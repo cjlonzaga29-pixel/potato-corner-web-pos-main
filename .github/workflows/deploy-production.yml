@@ -1,0 +1,46 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Full CI validation
+        run: |
+          pnpm run type-check
+          pnpm run lint
+          pnpm run test
+          pnpm run build
+
+      # Manual approval is enforced via the "production" GitHub Environment's
+      # required reviewers setting, not a workflow step.
+
+      - name: Run database migrations (production)
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+
+      # TODO: deploy apps/web to Vercel production and apps/api to Render
+      # production once those services are provisioned (out of scope for Phase 0).
+
+      # TODO: run Playwright smoke tests against production, then create a
+      # GitHub release with an auto-generated changelog.

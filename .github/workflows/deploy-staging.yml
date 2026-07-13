@@ -1,0 +1,42 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [staging]
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Full CI validation
+        run: |
+          pnpm run type-check
+          pnpm run lint
+          pnpm run test
+          pnpm run build
+
+      - name: Run database migrations (staging)
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+
+      # TODO: deploy apps/web to Vercel staging and apps/api to Render staging
+      # once those services are provisioned (out of scope for Phase 0).
+
+      # TODO: run Playwright smoke tests against the deployed staging URL.

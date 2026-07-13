@@ -1,0 +1,768 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+// Native Prisma enums (not String + CHECK): gives Postgres-level CREATE TYPE
+// validation and doesn't conflict with the app-code "no hand-written TS enum"
+// rule — Prisma-generated enums compile to string-literal unions.
+
+enum Role {
+  super_admin
+  supervisor
+  staff
+}
+
+enum EmploymentType {
+  regular
+  contractual
+  part_time
+}
+
+enum BranchStatus {
+  active
+  inactive
+  closed
+}
+
+enum ProductStatus {
+  draft
+  active
+  temporarily_unavailable
+  discontinued
+  archived
+}
+
+enum TransactionStatus {
+  completed
+  voided
+  refunded
+}
+
+enum PaymentMethod {
+  cash
+  gcash
+}
+
+enum InventoryDeductionStatus {
+  pending
+  completed
+  failed
+}
+
+enum ShiftStatus {
+  active
+  closed
+  flagged
+}
+
+enum DenominationCountType {
+  opening
+  closing
+}
+
+enum MovementType {
+  stock_in
+  sale_deduction
+  manual_adjustment
+  waste
+  physical_count
+  transfer_in
+  transfer_out
+}
+
+enum ImageProofType {
+  live_capture
+  gallery_upload
+}
+
+enum AttendanceGpsStatus {
+  within_radius
+  outside_radius
+  no_gps_data
+}
+
+enum AttendanceStatus {
+  present
+  corrected
+}
+
+enum FraudAlertSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+enum FraudAlertStatus {
+  open
+  investigating
+  dismissed
+  escalated
+}
+
+// ---------------------------------------------------------------------------
+// Core tables
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String         @id @default(uuid())
+  email          String         @unique
+  passwordHash   String         @map("password_hash")
+  role           Role
+  firstName      String         @map("first_name")
+  lastName       String         @map("last_name")
+  phone          String?
+  employeeId     String?        @unique @map("employee_id")
+  employmentType EmploymentType @map("employment_type")
+
+  // Application-layer AES-256-GCM ciphertext — see src/lib/encryption.ts.
+  // Never returned in standard API responses.
+  sssNumberEncrypted        String? @map("sss_number_encrypted")
+  philhealthNumberEncrypted String? @map("philhealth_number_encrypted")
+  tinNumberEncrypted        String? @map("tin_number_encrypted")
+  pagibigNumberEncrypted    String? @map("pagibig_number_encrypted")
+
+  isActive    Boolean   @default(true) @map("is_active")
+  lastLoginAt DateTime? @map("last_login_at")
+
+  // Account lockout (Architecture doc §5.3): locked after 5 consecutive
+  // failed attempts, auto-unlocks after 30 minutes, or manual Super Admin
+  // unlock (clears both fields).
+  loginAttempts Int       @default(0) @map("login_attempts")
+  lockedUntil   DateTime? @map("locked_until")
+
+  // Phase 5 (Employee Management). must_change_password is forced true on
+  // every admin-created or reactivated account and cleared only by a
+  // successful POST /api/auth/change-password. Deactivation never deletes
+  // the row (locked rule) — these three columns record who/when/why.
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  deactivatedAt      DateTime? @map("deactivated_at")
+  deactivatedBy      String?   @map("deactivated_by")
+  deactivationReason String?   @map("deactivation_reason")
+
+  branchAssignments   UserBranchAssignment[]
+  shiftsAsCashier     Shift[]                @relation("ShiftCashier")
+  shiftsOpenedBy      Shift[]                @relation("ShiftOpenedBy")
+  attendanceRecords   AttendanceRecord[]
+  auditLogs           AuditLog[]
+  createdProducts     Product[]
+  cashierTransactions Transaction[]
+  refreshTokens       RefreshToken[]
+  pinCredentials      PinCredential[]
+
+  // CR-001
+  priceOverrideRequests  BranchPriceOverride[]  @relation("PriceOverrideRequester")
+  priceOverrideReviews   BranchPriceOverride[]  @relation("PriceOverrideReviewer")
+  productRequestsFiled    ProductRequest[]      @relation("ProductRequestRequester")
+  productRequestsReviewed ProductRequest[]      @relation("ProductRequestReviewer")
+  recipeOverridesCreated  BranchRecipeOverride[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Branch {
+  id              String       @id @default(uuid())
+  name            String
+  code            String       @unique
+  address         String
+  city            String
+  gpsLatitude     Decimal?     @map("gps_latitude") @db.Decimal(10, 8)
+  gpsLongitude    Decimal?     @map("gps_longitude") @db.Decimal(11, 8)
+  gpsRadiusMeters Int          @default(100) @map("gps_radius_meters")
+  status          BranchStatus @default(active)
+
+  userAssignments     UserBranchAssignment[]
+  productAvailability BranchProductAvailability[]
+  flavorAvailability  BranchFlavorAvailability[]
+  ingredients         Ingredient[]
+  transactions        Transaction[]
+  shifts              Shift[]
+  inventoryMovements  InventoryMovement[]
+  attendanceRecords   AttendanceRecord[]
+  auditLogs           AuditLog[]
+  fraudAlerts         FraudAlert[]
+
+  // CR-001
+  exclusiveProducts Product[]              @relation("ProductExclusiveBranch")
+  priceOverrides    BranchPriceOverride[]
+  productRequests   ProductRequest[]
+  recipeOverrides   BranchRecipeOverride[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("branches")
+}
+
+model UserBranchAssignment {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  branchId   String    @map("branch_id")
+  assignedAt DateTime  @default(now()) @map("assigned_at")
+  removedAt  DateTime? @map("removed_at")
+
+  user   User   @relation(fields: [userId], references: [id])
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([userId])
+  @@index([branchId])
+  @@map("user_branch_assignments")
+}
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+/// Opaque refresh tokens are never stored in plaintext — only a SHA-256 hash
+/// of the token value. Rotated on every use (Architecture doc §5.1): using
+/// a token sets its revokedAt and creates a new row; replacedBy links the
+/// chain for audit purposes.
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash")
+  deviceId   String    @map("device_id")
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  replacedBy String?   @map("replaced_by")
+
+  user User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([deviceId])
+  @@map("refresh_tokens")
+}
+
+/// One PIN per (user, device) pair. Only usable on a device that has already
+/// completed full email/password authentication — enforced in the service
+/// layer by requiring an active, non-revoked RefreshToken for the same
+/// deviceId before a PIN can be set.
+model PinCredential {
+  id       String @id @default(uuid())
+  userId   String @map("user_id")
+  deviceId String @map("device_id")
+  pinHash  String @map("pin_hash")
+
+  user User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, deviceId])
+  @@map("pin_credentials")
+}
+
+// ---------------------------------------------------------------------------
+// Product and flavor system
+// ---------------------------------------------------------------------------
+
+model Product {
+  id                String        @id @default(uuid())
+  name              String
+  description       String?
+  category          String?
+  imageUrl          String?       @map("image_url")
+  status            ProductStatus @default(draft)
+  displayOrder      Int?          @map("display_order")
+  isSeasonal        Boolean       @default(false) @map("is_seasonal")
+  seasonalStartDate DateTime?     @map("seasonal_start_date") @db.Date
+  seasonalEndDate   DateTime?     @map("seasonal_end_date") @db.Date
+  createdBy         String?       @map("created_by")
+
+  // CR-001: branch-exclusive products (created directly by Super Admin with
+  // this flag, or via an approved product_requests row) skip the
+  // all-active-branches cascade and are only ever available at one branch.
+  branchExclusive   Boolean @default(false) @map("branch_exclusive")
+  exclusiveBranchId String? @map("exclusive_branch_id")
+
+  creator            User?                       @relation(fields: [createdBy], references: [id])
+  exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
+  variants           ProductVariant[]
+  branchAvailability BranchProductAvailability[]
+  productRequests    ProductRequest[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("products")
+}
+
+model ProductVariant {
+  id           String  @id @default(uuid())
+  productId    String  @map("product_id")
+  name         String
+  sizeLabel    String  @map("size_label")
+  basePrice    Decimal @map("base_price") @db.Decimal(10, 2)
+  displayOrder Int?    @map("display_order")
+  isActive     Boolean @default(true) @map("is_active")
+
+  product          Product                @relation(fields: [productId], references: [id])
+  variantFlavors   ProductVariantFlavor[]
+  recipes          Recipe[]
+  transactionItems TransactionItem[]
+
+  // CR-001
+  priceOverrides  BranchPriceOverride[]
+  recipeOverrides BranchRecipeOverride[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([productId])
+  @@map("product_variants")
+}
+
+model Flavor {
+  id           String  @id @default(uuid())
+  name         String
+  description  String?
+  colorHex     String? @map("color_hex")
+  displayOrder Int?    @map("display_order")
+  isActive     Boolean @default(true) @map("is_active")
+
+  variantFlavors     ProductVariantFlavor[]
+  branchAvailability BranchFlavorAvailability[]
+  recipes            Recipe[]
+  transactionItems   TransactionItem[]
+  recipeOverrides    BranchRecipeOverride[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("flavors")
+}
+
+model ProductVariantFlavor {
+  id               String  @id @default(uuid())
+  productVariantId String  @map("product_variant_id")
+  flavorId         String  @map("flavor_id")
+  pricePremium     Decimal @default(0) @map("price_premium") @db.Decimal(10, 2)
+  isAvailable      Boolean @default(true) @map("is_available")
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  flavor         Flavor         @relation(fields: [flavorId], references: [id])
+
+  @@unique([productVariantId, flavorId])
+  @@map("product_variant_flavors")
+}
+
+model BranchProductAvailability {
+  id          String  @id @default(uuid())
+  branchId    String  @map("branch_id")
+  productId   String  @map("product_id")
+  isAvailable Boolean @default(true) @map("is_available")
+  updatedBy   String? @map("updated_by")
+
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([branchId, productId])
+  @@map("branch_product_availability")
+}
+
+model BranchFlavorAvailability {
+  id                String  @id @default(uuid())
+  branchId          String  @map("branch_id")
+  flavorId          String  @map("flavor_id")
+  isAvailable       Boolean @default(true) @map("is_available")
+  unavailableReason String? @map("unavailable_reason")
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  flavor Flavor @relation(fields: [flavorId], references: [id])
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([branchId, flavorId])
+  @@map("branch_flavor_availability")
+}
+
+// ---------------------------------------------------------------------------
+// CR-001 — branch approval workflows (product requests, price overrides)
+// ---------------------------------------------------------------------------
+
+/// Supervisor-submitted request to add a branch-exclusive price for an
+/// existing catalog variant. status is a plain String (not a native enum,
+/// matching this refactor's other request tables) because it's checked in
+/// application code against REQUEST_STATUS rather than needing a Postgres
+/// CREATE TYPE. The partial unique index enforcing "at most one pending
+/// request per branch+variant" is added by raw SQL in the migration — Prisma's
+/// schema DSL has no WHERE-clause index syntax.
+model BranchPriceOverride {
+  id               String    @id @default(uuid())
+  branchId         String    @map("branch_id")
+  productVariantId String    @map("product_variant_id")
+  requestedPrice   Decimal   @map("requested_price") @db.Decimal(10, 2)
+  status           String    @default("pending")
+  requestedBy      String    @map("requested_by")
+  requestReason    String    @map("request_reason")
+  reviewedBy       String?   @map("reviewed_by")
+  reviewedAt       DateTime? @map("reviewed_at")
+  reviewNotes      String?   @map("review_notes")
+  effectiveFrom    DateTime? @map("effective_from")
+
+  branch         Branch         @relation(fields: [branchId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  requester      User           @relation("PriceOverrideRequester", fields: [requestedBy], references: [id])
+  reviewer       User?          @relation("PriceOverrideReviewer", fields: [reviewedBy], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId])
+  @@index([productVariantId])
+  @@index([status])
+  @@map("branch_price_overrides")
+}
+
+/// Supervisor-submitted request to add a brand-new product to the master
+/// catalog. proposed_variants/flavors/recipes are freeform JSON snapshots of
+/// the supervisor's proposal — validated against proposedVariantSchema etc.
+/// at the API boundary, not by the DB — because nothing here is committed to
+/// real Product/ProductVariant/Recipe rows unless and until a Super Admin
+/// approves it (reviewRequest creates those rows from this JSON at that point).
+model ProductRequest {
+  id                  String    @id @default(uuid())
+  branchId            String    @map("branch_id")
+  requestedBy         String    @map("requested_by")
+  proposedName        String    @map("proposed_name")
+  proposedDescription String?   @map("proposed_description")
+  proposedCategory    String?   @map("proposed_category")
+  proposedVariants    Json      @map("proposed_variants")
+  proposedFlavors     Json      @map("proposed_flavors")
+  proposedRecipes     Json      @map("proposed_recipes")
+  requestReason       String    @map("request_reason")
+  status              String    @default("pending")
+  reviewedBy          String?   @map("reviewed_by")
+  reviewedAt          DateTime? @map("reviewed_at")
+  reviewNotes         String?   @map("review_notes")
+  createdProductId    String?   @map("created_product_id")
+
+  branch         Branch   @relation(fields: [branchId], references: [id])
+  requester      User     @relation("ProductRequestRequester", fields: [requestedBy], references: [id])
+  reviewer       User?    @relation("ProductRequestReviewer", fields: [reviewedBy], references: [id])
+  createdProduct Product? @relation(fields: [createdProductId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId])
+  @@index([status])
+  @@map("product_requests")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory and recipes
+// ---------------------------------------------------------------------------
+
+model Ingredient {
+  id                String   @id @default(uuid())
+  name              String
+  unit              String
+  currentStock      Decimal  @default(0) @map("current_stock") @db.Decimal(10, 3)
+  lowStockThreshold Decimal  @map("low_stock_threshold") @db.Decimal(10, 3)
+  criticalThreshold Decimal  @map("critical_threshold") @db.Decimal(10, 3)
+  unitCost          Decimal? @map("unit_cost") @db.Decimal(10, 4)
+  branchId          String   @map("branch_id")
+
+  branch          Branch                 @relation(fields: [branchId], references: [id])
+  recipes         Recipe[]
+  movements       InventoryMovement[]
+  recipeOverrides BranchRecipeOverride[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId])
+  @@map("ingredients")
+}
+
+/// The flavorId column is the key field for the deduction algorithm:
+/// NULL means the row is a base ingredient applied to every sale of the
+/// variant regardless of flavor. A specific flavorId means the row applies
+/// only when that flavor is selected, and overrides the base quantity for
+/// the same ingredient. See the recipe deduction algorithm specification.
+model Recipe {
+  id               String  @id @default(uuid())
+  productVariantId String  @map("product_variant_id")
+  ingredientId     String  @map("ingredient_id")
+  flavorId         String? @map("flavor_id")
+  quantity         Decimal @db.Decimal(10, 4)
+  unit             String
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
+  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
+
+  @@index([productVariantId])
+  @@index([ingredientId])
+  @@index([flavorId])
+  @@map("recipes")
+}
+
+/// CR-001 Phase 7.5 — branch-scoped recipe row that replaces (same
+/// ingredient+flavor combination) or adds to (new ingredient) the master
+/// Recipe for one branch's computeDeduction. No approval workflow: a
+/// supervisor may create/update/delete these directly, audit-logged with a
+/// mandatory reason. Same flavorId-nullable base/flavor-specific semantics as
+/// the master Recipe model.
+model BranchRecipeOverride {
+  id               String  @id @default(uuid())
+  branchId         String  @map("branch_id")
+  productVariantId String  @map("product_variant_id")
+  ingredientId     String  @map("ingredient_id")
+  flavorId         String? @map("flavor_id")
+  quantity         Decimal @db.Decimal(10, 4)
+  unit             String
+  reason           String
+  createdBy        String  @map("created_by")
+
+  branch         Branch         @relation(fields: [branchId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
+  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
+  creator        User           @relation(fields: [createdBy], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([branchId, productVariantId, ingredientId, flavorId])
+  @@index([branchId, productVariantId])
+  @@map("branch_recipe_overrides")
+}
+
+/// Append-only. No row is ever updated or deleted — the full history of
+/// every ingredient's stock level is recoverable by replaying movements.
+model InventoryMovement {
+  id             String          @id @default(uuid())
+  branchId       String          @map("branch_id")
+  ingredientId   String          @map("ingredient_id")
+  movementType   MovementType    @map("movement_type")
+  quantityChange Decimal         @map("quantity_change") @db.Decimal(10, 3)
+  quantityBefore Decimal         @map("quantity_before") @db.Decimal(10, 3)
+  quantityAfter  Decimal         @map("quantity_after") @db.Decimal(10, 3)
+  referenceId    String?         @map("reference_id")
+  notes          String?
+  imageProofUrl  String?         @map("image_proof_url")
+  imageProofType ImageProofType? @map("image_proof_type")
+  approvedBy     String?         @map("approved_by")
+  recordedBy     String?         @map("recorded_by")
+
+  branch     Branch     @relation(fields: [branchId], references: [id])
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([branchId])
+  @@index([ingredientId])
+  @@map("inventory_movements")
+}
+
+// ---------------------------------------------------------------------------
+// Transactions, shifts, cash
+// ---------------------------------------------------------------------------
+
+model Transaction {
+  id                          String                   @id @default(uuid())
+  transactionNumber           String                   @unique @map("transaction_number")
+  branchId                    String                   @map("branch_id")
+  shiftId                     String?                  @map("shift_id")
+  cashierId                   String                   @map("cashier_id")
+  status                      TransactionStatus        @default(completed)
+  paymentMethod               PaymentMethod            @map("payment_method")
+  subtotal                    Decimal                  @db.Decimal(10, 2)
+  discountAmount              Decimal                  @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  vatAmount                   Decimal                  @map("vat_amount") @db.Decimal(10, 2)
+  totalAmount                 Decimal                  @map("total_amount") @db.Decimal(10, 2)
+  amountTendered              Decimal?                 @map("amount_tendered") @db.Decimal(10, 2)
+  changeAmount                Decimal?                 @map("change_amount") @db.Decimal(10, 2)
+  gcashReference              String?                  @map("gcash_reference")
+  discountType                String?                  @map("discount_type")
+  discountCustomerIdEncrypted String?                  @map("discount_customer_id_encrypted")
+  inventoryDeductionStatus    InventoryDeductionStatus @default(pending) @map("inventory_deduction_status")
+  isOfflineTransaction        Boolean                  @default(false) @map("is_offline_transaction")
+  offlineProvisionalNumber    String?                  @map("offline_provisional_number")
+  syncedAt                    DateTime?                @map("synced_at")
+
+  branch  Branch            @relation(fields: [branchId], references: [id])
+  shift   Shift?            @relation(fields: [shiftId], references: [id])
+  cashier User              @relation(fields: [cashierId], references: [id])
+  items   TransactionItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([branchId])
+  @@index([shiftId])
+  @@index([cashierId])
+  @@map("transactions")
+}
+
+/// Snapshot fields freeze the product/variant/flavor name and price at the
+/// exact moment of sale — they never change even if the product catalog
+/// or pricing changes later.
+model TransactionItem {
+  id                  String  @id @default(uuid())
+  transactionId       String  @map("transaction_id")
+  productId           String  @map("product_id")
+  productVariantId    String  @map("product_variant_id")
+  flavorId            String? @map("flavor_id")
+  productNameSnapshot String  @map("product_name_snapshot")
+  variantNameSnapshot String  @map("variant_name_snapshot")
+  flavorNameSnapshot  String? @map("flavor_name_snapshot")
+  unitPriceSnapshot   Decimal @map("unit_price_snapshot") @db.Decimal(10, 2)
+  quantity            Int
+  lineTotal           Decimal @map("line_total") @db.Decimal(10, 2)
+
+  transaction    Transaction    @relation(fields: [transactionId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
+
+  @@index([transactionId])
+  @@map("transaction_items")
+}
+
+model Shift {
+  id                     String      @id @default(uuid())
+  branchId               String      @map("branch_id")
+  cashierId              String      @map("cashier_id")
+  openedBy               String      @map("opened_by")
+  status                 ShiftStatus @default(active)
+  openingCashAmount      Decimal     @map("opening_cash_amount") @db.Decimal(10, 2)
+  closingCashAmount      Decimal?    @map("closing_cash_amount") @db.Decimal(10, 2)
+  expectedClosingCash    Decimal?    @map("expected_closing_cash") @db.Decimal(10, 2)
+  cashVariance           Decimal?    @map("cash_variance") @db.Decimal(10, 2)
+  varianceApprovedBy     String?     @map("variance_approved_by")
+  varianceApprovalReason String?     @map("variance_approval_reason")
+  cashSalesTotal         Decimal     @default(0) @map("cash_sales_total") @db.Decimal(10, 2)
+  gcashSalesTotal        Decimal     @default(0) @map("gcash_sales_total") @db.Decimal(10, 2)
+  transactionCount       Int         @default(0) @map("transaction_count")
+  shiftNotes             String?     @map("shift_notes")
+
+  branch  Branch @relation(fields: [branchId], references: [id])
+  cashier User   @relation("ShiftCashier", fields: [cashierId], references: [id])
+  opener  User   @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
+
+  denominations ShiftCashDenomination[]
+  transactions  Transaction[]
+
+  startedAt DateTime  @map("started_at")
+  closedAt  DateTime? @map("closed_at")
+
+  @@index([branchId])
+  @@index([cashierId])
+  @@map("shifts")
+}
+
+model ShiftCashDenomination {
+  id           String                @id @default(uuid())
+  shiftId      String                @map("shift_id")
+  denomination Decimal               @db.Decimal(10, 2)
+  count        Int
+  totalValue   Decimal               @map("total_value") @db.Decimal(10, 2)
+  countType    DenominationCountType @map("count_type")
+
+  shift Shift @relation(fields: [shiftId], references: [id])
+
+  @@index([shiftId])
+  @@map("shift_cash_denominations")
+}
+
+// ---------------------------------------------------------------------------
+// Attendance
+// ---------------------------------------------------------------------------
+
+model AttendanceRecord {
+  id                 String              @id @default(uuid())
+  employeeId         String              @map("employee_id")
+  branchId           String              @map("branch_id")
+  clockInServerTime  DateTime            @map("clock_in_server_time")
+  clockInDeviceTime  DateTime?           @map("clock_in_device_time")
+  clockInGpsLat      Decimal?            @map("clock_in_gps_lat") @db.Decimal(10, 8)
+  clockInGpsLng      Decimal?            @map("clock_in_gps_lng") @db.Decimal(11, 8)
+  clockInGpsStatus   AttendanceGpsStatus @map("clock_in_gps_status")
+  clockInTimeFlag    Boolean             @default(false) @map("clock_in_time_flag")
+  clockOutServerTime DateTime?           @map("clock_out_server_time")
+  clockOutDeviceTime DateTime?           @map("clock_out_device_time")
+  clockOutGpsLat     Decimal?            @map("clock_out_gps_lat") @db.Decimal(10, 8)
+  clockOutGpsLng     Decimal?            @map("clock_out_gps_lng") @db.Decimal(11, 8)
+  breakMinutes       Int                 @default(0) @map("break_minutes")
+  actualWorkMinutes  Int?                @map("actual_work_minutes")
+  overtimeMinutes    Int                 @default(0) @map("overtime_minutes")
+  status             AttendanceStatus    @default(present)
+  correctionReason   String?             @map("correction_reason")
+  correctedBy        String?             @map("corrected_by")
+
+  employee User   @relation(fields: [employeeId], references: [id])
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  @@index([employeeId])
+  @@index([branchId])
+  @@map("attendance_records")
+}
+
+// ---------------------------------------------------------------------------
+// Audit and fraud
+// ---------------------------------------------------------------------------
+
+/// Append-only, hash-chained. currentHash is SHA-256 of this record's fields
+/// concatenated with the previous record's currentHash — any historical
+/// modification breaks the chain and is detectable.
+model AuditLog {
+  id           String  @id @default(uuid())
+  action       String
+  entityType   String  @map("entity_type")
+  entityId     String? @map("entity_id")
+  actorId      String? @map("actor_id")
+  actorRole    String  @map("actor_role")
+  branchId     String? @map("branch_id")
+  beforeState  Json?   @map("before_state")
+  afterState   Json?   @map("after_state")
+  ipAddress    String? @map("ip_address")
+  userAgent    String? @map("user_agent")
+  previousHash String  @map("previous_hash")
+  currentHash  String  @map("current_hash")
+
+  actor  User?   @relation(fields: [actorId], references: [id])
+  branch Branch? @relation(fields: [branchId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@map("audit_logs")
+}
+
+model FraudAlert {
+  id              String             @id @default(uuid())
+  alertType       String             @map("alert_type")
+  severity        FraudAlertSeverity
+  employeeId      String?            @map("employee_id")
+  branchId        String?            @map("branch_id")
+  evidence        Json
+  status          FraudAlertStatus   @default(open)
+  investigatedBy  String?            @map("investigated_by")
+  dismissalReason String?            @map("dismissal_reason")
+
+  branch Branch? @relation(fields: [branchId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId])
+  @@index([employeeId])
+  @@map("fraud_alerts")
+}

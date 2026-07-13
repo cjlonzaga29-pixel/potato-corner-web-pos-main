@@ -1,0 +1,9 @@
+# Default owners for everything, unless a later match takes precedence.
+* @lead-developer @tech-lead
+
+# Authentication, payments, and audit logging require the two-approval rule
+# (Master Execution Plan §7.2) — codify it here once real GitHub usernames exist.
+/apps/api/src/modules/auth/ @lead-developer @tech-lead
+/apps/api/src/modules/transactions/ @lead-developer @tech-lead
+/apps/api/src/modules/audit/ @lead-developer @tech-lead
+/apps/api/prisma/schema.prisma @lead-developer @tech-lead

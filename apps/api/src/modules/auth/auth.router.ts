@@ -1,0 +1,196 @@
+import { Router, type Request, type Response, type NextFunction } from 'express';
+import {
+  loginSchema,
+  refreshSchema,
+  changePasswordSchema,
+  resetRequestSchema,
+  resetPasswordSchema,
+  pinSetSchema,
+  pinLoginSchema,
+} from '@potato-corner/shared';
+import { authService } from './auth.service.js';
+import { AuthError } from './auth.types.js';
+import { validate } from '../../middleware/validate.js';
+import { authenticate } from '../../middleware/authenticate.js';
+import { loginLimiter, resetLimiter } from '../../middleware/rate-limiter.js';
+import { config } from '../../config/index.js';
+import { parseDurationMs } from '../../lib/duration.js';
+
+const router: Router = Router();
+
+const REFRESH_COOKIE_NAME = 'refresh_token';
+// Must be '/' (not '/api/auth') — apps/web/middleware.ts reads this cookie
+// on every page navigation (e.g. /admin/dashboard, /terminal) to decide
+// whether the user is logged in. Scoping it to /api/auth meant the browser
+// never attached it outside that one path, so every post-login redirect
+// bounced straight back to /login.
+const REFRESH_COOKIE_PATH = '/';
+
+function setRefreshCookie(res: Response, token: string): void {
+  res.cookie(REFRESH_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: REFRESH_COOKIE_PATH,
+    maxAge: parseDurationMs(config.jwt.refreshTokenTtl),
+  });
+}
+
+function clearRefreshCookie(res: Response): void {
+  res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+}
+
+function getBearerToken(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  return header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+}
+
+/** Routes AuthError to its declared status code; unexpected errors fall through to the global handler. */
+function handleAuthError(error: unknown, res: Response, next: NextFunction): void {
+  if (error instanceof AuthError) {
+    res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
+    return;
+  }
+  next(error);
+}
+
+router.post('/login', loginLimiter, validate(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, password, device_id } = req.body as { email: string; password: string; device_id: string };
+    const result = await authService.login(email, password, device_id, req.ip ?? null);
+    setRefreshCookie(res, result.refreshToken);
+    res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post('/refresh', validate(refreshSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const refreshTokenValue = (req.cookies as Record<string, string> | undefined)?.[REFRESH_COOKIE_NAME];
+    if (!refreshTokenValue) {
+      res.status(401).json({ data: null, error: { code: 'REFRESH_MISSING' }, meta: null });
+      return;
+    }
+    const { device_id } = req.body as { device_id: string };
+    const result = await authService.refreshToken(refreshTokenValue, device_id);
+    setRefreshCookie(res, result.refreshToken);
+    res.status(200).json({ data: { access_token: result.access_token }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post('/logout', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const accessToken = getBearerToken(req);
+    const refreshTokenValue = (req.cookies as Record<string, string> | undefined)?.[REFRESH_COOKIE_NAME];
+    if (accessToken) {
+      await authService.logout(accessToken, refreshTokenValue);
+    }
+    clearRefreshCookie(res);
+    res.status(200).json({ data: { success: true }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post('/logout-all', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const accessToken = getBearerToken(req);
+    if (accessToken && req.user) {
+      await authService.logoutAllDevices(req.user.user_id, accessToken);
+    }
+    clearRefreshCookie(res);
+    res.status(200).json({ data: { success: true }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post(
+  '/change-password',
+  authenticate,
+  validate(changePasswordSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const accessToken = getBearerToken(req);
+      const deviceId = req.headers['x-device-id'];
+      const { current_password, new_password } = req.body as { current_password: string; new_password: string };
+      if (!req.user || !accessToken) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      if (typeof deviceId !== 'string') {
+        res.status(400).json({ data: null, error: { code: 'DEVICE_ID_MISSING' }, meta: null });
+        return;
+      }
+      const result = await authService.changePassword(req.user.user_id, current_password, new_password, accessToken, deviceId);
+      setRefreshCookie(res, result.refreshToken);
+      res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/request-reset',
+  resetLimiter,
+  validate(resetRequestSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email } = req.body as { email: string };
+      await authService.requestPasswordReset(email);
+      // Same response whether or not the email exists — never confirm account existence.
+      res.status(200).json({
+        data: { message: 'If an account exists for that email, a reset link has been sent.' },
+        error: null,
+        meta: null,
+      });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/reset-password',
+  validate(resetPasswordSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { token, new_password } = req.body as { token: string; new_password: string };
+      await authService.resetPassword(token, new_password);
+      res.status(200).json({ data: { success: true }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+router.post('/pin/set', authenticate, validate(pinSetSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const deviceId = req.headers['x-device-id'];
+    if (!req.user || typeof deviceId !== 'string') {
+      res.status(400).json({ data: null, error: { code: 'DEVICE_ID_MISSING' }, meta: null });
+      return;
+    }
+    const { pin } = req.body as { pin: string };
+    await authService.setPin(req.user.user_id, deviceId, pin);
+    res.status(200).json({ data: { success: true }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post('/pin/login', loginLimiter, validate(pinLoginSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { user_id, pin, device_id } = req.body as { user_id: string; pin: string; device_id: string };
+    const result = await authService.validatePin(user_id, device_id, pin);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+export { router as authRouter };

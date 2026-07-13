@@ -1,0 +1,79 @@
+# Potato Corner POS — Claude Code Project Rules
+
+## Project Overview
+
+Enterprise Web POS and Branch Management Platform for the Potato Corner franchise. Multi-branch QSR operation in the Philippines. Three role-based interfaces (Super Admin, Supervisor, Staff POS) from one Next.js codebase.
+
+Full specifications: `docs/architecture/final-approved-architecture.md` (business rules, database schema, algorithms) and `docs/architecture/master-execution-plan.md` (stack, standards, 20-phase roadmap). Nothing in those documents is open for discussion without a formal change request — implement what they say, don't redesign it.
+
+**Current status:** Phase 0 (Environment and Repository Setup) complete — local scaffold only, no external services (Supabase/Render/Vercel/Upstash/Sentry/PostHog) wired up yet. Phase 1 (Authentication Foundation) is next.
+
+## Architecture
+
+- Monorepo: pnpm workspaces + Turborepo
+- Frontend: Next.js 15 App Router, React 19, TypeScript, Tailwind CSS v3, shadcn/ui
+- Backend: Node.js Express 5 modular monolith, TypeScript
+- Database: PostgreSQL via Supabase Pro, Prisma ORM
+- Queue: BullMQ with Upstash Redis
+- Realtime: Socket.io with Redis adapter
+- Offline: Service Worker (`@ducanh2912/next-pwa`) + Dexie.js IndexedDB
+
+## Critical Business Rules — Never Modify Without Explicit Instruction
+
+**Recipe Deduction Algorithm**
+```
+Step 1: Collect base ingredients (flavor_id IS NULL)
+Step 2: Collect flavor-specific ingredients (flavor_id = selected)
+Step 3: Flavor-specific quantity overrides base for same ingredient
+Step 4: Multiply all quantities by items sold
+Step 5: Deduct atomically
+```
+
+**PWD/Senior Citizen VAT Formula**
+```
+VATable base = total ÷ 1.12
+Discount = VATable base × 0.20
+Discounted base = VATable base - discount
+VAT = discounted base × 0.12
+Total = discounted base + VAT
+```
+
+**Transaction Number**
+`transaction_number` IS the receipt number. Same field. Same value everywhere. No separate receipt number exists.
+
+**Offline Receipt Numbers**
+Format: `PC-[BRANCH]-[DATE]-OFFLINE-[LOCAL_SEQ]`. Resets to 1 at midnight. Replaced with the official number after sync.
+
+**JWT Structure**
+```
+Super Admin: { user_id, role, email }
+Supervisor:  { user_id, role, email, branch_ids: [uuid, ...] }
+Staff:       { user_id, role, email, branch_ids: [uuid] }
+```
+
+## Code Standards
+
+- TypeScript strict mode, no `any`, no `!` without a comment explaining why it's safe
+- kebab-case files and folders, PascalCase components, camelCase hooks/utilities
+- One component per file
+- Zod validates every API request payload (schemas live in `packages/shared`)
+- No direct Prisma calls in routers — always through the repository layer
+- Server Components by default in Next.js App Router, `"use client"` only when needed
+- Conventional commits (`feat|fix|docs|test|refactor|chore|perf`, imperative mood)
+
+## Module Structure
+
+Each backend module (`apps/api/src/modules/<name>/`) contains: `<name>.router.ts`, `<name>.service.ts`, `<name>.repository.ts`, `<name>.types.ts`.
+
+## State Management Separation
+
+Data from the database → TanStack Query. Data that lives in the browser only (POS cart, shift state, UI state, branch context, auth identity cache, offline sync status) → Zustand. These responsibilities never overlap.
+
+## Do Not
+
+- Add libraries not in the approved stack
+- Modify the authentication JWT structure
+- Change the database schema without a Prisma migration
+- Use raw SQL instead of Prisma
+- Store secrets in code
+- Create API routes in Next.js — all API logic lives in the Express backend (`apps/web/app/api/health` is the sole exception, a liveness probe)

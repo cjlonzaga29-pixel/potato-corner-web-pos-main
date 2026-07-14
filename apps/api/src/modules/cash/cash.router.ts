@@ -119,6 +119,22 @@ router.get('/:shiftId', authenticate, allRoles, requirePasswordChange, async (re
   }
 });
 
+router.get('/:shiftId/summary', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const result = await cashService.getShiftSummary(req.params.shiftId as string);
+    // Same inline branch-check pattern as GET /:shiftId — the branch is only
+    // known once the shift has been fetched.
+    if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(result.shift.branch_id)) {
+      res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+      return;
+    }
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
 router.post(
   '/:shiftId/close',
   authenticate,

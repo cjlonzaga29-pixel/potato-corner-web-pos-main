@@ -14,6 +14,7 @@ vi.mock('./cash.service.js', () => ({
     openShift: vi.fn(),
     getCurrentShift: vi.fn(),
     getShiftById: vi.fn(),
+    getShiftSummary: vi.fn(),
     listShifts: vi.fn(),
     closeShift: vi.fn(),
     approveVariance: vi.fn(),
@@ -87,6 +88,7 @@ describe('cash routes — authentication', () => {
     { method: 'get', path: '/current' },
     { method: 'get', path: '/' },
     { method: 'get', path: '/:shiftId' },
+    { method: 'get', path: '/:shiftId/summary' },
     { method: 'post', path: '/:shiftId/close' },
     { method: 'post', path: '/:shiftId/approve-variance' },
     { method: 'post', path: '/:shiftId/void' },
@@ -282,6 +284,57 @@ describe('GET /current', () => {
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(cashService.getCurrentShift).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /:shiftId/summary', () => {
+  it('staff cannot fetch a shift summary — 403', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/:shiftId/summary');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(cashService.getShiftSummary).not.toHaveBeenCalled();
+  });
+
+  it("blocks a supervisor from fetching another branch's shift summary — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/:shiftId/summary');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 } });
+    const res = mockRes();
+    vi.mocked(cashService.getShiftSummary).mockResolvedValue({ shift: { id: SHIFT_1, branch_id: BRANCH_2 }, summary: {} } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+  });
+
+  it('allows a supervisor to fetch their own branch shift summary — 200', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/:shiftId/summary');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 } });
+    const res = mockRes();
+    vi.mocked(cashService.getShiftSummary).mockResolvedValue({ shift: { id: SHIFT_1, branch_id: BRANCH_1 }, summary: {} } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('allows a super_admin to fetch any branch shift summary — 200', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/:shiftId/summary');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 } });
+    const res = mockRes();
+    vi.mocked(cashService.getShiftSummary).mockResolvedValue({ shift: { id: SHIFT_1, branch_id: BRANCH_2 }, summary: {} } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 });
 

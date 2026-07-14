@@ -158,6 +158,7 @@ export function useApproveVariance(shiftId: string | null | undefined) {
     onSuccess: (shift) => {
       queryClient.setQueryData(['shift', shiftId], shift);
       void queryClient.invalidateQueries({ queryKey: ['shifts'] });
+      void queryClient.invalidateQueries({ queryKey: ['shift-summary', shiftId] });
       toast.success(shift.variance_approved ? 'Variance approved' : 'Variance rejected');
     },
     onError: (error: Error) => toast.error(error.message),

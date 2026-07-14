@@ -124,4 +124,25 @@ describe.skipIf(!canRunIntegrationTests)('cash (shift management) integration', 
     // returned shift's branch_id matches the query.
     expect(true).toBe(true);
   });
+
+  it('GET /api/cash/:shiftId/summary returns a live-computed summary for an OPEN shift', async () => {
+    // TODO: open a shift, create 2 completed cash + 1 completed gcash + 1 voided transaction against
+    // it, call GET /:shiftId/summary, assert summary.cash_sales_count === 2, summary.voided_count === 1,
+    // summary.actual_cash === null, summary.variance_status === null.
+    expect(true).toBe(true);
+  });
+
+  it('GET /api/cash/:shiftId/summary returns stored values for a CLOSED shift, matching the close response', async () => {
+    // TODO: open + close a shift with a matching denomination count, call GET /:shiftId/summary,
+    // assert its `summary` object deep-equals the `summary` key returned by the earlier POST
+    // /:shiftId/close call (same numbers, both computed once and persisted).
+    expect(true).toBe(true);
+  });
+
+  it('POST /api/cash/:shiftId/close response includes all 7 new summary fields on the shift and a full `summary` object', async () => {
+    // TODO: open a shift, record a mix of completed/voided/PWD-discounted transactions, close it,
+    // assert response.data.cash_sales_count/voided_count/pwd_sc_transaction_count/etc. are present
+    // and response.data.summary.total_sales === cash_sales_total + gcash_sales_total.
+    expect(true).toBe(true);
+  });
 });

@@ -41,3 +41,13 @@ export interface ShiftListFilters {
   page: number;
   limit: number;
 }
+
+export interface ShiftCloseComputedCounts {
+  cashSalesCount: number;
+  gcashSalesCount: number;
+  voidedCount: number;
+  refundedCount: number;
+  totalTransactionCount: number;
+  totalDiscountAmount: number;
+  pwdScTransactionCount: number;
+}

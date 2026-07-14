@@ -6,8 +6,10 @@ import type {
   ApproveVarianceInput,
   CloseShiftInput,
   OpenShiftInput,
+  ShiftCloseResponse,
   ShiftListResponse,
   ShiftResponse,
+  ShiftSummaryResponse,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useShiftStore } from '@/stores/shift.store';
@@ -48,6 +50,22 @@ export function useShift(shiftId: string | null | undefined) {
       return response.data;
     },
     enabled: Boolean(shiftId),
+  });
+}
+
+export function useShiftSummary(shiftId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['shift-summary', shiftId],
+    queryFn: async () => {
+      const response = await apiClient<ShiftSummaryResponse>(`/api/cash/${shiftId}/summary`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load shift summary'));
+      return response.data;
+    },
+    enabled: Boolean(shiftId),
+    // Matches useCurrentShift's cadence — meaningful for an OPEN shift's
+    // live preview; a closed/flagged shift's summary never changes, but a
+    // short staleTime is harmless there too.
+    staleTime: 10 * 1000,
   });
 }
 
@@ -108,7 +126,7 @@ export function useCloseShift(branchId: string | null | undefined, shiftId: stri
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CloseShiftInput) => {
-      const response = await apiClient<ShiftResponse>(`/api/cash/${shiftId}/close`, {
+      const response = await apiClient<ShiftCloseResponse>(`/api/cash/${shiftId}/close`, {
         method: 'POST',
         body: JSON.stringify(input),
       });
@@ -116,13 +134,10 @@ export function useCloseShift(branchId: string | null | undefined, shiftId: stri
       return response.data;
     },
     onSuccess: (shift) => {
-      // A flagged (pending-review) shift is closed-for-cashiering but not
-      // "closed" in the store's active/inactive sense until a super_admin
-      // resolves the variance — clearShift either way, since staff/
-      // supervisors have nothing further to do at the terminal.
       useShiftStore.getState().clearShift();
       invalidateShifts(queryClient, branchId);
       queryClient.setQueryData(['shift', shiftId], shift);
+      void queryClient.invalidateQueries({ queryKey: ['shift-summary', shiftId] });
       toast.success(shift.status === 'flagged' ? 'Shift closed — pending variance review' : 'Shift closed');
     },
     onError: (error: Error) => toast.error(error.message),

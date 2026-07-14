@@ -23,6 +23,7 @@ vi.mock('../../lib/prisma.js', () => {
     transaction: {
       groupBy: vi.fn(),
       count: vi.fn(),
+      aggregate: vi.fn(),
     },
     user: {
       findUnique: vi.fn(),
@@ -126,6 +127,53 @@ describe('cashRepository.sumTransactionsForShift', () => {
   });
 });
 
+describe('cashRepository.sumTransactionCountsForShift', () => {
+  it('splits completed counts by payment method, sums voided/refunded/total/pwd-sc/discount', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
+      { paymentMethod: 'cash', status: 'completed', _count: { _all: 5 } },
+      { paymentMethod: 'gcash', status: 'completed', _count: { _all: 3 } },
+      { paymentMethod: 'cash', status: 'voided', _count: { _all: 1 } },
+      { paymentMethod: 'gcash', status: 'refunded', _count: { _all: 2 } },
+    ] as never);
+    vi.mocked(prisma.transaction.aggregate).mockResolvedValue({ _sum: { discountAmount: new Prisma.Decimal(150) } } as never);
+    vi.mocked(prisma.transaction.count).mockResolvedValueOnce(4).mockResolvedValueOnce(11);
+
+    const result = await cashRepository.sumTransactionCountsForShift('shift-1');
+
+    expect(result).toEqual({
+      cashSalesCount: 5,
+      gcashSalesCount: 3,
+      voidedCount: 1,
+      refundedCount: 2,
+      totalTransactionCount: 11,
+      totalDiscountAmount: 150,
+      pwdScTransactionCount: 4,
+    });
+    expect(prisma.transaction.count).toHaveBeenNthCalledWith(1, {
+      where: { shiftId: 'shift-1', status: 'completed', discountType: { in: ['pwd', 'senior_citizen'] } },
+    });
+    expect(prisma.transaction.count).toHaveBeenNthCalledWith(2, { where: { shiftId: 'shift-1' } });
+  });
+
+  it('returns all zeros when the shift has no transactions', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.transaction.aggregate).mockResolvedValue({ _sum: { discountAmount: null } } as never);
+    vi.mocked(prisma.transaction.count).mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+
+    const result = await cashRepository.sumTransactionCountsForShift('shift-1');
+
+    expect(result).toEqual({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+  });
+});
+
 describe('cashRepository.countAnyTransactionsForShift', () => {
   it('counts every transaction regardless of status', async () => {
     vi.mocked(prisma.transaction.count).mockResolvedValue(2);
@@ -151,6 +199,13 @@ describe('cashRepository.closeShift', () => {
         cashSalesTotal: 500,
         gcashSalesTotal: 0,
         transactionCount: 5,
+        cashSalesCount: 2,
+        gcashSalesCount: 1,
+        voidedCount: 0,
+        refundedCount: 0,
+        totalTransactionCount: 3,
+        totalDiscountAmount: 25,
+        pwdScTransactionCount: 1,
         status: 'closed',
         varianceApproved: true,
         closedBy: 'user-1',
@@ -169,6 +224,13 @@ describe('cashRepository.closeShift', () => {
         cashSalesTotal: 500,
         gcashSalesTotal: 0,
         transactionCount: 5,
+        cashSalesCount: 2,
+        gcashSalesCount: 1,
+        voidedCount: 0,
+        refundedCount: 0,
+        totalTransactionCount: 3,
+        totalDiscountAmount: 25,
+        pwdScTransactionCount: 1,
         status: 'closed',
         varianceApproved: true,
         varianceExplanation: undefined,

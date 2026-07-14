@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { CloseShiftData, DenominationCountInput, OpenShiftData, ShiftListFilters } from './cash.types.js';
+import type { CloseShiftData, DenominationCountInput, OpenShiftData, ShiftListFilters, ShiftCloseComputedCounts } from './cash.types.js';
 
 const shiftInclude = {
   denominations: true,
@@ -77,6 +77,48 @@ export const cashRepository = {
     };
   },
 
+  /**
+   * Close-time-only summary counts (BIR reporting fields) — computed fresh
+   * every close, unlike cashSalesTotal/gcashSalesTotal which are also live-
+   * overlaid for an open shift. cashSalesCount/gcashSalesCount are COMPLETED-
+   * only per payment method; voidedCount/refundedCount span both payment
+   * methods; totalTransactionCount is every status; totalDiscountAmount and
+   * pwdScTransactionCount are COMPLETED-only (a voided PWD sale never
+   * happened for reporting purposes).
+   */
+  async sumTransactionCountsForShift(shiftId: string): Promise<ShiftCloseComputedCounts> {
+    const [statusRows, discountAgg, pwdScCount, totalCount] = await Promise.all([
+      prisma.transaction.groupBy({
+        by: ['paymentMethod', 'status'],
+        where: { shiftId },
+        _count: { _all: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { shiftId, status: 'completed' },
+        _sum: { discountAmount: true },
+      }),
+      prisma.transaction.count({
+        where: { shiftId, status: 'completed', discountType: { in: ['pwd', 'senior_citizen'] } },
+      }),
+      prisma.transaction.count({ where: { shiftId } }),
+    ]);
+
+    const cashSalesCount = statusRows.find((r) => r.paymentMethod === 'cash' && r.status === 'completed')?._count._all ?? 0;
+    const gcashSalesCount = statusRows.find((r) => r.paymentMethod === 'gcash' && r.status === 'completed')?._count._all ?? 0;
+    const voidedCount = statusRows.filter((r) => r.status === 'voided').reduce((sum, r) => sum + r._count._all, 0);
+    const refundedCount = statusRows.filter((r) => r.status === 'refunded').reduce((sum, r) => sum + r._count._all, 0);
+
+    return {
+      cashSalesCount,
+      gcashSalesCount,
+      voidedCount,
+      refundedCount,
+      totalTransactionCount: totalCount,
+      totalDiscountAmount: discountAgg._sum.discountAmount?.toNumber() ?? 0,
+      pwdScTransactionCount: pwdScCount,
+    };
+  },
+
   /** Any transaction at all (regardless of status) counts toward the void guard — even a voided one means the shift wasn't untouched. */
   countAnyTransactionsForShift(shiftId: string) {
     return prisma.transaction.count({ where: { shiftId } });
@@ -92,6 +134,13 @@ export const cashRepository = {
       cashSalesTotal: number;
       gcashSalesTotal: number;
       transactionCount: number;
+      cashSalesCount: number;
+      gcashSalesCount: number;
+      voidedCount: number;
+      refundedCount: number;
+      totalTransactionCount: number;
+      totalDiscountAmount: number;
+      pwdScTransactionCount: number;
       status: 'closed' | 'flagged';
       varianceApproved: boolean | null;
       closedBy: string;
@@ -111,6 +160,13 @@ export const cashRepository = {
           cashSalesTotal: computed.cashSalesTotal,
           gcashSalesTotal: computed.gcashSalesTotal,
           transactionCount: computed.transactionCount,
+          cashSalesCount: computed.cashSalesCount,
+          gcashSalesCount: computed.gcashSalesCount,
+          voidedCount: computed.voidedCount,
+          refundedCount: computed.refundedCount,
+          totalTransactionCount: computed.totalTransactionCount,
+          totalDiscountAmount: computed.totalDiscountAmount,
+          pwdScTransactionCount: computed.pwdScTransactionCount,
           status: computed.status,
           varianceApproved: computed.varianceApproved,
           varianceExplanation: data.varianceExplanation,

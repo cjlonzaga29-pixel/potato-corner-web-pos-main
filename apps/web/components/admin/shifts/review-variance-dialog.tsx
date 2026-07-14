@@ -44,7 +44,7 @@ export function ReviewVarianceDialog({ open, onOpenChange, shift }: ReviewVarian
 
         <div className="space-y-3 text-sm">
           <div>
-            <p className="text-xs text-muted-foreground">Cashier's explanation</p>
+            <p className="text-xs text-muted-foreground">Cashier&apos;s explanation</p>
             <p>{shift.variance_explanation ?? '—'}</p>
           </div>
           <div>

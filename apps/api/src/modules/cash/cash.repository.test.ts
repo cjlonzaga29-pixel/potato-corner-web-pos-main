@@ -149,6 +149,15 @@ describe('cashRepository.sumTransactionCountsForShift', () => {
       totalDiscountAmount: 150,
       pwdScTransactionCount: 4,
     });
+    expect(prisma.transaction.groupBy).toHaveBeenCalledWith({
+      by: ['paymentMethod', 'status'],
+      where: { shiftId: 'shift-1' },
+      _count: { _all: true },
+    });
+    expect(prisma.transaction.aggregate).toHaveBeenCalledWith({
+      where: { shiftId: 'shift-1', status: 'completed' },
+      _sum: { discountAmount: true },
+    });
     expect(prisma.transaction.count).toHaveBeenNthCalledWith(1, {
       where: { shiftId: 'shift-1', status: 'completed', discountType: { in: ['pwd', 'senior_citizen'] } },
     });
@@ -170,6 +179,15 @@ describe('cashRepository.sumTransactionCountsForShift', () => {
       totalTransactionCount: 0,
       totalDiscountAmount: 0,
       pwdScTransactionCount: 0,
+    });
+    expect(prisma.transaction.groupBy).toHaveBeenCalledWith({
+      by: ['paymentMethod', 'status'],
+      where: { shiftId: 'shift-1' },
+      _count: { _all: true },
+    });
+    expect(prisma.transaction.aggregate).toHaveBeenCalledWith({
+      where: { shiftId: 'shift-1', status: 'completed' },
+      _sum: { discountAmount: true },
     });
   });
 });

@@ -122,6 +122,9 @@ export type ApproveVarianceInput = z.infer<typeof schemas.approveVarianceSchema>
 export type VoidShiftInput = z.infer<typeof schemas.voidShiftSchema>;
 export type ShiftResponse = z.infer<typeof schemas.shiftResponseSchema>;
 export type ShiftListResponse = z.infer<typeof schemas.shiftListResponseSchema>;
+export type ShiftSummary = z.infer<typeof schemas.shiftSummarySchema>;
+export type ShiftSummaryResponse = z.infer<typeof schemas.shiftSummaryResponseSchema>;
+export type ShiftCloseResponse = z.infer<typeof schemas.shiftCloseResponseSchema>;
 export type DenominationCountInput = z.infer<typeof schemas.denominationCountSchema>;
 
 export type ClockInInput = z.infer<typeof schemas.clockInSchema>;

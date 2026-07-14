@@ -70,6 +70,13 @@ export const shiftResponseSchema = z.object({
   cash_sales_total: z.number(),
   gcash_sales_total: z.number(),
   transaction_count: z.number().int(),
+  cash_sales_count: z.number().int(),
+  gcash_sales_count: z.number().int(),
+  voided_count: z.number().int(),
+  refunded_count: z.number().int(),
+  total_transaction_count: z.number().int(),
+  total_discount_amount: z.number(),
+  pwd_sc_transaction_count: z.number().int(),
   shift_notes: z.string().nullable(),
   started_at: z.iso.datetime(),
   closed_at: z.iso.datetime().nullable(),
@@ -81,4 +88,32 @@ export const shiftListResponseSchema = z.object({
   total: z.number().int(),
   page: z.number().int(),
   limit: z.number().int(),
+});
+
+export const shiftSummarySchema = z.object({
+  cash_sales_total: z.number(),
+  gcash_sales_total: z.number(),
+  total_sales: z.number(),
+  cash_sales_count: z.number().int(),
+  gcash_sales_count: z.number().int(),
+  total_transaction_count: z.number().int(),
+  voided_count: z.number().int(),
+  refunded_count: z.number().int(),
+  total_discount_amount: z.number(),
+  pwd_sc_transaction_count: z.number().int(),
+  expected_cash: z.number(),
+  actual_cash: z.number().nullable(),
+  variance: z.number().nullable(),
+  variance_status: z.enum(['AUTO_APPROVED', 'PENDING_REVIEW']).nullable(),
+});
+
+/** Response shape of GET /api/cash/:shiftId/summary. Note POST /:shiftId/close returns a flat ShiftResponse with an extra `summary` key instead of this wrapper — see the Phase 11 plan's "resolved ambiguities" note for why. */
+export const shiftSummaryResponseSchema = z.object({
+  shift: shiftResponseSchema,
+  summary: shiftSummarySchema,
+});
+
+/** ShiftResponse extended with the `summary` key returned only by POST /:shiftId/close. */
+export const shiftCloseResponseSchema = shiftResponseSchema.extend({
+  summary: shiftSummarySchema,
 });

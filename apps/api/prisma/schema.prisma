@@ -698,6 +698,13 @@ model Shift {
   gcashSalesTotal        Decimal     @default(0) @map("gcash_sales_total") @db.Decimal(10, 2)
   transactionCount       Int         @default(0) @map("transaction_count")
   shiftNotes             String?     @map("shift_notes")
+  cashSalesCount         Int         @default(0) @map("cash_sales_count")
+  gcashSalesCount        Int         @default(0) @map("gcash_sales_count")
+  voidedCount            Int         @default(0) @map("voided_count")
+  refundedCount          Int         @default(0) @map("refunded_count")
+  totalTransactionCount  Int         @default(0) @map("total_transaction_count")
+  totalDiscountAmount    Decimal     @default(0) @map("total_discount_amount") @db.Decimal(10, 2)
+  pwdScTransactionCount  Int         @default(0) @map("pwd_sc_transaction_count")
 
   branch  Branch @relation(fields: [branchId], references: [id])
   cashier User   @relation("ShiftCashier", fields: [cashierId], references: [id])

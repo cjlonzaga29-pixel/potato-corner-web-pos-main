@@ -8,7 +8,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DenominationTable, denominationEntries, denominationTotal, type DenominationQuantities } from '@/components/pos/denomination-table';
 import { useAuth } from '@/hooks/use-auth';
-import { useCurrentShift, useCloseShift } from '@/hooks/queries/use-shifts';
+import { useCurrentShift, useCloseShift, useShiftSummary } from '@/hooks/queries/use-shifts';
+import { formatCurrency } from '@/lib/utils';
 
 const VARIANCE_TOLERANCE = 0;
 const MIN_EXPLANATION_LENGTH = 50;
@@ -22,6 +23,8 @@ export default function CloseShiftPage() {
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
   const { data: shift, isLoading } = useCurrentShift(branchId);
+  const { data: summaryData } = useShiftSummary(shift?.id);
+  const summary = summaryData?.summary;
   const [quantities, setQuantities] = useState<DenominationQuantities>({});
   const [notes, setNotes] = useState('');
   const [varianceExplanation, setVarianceExplanation] = useState('');
@@ -62,6 +65,44 @@ export default function CloseShiftPage() {
         <p className="text-sm text-muted-foreground">Count the cash on hand and enter the breakdown below.</p>
       </div>
 
+      {summary && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Shift Summary (so far)</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            <div>
+              <p className="text-xs text-muted-foreground">Total Sales</p>
+              <p className="font-semibold tabular-nums">{formatCurrency(summary.total_sales)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Cash Sales</p>
+              <p className="font-semibold tabular-nums">{formatCurrency(summary.cash_sales_total)} ({summary.cash_sales_count})</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">GCash Sales</p>
+              <p className="font-semibold tabular-nums">{formatCurrency(summary.gcash_sales_total)} ({summary.gcash_sales_count})</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Transactions</p>
+              <p className="font-semibold tabular-nums">{summary.total_transaction_count}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Voided</p>
+              <p className="font-semibold tabular-nums">{summary.voided_count}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Refunded</p>
+              <p className="font-semibold tabular-nums">{summary.refunded_count}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Total Discounts</p>
+              <p className="font-semibold tabular-nums">{formatCurrency(summary.total_discount_amount)}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardContent className="grid grid-cols-3 gap-4 pt-6 text-center">
           <div>
@@ -89,7 +130,7 @@ export default function CloseShiftPage() {
         <Card className="border-orange-400">
           <CardHeader>
             <CardTitle className="text-sm text-orange-600">
-              This shift will require supervisor approval before closing
+              This shift will be flagged for review — a super admin must approve or reject the variance before it counts as fully closed
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">

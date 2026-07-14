@@ -5,7 +5,7 @@ import { redis } from '../lib/redis.js';
 import { sha256Hex } from '../lib/hash.js';
 import { config } from '../config/index.js';
 
-type AuthErrorCode = 'TOKEN_MISSING' | 'TOKEN_INVALID' | 'TOKEN_EXPIRED' | 'TOKEN_REVOKED';
+export type AuthErrorCode = 'TOKEN_MISSING' | 'TOKEN_INVALID' | 'TOKEN_EXPIRED' | 'TOKEN_REVOKED';
 
 function unauthorized(res: Response, code: AuthErrorCode): void {
   res.status(401).json({ data: null, error: { code }, meta: null });

@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { redis } from '../../lib/redis.js';
+import { inventoryRepository } from '../inventory/inventory.repository.js';
 import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
 
 const activeAssignmentsInclude = {
@@ -155,15 +156,26 @@ export const branchesRepository = {
       // (currentStock <= lowStockThreshold) without raw SQL, which this
       // project avoids — branch ingredient lists are small, so counting
       // in application code is simpler and stays within the ORM.
+      //
+      // currentStock itself is no longer read here (Phase 8: it's a
+      // vestigial stored field, never updated after ingredient creation —
+      // see the schema doc comment on Ingredient). Real current stock is
+      // derived from the InventoryMovement ledger via inventoryRepository,
+      // the same source every Phase 8 endpoint uses.
       prisma.ingredient.findMany({
-        where: { branchId },
-        select: { currentStock: true, lowStockThreshold: true },
+        where: { branchId, deletedAt: null },
+        select: { id: true, lowStockThreshold: true },
       }),
     ]);
 
-    const lowStockIngredientCount = ingredients.filter(
-      (ingredient) => ingredient.currentStock.lessThanOrEqualTo(ingredient.lowStockThreshold),
-    ).length;
+    // getCurrentStockMap only includes ingredients with at least one
+    // movement — one with none has zero stock, not "unknown," so it must
+    // still count toward the low-stock total whenever the threshold is >= 0.
+    const stockMap = await inventoryRepository.getCurrentStockMap(ingredients.map((i) => i.id));
+    const lowStockIngredientCount = ingredients.filter((ingredient) => {
+      const currentStock = stockMap.get(ingredient.id)?.toNumber() ?? 0;
+      return currentStock <= ingredient.lowStockThreshold.toNumber();
+    }).length;
 
     return {
       activeShiftsCount,

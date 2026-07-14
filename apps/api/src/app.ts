@@ -12,7 +12,7 @@ import { branchesRouter } from './modules/branches/branches.router.js';
 import { productsRouter } from './modules/products/products.router.js';
 import { flavorsRouter } from './modules/flavors/flavors.router.js';
 import { recipesRouter } from './modules/recipes/recipes.router.js';
-import { inventoryRouter } from './modules/inventory/inventory.router.js';
+import { inventoryRouter, inventoryBranchRouter } from './modules/inventory/inventory.router.js';
 import { productRequestsRouter } from './modules/product-requests/product-requests.router.js';
 import { priceOverridesRouter } from './modules/price-overrides/price-overrides.router.js';
 import { transactionsRouter } from './modules/transactions/transactions.router.js';
@@ -47,6 +47,10 @@ app.use(apiLimiter);
 
 app.use('/api/auth', authRouter);
 app.use('/api/branches', branchesRouter);
+// Same prefix as branchesRouter — no path collision (branchesRouter owns
+// /:branchId and its assignments/status/stats sub-paths; this one only
+// matches /:branchId/inventory*), Express tries each mounted router in order.
+app.use('/api/branches', inventoryBranchRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/flavors', flavorsRouter);
 app.use('/api/recipes', recipesRouter);

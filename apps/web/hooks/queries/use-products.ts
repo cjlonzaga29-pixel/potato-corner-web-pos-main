@@ -8,6 +8,7 @@ import type {
   CreateProductInput,
   CreateVariantInput,
   LinkVariantFlavorInput,
+  PosCatalogResponse,
   ProductDetailResponse,
   ProductListResponse,
   ProductStatus,
@@ -74,6 +75,20 @@ export function useProduct(productId: string | null | undefined) {
     },
     enabled: Boolean(productId),
     staleTime: 30 * 1000,
+  });
+}
+
+/** POS terminal catalog (Phase 10) — branch-filtered, availability-checked, override-priced. Distinct from useProducts (admin/supervisor management view). */
+export function useCatalog(branchId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['catalog', branchId],
+    queryFn: async () => {
+      const response = await apiClient<PosCatalogResponse>(`/api/products/catalog?branch_id=${branchId}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load the product catalog'));
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 60 * 1000,
   });
 }
 

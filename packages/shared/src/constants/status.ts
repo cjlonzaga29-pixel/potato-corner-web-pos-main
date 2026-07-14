@@ -114,6 +114,26 @@ export const IMAGE_PROOF_TYPE = {
 } as const;
 export type ImageProofType = (typeof IMAGE_PROOF_TYPE)[keyof typeof IMAGE_PROOF_TYPE];
 
+/** Reason codes for a manual_adjustment InventoryMovement (Phase 8). */
+export const ADJUSTMENT_REASON = {
+  COUNT_CORRECTION: 'count_correction',
+  DAMAGED: 'damaged',
+  EXPIRED: 'expired',
+  SUPPLIER_ERROR: 'supplier_error',
+  OTHER: 'other',
+} as const;
+export type AdjustmentReason = (typeof ADJUSTMENT_REASON)[keyof typeof ADJUSTMENT_REASON];
+
+/** Reason codes for a waste InventoryMovement (Phase 8) — distinct from adjustment reasons per the spec. */
+export const WASTE_REASON = {
+  SPOILAGE: 'spoilage',
+  PREPARATION_ERROR: 'preparation_error',
+  DROPPED: 'dropped',
+  EXPIRED: 'expired',
+  OTHER: 'other',
+} as const;
+export type WasteReason = (typeof WASTE_REASON)[keyof typeof WASTE_REASON];
+
 export const GPS_STATUS = {
   WITHIN_RADIUS: 'within_radius',
   OUTSIDE_RADIUS: 'outside_radius',

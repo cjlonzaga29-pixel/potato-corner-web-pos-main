@@ -18,8 +18,9 @@ import { ProductError } from './products.types.js';
 import { FlavorError } from '../flavors/flavors.types.js';
 import { flavorsService } from '../flavors/flavors.service.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -73,7 +74,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -92,7 +93,24 @@ router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Respo
   }
 });
 
-router.get('/:productId', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+// Registered before /:productId — Express matches routes in order and
+// "catalog" would otherwise be captured as a productId param.
+router.get('/catalog', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const branchId = (req.query.branch_id as string | undefined) ?? (req.query.branchId as string | undefined);
+    if (!branchId) {
+      res.status(400).json({ data: null, error: { code: 'BRANCH_ID_REQUIRED' }, meta: null });
+      return;
+    }
+    const catalog = await productsService.getPosCatalog(branchId);
+    res.status(200).json({ data: catalog, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.getProductById(req.params.productId as string, req.user);
@@ -106,6 +124,7 @@ router.post(
   '/',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   validate(createProductSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -132,7 +151,7 @@ router.post(
   },
 );
 
-router.patch('/:productId', authenticate, adminOnly, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:productId', authenticate, adminOnly, requirePasswordChange, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.updateProduct(
@@ -151,6 +170,7 @@ router.patch(
   '/:productId/status',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   validate(changeProductStatusSchema),
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -173,6 +193,7 @@ router.post(
   '/:productId/image',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   (req: Request, res: Response, next: NextFunction) => {
     upload.single('image')(req, res, (error: unknown) => {
       if (error) {
@@ -212,6 +233,7 @@ router.get(
   '/:productId/branch-availability',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
@@ -230,6 +252,7 @@ router.patch(
   '/:productId/branch-availability/:branchId',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -254,6 +277,7 @@ router.post(
   '/:productId/variants',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(createVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -275,6 +299,7 @@ router.patch(
   '/:productId/variants/:variantId',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(updateVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -297,6 +322,7 @@ router.post(
   '/:productId/variants/:variantId/flavors',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(linkVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -319,6 +345,7 @@ router.patch(
   '/:productId/variants/:variantId/flavors/:flavorId',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(updateVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

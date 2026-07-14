@@ -218,3 +218,38 @@ export const productListResponseSchema = z.object({
   page: z.number().int(),
   limit: z.number().int(),
 });
+
+// ---------------------------------------------------------------------------
+// POS catalog (Phase 10) — a lean, staff-accessible read model distinct from
+// the admin/supervisor productResponseSchema above: branch-filtered to only
+// what's actually sellable right now, with the effective (override-aware)
+// price already resolved server-side so the terminal never computes pricing.
+// ---------------------------------------------------------------------------
+
+export const posCatalogFlavorSchema = z.object({
+  flavor_id: z.uuid(),
+  name: z.string(),
+  color_hex: z.string().nullable(),
+  price_premium: z.number(),
+});
+
+export const posCatalogVariantSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  size_label: z.string(),
+  price: z.number(),
+  flavors: z.array(posCatalogFlavorSchema),
+});
+
+export const posCatalogProductSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  category: z.string().nullable(),
+  image_url: z.string().nullable(),
+  variants: z.array(posCatalogVariantSchema),
+});
+
+export const posCatalogResponseSchema = z.object({
+  categories: z.array(z.string()),
+  products: z.array(posCatalogProductSchema),
+});

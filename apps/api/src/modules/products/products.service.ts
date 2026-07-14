@@ -4,6 +4,7 @@ import { productsRepository } from './products.repository.js';
 import { ProductError, type ProductListFilters } from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -617,5 +618,54 @@ export const productsService = {
     });
 
     return toBranchAvailabilityRow(row);
+  },
+
+  /**
+   * Phase 10 POS terminal catalog — a lean, staff-accessible read model
+   * distinct from getAllProducts (admin/supervisor only). Effective price is
+   * resolved server-side via priceOverridesService so the terminal never
+   * computes pricing from a client-trusted base_price.
+   */
+  async getPosCatalog(branchId: string) {
+    const [products, disabledFlavorIds] = await Promise.all([
+      productsRepository.findCatalogForBranch(branchId),
+      productsRepository.findDisabledFlavorIds(branchId),
+    ]);
+    const disabledFlavors = new Set(disabledFlavorIds);
+
+    const catalogProducts = await Promise.all(
+      products.map(async (product) => {
+        const variants = await Promise.all(
+          product.variants.map(async (variant) => {
+            const price = await priceOverridesService.getActivePriceForBranch(branchId, variant.id, variant.basePrice.toNumber());
+            return {
+              id: variant.id,
+              name: variant.name,
+              size_label: variant.sizeLabel,
+              price,
+              flavors: variant.variantFlavors
+                .filter((vf) => !disabledFlavors.has(vf.flavorId))
+                .map((vf) => ({
+                  flavor_id: vf.flavorId,
+                  name: vf.flavor.name,
+                  color_hex: vf.flavor.colorHex,
+                  price_premium: vf.pricePremium.toNumber(),
+                })),
+            };
+          }),
+        );
+        return {
+          id: product.id,
+          name: product.name,
+          category: product.category,
+          image_url: product.imageUrl,
+          variants,
+        };
+      }),
+    );
+
+    const categories = [...new Set(catalogProducts.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort();
+
+    return { categories, products: catalogProducts };
   },
 };

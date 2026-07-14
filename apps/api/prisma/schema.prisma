@@ -148,21 +148,23 @@ model User {
   deactivatedBy      String?   @map("deactivated_by")
   deactivationReason String?   @map("deactivation_reason")
 
-  branchAssignments   UserBranchAssignment[]
-  shiftsAsCashier     Shift[]                @relation("ShiftCashier")
-  shiftsOpenedBy      Shift[]                @relation("ShiftOpenedBy")
-  attendanceRecords   AttendanceRecord[]
-  auditLogs           AuditLog[]
-  createdProducts     Product[]
-  cashierTransactions Transaction[]
-  refreshTokens       RefreshToken[]
-  pinCredentials      PinCredential[]
+  branchAssignments    UserBranchAssignment[]
+  shiftsAsCashier      Shift[]                @relation("ShiftCashier")
+  shiftsOpenedBy       Shift[]                @relation("ShiftOpenedBy")
+  attendanceRecords    AttendanceRecord[]
+  auditLogs            AuditLog[]
+  createdProducts      Product[]
+  cashierTransactions  Transaction[]
+  voidedTransactions   Transaction[]          @relation("TransactionVoidedBy")
+  refundedTransactions Transaction[]          @relation("TransactionRefundedBy")
+  refreshTokens        RefreshToken[]
+  pinCredentials       PinCredential[]
 
   // CR-001
-  priceOverrideRequests  BranchPriceOverride[]  @relation("PriceOverrideRequester")
-  priceOverrideReviews   BranchPriceOverride[]  @relation("PriceOverrideReviewer")
-  productRequestsFiled    ProductRequest[]      @relation("ProductRequestRequester")
-  productRequestsReviewed ProductRequest[]      @relation("ProductRequestReviewer")
+  priceOverrideRequests   BranchPriceOverride[]  @relation("PriceOverrideRequester")
+  priceOverrideReviews    BranchPriceOverride[]  @relation("PriceOverrideReviewer")
+  productRequestsFiled    ProductRequest[]       @relation("ProductRequestRequester")
+  productRequestsReviewed ProductRequest[]       @relation("ProductRequestReviewer")
   recipeOverridesCreated  BranchRecipeOverride[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -243,6 +245,7 @@ model RefreshToken {
 
   @@index([userId])
   @@index([deviceId])
+  @@index([userId, revokedAt])
   @@map("refresh_tokens")
 }
 
@@ -293,10 +296,13 @@ model Product {
   variants           ProductVariant[]
   branchAvailability BranchProductAvailability[]
   productRequests    ProductRequest[]
+  transactionItems   TransactionItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([status])
+  @@index([category])
   @@map("products")
 }
 
@@ -469,15 +475,22 @@ model ProductRequest {
 // Inventory and recipes
 // ---------------------------------------------------------------------------
 
+/// currentStock is a Phase-0-scaffolded stored field, superseded by Phase 8:
+/// current stock is always derived by replaying InventoryMovement rows for
+/// the ingredient (see inventoryRepository.getCurrentStock), never read or
+/// written directly outside ingredient creation's initial snapshot. Kept in
+/// the schema rather than dropped to avoid an unrelated destructive column
+/// migration in the same step that introduces the derivation.
 model Ingredient {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   name              String
   unit              String
-  currentStock      Decimal  @default(0) @map("current_stock") @db.Decimal(10, 3)
-  lowStockThreshold Decimal  @map("low_stock_threshold") @db.Decimal(10, 3)
-  criticalThreshold Decimal  @map("critical_threshold") @db.Decimal(10, 3)
-  unitCost          Decimal? @map("unit_cost") @db.Decimal(10, 4)
-  branchId          String   @map("branch_id")
+  currentStock      Decimal   @default(0) @map("current_stock") @db.Decimal(10, 3)
+  lowStockThreshold Decimal   @map("low_stock_threshold") @db.Decimal(10, 3)
+  criticalThreshold Decimal   @map("critical_threshold") @db.Decimal(10, 3)
+  unitCost          Decimal?  @map("unit_cost") @db.Decimal(10, 4)
+  branchId          String    @map("branch_id")
+  deletedAt         DateTime? @map("deleted_at")
 
   branch          Branch                 @relation(fields: [branchId], references: [id])
   recipes         Recipe[]
@@ -488,6 +501,10 @@ model Ingredient {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([branchId])
+  // Unique on (branch_id, name) WHERE deleted_at IS NULL — a soft-deleted
+  // ingredient's name can be reused. Partial index added by raw SQL in the
+  // migration, same reason as BranchPriceOverride's pending-request index:
+  // Prisma's schema DSL has no WHERE-clause index syntax.
   @@map("ingredients")
 }
 
@@ -497,12 +514,13 @@ model Ingredient {
 /// only when that flavor is selected, and overrides the base quantity for
 /// the same ingredient. See the recipe deduction algorithm specification.
 model Recipe {
-  id               String  @id @default(uuid())
-  productVariantId String  @map("product_variant_id")
-  ingredientId     String  @map("ingredient_id")
-  flavorId         String? @map("flavor_id")
-  quantity         Decimal @db.Decimal(10, 4)
+  id               String    @id @default(uuid())
+  productVariantId String    @map("product_variant_id")
+  ingredientId     String    @map("ingredient_id")
+  flavorId         String?   @map("flavor_id")
+  quantity         Decimal   @db.Decimal(10, 4)
   unit             String
+  deletedAt        DateTime? @map("deleted_at")
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
@@ -511,6 +529,10 @@ model Recipe {
   @@index([productVariantId])
   @@index([ingredientId])
   @@index([flavorId])
+  // Unique on (product_variant_id, ingredient_id, flavor_id) WHERE deleted_at
+  // IS NULL — matches BranchRecipeOverride's constraint shape, but partial so
+  // a soft-deleted recipe row doesn't permanently block recreating the same
+  // combination. Added by raw SQL in the migration (see Ingredient's note).
   @@map("recipes")
 }
 
@@ -587,25 +609,42 @@ model Transaction {
   subtotal                    Decimal                  @db.Decimal(10, 2)
   discountAmount              Decimal                  @default(0) @map("discount_amount") @db.Decimal(10, 2)
   vatAmount                   Decimal                  @map("vat_amount") @db.Decimal(10, 2)
+  // Portion of the sale exempt from VAT. No current business rule zeroes out
+  // VAT for PWD/Senior Citizen (architecture doc §Discounts explicitly still
+  // charges VAT on the discounted base) — this stays 0 for every discount
+  // type today and exists so a future true VAT-exempt scenario doesn't need
+  // another migration.
+  vatExemptAmount             Decimal                  @default(0) @map("vat_exempt_amount") @db.Decimal(10, 2)
   totalAmount                 Decimal                  @map("total_amount") @db.Decimal(10, 2)
   amountTendered              Decimal?                 @map("amount_tendered") @db.Decimal(10, 2)
   changeAmount                Decimal?                 @map("change_amount") @db.Decimal(10, 2)
   gcashReference              String?                  @map("gcash_reference")
+  gcashManuallyVerified       Boolean?                 @map("gcash_manually_verified")
   discountType                String?                  @map("discount_type")
   discountCustomerIdEncrypted String?                  @map("discount_customer_id_encrypted")
   inventoryDeductionStatus    InventoryDeductionStatus @default(pending) @map("inventory_deduction_status")
   isOfflineTransaction        Boolean                  @default(false) @map("is_offline_transaction")
   offlineProvisionalNumber    String?                  @map("offline_provisional_number")
   syncedAt                    DateTime?                @map("synced_at")
+  receiptPrinted              Boolean                  @default(false) @map("receipt_printed")
+  voidedAt                    DateTime?                @map("voided_at")
+  voidedById                  String?                  @map("voided_by_id")
+  voidReason                  String?                  @map("void_reason")
+  refundedAt                  DateTime?                @map("refunded_at")
+  refundedById                String?                  @map("refunded_by_id")
+  refundReason                String?                  @map("refund_reason")
 
-  branch  Branch            @relation(fields: [branchId], references: [id])
-  shift   Shift?            @relation(fields: [shiftId], references: [id])
-  cashier User              @relation(fields: [cashierId], references: [id])
-  items   TransactionItem[]
+  branch     Branch            @relation(fields: [branchId], references: [id])
+  shift      Shift?            @relation(fields: [shiftId], references: [id])
+  cashier    User              @relation(fields: [cashierId], references: [id])
+  voidedBy   User?             @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
+  refundedBy User?             @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
+  items      TransactionItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@index([branchId])
+  @@index([branchId, createdAt])
   @@index([shiftId])
   @@index([cashierId])
   @@map("transactions")
@@ -628,10 +667,12 @@ model TransactionItem {
   lineTotal           Decimal @map("line_total") @db.Decimal(10, 2)
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id])
+  product        Product        @relation(fields: [productId], references: [id])
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
 
   @@index([transactionId])
+  @@index([productVariantId])
   @@map("transaction_items")
 }
 
@@ -640,11 +681,17 @@ model Shift {
   branchId               String      @map("branch_id")
   cashierId              String      @map("cashier_id")
   openedBy               String      @map("opened_by")
+  closedBy               String?     @map("closed_by")
   status                 ShiftStatus @default(active)
   openingCashAmount      Decimal     @map("opening_cash_amount") @db.Decimal(10, 2)
   closingCashAmount      Decimal?    @map("closing_cash_amount") @db.Decimal(10, 2)
   expectedClosingCash    Decimal?    @map("expected_closing_cash") @db.Decimal(10, 2)
   cashVariance           Decimal?    @map("cash_variance") @db.Decimal(10, 2)
+  // Tri-state: null = no variance / not yet reviewed, true = approved, false = rejected.
+  varianceApproved       Boolean?    @map("variance_approved")
+  // Cashier's own explanation, entered at close time when the variance is outside tolerance.
+  varianceExplanation    String?     @map("variance_explanation")
+  // Super Admin's justification when approving or rejecting — distinct from the cashier's explanation above.
   varianceApprovedBy     String?     @map("variance_approved_by")
   varianceApprovalReason String?     @map("variance_approval_reason")
   cashSalesTotal         Decimal     @default(0) @map("cash_sales_total") @db.Decimal(10, 2)
@@ -663,7 +710,9 @@ model Shift {
   closedAt  DateTime? @map("closed_at")
 
   @@index([branchId])
+  @@index([branchId, status])
   @@index([cashierId])
+  @@index([openedBy])
   @@map("shifts")
 }
 
@@ -677,7 +726,7 @@ model ShiftCashDenomination {
 
   shift Shift @relation(fields: [shiftId], references: [id])
 
-  @@index([shiftId])
+  @@index([shiftId, countType])
   @@map("shift_cash_denominations")
 }
 
@@ -743,6 +792,7 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([actorId])
+  @@index([createdAt])
   @@map("audit_logs")
 }
 

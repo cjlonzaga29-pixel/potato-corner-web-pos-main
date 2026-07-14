@@ -8,6 +8,7 @@ vi.mock('./cash.repository.js', () => ({
     findUserById: vi.fn(),
     createShift: vi.fn(),
     sumTransactionsForShift: vi.fn(),
+    sumTransactionCountsForShift: vi.fn(),
     countAnyTransactionsForShift: vi.fn(),
     closeShift: vi.fn(),
     approveVariance: vi.fn(),
@@ -32,7 +33,7 @@ function decimal(value: number): { toNumber(): number } {
 
 /** cashRepository.closeShift's real `computed` param is plain numbers, but the row it resolves to (like every Prisma row) carries Decimal-like fields — wraps the ones toShiftResponse expects to call .toNumber() on. */
 function asShiftRow(computed: Record<string, unknown>) {
-  const decimalFields = ['closingCashAmount', 'expectedClosingCash', 'cashVariance', 'cashSalesTotal', 'gcashSalesTotal'];
+  const decimalFields = ['closingCashAmount', 'expectedClosingCash', 'cashVariance', 'cashSalesTotal', 'gcashSalesTotal', 'totalDiscountAmount'];
   const wrapped: Record<string, unknown> = { ...computed };
   for (const field of decimalFields) {
     if (typeof wrapped[field] === 'number') wrapped[field] = decimal(wrapped[field] as number);
@@ -59,6 +60,13 @@ function shiftRow(overrides: Partial<Record<string, unknown>> = {}) {
     cashSalesTotal: decimal(0),
     gcashSalesTotal: decimal(0),
     transactionCount: 0,
+    cashSalesCount: 0,
+    gcashSalesCount: 0,
+    voidedCount: 0,
+    refundedCount: 0,
+    totalTransactionCount: 0,
+    totalDiscountAmount: decimal(0),
+    pwdScTransactionCount: 0,
     shiftNotes: null,
     startedAt: new Date('2026-01-01T08:00:00.000Z'),
     closedAt: null,
@@ -198,6 +206,15 @@ describe('cashService.closeShift', () => {
       gcashSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
     vi.mocked(cashRepository.closeShift).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
 
     await expect(
@@ -212,6 +229,15 @@ describe('cashService.closeShift', () => {
       gcashSalesTotal: new Prisma.Decimal(300),
       transactionCount: 4,
     });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
     vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
 
     const result = await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 500, quantity: 1 }] }, SUPERVISOR, null);
@@ -224,12 +250,90 @@ describe('cashService.closeShift', () => {
     );
   });
 
+  it('computes and persists all 7 summary count/total fields, and returns them on the shift response plus in `summary`', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(500),
+      gcashSalesTotal: new Prisma.Decimal(300),
+      transactionCount: 4,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 3,
+      gcashSalesCount: 2,
+      voidedCount: 1,
+      refundedCount: 1,
+      totalTransactionCount: 7,
+      totalDiscountAmount: 40,
+      pwdScTransactionCount: 2,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) =>
+      Promise.resolve({
+        ...asShiftRow(computed),
+        cashSalesCount: computed.cashSalesCount,
+        gcashSalesCount: computed.gcashSalesCount,
+        voidedCount: computed.voidedCount,
+        refundedCount: computed.refundedCount,
+        totalTransactionCount: computed.totalTransactionCount,
+        totalDiscountAmount: decimal(computed.totalDiscountAmount as number),
+        pwdScTransactionCount: computed.pwdScTransactionCount,
+      } as never),
+    );
+
+    const result = await cashService.closeShift(
+      'shift-1',
+      { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 500, quantity: 1 }] },
+      SUPERVISOR,
+      null,
+    );
+
+    expect(cashRepository.closeShift).toHaveBeenCalledWith(
+      'shift-1',
+      expect.anything(),
+      expect.objectContaining({
+        cashSalesCount: 3,
+        gcashSalesCount: 2,
+        voidedCount: 1,
+        refundedCount: 1,
+        totalTransactionCount: 7,
+        totalDiscountAmount: 40,
+        pwdScTransactionCount: 2,
+      }),
+    );
+    expect(result.cash_sales_count).toBe(3);
+    expect(result.gcash_sales_count).toBe(2);
+    expect(result.total_transaction_count).toBe(7);
+    expect(result.summary).toMatchObject({
+      cash_sales_total: 500,
+      gcash_sales_total: 300,
+      total_sales: 800,
+      cash_sales_count: 3,
+      gcash_sales_count: 2,
+      total_transaction_count: 7,
+      voided_count: 1,
+      refunded_count: 1,
+      total_discount_amount: 40,
+      pwd_sc_transaction_count: 2,
+      expected_cash: 1500,
+      actual_cash: 1500,
+      variance_status: 'AUTO_APPROVED',
+    });
+  });
+
   it('auto-approves and closes when the counted cash exactly matches expected cash (zero-tolerance default)', async () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
     });
     vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
 
@@ -259,6 +363,15 @@ describe('cashService.closeShift', () => {
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
     });
     vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
 
@@ -332,5 +445,109 @@ describe('cashService.voidShift', () => {
 
     expect(result.status).toBe('closed');
     expect(cashRepository.voidShift).toHaveBeenCalledWith('shift-1', { voidedBy: 'admin-1', note: expect.stringContaining('VOIDED') });
+  });
+});
+
+describe('cashService.getShiftSummary', () => {
+  it('rejects with 404 SHIFT_NOT_FOUND when the shift does not exist', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(null);
+
+    await expect(cashService.getShiftSummary('missing')).rejects.toMatchObject({ code: 'SHIFT_NOT_FOUND', statusCode: 404 });
+  });
+
+  it('computes summary live for an OPEN shift, with actual_cash/variance/variance_status null', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active', openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(200),
+      gcashSalesTotal: new Prisma.Decimal(50),
+      transactionCount: 3,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 2,
+      gcashSalesCount: 1,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 3,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+
+    const result = await cashService.getShiftSummary('shift-1');
+
+    expect(result.shift.status).toBe('active');
+    expect(result.summary).toMatchObject({
+      cash_sales_total: 200,
+      gcash_sales_total: 50,
+      total_sales: 250,
+      expected_cash: 1200,
+      actual_cash: null,
+      variance: null,
+      variance_status: null,
+    });
+  });
+
+  it('returns the stored (not recomputed) values for a CLOSED shift', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(
+      shiftRow({
+        status: 'closed',
+        cashSalesTotal: decimal(500),
+        gcashSalesTotal: decimal(100),
+        cashSalesCount: 4,
+        gcashSalesCount: 1,
+        voidedCount: 0,
+        refundedCount: 1,
+        totalTransactionCount: 6,
+        totalDiscountAmount: decimal(75),
+        pwdScTransactionCount: 3,
+        closingCashAmount: decimal(1500),
+        expectedClosingCash: decimal(1500),
+        cashVariance: decimal(0),
+      }) as never,
+    );
+
+    const result = await cashService.getShiftSummary('shift-1');
+
+    expect(cashRepository.sumTransactionsForShift).not.toHaveBeenCalled();
+    expect(cashRepository.sumTransactionCountsForShift).not.toHaveBeenCalled();
+    expect(result.summary).toMatchObject({
+      cash_sales_total: 500,
+      gcash_sales_total: 100,
+      total_sales: 600,
+      pwd_sc_transaction_count: 3,
+      actual_cash: 1500,
+      variance: 0,
+      variance_status: 'AUTO_APPROVED',
+    });
+  });
+
+  it('counts only COMPLETED PWD/Senior-Citizen transactions in pwd_sc_transaction_count (live path)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active' }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 5,
+    });
+
+    const result = await cashService.getShiftSummary('shift-1');
+
+    expect(result.summary.pwd_sc_transaction_count).toBe(5);
+    expect(cashRepository.sumTransactionCountsForShift).toHaveBeenCalledWith('shift-1');
+  });
+
+  it('flags a FLAGGED shift as PENDING_REVIEW in variance_status', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'flagged', cashVariance: decimal(-50) }) as never);
+
+    const result = await cashService.getShiftSummary('shift-1');
+
+    expect(result.summary.variance_status).toBe('PENDING_REVIEW');
   });
 });

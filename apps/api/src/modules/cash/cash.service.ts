@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { ROLES } from '@potato-corner/shared';
 import { cashRepository } from './cash.repository.js';
-import { CashError, type ApproveVarianceData, type CloseShiftData, type OpenShiftData, type ShiftListFilters } from './cash.types.js';
+import { CashError, type ApproveVarianceData, type CloseShiftData, type OpenShiftData, type ShiftListFilters, type ShiftCloseComputedCounts } from './cash.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 type ActorContext = { id: string; role: string };
@@ -44,6 +44,13 @@ interface ShiftRow {
   startedAt: Date;
   closedAt: Date | null;
   denominations?: DenominationRow[];
+  cashSalesCount: number;
+  gcashSalesCount: number;
+  voidedCount: number;
+  refundedCount: number;
+  totalTransactionCount: number;
+  totalDiscountAmount: { toNumber(): number };
+  pwdScTransactionCount: number;
 }
 
 function toCents(amount: number): number {
@@ -69,6 +76,13 @@ function toShiftResponse(shift: ShiftRow) {
     cash_sales_total: shift.cashSalesTotal.toNumber(),
     gcash_sales_total: shift.gcashSalesTotal.toNumber(),
     transaction_count: shift.transactionCount,
+    cash_sales_count: shift.cashSalesCount,
+    gcash_sales_count: shift.gcashSalesCount,
+    voided_count: shift.voidedCount,
+    refunded_count: shift.refundedCount,
+    total_transaction_count: shift.totalTransactionCount,
+    total_discount_amount: shift.totalDiscountAmount.toNumber(),
+    pwd_sc_transaction_count: shift.pwdScTransactionCount,
     shift_notes: shift.shiftNotes,
     started_at: shift.startedAt.toISOString(),
     closed_at: shift.closedAt?.toISOString() ?? null,
@@ -79,6 +93,56 @@ function toShiftResponse(shift: ShiftRow) {
       subtotal: d.totalValue.toNumber(),
       phase: d.countType,
     })),
+  };
+}
+
+interface EodSummary {
+  cash_sales_total: number;
+  gcash_sales_total: number;
+  total_sales: number;
+  cash_sales_count: number;
+  gcash_sales_count: number;
+  total_transaction_count: number;
+  voided_count: number;
+  refunded_count: number;
+  total_discount_amount: number;
+  pwd_sc_transaction_count: number;
+  expected_cash: number;
+  actual_cash: number | null;
+  variance: number | null;
+  variance_status: 'AUTO_APPROVED' | 'PENDING_REVIEW' | null;
+}
+
+/**
+ * Builds the EOD summary object shared by POST /:shiftId/close and
+ * GET /:shiftId/summary. For an OPEN (active) shift, actual_cash/variance/
+ * variance_status are null — no closing count has happened yet, only
+ * expected_cash can be computed live. variance_status is derived purely
+ * from `status` ('flagged' -> PENDING_REVIEW, else -> AUTO_APPROVED) — see
+ * the plan's "resolved ambiguities" note on why a manually-approved/
+ * rejected flagged shift also reads as AUTO_APPROVED once resolved.
+ */
+function buildEodSummary(
+  shift: ShiftRow,
+  counts: ShiftCloseComputedCounts,
+  sales: { cashSalesTotal: number; gcashSalesTotal: number },
+): EodSummary {
+  const isOpen = shift.status === 'active';
+  return {
+    cash_sales_total: sales.cashSalesTotal,
+    gcash_sales_total: sales.gcashSalesTotal,
+    total_sales: sales.cashSalesTotal + sales.gcashSalesTotal,
+    cash_sales_count: counts.cashSalesCount,
+    gcash_sales_count: counts.gcashSalesCount,
+    total_transaction_count: counts.totalTransactionCount,
+    voided_count: counts.voidedCount,
+    refunded_count: counts.refundedCount,
+    total_discount_amount: counts.totalDiscountAmount,
+    pwd_sc_transaction_count: counts.pwdScTransactionCount,
+    expected_cash: isOpen ? shift.openingCashAmount.toNumber() + sales.cashSalesTotal : (shift.expectedClosingCash?.toNumber() ?? 0),
+    actual_cash: isOpen ? null : (shift.closingCashAmount?.toNumber() ?? null),
+    variance: isOpen ? null : (shift.cashVariance?.toNumber() ?? null),
+    variance_status: isOpen ? null : shift.status === 'flagged' ? 'PENDING_REVIEW' : 'AUTO_APPROVED',
   };
 }
 
@@ -150,6 +214,42 @@ export const cashService = {
     return withLiveSalesTotals(shift);
   },
 
+  async getShiftSummary(id: string) {
+    const shift = (await cashRepository.findShiftById(id)) as ShiftRow | null;
+    if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'Shift not found', 404);
+
+    if (shift.status === 'active') {
+      const [sales, counts] = await Promise.all([
+        cashRepository.sumTransactionsForShift(id),
+        cashRepository.sumTransactionCountsForShift(id),
+      ]);
+      return {
+        shift: toShiftResponse(shift),
+        summary: buildEodSummary(shift, counts, {
+          cashSalesTotal: sales.cashSalesTotal.toNumber(),
+          gcashSalesTotal: sales.gcashSalesTotal.toNumber(),
+        }),
+      };
+    }
+
+    const counts: ShiftCloseComputedCounts = {
+      cashSalesCount: shift.cashSalesCount,
+      gcashSalesCount: shift.gcashSalesCount,
+      voidedCount: shift.voidedCount,
+      refundedCount: shift.refundedCount,
+      totalTransactionCount: shift.totalTransactionCount,
+      totalDiscountAmount: shift.totalDiscountAmount.toNumber(),
+      pwdScTransactionCount: shift.pwdScTransactionCount,
+    };
+    return {
+      shift: toShiftResponse(shift),
+      summary: buildEodSummary(shift, counts, {
+        cashSalesTotal: shift.cashSalesTotal.toNumber(),
+        gcashSalesTotal: shift.gcashSalesTotal.toNumber(),
+      }),
+    };
+  },
+
   async listShifts(filters: ShiftListFilters) {
     const { shifts, total } = await cashRepository.listShifts(filters);
     return {
@@ -171,7 +271,10 @@ export const cashService = {
     }
 
     const closingCashAmount = data.denominations.reduce((sum, d) => sum + d.denomination * d.quantity, 0);
-    const sales = await cashRepository.sumTransactionsForShift(id);
+    const [sales, counts] = await Promise.all([
+      cashRepository.sumTransactionsForShift(id),
+      cashRepository.sumTransactionCountsForShift(id),
+    ]);
     const cashSalesTotal = sales.cashSalesTotal;
     const gcashSalesTotal = sales.gcashSalesTotal;
     const expectedClosingCash = new Prisma.Decimal(shift.openingCashAmount.toNumber()).plus(cashSalesTotal);
@@ -197,11 +300,19 @@ export const cashService = {
       cashSalesTotal: cashSalesTotal.toNumber(),
       gcashSalesTotal: gcashSalesTotal.toNumber(),
       transactionCount: sales.transactionCount,
+      cashSalesCount: counts.cashSalesCount,
+      gcashSalesCount: counts.gcashSalesCount,
+      voidedCount: counts.voidedCount,
+      refundedCount: counts.refundedCount,
+      totalTransactionCount: counts.totalTransactionCount,
+      totalDiscountAmount: counts.totalDiscountAmount,
+      pwdScTransactionCount: counts.pwdScTransactionCount,
       status,
       varianceApproved,
       closedBy: actor.id,
     })) as ShiftRow;
     const response = toShiftResponse(updated);
+    const summary = buildEodSummary(updated, counts, { cashSalesTotal: cashSalesTotal.toNumber(), gcashSalesTotal: gcashSalesTotal.toNumber() });
 
     await recordAuditLog({
       action: status === 'closed' ? 'SHIFT_CLOSED' : 'SHIFT_FLAGGED_FOR_REVIEW',
@@ -215,7 +326,7 @@ export const cashService = {
       ipAddress,
     });
 
-    return response;
+    return { ...response, summary };
   },
 
   async approveVariance(id: string, data: ApproveVarianceData, actor: ActorContext, ipAddress: string | null) {

@@ -8,7 +8,9 @@ import type {
   ProductRequestResponse,
   ReviewProductRequestInput,
 } from '@potato-corner/shared';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 export interface ProductRequestFilters {
   status?: 'pending' | 'approved' | 'rejected';
@@ -99,4 +101,12 @@ export function useReviewProductRequest(id: string) {
     },
     onError: (error: Error) => toast.error(error.message),
   });
+}
+
+/** Keeps the product-request list/detail views in sync with submissions and reviews made from any other session, without a manual refresh. */
+export function useProductRequestsRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.PRODUCT_REQUEST_SUBMITTED, SOCKET_EVENTS.PRODUCT_REQUEST_REVIEWED],
+    [['product-requests'], ['product-request']],
+  );
 }

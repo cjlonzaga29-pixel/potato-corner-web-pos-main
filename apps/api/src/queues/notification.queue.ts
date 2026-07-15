@@ -1,6 +1,6 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
-import { redis } from '../lib/redis.js';
+import { redis, createWorkerConnection } from '../lib/redis.js';
 import { sendWelcomeEmail } from '../lib/email.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
 
@@ -64,5 +64,5 @@ export const notificationWorker = new Worker(
     }
     // TODO(Phase 8+): implement remaining notification types.
   },
-  { connection: redis },
+  { connection: createWorkerConnection() },
 );

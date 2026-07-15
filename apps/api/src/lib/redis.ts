@@ -33,3 +33,24 @@ redis.on('error', (error) => {
   console.error('Redis connection error:', error.message);
   Sentry.captureException(error, { tags: { component: 'redis' } });
 });
+
+/**
+ * Dedicated connection for BullMQ Workers. Workers block on reads
+ * (`XREADGROUP ... BLOCK`) that legitimately sit open for seconds while
+ * waiting for a job — sharing the `commandTimeout`'d `redis` client above
+ * races ioredis's own timeout against BullMQ's block window, aborting
+ * healthy waits as "Command timed out" and sending the worker into an
+ * infinite retry loop. `commandTimeout: undefined` here disables that
+ * per-command timeout for this connection only; BullMQ's own connection
+ * retry strategy still applies if Redis actually goes down. Each Worker
+ * should get its own instance (call this once per queue file), per BullMQ's
+ * connection-sharing guidance.
+ */
+export function createWorkerConnection(): Redis {
+  const connection = redis.duplicate({ commandTimeout: undefined });
+  connection.on('error', (error) => {
+    console.error('Redis worker connection error:', error.message);
+    Sentry.captureException(error, { tags: { component: 'redis-worker' } });
+  });
+  return connection;
+}

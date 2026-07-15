@@ -1,6 +1,6 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import { MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS } from '@potato-corner/shared';
-import { redis } from '../lib/redis.js';
+import { redis, createWorkerConnection } from '../lib/redis.js';
 import { inventoryRepository } from '../modules/inventory/inventory.repository.js';
 import { computeDeduction } from '../modules/recipes/recipes.service.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
@@ -141,7 +141,7 @@ export const inventoryWorker = new Worker(
     // TODO(Phase 8+): implement remaining inventory job types.
   },
   {
-    connection: redis,
+    connection: createWorkerConnection(),
     settings: {
       backoffStrategy: retryDelayMs,
     },

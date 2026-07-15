@@ -1,5 +1,5 @@
 import { Queue, Worker, type Job } from 'bullmq';
-import { redis } from '../lib/redis.js';
+import { redis, createWorkerConnection } from '../lib/redis.js';
 
 export const fraudQueue = new Queue('fraud', { connection: redis });
 
@@ -14,5 +14,5 @@ export const fraudWorker = new Worker(
     void job;
     // TODO(Phase 8+): implement.
   },
-  { connection: redis },
+  { connection: createWorkerConnection() },
 );

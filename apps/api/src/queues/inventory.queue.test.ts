@@ -15,7 +15,10 @@ vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({ on: vi.fn() })),
 }));
 
-vi.mock('../lib/redis.js', () => ({ redis: {} }));
+vi.mock('../lib/redis.js', () => ({
+  redis: {},
+  createWorkerConnection: vi.fn().mockReturnValue({ on: vi.fn() }),
+}));
 
 vi.mock('../modules/inventory/inventory.repository.js', () => ({
   inventoryRepository: {

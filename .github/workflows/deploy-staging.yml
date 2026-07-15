@@ -45,7 +45,12 @@ jobs:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
 
       - name: Deploy apps/api to Render (staging)
-        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_STAGING }}"
+        # Skips instead of failing the run when the Render service (and its
+        # deploy hook secret) hasn't been provisioned yet.
+        if: ${{ env.RENDER_DEPLOY_HOOK_STAGING != '' }}
+        env:
+          RENDER_DEPLOY_HOOK_STAGING: ${{ secrets.RENDER_DEPLOY_HOOK_STAGING }}
+        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_STAGING"
 
       # apps/web needs no step here — Vercel's GitHub integration auto-deploys
       # on push to `staging` directly, independent of this workflow.

@@ -48,7 +48,13 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
 
       - name: Deploy apps/api to Render (production)
-        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_PRODUCTION }}"
+        # Skips instead of failing the run when the Render service (and its
+        # deploy hook secret) hasn't been provisioned yet — migrations above
+        # already ran against the real production DB regardless.
+        if: ${{ env.RENDER_DEPLOY_HOOK_PRODUCTION != '' }}
+        env:
+          RENDER_DEPLOY_HOOK_PRODUCTION: ${{ secrets.RENDER_DEPLOY_HOOK_PRODUCTION }}
+        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_PRODUCTION"
 
       # apps/web needs no step here — Vercel's GitHub integration auto-deploys
       # on push to `main` directly, independent of this workflow.

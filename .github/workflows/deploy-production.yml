@@ -23,6 +23,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up test environment
+        # See ci.yml's identical step — vitest.setup.ts loads apps/api/.env
+        # via dotenv/config at test-file-import time, and .env is gitignored.
+        run: cp .env.example apps/api/.env
+
+      - name: Generate Prisma client
+        run: pnpm --filter @potato-corner/api exec prisma generate
+
       - name: Full CI validation
         run: |
           pnpm run type-check

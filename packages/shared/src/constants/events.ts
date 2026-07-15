@@ -1,10 +1,12 @@
 /** WebSocket event name constants — shared verbatim between Socket.io server and client. */
 export const SOCKET_EVENTS = {
   TRANSACTION_COMPLETED: 'transaction:completed',
+  TRANSACTION_REFUNDED: 'transaction:refunded',
   INVENTORY_LOW_STOCK: 'inventory:low_stock',
   INVENTORY_OUT_OF_STOCK: 'inventory:out_of_stock',
   INVENTORY_PRODUCT_UNAVAILABLE: 'inventory:product_unavailable',
   CASH_VARIANCE_FLAGGED: 'cash:variance_flagged',
+  CASH_VARIANCE_APPROVED: 'cash:variance_approved',
   // Phase 13 — shift lifecycle broadcasts; not in the original architecture
   // doc's event list (which predates the real-time layer being built out),
   // added here because openShift/closeShift had no event to wire into.

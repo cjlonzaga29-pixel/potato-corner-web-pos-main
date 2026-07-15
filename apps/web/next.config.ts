@@ -20,7 +20,11 @@ const nextConfig: NextConfig = {
   // browser's perspective, so the cookie lands on the right domain.
   // `afterFiles` lets this app's own /api/health route handler still win.
   async rewrites() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+    // `||`, not `??` — Vercel's Preview/Development scopes currently have
+    // this var set to an empty string rather than unset, and `??` only
+    // falls back on null/undefined, not ''. An empty destination fails
+    // Next.js's "must start with /, http://, or https://" rewrite check.
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
     return {
       afterFiles: [{ source: '/api/:path*', destination: `${apiUrl}/api/:path*` }],
     };

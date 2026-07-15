@@ -13,6 +13,7 @@ import { RecipeError } from './recipes.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -37,7 +38,7 @@ const listQuerySchema = z.object({ product_variant_id: z.uuid() });
 
 // --- Master recipes (Super Admin owns; Phase 7 foundation) ---
 
-router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -52,7 +53,7 @@ router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Respo
   }
 });
 
-router.post('/', authenticate, adminOnly, validate(createRecipeSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createRecipeSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const recipe = await recipesService.createRecipe(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -62,7 +63,7 @@ router.post('/', authenticate, adminOnly, validate(createRecipeSchema), async (r
   }
 });
 
-router.patch('/:id', authenticate, adminOnly, validate(updateRecipeSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', authenticate, adminOnly, requirePasswordChange, validate(updateRecipeSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const recipe = await recipesService.updateRecipe(req.params.id as string, req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -72,7 +73,7 @@ router.patch('/:id', authenticate, adminOnly, validate(updateRecipeSchema), asyn
   }
 });
 
-router.delete('/:id', authenticate, adminOnly, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await recipesService.deleteRecipe(req.params.id as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -84,7 +85,7 @@ router.delete('/:id', authenticate, adminOnly, async (req: Request, res: Respons
 
 // --- CR-001 deduction simulation ---
 
-router.post('/simulate', authenticate, adminOrSupervisor, validate(simulateDeductionSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/simulate', authenticate, adminOrSupervisor, requirePasswordChange, validate(simulateDeductionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const body = req.body as { branch_id?: string };
@@ -105,6 +106,7 @@ router.get(
   '/:variantId/overrides',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -126,6 +128,7 @@ router.post(
   '/:variantId/overrides',
   authenticate,
   supervisorOnly,
+  requirePasswordChange,
   branchGuard,
   validate(createRecipeOverrideSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -148,6 +151,7 @@ router.patch(
   '/overrides/:overrideId',
   authenticate,
   supervisorOnly,
+  requirePasswordChange,
   branchGuard,
   validate(updateRecipeOverrideSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -176,6 +180,7 @@ router.delete(
   '/overrides/:overrideId',
   authenticate,
   supervisorOnly,
+  requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

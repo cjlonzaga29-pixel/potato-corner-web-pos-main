@@ -5,6 +5,7 @@ import { priceOverridesService } from './price-overrides.service.js';
 import { PriceOverrideError } from './price-overrides.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -32,7 +33,7 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
-router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -47,7 +48,7 @@ router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Respo
   }
 });
 
-router.post('/', authenticate, supervisorOnly, validate(createPriceOverrideSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createPriceOverrideSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const override = await priceOverridesService.submitOverrideRequest(req.body, req.user, req.ip ?? null);
@@ -61,6 +62,7 @@ router.post(
   '/:id/review',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(reviewPriceOverrideSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

@@ -13,6 +13,7 @@ import { BranchError } from './branches.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -46,7 +47,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -65,7 +66,7 @@ router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Respo
   }
 });
 
-router.get('/:branchId', authenticate, adminOrSupervisor, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:branchId', authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const branch = await branchesService.getBranchById(req.params.branchId as string, req.user);
@@ -75,7 +76,7 @@ router.get('/:branchId', authenticate, adminOrSupervisor, branchGuard, async (re
   }
 });
 
-router.post('/', authenticate, adminOnly, validate(createBranchSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createBranchSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const branch = await branchesService.createBranch(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -85,7 +86,7 @@ router.post('/', authenticate, adminOnly, validate(createBranchSchema), async (r
   }
 });
 
-router.patch('/:branchId', authenticate, adminOnly, validate(updateBranchSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:branchId', authenticate, adminOnly, requirePasswordChange, validate(updateBranchSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const branch = await branchesService.updateBranch(
@@ -104,6 +105,7 @@ router.patch(
   '/:branchId/status',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(changeBranchStatusSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -126,6 +128,7 @@ router.get(
   '/:branchId/assignments',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -142,6 +145,7 @@ router.post(
   '/:branchId/assignments',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   validate(assignSupervisorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -164,6 +168,7 @@ router.delete(
   '/:branchId/assignments/:userId',
   authenticate,
   adminOnly,
+  requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
@@ -184,6 +189,7 @@ router.get(
   '/:branchId/stats',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

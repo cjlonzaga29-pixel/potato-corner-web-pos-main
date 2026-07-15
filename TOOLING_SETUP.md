@@ -27,11 +27,13 @@ Tools are grouped as **Core** (this project actively uses or is planned to use t
 ### Install Node.js 24
 
 ```powershell
-winget install OpenJS.NodeJS.LTS
-# or, if you manage multiple Node versions:
+# Recommended on Windows: nvm4w (CoreyButler.NVMforWindows), not the plain OpenJS MSI.
+# The direct MSI can leave a stale "installed" registry entry with no node.exe on disk
+# if the install is interrupted; nvm4w avoids that and lets you switch versions cleanly.
 winget install CoreyButler.NVMforWindows
 nvm install 24
 nvm use 24
+node -v   # v24.x — should resolve to C:\nvm4w\nodejs\node.exe (`Get-Command node`)
 ```
 
 ### Install pnpm (pinned to the version this repo uses)
@@ -41,6 +43,17 @@ corepack enable
 corepack prepare pnpm@11.10.0 --activate
 pnpm -v   # should print 11.10.0
 ```
+
+> **Windows non-admin gotcha:** `corepack prepare ... --activate` writes into `C:\Program
+> Files\nodejs\`, which fails with `EPERM` in a non-elevated shell. If that happens:
+> ```powershell
+> npm config set prefix "$env:APPDATA\npm"
+> [Environment]::SetEnvironmentVariable("Path", "$env:APPDATA\npm;" + [Environment]::GetEnvironmentVariable("Path","User"), "User")
+> npm install -g pnpm@11.10.0
+> ```
+> **Also:** after any global npm install (pnpm, vercel, supabase, etc.), open a **new**
+> terminal/tool session — the current one won't see the updated PATH until its process
+> environment is refreshed.
 
 ### Install Git
 
@@ -108,6 +121,18 @@ winget install Docker.DockerDesktop
 docker --version
 docker compose version
 ```
+
+> **WSL2 prerequisite:** Docker Desktop on Windows needs WSL2 installed and enabled
+> *first*, or its engine will start the GUI but sit stuck waiting on the backend VM
+> indefinitely (`docker ps` → `Error response from daemon: Docker Desktop is unable to
+> start`). Check with `wsl --status`; if it reports "not installed", you must run (from
+> an **elevated/Administrator** PowerShell — this cannot be done from a normal user
+> session):
+> ```powershell
+> wsl --install --no-distribution
+> ```
+> then **restart Windows** to complete the WSL2 kernel/VM Platform setup before Docker
+> Desktop's engine will come up.
 
 Example local infra (create `docker-compose.dev.yml` at the repo root if you want this):
 ```yaml
@@ -248,9 +273,22 @@ pnpm install
 # 4. Configure environment
 cp .env.example .env
 # Fill in real values for: DATABASE_URL/DIRECT_URL (Supabase), SUPABASE_URL/ANON_KEY/
-# SERVICE_ROLE_KEY, JWT_PRIVATE_KEY/PUBLIC_KEY (RS256 keypair), ENCRYPTION_KEY
-# (32-byte base64), REDIS_URL (Upstash), RESEND_API_KEY or SMTP_*, SENTRY_DSN,
-# NEXT_PUBLIC_POSTHOG_KEY/HOST as they become available.
+# SERVICE_ROLE_KEY, JWT_PRIVATE_KEY/PUBLIC_KEY (RS256 keypair), JWT_REFRESH_SECRET
+# (min 32 chars — required by apps/api/src/config/index.ts's zod schema but NOT listed
+# in .env.example, easy to miss), ENCRYPTION_KEY (32-byte base64), REDIS_URL (Upstash),
+# RESEND_API_KEY or SMTP_*, SENTRY_DSN, NEXT_PUBLIC_POSTHOG_KEY/HOST as they become available.
+#
+# IMPORTANT — Supabase DATABASE_URL/DIRECT_URL: the direct connection host
+# (db.<ref>.supabase.co:5432) resolves to an IPv6-only address on new Supabase
+# projects. If your network/machine has no IPv6 route (common on home ISPs/Windows),
+# Prisma will fail with "Can't reach database server" even though credentials are
+# correct. Use the IPv4-compatible Session Pooler string instead — from the Supabase
+# dashboard: Project Settings -> Database -> Connection string -> "Session pooler" tab
+# (format: postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres)
+#
+# Prisma CLI reads .env from apps/api/ (its own cwd when run via `pnpm --filter api`),
+# NOT the repo root — copy the root .env there too:
+cp .env apps/api/.env   # already gitignored via the root `.env*` pattern
 
 # 5. Generate an RS256 keypair for JWT_PRIVATE_KEY / JWT_PUBLIC_KEY if you don't have one
 openssl genrsa -out jwt-private.pem 2048
@@ -270,15 +308,20 @@ pnpm prisma:migrate
 pnpm prisma:seed
 cd ../..
 
-# 9. Run the full dev environment (web + api via Turborepo)
+# 9. Build the shared package once before first run — apps/web and apps/api both
+#    import @potato-corner/shared's compiled output (dist/), and turbo's `dev` task
+#    (unlike `build`) has no dependsOn, so it won't build workspace deps for you.
+pnpm --filter @potato-corner/shared build
+
+# 10. Run the full dev environment (web + api via Turborepo)
 pnpm dev
-# apps/web -> http://localhost:3000
+# apps/web -> http://localhost:3000 (falls back to next free port, e.g. 3002, if taken)
 # apps/api -> http://localhost:4000
 
-# 10. Install Playwright browsers for e2e tests
+# 11. Install Playwright browsers for e2e tests
 pnpm exec playwright install --with-deps
 
-# 11. Verify everything before committing (mirrors CI in .github/workflows/ci.yml)
+# 12. Verify everything before committing (mirrors CI in .github/workflows/ci.yml)
 pnpm type-check
 pnpm lint
 pnpm test
@@ -308,9 +351,42 @@ railway up
 
 Required GitHub Actions secrets to add under **Settings → Environments** (`staging`, `production`): `STAGING_DATABASE_URL`, `PRODUCTION_DATABASE_URL`, plus `VERCEL_TOKEN`/`RENDER_API_KEY` (or `RAILWAY_TOKEN`) once those steps are added to the workflows.
 
+> **Vercel + monorepo:** when linking/deploying `apps/web` from this pnpm workspace,
+> set the project's **Root Directory** to `apps/web` in the Vercel dashboard (Settings →
+> General). There's no CLI flag for this (`vercel project update` only supports
+> `--build-command/--dev-command/--framework/--install-command/--output-directory`).
+> Deploying *from* `apps/web` without this uploads only that subdirectory in isolation,
+> which breaks pnpm's `workspace:*` protocol (`npm error Unsupported URL Type
+> "workspace:": workspace:*`) since Vercel falls back to plain `npm install` without
+> full monorepo context. Always run `vercel deploy`/`vercel --prod` from the **repo
+> root** once Root Directory is set correctly.
+>
+> **Vercel + commit author email:** Vercel blocks a deploy if the triggering commit's
+> git author email isn't valid/verified against your GitHub account ("Update your Git
+> configuration with a valid email address..."). Fix with a **repo-scoped** (not
+> `--global`) config change so it doesn't affect other projects on the machine:
+> ```powershell
+> git config user.email "your-verified-github-email@example.com"
+> ```
+
 ---
 
-## 7. Quick Verification Checklist
+## 7. Windows-Specific Troubleshooting
+
+Issues actually hit setting this project up on a bare Windows machine, and their fixes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `pnpm dev` / `turbo run dev` crashes instantly with exit code `29` (`STATUS_ILLEGAL_INSTRUCTION`) | Turbo's Windows native binary (`@turbo/windows-64`) got corrupted during a flaky `pnpm install` (common on slower/unstable connections) | Bypass Turbo for local dev — run `pnpm --filter api dev` and `pnpm --filter web dev` directly in separate terminals. To actually fix Turbo, delete `node_modules/.pnpm/@turbo+windows-64@<version>` and reinstall — **do not** wipe the entire global pnpm store (`~/AppData/Local/pnpm/store`), that affects every project on the machine, not just this one |
+| API crashes with `ERR_MODULE_NOT_FOUND: ...@potato-corner/shared/dist/index.js` | `packages/shared` was never compiled — Turbo's `dev` task has no `dependsOn`, unlike `build` | `pnpm --filter @potato-corner/shared build` once before first `pnpm dev` (see step 9 above) |
+| Newly-installed CLI (`pnpm`, `vercel`, `supabase`, etc.) reports "not recognized" right after install | PATH was updated in the User/Machine registry hive, but the current shell process's environment was captured before that write | Open a **new** terminal window/session; or in PowerShell, force a refresh: `$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")` |
+| `Test-NetConnection`/`Resolve-DnsName` shows the Supabase direct-connection host resolving to an `AAAA` (IPv6) record only, and Prisma reports `P1001: Can't reach database server` | No IPv6 route on this network/machine | Use the Supabase **Session Pooler** connection string instead of the direct connection (see §5 step 4) |
+| `docker ps` → `Error response from daemon: Docker Desktop is unable to start`, engine log shows it endlessly retrying `_ping` | WSL2 isn't installed | Elevated PowerShell: `wsl --install --no-distribution`, then restart Windows |
+| Background `pnpm dev` log file looks empty/garbled when read with plain-text tools (`cat`, bash `grep`) | PowerShell's `*>`/`Out-File` redirection defaults to UTF-16LE, not UTF-8 | Use a tool that decodes text properly (e.g. an editor, or `Get-Content -Encoding Unicode`) rather than byte-oriented `grep`/`cat` |
+
+---
+
+## 8. Quick Verification Checklist
 
 ```powershell
 node -v          # >= 24

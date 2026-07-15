@@ -18,7 +18,9 @@ export function useOffline() {
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
   const refreshPendingCount = useCallback(async () => {
-    const count = await db.offlineTransactions.where('syncedAt').equals(0).count();
+    // See sync-queue.ts — syncedAt is stored as null, not 0, so an indexed
+    // .equals(0) query would silently never match.
+    const count = await db.offlineTransactions.filter((t) => t.syncedAt === null).count();
     setPendingSyncCount(count);
   }, []);
 

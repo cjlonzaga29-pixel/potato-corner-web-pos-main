@@ -9,6 +9,7 @@ import {
   ShoppingBag,
   Palette,
   ChefHat,
+  Banknote,
   Package,
   DollarSign,
   Users,
@@ -42,6 +43,7 @@ const NAV_ITEMS = [
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
   { label: 'Recipes', href: '/admin/recipes', icon: ChefHat },
+  { label: 'Shifts', href: '/admin/shifts', icon: Banknote },
   // CR-001 — Approvals section (Super Admin reviews supervisor submissions)
   { label: 'Product Requests', href: '/admin/approvals/product-requests', icon: Package },
   { label: 'Price Overrides', href: '/admin/approvals/price-overrides', icon: DollarSign },

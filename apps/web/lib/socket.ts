@@ -7,7 +7,7 @@ let socket: Socket | null = null;
 export function getSocket(accessToken: string): Socket {
   if (!socket) {
     socket = io(SOCKET_URL, {
-      auth: { token: Buffer.from(JSON.stringify({ accessToken })).toString('base64') },
+      auth: { token: accessToken },
       autoConnect: false,
     });
   }

@@ -19,19 +19,19 @@ const overrideInclude = {
  */
 export const recipesRepository = {
   findByVariant(productVariantId: string) {
-    return prisma.recipe.findMany({ where: { productVariantId }, include: recipeInclude });
+    return prisma.recipe.findMany({ where: { productVariantId, deletedAt: null }, include: recipeInclude });
   },
 
   /** Architecture doc §7.1 steps 1-2, both fetched together: base rows plus this specific flavor's rows (if any). */
   findMasterRows(productVariantId: string, flavorId: string | null) {
     return prisma.recipe.findMany({
-      where: { productVariantId, OR: [{ flavorId: null }, ...(flavorId ? [{ flavorId }] : [])] },
+      where: { productVariantId, deletedAt: null, OR: [{ flavorId: null }, ...(flavorId ? [{ flavorId }] : [])] },
       include: recipeInclude,
     });
   },
 
   findRecipeById(id: string) {
-    return prisma.recipe.findUnique({ where: { id }, include: recipeInclude });
+    return prisma.recipe.findFirst({ where: { id, deletedAt: null }, include: recipeInclude });
   },
 
   createRecipe(data: { productVariantId: string; ingredientId: string; flavorId: string | null; quantity: number; unit: string }) {
@@ -51,8 +51,9 @@ export const recipesRepository = {
     return prisma.recipe.update({ where: { id }, data, include: recipeInclude });
   },
 
+  /** Soft delete — no hard deletes, matching the architecture's stated principle (previously violated here). */
   deleteRecipe(id: string) {
-    return prisma.recipe.delete({ where: { id } });
+    return prisma.recipe.update({ where: { id }, data: { deletedAt: new Date() }, include: recipeInclude });
   },
 
   // --- CR-001 branch overrides ---

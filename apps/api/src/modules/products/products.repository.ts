@@ -240,4 +240,35 @@ export const productsRepository = {
   findActiveBranch(branchId: string) {
     return prisma.branch.findFirst({ where: { id: branchId, status: 'active' }, select: { id: true, name: true } });
   },
+
+  /** Phase 10 POS terminal catalog — active products, available at this branch, with only active variants and available flavors. */
+  findCatalogForBranch(branchId: string) {
+    return prisma.product.findMany({
+      where: {
+        status: 'active',
+        branchAvailability: { some: { branchId, isAvailable: true } },
+      },
+      orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
+      include: {
+        variants: {
+          where: { isActive: true },
+          orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+          include: {
+            variantFlavors: {
+              where: { isAvailable: true, flavor: { isActive: true } },
+              include: { flavor: { select: { id: true, name: true, colorHex: true } } },
+            },
+          },
+        },
+      },
+    });
+  },
+
+  async findDisabledFlavorIds(branchId: string): Promise<string[]> {
+    const rows = await prisma.branchFlavorAvailability.findMany({
+      where: { branchId, isAvailable: false },
+      select: { flavorId: true },
+    });
+    return rows.map((r) => r.flavorId);
+  },
 };

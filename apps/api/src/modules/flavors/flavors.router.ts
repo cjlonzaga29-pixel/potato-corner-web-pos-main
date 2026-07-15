@@ -7,6 +7,7 @@ import { ProductError } from '../products/products.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -44,7 +45,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -63,7 +64,7 @@ router.get('/', authenticate, adminOrSupervisor, async (req: Request, res: Respo
   }
 });
 
-router.get('/:flavorId', authenticate, adminOrSupervisor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:flavorId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const flavor = await flavorsService.getFlavorById(req.params.flavorId as string, req.user);
@@ -73,7 +74,7 @@ router.get('/:flavorId', authenticate, adminOrSupervisor, async (req: Request, r
   }
 });
 
-router.post('/', authenticate, adminOnly, validate(createFlavorSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createFlavorSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const flavor = await flavorsService.createFlavor(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -83,7 +84,7 @@ router.post('/', authenticate, adminOnly, validate(createFlavorSchema), async (r
   }
 });
 
-router.patch('/:flavorId', authenticate, adminOnly, validate(updateFlavorSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:flavorId', authenticate, adminOnly, requirePasswordChange, validate(updateFlavorSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const flavor = await flavorsService.updateFlavor(
@@ -102,6 +103,7 @@ router.get(
   '/:flavorId/branch-availability',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
@@ -120,6 +122,7 @@ router.patch(
   '/:flavorId/branch-availability/:branchId',
   authenticate,
   adminOrSupervisor,
+  requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),
   async (req: Request, res: Response, next: NextFunction) => {

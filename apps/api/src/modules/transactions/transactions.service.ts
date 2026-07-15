@@ -441,6 +441,16 @@ export const transactionsService = {
       ipAddress,
     });
 
+    const voidPayload = {
+      transactionId: response.id,
+      branchId: response.branch_id,
+      voidedBy: actor.id,
+      amount: response.total_amount,
+      reason: response.void_reason,
+    };
+    notifyBranch(response.branch_id, SOCKET_EVENTS.VOID_REQUESTED, voidPayload);
+    notifySuperAdmin(SOCKET_EVENTS.VOID_REQUESTED, voidPayload);
+
     return response;
   },
 
@@ -466,6 +476,15 @@ export const transactionsService = {
       afterState: response,
       ipAddress,
     });
+
+    const refundPayload = {
+      transactionId: response.id,
+      branchId: response.branch_id,
+      refundedBy: actor.id,
+      amount: response.total_amount,
+    };
+    notifyBranch(response.branch_id, SOCKET_EVENTS.TRANSACTION_REFUNDED, refundPayload);
+    notifySuperAdmin(SOCKET_EVENTS.TRANSACTION_REFUNDED, refundPayload);
 
     return response;
   },

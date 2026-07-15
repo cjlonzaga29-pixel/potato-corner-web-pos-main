@@ -305,6 +305,33 @@ describe('transactionsService.voidTransaction', () => {
       transactionsService.voidTransaction('txn-1', 'reason', { id: 'admin-1', role: 'super_admin' }, null),
     ).rejects.toMatchObject({ code: 'TRANSACTION_ALREADY_VOIDED' });
   });
+
+  it('broadcasts VOID_REQUESTED to the branch room and Super Admin with the void payload', async () => {
+    const branchId = randomUUID();
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(
+      transactionRow({ branchId, status: 'voided', voidedById: 'admin-1', voidReason: 'customer changed mind' }) as never,
+    );
+
+    const result = await transactionsService.voidTransaction(
+      'txn-1',
+      'customer changed mind',
+      { id: 'admin-1', role: 'super_admin' },
+      null,
+    );
+
+    const expectedPayload = {
+      transactionId: result.id,
+      branchId: result.branch_id,
+      voidedBy: 'admin-1',
+      amount: result.total_amount,
+      reason: result.void_reason,
+    };
+    expect(notifyBranch).toHaveBeenCalledWith(branchId, 'void:requested', expectedPayload);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', expectedPayload);
+  });
 });
 
 describe('transactionsService.refundTransaction', () => {
@@ -322,5 +349,24 @@ describe('transactionsService.refundTransaction', () => {
     await expect(
       transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
     ).rejects.toMatchObject({ code: 'TRANSACTION_ALREADY_VOIDED' });
+  });
+
+  it('broadcasts TRANSACTION_REFUNDED to the branch room and Super Admin with the refund payload', async () => {
+    const branchId = randomUUID();
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ branchId }) as never);
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(
+      transactionRow({ branchId, status: 'refunded', refundedById: 'admin-1', refundReason: 'defective' }) as never,
+    );
+
+    const result = await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    const expectedPayload = {
+      transactionId: result.id,
+      branchId: result.branch_id,
+      refundedBy: 'admin-1',
+      amount: result.total_amount,
+    };
+    expect(notifyBranch).toHaveBeenCalledWith(branchId, 'transaction:refunded', expectedPayload);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('transaction:refunded', expectedPayload);
   });
 });

@@ -116,7 +116,7 @@ function invalidateInventory(queryClient: ReturnType<typeof useQueryClient>, bra
 /** Keeps the inventory DataTable and alert banner in sync with stock movements recorded from any other device, without a manual refresh. */
 export function useInventoryRealtimeSync(branchId: string | null | undefined): void {
   useRealtimeInvalidate(
-    [SOCKET_EVENTS.INVENTORY_LOW_STOCK, SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK],
+    [SOCKET_EVENTS.INVENTORY_LOW_STOCK, SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE],
     [['ingredients', branchId], ['branch-inventory', branchId]],
   );
 }

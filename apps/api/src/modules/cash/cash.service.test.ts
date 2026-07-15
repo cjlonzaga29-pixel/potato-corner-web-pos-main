@@ -441,6 +441,55 @@ describe('cashService.closeShift', () => {
     expect(result.status).toBe('flagged');
     expect(result.variance_approved).toBeNull();
   });
+
+  it('broadcasts CASH_VARIANCE_FLAGGED to the branch room and Super Admin when the shift is flagged', async () => {
+    const branchId = randomUUID();
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId, openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0, gcashSalesCount: 0, voidedCount: 0, refundedCount: 0,
+      totalTransactionCount: 0, totalDiscountAmount: 0, pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) =>
+      Promise.resolve(asShiftRow({ ...computed, branchId, status: 'flagged' }) as never),
+    );
+
+    await cashService.closeShift(
+      'shift-1',
+      { denominations: [{ denomination: 500, quantity: 1 }], varianceExplanation: 'x'.repeat(50) },
+      SUPERVISOR,
+      null,
+    );
+
+    expect(notifyBranch).toHaveBeenCalledWith(
+      branchId,
+      'cash:variance_flagged',
+      expect.objectContaining({ shiftId: 'shift-1', branchId, flaggedBy: SUPERVISOR.id }),
+    );
+    expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_flagged', expect.objectContaining({ shiftId: 'shift-1' }));
+  });
+
+  it('does not broadcast CASH_VARIANCE_FLAGGED when the shift closes cleanly (no variance)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0, gcashSalesCount: 0, voidedCount: 0, refundedCount: 0,
+      totalTransactionCount: 0, totalDiscountAmount: 0, pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
+
+    await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(notifyBranch).not.toHaveBeenCalledWith(expect.anything(), 'cash:variance_flagged', expect.anything());
+  });
 });
 
 describe('cashService.approveVariance', () => {
@@ -468,6 +517,33 @@ describe('cashService.approveVariance', () => {
 
     expect(result.status).toBe('closed');
     expect(cashRepository.approveVariance).toHaveBeenCalledWith('shift-1', { approved: true, notes: 'x'.repeat(50), approvedBy: 'admin-1' });
+  });
+
+  it('broadcasts CASH_VARIANCE_APPROVED to the branch room and Super Admin when approved', async () => {
+    const branchId = randomUUID();
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId, status: 'flagged', cashVariance: decimal(-50) }) as never);
+    vi.mocked(cashRepository.approveVariance).mockResolvedValue(
+      shiftRow({ branchId, status: 'closed', varianceApproved: true, cashVariance: decimal(-50) }) as never,
+    );
+
+    await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+
+    expect(notifyBranch).toHaveBeenCalledWith(
+      branchId,
+      'cash:variance_approved',
+      expect.objectContaining({ shiftId: 'shift-1', branchId, approvedBy: SUPER_ADMIN.id, variance: -50 }),
+    );
+    expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_approved', expect.objectContaining({ shiftId: 'shift-1' }));
+  });
+
+  it('does not broadcast CASH_VARIANCE_APPROVED when the variance is rejected', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'flagged' }) as never);
+    vi.mocked(cashRepository.approveVariance).mockResolvedValue(shiftRow({ status: 'flagged', varianceApproved: false }) as never);
+
+    await cashService.approveVariance('shift-1', { approved: false, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+
+    expect(notifyBranch).not.toHaveBeenCalledWith(expect.anything(), 'cash:variance_approved', expect.anything());
+    expect(notifySuperAdmin).not.toHaveBeenCalledWith('cash:variance_approved', expect.anything());
   });
 });
 

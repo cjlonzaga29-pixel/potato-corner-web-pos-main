@@ -128,7 +128,7 @@ export async function processSaleDeduction(job: Job<SaleDeductionJobData>): Prom
     // never merely low/critical.
     if (currentStock <= 0) {
       const cascadeResult = await inventoryRepository.runOutOfStockCascade(branchId, ingredientId);
-      console.info(
+      console.warn(
         `Out-of-stock cascade for ingredient ${ingredientId} (${total.ingredientName}) at branch ${branchId}: ${cascadeResult.affectedFlavors.length} flavor(s), ${cascadeResult.affectedProducts.length} product(s) newly unavailable`,
       );
       if (cascadeResult.affectedFlavors.length > 0 || cascadeResult.affectedProducts.length > 0) {

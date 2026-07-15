@@ -77,7 +77,7 @@ export const notificationWorker = new Worker(
       // time — this job exists so a future notification channel (push,
       // email — Phase 18) has a durable job to hang off, same reasoning as
       // inventory_deduction_failed above. TODO(Phase 18): send push/email.
-      console.info(
+      console.warn(
         `Out-of-stock cascade at branch ${data.branchId}: ${data.affectedFlavors.length} flavor(s), ${data.affectedProducts.length} product(s) marked unavailable (triggered by ${data.triggeredByIngredientName})`,
       );
       return;

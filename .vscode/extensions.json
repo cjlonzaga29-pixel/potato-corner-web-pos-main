@@ -1,0 +1,18 @@
+{
+  "recommendations": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "bradlc.vscode-tailwindcss",
+    "Prisma.prisma",
+    "eamodio.gitlens",
+    "GitHub.copilot",
+    "rangav.vscode-thunder-client",
+    "usernameheren.errorlens",
+    "christian-kohler.path-intellisense",
+    "cweijan.vscode-postgresql-client2",
+    "mikestead.dotenv",
+    "vitest.explorer",
+    "ms-playwright.playwright",
+    "pmneo.tsimporter"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "@potato-corner/config/typescript/nextjs.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": true,
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * Color system. Potato Corner brand: yellow-500 (#EAB308) as --primary,
+ * gray-900 (#111827) as the dark-mode --background. Values are HSL triples
+ * (no hsl() wrapper) so tailwind.config.ts can compose them as
+ * `hsl(var(--x))` and still support Tailwind's opacity modifiers.
+ */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 221 39% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 221 39% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 221 39% 11%;
+    --primary: 45 93% 47%;
+    --primary-foreground: 221 39% 11%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 221 39% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 48 96% 89%;
+    --accent-foreground: 221 39% 11%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 45 93% 47%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 221 39% 11%;
+    --foreground: 210 20% 98%;
+    --card: 215 28% 17%;
+    --card-foreground: 210 20% 98%;
+    --popover: 215 28% 17%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 45 93% 47%;
+    --primary-foreground: 221 39% 11%;
+    --secondary: 217 19% 27%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 217 19% 27%;
+    --muted-foreground: 218 11% 65%;
+    --accent: 215 28% 22%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 217 19% 27%;
+    --input: 217 19% 27%;
+    --ring: 45 93% 47%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/**
+ * `.touch-target` is opt-in rather than applied globally to every button —
+ * the design system rule (48x48px minimum) is scoped to the POS terminal,
+ * which is touch-first; admin/supervisor are desktop-first and would look
+ * broken if every compact button (dropdown items, icon buttons) were
+ * forced to 48px. POS components apply this explicitly, and the Button
+ * `pos` variant already bakes in a 56px min-height on its own.
+ */
+@layer utilities {
+  .touch-target {
+    min-height: 48px;
+    min-width: 48px;
+  }
+}

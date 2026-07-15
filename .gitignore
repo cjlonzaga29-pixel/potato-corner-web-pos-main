@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.next/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# next-pwa generated service worker (regenerated every build)
+apps/web/public/sw.js
+apps/web/public/sw.js.map
+apps/web/public/swe-worker-*.js
+apps/web/public/swe-worker-*.js.map
+apps/web/public/workbox-*.js
+apps/web/public/workbox-*.js.map
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Testing
+coverage/
+playwright-report/
+test-results/
+
+# Deployment
+.vercel/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+.vercel
+.env*

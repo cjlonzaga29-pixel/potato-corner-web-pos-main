@@ -1,10 +1,11 @@
 import { Queue, Worker, type Job } from 'bullmq';
-import { MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS } from '@potato-corner/shared';
+import { MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS, SOCKET_EVENTS } from '@potato-corner/shared';
 import { redis, createWorkerConnection } from '../lib/redis.js';
 import { inventoryRepository } from '../modules/inventory/inventory.repository.js';
 import { computeDeduction } from '../modules/recipes/recipes.service.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
 import { notificationQueue } from './notification.queue.js';
+import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
 
 export interface SaleDeductionItem {
   productVariantId: string;
@@ -120,6 +121,28 @@ export async function processSaleDeduction(job: Job<SaleDeductionJobData>): Prom
         criticalThreshold,
         severity: currentStock <= criticalThreshold ? 'critical' : 'low',
       });
+    }
+
+    // Architecture doc §7.2 Out-of-Stock Cascade — only once stock has
+    // actually reached zero (or gone negative from a concurrent deduction),
+    // never merely low/critical.
+    if (currentStock <= 0) {
+      const cascadeResult = await inventoryRepository.runOutOfStockCascade(branchId, ingredientId);
+      console.info(
+        `Out-of-stock cascade for ingredient ${ingredientId} (${total.ingredientName}) at branch ${branchId}: ${cascadeResult.affectedFlavors.length} flavor(s), ${cascadeResult.affectedProducts.length} product(s) newly unavailable`,
+      );
+      if (cascadeResult.affectedFlavors.length > 0 || cascadeResult.affectedProducts.length > 0) {
+        const cascadePayload = {
+          branchId,
+          triggeredByIngredientId: ingredientId,
+          triggeredByIngredientName: total.ingredientName,
+          affectedFlavors: cascadeResult.affectedFlavors.map((f) => ({ flavorId: f.flavorId, name: f.flavorName })),
+          affectedProducts: cascadeResult.affectedProducts.map((p) => ({ productId: p.productId, name: p.productName })),
+        };
+        notifyBranch(branchId, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
+        notifySuperAdmin(SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
+        await notificationQueue.add('inventory_product_unavailable', cascadePayload);
+      }
     }
   }
 

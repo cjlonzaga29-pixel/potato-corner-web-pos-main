@@ -16,6 +16,21 @@ const movementInclude = {
  * ingredient (append-only ledger, replayable per the schema's own doc
  * comment). Every write path funnels through appendMovement.
  */
+export interface CascadeAffectedFlavor {
+  flavorId: string;
+  flavorName: string;
+}
+
+export interface CascadeAffectedProduct {
+  productId: string;
+  productName: string;
+}
+
+export interface OutOfStockCascadeResult {
+  affectedFlavors: CascadeAffectedFlavor[];
+  affectedProducts: CascadeAffectedProduct[];
+}
+
 export const inventoryRepository = {
   findAllIngredients(branchId?: string) {
     return prisma.ingredient.findMany({
@@ -213,6 +228,108 @@ export const inventoryRepository = {
       select: { id: true },
     });
     return existing !== null;
+  },
+
+  /**
+   * Architecture doc §7.2 Out-of-Stock Cascade. Runs only when an
+   * ingredient's stock has reached zero (caller's responsibility to check).
+   * flavor_id IS NULL recipe/override rows are base ingredients (§7.1) —
+   * they apply to every flavor of that variant, not to a literal "null
+   * flavor" (branch_flavor_availability has no such row), so they're
+   * expanded to every flavor linked to the variant via product_variant_flavors
+   * before being cascaded. Idempotent: a flavor/product already marked
+   * unavailable is skipped, both to avoid redundant writes and so the
+   * caller's "affected" result — and therefore the socket broadcast — never
+   * repeats something already broadcast by an earlier deduction. Runs
+   * entirely inside one transaction: either the whole cascade commits, or
+   * none of it does.
+   */
+  async runOutOfStockCascade(branchId: string, ingredientId: string): Promise<OutOfStockCascadeResult> {
+    return prisma.$transaction(async (tx) => {
+      const [masterRows, overrideRows] = await Promise.all([
+        tx.recipe.findMany({ where: { ingredientId, deletedAt: null }, select: { productVariantId: true, flavorId: true } }),
+        tx.branchRecipeOverride.findMany({
+          where: { ingredientId, branchId, deletedAt: null },
+          select: { productVariantId: true, flavorId: true },
+        }),
+      ]);
+      const rows = [...masterRows, ...overrideRows];
+      if (rows.length === 0) return { affectedFlavors: [], affectedProducts: [] };
+
+      const baseVariantIds = [...new Set(rows.filter((r) => r.flavorId === null).map((r) => r.productVariantId))];
+      const directFlavorIds = new Set(rows.filter((r) => r.flavorId !== null).map((r) => r.flavorId as string));
+
+      if (baseVariantIds.length > 0) {
+        const expanded = await tx.productVariantFlavor.findMany({
+          where: { productVariantId: { in: baseVariantIds } },
+          select: { flavorId: true },
+        });
+        for (const row of expanded) directFlavorIds.add(row.flavorId);
+      }
+
+      if (directFlavorIds.size === 0) return { affectedFlavors: [], affectedProducts: [] };
+
+      const existingAvailability = await tx.branchFlavorAvailability.findMany({
+        where: { branchId, flavorId: { in: [...directFlavorIds] } },
+        select: { flavorId: true, isAvailable: true },
+      });
+      const alreadyUnavailable = new Set(existingAvailability.filter((r) => !r.isAvailable).map((r) => r.flavorId));
+      const flavorIdsToDisable = [...directFlavorIds].filter((id) => !alreadyUnavailable.has(id));
+
+      if (flavorIdsToDisable.length === 0) return { affectedFlavors: [], affectedProducts: [] };
+
+      const flavors = await tx.flavor.findMany({ where: { id: { in: flavorIdsToDisable } }, select: { id: true, name: true } });
+
+      for (const flavorId of flavorIdsToDisable) {
+        await tx.branchFlavorAvailability.upsert({
+          where: { branchId_flavorId: { branchId, flavorId } },
+          create: { branchId, flavorId, isAvailable: false, unavailableReason: 'out_of_stock' },
+          update: { isAvailable: false, unavailableReason: 'out_of_stock' },
+        });
+      }
+
+      const linkedVariantFlavors = await tx.productVariantFlavor.findMany({
+        where: { flavorId: { in: flavorIdsToDisable } },
+        select: { productVariant: { select: { productId: true } } },
+      });
+      const candidateProductIds = [...new Set(linkedVariantFlavors.map((r) => r.productVariant.productId))];
+
+      const affectedProducts: CascadeAffectedProduct[] = [];
+      for (const productId of candidateProductIds) {
+        const productFlavorLinks = await tx.productVariantFlavor.findMany({
+          where: { productVariant: { productId } },
+          select: { flavorId: true },
+        });
+        const distinctFlavorIds = [...new Set(productFlavorLinks.map((r) => r.flavorId))];
+
+        const unavailableForProduct = await tx.branchFlavorAvailability.findMany({
+          where: { branchId, flavorId: { in: distinctFlavorIds }, isAvailable: false },
+          select: { flavorId: true },
+        });
+        const unavailableSet = new Set(unavailableForProduct.map((r) => r.flavorId));
+        const anyFlavorStillAvailable = distinctFlavorIds.some((id) => !unavailableSet.has(id));
+        if (anyFlavorStillAvailable) continue;
+
+        const existingProductAvailability = await tx.branchProductAvailability.findUnique({
+          where: { branchId_productId: { branchId, productId } },
+        });
+        if (existingProductAvailability?.isAvailable === false) continue;
+
+        await tx.branchProductAvailability.upsert({
+          where: { branchId_productId: { branchId, productId } },
+          create: { branchId, productId, isAvailable: false },
+          update: { isAvailable: false },
+        });
+
+        const product = await tx.product.findUnique({ where: { id: productId }, select: { id: true, name: true } });
+        if (product) affectedProducts.push({ productId: product.id, productName: product.name });
+      }
+
+      return {
+        affectedFlavors: flavors.map((f) => ({ flavorId: f.id, flavorName: f.name })),
+        affectedProducts,
+      };
+    });
   },
 
   async findMovements(branchId: string, filters: MovementListFilters) {

@@ -90,7 +90,10 @@ export function useCreateTransaction() {
 
 /** Keeps a shift's transaction list (and its live sales total) in sync with sales recorded from any other terminal, without a manual refresh. */
 export function useTransactionsRealtimeSync(): void {
-  useRealtimeInvalidate([SOCKET_EVENTS.TRANSACTION_COMPLETED], [['transactions'], ['current-shift']]);
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.TRANSACTION_COMPLETED, SOCKET_EVENTS.VOID_REQUESTED, SOCKET_EVENTS.TRANSACTION_REFUNDED],
+    [['transactions'], ['current-shift']],
+  );
 }
 
 export function useVoidTransaction(transactionId: string) {

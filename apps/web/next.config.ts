@@ -11,6 +11,20 @@ const withPWA = withPWAInit({
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@potato-corner/shared'],
+  // Proxies browser calls to the API backend through this same origin.
+  // The API and this app live on different domains (Vercel vs Railway) —
+  // without this, the HttpOnly refresh_token cookie the API sets would be
+  // scoped to the API's own domain and never reach requests made to this
+  // app, which is what apps/web/middleware.ts checks to gate protected
+  // routes. Proxying makes every /api/* call same-origin from the
+  // browser's perspective, so the cookie lands on the right domain.
+  // `afterFiles` lets this app's own /api/health route handler still win.
+  async rewrites() {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+    return {
+      afterFiles: [{ source: '/api/:path*', destination: `${apiUrl}/api/:path*` }],
+    };
+  },
 };
 
 export default withPWA(nextConfig);

@@ -1,6 +1,10 @@
 import { ROLE_DASHBOARDS } from '@potato-corner/shared';
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+// Relative on purpose: browser requests go through this app's own /api/*
+// rewrite (see next.config.ts) rather than straight to the API's own
+// domain, so the API's Set-Cookie (refresh_token) lands on this app's
+// origin — the one apps/web/middleware.ts actually checks.
+export const API_URL = '';
 export const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:4000';
 
 /** Where each role lands after login. Re-exported from @potato-corner/shared, the single source of truth also used by apps/web/middleware.ts. */

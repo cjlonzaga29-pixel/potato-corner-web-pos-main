@@ -10,7 +10,13 @@ const ROLE_PATH_OWNERSHIP: Array<{ prefix: string; roles: string[] }> = [
 ];
 
 // '/login' is handled separately above (it redirects an already-authenticated user instead of just passing through).
-const PUBLIC_PATH_PREFIXES = ['/reset-password', '/r/', '/api/health'];
+// '/api/' covers every proxied backend call (see next.config.ts's rewrite) —
+// those now share this app's origin, so without this exemption this
+// middleware would treat an unauthenticated POST /api/auth/login itself as
+// a protected-route request and redirect it to /login before it ever
+// reaches the proxy. The backend enforces its own auth on each endpoint;
+// this middleware's job is page routing, not gating the API namespace.
+const PUBLIC_PATH_PREFIXES = ['/reset-password', '/r/', '/api/'];
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 

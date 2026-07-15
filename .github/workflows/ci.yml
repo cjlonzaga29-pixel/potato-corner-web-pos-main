@@ -22,6 +22,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up test environment
+        # apps/api/vitest.setup.ts loads apps/api/.env via dotenv/config at
+        # test-file-import time. .env is correctly gitignored, so CI has no
+        # env vars unless we provide them. .env.example's placeholder values
+        # are non-secret strings that already satisfy config/index.ts's zod
+        # schema (`.min(1)` string checks, no real-secret format enforced) —
+        # copying it in is enough for tests that import real (non-mocked)
+        # modules at the top of the config-dependent import chain, without
+        # committing or referencing any actual secret.
+        run: cp .env.example apps/api/.env
+
+      - name: Generate Prisma client
+        run: pnpm --filter @potato-corner/api exec prisma generate
+
       - name: Type-check
         run: pnpm run type-check
 

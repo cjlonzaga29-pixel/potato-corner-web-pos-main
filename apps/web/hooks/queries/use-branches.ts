@@ -14,7 +14,6 @@ import type {
   CreateBranchInput,
   UpdateBranchInput,
 } from '@potato-corner/shared';
-import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 

@@ -32,6 +32,9 @@ importers:
       '@prisma/client':
         specifier: ^5.22.0
         version: 5.22.0(prisma@5.22.0)
+      '@react-pdf/renderer':
+        specifier: ^4.1.6
+        version: 4.5.1(react@19.1.0)
       '@sentry/node':
         specifier: ^8.47.0
         version: 8.55.2
@@ -80,6 +83,9 @@ importers:
       rate-limit-redis:
         specifier: ^4.2.0
         version: 4.3.1(express-rate-limit@7.5.1(express@5.2.1))
+      react:
+        specifier: 19.1.0
+        version: 19.1.0
       resend:
         specifier: ^4.0.1
         version: 4.8.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -120,6 +126,9 @@ importers:
       '@types/node':
         specifier: ^22.10.5
         version: 22.20.1
+      '@types/react':
+        specifier: ^19
+        version: 19.2.17
       '@vitest/coverage-v8':
         specifier: ^3.0.2
         version: 3.2.7(vitest@3.2.7(@types/node@22.20.1)(jiti@1.21.7)(jsdom@25.0.1)(terser@5.48.0)(tsx@4.23.0))

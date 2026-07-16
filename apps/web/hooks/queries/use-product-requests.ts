@@ -2,13 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   CreateProductRequestInput,
   ProductRequestListResponse,
   ProductRequestResponse,
   ReviewProductRequestInput,
 } from '@potato-corner/shared';
-import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
@@ -61,6 +61,11 @@ export function useProductRequest(id: string | null | undefined) {
     enabled: Boolean(id),
     staleTime: 15 * 1000,
   });
+}
+
+/** Keeps pending product-request lists (dashboard KPI, sidebar badge, approvals queue) in sync with submissions from any branch, without a manual refresh. */
+export function useProductRequestRealtimeSync(): void {
+  useRealtimeInvalidate([SOCKET_EVENTS.PRODUCT_REQUEST_SUBMITTED], [['product-requests']]);
 }
 
 export function useSubmitProductRequest() {

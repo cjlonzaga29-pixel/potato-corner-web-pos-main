@@ -15,6 +15,8 @@ interface KpiCardProps {
   trendLabel?: string;
   isLoading?: boolean;
   icon?: LucideIcon;
+  /** Visual emphasis for counts that need to stand out from a plain number (e.g. pending approvals, flagged shifts). Defaults to no emphasis. */
+  tone?: 'default' | 'warning' | 'danger';
 }
 
 const TREND_ICONS = { up: ArrowUp, down: ArrowDown, neutral: Minus } as const;
@@ -22,6 +24,16 @@ const TREND_COLORS = {
   up: 'text-green-600 dark:text-green-400',
   down: 'text-red-600 dark:text-red-400',
   neutral: 'text-muted-foreground',
+} as const;
+const TONE_BORDER = {
+  default: '',
+  warning: 'border-yellow-300 dark:border-yellow-800',
+  danger: 'border-red-300 dark:border-red-800',
+} as const;
+const TONE_TEXT = {
+  default: '',
+  warning: 'text-yellow-700 dark:text-yellow-500',
+  danger: 'text-red-700 dark:text-red-500',
 } as const;
 
 /**
@@ -39,6 +51,7 @@ export function KpiCard({
   trendLabel,
   isLoading,
   icon: Icon,
+  tone = 'default',
 }: KpiCardProps) {
   if (isLoading) {
     return (
@@ -60,13 +73,13 @@ export function KpiCard({
   const percentageChange = previousValue !== undefined ? calculatePercentageChange(value, previousValue) : null;
 
   return (
-    <Card>
+    <Card className={cn(tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`)}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
         {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">
+        <div className={cn('text-2xl font-bold', TONE_TEXT[tone])}>
           {prefix}
           <NumberTicker value={value} decimalPlaces={Number.isInteger(value) ? 0 : 2} className="text-inherit" />
           {suffix}

@@ -17,6 +17,7 @@
   "dependencies": {
     "@potato-corner/shared": "workspace:*",
     "@prisma/client": "^5.22.0",
+    "@react-pdf/renderer": "^4.1.6",
     "@sentry/node": "^8.47.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "@supabase/supabase-js": "^2.47.10",
@@ -33,6 +34,7 @@
     "morgan": "^1.10.0",
     "multer": "^2.2.0",
     "rate-limit-redis": "^4.2.0",
+    "react": "19.1.0",
     "resend": "^4.0.1",
     "sharp": "^0.35.3",
     "socket.io": "^4.8.1",
@@ -48,6 +50,7 @@
     "@types/morgan": "^1.9.9",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.10.5",
+    "@types/react": "^19",
     "@vitest/coverage-v8": "^3.0.2",
     "eslint": "^9.18.0",
     "prisma": "^5.22.0",

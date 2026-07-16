@@ -5,7 +5,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { redis } from '../lib/redis.js';
 import { verifyAccessToken, AccessTokenError, type AccessTokenErrorCode } from '../lib/verify-access-token.js';
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
-import { SUPER_ADMIN_ROOM, branchRoom } from './rooms.js';
+import { SUPER_ADMIN_ROOM, branchRoom, userRoom } from './rooms.js';
 
 /**
  * Initializes Socket.io with the Redis adapter (required for correct
@@ -88,6 +88,7 @@ export async function socketAuthMiddleware(socket: Socket, next: (err?: Error) =
  * a real server.
  */
 export function joinRoomsForUser(socket: Pick<Socket, 'join'>, user: JwtPayload): void {
+  void socket.join(userRoom(user.user_id));
   if (user.role === ROLES.SUPER_ADMIN) {
     void socket.join(SUPER_ADMIN_ROOM);
   } else {

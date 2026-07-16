@@ -31,6 +31,10 @@ export const SOCKET_EVENTS = {
   PRODUCT_REQUEST_REVIEWED: 'product_request:reviewed',
   PRICE_OVERRIDE_SUBMITTED: 'price_override:submitted',
   PRICE_OVERRIDE_REVIEWED: 'price_override:reviewed',
+
+  // Phase 16 — report export lifecycle (async CSV/PDF jobs)
+  REPORT_EXPORT_READY: 'report:export_ready',
+  REPORT_EXPORT_FAILED: 'report:export_failed',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

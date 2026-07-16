@@ -19,8 +19,10 @@ vi.mock('../../lib/prisma.js', () => {
       findUniqueOrThrow: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
+      groupBy: vi.fn(),
     },
     transactionItem: { createMany: vi.fn() },
+    shift: { findMany: vi.fn() },
     $transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
@@ -151,6 +153,81 @@ describe('transactionsRepository.createTransaction', () => {
     expect(prisma.transaction.findUniqueOrThrow).toHaveBeenCalledWith({
       where: { id: 'txn-1' },
       include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+    });
+  });
+});
+
+describe('transactionsRepository.findClosedShiftTransactionSummaries', () => {
+  it('fetches shifts closed in the window with their voided and discounted transactions', async () => {
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([]);
+
+    const dayStart = new Date('2026-07-16T16:00:00.000Z');
+    const dayEnd = new Date('2026-07-17T15:59:59.999Z');
+    await transactionsRepository.findClosedShiftTransactionSummaries('branch-1', dayStart, dayEnd);
+
+    expect(prisma.shift.findMany).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', status: { in: ['closed', 'flagged'] }, closedAt: { gte: dayStart, lte: dayEnd } },
+      select: {
+        id: true,
+        cashierId: true,
+        closedAt: true,
+        transactions: {
+          where: { OR: [{ status: 'voided' }, { status: 'completed', discountType: { not: null } }] },
+          select: { id: true, status: true, discountType: true, voidedAt: true },
+        },
+      },
+    });
+  });
+});
+
+describe('transactionsRepository.findGcashCountsByCashierForDate', () => {
+  it('groups completed GCash transactions by cashierId', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([{ cashierId: 'user-1', _count: { _all: 6 } }] as never);
+
+    const dayStart = new Date('2026-07-16T16:00:00.000Z');
+    const dayEnd = new Date('2026-07-17T15:59:59.999Z');
+    const result = await transactionsRepository.findGcashCountsByCashierForDate('branch-1', dayStart, dayEnd);
+
+    expect(prisma.transaction.groupBy).toHaveBeenCalledWith({
+      by: ['cashierId'],
+      where: { branchId: 'branch-1', paymentMethod: 'gcash', status: 'completed', createdAt: { gte: dayStart, lte: dayEnd } },
+      _count: { _all: true },
+    });
+    expect(result).toEqual([{ cashierId: 'user-1', gcashCount: 6 }]);
+  });
+});
+
+describe('transactionsRepository.countGcashTransactionsForBranchWindow', () => {
+  it('counts completed GCash transactions in the window', async () => {
+    vi.mocked(prisma.transaction.count).mockResolvedValue(120);
+
+    const windowStart = new Date('2026-06-17T16:00:00.000Z');
+    const windowEnd = new Date('2026-07-17T15:59:59.999Z');
+    const result = await transactionsRepository.countGcashTransactionsForBranchWindow('branch-1', windowStart, windowEnd);
+
+    expect(prisma.transaction.count).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', paymentMethod: 'gcash', status: 'completed', createdAt: { gte: windowStart, lte: windowEnd } },
+    });
+    expect(result).toBe(120);
+  });
+});
+
+describe('transactionsRepository.findStatutoryDiscountsInWindow', () => {
+  it('finds completed PWD/Senior transactions with a non-null hash in the window, across all branches', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([]);
+
+    const windowStart = new Date('2026-06-17T16:00:00.000Z');
+    const windowEnd = new Date('2026-07-17T15:59:59.999Z');
+    await transactionsRepository.findStatutoryDiscountsInWindow(windowStart, windowEnd);
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith({
+      where: {
+        status: 'completed',
+        discountType: { in: ['pwd', 'senior_citizen'] },
+        discountCustomerIdHash: { not: null },
+        createdAt: { gte: windowStart, lte: windowEnd },
+      },
+      select: { id: true, branchId: true, cashierId: true, discountCustomerIdHash: true, createdAt: true },
     });
   });
 });

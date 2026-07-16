@@ -181,4 +181,56 @@ export const transactionsRepository = {
   markReceiptPrinted(id: string) {
     return prisma.transaction.update({ where: { id }, data: { receiptPrinted: true }, include: transactionInclude });
   },
+
+  /**
+   * One row per shift closed inside [dayStart, dayEnd], with its voided
+   * transactions and its discounted-and-completed transactions. Backs
+   * fraud rules 1 (excessive voids), 2 (discount abuse), 6 (end of shift
+   * void), and 7 (employee self-discount frequency) — each rule filters
+   * this same shape differently rather than four near-duplicate queries.
+   */
+  findClosedShiftTransactionSummaries(branchId: string, dayStart: Date, dayEnd: Date) {
+    return prisma.shift.findMany({
+      where: { branchId, status: { in: ['closed', 'flagged'] }, closedAt: { gte: dayStart, lte: dayEnd } },
+      select: {
+        id: true,
+        cashierId: true,
+        closedAt: true,
+        transactions: {
+          where: { OR: [{ status: 'voided' }, { status: 'completed', discountType: { not: null } }] },
+          select: { id: true, status: true, discountType: true, voidedAt: true },
+        },
+      },
+    });
+  },
+
+  /** Per-cashier GCash transaction count for one day — the "actual" side of rule 4's anomaly comparison. */
+  async findGcashCountsByCashierForDate(branchId: string, dayStart: Date, dayEnd: Date) {
+    const rows = await prisma.transaction.groupBy({
+      by: ['cashierId'],
+      where: { branchId, paymentMethod: 'gcash', status: 'completed', createdAt: { gte: dayStart, lte: dayEnd } },
+      _count: { _all: true },
+    });
+    return rows.map((row) => ({ cashierId: row.cashierId, gcashCount: row._count._all }));
+  },
+
+  /** Total branch-wide GCash transaction count over a trailing window — the denominator for rule 4's daily average. */
+  countGcashTransactionsForBranchWindow(branchId: string, windowStart: Date, windowEnd: Date) {
+    return prisma.transaction.count({
+      where: { branchId, paymentMethod: 'gcash', status: 'completed', createdAt: { gte: windowStart, lte: windowEnd } },
+    });
+  },
+
+  /** Every statutory-discount transaction with a hash in the trailing window, across all branches — rule 5 groups these by hash itself (Corrections #4: this rule is global-scope, not per-branch). */
+  findStatutoryDiscountsInWindow(windowStart: Date, windowEnd: Date) {
+    return prisma.transaction.findMany({
+      where: {
+        status: 'completed',
+        discountType: { in: ['pwd', 'senior_citizen'] },
+        discountCustomerIdHash: { not: null },
+        createdAt: { gte: windowStart, lte: windowEnd },
+      },
+      select: { id: true, branchId: true, cashierId: true, discountCustomerIdHash: true, createdAt: true },
+    });
+  },
 };

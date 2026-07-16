@@ -842,3 +842,32 @@ model FraudAlert {
   @@index([employeeId])
   @@map("fraud_alerts")
 }
+
+enum ReportType {
+  DAILY_SALES
+  SHIFT_SUMMARY
+  CASH_RECONCILIATION
+  VOID_REFUND
+  DISCOUNT_COMPLIANCE
+  INVENTORY_MOVEMENT
+  ATTENDANCE_SUMMARY
+  FRAUD_ALERT_SUMMARY
+  PRODUCT_PERFORMANCE
+  FLAVOR_PERFORMANCE
+  EMPLOYEE_PERFORMANCE
+  INVENTORY_VALUATION
+  BRANCH_COMPARISON
+}
+
+model ReportSnapshot {
+  id         String     @id @default(uuid())
+  reportType ReportType @map("report_type")
+  branchId   String?    @map("branch_id")
+  computedAt DateTime   @default(now()) @map("computed_at")
+  payload    Json
+  parameters Json       @default("{}")
+
+  @@index([reportType, branchId, computedAt(sort: Desc)])
+  @@index([computedAt])
+  @@map("report_snapshots")
+}

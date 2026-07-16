@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/node';
 import { SOCKET_EVENTS, type ReportType } from '@potato-corner/shared';
 import { redis, createWorkerConnection } from '../lib/redis.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
+import { notifyUser } from '../lib/notify.js';
 import { generateCsv } from '../lib/reports/csv.js';
 import { generatePdf } from '../lib/reports/pdf.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
@@ -72,8 +72,7 @@ async function processGenerateExport(job: Job<GenerateExportJobData>): Promise<v
   const expiresAt = new Date(Date.now() + 86_400 * 1000).toISOString();
   const payload = { job_id: job.id ?? '', report_type: reportType, format, download_url: signed.signedUrl, expires_at: expiresAt, requester_id: requesterId };
 
-  notifySuperAdmin(SOCKET_EVENTS.REPORT_EXPORT_READY, payload);
-  if (branchId) notifyBranch(branchId, SOCKET_EVENTS.REPORT_EXPORT_READY, payload);
+  notifyUser(requesterId, SOCKET_EVENTS.REPORT_EXPORT_READY, payload);
 
   await recordAuditLog({
     action: 'REPORT_EXPORTED',
@@ -119,8 +118,7 @@ reportWorker.on('failed', (job, error) => {
   if (job.attemptsMade < (job.opts.attempts ?? MAX_ATTEMPTS)) return;
 
   Sentry.captureException(error);
-  const { reportType, requesterId, branchId } = job.data as GenerateExportJobData;
+  const { reportType, requesterId } = job.data as GenerateExportJobData;
   const payload = { job_id: job.id ?? '', report_type: reportType, error: error.message, requester_id: requesterId };
-  notifySuperAdmin(SOCKET_EVENTS.REPORT_EXPORT_FAILED, payload);
-  if (branchId) notifyBranch(branchId, SOCKET_EVENTS.REPORT_EXPORT_FAILED, payload);
+  notifyUser(requesterId, SOCKET_EVENTS.REPORT_EXPORT_FAILED, payload);
 });

@@ -15,7 +15,7 @@ vi.mock('../lib/redis.js', () => ({
 const { redis } = await import('../lib/redis.js');
 const { blacklistKey } = await import('../lib/verify-access-token.js');
 const { socketAuthMiddleware, joinRoomsForUser } = await import('./socket.server.js');
-const { SUPER_ADMIN_ROOM, branchRoom } = await import('./rooms.js');
+const { SUPER_ADMIN_ROOM, branchRoom, userRoom } = await import('./rooms.js');
 const { generateStaffToken, generateSuperAdminToken } = await import('../test-utils/auth-tokens.js');
 
 /** Minimal fake Socket — only the handshake/data surface socketAuthMiddleware touches. */
@@ -147,35 +147,41 @@ describe('socketAuthMiddleware', () => {
 });
 
 describe('joinRoomsForUser', () => {
-  it('joins a staff connection to its single assigned branch room, and no other room', () => {
+  it('joins a staff connection to its own user room and its single assigned branch room, and no other room', () => {
+    const userId = randomUUID();
     const branchId = randomUUID();
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: randomUUID(), role: ROLES.STAFF, email: 'staff@potatocorner.test', branch_ids: [branchId] });
+    joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.STAFF, email: 'staff@potatocorner.test', branch_ids: [branchId] });
 
-    expect(socket.join).toHaveBeenCalledTimes(1);
+    expect(socket.join).toHaveBeenCalledTimes(2);
+    expect(socket.join).toHaveBeenCalledWith(userRoom(userId));
     expect(socket.join).toHaveBeenCalledWith(branchRoom(branchId));
     expect(socket.join).not.toHaveBeenCalledWith(SUPER_ADMIN_ROOM);
   });
 
-  it('joins a supervisor connection to every branch room in branch_ids', () => {
+  it('joins a supervisor connection to its own user room and every branch room in branch_ids', () => {
+    const userId = randomUUID();
     const branchA = randomUUID();
     const branchB = randomUUID();
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: randomUUID(), role: ROLES.SUPERVISOR, email: 'supervisor@potatocorner.test', branch_ids: [branchA, branchB] });
+    joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPERVISOR, email: 'supervisor@potatocorner.test', branch_ids: [branchA, branchB] });
 
+    expect(socket.join).toHaveBeenCalledWith(userRoom(userId));
     expect(socket.join).toHaveBeenCalledWith(branchRoom(branchA));
     expect(socket.join).toHaveBeenCalledWith(branchRoom(branchB));
-    expect(socket.join).toHaveBeenCalledTimes(2);
+    expect(socket.join).toHaveBeenCalledTimes(3);
   });
 
-  it('joins a super_admin connection to the Super Admin room only, never a branch room', () => {
+  it('joins a super_admin connection to its own user room and the Super Admin room only, never a branch room', () => {
+    const userId = randomUUID();
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: randomUUID(), role: ROLES.SUPER_ADMIN, email: 'admin@potatocorner.test' });
+    joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPER_ADMIN, email: 'admin@potatocorner.test' });
 
-    expect(socket.join).toHaveBeenCalledTimes(1);
+    expect(socket.join).toHaveBeenCalledTimes(2);
+    expect(socket.join).toHaveBeenCalledWith(userRoom(userId));
     expect(socket.join).toHaveBeenCalledWith(SUPER_ADMIN_ROOM);
   });
 

@@ -14,7 +14,7 @@ vi.mock('../../lib/prisma.js', () => {
     productVariant: { findMany: vi.fn() },
     flavor: { findMany: vi.fn() },
     ingredient: { findMany: vi.fn() },
-    reportSnapshot: { create: vi.fn(), findFirst: vi.fn() },
+    reportSnapshot: { create: vi.fn(), findFirst: vi.fn(), deleteMany: vi.fn() },
   };
   return { prisma: prismaMock };
 });
@@ -182,12 +182,35 @@ describe('reportsRepository.getInventoryValuation', () => {
 
 describe('reportsRepository.saveSnapshot', () => {
   it('writes a new ReportSnapshot row with the given payload and parameters', async () => {
-    vi.mocked(prisma.reportSnapshot.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.reportSnapshot.create).mockResolvedValue({ id: 'snap-new' } as never);
+    vi.mocked(prisma.reportSnapshot.deleteMany).mockResolvedValue({ count: 0 } as never);
 
     await reportsRepository.saveSnapshot('PRODUCT_PERFORMANCE', 'b1', [{ foo: 'bar' }], { branchId: 'b1' });
 
     expect(prisma.reportSnapshot.create).toHaveBeenCalledWith({
       data: { reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', payload: [{ foo: 'bar' }], parameters: { branchId: 'b1' } },
+    });
+  });
+
+  it('deletes sibling snapshots for the same (reportType, branchId), keeping only the newly created row', async () => {
+    vi.mocked(prisma.reportSnapshot.create).mockResolvedValue({ id: 'snap-new' } as never);
+    vi.mocked(prisma.reportSnapshot.deleteMany).mockResolvedValue({ count: 2 } as never);
+
+    await reportsRepository.saveSnapshot('PRODUCT_PERFORMANCE', 'b1', [{ foo: 'bar' }], { branchId: 'b1' });
+
+    expect(prisma.reportSnapshot.deleteMany).toHaveBeenCalledWith({
+      where: { reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', id: { not: 'snap-new' } },
+    });
+  });
+
+  it('scopes sibling deletion correctly for a null branchId (org-wide report type)', async () => {
+    vi.mocked(prisma.reportSnapshot.create).mockResolvedValue({ id: 'snap-new' } as never);
+    vi.mocked(prisma.reportSnapshot.deleteMany).mockResolvedValue({ count: 1 } as never);
+
+    await reportsRepository.saveSnapshot('BRANCH_COMPARISON', null, [], {});
+
+    expect(prisma.reportSnapshot.deleteMany).toHaveBeenCalledWith({
+      where: { reportType: 'BRANCH_COMPARISON', branchId: null, id: { not: 'snap-new' } },
     });
   });
 });

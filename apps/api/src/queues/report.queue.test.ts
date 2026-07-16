@@ -18,7 +18,7 @@ vi.mock('bullmq', () => {
   return { Queue, Worker };
 });
 vi.mock('../lib/supabase.js', () => ({ supabaseAdmin: { storage: { from: vi.fn() } } }));
-vi.mock('../lib/notify.js', () => ({ notifyBranch: vi.fn(), notifySuperAdmin: vi.fn() }));
+vi.mock('../lib/notify.js', () => ({ notifyUser: vi.fn() }));
 vi.mock('../middleware/audit-log.js', () => ({ recordAuditLog: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../modules/reports/reports.columns.js', () => ({
   getReportRows: vi.fn().mockResolvedValue([{ report_date: '2026-07-01' }]),
@@ -29,7 +29,7 @@ vi.mock('../lib/prisma.js', () => ({ prisma: { branch: { findUnique: vi.fn().moc
 vi.mock('@sentry/node', () => ({ captureException: vi.fn() }));
 
 const { supabaseAdmin } = await import('../lib/supabase.js');
-const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
+const { notifyUser } = await import('../lib/notify.js');
 const { recordAuditLog } = await import('../middleware/audit-log.js');
 const { reportsRepository } = await import('../modules/reports/reports.repository.js');
 const Sentry = await import('@sentry/node');
@@ -48,7 +48,7 @@ const failedHandler = vi.mocked(reportWorker.on).mock.calls.find(([event]) => ev
 beforeEach(() => vi.clearAllMocks());
 
 describe('report worker — generate_export (CSV)', () => {
-  it('generates CSV, uploads to storage, and emits report:export_ready', async () => {
+  it('generates CSV, uploads to storage, and emits report:export_ready to the requester only', async () => {
     const upload = vi.fn().mockResolvedValue({ error: null });
     const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/x.csv' }, error: null });
     vi.mocked(supabaseAdmin.storage.from).mockReturnValue({ upload, createSignedUrl } as never);
@@ -61,8 +61,8 @@ describe('report worker — generate_export (CSV)', () => {
 
     expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.csv$/), expect.any(Buffer), { contentType: 'text/csv', upsert: false });
     expect(createSignedUrl).toHaveBeenCalledWith(expect.any(String), 86_400);
-    expect(notifySuperAdmin).toHaveBeenCalledWith('report:export_ready', expect.objectContaining({ download_url: 'https://signed.example/x.csv' }));
-    expect(notifyBranch).toHaveBeenCalledWith('b1', 'report:export_ready', expect.anything());
+    expect(notifyUser).toHaveBeenCalledWith('user-1', 'report:export_ready', expect.objectContaining({ download_url: 'https://signed.example/x.csv' }));
+    expect(notifyUser).toHaveBeenCalledTimes(1);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'REPORT_EXPORTED' }));
   });
 });
@@ -96,7 +96,7 @@ describe('report worker — refresh_snapshot', () => {
 });
 
 describe('report worker — failed handler', () => {
-  it('emits report:export_failed to notifySuperAdmin and notifyBranch after max retries, and reports to Sentry', () => {
+  it('emits report:export_failed to the requester only after max retries, and reports to Sentry', () => {
     expect(failedHandler).toBeDefined();
 
     failedHandler?.(
@@ -105,7 +105,7 @@ describe('report worker — failed handler', () => {
     );
 
     expect(Sentry.captureException).toHaveBeenCalled();
-    expect(notifySuperAdmin).toHaveBeenCalledWith('report:export_failed', expect.objectContaining({ job_id: 'job-4', error: 'upload failed' }));
-    expect(notifyBranch).toHaveBeenCalledWith('b1', 'report:export_failed', expect.anything());
+    expect(notifyUser).toHaveBeenCalledWith('user-1', 'report:export_failed', expect.objectContaining({ job_id: 'job-4', error: 'upload failed' }));
+    expect(notifyUser).toHaveBeenCalledTimes(1);
   });
 });

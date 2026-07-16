@@ -458,7 +458,13 @@ export const reportsRepository = {
   },
 
   async saveSnapshot(reportType: ReportType, branchId: string | null, data: unknown, parameters: unknown): Promise<void> {
-    await prisma.reportSnapshot.create({ data: { reportType, branchId, payload: data as Prisma.InputJsonValue, parameters: parameters as Prisma.InputJsonValue } });
+    const created = await prisma.reportSnapshot.create({
+      data: { reportType, branchId, payload: data as Prisma.InputJsonValue, parameters: parameters as Prisma.InputJsonValue },
+    });
+    // Keep only the latest snapshot per (reportType, branchId) — refreshes
+    // happen every 15 min under stale-while-revalidate, so without this the
+    // table grows without bound.
+    await prisma.reportSnapshot.deleteMany({ where: { reportType, branchId, id: { not: created.id } } });
   },
 
   async getLatestSnapshot(reportType: ReportType, branchId: string | null) {

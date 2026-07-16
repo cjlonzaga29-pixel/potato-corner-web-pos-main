@@ -40,6 +40,21 @@ async function accessAudit(reportType: ReportType, filters: ReportFilters, actor
   });
 }
 
+// These six report types are already paginated inside the repository
+// (skip/take applied in the Prisma query) — fetchRows returns exactly one
+// page, so the true `total` must come from a separate count, and the
+// result must not be re-sliced. The remaining two real-time types
+// (DAILY_SALES, DISCOUNT_COMPLIANCE) aggregate in memory and return every
+// matching row, so they still need client-side slicing here.
+const REPOSITORY_PAGINATED_TYPES = new Set<ReportType>([
+  'SHIFT_SUMMARY',
+  'CASH_RECONCILIATION',
+  'VOID_REFUND',
+  'INVENTORY_MOVEMENT',
+  'ATTENDANCE_SUMMARY',
+  'FRAUD_ALERT_SUMMARY',
+]);
+
 async function realtimeReport<T>(
   reportType: ReportType,
   rawFilters: ReportFilters,
@@ -48,6 +63,21 @@ async function realtimeReport<T>(
   fetchRows: (filters: ReportFilters) => Promise<T[]>,
 ): Promise<ReportResponse<T>> {
   const filters = defaultRealtimeFilters(rawFilters);
+
+  if (REPOSITORY_PAGINATED_TYPES.has(reportType)) {
+    const [page, total] = await Promise.all([fetchRows(filters), reportsRepository.countRows(reportType, filters)]);
+    await accessAudit(reportType, filters, actorId, actorRole, total);
+    return {
+      report_type: reportType,
+      generated_at: new Date().toISOString(),
+      filters: toWireFilters(filters),
+      data: page,
+      total,
+      page: filters.page,
+      limit: filters.limit,
+    };
+  }
+
   const allRows = await fetchRows(filters);
   const start = (filters.page - 1) * filters.limit;
   const page = allRows.slice(start, start + filters.limit);

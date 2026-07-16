@@ -88,6 +88,19 @@ describe('reportsService.getFraudAlertSummaryReport', () => {
     expect(reportsRepository.getFraudAlertSummary).toHaveBeenCalled();
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'FRAUD_ALERT_SUMMARY', actorRole: 'super_admin' }));
   });
+
+  it('uses the repository-level total, not the page length, for a DB-paginated type (does not re-slice)', async () => {
+    const page = Array.from({ length: 25 }, (_, i) => ({ alert_id: `a-${i}` }));
+    vi.mocked(reportsRepository.getFraudAlertSummary).mockResolvedValue(page as never);
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(137);
+
+    const result = await reportsService.getFraudAlertSummaryReport({ page: 2, limit: 25 }, 'admin-1', 'super_admin');
+
+    expect(reportsRepository.countRows).toHaveBeenCalledWith('FRAUD_ALERT_SUMMARY', expect.anything());
+    expect(result.data).toEqual(page);
+    expect(result.total).toBe(137);
+    expect(result.total).toBeGreaterThan(result.limit);
+  });
 });
 
 describe('reportsService.getProductPerformanceReport', () => {

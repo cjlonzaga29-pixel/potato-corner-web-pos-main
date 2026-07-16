@@ -1,5 +1,5 @@
 import { getIO } from '../socket/socket.server.js';
-import { SUPER_ADMIN_ROOM, branchRoom } from '../socket/rooms.js';
+import { SUPER_ADMIN_ROOM, branchRoom, userRoom } from '../socket/rooms.js';
 
 /**
  * Lightweight real-time "notification" for CR-001's approval workflows.
@@ -15,4 +15,9 @@ export function notifySuperAdmin(event: string, payload: unknown): void {
 
 export function notifyBranch(branchId: string, event: string, payload: unknown): void {
   getIO()?.to(branchRoom(branchId)).emit(event, payload);
+}
+
+/** Delivers an event only to the given user's own sockets — for payloads (e.g. signed export URLs) that must not reach the rest of their branch or admin room. */
+export function notifyUser(userId: string, event: string, payload: unknown): void {
+  getIO()?.to(userRoom(userId)).emit(event, payload);
 }

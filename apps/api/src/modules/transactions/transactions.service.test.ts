@@ -37,6 +37,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 
 vi.mock('../../lib/encryption.js', () => ({
   encryptField: vi.fn((value: string) => `encrypted(${value})`),
+  hashField: vi.fn((value: string) => `hashed(${value})`),
 }));
 
 vi.mock('../../queues/inventory.queue.js', () => ({
@@ -276,6 +277,67 @@ describe('transactionsService.createTransaction — side effects', () => {
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'transaction:completed', result);
     expect(notifySuperAdmin).toHaveBeenCalledWith('transaction:completed', result);
     expect(transactionResponseSchema.safeParse(result).success).toBe(true);
+  });
+});
+
+describe('transactionsService.createTransaction — discount ID hashing', () => {
+  it('populates discountCustomerIdHash alongside the encrypted field for a PWD discount', async () => {
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
+    vi.mocked(priceOverridesService.getActivePriceForBranch).mockResolvedValue(100);
+    vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ discountType: 'pwd' }) as never);
+
+    await transactionsService.createTransaction(
+      {
+        branchId: 'branch-1',
+        shiftId: 'shift-1',
+        cashierId: 'user-1',
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
+        paymentMethod: 'cash',
+        discountType: 'pwd',
+        discountIdReference: 'PWD-12345',
+        cashTendered: 200,
+        isOfflineTransaction: false,
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discountCustomerIdEncrypted: 'encrypted(PWD-12345)',
+        discountCustomerIdHash: 'hashed(PWD-12345)',
+      }),
+    );
+  });
+
+  it('leaves discountCustomerIdHash null when there is no discount ID reference', async () => {
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
+    vi.mocked(priceOverridesService.getActivePriceForBranch).mockResolvedValue(100);
+    vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
+
+    await transactionsService.createTransaction(
+      {
+        branchId: 'branch-1',
+        shiftId: 'shift-1',
+        cashierId: 'user-1',
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
+        paymentMethod: 'cash',
+        cashTendered: 200,
+        isOfflineTransaction: false,
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountCustomerIdEncrypted: null, discountCustomerIdHash: null }),
+    );
   });
 });
 

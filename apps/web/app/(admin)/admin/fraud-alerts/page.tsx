@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import type { PaginationState } from '@tanstack/react-table';
 import { ShieldAlert } from 'lucide-react';
@@ -49,7 +49,7 @@ function toSeverityFilter(value: string | null): (typeof SEVERITY_FILTERS)[numbe
   return value && SEVERITY_VALUES.has(value) ? (value as (typeof SEVERITY_FILTERS)[number]['value']) : 'all';
 }
 
-export default function FraudAlertsPage() {
+function FraudAlertsPageContent() {
   useFraudAlertsRealtimeSync();
 
   const router = useRouter();
@@ -252,5 +252,13 @@ export default function FraudAlertsPage() {
         }}
       />
     </div>
+  );
+}
+
+export default function FraudAlertsPage() {
+  return (
+    <Suspense fallback={<div>Loading fraud alerts...</div>}>
+      <FraudAlertsPageContent />
+    </Suspense>
   );
 }

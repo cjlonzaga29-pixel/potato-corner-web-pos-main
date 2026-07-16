@@ -54,3 +54,12 @@ export interface UpdateFraudAlertStatusData {
   investigatedBy?: string;
   dismissalReason?: string;
 }
+
+/** Input shape for fraudRepository.createAlert — one row per detection result the engine produces. */
+export interface CreateFraudAlertData {
+  alertType: string;
+  severity: FraudAlertSeverity;
+  branchId: string | null;
+  employeeId: string | null;
+  evidence: Record<string, unknown>;
+}

@@ -32,6 +32,7 @@ const envSchema = z.object({
   JWT_REFRESH_TOKEN_TTL: z.string().default('7d'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
   ENCRYPTION_KEY: z.string().min(1),
+  HASH_KEY: z.string().min(1),
   SUPABASE_URL: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   NEXT_PUBLIC_APP_URL: z.string().min(1).default('http://localhost:3000'),
@@ -65,6 +66,7 @@ export const config = {
     refreshSecret: env.JWT_REFRESH_SECRET,
   },
   encryptionKey: env.ENCRYPTION_KEY,
+  hashKey: env.HASH_KEY,
   supabase: { url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY },
   sentryDsn: env.SENTRY_DSN,
 } as const;

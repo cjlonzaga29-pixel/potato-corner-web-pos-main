@@ -8,6 +8,7 @@ import {
   type InvestigateAlertData,
 } from './fraud.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { enqueueManualFraudScan } from '../../queues/fraud.queue.js';
 
 interface FraudAlertRow {
   id: string;
@@ -167,5 +168,22 @@ export const fraudService = {
     });
 
     return mapAlertToResponse(updated as FraudAlertRow);
+  },
+
+  async triggerManualScan(actorId: string): Promise<{ jobId: string | null }> {
+    const evaluationDate = new Date().toISOString();
+    const job = await enqueueManualFraudScan({ evaluationDate, requestedBy: actorId });
+
+    await recordAuditLog({
+      action: 'FRAUD_MANUAL_SCAN_TRIGGERED',
+      entityType: 'fraud_scan',
+      entityId: job.id ?? null,
+      actorId,
+      actorRole: ACTOR_ROLE,
+      branchId: null,
+      afterState: { evaluation_date: evaluationDate, job_id: job.id ?? null },
+    });
+
+    return { jobId: job.id ?? null };
   },
 };

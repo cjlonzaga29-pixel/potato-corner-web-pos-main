@@ -13,6 +13,10 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../queues/fraud.queue.js', () => ({
+  enqueueManualFraudScan: vi.fn(),
+}));
+
 const { fraudRepository } = await import('./fraud.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { fraudService } = await import('./fraud.service.js');
@@ -216,5 +220,29 @@ describe('fraudService.escalateAlert', () => {
       }),
     );
     expect(result.status).toBe('escalated');
+  });
+});
+
+describe('fraudService.triggerManualScan', () => {
+  it('enqueues a manual_scan job and records an audit log entry', async () => {
+    const { enqueueManualFraudScan } = await import('../../queues/fraud.queue.js');
+    vi.mocked(enqueueManualFraudScan).mockResolvedValue({ id: 'job-123' } as never);
+
+    const result = await fraudService.triggerManualScan('admin-1');
+
+    expect(enqueueManualFraudScan).toHaveBeenCalledWith({
+      evaluationDate: expect.any(String),
+      requestedBy: 'admin-1',
+    });
+    expect(result).toEqual({ jobId: 'job-123' });
+  });
+
+  it('returns jobId: null when the job has no id (defensive — BullMQ always assigns one in practice)', async () => {
+    const { enqueueManualFraudScan } = await import('../../queues/fraud.queue.js');
+    vi.mocked(enqueueManualFraudScan).mockResolvedValue({ id: undefined } as never);
+
+    const result = await fraudService.triggerManualScan('admin-1');
+
+    expect(result).toEqual({ jobId: null });
   });
 });

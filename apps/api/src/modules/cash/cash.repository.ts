@@ -224,6 +224,26 @@ export const cashRepository = {
 
     return { shifts, total };
   },
+
+  /** Distinct cashiers who closed a shift in the window — the candidate set rule 3 (cash variance pattern) checks. */
+  async findCashiersWithClosedShifts(branchId: string, dayStart: Date, dayEnd: Date): Promise<string[]> {
+    const rows = await prisma.shift.findMany({
+      where: { branchId, status: { in: ['closed', 'flagged'] }, closedAt: { gte: dayStart, lte: dayEnd } },
+      select: { cashierId: true },
+      distinct: ['cashierId'],
+    });
+    return rows.map((row) => row.cashierId);
+  },
+
+  /** The trailing window rule 3 evaluates: varianceApproved !== null (Decision 6) means "outside tolerance, required a decision". */
+  findLastNClosedShiftsForCashier(cashierId: string, branchId: string, n: number) {
+    return prisma.shift.findMany({
+      where: { cashierId, branchId, status: { in: ['closed', 'flagged'] } },
+      orderBy: { closedAt: 'desc' },
+      take: n,
+      select: { id: true, varianceApproved: true, closedAt: true },
+    });
+  },
 };
 
 function denominationRow(shiftId: string, d: DenominationCountInput, countType: 'opening' | 'closing') {

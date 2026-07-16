@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { config } from '../config/index.js';
 
 /**
@@ -14,6 +14,21 @@ const IV_LENGTH = 12;
 
 function getKey(): Buffer {
   return Buffer.from(config.encryptionKey, 'base64');
+}
+
+function getHashKey(): Buffer {
+  return Buffer.from(config.hashKey, 'base64');
+}
+
+/**
+ * Deterministic HMAC-SHA256 of a plaintext ID, hex-encoded. Used only for
+ * equality-matching (Phase 17's discount-ID-reuse rule) — never for
+ * confidentiality, and never decrypted or reversed. Kept as a separate key
+ * (HASH_KEY, not ENCRYPTION_KEY) so rotating one does not invalidate the
+ * other.
+ */
+export function hashField(plaintext: string): string {
+  return createHmac('sha256', getHashKey()).update(plaintext, 'utf8').digest('hex');
 }
 
 /** Returns base64(iv + authTag + ciphertext), safe to store as a single column value. */

@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { FraudAlertFilters, UpdateFraudAlertStatusData } from './fraud.types.js';
+import type { CreateFraudAlertData, FraudAlertFilters, UpdateFraudAlertStatusData } from './fraud.types.js';
 
 /**
  * branch is a real FK relation (fraud_alerts.branch_id -> branches.id) so it
@@ -67,5 +67,41 @@ export const fraudRepository = {
       where: { id: { in: employeeIds } },
       select: { id: true, firstName: true, lastName: true },
     });
+  },
+
+  createAlert(data: CreateFraudAlertData) {
+    return prisma.fraudAlert.create({
+      data: {
+        alertType: data.alertType,
+        severity: data.severity,
+        branchId: data.branchId,
+        employeeId: data.employeeId,
+        evidence: data.evidence as Prisma.InputJsonValue,
+      },
+      include: fraudAlertInclude,
+    });
+  },
+
+  /** Standard dedup lookup for every rule except discount_id_reuse (see findOpenAlertsByType). */
+  findRecentOpenAlert(branchId: string | null, employeeId: string | null, alertType: string) {
+    return prisma.fraudAlert.findFirst({
+      where: { branchId, employeeId, alertType, status: { in: ['open', 'investigating'] } },
+    });
+  },
+
+  /**
+   * discount_id_reuse has no natural employeeId/branchId to key dedup on
+   * (Corrections #4) — the detection service fetches every open alert of
+   * this type and matches on evidence.customer_id_hash itself.
+   */
+  findOpenAlertsByType(alertType: string) {
+    return prisma.fraudAlert.findMany({
+      where: { alertType, status: { in: ['open', 'investigating'] } },
+      select: { id: true, evidence: true },
+    });
+  },
+
+  findActiveBranchIds() {
+    return prisma.branch.findMany({ where: { status: 'active' }, select: { id: true } });
   },
 };

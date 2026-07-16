@@ -5,6 +5,7 @@ import { config } from './config/index.js';
 import { app } from './app.js';
 import { createSocketServer } from './socket/socket.server.js';
 import { redis } from './lib/redis.js';
+import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 
 // Importing `config` above already validated every required env var (it
 // fails fast with a clear field-level error if anything is missing) —
@@ -55,6 +56,16 @@ async function start(): Promise<void> {
     console.log('Redis connection verified.');
   } else {
     console.error('Redis is unreachable at startup — continuing, but sessions/rate-limiting/queues will not work.');
+  }
+
+  if (redisOk) {
+    try {
+      await scheduleNightlyFraudScan();
+      console.log('Nightly fraud detection scan scheduled (23:00 Asia/Manila).');
+    } catch (error) {
+      console.error('Failed to register the nightly fraud detection scan:', error);
+      Sentry.captureException(error);
+    }
   }
 
   const httpServer = createServer(app);

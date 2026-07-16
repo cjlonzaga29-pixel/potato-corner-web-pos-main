@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type {
   ReportFilters,
+  ReportType,
   DailySalesReportRow,
   ShiftSummaryReportRow,
   CashReconciliationReportRow,
@@ -10,6 +11,11 @@ import type {
   InventoryMovementReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
+  ProductPerformanceReportRow,
+  FlavorPerformanceReportRow,
+  EmployeePerformanceReportRow,
+  InventoryValuationReportRow,
+  BranchComparisonReportRow,
 } from './reports.types.js';
 
 /**
@@ -268,5 +274,228 @@ export const reportsRepository = {
       created_at: a.createdAt.toISOString(),
       updated_at: a.updatedAt.toISOString(),
     }));
+  },
+
+  async getProductPerformance(filters: ReportFilters): Promise<ProductPerformanceReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const completedTransactionIds = await prisma.transaction
+      .findMany({
+        where: { status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+        select: { id: true },
+      })
+      .then((rows) => rows.map((r) => r.id));
+    if (completedTransactionIds.length === 0) return [];
+
+    const grouped = await prisma.transactionItem.groupBy({
+      by: ['productVariantId'],
+      where: { transactionId: { in: completedTransactionIds } },
+      _sum: { quantity: true, lineTotal: true },
+      _count: { id: true },
+    });
+    const variants = await prisma.productVariant.findMany({
+      where: { id: { in: grouped.map((g) => g.productVariantId) } },
+      include: { product: { select: { name: true } } },
+    });
+    const variantById = new Map(variants.map((v) => [v.id, v]));
+
+    return grouped
+      .map((g) => {
+        const variant = variantById.get(g.productVariantId);
+        return {
+          product_variant_id: g.productVariantId,
+          product_name: variant?.product.name ?? 'Unknown Product',
+          variant_name: variant?.name ?? 'Unknown Variant',
+          units_sold: g._sum.quantity ?? 0,
+          gross_revenue: g._sum.lineTotal?.toNumber() ?? 0,
+          transaction_count: g._count.id,
+        };
+      })
+      .sort((a, b) => b.gross_revenue - a.gross_revenue);
+  },
+
+  async getFlavorPerformance(filters: ReportFilters): Promise<FlavorPerformanceReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const completedTransactionIds = await prisma.transaction
+      .findMany({
+        where: { status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+        select: { id: true },
+      })
+      .then((rows) => rows.map((r) => r.id));
+    if (completedTransactionIds.length === 0) return [];
+
+    const grouped = await prisma.transactionItem.groupBy({
+      by: ['flavorId'],
+      where: { transactionId: { in: completedTransactionIds }, flavorId: { not: null } },
+      _sum: { quantity: true, lineTotal: true },
+    });
+    const flavorIds = grouped.map((g) => g.flavorId).filter((id): id is string => id !== null);
+    const flavors = await prisma.flavor.findMany({ where: { id: { in: flavorIds } }, select: { id: true, name: true } });
+    const flavorNameById = new Map(flavors.map((f) => [f.id, f.name]));
+
+    return grouped
+      .filter((g): g is typeof g & { flavorId: string } => g.flavorId !== null)
+      .map((g) => ({
+        flavor_id: g.flavorId,
+        flavor_name: flavorNameById.get(g.flavorId) ?? 'Unknown Flavor',
+        units_sold: g._sum.quantity ?? 0,
+        gross_revenue: g._sum.lineTotal?.toNumber() ?? 0,
+      }))
+      .sort((a, b) => b.gross_revenue - a.gross_revenue);
+  },
+
+  async getEmployeePerformance(filters: ReportFilters): Promise<EmployeePerformanceReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const salesGrouped = await prisma.transaction.groupBy({
+      by: ['cashierId', 'branchId'],
+      where: { status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+      _sum: { totalAmount: true },
+      _count: { _all: true },
+    });
+    if (salesGrouped.length === 0) return [];
+
+    const employeeIds = [...new Set(salesGrouped.map((g) => g.cashierId))];
+    const [employees, attendanceRecords, branches] = await Promise.all([
+      prisma.user.findMany({ where: { id: { in: employeeIds } }, select: { id: true, firstName: true, lastName: true } }),
+      prisma.attendanceRecord.findMany({
+        where: { employeeId: { in: employeeIds }, deletedAt: null, ...(range && { clockInServerTime: range }) },
+        select: { employeeId: true, actualWorkMinutes: true },
+      }),
+      prisma.branch.findMany({ select: { id: true, name: true } }),
+    ]);
+    const employeeById = new Map(employees.map((e) => [e.id, e]));
+    const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
+    const minutesByEmployee = new Map<string, number>();
+    for (const record of attendanceRecords) {
+      minutesByEmployee.set(record.employeeId, (minutesByEmployee.get(record.employeeId) ?? 0) + (record.actualWorkMinutes ?? 0));
+    }
+
+    return salesGrouped
+      .map((g) => {
+        const employee = employeeById.get(g.cashierId);
+        return {
+          employee_id: g.cashierId,
+          employee_name: employee ? `${employee.firstName} ${employee.lastName}` : 'Unknown Employee',
+          branch_id: g.branchId,
+          branch_name: branchNameById.get(g.branchId) ?? 'Unknown Branch',
+          transaction_count: g._count._all,
+          gross_sales: g._sum.totalAmount?.toNumber() ?? 0,
+          hours_worked: Math.round(((minutesByEmployee.get(g.cashierId) ?? 0) / 60) * 100) / 100,
+        };
+      })
+      .sort((a, b) => b.gross_sales - a.gross_sales);
+  },
+
+  async getInventoryValuation(filters: ReportFilters): Promise<InventoryValuationReportRow[]> {
+    const ingredients = await prisma.ingredient.findMany({
+      where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }) },
+      select: { id: true, name: true, branchId: true, unit: true, unitCost: true, lowStockThreshold: true, criticalThreshold: true },
+    });
+    if (ingredients.length === 0) return [];
+
+    const movementSums = await prisma.inventoryMovement.groupBy({
+      by: ['ingredientId'],
+      where: { ingredientId: { in: ingredients.map((i) => i.id) } },
+      _sum: { quantityChange: true },
+    });
+    const stockById = new Map(movementSums.map((m) => [m.ingredientId, m._sum.quantityChange?.toNumber() ?? 0]));
+
+    return ingredients
+      .map((ingredient) => {
+        const currentStock = stockById.get(ingredient.id) ?? 0;
+        const unitCost = ingredient.unitCost?.toNumber() ?? null;
+        const status =
+          currentStock <= ingredient.criticalThreshold.toNumber() ? 'critical' : currentStock <= ingredient.lowStockThreshold.toNumber() ? 'low' : 'ok';
+        return {
+          ingredient_id: ingredient.id,
+          ingredient_name: ingredient.name,
+          branch_id: ingredient.branchId,
+          unit: ingredient.unit,
+          current_stock: currentStock,
+          unit_cost: unitCost,
+          total_value: unitCost !== null ? Math.round(currentStock * unitCost * 100) / 100 : 0,
+          status: status as 'ok' | 'low' | 'critical',
+        };
+      })
+      .sort((a, b) => b.total_value - a.total_value);
+  },
+
+  async getBranchComparison(filters: ReportFilters): Promise<BranchComparisonReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const [salesGrouped, activeShifts, ingredients, branches] = await Promise.all([
+      prisma.transaction.groupBy({ by: ['branchId'], where: { status: 'completed', ...(range && { createdAt: range }) }, _sum: { totalAmount: true }, _count: { _all: true } }),
+      prisma.shift.findMany({ where: { status: 'active' }, select: { branchId: true } }),
+      prisma.ingredient.findMany({ where: { deletedAt: null }, select: { id: true, branchId: true, lowStockThreshold: true } }),
+      prisma.branch.findMany({ select: { id: true, name: true } }),
+    ]);
+
+    const activeShiftCountByBranch = new Map<string, number>();
+    for (const shift of activeShifts) activeShiftCountByBranch.set(shift.branchId, (activeShiftCountByBranch.get(shift.branchId) ?? 0) + 1);
+
+    const movementSums = ingredients.length
+      ? await prisma.inventoryMovement.groupBy({ by: ['ingredientId'], where: { ingredientId: { in: ingredients.map((i) => i.id) } }, _sum: { quantityChange: true } })
+      : [];
+    const stockById = new Map(movementSums.map((m) => [m.ingredientId, m._sum.quantityChange?.toNumber() ?? 0]));
+    const lowStockCountByBranch = new Map<string, number>();
+    for (const ingredient of ingredients) {
+      const stock = stockById.get(ingredient.id) ?? 0;
+      if (stock <= ingredient.lowStockThreshold.toNumber()) lowStockCountByBranch.set(ingredient.branchId, (lowStockCountByBranch.get(ingredient.branchId) ?? 0) + 1);
+    }
+
+    const salesByBranch = new Map(salesGrouped.map((g) => [g.branchId, g]));
+    return branches
+      .map((branch) => {
+        const sales = salesByBranch.get(branch.id);
+        return {
+          branch_id: branch.id,
+          branch_name: branch.name,
+          gross_sales: sales?._sum.totalAmount?.toNumber() ?? 0,
+          transaction_count: sales?._count._all ?? 0,
+          active_shift_count: activeShiftCountByBranch.get(branch.id) ?? 0,
+          low_stock_ingredient_count: lowStockCountByBranch.get(branch.id) ?? 0,
+        };
+      })
+      .sort((a, b) => b.gross_sales - a.gross_sales);
+  },
+
+  async saveSnapshot(reportType: ReportType, branchId: string | null, data: unknown, parameters: unknown): Promise<void> {
+    await prisma.reportSnapshot.create({ data: { reportType, branchId, payload: data as Prisma.InputJsonValue, parameters: parameters as Prisma.InputJsonValue } });
+  },
+
+  async getLatestSnapshot(reportType: ReportType, branchId: string | null) {
+    return prisma.reportSnapshot.findFirst({ where: { reportType, branchId }, orderBy: { computedAt: 'desc' } });
+  },
+
+  async countRows(reportType: ReportType, filters: ReportFilters): Promise<number> {
+    const range = dateRangeFilter(filters);
+    switch (reportType) {
+      case 'VOID_REFUND':
+        return prisma.transaction.count({ where: { status: { in: ['voided', 'refunded'] }, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) } });
+      case 'INVENTORY_MOVEMENT':
+        return prisma.inventoryMovement.count({ where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) } });
+      case 'ATTENDANCE_SUMMARY':
+        return prisma.attendanceRecord.count({ where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { clockInServerTime: range }) } });
+      case 'FRAUD_ALERT_SUMMARY':
+        return prisma.fraudAlert.count({ where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) } });
+      case 'SHIFT_SUMMARY':
+        return prisma.shift.count({ where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { startedAt: range }) } });
+      case 'CASH_RECONCILIATION':
+        return prisma.shift.count({ where: { status: { in: ['closed', 'flagged'] }, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { startedAt: range }) } });
+      case 'DAILY_SALES':
+        return this.getDailySales(filters).then((rows) => rows.length);
+      case 'DISCOUNT_COMPLIANCE':
+        return this.getDiscountCompliance(filters).then((rows) => rows.length);
+      case 'PRODUCT_PERFORMANCE':
+        return this.getProductPerformance(filters).then((rows) => rows.length);
+      case 'FLAVOR_PERFORMANCE':
+        return this.getFlavorPerformance(filters).then((rows) => rows.length);
+      case 'EMPLOYEE_PERFORMANCE':
+        return this.getEmployeePerformance(filters).then((rows) => rows.length);
+      case 'INVENTORY_VALUATION':
+        return this.getInventoryValuation(filters).then((rows) => rows.length);
+      case 'BRANCH_COMPARISON':
+        return this.getBranchComparison(filters).then((rows) => rows.length);
+      default:
+        return 0;
+    }
   },
 };

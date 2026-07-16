@@ -89,3 +89,56 @@ describe('reportsService.getFraudAlertSummaryReport', () => {
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'FRAUD_ALERT_SUMMARY', actorRole: 'super_admin' }));
   });
 });
+
+describe('reportsService.getProductPerformanceReport', () => {
+  it('computes fresh and saves a snapshot when none exists yet', async () => {
+    vi.mocked(reportsRepository.getLatestSnapshot).mockResolvedValue(null);
+    const { getReportRows } = await import('./reports.columns.js');
+    vi.mocked(getReportRows).mockResolvedValue([{ product_variant_id: 'pv-1' } as never]);
+
+    const result = await reportsService.getProductPerformanceReport('b1', 'user-1', 'supervisor');
+
+    expect(reportsRepository.saveSnapshot).toHaveBeenCalledWith('PRODUCT_PERFORMANCE', 'b1', [{ product_variant_id: 'pv-1' }], expect.anything());
+    expect(result.data).toEqual([{ product_variant_id: 'pv-1' }]);
+  });
+
+  it('returns the snapshot immediately without recomputing when it is fresh (<15 min old)', async () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    vi.mocked(reportsRepository.getLatestSnapshot).mockResolvedValue({
+      id: 'snap-1', reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', computedAt: fiveMinAgo, payload: [{ product_variant_id: 'pv-1' }], parameters: {},
+    } as never);
+    const { getReportRows } = await import('./reports.columns.js');
+
+    const result = await reportsService.getProductPerformanceReport('b1', 'user-1', 'supervisor');
+
+    expect(getReportRows).not.toHaveBeenCalled();
+    expect(reportsRepository.saveSnapshot).not.toHaveBeenCalled();
+    expect(result.computed_at).toBe(fiveMinAgo.toISOString());
+    expect(result.data).toEqual([{ product_variant_id: 'pv-1' }]);
+  });
+
+  it('serves the stale snapshot immediately and enqueues a background refresh when it is >15 min old', async () => {
+    const twentyMinAgo = new Date(Date.now() - 20 * 60 * 1000);
+    vi.mocked(reportsRepository.getLatestSnapshot).mockResolvedValue({
+      id: 'snap-1', reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', computedAt: twentyMinAgo, payload: [{ product_variant_id: 'pv-1' }], parameters: {},
+    } as never);
+    const { enqueueRefreshSnapshot } = await import('../../queues/report.queue.js');
+
+    const result = await reportsService.getProductPerformanceReport('b1', 'user-1', 'supervisor');
+
+    expect(enqueueRefreshSnapshot).toHaveBeenCalledWith(expect.objectContaining({ reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1' }));
+    expect(result.data).toEqual([{ product_variant_id: 'pv-1' }]);
+  });
+});
+
+describe('reportsService.getBranchComparisonReport', () => {
+  it('writes REPORT_ACCESSED for the super-admin-only global report', async () => {
+    vi.mocked(reportsRepository.getLatestSnapshot).mockResolvedValue(null);
+    const { getReportRows } = await import('./reports.columns.js');
+    vi.mocked(getReportRows).mockResolvedValue([]);
+
+    await reportsService.getBranchComparisonReport(null, 'admin-1', 'super_admin');
+
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'BRANCH_COMPARISON', actorRole: 'super_admin', branchId: null }));
+  });
+});

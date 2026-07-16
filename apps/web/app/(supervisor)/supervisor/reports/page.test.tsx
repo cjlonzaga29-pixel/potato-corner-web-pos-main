@@ -15,6 +15,9 @@ const {
   mockUseAttendanceByBranch,
   mockUseAttendanceRealtimeSync,
   mockUseEmployees,
+  mockUseAuthStore,
+  mockUseRequestExport,
+  mockUseReportsRealtimeSync,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
   mockUseShifts: vi.fn(),
@@ -26,6 +29,9 @@ const {
   mockUseAttendanceByBranch: vi.fn(),
   mockUseAttendanceRealtimeSync: vi.fn(),
   mockUseEmployees: vi.fn(),
+  mockUseAuthStore: vi.fn(),
+  mockUseRequestExport: vi.fn(),
+  mockUseReportsRealtimeSync: vi.fn(),
 }));
 
 vi.mock('@/stores/branch.store', () => ({
@@ -54,6 +60,15 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
 
 vi.mock('@/hooks/queries/use-employees', () => ({
   useEmployees: mockUseEmployees,
+}));
+
+vi.mock('@/stores/auth.store', () => ({
+  useAuthStore: mockUseAuthStore,
+}));
+
+vi.mock('@/hooks/queries/use-reports', () => ({
+  useRequestExport: mockUseRequestExport,
+  useReportsRealtimeSync: mockUseReportsRealtimeSync,
 }));
 
 /**
@@ -266,6 +281,9 @@ beforeEach(() => {
   mockUseInventoryMovements.mockReturnValue({ data: { movements: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
   mockUseAttendanceByBranch.mockReturnValue({ data: { records: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
   mockUseEmployees.mockReturnValue({ data: { employees: [], total: 0, page: 1, limit: 100 }, isLoading: false });
+  mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string } }) => unknown) => selector({ user: { id: 'user-1' } }));
+  mockUseRequestExport.mockReturnValue({ mutate: vi.fn(), isPending: false });
+  mockUseReportsRealtimeSync.mockReturnValue(undefined);
 });
 
 afterEach(() => {
@@ -406,12 +424,12 @@ describe('SupervisorReportsPage', () => {
     expect(screen.getByText('Maria Santos')).toBeInTheDocument();
   });
 
-  it('re-fetches with updated date params after changing the filter and clicking Apply', () => {
+  it('re-fetches with updated date params after changing the filter and clicking Refresh', () => {
     render(<SupervisorReportsPage />);
 
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-01-01' } });
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-01-31' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    fireEvent.click(screen.getByRole('button', { name: /^refresh/i }));
 
     expect(mockUseTransactions).toHaveBeenCalledWith(
       expect.objectContaining({ date_from: '2026-01-01', date_to: '2026-01-31' }),
@@ -464,5 +482,59 @@ describe('SupervisorReportsPage', () => {
     mockBranchState({ activeBranchId: null, activeBranch: null });
     render(<SupervisorReportsPage />);
     expect(screen.getByText('Select an active branch to view its reports.')).toBeInTheDocument();
+  });
+});
+
+describe('export controls', () => {
+  it('renders Export CSV and Export PDF buttons', () => {
+    render(<SupervisorReportsPage />);
+    expect(screen.getByRole('button', { name: /export csv/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /export pdf/i })).toBeInTheDocument();
+  });
+
+  it('calls useRequestExport().mutate with format csv and the active tab report_type on Export CSV click', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<SupervisorReportsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'csv', report_type: 'DAILY_SALES' }));
+  });
+
+  it('calls useRequestExport().mutate with format pdf on Export PDF click', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<SupervisorReportsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }));
+  });
+});
+
+describe('refresh cooldown', () => {
+  it('disables the Refresh button for 60 seconds after click', () => {
+    vi.useFakeTimers();
+    render(<SupervisorReportsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /^refresh/i }));
+
+    expect(screen.getByRole('button', { name: /refresh \(60s\)/i })).toBeDisabled();
+    vi.useRealTimers();
+  });
+});
+
+describe('realtime sync', () => {
+  it('calls useReportsRealtimeSync on mount', () => {
+    render(<SupervisorReportsPage />);
+    expect(mockUseReportsRealtimeSync).toHaveBeenCalled();
+  });
+});
+
+describe('branch selector', () => {
+  it('does not render a branch selector (branch is implicit from useBranchStore)', () => {
+    render(<SupervisorReportsPage />);
+    expect(screen.queryByLabelText(/branch/i)).not.toBeInTheDocument();
   });
 });

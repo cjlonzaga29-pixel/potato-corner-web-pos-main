@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import type { AttendanceResponse, MovementResponse, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
+import type { AttendanceResponse, ExportReadyPayload, ExportRequestInput, MovementResponse, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
+import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,16 +14,30 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ShiftStatusBadge } from '@/components/admin/shifts/shift-status-badge';
+import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { formatCurrency, formatDateTime, formatDuration, formatTimeAgo } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useInventoryMovements, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
+import { useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
 
 const DEFAULT_RANGE_DAYS = 7;
 const QUERY_LIMIT = 100;
+const REFRESH_COOLDOWN_SECONDS = 60;
+
+const TAB_TO_REPORT_TYPE: Record<string, ExportRequestInput['report_type']> = {
+  'daily-sales': 'DAILY_SALES',
+  'shift-summary': 'SHIFT_SUMMARY',
+  'cash-reconciliation': 'CASH_RECONCILIATION',
+  'void-refund': 'VOID_REFUND',
+  'discount-compliance': 'DISCOUNT_COMPLIANCE',
+  'inventory-movement': 'INVENTORY_MOVEMENT',
+  'attendance-summary': 'ATTENDANCE_SUMMARY',
+};
 
 function pad(value: number): string {
   return String(value).padStart(2, '0');
@@ -223,9 +238,13 @@ function createAttendanceSummaryColumns(employeeNames: Map<string, string>): Col
 
 /**
  * Real-time-only report tier (Phase 20 scope lock): every report below is
- * composed client-side from existing list queries — no new backend
- * endpoints, no pre-computed snapshots, no export. Branch is implicit from
+ * composed client-side from existing list queries. Branch is implicit from
  * useBranchStore, matching every other supervisor data page.
+ *
+ * (Phase 16 note: export, manual refresh with a cooldown, and export-ready
+ * realtime notifications are layered on top via the new /api/reports/export
+ * endpoint — the 7 tabs' underlying data still come from this lightweight
+ * client-composed tier, unchanged.)
  *
  * All queries below are fired unconditionally and in parallel (no
  * sequential/waterfall awaits) so every tab's data is ready by the time the
@@ -245,6 +264,31 @@ export default function SupervisorReportsPage() {
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   useInventoryRealtimeSync(activeBranchId);
   useAttendanceRealtimeSync();
+
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const requestExport = useRequestExport();
+  const [activeTab, setActiveTab] = useState('daily-sales');
+  const [refreshDisabled, setRefreshDisabled] = useState(false);
+  const [refreshCooldown, setRefreshCooldown] = useState(0);
+
+  useReportsRealtimeSync((payload: ExportReadyPayload) => {
+    if (payload.requester_id !== currentUserId) return;
+    toast.success('Export ready', {
+      description: `Your ${payload.report_type} export is ready`,
+      action: { label: 'Download', onClick: () => window.open(payload.download_url, '_blank') },
+      duration: 30_000,
+    });
+  });
+
+  useEffect(() => {
+    if (!refreshDisabled) return;
+    if (refreshCooldown <= 0) {
+      setRefreshDisabled(false);
+      return;
+    }
+    const timer = setInterval(() => setRefreshCooldown((s) => s - 1), 1000);
+    return () => clearInterval(timer);
+  }, [refreshDisabled, refreshCooldown]);
 
   const [fromInput, setFromInput] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
   const [toInput, setToInput] = useState(() => todayDateString());
@@ -284,8 +328,19 @@ export default function SupervisorReportsPage() {
     return <p className="text-sm text-destructive">Select an active branch to view its reports.</p>;
   }
 
-  function applyDateRange() {
+  function handleRefresh() {
     setDateRange({ from: fromInput, to: toInput });
+    setRefreshDisabled(true);
+    setRefreshCooldown(REFRESH_COOLDOWN_SECONDS);
+  }
+
+  function handleExport(format: 'csv' | 'pdf') {
+    const input: ExportRequestInput = {
+      report_type: TAB_TO_REPORT_TYPE[activeTab] ?? 'DAILY_SALES',
+      filters: { branch_id: activeBranchId ?? undefined, date_from: dateRange.from, date_to: dateRange.to, page: 1, limit: QUERY_LIMIT },
+      format,
+    };
+    requestExport.mutate(input);
   }
 
   // Daily Sales
@@ -364,10 +419,18 @@ export default function SupervisorReportsPage() {
           <Label htmlFor="reports-to">To</Label>
           <Input id="reports-to" type="date" value={toInput} onChange={(e) => setToInput(e.target.value)} />
         </div>
-        <Button onClick={applyDateRange}>Apply</Button>
+        <Button onClick={handleRefresh} disabled={refreshDisabled}>
+          {refreshDisabled ? `Refresh (${refreshCooldown}s)` : 'Refresh'}
+        </Button>
+        <Button variant="outline" onClick={() => handleExport('csv')} disabled={requestExport.isPending}>
+          Export CSV
+        </Button>
+        <Button variant="outline" onClick={() => handleExport('pdf')} disabled={requestExport.isPending}>
+          Export PDF
+        </Button>
       </div>
 
-      <Tabs defaultValue="daily-sales" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="daily-sales">Daily Sales</TabsTrigger>
           <TabsTrigger value="shift-summary">Shift Summary</TabsTrigger>
@@ -379,6 +442,10 @@ export default function SupervisorReportsPage() {
         </TabsList>
 
         <TabsContent value="daily-sales" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={completedQuery.dataUpdatedAt ? new Date(completedQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={completedQuery.isLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Transactions" value={totalTransactions} isLoading={completedQuery.isLoading} />
             <KpiCard title="Gross Sales" value={grossSales} prefix="₱" isLoading={completedQuery.isLoading} />
@@ -396,6 +463,10 @@ export default function SupervisorReportsPage() {
         </TabsContent>
 
         <TabsContent value="shift-summary" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={allShiftsQuery.dataUpdatedAt ? new Date(allShiftsQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={allShiftsQuery.isLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Shifts" value={totalShifts} isLoading={allShiftsQuery.isLoading} />
             <KpiCard title="Completed Shifts" value={completedShifts} isLoading={allShiftsQuery.isLoading} />
@@ -413,6 +484,10 @@ export default function SupervisorReportsPage() {
         </TabsContent>
 
         <TabsContent value="cash-reconciliation" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={closedShiftsQuery.dataUpdatedAt ? new Date(closedShiftsQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={closedShiftsQuery.isLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Closed Shifts" value={closedShiftsCount} isLoading={closedShiftsQuery.isLoading} />
             <KpiCard title="Shifts with Variance" value={shiftsWithVariance} isLoading={closedShiftsQuery.isLoading} />
@@ -430,6 +505,14 @@ export default function SupervisorReportsPage() {
         </TabsContent>
 
         <TabsContent value="void-refund" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={
+              voidedQuery.dataUpdatedAt || refundedQuery.dataUpdatedAt
+                ? new Date(Math.max(voidedQuery.dataUpdatedAt, refundedQuery.dataUpdatedAt)).toISOString()
+                : undefined
+            }
+            isLoading={voidRefundLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Voided" value={totalVoided} isLoading={voidRefundLoading} />
             <KpiCard title="Total Refunded" value={totalRefunded} isLoading={voidRefundLoading} />
@@ -450,6 +533,10 @@ export default function SupervisorReportsPage() {
         </TabsContent>
 
         <TabsContent value="discount-compliance" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={completedQuery.dataUpdatedAt ? new Date(completedQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={completedQuery.isLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} isLoading={completedQuery.isLoading} />
             <KpiCard title="PWD Discounts" value={pwdDiscounts} isLoading={completedQuery.isLoading} />
@@ -467,6 +554,10 @@ export default function SupervisorReportsPage() {
         </TabsContent>
 
         <TabsContent value="inventory-movement" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={movementsQuery.dataUpdatedAt ? new Date(movementsQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={movementsQuery.isLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Movements" value={totalMovements} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Stock In" value={stockInCount} isLoading={movementsQuery.isLoading} />
@@ -484,6 +575,10 @@ export default function SupervisorReportsPage() {
         </TabsContent>
 
         <TabsContent value="attendance-summary" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={attendanceQuery.dataUpdatedAt ? new Date(attendanceQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={attendanceQuery.isLoading}
+          />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Staff Today" value={totalStaffToday} isLoading={attendanceQuery.isLoading} />
             <KpiCard title="Clocked In Now" value={clockedInNow} isLoading={attendanceQuery.isLoading} />

@@ -627,6 +627,13 @@ model Transaction {
   gcashManuallyVerified       Boolean?                 @map("gcash_manually_verified")
   discountType                String?                  @map("discount_type")
   discountCustomerIdEncrypted String?                  @map("discount_customer_id_encrypted")
+  // Deterministic HMAC-SHA256 of the same plaintext ID stored above —
+  // discountCustomerIdEncrypted uses a random IV per encryption (see
+  // lib/encryption.ts), so it can never be grouped/compared for equality.
+  // This column exists solely so the Phase 17 discount-ID-reuse rule can
+  // find repeated IDs; it is never decrypted and never returned in any API
+  // response.
+  discountCustomerIdHash      String?                  @map("discount_customer_id_hash")
   inventoryDeductionStatus    InventoryDeductionStatus @default(pending) @map("inventory_deduction_status")
   isOfflineTransaction        Boolean                  @default(false) @map("is_offline_transaction")
   offlineProvisionalNumber    String?                  @map("offline_provisional_number")
@@ -652,6 +659,7 @@ model Transaction {
   @@index([branchId, createdAt])
   @@index([shiftId])
   @@index([cashierId])
+  @@index([discountCustomerIdHash])
   @@map("transactions")
 }
 
@@ -840,6 +848,7 @@ model FraudAlert {
 
   @@index([branchId])
   @@index([employeeId])
+  @@index([branchId, alertType, status])
   @@map("fraud_alerts")
 }
 

@@ -101,6 +101,7 @@ describe('transactionsRepository.createTransaction', () => {
       discountAmount: 0,
       discountType: null,
       discountCustomerIdEncrypted: null,
+      discountCustomerIdHash: null,
       vatAmount: 10.71,
       vatExemptAmount: 0,
       totalAmount: 100,

@@ -17,6 +17,7 @@ interface CreateTransactionRow {
   discountAmount: number;
   discountType: string | null;
   discountCustomerIdEncrypted: string | null;
+  discountCustomerIdHash: string | null;
   vatAmount: number;
   vatExemptAmount: number;
   totalAmount: number;
@@ -110,6 +111,7 @@ export const transactionsRepository = {
           discountAmount: data.discountAmount,
           discountType: data.discountType,
           discountCustomerIdEncrypted: data.discountCustomerIdEncrypted,
+          discountCustomerIdHash: data.discountCustomerIdHash,
           vatAmount: data.vatAmount,
           vatExemptAmount: data.vatExemptAmount,
           totalAmount: data.totalAmount,

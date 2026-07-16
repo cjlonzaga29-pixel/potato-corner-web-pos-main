@@ -5,7 +5,7 @@ import { TransactionError, type CartItemInput, type CreateTransactionData, type 
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { encryptField } from '../../lib/encryption.js';
+import { encryptField, hashField } from '../../lib/encryption.js';
 import { enqueueSaleDeduction } from '../../queues/inventory.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 
@@ -308,6 +308,7 @@ export const transactionsService = {
     }
 
     const discountCustomerIdEncrypted = data.discountIdReference ? encryptField(data.discountIdReference) : null;
+    const discountCustomerIdHash = data.discountIdReference ? hashField(data.discountIdReference) : null;
 
     let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>> | undefined;
     let lastError: unknown;
@@ -324,6 +325,7 @@ export const transactionsService = {
           discountAmount,
           discountType: data.discountType ?? null,
           discountCustomerIdEncrypted,
+          discountCustomerIdHash,
           vatAmount,
           vatExemptAmount,
           totalAmount,

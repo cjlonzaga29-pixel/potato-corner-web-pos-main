@@ -16,6 +16,7 @@ vi.mock('./fraud.service.js', () => ({
     investigateAlert: vi.fn(),
     dismissAlert: vi.fn(),
     escalateAlert: vi.fn(),
+    triggerManualScan: vi.fn(),
   },
 }));
 
@@ -79,6 +80,7 @@ describe('fraud routes — authentication', () => {
     { method: 'post', path: '/:id/investigate' },
     { method: 'post', path: '/:id/dismiss' },
     { method: 'post', path: '/:id/escalate' },
+    { method: 'post', path: '/run' },
   ];
 
   it.each(protectedRoutes)('$method $path returns 401 with no Authorization header', async ({ method, path }) => {
@@ -254,5 +256,48 @@ describe('POST /:id/escalate', () => {
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(fraudService.escalateAlert).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /run — role guard and behavior', () => {
+  it('returns 403 for supervisor', async () => {
+    const handlers = getRouteHandlers(fraudRouter, 'post', '/run');
+    const token = generateSupervisorToken([randomUUID()]);
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('returns 403 for staff', async () => {
+    const handlers = getRouteHandlers(fraudRouter, 'post', '/run');
+    const token = generateStaffToken(randomUUID());
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('enqueues a scan and returns 202 with the job id for super_admin', async () => {
+    vi.mocked(fraudService.triggerManualScan).mockResolvedValue({ jobId: 'job-123' });
+    const handlers = getRouteHandlers(fraudRouter, 'post', '/run');
+    const userId = randomUUID();
+    const token = generateSuperAdminToken({ userId });
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(fraudService.triggerManualScan).toHaveBeenCalledWith(userId);
+    expect(res.status).toHaveBeenCalledWith(202);
+    expect((res as Response & { jsonBody?: unknown }).jsonBody).toEqual({
+      data: { job_id: 'job-123', message: 'Fraud detection scan enqueued' },
+      error: null,
+      meta: null,
+    });
   });
 });

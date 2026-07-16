@@ -126,4 +126,14 @@ router.post(
   },
 );
 
+router.post('/run', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const result = await fraudService.triggerManualScan(req.user.user_id);
+    res.status(202).json({ data: { job_id: result.jobId, message: 'Fraud detection scan enqueued' }, error: null, meta: null });
+  } catch (error) {
+    handleFraudError(error, res, next);
+  }
+});
+
 export { router as fraudRouter };

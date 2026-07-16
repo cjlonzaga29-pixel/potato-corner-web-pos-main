@@ -24,6 +24,9 @@ export const SOCKET_EVENTS = {
   FRAUD_ALERT_INVESTIGATED: 'fraud:alert_investigated',
   FRAUD_ALERT_DISMISSED: 'fraud:alert_dismissed',
   FRAUD_ALERT_ESCALATED: 'fraud:alert_escalated',
+  // Phase 17 — emitted by fraud.queue.ts's failed handler after the final
+  // retry attempt of a nightly_scan or manual_scan job is exhausted.
+  FRAUD_SCAN_FAILED: 'fraud:scan_failed',
   BRANCH_STATUS_CHANGED: 'branch:status_changed',
   BRANCH_SUPERVISOR_ASSIGNED: 'branch:supervisor_assigned',
   BRANCH_SUPERVISOR_REMOVED: 'branch:supervisor_removed',

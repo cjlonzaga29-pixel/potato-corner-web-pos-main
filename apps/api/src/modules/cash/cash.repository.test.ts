@@ -299,6 +299,38 @@ describe('cashRepository.voidShift', () => {
   });
 });
 
+describe('cashRepository.findCashiersWithClosedShifts', () => {
+  it('returns distinct cashierIds for shifts closed in the window', async () => {
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([{ cashierId: 'user-1' }, { cashierId: 'user-2' }] as never);
+
+    const dayStart = new Date('2026-07-16T16:00:00.000Z');
+    const dayEnd = new Date('2026-07-17T15:59:59.999Z');
+    const result = await cashRepository.findCashiersWithClosedShifts('branch-1', dayStart, dayEnd);
+
+    expect(prisma.shift.findMany).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', status: { in: ['closed', 'flagged'] }, closedAt: { gte: dayStart, lte: dayEnd } },
+      select: { cashierId: true },
+      distinct: ['cashierId'],
+    });
+    expect(result).toEqual(['user-1', 'user-2']);
+  });
+});
+
+describe('cashRepository.findLastNClosedShiftsForCashier', () => {
+  it('fetches the N most recently closed shifts for one cashier at one branch', async () => {
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([]);
+
+    await cashRepository.findLastNClosedShiftsForCashier('user-1', 'branch-1', 10);
+
+    expect(prisma.shift.findMany).toHaveBeenCalledWith({
+      where: { cashierId: 'user-1', branchId: 'branch-1', status: { in: ['closed', 'flagged'] } },
+      orderBy: { closedAt: 'desc' },
+      take: 10,
+      select: { id: true, varianceApproved: true, closedAt: true },
+    });
+  });
+});
+
 describe('cashRepository.listShifts', () => {
   it('applies branch/status filters and pagination', async () => {
     vi.mocked(prisma.shift.findMany).mockResolvedValue([]);

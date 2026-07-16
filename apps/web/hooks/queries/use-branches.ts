@@ -14,6 +14,7 @@ import type {
   CreateBranchInput,
   UpdateBranchInput,
 } from '@potato-corner/shared';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
@@ -195,4 +196,12 @@ export function useRemoveSupervisor(branchId: string) {
     },
     onError: (error: Error) => toast.error(error.message),
   });
+}
+
+/** Keeps the branch list/detail views in sync with status changes and supervisor assignment changes made from any other session, without a manual refresh. */
+export function useBranchesRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.BRANCH_STATUS_CHANGED, SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED, SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED],
+    [['branches'], ['branch']],
+  );
 }

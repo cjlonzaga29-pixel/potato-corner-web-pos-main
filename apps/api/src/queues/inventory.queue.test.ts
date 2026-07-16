@@ -26,6 +26,7 @@ vi.mock('../modules/inventory/inventory.repository.js', () => ({
     appendMovement: vi.fn(),
     hasMovementForReference: vi.fn(),
     updateTransactionDeductionStatus: vi.fn(),
+    runOutOfStockCascade: vi.fn(),
   },
 }));
 
@@ -41,9 +42,15 @@ vi.mock('./notification.queue.js', () => ({
   notificationQueue: { add: vi.fn() },
 }));
 
+vi.mock('../lib/notify.js', () => ({
+  notifyBranch: vi.fn(),
+  notifySuperAdmin: vi.fn(),
+}));
+
 const { inventoryRepository } = await import('../modules/inventory/inventory.repository.js');
 const { computeDeduction } = await import('../modules/recipes/recipes.service.js');
 const { notificationQueue } = await import('./notification.queue.js');
+const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
 const { processSaleDeduction } = await import('./inventory.queue.js');
 
 function decimal(value: number): { toNumber(): number } {
@@ -91,6 +98,7 @@ beforeEach(() => {
   vi.mocked(inventoryRepository.hasMovementForReference).mockResolvedValue(false);
   vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
   vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow() as never);
+  vi.mocked(inventoryRepository.runOutOfStockCascade).mockResolvedValue({ affectedFlavors: [], affectedProducts: [] });
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
 
@@ -250,5 +258,91 @@ describe('processSaleDeduction — missing recipe', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('variant-no-recipe'));
     expect(inventoryRepository.appendMovement).not.toHaveBeenCalled();
     expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalledWith('txn-1', 'completed');
+  });
+});
+
+describe('processSaleDeduction — Out-of-Stock Cascade', () => {
+  it('runs the cascade when post-deduction stock reaches exactly zero', async () => {
+    vi.mocked(computeDeduction).mockResolvedValueOnce([deductionLine({ quantity: 50 })] as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ quantityAfter: decimal(0) }) as never);
+    vi.mocked(inventoryRepository.runOutOfStockCascade).mockResolvedValue({
+      affectedFlavors: [{ flavorId: 'flavor-1', flavorName: 'Sour Cream' }],
+      affectedProducts: [{ productId: 'product-1', productName: 'Potato Corner Fries' }],
+    });
+
+    const job = fakeJob({
+      transactionId: 'txn-1',
+      branchId: 'branch-1',
+      items: [{ productVariantId: 'variant-1', flavorId: null, quantity: 1 }],
+    });
+
+    await processSaleDeduction(job);
+
+    expect(inventoryRepository.runOutOfStockCascade).toHaveBeenCalledWith('branch-1', 'ing-1');
+  });
+
+  it('broadcasts INVENTORY_PRODUCT_UNAVAILABLE to the branch room and Super Admin when the cascade affects flavors or products', async () => {
+    vi.mocked(computeDeduction).mockResolvedValueOnce([deductionLine({ quantity: 50 })] as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ quantityAfter: decimal(0) }) as never);
+    vi.mocked(inventoryRepository.runOutOfStockCascade).mockResolvedValue({
+      affectedFlavors: [{ flavorId: 'flavor-1', flavorName: 'Sour Cream' }],
+      affectedProducts: [{ productId: 'product-1', productName: 'Potato Corner Fries' }],
+    });
+
+    const job = fakeJob({
+      transactionId: 'txn-1',
+      branchId: 'branch-1',
+      items: [{ productVariantId: 'variant-1', flavorId: null, quantity: 1 }],
+    });
+
+    await processSaleDeduction(job);
+
+    const expectedPayload = {
+      branchId: 'branch-1',
+      triggeredByIngredientId: 'ing-1',
+      triggeredByIngredientName: 'Potato',
+      affectedFlavors: [{ flavorId: 'flavor-1', name: 'Sour Cream' }],
+      affectedProducts: [{ productId: 'product-1', name: 'Potato Corner Fries' }],
+    };
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'inventory:product_unavailable', expectedPayload);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('inventory:product_unavailable', expectedPayload);
+    expect(notificationQueue.add).toHaveBeenCalledWith('inventory_product_unavailable', expectedPayload);
+  });
+
+  it('does not broadcast when the cascade affects nothing (idempotent retry)', async () => {
+    vi.mocked(computeDeduction).mockResolvedValueOnce([deductionLine({ quantity: 50 })] as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ quantityAfter: decimal(0) }) as never);
+    vi.mocked(inventoryRepository.runOutOfStockCascade).mockResolvedValue({ affectedFlavors: [], affectedProducts: [] });
+
+    const job = fakeJob({
+      transactionId: 'txn-1',
+      branchId: 'branch-1',
+      items: [{ productVariantId: 'variant-1', flavorId: null, quantity: 1 }],
+    });
+
+    await processSaleDeduction(job);
+
+    expect(notifyBranch).not.toHaveBeenCalledWith(expect.anything(), 'inventory:product_unavailable', expect.anything());
+    expect(notifySuperAdmin).not.toHaveBeenCalledWith('inventory:product_unavailable', expect.anything());
+  });
+
+  it('does not run the cascade when stock is low but not zero', async () => {
+    vi.mocked(computeDeduction).mockResolvedValueOnce([deductionLine({ quantity: 42 })] as never);
+    vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(
+      ingredientRow({ lowStockThreshold: decimal(10), criticalThreshold: decimal(5) }) as never,
+    );
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ quantityAfter: decimal(8) }) as never);
+
+    const job = fakeJob({
+      transactionId: 'txn-1',
+      branchId: 'branch-1',
+      items: [{ productVariantId: 'variant-1', flavorId: null, quantity: 1 }],
+    });
+
+    await processSaleDeduction(job);
+
+    expect(inventoryRepository.runOutOfStockCascade).not.toHaveBeenCalled();
+    // The existing low-stock alert still fires — the cascade is additive, not a replacement.
+    expect(notificationQueue.add).toHaveBeenCalledWith('low_stock_alert', expect.objectContaining({ severity: 'low' }));
   });
 });

@@ -334,6 +334,19 @@ export const cashService = {
     notifyBranch(shift.branchId, SOCKET_EVENTS.SHIFT_CLOSED, responseWithSummary);
     notifySuperAdmin(SOCKET_EVENTS.SHIFT_CLOSED, responseWithSummary);
 
+    if (status === 'flagged') {
+      const variancePayload = {
+        shiftId: id,
+        branchId: shift.branchId,
+        expectedAmount: expectedClosingCash.toNumber(),
+        actualAmount: closingCashAmount,
+        variance: cashVariance.toNumber(),
+        flaggedBy: actor.id,
+      };
+      notifyBranch(shift.branchId, SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, variancePayload);
+      notifySuperAdmin(SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, variancePayload);
+    }
+
     return responseWithSummary;
   },
 
@@ -362,6 +375,17 @@ export const cashService = {
       afterState: response,
       ipAddress,
     });
+
+    if (data.approved) {
+      const approvalPayload = {
+        shiftId: id,
+        branchId: shift.branchId,
+        approvedBy: actor.id,
+        variance: updated.cashVariance?.toNumber() ?? null,
+      };
+      notifyBranch(shift.branchId, SOCKET_EVENTS.CASH_VARIANCE_APPROVED, approvalPayload);
+      notifySuperAdmin(SOCKET_EVENTS.CASH_VARIANCE_APPROVED, approvalPayload);
+    }
 
     return response;
   },

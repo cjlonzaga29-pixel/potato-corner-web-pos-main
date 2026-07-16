@@ -9,6 +9,7 @@ import type {
   PriceOverrideResponse,
   ReviewPriceOverrideInput,
 } from '@potato-corner/shared';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
@@ -96,4 +97,9 @@ export function useReviewPriceOverride(id: string) {
     },
     onError: (error: Error) => toast.error(error.message),
   });
+}
+
+/** Keeps the price-override list in sync with submissions and reviews made from any other session, without a manual refresh. usePriceOverride derives from usePriceOverrides, so a single ['price-overrides'] invalidation covers both. */
+export function usePriceOverridesRealtimeSync(): void {
+  useRealtimeInvalidate([SOCKET_EVENTS.PRICE_OVERRIDE_SUBMITTED, SOCKET_EVENTS.PRICE_OVERRIDE_REVIEWED], [['price-overrides']]);
 }

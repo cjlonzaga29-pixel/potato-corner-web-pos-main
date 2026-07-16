@@ -29,6 +29,14 @@ interface InventoryDeductionFailedJobData {
   error: string;
 }
 
+interface InventoryProductUnavailableJobData {
+  branchId: string;
+  triggeredByIngredientId: string;
+  triggeredByIngredientName: string;
+  affectedFlavors: { flavorId: string; name: string }[];
+  affectedProducts: { productId: string; name: string }[];
+}
+
 /**
  * Notification queue worker. Phase 5 wires up employee_welcome; Phase 8
  * adds the inventory queue's decoupled alert delivery (low_stock_alert,
@@ -60,6 +68,18 @@ export const notificationWorker = new Worker(
       // the durable, queryable record — this job just keeps that failure
       // visible in server logs until a UI is built to consume a real event.
       console.error(`Inventory deduction failed for transaction ${data.transactionId} (branch ${data.branchId}):`, data.error);
+      return;
+    }
+    if (job.name === 'inventory_product_unavailable') {
+      const data = job.data as InventoryProductUnavailableJobData;
+      // The branch/super-admin socket broadcast already happened directly
+      // from the inventory worker (queues/inventory.queue.ts) at cascade
+      // time — this job exists so a future notification channel (push,
+      // email — Phase 18) has a durable job to hang off, same reasoning as
+      // inventory_deduction_failed above. TODO(Phase 18): send push/email.
+      console.warn(
+        `Out-of-stock cascade at branch ${data.branchId}: ${data.affectedFlavors.length} flavor(s), ${data.affectedProducts.length} product(s) marked unavailable (triggered by ${data.triggeredByIngredientName})`,
+      );
       return;
     }
     // TODO(Phase 8+): implement remaining notification types.

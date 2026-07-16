@@ -74,8 +74,8 @@ TypeScript strict, no `any`, no `!` without a justifying comment. Function compo
 | 13 | Real-time WebSocket layer — Socket.io + Redis adapter, room management, all event broadcasts, activity feed |
 | 14 | Supervisor dashboard — operations panel, approval queues, inventory/attendance/shift panels, branch-level reports |
 | 15 | Super Admin dashboard — company KPIs, branch rankings, fraud alert investigation UI, catalog/employee/system config |
-| 16 | Reporting system — all 13 report types, 15-minute pre-compute jobs, CSV/PDF export, access audit logging |
-| 17 | Fraud detection system — nightly job, all 7 detection rules, investigate/dismiss/escalate workflow |
+| 16 | ✅ **Done** (PR #7, 2026-07-17) — Reporting system — all 13 report types, 15-minute pre-compute jobs, CSV/PDF export, access audit logging |
+| 17 | ✅ **Done** (PR #7, 2026-07-17) — Fraud detection system — nightly job, all 7 detection rules, investigate/dismiss/escalate workflow |
 | 18 | Notifications and EOD summary — delivery pipeline, EOD job at 11:59 PM |
 | 19 | Production testing and hardening — full Playwright suite, load testing, offline/sync edge cases, security audit, minimum-device PWA testing |
 | 20 | Pilot branch deployment — production config, recipe testing protocol sign-off, 3-day Super Admin on-call, feedback collection |

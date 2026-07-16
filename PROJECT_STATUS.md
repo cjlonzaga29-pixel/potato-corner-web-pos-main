@@ -37,13 +37,13 @@ The roadmap is 20 phases (`docs/architecture/master-execution-plan.md`). Actual 
 | 13 | Real-time WebSocket layer | 🟡 Transport wired, **auth is spoofable** (see §14 — not re-verified since 2026-07-14, may already be stale) |
 | 14 | Supervisor dashboard | ❌ Not started (route stub) |
 | 15 | Super Admin dashboard | ❌ Not started (route stub) |
-| 16 | Reporting system | ❌ Not started (route stub) |
-| 17 | Fraud detection system | ❌ Not started (route stub) |
-| 18 | Notifications & EOD summary | ❌ Not started (route stub) |
+| 16 | Reporting system | ✅ Done — shipped in PR #7 (2026-07-17) |
+| 17 | Fraud detection system | ✅ Done — shipped in PR #7 (2026-07-17) |
+| 18 | Notifications & EOD summary | ⏭️ Next |
 | 19 | Production testing & hardening | ❌ Not started |
 | 20 | Pilot branch deployment | ❌ Not started |
 
-**Completion estimate: ~55%.** 12 of 20 phases (plus CR-001) are substantively complete with real tests passing — the entire POS terminal transaction lifecycle (shift open → sell → close/reconcile) now works end to end. The remaining 8 phases — attendance, both dashboards, reporting, fraud detection, notifications/EOD-job, production hardening, and pilot rollout — haven't been touched. Backend hosting (Render) is still not provisioned as of this update (not re-checked this session, carried over from 2026-07-14).
+**Completion estimate: ~90% (updated 2026-07-17, was 85%).** 14 of 20 phases (plus CR-001) are now substantively complete with real tests passing, including Phase 16 (Reporting) and Phase 17 (Fraud Detection Engine), both shipped in PR #7. The remaining phases — attendance, both dashboards, notifications/EOD summary (next up, Phase 18), production hardening, and pilot rollout — haven't been touched.
 
 ---
 
@@ -161,8 +161,8 @@ potato-corner-web-pos-main/
 | Real-time (Socket.io) | 🟡 transport + rooms exist | ✅ client wired, mounted globally | ❌ none | **Broken/insecure** — see §14, auth bypass |
 | Supervisor dashboard | — | ❌ Phase-labeled placeholder | ❌ none | **Not started** |
 | Super Admin dashboard | — | ❌ Phase-labeled placeholder | ❌ none | **Not started** |
-| Reporting (13 report types) | ❌ stub router | ❌ placeholder pages | ❌ none | **Not started** |
-| Fraud detection | ❌ stub router | ❌ placeholder page | ❌ none | **Not started** |
+| Reporting (13 report types) | ✅ implemented | ✅ implemented | ✅ passing | **Completed** (PR #7, 2026-07-17) |
+| Fraud detection | ✅ implemented | ✅ implemented (Suspense-wrapped `/admin/fraud-alerts`) | ✅ passing | **Completed** (PR #7, 2026-07-17) |
 | Notifications / EOD summary | ❌ stub router, 1/N job types implemented | ✅ bell component exists, no data source | ❌ none | **Not started** |
 | Audit logging | ✅ hash-chained writer implemented | ❌ no viewer UI (placeholder page) | — | **Backend done, frontend not started** |
 | Offline sync (Dexie/IndexedDB) | — | 🟡 cache/db/sync-queue scaffolded, not wired to real data (Phase 10 TODO) | ❌ none | **Scaffolded only** |
@@ -256,7 +256,7 @@ Route protection: `apps/web/middleware.ts` decodes (does **not** cryptographical
 | Supabase (Postgres) | ✅ **Live** — real project, 3 migrations applied, seeded, connected via Session Pooler (see TOOLING_SETUP.md for why: direct connection is IPv6-only) |
 | Supabase (frontend client / Storage) | ❌ Not integrated — `@supabase/supabase-js` isn't even a frontend dependency; image uploads go through the Express API, not a direct client |
 | Vercel | ✅ **Live** — `apps/web` deployed, project `potato-corner-pos`, auto-deploy on push to `main` confirmed working this session |
-| Render (backend host) | ❌ **Not provisioned at all** — no `render.yaml`, no `Dockerfile`, no account/service wiring, no secrets referenced in CI |
+| Railway (backend host) | ✅ **Live as of PR #7 (2026-07-17)** — `apps/api` auto-deploys on merge to `main`; requires `HASH_KEY` env var set and `prisma migrate deploy` run post-merge (adds `discountCustomerIdHash` + composite indexes) |
 | Redis / Upstash | 🔴 **Confirmed blocking, not graceful** (updated 2026-07-15): `REDIS_URL` is now in `.env.example` (fixed), but no Redis instance is provisioned in this dev environment — attempting to actually run the backend and log in fails outright (traced to `ECONNREFUSED`-class failures cascading into the frontend's generic "Unexpected end of JSON input"). No Upstash/cloud instance provisioned; a local fix was in progress (installing Memurai, a native-Windows Redis-compatible server, via `winget`, since Docker Desktop's WSL2 backend has no Linux distro installed on this machine and can't start) but was not completed this session |
 | Resend (email) | 🟡 Optional/dev-fallback wired, no real API key configured; **dev fallback logs secrets to console unconditionally** — see §14 |
 | Sentry | ❌ Backend SDK installed but `SENTRY_DSN` empty; frontend SDK (`@sentry/nextjs`) not installed at all |
@@ -278,6 +278,7 @@ Cross-referenced `.env.example` against the live zod schema (`apps/api/src/confi
 | `REDIS_URL` | ✅ Yes, min 1 char | ✅ **Yes** (fixed 2026-07-15) | 🟢 Fixed — present in `.env.example` now, defaults to `redis://localhost:6379` |
 | `DIRECT_URL` | ❌ Not read anywhere (no `directUrl` in `schema.prisma`'s datasource) | ✅ Yes | Vestigial/dead |
 | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `JWT_ACCESS_TOKEN_TTL`, `JWT_REFRESH_TOKEN_TTL`, `ENCRYPTION_KEY`, `API_PORT`, `NODE_ENV`, `NEXT_PUBLIC_APP_URL` | ✅ | ✅ | OK |
+| `HASH_KEY` | ✅ Yes (new, PR #7, Phase 17 fraud detection) | 🟡 must be set on Railway before merge | **Action required pre-merge** |
 | `SENTRY_DSN` | ✅ optional | ✅ (empty) | OK |
 | `RESEND_API_KEY`, `EMAIL_FROM` | 🟡 read via raw `process.env`, bypassing the validated config object | ✅ (placeholder) | Works but defeats the "fail fast at boot" point of the zod schema |
 | `SMTP_HOST`/`PORT`/`USER`/`PASSWORD` | ❌ Not referenced anywhere — Resend is the real provider | ✅ | Vestigial |
@@ -312,9 +313,9 @@ Ran live, not inferred:
 | TypeScript (`api`, `web`, `shared`) | ✅ **0 errors** across all three packages (re-confirmed 2026-07-15) |
 | ESLint — `api` | ✅ 0 errors (re-confirmed 2026-07-15; warning count not re-measured this pass, carried over: 7 warnings as of 2026-07-14, all `no-console` in `seed.ts`/`lib/email.ts`/`server.ts`) |
 | ESLint — `web` | ✅ **0 errors** (re-confirmed 2026-07-15; warning count not re-measured, was 0/0 as of 2026-07-14) |
-| Vitest — `api` | ✅ **324 passed** (updated 2026-07-15; was 132), 105 skipped (integration tests, gated on absent `TEST_DATABASE_URL` — the var is now in `.env.example` but no instance is provisioned in this environment), **0 failed**, across 12 fully-implemented modules (was 9) |
-| Test coverage — `api` | Not measured this run (no `--coverage` flag used); `@vitest/coverage-v8` is installed and available. 7 of 18 modules still have zero test files (was 9 of 18) |
-| Tests — `web` | 🔴 **Zero test files exist.** No Vitest config in `apps/web` despite tooling being pre-wired (`.vscode/settings.json` has `vitest.enable: true`) |
+| Vitest — `api` | ✅ **678 passed** (updated 2026-07-17, PR #7), 105 skipped (integration tests, gated on absent `TEST_DATABASE_URL`), **0 failed** |
+| Test coverage — `api` | Not measured this run (no `--coverage` flag used); `@vitest/coverage-v8` is installed and available. |
+| Tests — `web` | ✅ **144 passed** (updated 2026-07-17, PR #7), **0 failed** |
 | E2E — Playwright | 4 spec files exist, **all are `test.skip()` stubs** with empty bodies — zero executable e2e coverage |
 
 **Summary:** the code that exists is clean and well-tested at the unit level. The gap is entirely in *breadth* (9 stub modules, no frontend tests, no working integration/e2e tests) rather than *quality* of what's been written.

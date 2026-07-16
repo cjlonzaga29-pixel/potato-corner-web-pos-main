@@ -11,10 +11,15 @@ vi.mock('../../lib/prisma.js', () => {
     fraudAlert: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
+      create: vi.fn(),
     },
     user: {
+      findMany: vi.fn(),
+    },
+    branch: {
       findMany: vi.fn(),
     },
   };
@@ -196,5 +201,76 @@ describe('fraudRepository.findEmployeeNamesByIds', () => {
       select: { id: true, firstName: true, lastName: true },
     });
     expect(result).toEqual([{ id: 'user-1', firstName: 'Juan', lastName: 'Dela Cruz' }]);
+  });
+});
+
+describe('fraudRepository.createAlert', () => {
+  it('creates a fraud alert with the branch relation included', async () => {
+    vi.mocked(prisma.fraudAlert.create).mockResolvedValue({ id: 'alert-new' } as never);
+
+    const result = await fraudRepository.createAlert({
+      alertType: 'excessive_voids',
+      severity: 'medium',
+      branchId: 'branch-1',
+      employeeId: 'user-1',
+      evidence: { shift_id: 'shift-1', void_count: 4 },
+    });
+
+    expect(prisma.fraudAlert.create).toHaveBeenCalledWith({
+      data: {
+        alertType: 'excessive_voids',
+        severity: 'medium',
+        branchId: 'branch-1',
+        employeeId: 'user-1',
+        evidence: { shift_id: 'shift-1', void_count: 4 },
+      },
+      include: FRAUD_ALERT_INCLUDE,
+    });
+    expect(result).toEqual({ id: 'alert-new' });
+  });
+});
+
+describe('fraudRepository.findRecentOpenAlert', () => {
+  it('queries by branchId, employeeId, alertType, and status open/investigating', async () => {
+    vi.mocked(prisma.fraudAlert.findFirst).mockResolvedValue(null);
+
+    await fraudRepository.findRecentOpenAlert('branch-1', 'user-1', 'excessive_voids');
+
+    expect(prisma.fraudAlert.findFirst).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', employeeId: 'user-1', alertType: 'excessive_voids', status: { in: ['open', 'investigating'] } },
+    });
+  });
+
+  it('returns null when nothing matches', async () => {
+    vi.mocked(prisma.fraudAlert.findFirst).mockResolvedValue(null);
+
+    const result = await fraudRepository.findRecentOpenAlert('branch-1', null, 'cash_variance_pattern');
+
+    expect(result).toBeNull();
+  });
+});
+
+describe('fraudRepository.findOpenAlertsByType', () => {
+  it('selects only id and evidence for the given alertType, status open/investigating', async () => {
+    vi.mocked(prisma.fraudAlert.findMany).mockResolvedValue([{ id: 'alert-1', evidence: { customer_id_hash: 'abc' } }] as never);
+
+    const result = await fraudRepository.findOpenAlertsByType('discount_id_reuse');
+
+    expect(prisma.fraudAlert.findMany).toHaveBeenCalledWith({
+      where: { alertType: 'discount_id_reuse', status: { in: ['open', 'investigating'] } },
+      select: { id: true, evidence: true },
+    });
+    expect(result).toEqual([{ id: 'alert-1', evidence: { customer_id_hash: 'abc' } }]);
+  });
+});
+
+describe('fraudRepository.findActiveBranchIds', () => {
+  it('selects only id for active branches', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }, { id: 'branch-2' }] as never);
+
+    const result = await fraudRepository.findActiveBranchIds();
+
+    expect(prisma.branch.findMany).toHaveBeenCalledWith({ where: { status: 'active' }, select: { id: true } });
+    expect(result).toEqual([{ id: 'branch-1' }, { id: 'branch-2' }]);
   });
 });

@@ -16,7 +16,7 @@ Architecture and business rules are locked documents (`docs/architecture/final-a
 
 ## 2. Current Development Phase and Completion Percentage
 
-The roadmap is 20 phases (`docs/architecture/master-execution-plan.md`). Actual implementation state, verified against real code (not the stale doc claims). **Rows for Phases 8-11 updated 2026-07-15** — all four are now substantively complete; the rest of this table is carried over from the 2026-07-14 audit:
+The roadmap is 20 phases (`docs/architecture/master-execution-plan.md`). Actual implementation state, verified against real code (not the stale doc claims). **Rows for Phases 8-11 updated 2026-07-15; rows for Phases 12-15 corrected 2026-07-17** — all had been marked not-started/insecure but are verified substantively complete against live code (mounted routes, real UI, JWT-verified socket auth) and confirmed by commits `30999d1` and `340c35f`:
 
 | Phase | Goal | Status |
 |---|---|---|
@@ -33,17 +33,17 @@ The roadmap is 20 phases (`docs/architecture/master-execution-plan.md`). Actual 
 | 9 | POS terminal — shift & cash | ✅ Done — shift open/close, denomination counting, `shiftGuard` activated, 8 mounted routes under `/api/cash` |
 | 10 | POS terminal — transactions | ✅ Done — cart/checkout/payment/void/refund, 6 mounted routes under `/api/transactions`, BullMQ inventory deduction hooked to every committed sale |
 | 11 | POS terminal — closing/reconciliation | ✅ Done — denomination-count reconciliation at close, EOD summary object (`GET /api/cash/:shiftId/summary`), variance approve/reject flow, admin (`/admin/shifts`) + supervisor (`/supervisor/cash`) review UI |
-| 12 | Attendance system | ❌ Not started (route stub) |
-| 13 | Real-time WebSocket layer | 🟡 Transport wired, **auth is spoofable** (see §14 — not re-verified since 2026-07-14, may already be stale) |
-| 14 | Supervisor dashboard | ❌ Not started (route stub) |
-| 15 | Super Admin dashboard | ❌ Not started (route stub) |
+| 12 | Attendance system | ✅ Done — `attendanceRouter` mounted at `/api/attendance`, full supervisor UI (filtered/paginated table, correction dialog, realtime sync) |
+| 13 | Real-time WebSocket layer | ✅ Done — `socketAuthMiddleware` verifies JWT (RS256 signature, Redis blacklist, payload validation) and rejects the handshake on failure; the spoofable-auth finding is stale, fixed per commit `30999d1` |
+| 14 | Supervisor dashboard | ✅ Done — shift card, KPI cards, live transactions feed, inventory alerts, attendance overview, realtime connection indicator |
+| 15 | Super Admin dashboard | ✅ Done — KPI row, branch grid with flagged-branch highlighting, pending product-request/price-override review panels, shortcut cards |
 | 16 | Reporting system | ✅ Done — shipped in PR #7 (2026-07-17) |
 | 17 | Fraud detection system | ✅ Done — shipped in PR #7 (2026-07-17) |
 | 18 | Notifications & EOD summary | ⏭️ Next |
 | 19 | Production testing & hardening | ❌ Not started |
 | 20 | Pilot branch deployment | ❌ Not started |
 
-**Completion estimate: ~90% (updated 2026-07-17, was 85%).** 14 of 20 phases (plus CR-001) are now substantively complete with real tests passing, including Phase 16 (Reporting) and Phase 17 (Fraud Detection Engine), both shipped in PR #7. The remaining phases — attendance, both dashboards, notifications/EOD summary (next up, Phase 18), production hardening, and pilot rollout — haven't been touched.
+**Completion estimate: ~90% (updated 2026-07-17, corrected phase count).** 18 of 20 phases (plus CR-001) are now substantively complete, including Phases 12-15 (attendance, real-time layer, both dashboards — previously mismarked not-started, corrected 2026-07-17 against live code) and Phase 16 (Reporting) and Phase 17 (Fraud Detection Engine), both shipped in PR #7. Only notifications/EOD summary (next up, Phase 18), production hardening (19), and pilot rollout (20) remain untouched.
 
 ---
 
@@ -157,10 +157,10 @@ potato-corner-web-pos-main/
 | Inventory (ingredient master + deduction, adjustments, counts, transfers) | ✅ 13 mounted routes, BullMQ deduction queue live | ✅ supervisor inventory + count/adjust/waste/stock-in/movements pages | ✅ unit + repository + router tests | **Completed** (updated 2026-07-15) |
 | POS terminal (cart, checkout, payment, receipts) | ✅ 6 mounted routes (`/api/transactions`), void/refund/receipt-printed | ✅ terminal + receipt-modal built | ✅ unit + repository + router tests (e2e still skipped) | **Completed** (updated 2026-07-15) |
 | Shift & cash management (open/close/reconciliation) | ✅ 8 mounted routes (`/api/cash`), EOD summary + variance approve/reject | ✅ shift open/close pages, `/admin/shifts` + `/supervisor/cash` review UI | ✅ unit + repository + router tests (e2e still skipped) | **Completed** (updated 2026-07-15, Phase 9 + Phase 11) |
-| Attendance | ❌ stub router | ❌ placeholder page | ❌ none | **Not started** |
-| Real-time (Socket.io) | 🟡 transport + rooms exist | ✅ client wired, mounted globally | ❌ none | **Broken/insecure** — see §14, auth bypass |
-| Supervisor dashboard | — | ❌ Phase-labeled placeholder | ❌ none | **Not started** |
-| Super Admin dashboard | — | ❌ Phase-labeled placeholder | ❌ none | **Not started** |
+| Attendance | ✅ `attendanceRouter` mounted at `/api/attendance` | ✅ full supervisor UI (filtered/paginated table, correction dialog) | — *(not re-verified 2026-07-17)* | **Completed** (corrected 2026-07-17) |
+| Real-time (Socket.io) | ✅ `socketAuthMiddleware` verifies JWT, rejects unauthenticated handshakes | ✅ client wired, mounted globally | — *(not re-verified 2026-07-17)* | **Completed** (corrected 2026-07-17 — prior "auth bypass" finding was stale, fixed per commit `30999d1`) |
+| Supervisor dashboard | — | ✅ shift/KPI/transactions/inventory/attendance panels, realtime sync | — *(not re-verified 2026-07-17)* | **Completed** (corrected 2026-07-17) |
+| Super Admin dashboard | — | ✅ KPI row, branch grid, pending-request/override panels, realtime sync | — *(not re-verified 2026-07-17)* | **Completed** (corrected 2026-07-17) |
 | Reporting (13 report types) | ✅ implemented | ✅ implemented | ✅ passing | **Completed** (PR #7, 2026-07-17) |
 | Fraud detection | ✅ implemented | ✅ implemented (Suspense-wrapped `/admin/fraud-alerts`) | ✅ passing | **Completed** (PR #7, 2026-07-17) |
 | Notifications / EOD summary | ❌ stub router, 1/N job types implemented | ✅ bell component exists, no data source | ❌ none | **Not started** |
@@ -457,15 +457,15 @@ The project's own rules explicitly forbid adding libraries outside the approved 
 
 ---
 
-## 22. Overall Project Health Score: 69/100 (updated 2026-07-15; was 63/100 on 2026-07-14)
+## 22. Overall Project Health Score: 81/100 (updated 2026-07-17; was 69/100 on 2026-07-15)
 
-Only the **Feature completeness** row was recomputed this update, based on verified Phase 8-11 completion. Every other row is carried over unchanged from 2026-07-14 — Security, Documentation accuracy, and Deployment readiness in particular were **not** re-audited this session and should be treated as stale estimates, not fresh findings.
+The **Security** and **Feature completeness** rows were recomputed this update: Phases 12-15 (attendance, real-time layer, both dashboards) were verified complete against live code, correcting a stale "not started" / "auth bypass" characterization. Documentation accuracy and Deployment readiness were **not** re-audited this session and should be treated as stale estimates, not fresh findings.
 
 | Dimension | Score | Why |
 |---|---|---|
 | Code quality (of what exists) | 18/20 | 0 TypeScript errors, near-zero lint warnings, substantive and passing unit tests, consistent architecture adherence (repository-layer pattern, Zod-everywhere, kebab-case discipline all genuinely followed) — re-confirmed 2026-07-15 for the delta (type-check/lint/test/build all clean), not re-scored |
-| Security | 8/20 *(not re-audited 2026-07-15)* | One real, currently-exploitable auth bypass (Socket.io) and one credential-leaking log path pull this down hard, despite otherwise good practices (token storage, encryption, hashing all sound) |
-| Feature completeness | 16/25 *(updated 2026-07-15; was 10/25)* | 12 of 20 roadmap phases done plus a full unplanned change request. The actual point-of-sale product now works end to end — open a shift, sell, close and reconcile cash, review variances — which was the single biggest gap as of the last audit. 40% of the roadmap by phase count (8 phases: attendance, both dashboards, reporting, fraud detection, notifications/EOD job, production hardening, pilot rollout) remains untouched |
+| Security | 14/20 *(Socket.io finding corrected 2026-07-17; rest not re-audited)* | The Socket.io auth-bypass finding was stale — `socketAuthMiddleware` verifies JWT and rejects unauthenticated handshakes, confirmed against live code. One credential-leaking log path (not re-audited) still pulls this down |
+| Feature completeness | 22/25 *(corrected 2026-07-17; was wrongly 16/25)* | 18 of 20 roadmap phases done plus a full unplanned change request. Phases 12-15 (attendance, real-time layer, both dashboards) were verified complete against live code and had been mismarked not-started/broken. Only notifications/EOD summary, production hardening, and pilot rollout (10% of the roadmap by phase count) remain untouched |
 | Test coverage | 10/15 *(not re-audited 2026-07-15)* | Backend unit tests are excellent where they exist (324 passing, up from 132); zero frontend tests and zero runnable integration/e2e tests remain a real gap against the doc's own 80% target |
 | Documentation accuracy | 7/10 *(not re-audited 2026-07-15)* | The architecture/business-rules docs themselves are excellent and clearly authoritative; the *status* layer on top of them (CLAUDE.md, api-contracts.md, database-schema.md) is stale enough to actively mislead a new contributor or AI agent picking up the project — this document is the one exception being kept current |
 | Deployment readiness | 10/10 *(not re-audited 2026-07-15)* | *(partial credit, weighted)* Frontend is genuinely live and working on Vercel; backend has literally zero deployment infrastructure — split evenly. Not re-checked this session |

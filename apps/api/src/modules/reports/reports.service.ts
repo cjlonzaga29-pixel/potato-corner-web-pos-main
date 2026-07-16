@@ -1,9 +1,13 @@
+import { ROLES } from '@potato-corner/shared';
 import type { ReportType } from '@potato-corner/shared';
 import { reportsRepository } from './reports.repository.js';
 import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { getReportRows } from './reports.columns.js';
-import { enqueueRefreshSnapshot } from '../../queues/report.queue.js';
+import { getReportRows, REPORT_COLUMNS } from './reports.columns.js';
+import { ReportError } from './reports.types.js';
+import { generateCsv } from '../../lib/reports/csv.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
+import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
 
 const DEFAULT_REALTIME_RANGE_DAYS = 7;
 
@@ -95,6 +99,10 @@ async function precomputedReport<T>(
   return { report_type: reportType, computed_at: existing.computedAt.toISOString(), branch_id: branchId, data: existing.payload as T[] };
 }
 
+const SYNC_CSV_ROW_LIMIT = 10_000;
+const SUPER_ADMIN_ONLY_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON']);
+const PRECOMPUTED_TYPES = new Set<ReportType>(['PRODUCT_PERFORMANCE', 'FLAVOR_PERFORMANCE', 'EMPLOYEE_PERFORMANCE', 'INVENTORY_VALUATION', 'BRANCH_COMPARISON']);
+
 export const reportsService = {
   getDailySalesReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('DAILY_SALES', filters, actorId, actorRole, (f) => reportsRepository.getDailySales(f)),
@@ -123,4 +131,61 @@ export const reportsService = {
     precomputedReport('INVENTORY_VALUATION', branchId, actorId, actorRole),
   getBranchComparisonReport: (branchId: string | null, actorId: string, actorRole: string) =>
     precomputedReport('BRANCH_COMPARISON', branchId, actorId, actorRole),
+
+  async requestExport(
+    reportType: ReportType,
+    filters: ReportFilters,
+    format: 'csv' | 'pdf',
+    requesterId: string,
+    requesterRole: string,
+    branchId: string | null,
+  ): Promise<{ download_url: string; expires_at: string } | { job_id: string; message: string; estimated_seconds: number }> {
+    if (SUPER_ADMIN_ONLY_TYPES.has(reportType) && requesterRole !== ROLES.SUPER_ADMIN) {
+      throw new ReportError('FORBIDDEN_REPORT_TYPE', `${reportType} can only be exported by a super admin`, 403);
+    }
+
+    const resolvedFilters = PRECOMPUTED_TYPES.has(reportType) ? precomputedWindowFilters(branchId) : defaultRealtimeFilters(filters);
+    const count = await reportsRepository.countRows(reportType, resolvedFilters);
+
+    if (format === 'csv' && count < SYNC_CSV_ROW_LIMIT) {
+      const rows = await getReportRows(reportType, { ...resolvedFilters, page: 1, limit: count || 1 });
+      const columns = REPORT_COLUMNS[reportType];
+      const buffer = generateCsv(rows, columns);
+      const path = `reports/${requesterId}/${Date.now()}-${reportType}.csv`;
+
+      const { error: uploadError } = await supabaseAdmin.storage.from('report-exports').upload(path, buffer, { contentType: 'text/csv', upsert: false });
+      if (uploadError) throw new ReportError('EXPORT_UPLOAD_FAILED', 'Failed to upload the report export', 502);
+
+      const { data: signed, error: signError } = await supabaseAdmin.storage.from('report-exports').createSignedUrl(path, 86_400);
+      if (signError || !signed) throw new ReportError('EXPORT_SIGN_FAILED', 'Failed to create a download link for the export', 502);
+
+      const expiresAt = new Date(Date.now() + 86_400 * 1000).toISOString();
+      await recordAuditLog({
+        action: 'REPORT_EXPORTED',
+        entityType: 'report',
+        entityId: reportType,
+        actorId: requesterId,
+        actorRole: requesterRole,
+        branchId,
+        afterState: { reportType, format, path, async: false, rowCount: rows.length },
+      });
+      return { download_url: signed.signedUrl, expires_at: expiresAt };
+    }
+
+    const job = await enqueueGenerateExport({ reportType, filters: resolvedFilters, format, requesterId, branchId });
+    await recordAuditLog({
+      action: 'REPORT_EXPORTED',
+      entityType: 'report',
+      entityId: reportType,
+      actorId: requesterId,
+      actorRole: requesterRole,
+      branchId,
+      afterState: { reportType, format, async: true, jobId: job.id, rowCount: count },
+    });
+    return {
+      job_id: job.id ?? '',
+      message: "Export queued — you'll be notified when it's ready",
+      estimated_seconds: count < 1000 ? 10 : count < 10_000 ? 30 : 120,
+    };
+  },
 };

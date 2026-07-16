@@ -142,3 +142,49 @@ describe('reportsService.getBranchComparisonReport', () => {
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'BRANCH_COMPARISON', actorRole: 'super_admin', branchId: null }));
   });
 });
+
+describe('reportsService.requestExport', () => {
+  it('CSV sync path: uploads to storage and returns a signed download_url when count < 10,000', async () => {
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(5);
+    const { getReportRows } = await import('./reports.columns.js');
+    vi.mocked(getReportRows).mockResolvedValue([{ report_date: '2026-07-01' } as never]);
+    const { supabaseAdmin } = await import('../../lib/supabase.js');
+    const upload = vi.fn().mockResolvedValue({ error: null });
+    const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/report.csv' }, error: null });
+    vi.mocked(supabaseAdmin.storage.from).mockReturnValue({ upload, createSignedUrl } as never);
+
+    const result = await reportsService.requestExport('DAILY_SALES', { page: 1, limit: 25 }, 'csv', 'user-1', 'supervisor', 'b1');
+
+    expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.csv$/), expect.any(Buffer), { contentType: 'text/csv', upsert: false });
+    expect(result).toEqual({ download_url: 'https://signed.example/report.csv', expires_at: expect.any(String) });
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'REPORT_EXPORTED' }));
+  });
+
+  it('CSV async path: enqueues a job and returns job_id when count >= 10,000', async () => {
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(15_000);
+    const { enqueueGenerateExport } = await import('../../queues/report.queue.js');
+    vi.mocked(enqueueGenerateExport).mockResolvedValue({ id: 'job-1' } as never);
+
+    const result = await reportsService.requestExport('VOID_REFUND', { page: 1, limit: 25 }, 'csv', 'user-1', 'supervisor', 'b1');
+
+    expect(enqueueGenerateExport).toHaveBeenCalled();
+    expect(result).toEqual({ job_id: 'job-1', message: expect.any(String), estimated_seconds: 120 });
+  });
+
+  it('PDF always enqueues a job, regardless of row count', async () => {
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(3);
+    const { enqueueGenerateExport } = await import('../../queues/report.queue.js');
+    vi.mocked(enqueueGenerateExport).mockResolvedValue({ id: 'job-2' } as never);
+
+    const result = await reportsService.requestExport('DAILY_SALES', { page: 1, limit: 25 }, 'pdf', 'user-1', 'supervisor', 'b1');
+
+    expect(enqueueGenerateExport).toHaveBeenCalled();
+    expect('job_id' in result && result.job_id).toBe('job-2');
+  });
+
+  it('rejects a supervisor exporting a super-admin-only report type with 403', async () => {
+    await expect(
+      reportsService.requestExport('BRANCH_COMPARISON', { page: 1, limit: 25 }, 'csv', 'user-1', 'supervisor', null),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN_REPORT_TYPE', statusCode: 403 });
+  });
+});

@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   CreatePriceOverrideInput,
   PriceOverrideListResponse,
@@ -9,6 +10,7 @@ import type {
   ReviewPriceOverrideInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 export interface PriceOverrideFilters {
   status?: 'pending' | 'approved' | 'rejected';
@@ -51,6 +53,11 @@ export function usePriceOverrides(filters: PriceOverrideFilters = {}) {
 export function usePriceOverride(id: string | null | undefined) {
   const { data } = usePriceOverrides();
   return data?.overrides.find((o) => o.id === id);
+}
+
+/** Keeps pending price-override lists (dashboard KPI, sidebar badge, approvals queue) in sync with submissions from any branch, without a manual refresh. */
+export function usePriceOverrideRealtimeSync(): void {
+  useRealtimeInvalidate([SOCKET_EVENTS.PRICE_OVERRIDE_SUBMITTED], [['price-overrides']]);
 }
 
 export function useSubmitPriceOverride() {

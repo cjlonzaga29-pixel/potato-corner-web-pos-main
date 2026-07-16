@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   AssignSupervisorInput,
   BranchAssignmentResponse,
@@ -14,6 +15,7 @@ import type {
   UpdateBranchInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 export interface BranchFilters {
   status?: BranchStatus;
@@ -93,6 +95,14 @@ export function useBranchStats(branchId: string | null | undefined) {
     staleTime: 10 * 1000,
     refetchInterval: 30 * 1000,
   });
+}
+
+/** Keeps branch lists/dashboards in sync with status changes and supervisor (re)assignments recorded from any other session, without a manual refresh. */
+export function useBranchRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.BRANCH_STATUS_CHANGED, SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED, SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED],
+    [['branches'], ['branch']],
+  );
 }
 
 export function useCreateBranch() {

@@ -5,6 +5,7 @@ import type { Socket } from 'socket.io-client';
 import { ROLES } from '@potato-corner/shared';
 import { getSocket } from '@/lib/socket';
 import { useAuthStore } from '@/stores/auth.store';
+import { useSocketStore } from '@/stores/socket.store';
 
 /**
  * Initializes the Socket.io connection and joins the correct room(s) for
@@ -32,6 +33,7 @@ export function useSocket() {
 
     function handleConnect() {
       setIsConnected(true);
+      useSocketStore.getState().setConnected(true);
       if (!user) return;
       if (user.role === ROLES.SUPER_ADMIN) {
         socket.emit('join', 'admin');
@@ -45,10 +47,21 @@ export function useSocket() {
 
     function handleDisconnect() {
       setIsConnected(false);
+      useSocketStore.getState().setConnected(false);
+    }
+
+    function handleReconnectAttempt() {
+      useSocketStore.getState().setReconnecting(true);
+    }
+
+    function handleReconnectFailed() {
+      useSocketStore.getState().setReconnecting(false);
     }
 
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
+    socket.io.on('reconnect_attempt', handleReconnectAttempt);
+    socket.io.on('reconnect_failed', handleReconnectFailed);
 
     if (socket.connected) {
       handleConnect();
@@ -59,6 +72,8 @@ export function useSocket() {
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
+      socket.io.off('reconnect_attempt', handleReconnectAttempt);
+      socket.io.off('reconnect_failed', handleReconnectFailed);
     };
   }, [accessToken, user]);
 

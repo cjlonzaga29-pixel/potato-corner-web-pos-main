@@ -11,3 +11,4 @@ export * from './price-override.schema.js';
 export * from './transaction.schema.js';
 export * from './shift.schema.js';
 export * from './attendance.schema.js';
+export * from './fraud.schema.js';

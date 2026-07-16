@@ -15,6 +15,13 @@ export const SOCKET_EVENTS = {
   ATTENDANCE_CLOCKED_IN: 'attendance:clocked_in',
   ATTENDANCE_CLOCKED_OUT: 'attendance:clocked_out',
   FRAUD_ALERT_CREATED: 'fraud:alert_created',
+  // Phase 17 review workflow — not emitted yet (fraud.service.ts's
+  // investigate/dismiss/escalate actions are silent by design, see that
+  // module's notes), reserved here for whichever future change wires up
+  // live broadcasts for them.
+  FRAUD_ALERT_INVESTIGATED: 'fraud:alert_investigated',
+  FRAUD_ALERT_DISMISSED: 'fraud:alert_dismissed',
+  FRAUD_ALERT_ESCALATED: 'fraud:alert_escalated',
   BRANCH_STATUS_CHANGED: 'branch:status_changed',
   BRANCH_SUPERVISOR_ASSIGNED: 'branch:supervisor_assigned',
   BRANCH_SUPERVISOR_REMOVED: 'branch:supervisor_removed',

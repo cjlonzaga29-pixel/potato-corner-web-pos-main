@@ -46,6 +46,22 @@ export async function authedPost<T>(
   return { status: res.status(), data: parsed.data, error: parsed.error };
 }
 
+export async function authedPatch<T>(
+  request: APIRequestContext,
+  baseURL: string,
+  path: string,
+  accessToken: string,
+  body: unknown,
+): Promise<{ status: number; data: T | null; error: unknown }> {
+  const csrfToken = await readCsrfToken(request, baseURL);
+  const res = await request.patch(path, {
+    data: body,
+    headers: { Authorization: `Bearer ${accessToken}`, 'X-CSRF-Token': csrfToken },
+  });
+  const parsed = (await res.json()) as ApiResponse<T>;
+  return { status: res.status(), data: parsed.data, error: parsed.error };
+}
+
 export async function authedGet<T>(
   request: APIRequestContext,
   path: string,

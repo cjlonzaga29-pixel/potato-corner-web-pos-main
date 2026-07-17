@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REDIS_URL: redis://localhost:6379
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/potato_corner_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/potato_corner_test
     services:
       redis:
         image: redis:7-alpine
@@ -16,6 +18,19 @@ jobs:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: potato_corner_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -47,6 +62,13 @@ jobs:
 
       - name: Generate Prisma client
         run: pnpm --filter @potato-corner/api exec prisma generate
+
+      - name: Run database migrations (CI)
+        # DATABASE_URL/DIRECT_URL both point at the job-level Postgres
+        # service container (raw direct connection, no pooler — matches
+        # the CI row of the three-URL pattern in phase-19-debt.md).
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
 
       - name: Type-check
         run: pnpm run type-check

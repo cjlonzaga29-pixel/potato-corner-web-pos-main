@@ -16,11 +16,25 @@ export default defineConfig({
   projects: [
     {
       name: 'POS Terminal (Mobile)',
+      testIgnore: /pwa-minimum-device\.spec\.ts/,
       use: { ...devices['Galaxy Tab S4'] },
     },
     {
       name: 'Admin Dashboard (Desktop)',
+      testIgnore: /pwa-minimum-device\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Phase 19 Task 9 locked device profile: Android-class, ~2GB RAM,
+      // 4-core CPU, Chrome stable. Moto G4 (2016 budget Android — quad-core
+      // Snapdragon 617, 2GB RAM) is Playwright's closest built-in match to
+      // that spec, not an arbitrary pick. Scoped to pwa-minimum-device.spec.ts
+      // only via testMatch — running the whole suite a third time under a
+      // throttled device profile would be expensive for no benefit, since
+      // every other spec's assertions aren't device-profile-specific.
+      name: 'PWA Minimum-Device (Android)',
+      testMatch: /pwa-minimum-device\.spec\.ts/,
+      use: { ...devices['Moto G4'] },
     },
   ],
 });

@@ -265,7 +265,7 @@ Route protection: `apps/web/middleware.ts` decodes (does **not** cryptographical
 | Supabase (Postgres) | ✅ **Live** — real project, 3 migrations applied, seeded, connected via Session Pooler (see TOOLING_SETUP.md for why: direct connection is IPv6-only) |
 | Supabase (frontend client / Storage) | ❌ Not integrated — `@supabase/supabase-js` isn't even a frontend dependency; image uploads go through the Express API, not a direct client |
 | Vercel | ✅ **Live** — `apps/web` deployed, project `potato-corner-pos`, auto-deploy on push to `main` confirmed working this session |
-| Railway (backend host) | ✅ **Live as of PR #7 (2026-07-17)** — `apps/api` auto-deploys on merge to `main`; requires `HASH_KEY` env var set and `prisma migrate deploy` run post-merge (adds `discountCustomerIdHash` + composite indexes) |
+| Render (backend host) | 🟡 **Deploy step configured, liveness unverified this session** — `deploy-production.yml`/`deploy-staging.yml` POST to `RENDER_DEPLOY_HOOK_PRODUCTION`/`_STAGING` on push to `main`/`staging` (step skips gracefully if the secret isn't set); requires `HASH_KEY` env var set in Render and `prisma migrate deploy` runs automatically each deploy. This row previously said "Railway" — corrected to Render in Phase 19 doc cleanup; Render has been the actual target since `deploy-production.yml`/`deploy-staging.yml` were written |
 | Redis / Upstash | 🔴 **Confirmed blocking, not graceful** (updated 2026-07-15): `REDIS_URL` is now in `.env.example` (fixed), but no Redis instance is provisioned in this dev environment — attempting to actually run the backend and log in fails outright (traced to `ECONNREFUSED`-class failures cascading into the frontend's generic "Unexpected end of JSON input"). No Upstash/cloud instance provisioned; a local fix was in progress (installing Memurai, a native-Windows Redis-compatible server, via `winget`, since Docker Desktop's WSL2 backend has no Linux distro installed on this machine and can't start) but was not completed this session |
 | Resend (email) | 🟡 Optional/dev-fallback wired, no real API key configured; **dev fallback logs secrets to console unconditionally** — see §14 |
 | Sentry | ❌ Backend SDK installed but `SENTRY_DSN` empty; frontend SDK (`@sentry/nextjs`) not installed at all |
@@ -287,7 +287,7 @@ Cross-referenced `.env.example` against the live zod schema (`apps/api/src/confi
 | `REDIS_URL` | ✅ Yes, min 1 char | ✅ **Yes** (fixed 2026-07-15) | 🟢 Fixed — present in `.env.example` now, defaults to `redis://localhost:6379` |
 | `DIRECT_URL` | ❌ Not read anywhere (no `directUrl` in `schema.prisma`'s datasource) | ✅ Yes | Vestigial/dead |
 | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `JWT_ACCESS_TOKEN_TTL`, `JWT_REFRESH_TOKEN_TTL`, `ENCRYPTION_KEY`, `API_PORT`, `NODE_ENV`, `NEXT_PUBLIC_APP_URL` | ✅ | ✅ | OK |
-| `HASH_KEY` | ✅ Yes (new, PR #7, Phase 17 fraud detection) | 🟡 must be set on Railway before merge | **Action required pre-merge** |
+| `HASH_KEY` | ✅ Yes (new, PR #7, Phase 17 fraud detection) | 🟡 must be set in Render before merge | **Action required pre-merge** |
 | `SENTRY_DSN` | ✅ optional | ✅ (empty) | OK |
 | `RESEND_API_KEY`, `EMAIL_FROM` | 🟡 read via raw `process.env`, bypassing the validated config object | ✅ (placeholder) | Works but defeats the "fail fast at boot" point of the zod schema |
 | `SMTP_HOST`/`PORT`/`USER`/`PASSWORD` | ❌ Not referenced anywhere — Resend is the real provider | ✅ | Vestigial |
@@ -304,9 +304,9 @@ Cross-referenced `.env.example` against the live zod schema (`apps/api/src/confi
 | Item | Status |
 |---|---|
 | `apps/web` → Vercel | ✅ **Deployed and live**, `● Ready`, auto-deploy on push to `main` confirmed working |
-| `apps/api` → any host | ❌ **Zero deployment infrastructure** — no `render.yaml`, `Dockerfile`, or Railway config anywhere in the repo |
+| `apps/api` → any host | 🟡 **Partial deployment infrastructure** — `apps/api/Dockerfile` exists; no `render.yaml`; deploy step wired in `deploy-production.yml`/`deploy-staging.yml` via `RENDER_DEPLOY_HOOK_*` secrets (skips gracefully if unset, so actual Render provisioning is unverified). A stale `railway.json` previously existed, unreferenced by any workflow — removed in Phase 19 doc/config cleanup |
 | CI (`ci.yml`) | ✅ Runs type-check/lint/test/build on every PR to `main`/`staging` |
-| CD (`deploy-staging.yml`, `deploy-production.yml`) | 🟡 Runs `prisma migrate deploy` against real DB secrets, but **both files end in explicit `# TODO` comments** — no actual app deployment step exists for either Vercel or Render in either workflow. The live Vercel deploy happening today is via Vercel's own git integration, entirely outside this CI/CD pipeline |
+| CD (`deploy-staging.yml`, `deploy-production.yml`) | 🟡 Runs `prisma migrate deploy` against real DB secrets and POSTs to a `RENDER_DEPLOY_HOOK_*` secret to trigger the Render deploy (skips gracefully if the secret is unset); both files still end in a `# TODO` for Playwright smoke tests. The live Vercel deploy happening today is via Vercel's own git integration, entirely outside this CI/CD pipeline |
 | Local production build — `shared`, `api` | ✅ Both compile cleanly |
 | Local production build — `web` (`next build`) | ✅ **Fixed as of 2026-07-15** — builds cleanly (compile ✓, lint+typecheck ✓, all 46 static pages generated ✓), re-confirmed on two separate runs. The 2026-07-14 native-crash finding did not reproduce; likely was the corrupted-binary issue noted in that entry, since resolved |
 | Local dev environment | ✅ Works, but Turbo's own Windows binary is now confirmed to crash with `SIGILL` on `turbo run test`/`turbo run build` even after a fresh reinstall (updated 2026-07-15) — every verification in this update was run by invoking each package's `test`/`type-check`/`lint`/`build` script directly via `pnpm --filter <pkg> <script>`, bypassing Turbo's orchestration entirely. This is a sandbox/environment issue, not a code defect, but will block anyone running plain `pnpm test`/`pnpm build` from the repo root until Turbo's binary is fixed or replaced |
@@ -413,7 +413,7 @@ Everything below is *spec'd* (in the architecture docs) but not yet built:
 - Receipt generation/viewing (the public `/r/[txn]` route and `receipts` module are both stubs)
 - Real offline transaction processing — Dexie/IndexedDB scaffolding exists but isn't populated with real data yet
 - CSRF protection, manual account-unlock endpoint (security gaps, §14) — Socket.io signature verification, previously listed here, turned out to already be implemented (see §14.1, fixed 2026-07-15)
-- Backend hosting/deployment entirely (no Render/Railway config exists)
+- Backend hosting/deployment liveness confirmation — `apps/api/Dockerfile` and Render deploy-hook steps exist in CI, but actual Render service provisioning was not independently verified this session
 - Any frontend automated test coverage at all
 - Production hardening pass, load testing, and the pilot-branch rollout process (Phase 19, 20)
 
@@ -449,7 +449,7 @@ Everything below is *spec'd* (in the architecture docs) but not yet built:
 2. Stand up a real `TEST_DATABASE_URL`/`TEST_REDIS_URL` test environment so the 105 already-written integration test skeletons (was 60) can be filled in and actually run in CI — this is a large amount of test-writing work that's already scaffolded and just needs bodies. Note: a local Redis instance specifically is also needed just to run the backend at all in dev (see §10) — this is now the most immediate blocker, ahead of the test-environment work.
 3. Add a frontend test runner (Vitest is already the house standard) and write at least component-level coverage for the 18 fully-built pages before more UI accumulates untested.
 4. Implement the 4 skipped Playwright e2e specs alongside their corresponding phases, rather than after the fact.
-5. Provision Render (or formally re-decide on Railway) for `apps/api`, write a `render.yaml`, and complete the CI/CD TODOs.
+5. Confirm the Render service referenced by `RENDER_DEPLOY_HOOK_PRODUCTION`/`_STAGING` is actually provisioned (external infra state could not be verified this session); optionally write a `render.yaml` for declarative config; complete the remaining CI/CD TODOs (Playwright smoke tests).
 6. Run `pnpm --filter api test -- --coverage` in CI and track it against the doc's stated 80% target so coverage drift is visible over time.
 7. Do a documentation pass: update `CLAUDE.md`'s status line, rewrite `api-contracts.md` (currently says zero endpoints exist — should document the 60+ that do), and refresh `database-schema.md`'s model list to include the 4 CR-001 additions it's currently missing.
 

@@ -12,7 +12,7 @@ const withPWA = withPWAInit({
 const nextConfig: NextConfig = {
   transpilePackages: ['@potato-corner/shared'],
   // Proxies browser calls to the API backend through this same origin.
-  // The API and this app live on different domains (Vercel vs Railway) —
+  // The API and this app live on different domains (Vercel vs Render) —
   // without this, the HttpOnly refresh_token cookie the API sets would be
   // scoped to the API's own domain and never reach requests made to this
   // app, which is what apps/web/middleware.ts checks to gate protected

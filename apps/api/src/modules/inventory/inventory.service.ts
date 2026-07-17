@@ -10,9 +10,9 @@ import type {
   PhysicalCountSubmission,
 } from '@potato-corner/shared';
 import { inventoryRepository } from './inventory.repository.js';
-import { IngredientError } from './inventory.types.js';
+import { IngredientError, LARGE_ADJUSTMENT_APPROVAL_THRESHOLD_PHP } from './inventory.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { notificationQueue } from '../../queues/notification.queue.js';
+import { notificationQueue, enqueueNotification } from '../../queues/notification.queue.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -339,6 +339,28 @@ export const inventoryService = {
       lowStockThreshold: ingredient.lowStockThreshold,
       criticalThreshold: ingredient.criticalThreshold,
     });
+
+    // Phase 20 Task 5: real financial stakes at the pilot branch — a manual
+    // adjustment moving ≥ LARGE_ADJUSTMENT_APPROVAL_THRESHOLD_PHP worth of
+    // stock needs Supervisor/Super Admin visibility. unitCost is optional on
+    // an ingredient (not every ingredient has a recorded cost yet), so an
+    // unset cost can never itself trigger the notification.
+    if (ingredient.unitCost) {
+      const amount = Math.abs(data.quantity_delta) * ingredient.unitCost.toNumber();
+      if (amount >= LARGE_ADJUSTMENT_APPROVAL_THRESHOLD_PHP) {
+        try {
+          await enqueueNotification('large_adjustment_approval_needed', {
+            type: 'large_adjustment_approval_needed',
+            branchId: ingredient.branchId,
+            adjustmentId: movement.id,
+            requestedByUserId: actor.id,
+            amount,
+          });
+        } catch (error) {
+          console.error(`Failed to enqueue large-adjustment approval notification for movement ${movement.id}:`, error);
+        }
+      }
+    }
 
     return response;
   },

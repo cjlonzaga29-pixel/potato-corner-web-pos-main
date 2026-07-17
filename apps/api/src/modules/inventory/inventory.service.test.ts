@@ -23,10 +23,11 @@ vi.mock('../../middleware/audit-log.js', () => ({
 
 vi.mock('../../queues/notification.queue.js', () => ({
   notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+  enqueueNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { inventoryRepository } = await import('./inventory.repository.js');
-const { notificationQueue } = await import('../../queues/notification.queue.js');
+const { notificationQueue, enqueueNotification } = await import('../../queues/notification.queue.js');
 const { inventoryService } = await import('./inventory.service.js');
 
 const ACTOR = { id: 'user-1', role: 'supervisor' };
@@ -247,6 +248,49 @@ describe('inventoryService.adjustIngredient', () => {
   // validate() layer (see inventory.router.test.ts), not re-validated here —
   // the service trusts its input has already passed that schema, matching
   // every other module's service/router division in this codebase.
+
+  it('enqueues large_adjustment_approval_needed when |quantity_delta| * unitCost meets the ₱5,000 threshold', async () => {
+    vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: decimal(20) }) as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ id: 'mov-9', movementType: 'manual_adjustment' }) as never);
+
+    await inventoryService.adjustIngredient('ing-1', { quantity_delta: 300, reason_code: 'count_correction' }, ACTOR, null);
+
+    expect(enqueueNotification).toHaveBeenCalledWith('large_adjustment_approval_needed', {
+      type: 'large_adjustment_approval_needed',
+      branchId: 'branch-1',
+      adjustmentId: 'mov-9',
+      requestedByUserId: 'user-1',
+      amount: 6000,
+    });
+  });
+
+  it('uses the absolute value of a negative quantity_delta when computing the adjustment amount', async () => {
+    vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: decimal(20) }) as never);
+    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(1000) as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+
+    await inventoryService.adjustIngredient('ing-1', { quantity_delta: -300, reason_code: 'damaged' }, ACTOR, null);
+
+    expect(enqueueNotification).toHaveBeenCalledWith('large_adjustment_approval_needed', expect.objectContaining({ amount: 6000 }));
+  });
+
+  it('does not enqueue large_adjustment_approval_needed when the adjustment amount is below the threshold', async () => {
+    vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: decimal(20) }) as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+
+    await inventoryService.adjustIngredient('ing-1', { quantity_delta: 5, reason_code: 'count_correction' }, ACTOR, null);
+
+    expect(enqueueNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue large_adjustment_approval_needed when the ingredient has no recorded unitCost', async () => {
+    vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: null }) as never);
+    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+
+    await inventoryService.adjustIngredient('ing-1', { quantity_delta: 1000, reason_code: 'count_correction' }, ACTOR, null);
+
+    expect(enqueueNotification).not.toHaveBeenCalled();
+  });
 });
 
 describe('inventoryService.wasteIngredient', () => {

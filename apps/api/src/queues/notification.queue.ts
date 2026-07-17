@@ -208,8 +208,12 @@ export const notificationWorker = new Worker(
     }
     if (job.name === 'large_adjustment_approval_needed') {
       const data = job.data as Extract<NotificationPayload, { type: 'large_adjustment_approval_needed' }>;
+      notifyBranch(data.branchId, SOCKET_EVENTS.LARGE_ADJUSTMENT_APPROVAL_NEEDED, data);
       notifySuperAdmin(SOCKET_EVENTS.LARGE_ADJUSTMENT_APPROVAL_NEEDED, data);
-      const recipients = await notificationsRepository.findSuperAdminUserIds();
+      // Super admins (company-wide) plus the branch's own supervisors — real
+      // financial stakes at the pilot branch mean the branch's own
+      // supervisor needs visibility too, not just Super Admin (Phase 20 Task 5).
+      const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(data.branchId);
       await Promise.all(
         recipients.map((recipient) =>
           notificationsRepository.create({

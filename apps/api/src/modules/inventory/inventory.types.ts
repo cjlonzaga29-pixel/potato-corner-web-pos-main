@@ -53,3 +53,12 @@ export interface MovementListFilters {
   page: number;
   limit: number;
 }
+
+/**
+ * Peso value above which a manual inventory adjustment (Architecture doc
+ * §Part 13 "large adjustment approval needed") requires Supervisor/Super
+ * Admin visibility. No configurable-threshold model exists yet (unlike cash
+ * variance tolerance) — Phase 20 Task 5 fixes this as a hardcoded default,
+ * the same pattern a future settings feature would read from instead.
+ */
+export const LARGE_ADJUSTMENT_APPROVAL_THRESHOLD_PHP = 5000;

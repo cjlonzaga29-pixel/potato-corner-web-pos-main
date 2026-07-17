@@ -314,8 +314,11 @@ describe('notificationWorker processor — void_requested', () => {
 });
 
 describe('notificationWorker processor — large_adjustment_approval_needed', () => {
-  it('emits the socket event to super admins, persists a Notification per super admin, and emails each super admin', async () => {
-    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
+  it('emits the socket event to the branch and super admins, persists a Notification per branch supervisor + super admin, and emails each', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
+      { id: 'admin-1', email: 'admin-1@potatocorner.test' },
+      { id: 'supervisor-1', email: 'supervisor-1@potatocorner.test' },
+    ] as never);
     const data = {
       type: 'large_adjustment_approval_needed' as const,
       branchId: 'branch-1',
@@ -326,19 +329,29 @@ describe('notificationWorker processor — large_adjustment_approval_needed', ()
 
     await processor()({ name: 'large_adjustment_approval_needed', data } as Job);
 
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'notification:large_adjustment_approval_needed', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('notification:large_adjustment_approval_needed', data);
-    expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
+    expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
     expect(notificationsRepository.create).toHaveBeenCalledWith({
       type: 'large_adjustment_approval_needed',
       payload: data,
       recipientUserId: 'admin-1',
       branchId: 'branch-1',
     });
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'large_adjustment_approval_needed',
+      payload: data,
+      recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
     expect(sendLargeAdjustmentApprovalEmail).toHaveBeenCalledWith('admin-1@potatocorner.test', data);
+    expect(sendLargeAdjustmentApprovalEmail).toHaveBeenCalledWith('supervisor-1@potatocorner.test', data);
   });
 
   it('logs but does not throw when the email send fails, so the job still succeeds', async () => {
-    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
+      { id: 'admin-1', email: 'admin-1@potatocorner.test' },
+    ] as never);
     vi.mocked(sendLargeAdjustmentApprovalEmail).mockRejectedValue(new Error('Resend outage'));
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const data = {

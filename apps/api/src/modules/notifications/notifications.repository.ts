@@ -36,14 +36,20 @@ export const notificationsRepository = {
     });
   },
 
-  /** Super admins (company-wide) plus supervisors assigned to the given branch — matches the low_stock_alert/notifyBranch+notifySuperAdmin recipient shape. */
+  /**
+   * Super admins (company-wide) plus supervisors assigned to the given
+   * branch — matches the low_stock_alert/notifyBranch+notifySuperAdmin
+   * recipient shape. email is selected alongside id (Phase 20 Task 5)
+   * because large_adjustment_approval_needed emails this recipient set,
+   * same reasoning as findSuperAdminUserIds above.
+   */
   findBranchSupervisorAndAdminUserIds(branchId: string) {
     return prisma.user.findMany({
       where: {
         isActive: true,
         OR: [{ role: 'super_admin' }, { role: 'supervisor', branchAssignments: { some: { branchId, removedAt: null } } }],
       },
-      select: { id: true },
+      select: { id: true, email: true },
     });
   },
 

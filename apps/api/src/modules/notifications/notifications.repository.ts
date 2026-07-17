@@ -23,12 +23,16 @@ export const notificationsRepository = {
    * codebase (notifySuperAdmin broadcasts by socket room, not DB query).
    * Queries prisma.user directly here rather than through employeesRepository
    * — same precedent as fraudRepository.findEmployeeNamesByIds, which does
-   * the same for its own cross-cutting User lookup.
+   * the same for its own cross-cutting User lookup. email is selected
+   * alongside id (Task 10) because this is the only recipient-resolution
+   * path for the 3 email-eligible notification types (fraud_alert_created,
+   * large_adjustment_approval_needed, eod_summary) — Resend sends to
+   * user.email in the DB, per the plan's locked recipient source.
    */
   findSuperAdminUserIds() {
     return prisma.user.findMany({
       where: { role: 'super_admin', isActive: true },
-      select: { id: true },
+      select: { id: true, email: true },
     });
   },
 

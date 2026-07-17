@@ -19,6 +19,9 @@ vi.mock('../lib/redis.js', () => ({
 
 vi.mock('../lib/email.js', () => ({
   sendWelcomeEmail: vi.fn(),
+  sendFraudAlertEmail: vi.fn(),
+  sendLargeAdjustmentApprovalEmail: vi.fn(),
+  sendEodSummaryEmail: vi.fn(),
 }));
 
 vi.mock('../lib/notify.js', () => ({
@@ -35,7 +38,7 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
   },
 }));
 
-const { sendWelcomeEmail } = await import('../lib/email.js');
+const { sendWelcomeEmail, sendFraudAlertEmail, sendLargeAdjustmentApprovalEmail, sendEodSummaryEmail } = await import('../lib/email.js');
 const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
 const { notificationsRepository } = await import('../modules/notifications/notifications.repository.js');
 const { notificationWorker, enqueueNotification } = await import('./notification.queue.js');
@@ -261,8 +264,8 @@ describe('notificationWorker processor — void_requested', () => {
 });
 
 describe('notificationWorker processor — large_adjustment_approval_needed', () => {
-  it('emits the socket event to super admins and persists a Notification per super admin, with an email TODO', async () => {
-    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+  it('emits the socket event to super admins, persists a Notification per super admin, and emails each super admin', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
     const data = {
       type: 'large_adjustment_approval_needed' as const,
       branchId: 'branch-1',
@@ -281,12 +284,31 @@ describe('notificationWorker processor — large_adjustment_approval_needed', ()
       recipientUserId: 'admin-1',
       branchId: 'branch-1',
     });
+    expect(sendLargeAdjustmentApprovalEmail).toHaveBeenCalledWith('admin-1@potatocorner.test', data);
+  });
+
+  it('logs but does not throw when the email send fails, so the job still succeeds', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
+    vi.mocked(sendLargeAdjustmentApprovalEmail).mockRejectedValue(new Error('Resend outage'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const data = {
+      type: 'large_adjustment_approval_needed' as const,
+      branchId: 'branch-1',
+      adjustmentId: 'adj-1',
+      requestedByUserId: 'supervisor-1',
+      amount: 5000,
+    };
+
+    await expect(processor()({ name: 'large_adjustment_approval_needed', data } as Job)).resolves.toBeUndefined();
+
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });
 
 describe('notificationWorker processor — fraud_alert_created', () => {
-  it('persists a Notification per super admin without re-emitting a socket event (already broadcast by detection.service.ts)', async () => {
-    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+  it('persists a Notification per super admin, emails each super admin, without re-emitting a socket event (already broadcast by detection.service.ts)', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
     const data = { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' };
 
     await processor()({ name: 'fraud_alert_created', data } as Job);
@@ -298,6 +320,7 @@ describe('notificationWorker processor — fraud_alert_created', () => {
       recipientUserId: 'admin-1',
       branchId: 'branch-1',
     });
+    expect(sendFraudAlertEmail).toHaveBeenCalledWith('admin-1@potatocorner.test', data);
     expect(notifyBranch).not.toHaveBeenCalled();
     expect(notifySuperAdmin).not.toHaveBeenCalled();
   });
@@ -323,8 +346,8 @@ describe('notificationWorker processor — offline_transactions_synced', () => {
 });
 
 describe('notificationWorker processor — eod_summary', () => {
-  it('emits the socket event to super admins and persists a Notification per super admin, with an email TODO', async () => {
-    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+  it('emits the socket event to super admins, persists a Notification per super admin, and emails each super admin', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
     const data = {
       type: 'eod_summary' as const,
       branchId: 'branch-1',
@@ -351,5 +374,6 @@ describe('notificationWorker processor — eod_summary', () => {
       recipientUserId: 'admin-1',
       branchId: 'branch-1',
     });
+    expect(sendEodSummaryEmail).toHaveBeenCalledWith('admin-1@potatocorner.test', data);
   });
 });

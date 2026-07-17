@@ -52,16 +52,16 @@ describe('notificationsRepository.create', () => {
 });
 
 describe('notificationsRepository.findSuperAdminUserIds', () => {
-  it('queries active super_admin users, selecting only id', async () => {
-    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'admin-1' }] as never);
+  it('queries active super_admin users, selecting id and email', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
 
     const result = await notificationsRepository.findSuperAdminUserIds();
 
     expect(prisma.user.findMany).toHaveBeenCalledWith({
       where: { role: 'super_admin', isActive: true },
-      select: { id: true },
+      select: { id: true, email: true },
     });
-    expect(result).toEqual([{ id: 'admin-1' }]);
+    expect(result).toEqual([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }]);
   });
 });
 

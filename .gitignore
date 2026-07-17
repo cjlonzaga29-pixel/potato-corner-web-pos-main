@@ -24,6 +24,7 @@ apps/web/public/workbox-*.js.map
 coverage/
 playwright-report/
 test-results/
+tests/e2e/fixtures/*.auth.json
 
 # Deployment
 .vercel/

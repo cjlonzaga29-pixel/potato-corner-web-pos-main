@@ -39,11 +39,20 @@ The roadmap is 20 phases (`docs/architecture/master-execution-plan.md`). Actual 
 | 15 | Super Admin dashboard | ✅ Done — KPI row, branch grid with flagged-branch highlighting, pending product-request/price-override review panels, shortcut cards |
 | 16 | Reporting system | ✅ Done — shipped in PR #7 (2026-07-17) |
 | 17 | Fraud detection system | ✅ Done — shipped in PR #7 (2026-07-17) |
-| 18 | Notifications & EOD summary | ⏭️ Next |
+| 18 | Notifications & EOD summary | 🟡 In Progress — Tasks 1-3 of 12 done (plan, payload types, `Notification` model migration); handlers, delivery pipeline, EOD job still pending |
 | 19 | Production testing & hardening | ❌ Not started |
 | 20 | Pilot branch deployment | ❌ Not started |
 
-**Completion estimate: ~90% (updated 2026-07-17, corrected phase count).** 18 of 20 phases (plus CR-001) are now substantively complete, including Phases 12-15 (attendance, real-time layer, both dashboards — previously mismarked not-started, corrected 2026-07-17 against live code) and Phase 16 (Reporting) and Phase 17 (Fraud Detection Engine), both shipped in PR #7. Only notifications/EOD summary (next up, Phase 18), production hardening (19), and pilot rollout (20) remain untouched.
+**Completion estimate: ~90% (updated 2026-07-17, corrected phase count).** 18 of 20 phases (plus CR-001) are now substantively complete, including Phases 12-15 (attendance, real-time layer, both dashboards — previously mismarked not-started, corrected 2026-07-17 against live code) and Phase 16 (Reporting) and Phase 17 (Fraud Detection Engine), both shipped in PR #7. Phase 18 (notifications/EOD summary) is now in progress (Tasks 1-3 of 12); production hardening (19) and pilot rollout (20) remain untouched.
+
+### Phase 18 task log (updated 2026-07-17)
+
+- Task 1 (plan committed): ✅ commit `173d795`
+- Task 2 (notification payload types): ✅ commit `c62e6b4`
+- Task 3 (`Notification` model + migration): ✅ commit `8c1b3ea` — added `directUrl` datasource and the `notifications` table (recipient/branch indexed, JSON payload); applied locally via `prisma migrate dev`, confirmed via `prisma migrate status` → "Database schema is up to date! 14 migrations found."
+  - CI regression from the same change (production `deploy-production.yml` never set `DIRECT_URL`, would have failed migrate deploy) fixed same day: ✅ commit `3b5def4`, verified green on GitHub Actions run `29556098527`.
+  - **Not yet independently confirmed:** table-level check of `notifications` (and the rest of the 14 applied migrations) via `information_schema.tables` in the Supabase SQL Editor — `prisma migrate status` reports the schema as up to date, which is strong evidence, but the direct table listing was requested from the user and not yet returned as of this update. Do not treat this as fully closed until that's back.
+- Tasks 4-12: pending
 
 ---
 

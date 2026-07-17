@@ -50,4 +50,35 @@ export const notificationsRepository = {
       select: { id: true },
     });
   },
+
+  /** GET /api/notifications — unread (readAt null) first, then newest first within each group. */
+  async findForRecipient(recipientUserId: string, pagination: { page: number; limit: number }) {
+    const where: Prisma.NotificationWhereInput = { recipientUserId };
+    const [notifications, total, unreadCount] = await Promise.all([
+      prisma.notification.findMany({
+        where,
+        orderBy: [{ readAt: { sort: 'asc', nulls: 'first' } }, { createdAt: 'desc' }],
+        skip: (pagination.page - 1) * pagination.limit,
+        take: pagination.limit,
+      }),
+      prisma.notification.count({ where }),
+      prisma.notification.count({ where: { recipientUserId, readAt: null } }),
+    ]);
+    return { notifications, total, unreadCount };
+  },
+
+  /** Scoped to recipientUserId so one user can never mark another user's notification read — returns the affected row count (0 = not found or not owned). */
+  markRead(id: string, recipientUserId: string) {
+    return prisma.notification.updateMany({
+      where: { id, recipientUserId },
+      data: { readAt: new Date() },
+    });
+  },
+
+  markAllRead(recipientUserId: string) {
+    return prisma.notification.updateMany({
+      where: { recipientUserId, readAt: null },
+      data: { readAt: new Date() },
+    });
+  },
 };

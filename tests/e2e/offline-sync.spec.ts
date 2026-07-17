@@ -97,12 +97,22 @@ test.describe('offline transaction processing + reconnect sync (staff)', () => {
     expect(provisionalIdText).toContain('OFFLINE');
     await page.getByRole('button', { name: 'Done' }).click();
 
+    // components/pos/pos-header.tsx renders useOffline()'s pendingSyncCount
+    // as a "N pending" badge next to the Online/Offline indicator — visible
+    // proof the transaction is queued, before reconnecting.
+    await expect(page.getByText('1 pending')).toBeVisible();
+
     await page.context().setOffline(false);
     // syncOfflineTransactions() runs off the browser's 'online' event
-    // handler — no UI element surfaces completion directly, so this test
-    // polls the API instead of asserting on a specific frontend indicator
-    // (none exists for "sync finished"; terminal/page.tsx doesn't render
-    // useOffline()'s pendingSyncCount anywhere).
+    // handler and clears pendingSyncCount back to 0 once the sync
+    // succeeds — "1 pending" disappearing is a real, UI-driven completion
+    // signal (pendingSyncCount is derived straight from Dexie's
+    // syncedAt === null filter, which only flips on a successful API
+    // response), not just an absence of visible failure.
+    await expect(page.getByText('1 pending')).not.toBeVisible({ timeout: 15_000 });
+
+    // Independent server-side confirmation that the transaction actually
+    // landed, not just that the local queue believes it did.
     // page.request can't be used here — it shares the page's cookies, but
     // authenticate.ts requires an Authorization: Bearer header, which lives
     // only in the page's in-memory Zustand store, not exposed to Playwright.

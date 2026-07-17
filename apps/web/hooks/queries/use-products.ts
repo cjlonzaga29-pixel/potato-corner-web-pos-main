@@ -18,6 +18,7 @@ import type {
   UpdateVariantInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { PRODUCT_CACHE_REFRESH_MINUTES } from '@/lib/constants';
 
 export interface ProductFilters {
   status?: ProductStatus;
@@ -89,6 +90,13 @@ export function useCatalog(branchId: string | null | undefined) {
     },
     enabled: Boolean(branchId),
     staleTime: 60 * 1000,
+    // Architecture doc §10.1 / cache.ts's own comment: the offline catalog
+    // cache must refresh "on connect and at least every 30 minutes during
+    // active use." staleTime alone doesn't guarantee that — without an
+    // explicit refetchInterval, a terminal session that stays mounted
+    // without a refocus/reconnect event to trigger a refetch would just
+    // sit on a stale query indefinitely past the 60s staleTime.
+    refetchInterval: PRODUCT_CACHE_REFRESH_MINUTES * 60 * 1000,
   });
 }
 

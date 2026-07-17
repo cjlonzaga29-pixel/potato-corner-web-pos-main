@@ -2,8 +2,20 @@ import { db } from './db';
 import { apiClient } from '../api-client';
 import type { CreateTransactionInput } from '@potato-corner/shared';
 
+/**
+ * YYYY-MM-DD in Asia/Manila local time, not UTC. Date.prototype.toISOString()
+ * is always UTC and rolls the date over at 8am Manila time — using it here
+ * would break the "resets to 1 at midnight" locked rule (CLAUDE.md's Offline
+ * Receipt Numbers) for any transaction between local midnight and 8am, and
+ * would disagree with this codebase's other explicit Asia/Manila business-day
+ * conventions (apps/api/src/queues/eod.queue.ts, fraud.queue.ts).
+ */
+export function manilaDateString(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(date);
+}
+
 async function nextOfflineSequence(branchCode: string): Promise<number> {
-  const key = `${branchCode}:${new Date().toISOString().slice(0, 10)}`;
+  const key = `${branchCode}:${manilaDateString(new Date())}`;
   const existing = await db.offlineSequenceCounters.get(key);
   const next = (existing?.value ?? 0) + 1;
   await db.offlineSequenceCounters.put({ key, value: next });
@@ -20,7 +32,7 @@ export async function enqueueOfflineTransaction(branchCode: string, payload: Cre
 
   const now = Date.now();
   const sequence = await nextOfflineSequence(branchCode);
-  const dateStr = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+  const dateStr = manilaDateString(new Date(now)).replace(/-/g, '');
   const id = `PC-${branchCode}-${dateStr}-OFFLINE-${String(sequence).padStart(4, '0')}`;
 
   await db.offlineTransactions.add({ id, payload, createdAt: now, syncedAt: null, officialTransactionNumber: null });

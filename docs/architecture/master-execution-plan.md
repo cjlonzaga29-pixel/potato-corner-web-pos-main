@@ -33,6 +33,7 @@ Each concern has exactly one tool — no two libraries compete for the same resp
 | Offline storage | Dexie.js |
 | Unit/integration tests | Vitest |
 | End-to-end tests | Playwright |
+| Load testing | k6 *(Phase 19 addition — no load-testing tool was named before this; see `tests/load/README.md`)* |
 | Error tracking | Sentry |
 | Product analytics | PostHog |
 | Deployment (frontend) | Vercel |

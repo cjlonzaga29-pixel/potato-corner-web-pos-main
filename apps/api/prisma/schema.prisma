@@ -681,7 +681,7 @@ model TransactionItem {
   lineTotal           Decimal @map("line_total") @db.Decimal(10, 2)
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id])
-  product        Product        @relation(fields: [productId], references: [id])
+  product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
 

@@ -54,10 +54,13 @@ jobs:
       # required reviewers setting, not a workflow step.
 
       - name: Run database migrations (production)
+        # Uses the direct (non-pooled) connection string, not the pooler
+        # secret below — the session pooler caps concurrent clients at 15
+        # and migrate deploy needs a session-level connection of its own.
         working-directory: apps/api
         run: pnpm exec prisma migrate deploy
         env:
-          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
 
       - name: Deploy apps/api to Render (production)
         # Skips instead of failing the run when the Render service (and its

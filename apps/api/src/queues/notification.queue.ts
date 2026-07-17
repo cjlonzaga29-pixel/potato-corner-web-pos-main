@@ -3,8 +3,22 @@ import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { redis, createWorkerConnection } from '../lib/redis.js';
 import { sendWelcomeEmail } from '../lib/email.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
+import { notificationsRepository } from '../modules/notifications/notifications.repository.js';
 
 export const notificationQueue = new Queue('notification', { connection: redis });
+
+/**
+ * Architecture doc §3.6 / Phase 18 Decision 7: 10s / 60s / 300s backoff,
+ * matching inventory.queue.ts's RETRY_DELAYS_MS/retryDelayMs exactly. The
+ * attempts/backoff job options themselves are supplied per-call by Task 5's
+ * enqueueNotification wrapper — this Worker only needs the resolver function
+ * BullMQ calls when a job configured with `backoff: { type: 'custom' }` retries.
+ */
+const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
+
+function retryDelayMs(attemptsMade: number): number {
+  return RETRY_DELAYS_MS[attemptsMade - 1] ?? 300_000;
+}
 
 interface EmployeeWelcomeJobData {
   toEmail: string;
@@ -65,8 +79,19 @@ export const notificationWorker = new Worker(
       // here would define a frontend contract Step 3 doesn't cover. The
       // audit log entry and the transaction's `failed` status (both written
       // by the inventory worker before this job is enqueued) are already
-      // the durable, queryable record — this job just keeps that failure
-      // visible in server logs until a UI is built to consume a real event.
+      // the durable, queryable record — this job persists an in-app
+      // notification (Phase 18) on top of that, visible via the read API.
+      const recipients = await notificationsRepository.findSuperAdminUserIds();
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({
+            type: 'inventory_deduction_failed',
+            payload: { type: 'inventory_deduction_failed', transactionId: data.transactionId, branchId: data.branchId, error: data.error },
+            recipientUserId: recipient.id,
+            branchId: data.branchId,
+          }),
+        ),
+      );
       console.error(`Inventory deduction failed for transaction ${data.transactionId} (branch ${data.branchId}):`, data.error);
       return;
     }
@@ -74,9 +99,28 @@ export const notificationWorker = new Worker(
       const data = job.data as InventoryProductUnavailableJobData;
       // The branch/super-admin socket broadcast already happened directly
       // from the inventory worker (queues/inventory.queue.ts) at cascade
-      // time — this job exists so a future notification channel (push,
-      // email — Phase 18) has a durable job to hang off, same reasoning as
-      // inventory_deduction_failed above. TODO(Phase 18): send push/email.
+      // time (SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE) — re-emitting it
+      // here would double-broadcast to connected clients. This job persists
+      // the durable in-app Notification row the socket-only broadcast never
+      // gave callers a way to read later.
+      const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(data.branchId);
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({
+            type: 'product_auto_unavailable',
+            payload: {
+              type: 'product_auto_unavailable',
+              branchId: data.branchId,
+              triggeredByIngredientId: data.triggeredByIngredientId,
+              triggeredByIngredientName: data.triggeredByIngredientName,
+              affectedFlavors: data.affectedFlavors,
+              affectedProducts: data.affectedProducts,
+            },
+            recipientUserId: recipient.id,
+            branchId: data.branchId,
+          }),
+        ),
+      );
       console.warn(
         `Out-of-stock cascade at branch ${data.branchId}: ${data.affectedFlavors.length} flavor(s), ${data.affectedProducts.length} product(s) marked unavailable (triggered by ${data.triggeredByIngredientName})`,
       );
@@ -84,5 +128,10 @@ export const notificationWorker = new Worker(
     }
     // TODO(Phase 8+): implement remaining notification types.
   },
-  { connection: createWorkerConnection() },
+  {
+    connection: createWorkerConnection(),
+    settings: {
+      backoffStrategy: retryDelayMs,
+    },
+  },
 );

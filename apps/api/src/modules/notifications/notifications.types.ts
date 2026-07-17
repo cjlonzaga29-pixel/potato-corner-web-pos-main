@@ -4,6 +4,13 @@
  * types that don't need cross-app sharing are defined here.
  */
 
+// TODO(Phase 18 Task 6): these three interfaces don't yet match the real
+// job-data shape emitted by inventory.queue.ts's low_stock_alert job
+// (LowStockAlertJobData: ingredientId/ingredientName/currentStock/
+// lowStockThreshold/criticalThreshold, discriminated by a `severity` field
+// rather than separate low/critical job names). Fix field-for-field before
+// Task 6 persists these, same issue already fixed here for
+// inventory_deduction_failed/product_auto_unavailable in Task 4.
 export interface LowStockNotificationPayload {
   type: 'low_stock';
   branchId: string;
@@ -29,8 +36,10 @@ export interface OutOfStockNotificationPayload {
 export interface ProductAutoUnavailableNotificationPayload {
   type: 'product_auto_unavailable';
   branchId: string;
-  productId: string;
-  reason: string;
+  triggeredByIngredientId: string;
+  triggeredByIngredientName: string;
+  affectedFlavors: { flavorId: string; name: string }[];
+  affectedProducts: { productId: string; name: string }[];
 }
 
 export interface CashVarianceFlaggedNotificationPayload {
@@ -64,10 +73,9 @@ export interface FraudAlertCreatedNotificationPayload {
 
 export interface InventoryDeductionFailedNotificationPayload {
   type: 'inventory_deduction_failed';
+  transactionId: string;
   branchId: string;
-  transactionNumber: string;
-  productId: string;
-  reason: string;
+  error: string;
 }
 
 export interface OfflineTransactionsSyncedNotificationPayload {
@@ -95,3 +103,15 @@ export type NotificationPayload =
   | InventoryDeductionFailedNotificationPayload
   | OfflineTransactionsSyncedNotificationPayload
   | EodSummaryNotificationPayload;
+
+export type NotificationType = NotificationPayload['type'];
+
+// branchId is required, matching the Notification Prisma model's non-nullable
+// branch_id column — every current NotificationPayload variant carries a real
+// branchId, so there's no company-wide/null case to support yet.
+export interface CreateNotificationData {
+  type: NotificationType;
+  payload: NotificationPayload;
+  recipientUserId: string;
+  branchId: string;
+}

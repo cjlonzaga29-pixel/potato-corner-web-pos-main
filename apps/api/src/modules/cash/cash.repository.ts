@@ -235,6 +235,16 @@ export const cashRepository = {
     return rows.map((row) => row.cashierId);
   },
 
+  /**
+   * EOD summary's "unresolved cash variances" figure (Phase 18 Task 7) —
+   * a flagged shift's varianceApproved is null until approveVariance runs,
+   * which also flips status back to 'closed', so status === 'flagged' is
+   * an equivalent, clearer predicate than filtering on varianceApproved.
+   */
+  countUnresolvedVariancesInWindow(dayStart: Date, dayEnd: Date) {
+    return prisma.shift.count({ where: { status: 'flagged', closedAt: { gte: dayStart, lte: dayEnd } } });
+  },
+
   /** The trailing window rule 3 evaluates: varianceApproved !== null (Decision 6) means "outside tolerance, required a decision". */
   findLastNClosedShiftsForCashier(cashierId: string, branchId: string, n: number) {
     return prisma.shift.findMany({

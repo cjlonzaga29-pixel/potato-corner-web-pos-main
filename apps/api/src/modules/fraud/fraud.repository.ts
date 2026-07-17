@@ -104,4 +104,11 @@ export const fraudRepository = {
   findActiveBranchIds() {
     return prisma.branch.findMany({ where: { status: 'active' }, select: { id: true } });
   },
+
+  /** EOD summary's "open fraud alerts created that day" figure (Phase 18 Task 7) — date-windowed, unlike findOpenAlertsByType. */
+  countAlertsCreatedInWindow(dayStart: Date, dayEnd: Date) {
+    return prisma.fraudAlert.count({
+      where: { status: { in: ['open', 'investigating'] }, createdAt: { gte: dayStart, lte: dayEnd } },
+    });
+  },
 };

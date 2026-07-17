@@ -264,6 +264,21 @@ describe('fraudRepository.findOpenAlertsByType', () => {
   });
 });
 
+describe('fraudRepository.countAlertsCreatedInWindow', () => {
+  it('counts open/investigating alerts created within the given window', async () => {
+    vi.mocked(prisma.fraudAlert.count).mockResolvedValue(3);
+
+    const dayStart = new Date('2026-07-17T00:00:00.000Z');
+    const dayEnd = new Date('2026-07-17T23:59:59.999Z');
+    const result = await fraudRepository.countAlertsCreatedInWindow(dayStart, dayEnd);
+
+    expect(prisma.fraudAlert.count).toHaveBeenCalledWith({
+      where: { status: { in: ['open', 'investigating'] }, createdAt: { gte: dayStart, lte: dayEnd } },
+    });
+    expect(result).toBe(3);
+  });
+});
+
 describe('fraudRepository.findActiveBranchIds', () => {
   it('selects only id for active branches', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }, { id: 'branch-2' }] as never);

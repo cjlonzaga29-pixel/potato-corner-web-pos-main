@@ -331,6 +331,21 @@ describe('cashRepository.findLastNClosedShiftsForCashier', () => {
   });
 });
 
+describe('cashRepository.countUnresolvedVariancesInWindow', () => {
+  it('counts flagged shifts closed within the given window', async () => {
+    vi.mocked(prisma.shift.count).mockResolvedValue(2);
+
+    const dayStart = new Date('2026-07-17T00:00:00.000Z');
+    const dayEnd = new Date('2026-07-17T23:59:59.999Z');
+    const result = await cashRepository.countUnresolvedVariancesInWindow(dayStart, dayEnd);
+
+    expect(prisma.shift.count).toHaveBeenCalledWith({
+      where: { status: 'flagged', closedAt: { gte: dayStart, lte: dayEnd } },
+    });
+    expect(result).toBe(2);
+  });
+});
+
 describe('cashRepository.listShifts', () => {
   it('applies branch/status filters and pagination', async () => {
     vi.mocked(prisma.shift.findMany).mockResolvedValue([]);

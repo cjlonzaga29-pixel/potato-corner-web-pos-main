@@ -6,7 +6,7 @@ Enterprise Web POS and Branch Management Platform for the Potato Corner franchis
 
 Full specifications: `docs/architecture/final-approved-architecture.md` (business rules, database schema, algorithms) and `docs/architecture/master-execution-plan.md` (stack, standards, 20-phase roadmap). Nothing in those documents is open for discussion without a formal change request — implement what they say, don't redesign it.
 
-**Current status:** Phase 11 (POS terminal — closing and reconciliation) complete, plus CR-001 (product catalog refactor + branch recipe overrides, layered on top of Phase 7). Phases 12–20 (attendance, realtime, dashboards, reporting, fraud detection, notifications, hardening, pilot) are still Phase-0 router skeletons. Local scaffold only — no external services (Supabase/Render/Vercel/Upstash/Sentry/PostHog) wired up yet.
+**Current status:** Phases 0–19 complete (through production hardening), plus CR-001 (product catalog refactor + branch recipe overrides, layered on top of Phase 7). Phase 20 (pilot branch deployment) is in progress — recipe testing protocol, hold orders backend, offline sync batch endpoint, and the large-adjustment approval producer are done; production environment config, PWA device verification, staff clock-in UI, and pilot cutover remain open. External services (Supabase, Render, Vercel, Upstash, Resend) are live and wired.
 
 ## Architecture
 

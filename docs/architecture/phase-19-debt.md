@@ -28,6 +28,17 @@ Captured items discovered during earlier phases that Phase 19 should address.
   DIRECT_URL/pooler-mode issue above), but worth documenting
 - If encountered in future: run Prisma commands via native PowerShell
 
+### CLAUDE.md migration rule — ✅ resolved Phase 19 Task 3
+Database & Migration Safety three-URL pattern (`DATABASE_URL` / `DIRECT_URL` /
+`PRODUCTION_DATABASE_URL_DIRECT`) codified in `.claude/CLAUDE.md`, driven by
+the Phase 18 phantom-migration incident.
+
+### Web lint — ✅ resolved Phase 19 Task 4
+
+### Phantom migration incident (`20260717183737_add_recipe_unique_constraint`) — ✅ resolved Phase 19 Task 3
+Rolled back per the incident write-up now captured in `.claude/CLAUDE.md`'s
+Database & Migration Safety section.
+
 ### Supabase dashboard "Last migration" indicator — needs confirmation, not yet verified
 - Working hypothesis, **not yet confirmed**: the dashboard's Database →
   Migrations panel tracks Supabase-CLI migrations only, and since this
@@ -45,30 +56,26 @@ Captured items discovered during earlier phases that Phase 19 should address.
   verifying migration state
 
 ## From Phase 17 handoff (previously identified, still open)
-- Render vs Railway confusion in deploy-production.yml
-- PROJECT_STATUS.md contradictions about deploy platform
+- ~~Render vs Railway confusion in deploy-production.yml~~ — ✅ resolved Phase 19 Task 1
+- ~~PROJECT_STATUS.md contradictions about deploy platform~~ — ✅ resolved Phase 19 Task 1
 - apps/web/.env.example references outdated Railway URL
 - next.config.ts:15 comment references "Vercel vs Railway"
 - railway.json + apps/api/Dockerfile status unclear vs CI workflow
-- Postgres service container missing from CI (105 integration tests skip)
-- Phase 12/14/15 verification audit needed
+- ~~Postgres service container missing from CI (105 integration tests skip)~~ — ✅ resolved Phase 19 Task 2
+- ~~Phase 12/14/15 verification audit needed~~ — ✅ resolved Phase 19 Task 10
 
 ## Dormant notification producers (from Phase 18 Session A)
 
 Notification handlers implemented and ready, but no producer currently
-enqueues these types. Future phases must add producer logic:
+enqueues these types.
 
-- `large_adjustment_approval_needed` — requires adjustment-approval
-  workflow (likely tied to inventory adjustment large-value threshold
-  or manual price-override approval). No business logic exists.
+- ~~`large_adjustment_approval_needed`~~ — ✅ resolved Phase 20 Task 5:
+  producer wired to the inventory adjustment large-value threshold
+  workflow; both Supervisor and Super Admin receive the notification.
 
-- `offline_transactions_synced` — requires offline sync reconciliation
-  endpoint (POS terminal offline mode → server sync flow). Backend
-  endpoint does not exist. Frontend Dexie/PWA offline support may
-  also be incomplete.
-
-Handlers are safe to leave in place — they will activate as soon as
-producers exist, no code changes needed on the notification side.
+- ~~`offline_transactions_synced`~~ — ✅ resolved Phase 20 Task 4:
+  offline sync batch endpoint implemented, notification now fires on
+  successful sync.
 
 ## Skills usage discrepancy (from Phase 18 Session A)
 

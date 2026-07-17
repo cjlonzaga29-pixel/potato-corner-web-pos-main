@@ -77,9 +77,9 @@ TypeScript strict, no `any`, no `!` without a justifying comment. Function compo
 | 15 | Super Admin dashboard — company KPIs, branch rankings, fraud alert investigation UI, catalog/employee/system config |
 | 16 | ✅ **Done** (PR #7, 2026-07-17) — Reporting system — all 13 report types, 15-minute pre-compute jobs, CSV/PDF export, access audit logging |
 | 17 | ✅ **Done** (PR #7, 2026-07-17) — Fraud detection system — nightly job, all 7 detection rules, investigate/dismiss/escalate workflow |
-| 18 | Notifications and EOD summary — delivery pipeline, EOD job at 11:59 PM |
-| 19 | Production testing and hardening — full Playwright suite, load testing, offline/sync edge cases, security audit, minimum-device PWA testing |
-| 20 | Pilot branch deployment — production config, recipe testing protocol sign-off, 3-day Super Admin on-call, feedback collection |
+| 18 | ✅ **Done** — Notifications and EOD summary — delivery pipeline, EOD job at 11:59 PM |
+| 19 | ✅ **Done** — Production testing and hardening — full Playwright suite, load testing, offline/sync edge cases, security audit, minimum-device PWA testing |
+| 20 | 🟡 **In Progress** — Pilot branch deployment — production config, recipe testing protocol sign-off, 3-day Super Admin on-call, feedback collection |
 
 Sequencing rationale: auth gates everything → RBAC must be proven before the features it protects → shared components before feature UI → data foundation (branches/employees/products/recipes/inventory) before the POS → POS before dashboards → dashboards before reports. The POS terminal reaches functional state before significant investment in admin interfaces, since every other feature depends on data the POS generates.
 

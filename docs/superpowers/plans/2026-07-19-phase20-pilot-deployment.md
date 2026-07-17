@@ -1,6 +1,20 @@
 # Phase 20 — Pilot Branch Deployment
 
-**Status:** Planning — pending GO COMMIT before implementation begins.
+**Status:** In Progress.
+
+**Task status:**
+- Task 1 (recipe testing protocol defined): ✅ complete
+- Task 2 (hold orders backend + migration): ✅ complete
+- Task 3 (production environment configuration): ⏳ pending (external/operator — not blockable by Claude Code)
+- Task 4 (offline-sync backend endpoint): ✅ complete
+- Task 5 (`large_adjustment_approval_needed` notification producer): ✅ complete
+- Tasks 6–16: ❌ not started
+
+### Session B summary
+
+- 658 API tests passing, 151 web tests passing, 0 failures.
+- `offline_transactions_synced` notification is now live, fired by the new offline-sync batch endpoint (Task 4).
+- `large_adjustment_approval_needed` producer is now wired (Task 5); both Supervisor and Super Admin receive large-adjustment-approval notifications.
 **Scope statement (master-execution-plan.md, roadmap line 82):** "Pilot branch deployment — production config, recipe testing protocol sign-off, 3-day Super Admin on-call, feedback collection."
 
 This document sequences what `docs/architecture/final-approved-architecture.md` and `docs/architecture/master-execution-plan.md` already decided into an executable Phase 20 plan. Nothing here redesigns prior decisions.

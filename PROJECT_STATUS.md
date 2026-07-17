@@ -4,6 +4,14 @@
 
 > **Headline finding before anything else:** the project's own status documentation is stale. `.claude/CLAUDE.md` and `docs/architecture/api-contracts.md` both still say *"Phase 0 complete, Phase 1 next, no external services wired up."* The actual codebase is functionally through **Phase 11 of 20** (as of 2026-07-15), plus an entire unplanned change request (CR-001), with a live Supabase database and a live Vercel deployment. Treat every "current status" line in the docs as outdated relative to this report — including, ironically, the "Phase 7" claim in the rest of this document below this line, which predates Phases 8-11.
 
+> **2026-07-18 documentation sync note:** the sections below (§1–§22) were not re-audited this pass and describe repo state as of 2026-07-17. Since then, **Phase 18 and Phase 19 have both been completed**, and **Phase 20 (pilot branch deployment) is in progress**. Current summary:
+> - Phase 18 (Notifications & EOD summary): ✅ **Complete** (12/12 tasks) — supersedes the "Tasks 1-3 of 12" note in §2 below.
+> - Phase 19 (Production testing & hardening): ✅ **Complete** (10/10 tasks).
+> - Phase 20 (Pilot branch deployment): 🟡 **In Progress** — Task 1 (recipe testing protocol) ✅, Task 2 (hold orders backend + migration, commits `f3d661e`/`0d3d63c`) ✅, Task 3 (production environment config) ⏳ pending/external, Task 4 (offline sync batch endpoint, commit `aab56da`) ✅, Task 5 (large adjustment approval producer, commit `d992366`) ✅, Tasks 6-16 not started. Full task list: `docs/superpowers/plans/2026-07-19-phase20-pilot-deployment.md`.
+> - Test suite: 658 API tests, 151 web tests, 0 failures.
+> - Deploy stack confirmed: Render (backend, not Railway), Vercel (frontend), Supabase (database), Upstash (Redis), Resend (email, live and verified). Render deploy green.
+> - `docs/architecture/phase-19-debt.md` tracks resolved vs. still-open debt items from Phases 17-20.
+
 ---
 
 ## 1. Project Overview

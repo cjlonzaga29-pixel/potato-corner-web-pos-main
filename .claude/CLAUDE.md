@@ -65,6 +65,16 @@ Staff:       { user_id, role, email, branch_ids: [uuid] }
 
 Each backend module (`apps/api/src/modules/<name>/`) contains: `<name>.router.ts`, `<name>.service.ts`, `<name>.repository.ts`, `<name>.types.ts`.
 
+## Database & Migration Safety
+
+Never run `prisma migrate dev` or `prisma migrate diff --from-url` against a connection string that isn't explicitly verified as the local/dev shadow DB. This project uses a three-URL pattern, and mixing them up is the one mistake that reaches production data directly:
+
+- `DATABASE_URL` → Transaction Pooler (runtime, port 6543)
+- `DIRECT_URL` → Session Pooler (local dev, port 5432)
+- `PRODUCTION_DATABASE_URL_DIRECT` → raw direct connection (CI only, port 5432)
+
+Reason this rule exists: during Phase 18, `prisma migrate dev` was run locally against a connection string that turned out to be the production Supabase project, not the local shadow DB, creating a phantom migration (`20260717183737_add_recipe_unique_constraint`) that had to be resolved as `--rolled-back`. Always verify `DIRECT_URL`'s actual target — print it or check the host in the connection string — before running any `prisma migrate` command, every time, even when you're confident which environment you're in.
+
 ## State Management Separation
 
 Data from the database → TanStack Query. Data that lives in the browser only (POS cart, shift state, UI state, branch context, auth identity cache, offline sync status) → Zustand. These responsibilities never overlap.

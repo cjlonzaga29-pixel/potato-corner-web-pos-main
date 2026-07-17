@@ -20,6 +20,11 @@ vi.mock('./transactions.repository.js', () => ({
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
     markReceiptPrinted: vi.fn(),
+    countActiveHoldOrdersForShift: vi.fn(),
+    createHoldOrder: vi.fn(),
+    findHoldOrderById: vi.fn(),
+    listActiveHoldOrdersForShift: vi.fn(),
+    releaseHoldOrder: vi.fn(),
   },
 }));
 
@@ -48,11 +53,16 @@ vi.mock('../../queues/notification.queue.js', () => ({
   enqueueNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../queues/hold-order.queue.js', () => ({
+  enqueueHoldOrderExpiry: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { transactionsRepository } = await import('./transactions.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { priceOverridesService } = await import('../price-overrides/price-overrides.service.js');
 const { enqueueSaleDeduction } = await import('../../queues/inventory.queue.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
+const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { TransactionError } = await import('./transactions.types.js');
@@ -112,6 +122,29 @@ function transactionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function holdOrderRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'hold-1',
+    branchId: 'branch-1',
+    shiftId: 'shift-1',
+    cashierId: 'user-1',
+    status: 'held',
+    expiresAt: new Date('2026-07-19T10:15:00.000Z'),
+    releasedAt: null,
+    expiredAt: null,
+    createdAt: new Date('2026-07-19T10:00:00.000Z'),
+    items: [],
+    ...overrides,
+  };
+}
+
+const baseHoldInput = {
+  branchId: 'branch-1',
+  shiftId: 'shift-1',
+  cashierId: 'user-1',
+  items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
+};
+
 const baseInput = {
   branchId: 'branch-1',
   shiftId: 'shift-1',
@@ -131,6 +164,8 @@ beforeEach(() => {
   vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
   vi.mocked(priceOverridesService.getActivePriceForBranch).mockImplementation(async (_b, _v, masterPrice) => masterPrice as number);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
+  vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(0);
+  vi.mocked(transactionsRepository.createHoldOrder).mockResolvedValue(holdOrderRow() as never);
 });
 
 describe('transactionsService.createTransaction — VAT calculation', () => {
@@ -443,5 +478,84 @@ describe('transactionsService.refundTransaction', () => {
     };
     expect(notifyBranch).toHaveBeenCalledWith(branchId, 'transaction:refunded', expectedPayload);
     expect(notifySuperAdmin).toHaveBeenCalledWith('transaction:refunded', expectedPayload);
+  });
+});
+
+describe('transactionsService.holdOrder — 3-per-terminal limit', () => {
+  it('allows holding an order when the shift has fewer than 3 active holds', async () => {
+    vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(2);
+
+    await expect(transactionsService.holdOrder(baseHoldInput, null)).resolves.toMatchObject({ id: 'hold-1' });
+    expect(transactionsRepository.createHoldOrder).toHaveBeenCalled();
+  });
+
+  it('rejects holding a 4th order once the shift already has 3 active holds', async () => {
+    vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(3);
+
+    await expect(transactionsService.holdOrder(baseHoldInput, null)).rejects.toMatchObject({ code: 'HOLD_ORDER_LIMIT_REACHED' });
+    expect(transactionsRepository.createHoldOrder).not.toHaveBeenCalled();
+  });
+
+  it('rejects holding an order on a shift that is not open', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'closed' } as never);
+
+    await expect(transactionsService.holdOrder(baseHoldInput, null)).rejects.toMatchObject({ code: 'SHIFT_CLOSED' });
+    expect(transactionsRepository.createHoldOrder).not.toHaveBeenCalled();
+  });
+});
+
+describe('transactionsService.holdOrder — expiry scheduling', () => {
+  it('enqueues a 15-minute expiry job (HOLD_ORDER_EXPIRY_MS) after the hold is persisted', async () => {
+    await transactionsService.holdOrder(baseHoldInput, null);
+
+    expect(enqueueHoldOrderExpiry).toHaveBeenCalledWith({ holdOrderId: 'hold-1', branchId: 'branch-1', shiftId: 'shift-1' }, 15 * 60 * 1000);
+  });
+
+  it('does not fail the hold if enqueueing the expiry job throws', async () => {
+    vi.mocked(enqueueHoldOrderExpiry).mockRejectedValueOnce(new Error('redis unavailable'));
+
+    await expect(transactionsService.holdOrder(baseHoldInput, null)).resolves.toMatchObject({ id: 'hold-1' });
+  });
+});
+
+describe('transactionsService.listHoldOrders', () => {
+  it('returns only active (held) orders for the given shift', async () => {
+    vi.mocked(transactionsRepository.listActiveHoldOrdersForShift).mockResolvedValue([holdOrderRow()] as never);
+
+    const result = await transactionsService.listHoldOrders('shift-1');
+
+    expect(transactionsRepository.listActiveHoldOrdersForShift).toHaveBeenCalledWith('shift-1');
+    expect(result.hold_orders).toHaveLength(1);
+    expect(result.hold_orders[0]).toMatchObject({ id: 'hold-1', status: 'held' });
+  });
+});
+
+describe('transactionsService.releaseHoldOrder', () => {
+  it('rejects releasing a hold order that has already expired', async () => {
+    vi.mocked(transactionsRepository.findHoldOrderById).mockResolvedValue(holdOrderRow({ status: 'expired' }) as never);
+
+    await expect(
+      transactionsService.releaseHoldOrder('hold-1', { id: 'user-1', role: 'staff' }, null),
+    ).rejects.toMatchObject({ code: 'HOLD_ORDER_NOT_ACTIVE' });
+    expect(transactionsRepository.releaseHoldOrder).not.toHaveBeenCalled();
+  });
+
+  it('rejects releasing a hold order that does not exist', async () => {
+    vi.mocked(transactionsRepository.findHoldOrderById).mockResolvedValue(null);
+
+    await expect(
+      transactionsService.releaseHoldOrder('missing', { id: 'user-1', role: 'staff' }, null),
+    ).rejects.toMatchObject({ code: 'HOLD_ORDER_NOT_FOUND' });
+  });
+
+  it('marks a held order released and returns it', async () => {
+    vi.mocked(transactionsRepository.findHoldOrderById).mockResolvedValue(holdOrderRow() as never);
+    vi.mocked(transactionsRepository.releaseHoldOrder).mockResolvedValue(
+      holdOrderRow({ status: 'released', releasedAt: new Date('2026-07-19T10:05:00.000Z') }) as never,
+    );
+
+    const result = await transactionsService.releaseHoldOrder('hold-1', { id: 'user-1', role: 'staff' }, null);
+
+    expect(result).toMatchObject({ id: 'hold-1', status: 'released' });
   });
 });

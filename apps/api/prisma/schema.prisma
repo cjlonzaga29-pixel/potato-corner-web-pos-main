@@ -58,6 +58,12 @@ enum InventoryDeductionStatus {
   failed
 }
 
+enum HoldOrderStatus {
+  held
+  released
+  expired
+}
+
 enum ShiftStatus {
   active
   closed
@@ -153,14 +159,15 @@ model User {
   shiftsAsCashier            Shift[]                @relation("ShiftCashier")
   shiftsOpenedBy             Shift[]                @relation("ShiftOpenedBy")
   attendanceRecords          AttendanceRecord[]     @relation("AttendanceEmployee")
-  correctedAttendanceRecords AttendanceRecord[]      @relation("AttendanceCorrector")
+  correctedAttendanceRecords AttendanceRecord[]     @relation("AttendanceCorrector")
   auditLogs                  AuditLog[]
-  createdProducts      Product[]
-  cashierTransactions  Transaction[]
-  voidedTransactions   Transaction[]          @relation("TransactionVoidedBy")
-  refundedTransactions Transaction[]          @relation("TransactionRefundedBy")
-  refreshTokens        RefreshToken[]
-  pinCredentials       PinCredential[]
+  createdProducts            Product[]
+  cashierTransactions        Transaction[]
+  voidedTransactions         Transaction[]          @relation("TransactionVoidedBy")
+  refundedTransactions       Transaction[]          @relation("TransactionRefundedBy")
+  refreshTokens              RefreshToken[]
+  pinCredentials             PinCredential[]
+  holdOrders                 HoldOrder[]
 
   // CR-001
   priceOverrideRequests   BranchPriceOverride[]  @relation("PriceOverrideRequester")
@@ -192,6 +199,7 @@ model Branch {
   ingredients         Ingredient[]
   transactions        Transaction[]
   shifts              Shift[]
+  holdOrders          HoldOrder[]
   inventoryMovements  InventoryMovement[]
   attendanceRecords   AttendanceRecord[]
   auditLogs           AuditLog[]
@@ -299,6 +307,7 @@ model Product {
   branchAvailability BranchProductAvailability[]
   productRequests    ProductRequest[]
   transactionItems   TransactionItem[]
+  holdOrderItems     HoldOrderItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -321,6 +330,7 @@ model ProductVariant {
   variantFlavors   ProductVariantFlavor[]
   recipes          Recipe[]
   transactionItems TransactionItem[]
+  holdOrderItems   HoldOrderItem[]
 
   // CR-001
   priceOverrides  BranchPriceOverride[]
@@ -346,6 +356,7 @@ model Flavor {
   recipes            Recipe[]
   transactionItems   TransactionItem[]
   recipeOverrides    BranchRecipeOverride[]
+  holdOrderItems     HoldOrderItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -726,6 +737,7 @@ model Shift {
 
   denominations ShiftCashDenomination[]
   transactions  Transaction[]
+  holdOrders    HoldOrder[]
 
   startedAt DateTime  @map("started_at")
   closedAt  DateTime? @map("closed_at")
@@ -735,6 +747,58 @@ model Shift {
   @@index([cashierId])
   @@index([openedBy])
   @@map("shifts")
+}
+
+/// Architecture doc §Part 8 "Hold orders": max 3 per terminal, 15-min expiry,
+/// non-blocking toast on expiry, no supervisor action required. No separate
+/// "terminal" entity exists in this schema — a cashier's active Shift is the
+/// closest real proxy for one POS terminal session, so holds are scoped to
+/// shiftId (the 3-per-terminal limit is enforced as 3-per-active-shift).
+model HoldOrder {
+  id         String          @id @default(uuid())
+  branchId   String          @map("branch_id")
+  shiftId    String          @map("shift_id")
+  cashierId  String          @map("cashier_id")
+  status     HoldOrderStatus @default(held)
+  expiresAt  DateTime        @map("expires_at")
+  releasedAt DateTime?       @map("released_at")
+  expiredAt  DateTime?       @map("expired_at")
+
+  branch  Branch          @relation(fields: [branchId], references: [id])
+  shift   Shift           @relation(fields: [shiftId], references: [id])
+  cashier User            @relation(fields: [cashierId], references: [id])
+  items   HoldOrderItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([shiftId, status])
+  @@index([branchId, status])
+  @@map("hold_orders")
+}
+
+/// Cart line snapshot at hold time — mirrors TransactionItem's snapshot
+/// fields (name/price frozen at hold time) so a held order's display never
+/// silently drifts if the catalog changes while it's on hold.
+model HoldOrderItem {
+  id                  String  @id @default(uuid())
+  holdOrderId         String  @map("hold_order_id")
+  productId           String  @map("product_id")
+  productVariantId    String  @map("product_variant_id")
+  flavorId            String? @map("flavor_id")
+  productNameSnapshot String  @map("product_name_snapshot")
+  variantNameSnapshot String  @map("variant_name_snapshot")
+  flavorNameSnapshot  String? @map("flavor_name_snapshot")
+  unitPriceSnapshot   Decimal @map("unit_price_snapshot") @db.Decimal(10, 2)
+  quantity            Int
+
+  holdOrder      HoldOrder      @relation(fields: [holdOrderId], references: [id])
+  product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
+
+  @@index([holdOrderId])
+  @@map("hold_order_items")
 }
 
 model ShiftCashDenomination {
@@ -887,12 +951,12 @@ model ReportSnapshot {
 // ---------------------------------------------------------------------------
 
 model Notification {
-  id               String    @id @default(cuid())
-  type             String
-  payload          Json
-  recipientUserId  String    @map("recipient_user_id")
-  branchId         String    @map("branch_id")
-  readAt           DateTime? @map("read_at")
+  id              String    @id @default(cuid())
+  type            String
+  payload         Json
+  recipientUserId String    @map("recipient_user_id")
+  branchId        String    @map("branch_id")
+  readAt          DateTime? @map("read_at")
 
   createdAt DateTime @default(now()) @map("created_at")
 

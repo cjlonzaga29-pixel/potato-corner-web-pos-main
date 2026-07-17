@@ -14,6 +14,9 @@ export const SOCKET_EVENTS = {
   SHIFT_CLOSED: 'cash:shift_closed',
   VOID_REQUESTED: 'void:requested',
   VOID_APPROVED: 'void:approved',
+  // Phase 20 — non-blocking toast trigger for hold-order expiry (architecture
+  // doc §Part 8: 15-min expiry, no supervisor action required).
+  HOLD_ORDER_EXPIRED: 'hold_order:expired',
   ATTENDANCE_CLOCKED_IN: 'attendance:clocked_in',
   ATTENDANCE_CLOCKED_OUT: 'attendance:clocked_out',
   FRAUD_ALERT_CREATED: 'fraud:alert_created',

@@ -4,6 +4,7 @@ import {
   voidTransactionRequestSchema,
   refundTransactionRequestSchema,
   transactionListQuerySchema,
+  createHoldOrderSchema,
   ROLES,
   type CartItem,
 } from '@potato-corner/shared';
@@ -89,6 +90,83 @@ router.post(
         req.ip ?? null,
       );
       res.status(201).json({ data: transaction, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+interface CreateHoldOrderBody {
+  branch_id: string;
+  shift_id: string;
+  items: CartItem[];
+}
+
+// Registered before /:transactionId — same reasoning as products.router.ts's
+// GET /catalog: Express matches routes in order, and "/hold" would otherwise
+// be captured as a :transactionId param.
+router.post(
+  '/hold',
+  authenticate,
+  allRoles,
+  requirePasswordChange,
+  branchGuard,
+  shiftGuard,
+  validate(createHoldOrderSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as CreateHoldOrderBody;
+      const holdOrder = await transactionsService.holdOrder(
+        {
+          branchId: body.branch_id,
+          shiftId: body.shift_id,
+          cashierId: req.user.user_id,
+          items: body.items.map((item) => ({
+            productId: item.product_id,
+            productVariantId: item.product_variant_id,
+            flavorId: item.flavor_id,
+            quantity: item.quantity,
+          })),
+        },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: holdOrder, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.get('/hold', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const shiftId = req.query.shift_id as string | undefined;
+    if (!shiftId) {
+      res.status(400).json({ data: null, error: { code: 'SHIFT_ID_REQUIRED' }, meta: null });
+      return;
+    }
+    const result = await transactionsService.listHoldOrders(shiftId);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.post(
+  '/hold/:holdOrderId/release',
+  authenticate,
+  allRoles,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const released = await transactionsService.releaseHoldOrder(
+        req.params.holdOrderId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: released, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

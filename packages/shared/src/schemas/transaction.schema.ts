@@ -128,3 +128,39 @@ export const transactionListResponseSchema = z.object({
   page: z.number().int(),
   limit: z.number().int(),
 });
+
+/** Architecture doc §Part 8 "Hold orders": max 3 per terminal, 15-min expiry. */
+export const createHoldOrderSchema = z.object({
+  branch_id: z.uuid(),
+  shift_id: z.uuid(),
+  items: z.array(cartItemSchema).min(1),
+});
+
+export const holdOrderItemResponseSchema = z.object({
+  id: z.uuid(),
+  product_id: z.uuid(),
+  product_variant_id: z.uuid(),
+  flavor_id: z.uuid().nullable(),
+  product_name: z.string(),
+  variant_name: z.string(),
+  flavor_name: z.string().nullable(),
+  unit_price: z.number(),
+  quantity: z.number().int(),
+});
+
+export const holdOrderResponseSchema = z.object({
+  id: z.uuid(),
+  branch_id: z.uuid(),
+  shift_id: z.uuid(),
+  cashier_id: z.uuid(),
+  status: z.enum(['held', 'released', 'expired']),
+  expires_at: z.iso.datetime(),
+  released_at: z.iso.datetime().nullable(),
+  expired_at: z.iso.datetime().nullable(),
+  created_at: z.iso.datetime(),
+  items: z.array(holdOrderItemResponseSchema),
+});
+
+export const holdOrderListResponseSchema = z.object({
+  hold_orders: z.array(holdOrderResponseSchema),
+});

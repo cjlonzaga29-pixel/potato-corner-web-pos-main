@@ -44,3 +44,15 @@ export interface TransactionListFilters {
   page: number;
   limit: number;
 }
+
+export interface CreateHoldOrderData {
+  branchId: string;
+  shiftId: string;
+  cashierId: string;
+  items: CartItemInput[];
+}
+
+/** Max held orders per terminal (Architecture doc §Part 8) — no separate "terminal" entity exists, so this is enforced per active shift. */
+export const HOLD_ORDER_LIMIT_PER_TERMINAL = 3;
+/** 15-minute expiry (Architecture doc §Part 8). */
+export const HOLD_ORDER_EXPIRY_MS = 15 * 60 * 1000;

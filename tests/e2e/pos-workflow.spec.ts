@@ -16,6 +16,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import path from 'node:path';
 import { CATALOG_FIXTURE, seedCatalog } from './fixtures/seed-catalog';
+import { apiLogin, authedGet, authedPost } from './fixtures/api-helpers';
+import { TEST_USERS } from './fixtures/test-users';
 
 let branchId: string;
 
@@ -113,6 +115,109 @@ test.describe('process transaction — PWD discount + VAT verification (staff)',
     await expect(page.getByText('-₱20.00')).toBeVisible();
 
     await page.getByRole('button', { name: 'Done' }).click();
+  });
+});
+
+// API-level, not page-driven: Phase 20 Task 2 only implements the hold-order
+// backend (architecture doc §Part 8) — no "Hold" button exists yet anywhere
+// in the terminal UI (that's frontend scope, not part of this task's file
+// list), so the lifecycle is exercised directly against the API instead of
+// through page interactions, the same way seed-catalog.ts's own admin setup
+// calls do. Runs after the "shift open" block above and before "shift
+// close" below so it reuses that same still-active shift — holding/
+// releasing an order creates no Transaction row and touches no cash total,
+// so it cannot perturb the ₱1056.00 variance math the shift-close test
+// asserts against.
+test.describe('hold order lifecycle (staff, API-level)', () => {
+  let staffAccessToken: string;
+  let shiftId: string;
+  let productId: string;
+  let variantId: string;
+
+  test.beforeAll(async ({ request, baseURL }) => {
+    const staff = await apiLogin(request, TEST_USERS.staff.email, TEST_USERS.staff.password);
+    staffAccessToken = staff.accessToken;
+
+    const shiftRes = await authedGet<{ id: string } | null>(request, `/api/cash/current?branch_id=${branchId}`, staffAccessToken);
+    if (!shiftRes.data) {
+      throw new Error('No active shift found — expected the shift opened by the "shift open (supervisor)" describe block above to still be active.');
+    }
+    shiftId = shiftRes.data.id;
+
+    const catalogRes = await authedGet<{ products: { id: string; name: string; variants: { id: string; name: string }[] }[] }>(
+      request,
+      `/api/products/catalog?branch_id=${branchId}`,
+      staffAccessToken,
+    );
+    const product = catalogRes.data?.products.find((p) => p.name === CATALOG_FIXTURE.productName);
+    const variant = product?.variants.find((v) => v.name === CATALOG_FIXTURE.classicVariantName);
+    if (!product || !variant) {
+      throw new Error('Classic variant not found in POS catalog — expected seed-catalog.ts fixture products to be present.');
+    }
+    productId = product.id;
+    variantId = variant.id;
+  });
+
+  test('staff holds an order, sees it in the active list for this terminal, then releases it', async ({ request, baseURL }) => {
+    const url = baseURL ?? 'http://localhost:3000';
+    const holdRes = await authedPost<{ id: string; status: string }>(request, url, '/api/transactions/hold', staffAccessToken, {
+      branch_id: branchId,
+      shift_id: shiftId,
+      items: [{ product_id: productId, product_variant_id: variantId, quantity: 1 }],
+    });
+    expect(holdRes.status).toBe(201);
+    expect(holdRes.data?.status).toBe('held');
+
+    const listRes = await authedGet<{ hold_orders: { id: string }[] }>(request, `/api/transactions/hold?shift_id=${shiftId}`, staffAccessToken);
+    expect(listRes.data?.hold_orders.map((h) => h.id)).toContain(holdRes.data?.id);
+
+    const releaseRes = await authedPost<{ status: string }>(
+      request,
+      url,
+      `/api/transactions/hold/${holdRes.data?.id}/release`,
+      staffAccessToken,
+      {},
+    );
+    expect(releaseRes.status).toBe(200);
+    expect(releaseRes.data?.status).toBe('released');
+
+    // Released orders drop out of the active list (architecture doc: only
+    // held orders count toward the 3-per-terminal cap and appear as active).
+    const listAfterRelease = await authedGet<{ hold_orders: { id: string }[] }>(
+      request,
+      `/api/transactions/hold?shift_id=${shiftId}`,
+      staffAccessToken,
+    );
+    expect(listAfterRelease.data?.hold_orders.map((h) => h.id)).not.toContain(holdRes.data?.id);
+  });
+
+  test('enforces the max-3-held-orders-per-terminal limit (architecture doc §Part 8)', async ({ request, baseURL }) => {
+    const url = baseURL ?? 'http://localhost:3000';
+    const item = { product_id: productId, product_variant_id: variantId, quantity: 1 };
+    const heldIds: string[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      const res = await authedPost<{ id: string }>(request, url, '/api/transactions/hold', staffAccessToken, {
+        branch_id: branchId,
+        shift_id: shiftId,
+        items: [item],
+      });
+      expect(res.status).toBe(201);
+      heldIds.push(res.data!.id);
+    }
+
+    const fourth = await authedPost<{ id: string }>(request, url, '/api/transactions/hold', staffAccessToken, {
+      branch_id: branchId,
+      shift_id: shiftId,
+      items: [item],
+    });
+    expect(fourth.status).toBe(409);
+    expect((fourth.error as { code?: string } | null)?.code).toBe('HOLD_ORDER_LIMIT_REACHED');
+
+    // Release all three so no held orders are left dangling for the rest of the spec run.
+    for (const id of heldIds) {
+      await authedPost(request, url, `/api/transactions/hold/${id}/release`, staffAccessToken, {});
+    }
   });
 });
 

@@ -7,6 +7,27 @@ const transactionInclude = {
   shift: { select: { id: true, status: true, branchId: true } },
 } satisfies Prisma.TransactionInclude;
 
+const holdOrderInclude = {
+  items: true,
+} satisfies Prisma.HoldOrderInclude;
+
+interface CreateHoldOrderRow {
+  branchId: string;
+  shiftId: string;
+  cashierId: string;
+  expiresAt: Date;
+  items: {
+    productId: string;
+    productVariantId: string;
+    flavorId: string | null;
+    productName: string;
+    variantName: string;
+    flavorName: string | null;
+    unitPrice: number;
+    quantity: number;
+  }[];
+}
+
 interface CreateTransactionRow {
   branchId: string;
   shiftId: string;
@@ -231,6 +252,73 @@ export const transactionsRepository = {
         createdAt: { gte: windowStart, lte: windowEnd },
       },
       select: { id: true, branchId: true, cashierId: true, discountCustomerIdHash: true, createdAt: true },
+    });
+  },
+
+  /** 3-per-terminal limit (Architecture doc §Part 8) — "terminal" mapped to active shift, see transactions.types.ts. */
+  countActiveHoldOrdersForShift(shiftId: string) {
+    return prisma.holdOrder.count({ where: { shiftId, status: 'held' } });
+  },
+
+  async createHoldOrder(data: CreateHoldOrderRow) {
+    return prisma.$transaction(async (tx) => {
+      const holdOrder = await tx.holdOrder.create({
+        data: {
+          branchId: data.branchId,
+          shiftId: data.shiftId,
+          cashierId: data.cashierId,
+          expiresAt: data.expiresAt,
+        },
+      });
+
+      await tx.holdOrderItem.createMany({
+        data: data.items.map((item) => ({
+          holdOrderId: holdOrder.id,
+          productId: item.productId,
+          productVariantId: item.productVariantId,
+          flavorId: item.flavorId,
+          productNameSnapshot: item.productName,
+          variantNameSnapshot: item.variantName,
+          flavorNameSnapshot: item.flavorName,
+          unitPriceSnapshot: item.unitPrice,
+          quantity: item.quantity,
+        })),
+      });
+
+      return tx.holdOrder.findUniqueOrThrow({ where: { id: holdOrder.id }, include: holdOrderInclude });
+    });
+  },
+
+  findHoldOrderById(id: string) {
+    return prisma.holdOrder.findUnique({ where: { id }, include: holdOrderInclude });
+  },
+
+  listActiveHoldOrdersForShift(shiftId: string) {
+    return prisma.holdOrder.findMany({
+      where: { shiftId, status: 'held' },
+      include: holdOrderInclude,
+      orderBy: { createdAt: 'asc' },
+    });
+  },
+
+  releaseHoldOrder(id: string) {
+    return prisma.holdOrder.update({
+      where: { id },
+      data: { status: 'released', releasedAt: new Date() },
+      include: holdOrderInclude,
+    });
+  },
+
+  /**
+   * Only transitions rows still `held` — a hold already released between the
+   * expiry job firing and this write must not be overwritten back to
+   * `expired`. Returns the updated count so the worker can tell a genuine
+   * expiry apart from a harmless no-op race against a concurrent release.
+   */
+  expireHoldOrderIfStillHeld(id: string) {
+    return prisma.holdOrder.updateMany({
+      where: { id, status: 'held' },
+      data: { status: 'expired', expiredAt: new Date() },
     });
   },
 };

@@ -1,13 +1,22 @@
 import { Prisma } from '@prisma/client';
 import { DISCOUNT_TYPE, SOCKET_EVENTS } from '@potato-corner/shared';
 import { transactionsRepository } from './transactions.repository.js';
-import { TransactionError, type CartItemInput, type CreateTransactionData, type TransactionListFilters } from './transactions.types.js';
+import {
+  TransactionError,
+  HOLD_ORDER_LIMIT_PER_TERMINAL,
+  HOLD_ORDER_EXPIRY_MS,
+  type CartItemInput,
+  type CreateTransactionData,
+  type CreateHoldOrderData,
+  type TransactionListFilters,
+} from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField } from '../../lib/encryption.js';
 import { enqueueSaleDeduction } from '../../queues/inventory.queue.js';
 import { enqueueNotification } from '../../queues/notification.queue.js';
+import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 
 type ActorContext = { id: string; role: string };
@@ -123,6 +132,56 @@ function toTransactionResponse(row: TransactionRow) {
       unit_price: item.unitPriceSnapshot.toNumber(),
       quantity: item.quantity,
       line_total: item.lineTotal.toNumber(),
+    })),
+  };
+}
+
+interface HoldOrderItemRow {
+  id: string;
+  productId: string;
+  productVariantId: string;
+  flavorId: string | null;
+  productNameSnapshot: string;
+  variantNameSnapshot: string;
+  flavorNameSnapshot: string | null;
+  unitPriceSnapshot: { toNumber(): number };
+  quantity: number;
+}
+
+interface HoldOrderRow {
+  id: string;
+  branchId: string;
+  shiftId: string;
+  cashierId: string;
+  status: string;
+  expiresAt: Date;
+  releasedAt: Date | null;
+  expiredAt: Date | null;
+  createdAt: Date;
+  items: HoldOrderItemRow[];
+}
+
+function toHoldOrderResponse(row: HoldOrderRow) {
+  return {
+    id: row.id,
+    branch_id: row.branchId,
+    shift_id: row.shiftId,
+    cashier_id: row.cashierId,
+    status: row.status,
+    expires_at: row.expiresAt.toISOString(),
+    released_at: row.releasedAt?.toISOString() ?? null,
+    expired_at: row.expiredAt?.toISOString() ?? null,
+    created_at: row.createdAt.toISOString(),
+    items: row.items.map((item) => ({
+      id: item.id,
+      product_id: item.productId,
+      product_variant_id: item.productVariantId,
+      flavor_id: item.flavorId,
+      product_name: item.productNameSnapshot,
+      variant_name: item.variantNameSnapshot,
+      flavor_name: item.flavorNameSnapshot,
+      unit_price: item.unitPriceSnapshot.toNumber(),
+      quantity: item.quantity,
     })),
   };
 }
@@ -520,5 +579,95 @@ export const transactionsService = {
       branchId: (transaction as TransactionRow).branchId,
       ipAddress,
     });
+  },
+
+  /**
+   * Architecture doc §Part 8 "Hold orders": max 3 per terminal, 15-min
+   * expiry, no supervisor action required. Cart validation reuses the exact
+   * same catalog checks as createTransaction (resolveCartItems) — a held
+   * order must be resolvable against the live catalog just as much as a
+   * completed sale, since it's replayed into a real transaction on release.
+   */
+  async holdOrder(data: CreateHoldOrderData, ipAddress: string | null) {
+    const shift = await cashRepository.findShiftById(data.shiftId);
+    if (!shift || shift.branchId !== data.branchId) {
+      throw new TransactionError('INVALID_SHIFT', 'shift_id does not belong to branch_id', 422);
+    }
+    if (shift.status !== 'active') {
+      throw new TransactionError('SHIFT_CLOSED', 'Cannot hold an order on a shift that is not open', 409);
+    }
+
+    const activeCount = await transactionsRepository.countActiveHoldOrdersForShift(data.shiftId);
+    if (activeCount >= HOLD_ORDER_LIMIT_PER_TERMINAL) {
+      throw new TransactionError(
+        'HOLD_ORDER_LIMIT_REACHED',
+        `This terminal already has ${HOLD_ORDER_LIMIT_PER_TERMINAL} held orders — release or let one expire before holding another`,
+        409,
+      );
+    }
+
+    const resolvedItems = await resolveCartItems(data.branchId, data.items);
+    const expiresAt = new Date(Date.now() + HOLD_ORDER_EXPIRY_MS);
+
+    const created = await transactionsRepository.createHoldOrder({
+      branchId: data.branchId,
+      shiftId: data.shiftId,
+      cashierId: data.cashierId,
+      expiresAt,
+      items: resolvedItems,
+    });
+    const response = toHoldOrderResponse(created as HoldOrderRow);
+
+    await recordAuditLog({
+      action: 'HOLD_ORDER_CREATED',
+      entityType: 'hold_order',
+      entityId: created.id,
+      actorId: data.cashierId,
+      actorRole: 'cashier',
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    // Fire-and-forget, same reasoning as inventory deduction above: a queue
+    // outage must not fail the hold itself — a stuck `held` row with no
+    // expiry job is a manageable ops issue, not a data-integrity one.
+    try {
+      await enqueueHoldOrderExpiry({ holdOrderId: created.id, branchId: data.branchId, shiftId: data.shiftId }, HOLD_ORDER_EXPIRY_MS);
+    } catch (error) {
+      console.error(`Failed to enqueue expiry for hold order ${created.id}:`, error);
+    }
+
+    return response;
+  },
+
+  async listHoldOrders(shiftId: string) {
+    const holdOrders = await transactionsRepository.listActiveHoldOrdersForShift(shiftId);
+    return { hold_orders: (holdOrders as HoldOrderRow[]).map(toHoldOrderResponse) };
+  },
+
+  async releaseHoldOrder(id: string, actor: ActorContext, ipAddress: string | null) {
+    const holdOrder = (await transactionsRepository.findHoldOrderById(id)) as HoldOrderRow | null;
+    if (!holdOrder) throw new TransactionError('HOLD_ORDER_NOT_FOUND', 'Hold order not found', 404);
+    if (holdOrder.status !== 'held') {
+      throw new TransactionError('HOLD_ORDER_NOT_ACTIVE', `This hold order is already ${holdOrder.status}`, 409);
+    }
+
+    const updated = await transactionsRepository.releaseHoldOrder(id);
+    const response = toHoldOrderResponse(updated as HoldOrderRow);
+
+    await recordAuditLog({
+      action: 'HOLD_ORDER_RELEASED',
+      entityType: 'hold_order',
+      entityId: id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: holdOrder.branchId,
+      beforeState: toHoldOrderResponse(holdOrder),
+      afterState: response,
+      ipAddress,
+    });
+
+    return response;
   },
 };

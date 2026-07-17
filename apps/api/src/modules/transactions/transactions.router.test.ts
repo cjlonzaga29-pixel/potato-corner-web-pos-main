@@ -18,6 +18,7 @@ vi.mock('./transactions.service.js', () => ({
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
     markReceiptPrinted: vi.fn(),
+    syncOfflineTransactions: vi.fn(),
   },
 }));
 
@@ -103,6 +104,7 @@ beforeEach(() => {
 describe('transactions routes — authentication', () => {
   const protectedRoutes: Array<{ method: string; path: string }> = [
     { method: 'post', path: '/' },
+    { method: 'post', path: '/sync-offline' },
     { method: 'get', path: '/' },
     { method: 'get', path: '/:transactionId' },
     { method: 'post', path: '/:transactionId/void' },
@@ -202,6 +204,84 @@ describe('POST / — validate middleware', () => {
 
     expect(res.status).toHaveBeenCalledWith(422);
     expect(transactionsService.createTransaction).not.toHaveBeenCalled();
+  });
+});
+
+function validSyncOfflineBody(overrides: Record<string, unknown> = {}) {
+  return {
+    branch_id: BRANCH_1,
+    transactions: [
+      {
+        offline_provisional_number: `PC-MAIN01-20260719-OFFLINE-0001`,
+        shift_id: SHIFT_1,
+        items: [{ product_id: randomUUID(), product_variant_id: randomUUID(), quantity: 1 }],
+        payment_method: 'cash',
+        cash_tendered: 100,
+        client_created_at: Date.now(),
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe('POST /sync-offline', () => {
+  it('is registered before /:transactionId, matching the /hold registration-order pattern', () => {
+    // Would throw "No route registered" if Express's route-order matching
+    // captured "/sync-offline" as a :transactionId param instead.
+    expect(() => getRouteHandlers(transactionsRouter, 'post', '/sync-offline')).not.toThrow();
+  });
+
+  it('a valid batch from staff (with an active shift) reaches the service and returns 200', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody() });
+    const res = mockRes();
+    vi.mocked(transactionsService.syncOfflineTransactions).mockResolvedValue({ results: [], synced_count: 0 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.syncOfflineTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ branchId: BRANCH_1, cashierId: expect.any(String) }),
+      null,
+    );
+  });
+
+  it('an empty transactions array gets 422 before reaching the service', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody({ transactions: [] }) });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(transactionsService.syncOfflineTransactions).not.toHaveBeenCalled();
+  });
+
+  it('staff with no active shift is blocked by shiftGuard before reaching the service — 403 NO_ACTIVE_SHIFT', async () => {
+    vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody() });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(transactionsService.syncOfflineTransactions).not.toHaveBeenCalled();
+  });
+
+  it('a staff member posting for a branch they are not assigned to gets 403 from branchGuard', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_2);
+    const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody({ branch_id: BRANCH_1 }) });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(transactionsService.syncOfflineTransactions).not.toHaveBeenCalled();
   });
 });
 

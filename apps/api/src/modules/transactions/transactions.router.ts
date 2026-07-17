@@ -5,8 +5,10 @@ import {
   refundTransactionRequestSchema,
   transactionListQuerySchema,
   createHoldOrderSchema,
+  syncOfflineTransactionsSchema,
   ROLES,
   type CartItem,
+  type OfflineTransactionItem,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
 import { TransactionError } from './transactions.types.js';
@@ -90,6 +92,60 @@ router.post(
         req.ip ?? null,
       );
       res.status(201).json({ data: transaction, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+interface SyncOfflineTransactionsBody {
+  branch_id: string;
+  transactions: OfflineTransactionItem[];
+}
+
+// Registered before /:transactionId — same reasoning as /hold above. Phase
+// 20 Task 4: reconnect-sync reconciliation endpoint (Architecture doc §Part
+// 10). branchGuard/shiftGuard read branch_id off the top-level body field —
+// every queued offline transaction in the batch belongs to the same device,
+// hence the same branch and (for staff) the same currently-active shift.
+router.post(
+  '/sync-offline',
+  authenticate,
+  allRoles,
+  requirePasswordChange,
+  branchGuard,
+  shiftGuard,
+  validate(syncOfflineTransactionsSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as SyncOfflineTransactionsBody;
+      const result = await transactionsService.syncOfflineTransactions(
+        {
+          branchId: body.branch_id,
+          cashierId: req.user.user_id,
+          transactions: body.transactions.map((item) => ({
+            offlineProvisionalNumber: item.offline_provisional_number,
+            shiftId: item.shift_id,
+            items: item.items.map((cartItem) => ({
+              productId: cartItem.product_id,
+              productVariantId: cartItem.product_variant_id,
+              flavorId: cartItem.flavor_id,
+              quantity: cartItem.quantity,
+            })),
+            paymentMethod: item.payment_method,
+            discountType: item.discount_type,
+            discountIdReference: item.discount_id_reference,
+            discountAmount: item.discount_amount,
+            cashTendered: item.cash_tendered,
+            gcashReferenceNumber: item.gcash_reference_number,
+            gcashManuallyVerified: item.gcash_manually_verified,
+            clientCreatedAt: item.client_created_at,
+          })),
+        },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

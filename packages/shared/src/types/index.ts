@@ -115,6 +115,10 @@ export type TransactionListQuery = z.infer<typeof schemas.transactionListQuerySc
 export type TransactionItemResponse = z.infer<typeof schemas.transactionItemResponseSchema>;
 export type TransactionResponse = z.infer<typeof schemas.transactionResponseSchema>;
 export type TransactionListResponse = z.infer<typeof schemas.transactionListResponseSchema>;
+export type OfflineTransactionItem = z.infer<typeof schemas.offlineTransactionItemSchema>;
+export type SyncOfflineTransactionsInput = z.infer<typeof schemas.syncOfflineTransactionsSchema>;
+export type SyncOfflineTransactionResult = z.infer<typeof schemas.syncOfflineTransactionResultSchema>;
+export type SyncOfflineTransactionsResponse = z.infer<typeof schemas.syncOfflineTransactionsResponseSchema>;
 
 export type OpenShiftInput = z.infer<typeof schemas.openShiftSchema>;
 export type CloseShiftInput = z.infer<typeof schemas.closeShiftSchema>;

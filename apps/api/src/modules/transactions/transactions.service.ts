@@ -9,6 +9,7 @@ import {
   type CreateTransactionData,
   type CreateHoldOrderData,
   type TransactionListFilters,
+  type SyncOfflineTransactionsData,
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
@@ -455,6 +456,69 @@ export const transactionsService = {
     // this row is the entire "update the shift's running total" step.
 
     return response;
+  },
+
+  /**
+   * Reconnect-sync reconciliation endpoint (Phase 20 Task 4 / Architecture
+   * doc §Part 10). Processes a device's queued offline sales in one request,
+   * strictly in chronological order (client_created_at), each through the
+   * exact same createTransaction path a live sale takes — official receipt
+   * numbering, VAT/discount calculation, inventory deduction, and audit
+   * logging are not duplicated here, only reused. A failed item is recorded
+   * in its own result row and does not stop the rest of the batch from
+   * syncing, mirroring the frontend queue's existing per-transaction
+   * failure handling (lib/offline/sync-queue.ts).
+   */
+  async syncOfflineTransactions(data: SyncOfflineTransactionsData, ipAddress: string | null) {
+    const ordered = [...data.transactions].sort((a, b) => a.clientCreatedAt - b.clientCreatedAt);
+
+    const results: {
+      offline_provisional_number: string;
+      status: 'synced' | 'failed';
+      transaction?: ReturnType<typeof toTransactionResponse>;
+      error?: { code: string; message?: string };
+    }[] = [];
+
+    for (const item of ordered) {
+      try {
+        const transaction = await transactionsService.createTransaction(
+          {
+            branchId: data.branchId,
+            shiftId: item.shiftId,
+            cashierId: data.cashierId,
+            items: item.items,
+            paymentMethod: item.paymentMethod,
+            discountType: item.discountType,
+            discountIdReference: item.discountIdReference,
+            discountAmount: item.discountAmount,
+            cashTendered: item.cashTendered,
+            gcashReferenceNumber: item.gcashReferenceNumber,
+            gcashManuallyVerified: item.gcashManuallyVerified,
+            isOfflineTransaction: true,
+            offlineProvisionalNumber: item.offlineProvisionalNumber,
+          },
+          ipAddress,
+        );
+        results.push({ offline_provisional_number: item.offlineProvisionalNumber, status: 'synced', transaction });
+      } catch (error) {
+        results.push({
+          offline_provisional_number: item.offlineProvisionalNumber,
+          status: 'failed',
+          error: error instanceof TransactionError ? { code: error.code, message: error.message } : { code: 'SYNC_FAILED' },
+        });
+      }
+    }
+
+    const syncedCount = results.filter((r) => r.status === 'synced').length;
+    if (syncedCount > 0) {
+      await enqueueNotification('offline_transactions_synced', {
+        type: 'offline_transactions_synced',
+        branchId: data.branchId,
+        syncedCount,
+      });
+    }
+
+    return { results, synced_count: syncedCount };
   },
 
   async getTransactionById(id: string) {

@@ -39,12 +39,26 @@ export async function enqueueOfflineTransaction(branchCode: string, payload: Cre
   return id;
 }
 
+interface SyncOfflineTransactionsResult {
+  offline_provisional_number: string;
+  status: 'synced' | 'failed';
+  transaction?: { receipt_number: string };
+  error?: { code: string; message?: string };
+}
+
+interface SyncOfflineTransactionsResponse {
+  results: SyncOfflineTransactionsResult[];
+  synced_count: number;
+}
+
 /**
- * Drains offline transactions in chronological order once connectivity
- * returns, per Architecture doc §10.3. The server assigns the official
- * receipt number; the local record is updated to reference it. A failed
- * sync is logged and left in the queue — the loop moves on to the next
- * transaction rather than blocking the whole drain on one bad payload.
+ * Drains offline transactions in one reconnect-sync batch call once
+ * connectivity returns, per Architecture doc §10.3 — the server processes
+ * the batch in chronological order (client_created_at) and assigns each an
+ * official receipt number; this just relays that queue's payload shape and
+ * writes the results back. A failed item is logged and left in the local
+ * queue (retried on the next reconnect) rather than blocking the rest of
+ * the batch from syncing.
  */
 export async function syncOfflineTransactions(): Promise<void> {
   if (typeof window === 'undefined') return;
@@ -54,24 +68,50 @@ export async function syncOfflineTransactions(): Promise<void> {
   // Filtering after an indexed orderBy keeps the chronological order without
   // that mismatch.
   const pending = await db.offlineTransactions.orderBy('createdAt').filter((t) => t.syncedAt === null).toArray();
+  const [firstPending] = pending;
+  if (!firstPending) return;
 
-  for (const transaction of pending) {
-    try {
-      const response = await apiClient<{ receipt_number: string }>('/api/transactions', {
-        method: 'POST',
-        body: JSON.stringify(transaction.payload),
-      });
+  // Every queued transaction on this device was rung up at the same branch
+  // — a device's terminal session never spans branches.
+  const branchId = firstPending.payload.branch_id;
 
-      if (response.data) {
-        await db.offlineTransactions.update(transaction.id, {
+  try {
+    const response = await apiClient<SyncOfflineTransactionsResponse>('/api/transactions/sync-offline', {
+      method: 'POST',
+      body: JSON.stringify({
+        branch_id: branchId,
+        transactions: pending.map((t) => ({
+          offline_provisional_number: t.id,
+          shift_id: t.payload.shift_id,
+          items: t.payload.items,
+          payment_method: t.payload.payment_method,
+          discount_type: t.payload.discount_type,
+          discount_id_reference: t.payload.discount_id_reference,
+          discount_amount: t.payload.discount_amount,
+          cash_tendered: t.payload.cash_tendered,
+          gcash_reference_number: t.payload.gcash_reference_number,
+          gcash_manually_verified: t.payload.gcash_manually_verified,
+          client_created_at: t.createdAt,
+        })),
+      }),
+    });
+
+    if (!response.data) {
+      console.error('Failed to sync offline transaction batch:', response.error);
+      return;
+    }
+
+    for (const result of response.data.results) {
+      if (result.status === 'synced' && result.transaction) {
+        await db.offlineTransactions.update(result.offline_provisional_number, {
           syncedAt: Date.now(),
-          officialTransactionNumber: response.data.receipt_number,
+          officialTransactionNumber: result.transaction.receipt_number,
         });
       } else {
-        console.error(`Failed to sync offline transaction ${transaction.id}:`, response.error);
+        console.error(`Failed to sync offline transaction ${result.offline_provisional_number}:`, result.error);
       }
-    } catch (error) {
-      console.error(`Failed to sync offline transaction ${transaction.id}:`, error);
     }
+  } catch (error) {
+    console.error('Failed to sync offline transaction batch:', error);
   }
 }

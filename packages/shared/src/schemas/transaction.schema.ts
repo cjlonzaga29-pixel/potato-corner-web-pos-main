@@ -129,6 +129,62 @@ export const transactionListResponseSchema = z.object({
   limit: z.number().int(),
 });
 
+/**
+ * One offline-queued sale within a reconnect-sync batch (Architecture doc
+ * §Part 10). Shaped like createTransactionSchema but branch-scoped to the
+ * batch's declared branch_id and always carrying its own provisional
+ * number — is_offline_transaction is implied true, not repeated per item.
+ */
+export const offlineTransactionItemSchema = z
+  .object({
+    offline_provisional_number: z.string().min(1),
+    shift_id: z.uuid(),
+    items: z.array(cartItemSchema).min(1),
+    payment_method: z.enum(paymentMethodValues),
+    discount_type: z.enum(discountTypeValues).optional(),
+    discount_id_reference: z.string().min(1).optional(),
+    discount_amount: z.number().nonnegative().optional(),
+    cash_tendered: z.number().nonnegative().optional(),
+    gcash_reference_number: z
+      .string()
+      .regex(/^\d{10,20}$/)
+      .optional(),
+    gcash_manually_verified: z.boolean().optional(),
+    // Epoch ms from the client's Dexie queue (createdAt) — the server sorts
+    // the batch by this before processing, per the architecture doc's "sync
+    // queue processes transactions in chronological order" rule.
+    client_created_at: z.number().int().nonnegative(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.payment_method === PAYMENT_METHOD.CASH && data.cash_tendered === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['cash_tendered'], message: 'cash_tendered is required for a cash payment' });
+    }
+    if (data.payment_method === PAYMENT_METHOD.GCASH && !data.gcash_reference_number) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['gcash_reference_number'],
+        message: 'gcash_reference_number is required for a GCash payment',
+      });
+    }
+  });
+
+export const syncOfflineTransactionsSchema = z.object({
+  branch_id: z.uuid(),
+  transactions: z.array(offlineTransactionItemSchema).min(1),
+});
+
+export const syncOfflineTransactionResultSchema = z.object({
+  offline_provisional_number: z.string(),
+  status: z.enum(['synced', 'failed']),
+  transaction: transactionResponseSchema.optional(),
+  error: z.object({ code: z.string(), message: z.string().optional() }).optional(),
+});
+
+export const syncOfflineTransactionsResponseSchema = z.object({
+  results: z.array(syncOfflineTransactionResultSchema),
+  synced_count: z.number().int(),
+});
+
 /** Architecture doc §Part 8 "Hold orders": max 3 per terminal, 15-min expiry. */
 export const createHoldOrderSchema = z.object({
   branch_id: z.uuid(),

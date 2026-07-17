@@ -481,6 +481,66 @@ describe('transactionsService.refundTransaction', () => {
   });
 });
 
+describe('transactionsService.syncOfflineTransactions', () => {
+  const offlineItem = (overrides: Record<string, unknown> = {}) => ({
+    offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0001',
+    shiftId: 'shift-1',
+    items: baseInput.items,
+    paymentMethod: 'cash' as const,
+    cashTendered: 100,
+    clientCreatedAt: 1000,
+    ...overrides,
+  });
+
+  it('processes the batch in chronological order (client_created_at), not submission order', async () => {
+    const earlier = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0002', clientCreatedAt: 1000 });
+    const later = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0003', clientCreatedAt: 2000 });
+
+    // Submitted out of order — later item first.
+    await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [later, earlier] }, null);
+
+    const calls = vi.mocked(transactionsRepository.createTransaction).mock.calls;
+    expect(calls[0][0]).toMatchObject({ offlineProvisionalNumber: earlier.offlineProvisionalNumber });
+    expect(calls[1][0]).toMatchObject({ offlineProvisionalNumber: later.offlineProvisionalNumber });
+  });
+
+  it('marks a failed item without stopping the rest of the batch from syncing', async () => {
+    const insufficientCash = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0004', cashTendered: 1, clientCreatedAt: 1000 });
+    const valid = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0005', cashTendered: 100, clientCreatedAt: 2000 });
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', transactions: [insufficientCash, valid] },
+      null,
+    );
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ offline_provisional_number: insufficientCash.offlineProvisionalNumber, status: 'failed' }),
+      expect.objectContaining({ offline_provisional_number: valid.offlineProvisionalNumber, status: 'synced' }),
+    ]);
+    expect(result.results[0].error).toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
+    expect(result.synced_count).toBe(1);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('enqueues offline_transactions_synced with the synced count when at least one item syncs', async () => {
+    await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [offlineItem()] }, null);
+
+    expect(enqueueNotification).toHaveBeenCalledWith('offline_transactions_synced', {
+      type: 'offline_transactions_synced',
+      branchId: 'branch-1',
+      syncedCount: 1,
+    });
+  });
+
+  it('does not enqueue offline_transactions_synced when every item in the batch fails', async () => {
+    const insufficientCash = offlineItem({ cashTendered: 1 });
+
+    await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [insufficientCash] }, null);
+
+    expect(enqueueNotification).not.toHaveBeenCalledWith('offline_transactions_synced', expect.anything());
+  });
+});
+
 describe('transactionsService.holdOrder — 3-per-terminal limit', () => {
   it('allows holding an order when the shift has fewer than 3 active holds', async () => {
     vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(2);

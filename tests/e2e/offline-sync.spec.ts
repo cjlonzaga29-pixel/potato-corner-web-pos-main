@@ -16,6 +16,11 @@
 // fires those same events in Chromium, which is what this test relies on —
 // this is standard, documented Playwright behavior, not a guess, but has
 // still never been run here.
+//
+// Phase 20 Task 4: syncOfflineTransactions() now POSTs the whole queued
+// batch to POST /api/transactions/sync-offline in one call instead of
+// looping per transaction — this spec is black-box (UI state only, no
+// network assertions) so that change doesn't require any edits here.
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { TEST_USERS } from './fixtures/test-users';

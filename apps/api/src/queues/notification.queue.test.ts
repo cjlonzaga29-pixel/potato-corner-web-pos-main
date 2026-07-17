@@ -325,7 +325,21 @@ describe('notificationWorker processor — offline_transactions_synced', () => {
 describe('notificationWorker processor — eod_summary', () => {
   it('emits the socket event to super admins and persists a Notification per super admin, with an email TODO', async () => {
     vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
-    const data = { type: 'eod_summary' as const, branchId: 'branch-1', businessDate: '2026-07-17', totalSales: 15000 };
+    const data = {
+      type: 'eod_summary' as const,
+      branchId: 'branch-1',
+      businessDate: '2026-07-17',
+      totalSales: 15000,
+      totalRevenue: 20000,
+      transactionCount: 60,
+      voidCount: 3,
+      unresolvedCashVarianceCount: 1,
+      openFraudAlertsCreatedTodayCount: 2,
+      branchRevenue: [
+        { branchId: 'branch-1', branchName: 'Manila', revenue: 15000 },
+        { branchId: 'branch-2', branchName: 'Cebu', revenue: 5000 },
+      ],
+    };
 
     await processor()({ name: 'eod_summary', data } as Job);
 

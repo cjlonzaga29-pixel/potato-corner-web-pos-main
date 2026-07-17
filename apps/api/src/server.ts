@@ -6,6 +6,7 @@ import { app } from './app.js';
 import { createSocketServer } from './socket/socket.server.js';
 import { redis } from './lib/redis.js';
 import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
+import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 
 // Importing `config` above already validated every required env var (it
 // fails fast with a clear field-level error if anything is missing) —
@@ -64,6 +65,14 @@ async function start(): Promise<void> {
       console.log('Nightly fraud detection scan scheduled (23:00 Asia/Manila).');
     } catch (error) {
       console.error('Failed to register the nightly fraud detection scan:', error);
+      Sentry.captureException(error);
+    }
+
+    try {
+      await scheduleNightlyEodSummary();
+      console.log('Nightly EOD summary scheduled (23:59 Asia/Manila).');
+    } catch (error) {
+      console.error('Failed to register the nightly EOD summary:', error);
       Sentry.captureException(error);
     }
   }

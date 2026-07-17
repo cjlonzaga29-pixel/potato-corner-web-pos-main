@@ -95,11 +95,23 @@ export interface OfflineTransactionsSyncedNotificationPayload {
   syncedCount: number;
 }
 
+// branchId/totalSales scope this row to one branch (Notification.branch_id is
+// non-nullable — see Task 3's committed migration); one job is enqueued per
+// active branch (Task 8), each carrying the same company-wide totals
+// (totalRevenue/transactionCount/voidCount/unresolvedCashVarianceCount/
+// openFraudAlertsCreatedTodayCount/branchRevenue) so every recipient sees
+// full context regardless of which branch a given row is tagged with.
 export interface EodSummaryNotificationPayload {
   type: 'eod_summary';
   branchId: string;
   businessDate: string;
   totalSales: number;
+  totalRevenue: number;
+  transactionCount: number;
+  voidCount: number;
+  unresolvedCashVarianceCount: number;
+  openFraudAlertsCreatedTodayCount: number;
+  branchRevenue: { branchId: string; branchName: string; revenue: number }[];
 }
 
 export type NotificationPayload =

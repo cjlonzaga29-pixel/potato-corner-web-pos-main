@@ -107,6 +107,28 @@ describe('GET /', () => {
     expect(notificationsService.listForRecipient).toHaveBeenCalledWith(expect.any(String), { page: 1, limit: 25 });
   });
 
+  it('passes through explicit page/limit query params and returns total/unread_count in the response', async () => {
+    const handlers = getRouteHandlers(notificationsRouter, 'get', '/');
+    const token = generateStaffToken(randomUUID());
+    const req = mockReq({ ...authHeader(token), query: { page: '2', limit: '10' } });
+    const res = mockRes();
+    vi.mocked(notificationsService.listForRecipient).mockResolvedValue({
+      notifications: [{ id: NOTIF_1, type: 'low_stock', payload: {}, branch_id: 'branch-1', read: false, created_at: '2026-07-17T00:00:00.000Z' }],
+      total: 15,
+      unread_count: 4,
+      page: 2,
+      limit: 10,
+    });
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(notificationsService.listForRecipient).toHaveBeenCalledWith(expect.any(String), { page: 2, limit: 10 });
+    expect((res as Response & { jsonBody?: unknown }).jsonBody).toEqual(
+      expect.objectContaining({ data: expect.objectContaining({ total: 15, unread_count: 4, page: 2, limit: 10 }) }),
+    );
+  });
+
   it('returns 422 for an invalid page param', async () => {
     const handlers = getRouteHandlers(notificationsRouter, 'get', '/');
     const token = generateSuperAdminToken();

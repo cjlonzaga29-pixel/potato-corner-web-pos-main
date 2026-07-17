@@ -1,7 +1,7 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { redis, createWorkerConnection } from '../lib/redis.js';
-import { sendWelcomeEmail } from '../lib/email.js';
+import { sendWelcomeEmail, sendFraudAlertEmail, sendLargeAdjustmentApprovalEmail, sendEodSummaryEmail } from '../lib/email.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
 import { notificationsRepository } from '../modules/notifications/notifications.repository.js';
 import type { NotificationPayload, NotificationType } from '../modules/notifications/notifications.types.js';
@@ -32,6 +32,21 @@ function retryDelayMs(attemptsMade: number): number {
  */
 export function enqueueNotification(type: NotificationType, payload: NotificationPayload) {
   return notificationQueue.add(type, payload, { attempts: 3, backoff: { type: 'custom' } });
+}
+
+/**
+ * Task 10's error-handling contract: an email delivery failure must not
+ * fail the whole job — the Notification row is already persisted and the
+ * socket event already emitted by the time this runs, so retrying the job
+ * would only re-create duplicate Notification rows, not fix the email.
+ * Logged so ops can see it (e.g. Resend outage) without losing the alert.
+ */
+async function sendEmailBestEffort(send: () => Promise<void>, context: string): Promise<void> {
+  try {
+    await send();
+  } catch (error) {
+    console.error(`Failed to send ${context}:`, error);
+  }
 }
 
 interface EmployeeWelcomeJobData {
@@ -205,7 +220,11 @@ export const notificationWorker = new Worker(
           }),
         ),
       );
-      // TODO(Task 10): send email via Resend
+      await Promise.all(
+        recipients.map((recipient) =>
+          sendEmailBestEffort(() => sendLargeAdjustmentApprovalEmail(recipient.email, data), `large adjustment approval email to ${recipient.email}`),
+        ),
+      );
       return;
     }
     if (job.name === 'fraud_alert_created') {
@@ -219,7 +238,11 @@ export const notificationWorker = new Worker(
           notificationsRepository.create({ type: 'fraud_alert_created', payload: data, recipientUserId: recipient.id, branchId: data.branchId }),
         ),
       );
-      // TODO(Task 10): send email via Resend
+      await Promise.all(
+        recipients.map((recipient) =>
+          sendEmailBestEffort(() => sendFraudAlertEmail(recipient.email, data), `fraud alert email to ${recipient.email}`),
+        ),
+      );
       return;
     }
     if (job.name === 'offline_transactions_synced') {
@@ -248,7 +271,9 @@ export const notificationWorker = new Worker(
           notificationsRepository.create({ type: 'eod_summary', payload: data, recipientUserId: recipient.id, branchId: data.branchId }),
         ),
       );
-      // TODO(Task 10): send email via Resend
+      await Promise.all(
+        recipients.map((recipient) => sendEmailBestEffort(() => sendEodSummaryEmail(recipient.email, data), `EOD summary email to ${recipient.email}`)),
+      );
       return;
     }
   },

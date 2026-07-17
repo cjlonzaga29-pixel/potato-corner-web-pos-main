@@ -138,3 +138,20 @@ export interface CreateNotificationData {
   recipientUserId: string;
   branchId: string;
 }
+
+/** Mirrors FraudError — every module maps its own domain errors to HTTP status via its router's error handler. */
+export class NotificationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly statusCode: number = 400,
+  ) {
+    super(message);
+    this.name = 'NotificationError';
+  }
+}
+
+export interface NotificationPagination {
+  page: number;
+  limit: number;
+}

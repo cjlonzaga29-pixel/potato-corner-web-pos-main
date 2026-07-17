@@ -10,6 +10,9 @@ vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
     notification: {
       create: vi.fn(),
+      findMany: vi.fn(),
+      count: vi.fn(),
+      updateMany: vi.fn(),
     },
     user: {
       findMany: vi.fn(),
@@ -49,16 +52,16 @@ describe('notificationsRepository.create', () => {
 });
 
 describe('notificationsRepository.findSuperAdminUserIds', () => {
-  it('queries active super_admin users, selecting only id', async () => {
-    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'admin-1' }] as never);
+  it('queries active super_admin users, selecting id and email', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
 
     const result = await notificationsRepository.findSuperAdminUserIds();
 
     expect(prisma.user.findMany).toHaveBeenCalledWith({
       where: { role: 'super_admin', isActive: true },
-      select: { id: true },
+      select: { id: true, email: true },
     });
-    expect(result).toEqual([{ id: 'admin-1' }]);
+    expect(result).toEqual([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }]);
   });
 });
 
@@ -90,5 +93,69 @@ describe('notificationsRepository.findBranchSupervisorUserIds', () => {
       select: { id: true },
     });
     expect(result).toEqual([{ id: 'supervisor-1' }]);
+  });
+});
+
+describe('notificationsRepository.findForRecipient', () => {
+  it('queries by recipientUserId, unread first then newest first, with pagination', async () => {
+    vi.mocked(prisma.notification.findMany).mockResolvedValue([{ id: 'notif-1' }] as never);
+    vi.mocked(prisma.notification.count).mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+
+    const result = await notificationsRepository.findForRecipient('user-1', { page: 1, limit: 25 });
+
+    expect(prisma.notification.findMany).toHaveBeenCalledWith({
+      where: { recipientUserId: 'user-1' },
+      orderBy: [{ readAt: { sort: 'asc', nulls: 'first' } }, { createdAt: 'desc' }],
+      skip: 0,
+      take: 25,
+    });
+    expect(prisma.notification.count).toHaveBeenNthCalledWith(1, { where: { recipientUserId: 'user-1' } });
+    expect(prisma.notification.count).toHaveBeenNthCalledWith(2, { where: { recipientUserId: 'user-1', readAt: null } });
+    expect(result).toEqual({ notifications: [{ id: 'notif-1' }], total: 1, unreadCount: 1 });
+  });
+
+  it('computes skip/take from page and limit', async () => {
+    vi.mocked(prisma.notification.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.notification.count).mockResolvedValue(0);
+
+    await notificationsRepository.findForRecipient('user-1', { page: 3, limit: 10 });
+
+    expect(prisma.notification.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 20, take: 10 }));
+  });
+});
+
+describe('notificationsRepository.markRead', () => {
+  it('scopes the update to id and recipientUserId, stamping readAt', async () => {
+    vi.mocked(prisma.notification.updateMany).mockResolvedValue({ count: 1 });
+
+    const result = await notificationsRepository.markRead('notif-1', 'user-1');
+
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { id: 'notif-1', recipientUserId: 'user-1' },
+      data: { readAt: expect.any(Date) },
+    });
+    expect(result).toEqual({ count: 1 });
+  });
+
+  it('returns count 0 when the notification belongs to a different recipient', async () => {
+    vi.mocked(prisma.notification.updateMany).mockResolvedValue({ count: 0 });
+
+    const result = await notificationsRepository.markRead('notif-1', 'other-user');
+
+    expect(result).toEqual({ count: 0 });
+  });
+});
+
+describe('notificationsRepository.markAllRead', () => {
+  it('scopes the update to recipientUserId and unread rows only', async () => {
+    vi.mocked(prisma.notification.updateMany).mockResolvedValue({ count: 3 });
+
+    const result = await notificationsRepository.markAllRead('user-1');
+
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { recipientUserId: 'user-1', readAt: null },
+      data: { readAt: expect.any(Date) },
+    });
+    expect(result).toEqual({ count: 3 });
   });
 });

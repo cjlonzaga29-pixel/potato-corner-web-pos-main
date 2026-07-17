@@ -6,9 +6,10 @@ const onMock = vi.fn();
 
 vi.mock('bullmq', () => ({
   Queue: vi.fn().mockImplementation(() => ({ add: addMock })),
-  Worker: vi.fn().mockImplementation((_name: string, processor: (job: Job) => Promise<void>) => ({
+  Worker: vi.fn().mockImplementation((_name: string, processor: (job: Job) => Promise<void>, options: unknown) => ({
     on: onMock,
     __processor: processor,
+    __options: options,
   })),
 }));
 
@@ -118,5 +119,16 @@ describe('eodWorker processor', () => {
     await processor({ name: 'nightly_eod_summary', data: {} } as Job);
 
     expect(enqueueNotification).not.toHaveBeenCalled();
+  });
+});
+
+describe('eodWorker backoff strategy', () => {
+  it('resolves the 10s/60s/300s Decision 7 backoff schedule, falling back to 300s beyond the 3rd attempt', () => {
+    const options = (eodWorker as unknown as { __options: { settings: { backoffStrategy: (attemptsMade: number) => number } } }).__options;
+
+    expect(options.settings.backoffStrategy(1)).toBe(10_000);
+    expect(options.settings.backoffStrategy(2)).toBe(60_000);
+    expect(options.settings.backoffStrategy(3)).toBe(300_000);
+    expect(options.settings.backoffStrategy(4)).toBe(300_000);
   });
 });

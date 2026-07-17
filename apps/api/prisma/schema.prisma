@@ -1,6 +1,7 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -879,4 +880,23 @@ model ReportSnapshot {
   @@index([reportType, branchId, computedAt(sort: Desc)])
   @@index([computedAt])
   @@map("report_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id               String    @id @default(cuid())
+  type             String
+  payload          Json
+  recipientUserId  String    @map("recipient_user_id")
+  branchId         String    @map("branch_id")
+  readAt           DateTime? @map("read_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([recipientUserId, readAt])
+  @@index([branchId, createdAt])
+  @@map("notifications")
 }

@@ -14,6 +14,22 @@ interface RefreshResponseData {
 
 let refreshInFlight: Promise<string | null> | null = null;
 
+const CSRF_COOKIE_NAME = 'csrf-token';
+const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Reads the non-HttpOnly csrf-token cookie the API's double-submit guard
+ * (apps/api/src/middleware/csrf-guard.ts) issues on every response. Echoed
+ * back as the X-CSRF-Token header on mutations so the API can confirm the
+ * request came from JS running on this origin rather than a cross-site form.
+ */
+function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${CSRF_COOKIE_NAME}=([^;]*)`));
+  const value = match?.[1];
+  return value !== undefined ? decodeURIComponent(value) : null;
+}
+
 /**
  * Calls POST /api/auth/refresh (the HttpOnly refresh cookie travels
  * automatically via credentials: 'include'). Deduplicated so concurrent
@@ -23,10 +39,14 @@ async function refreshAccessToken(): Promise<string | null> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
+        const csrfToken = getCsrfToken();
         const response = await fetch(`${API_URL}/api/auth/refresh`, {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+          },
           body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
         });
         if (!response.ok) return null;
@@ -55,6 +75,12 @@ function buildHeaders(init?: RequestInit): Headers {
 
   const deviceId = getOrCreateDeviceId();
   if (deviceId) headers.set('X-Device-ID', deviceId);
+
+  const method = (init?.method ?? 'GET').toUpperCase();
+  if (MUTATION_METHODS.has(method)) {
+    const csrfToken = getCsrfToken();
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+  }
 
   return headers;
 }

@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import * as Sentry from '@sentry/node';
 import { config } from './config/index.js';
 import { apiLimiter } from './middleware/rate-limiter.js';
+import { csrfGuard } from './middleware/csrf-guard.js';
 
 import { authRouter } from './modules/auth/auth.router.js';
 import { branchesRouter } from './modules/branches/branches.router.js';
@@ -44,6 +45,10 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 app.use(apiLimiter);
+
+// Double-submit cookie CSRF check for state-changing requests — see
+// middleware/csrf-guard.ts for the exemption rationale.
+app.use(csrfGuard);
 
 app.use('/api/auth', authRouter);
 app.use('/api/branches', branchesRouter);

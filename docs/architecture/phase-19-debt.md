@@ -52,3 +52,29 @@ Captured items discovered during earlier phases that Phase 19 should address.
 - railway.json + apps/api/Dockerfile status unclear vs CI workflow
 - Postgres service container missing from CI (105 integration tests skip)
 - Phase 12/14/15 verification audit needed
+
+## Dormant notification producers (from Phase 18 Session A)
+
+Notification handlers implemented and ready, but no producer currently
+enqueues these types. Future phases must add producer logic:
+
+- `large_adjustment_approval_needed` — requires adjustment-approval
+  workflow (likely tied to inventory adjustment large-value threshold
+  or manual price-override approval). No business logic exists.
+
+- `offline_transactions_synced` — requires offline sync reconciliation
+  endpoint (POS terminal offline mode → server sync flow). Backend
+  endpoint does not exist. Frontend Dexie/PWA offline support may
+  also be incomplete.
+
+Handlers are safe to leave in place — they will activate as soon as
+producers exist, no code changes needed on the notification side.
+
+## Skills usage discrepancy (from Phase 18 Session A)
+
+Plan doc header at docs/superpowers/plans/2026-07-17-phase18-notifications-eod-summary.md
+references "REQUIRED SUB-SKILL: superpowers:subagent-driven-development or
+superpowers:executing-plans". Session A operated without invoking those
+Skills — TDD cycle performed manually. Future planning sessions should
+either align on Skill usage or update plan docs to remove Skill references
+when working under sessions that disable them.

@@ -61,6 +61,7 @@ jobs:
         run: pnpm exec prisma migrate deploy
         env:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
+          DIRECT_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
 
       - name: Deploy apps/api to Render (production)
         # Skips instead of failing the run when the Render service (and its

@@ -44,9 +44,12 @@ export interface ProductAutoUnavailableNotificationPayload {
 
 export interface CashVarianceFlaggedNotificationPayload {
   type: 'cash_variance_flagged';
-  branchId: string;
   shiftId: string;
-  varianceAmount: number;
+  branchId: string;
+  expectedAmount: number;
+  actualAmount: number;
+  variance: number;
+  flaggedBy: string;
 }
 
 export interface VoidRequestedNotificationPayload {
@@ -54,6 +57,8 @@ export interface VoidRequestedNotificationPayload {
   branchId: string;
   transactionNumber: string;
   requestedByUserId: string;
+  amount: number;
+  reason: string | null;
 }
 
 export interface LargeAdjustmentApprovalNeededNotificationPayload {

@@ -4,6 +4,7 @@ import { cashRepository } from './cash.repository.js';
 import { CashError, type ApproveVarianceData, type CloseShiftData, type OpenShiftData, type ShiftListFilters, type ShiftCloseComputedCounts } from './cash.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -345,6 +346,7 @@ export const cashService = {
       };
       notifyBranch(shift.branchId, SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, variancePayload);
       notifySuperAdmin(SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, variancePayload);
+      await enqueueNotification('cash_variance_flagged', { type: 'cash_variance_flagged', ...variancePayload });
     }
 
     return responseWithSummary;

@@ -37,7 +37,7 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
 const { sendWelcomeEmail } = await import('../lib/email.js');
 const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
 const { notificationsRepository } = await import('../modules/notifications/notifications.repository.js');
-const { notificationWorker } = await import('./notification.queue.js');
+const { notificationWorker, enqueueNotification } = await import('./notification.queue.js');
 
 function processor(): (job: Job) => Promise<void> {
   return (notificationWorker as unknown as { __processor: (job: Job) => Promise<void> }).__processor;
@@ -45,6 +45,24 @@ function processor(): (job: Job) => Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('enqueueNotification', () => {
+  it('enqueues a job named for the type, with the payload as job data and Decision 7 retry options', async () => {
+    const payload = {
+      type: 'cash_variance_flagged' as const,
+      shiftId: 'shift-1',
+      branchId: 'branch-1',
+      expectedAmount: 1000,
+      actualAmount: 850,
+      variance: -150,
+      flaggedBy: 'supervisor-1',
+    };
+
+    await enqueueNotification('cash_variance_flagged', payload);
+
+    expect(addMock).toHaveBeenCalledWith('cash_variance_flagged', payload, { attempts: 3, backoff: { type: 'custom' } });
+  });
 });
 
 describe('notificationWorker processor — employee_welcome', () => {

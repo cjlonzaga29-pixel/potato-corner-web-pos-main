@@ -13,12 +13,17 @@ vi.mock('../../lib/notify.js', () => ({
   notifySuperAdmin: vi.fn(),
 }));
 
+vi.mock('../../queues/notification.queue.js', () => ({
+  enqueueNotification: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('./rules/index.js', () => ({
   FRAUD_RULES: [],
 }));
 
 const { fraudRepository } = await import('./fraud.repository.js');
 const { notifySuperAdmin } = await import('../../lib/notify.js');
+const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const rulesModule = await import('./rules/index.js');
 const { runDetection } = await import('./detection.service.js');
 
@@ -92,6 +97,12 @@ describe('runDetection — alert creation and dedup (standard key)', () => {
     expect(fraudRepository.findRecentOpenAlert).toHaveBeenCalledWith('branch-1', 'user-1', 'excessive_voids');
     expect(fraudRepository.createAlert).toHaveBeenCalledWith(detectionResult);
     expect(notifySuperAdmin).toHaveBeenCalledWith('fraud:alert_created', expect.objectContaining({ id: 'alert-1', alert_type: 'excessive_voids' }));
+    expect(enqueueNotification).toHaveBeenCalledWith('fraud_alert_created', {
+      type: 'fraud_alert_created',
+      branchId: 'branch-1',
+      alertId: 'alert-1',
+      severity: 'medium',
+    });
     expect(result.alertsCreated).toBe(1);
     expect(result.alertsSkippedDupe).toBe(0);
   });
@@ -134,6 +145,9 @@ describe('runDetection — alert creation and dedup (discount_id_reuse special-c
     expect(fraudRepository.findRecentOpenAlert).not.toHaveBeenCalled();
     expect(fraudRepository.createAlert).toHaveBeenCalledWith(detectionResult);
     expect(result.alertsCreated).toBe(1);
+    // alert.branchId is null for this rule (Corrections #4) — Notification.branch_id
+    // is NOT NULL, so persistence is skipped even though the socket broadcast fires.
+    expect(enqueueNotification).not.toHaveBeenCalled();
   });
 
   it('skips creating an alert when an open alert already has a matching customer_id_hash', async () => {

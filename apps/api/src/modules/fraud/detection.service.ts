@@ -3,6 +3,7 @@ import { fraudRepository } from './fraud.repository.js';
 import { FRAUD_RULES } from './rules/index.js';
 import type { DetectionResult } from './rules/fraud-rule.types.js';
 import { notifySuperAdmin } from '../../lib/notify.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 
 export interface RunResult {
   branchesEvaluated: number;
@@ -48,6 +49,19 @@ async function processResult(result: DetectionResult): Promise<boolean> {
     status: alert.status,
     created_at: alert.createdAt.toISOString(),
   });
+  // The Notification model's branch_id column is NOT NULL, but fraud alerts
+  // for rules like discount_id_reuse have no single branch (Corrections #4)
+  // — alert.branchId is legitimately null for those. Skipping persistence in
+  // that case; the notifySuperAdmin socket broadcast above still fires either
+  // way, so admins aren't left without any signal.
+  if (alert.branchId !== null) {
+    await enqueueNotification('fraud_alert_created', {
+      type: 'fraud_alert_created',
+      branchId: alert.branchId,
+      alertId: alert.id,
+      severity: alert.severity,
+    });
+  }
   return true;
 }
 

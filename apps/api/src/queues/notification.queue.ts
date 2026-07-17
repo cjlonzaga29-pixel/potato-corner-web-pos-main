@@ -4,6 +4,7 @@ import { redis, createWorkerConnection } from '../lib/redis.js';
 import { sendWelcomeEmail } from '../lib/email.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
 import { notificationsRepository } from '../modules/notifications/notifications.repository.js';
+import type { NotificationPayload, NotificationType } from '../modules/notifications/notifications.types.js';
 
 export const notificationQueue = new Queue('notification', { connection: redis });
 
@@ -18,6 +19,19 @@ const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
 
 function retryDelayMs(attemptsMade: number): number {
   return RETRY_DELAYS_MS[attemptsMade - 1] ?? 300_000;
+}
+
+/**
+ * Enqueues a job named for the notification type, with the payload as the
+ * job's data (matching every existing handler's `job.data as <TypePayload>`
+ * pattern — not wrapped) and Decision 7's retry policy. Recipient resolution
+ * happens inside the Task 6 handler when the job is processed, the same way
+ * Task 4's inventory_deduction_failed/inventory_product_unavailable handlers
+ * already resolve recipients — callers of this function never select
+ * recipients themselves.
+ */
+export function enqueueNotification(type: NotificationType, payload: NotificationPayload) {
+  return notificationQueue.add(type, payload, { attempts: 3, backoff: { type: 'custom' } });
 }
 
 interface EmployeeWelcomeJobData {

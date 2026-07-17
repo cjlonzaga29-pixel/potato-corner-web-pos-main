@@ -44,10 +44,15 @@ vi.mock('../../queues/inventory.queue.js', () => ({
   enqueueSaleDeduction: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../queues/notification.queue.js', () => ({
+  enqueueNotification: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { transactionsRepository } = await import('./transactions.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { priceOverridesService } = await import('../price-overrides/price-overrides.service.js');
 const { enqueueSaleDeduction } = await import('../../queues/inventory.queue.js');
+const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { TransactionError } = await import('./transactions.types.js');
@@ -392,6 +397,14 @@ describe('transactionsService.voidTransaction', () => {
       reason: result.void_reason,
     };
     expect(notifyBranch).toHaveBeenCalledWith(branchId, 'void:requested', expectedPayload);
+    expect(enqueueNotification).toHaveBeenCalledWith('void_requested', {
+      type: 'void_requested',
+      branchId: result.branch_id,
+      transactionNumber: result.receipt_number,
+      requestedByUserId: 'admin-1',
+      amount: result.total_amount,
+      reason: result.void_reason,
+    });
     expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', expectedPayload);
   });
 });

@@ -28,8 +28,13 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../queues/notification.queue.js', () => ({
+  enqueueNotification: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { cashRepository } = await import('./cash.repository.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
+const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { cashService } = await import('./cash.service.js');
 
 const SUPERVISOR = { id: 'supervisor-1', role: 'supervisor' };
@@ -471,6 +476,26 @@ describe('cashService.closeShift', () => {
       expect.objectContaining({ shiftId: 'shift-1', branchId, flaggedBy: SUPERVISOR.id }),
     );
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_flagged', expect.objectContaining({ shiftId: 'shift-1' }));
+    expect(enqueueNotification).toHaveBeenCalledWith(
+      'cash_variance_flagged',
+      expect.objectContaining({ type: 'cash_variance_flagged', shiftId: 'shift-1', branchId, flaggedBy: SUPERVISOR.id }),
+    );
+  });
+
+  it('does not enqueue a notification when the shift closes cleanly (no variance)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) =>
+      Promise.resolve(asShiftRow({ ...computed, status: 'closed' }) as never),
+    );
+
+    await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(enqueueNotification).not.toHaveBeenCalled();
   });
 
   it('does not broadcast CASH_VARIANCE_FLAGGED when the shift closes cleanly (no variance)', async () => {

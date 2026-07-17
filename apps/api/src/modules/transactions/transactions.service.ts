@@ -7,6 +7,7 @@ import { priceOverridesService } from '../price-overrides/price-overrides.servic
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField } from '../../lib/encryption.js';
 import { enqueueSaleDeduction } from '../../queues/inventory.queue.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 
 type ActorContext = { id: string; role: string };
@@ -452,6 +453,19 @@ export const transactionsService = {
     };
     notifyBranch(response.branch_id, SOCKET_EVENTS.VOID_REQUESTED, voidPayload);
     notifySuperAdmin(SOCKET_EVENTS.VOID_REQUESTED, voidPayload);
+    // transactionNumber uses response.receipt_number (the real transaction_number/receipt
+    // number, per CLAUDE.md — "Same field. Same value everywhere.") rather than
+    // response.id (the DB primary key voidPayload above uses under the transactionId
+    // key), since the persisted Notification needs the value staff/admins actually
+    // recognize a transaction by.
+    await enqueueNotification('void_requested', {
+      type: 'void_requested',
+      branchId: response.branch_id,
+      transactionNumber: response.receipt_number,
+      requestedByUserId: actor.id,
+      amount: response.total_amount,
+      reason: response.void_reason,
+    });
 
     return response;
   },

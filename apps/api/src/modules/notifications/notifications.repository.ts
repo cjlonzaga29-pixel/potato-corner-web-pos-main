@@ -42,4 +42,12 @@ export const notificationsRepository = {
       select: { id: true },
     });
   },
+
+  /** Supervisors assigned to the given branch only — no super admins (void_requested, offline_transactions_synced). */
+  findBranchSupervisorUserIds(branchId: string) {
+    return prisma.user.findMany({
+      where: { isActive: true, role: 'supervisor', branchAssignments: { some: { branchId, removedAt: null } } },
+      select: { id: true },
+    });
+  },
 };

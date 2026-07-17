@@ -78,3 +78,17 @@ describe('notificationsRepository.findBranchSupervisorAndAdminUserIds', () => {
     expect(result).toEqual([{ id: 'supervisor-1' }, { id: 'admin-1' }]);
   });
 });
+
+describe('notificationsRepository.findBranchSupervisorUserIds', () => {
+  it('queries active supervisors assigned to the given branch, no super admins', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+
+    const result = await notificationsRepository.findBranchSupervisorUserIds('branch-1');
+
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: { isActive: true, role: 'supervisor', branchAssignments: { some: { branchId: 'branch-1', removedAt: null } } },
+      select: { id: true },
+    });
+    expect(result).toEqual([{ id: 'supervisor-1' }]);
+  });
+});

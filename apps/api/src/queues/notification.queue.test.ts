@@ -31,6 +31,7 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
     create: vi.fn(),
     findSuperAdminUserIds: vi.fn(),
     findBranchSupervisorAndAdminUserIds: vi.fn(),
+    findBranchSupervisorUserIds: vi.fn(),
   },
 }));
 
@@ -77,8 +78,8 @@ describe('notificationWorker processor — employee_welcome', () => {
 });
 
 describe('notificationWorker processor — low_stock_alert', () => {
-  it('emits the low-stock socket event to branch and super admin unchanged', async () => {
-    const data = {
+  function stockJobData(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
       branchId: 'branch-1',
       ingredientId: 'ing-1',
       ingredientName: 'Potato',
@@ -86,12 +87,51 @@ describe('notificationWorker processor — low_stock_alert', () => {
       lowStockThreshold: 10,
       criticalThreshold: 3,
       severity: 'low' as const,
+      ...overrides,
     };
+  }
+
+  it('emits the low-stock socket event to branch and super admin unchanged, and persists a low_stock Notification per branch supervisor/admin', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    const data = stockJobData();
 
     await processor()({ name: 'low_stock_alert', data } as Job);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'inventory:low_stock', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('inventory:low_stock', data);
+    expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'low_stock',
+      payload: {
+        type: 'low_stock',
+        branchId: 'branch-1',
+        ingredientId: 'ing-1',
+        ingredientName: 'Potato',
+        currentStock: 5,
+        lowStockThreshold: 10,
+        criticalThreshold: 3,
+      },
+      recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
+  });
+
+  it('persists type critical_stock when severity is critical and stock is still above zero', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = stockJobData({ currentStock: 2, severity: 'critical' as const });
+
+    await processor()({ name: 'low_stock_alert', data } as Job);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ type: 'critical_stock' }));
+  });
+
+  it('persists type out_of_stock when currentStock is zero or below, regardless of severity', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = stockJobData({ currentStock: 0, severity: 'critical' as const });
+
+    await processor()({ name: 'low_stock_alert', data } as Job);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ type: 'out_of_stock' }));
   });
 });
 
@@ -164,5 +204,138 @@ describe('notificationWorker processor — inventory_product_unavailable', () =>
     expect(consoleWarnSpy).toHaveBeenCalled();
 
     consoleWarnSpy.mockRestore();
+  });
+});
+
+describe('notificationWorker processor — cash_variance_flagged', () => {
+  it('emits the socket event and persists a Notification per branch supervisor/admin', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    const data = {
+      type: 'cash_variance_flagged' as const,
+      shiftId: 'shift-1',
+      branchId: 'branch-1',
+      expectedAmount: 1000,
+      actualAmount: 850,
+      variance: -150,
+      flaggedBy: 'supervisor-1',
+    };
+
+    await processor()({ name: 'cash_variance_flagged', data } as Job);
+
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'cash:variance_flagged', data);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_flagged', data);
+    expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'cash_variance_flagged',
+      payload: data,
+      recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('notificationWorker processor — void_requested', () => {
+  it('emits the socket event and persists a Notification per branch supervisor only (no super admins)', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    const data = {
+      type: 'void_requested' as const,
+      branchId: 'branch-1',
+      transactionNumber: 'MNL001-20260717-000001',
+      requestedByUserId: 'admin-1',
+      amount: 250,
+      reason: 'customer changed mind',
+    };
+
+    await processor()({ name: 'void_requested', data } as Job);
+
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'void:requested', data);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', data);
+    expect(notificationsRepository.findBranchSupervisorUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'void_requested',
+      payload: data,
+      recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('notificationWorker processor — large_adjustment_approval_needed', () => {
+  it('emits the socket event to super admins and persists a Notification per super admin, with an email TODO', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = {
+      type: 'large_adjustment_approval_needed' as const,
+      branchId: 'branch-1',
+      adjustmentId: 'adj-1',
+      requestedByUserId: 'supervisor-1',
+      amount: 5000,
+    };
+
+    await processor()({ name: 'large_adjustment_approval_needed', data } as Job);
+
+    expect(notifySuperAdmin).toHaveBeenCalledWith('notification:large_adjustment_approval_needed', data);
+    expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'large_adjustment_approval_needed',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('notificationWorker processor — fraud_alert_created', () => {
+  it('persists a Notification per super admin without re-emitting a socket event (already broadcast by detection.service.ts)', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' };
+
+    await processor()({ name: 'fraud_alert_created', data } as Job);
+
+    expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'fraud_alert_created',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
+    expect(notifyBranch).not.toHaveBeenCalled();
+    expect(notifySuperAdmin).not.toHaveBeenCalled();
+  });
+});
+
+describe('notificationWorker processor — offline_transactions_synced', () => {
+  it('emits the socket event to the branch and persists a Notification per branch supervisor only', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    const data = { type: 'offline_transactions_synced' as const, branchId: 'branch-1', syncedCount: 4 };
+
+    await processor()({ name: 'offline_transactions_synced', data } as Job);
+
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'notification:offline_transactions_synced', data);
+    expect(notifySuperAdmin).not.toHaveBeenCalled();
+    expect(notificationsRepository.findBranchSupervisorUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'offline_transactions_synced',
+      payload: data,
+      recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('notificationWorker processor — eod_summary', () => {
+  it('emits the socket event to super admins and persists a Notification per super admin, with an email TODO', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = { type: 'eod_summary' as const, branchId: 'branch-1', businessDate: '2026-07-17', totalSales: 15000 };
+
+    await processor()({ name: 'eod_summary', data } as Job);
+
+    expect(notifySuperAdmin).toHaveBeenCalledWith('notification:eod_summary', data);
+    expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'eod_summary',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
   });
 });

@@ -85,6 +85,31 @@ export const notificationWorker = new Worker(
       const event = data.currentStock <= 0 ? SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK : SOCKET_EVENTS.INVENTORY_LOW_STOCK;
       notifyBranch(data.branchId, event, data);
       notifySuperAdmin(event, data);
+      // inventory.queue.ts only ever enqueues this one job name for all three
+      // stock-level types — the notification `type` is derived here, not from
+      // job.name, matching the same severity/currentStock logic used above
+      // to pick the socket event.
+      const stockType = data.currentStock <= 0 ? 'out_of_stock' : data.severity === 'critical' ? 'critical_stock' : 'low_stock';
+      const stockPayload = {
+        type: stockType,
+        branchId: data.branchId,
+        ingredientId: data.ingredientId,
+        ingredientName: data.ingredientName,
+        currentStock: data.currentStock,
+        lowStockThreshold: data.lowStockThreshold,
+        criticalThreshold: data.criticalThreshold,
+      } as NotificationPayload;
+      const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(data.branchId);
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({
+            type: stockType,
+            payload: stockPayload,
+            recipientUserId: recipient.id,
+            branchId: data.branchId,
+          }),
+        ),
+      );
       return;
     }
     if (job.name === 'inventory_deduction_failed') {
@@ -140,7 +165,92 @@ export const notificationWorker = new Worker(
       );
       return;
     }
-    // TODO(Phase 8+): implement remaining notification types.
+    if (job.name === 'cash_variance_flagged') {
+      const data = job.data as Extract<NotificationPayload, { type: 'cash_variance_flagged' }>;
+      notifyBranch(data.branchId, SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, data);
+      notifySuperAdmin(SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, data);
+      const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(data.branchId);
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({ type: 'cash_variance_flagged', payload: data, recipientUserId: recipient.id, branchId: data.branchId }),
+        ),
+      );
+      return;
+    }
+    if (job.name === 'void_requested') {
+      const data = job.data as Extract<NotificationPayload, { type: 'void_requested' }>;
+      notifyBranch(data.branchId, SOCKET_EVENTS.VOID_REQUESTED, data);
+      notifySuperAdmin(SOCKET_EVENTS.VOID_REQUESTED, data);
+      // Branch supervisors only (Task 6 recipient matrix) — no super admins,
+      // unlike cash_variance_flagged/low_stock above.
+      const recipients = await notificationsRepository.findBranchSupervisorUserIds(data.branchId);
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({ type: 'void_requested', payload: data, recipientUserId: recipient.id, branchId: data.branchId }),
+        ),
+      );
+      return;
+    }
+    if (job.name === 'large_adjustment_approval_needed') {
+      const data = job.data as Extract<NotificationPayload, { type: 'large_adjustment_approval_needed' }>;
+      notifySuperAdmin(SOCKET_EVENTS.LARGE_ADJUSTMENT_APPROVAL_NEEDED, data);
+      const recipients = await notificationsRepository.findSuperAdminUserIds();
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({
+            type: 'large_adjustment_approval_needed',
+            payload: data,
+            recipientUserId: recipient.id,
+            branchId: data.branchId,
+          }),
+        ),
+      );
+      // TODO(Task 10): send email via Resend
+      return;
+    }
+    if (job.name === 'fraud_alert_created') {
+      const data = job.data as Extract<NotificationPayload, { type: 'fraud_alert_created' }>;
+      // detection.service.ts's own notifySuperAdmin call already broadcasts
+      // this at alert-creation time — not duplicated here, same reasoning as
+      // inventory_product_unavailable above.
+      const recipients = await notificationsRepository.findSuperAdminUserIds();
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({ type: 'fraud_alert_created', payload: data, recipientUserId: recipient.id, branchId: data.branchId }),
+        ),
+      );
+      // TODO(Task 10): send email via Resend
+      return;
+    }
+    if (job.name === 'offline_transactions_synced') {
+      const data = job.data as Extract<NotificationPayload, { type: 'offline_transactions_synced' }>;
+      notifyBranch(data.branchId, SOCKET_EVENTS.OFFLINE_TRANSACTIONS_SYNCED, data);
+      // Informational, branch supervisors only.
+      const recipients = await notificationsRepository.findBranchSupervisorUserIds(data.branchId);
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({
+            type: 'offline_transactions_synced',
+            payload: data,
+            recipientUserId: recipient.id,
+            branchId: data.branchId,
+          }),
+        ),
+      );
+      return;
+    }
+    if (job.name === 'eod_summary') {
+      const data = job.data as Extract<NotificationPayload, { type: 'eod_summary' }>;
+      notifySuperAdmin(SOCKET_EVENTS.EOD_SUMMARY, data);
+      const recipients = await notificationsRepository.findSuperAdminUserIds();
+      await Promise.all(
+        recipients.map((recipient) =>
+          notificationsRepository.create({ type: 'eod_summary', payload: data, recipientUserId: recipient.id, branchId: data.branchId }),
+        ),
+      );
+      // TODO(Task 10): send email via Resend
+      return;
+    }
   },
   {
     connection: createWorkerConnection(),

@@ -17,6 +17,10 @@ export const SOCKET_EVENTS = {
   ATTENDANCE_CLOCKED_IN: 'attendance:clocked_in',
   ATTENDANCE_CLOCKED_OUT: 'attendance:clocked_out',
   FRAUD_ALERT_CREATED: 'fraud:alert_created',
+  // Phase 18 — notification types with no other socket event to reuse.
+  LARGE_ADJUSTMENT_APPROVAL_NEEDED: 'notification:large_adjustment_approval_needed',
+  OFFLINE_TRANSACTIONS_SYNCED: 'notification:offline_transactions_synced',
+  EOD_SUMMARY: 'notification:eod_summary',
   // Phase 17 review workflow — not emitted yet (fraud.service.ts's
   // investigate/dismiss/escalate actions are silent by design, see that
   // module's notes), reserved here for whichever future change wires up

@@ -4,33 +4,39 @@
  * types that don't need cross-app sharing are defined here.
  */
 
-// TODO(Phase 18 Task 6): these three interfaces don't yet match the real
-// job-data shape emitted by inventory.queue.ts's low_stock_alert job
-// (LowStockAlertJobData: ingredientId/ingredientName/currentStock/
-// lowStockThreshold/criticalThreshold, discriminated by a `severity` field
-// rather than separate low/critical job names). Fix field-for-field before
-// Task 6 persists these, same issue already fixed here for
-// inventory_deduction_failed/product_auto_unavailable in Task 4.
+// Matches inventory.queue.ts's LowStockAlertJobData field-for-field (fixed
+// in Task 6 — previously used a productId/currentQuantity/threshold shape
+// that didn't match the real job data). All three share one job, discriminated
+// by currentStock/severity at persistence time in notification.queue.ts, not
+// by separate job names — inventory.queue.ts only ever enqueues 'low_stock_alert'.
 export interface LowStockNotificationPayload {
   type: 'low_stock';
   branchId: string;
-  productId: string;
-  currentQuantity: number;
-  threshold: number;
+  ingredientId: string;
+  ingredientName: string;
+  currentStock: number;
+  lowStockThreshold: number;
+  criticalThreshold: number;
 }
 
 export interface CriticalStockNotificationPayload {
   type: 'critical_stock';
   branchId: string;
-  productId: string;
-  currentQuantity: number;
-  threshold: number;
+  ingredientId: string;
+  ingredientName: string;
+  currentStock: number;
+  lowStockThreshold: number;
+  criticalThreshold: number;
 }
 
 export interface OutOfStockNotificationPayload {
   type: 'out_of_stock';
   branchId: string;
-  productId: string;
+  ingredientId: string;
+  ingredientName: string;
+  currentStock: number;
+  lowStockThreshold: number;
+  criticalThreshold: number;
 }
 
 export interface ProductAutoUnavailableNotificationPayload {

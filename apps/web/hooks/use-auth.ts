@@ -94,6 +94,18 @@ export function useAuth() {
       setLoading(false);
     }
 
+    // Skip the silent refresh if the store already holds a valid
+    // access token (e.g. this mount is a client-side navigation between
+    // authenticated pages, not a hard reload). Calling restoreSession()
+    // here would race the middleware's own server-side refresh-token
+    // rotation on the very next navigation — refresh tokens are single-use,
+    // so whichever request reaches the backend second gets REFRESH_INVALID
+    // and bounces the user to /login. Only run on a genuine hard reload,
+    // where the in-memory store is empty and this is the only way back in.
+    if (useAuthStore.getState().accessToken) {
+      return;
+    }
+
     void restoreSession();
     return () => {
       cancelled = true;

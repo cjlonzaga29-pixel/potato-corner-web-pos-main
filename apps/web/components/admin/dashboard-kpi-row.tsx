@@ -23,7 +23,7 @@ export function DashboardKpiRow({
   isLoadingFlagged,
 }: DashboardKpiRowProps) {
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
       <KpiCard title="Active Shifts" value={activeShiftsCount ?? 0} isLoading={isLoadingShifts} />
       <KpiCard title="Live Revenue (Open Shifts)" value={liveRevenue ?? 0} prefix="₱" isLoading={isLoadingRevenue} />
       <KpiCard

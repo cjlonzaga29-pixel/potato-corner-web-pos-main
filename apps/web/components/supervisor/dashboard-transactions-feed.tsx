@@ -55,9 +55,9 @@ export function DashboardTransactionsFeed({ transactions, isLoading, onRowClick 
         <div
           key={transaction.id}
           onClick={onRowClick}
-          className={onRowClick ? 'flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-muted/50' : 'flex items-center justify-between rounded-md border px-3 py-2 text-sm'}
+          className={onRowClick ? 'flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-muted/50' : 'flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-sm'}
         >
-          <span className="font-medium">{transaction.receipt_number}</span>
+          <span className="min-w-0 truncate font-medium">{transaction.receipt_number}</span>
           <Badge variant={STATUS_VARIANT[transaction.status]}>{STATUS_LABEL[transaction.status]}</Badge>
           <Badge variant="outline">{PAYMENT_METHOD_LABEL[transaction.payment_method]}</Badge>
           <span className="tabular-nums">{formatCurrency(transaction.total_amount)}</span>

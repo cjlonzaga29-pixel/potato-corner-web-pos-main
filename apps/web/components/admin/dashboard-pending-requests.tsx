@@ -17,7 +17,7 @@ interface DashboardPendingRequestsProps {
 export function DashboardPendingRequests({ requests, isLoading }: DashboardPendingRequestsProps) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium">Pending Product Requests</CardTitle>
         <Link href="/admin/approvals/product-requests" className="text-xs text-primary hover:underline">
           View all

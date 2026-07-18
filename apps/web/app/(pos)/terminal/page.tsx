@@ -62,7 +62,7 @@ export default function TerminalPage() {
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
   const { items, addItem, removeItem, updateItemQuantity, clearCart } = useCart();
-  const { data: liveCatalog } = useCatalog(branchId);
+  const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   const { data: shift } = useCurrentShift(branchId);
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction();
@@ -227,7 +227,7 @@ export default function TerminalPage() {
       )}
 
       {/* LEFT PANEL — product catalog */}
-      <div className="flex w-2/3 flex-col overflow-hidden border-r">
+      <div className="relative flex w-2/3 flex-col overflow-hidden border-r">
         <div className="border-b p-3">
           <Tabs value={activeCategory} onValueChange={setActiveCategory}>
             <TabsList>
@@ -261,7 +261,11 @@ export default function TerminalPage() {
               </Card>
             )),
           )}
-          {visibleProducts.length === 0 && <p className="col-span-full p-6 text-center text-sm text-muted-foreground">No products available.</p>}
+          {visibleProducts.length === 0 && (
+            <p className="col-span-full p-6 text-center text-sm text-muted-foreground">
+              {isCatalogLoading ? 'Loading catalog…' : 'No products available.'}
+            </p>
+          )}
         </div>
 
         {flavorPrompt && (
@@ -303,16 +307,16 @@ export default function TerminalPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button variant="outline" className="h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity - 1)}>
+                  <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity - 1)}>
                     −
                   </Button>
                   <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
-                  <Button variant="outline" className="h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity + 1)}>
+                  <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity + 1)}>
                     +
                   </Button>
                 </div>
                 <p className="w-16 text-right tabular-nums">{formatPeso(line.lineTotal)}</p>
-                <Button variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => removeItem(line.index)}>
+                <Button variant="ghost" className="touch-target h-7 w-7 p-0 text-destructive" onClick={() => removeItem(line.index)}>
                   ×
                 </Button>
               </div>

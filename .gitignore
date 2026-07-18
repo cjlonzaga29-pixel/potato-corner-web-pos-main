@@ -43,6 +43,7 @@ pnpm-debug.log*
 .env*
 !.env.example
 !**/.env.example
+!tests/e2e/.env.e2e.example
 
 # Git worktrees (superpowers:using-git-worktrees)
 .worktrees/

@@ -1,1 +1,1 @@
-PWA icon assets (192x192 and 512x512 PNG, per manifest.json) are not generated in Phase 0 — add real branded icons here before Phase 19 PWA testing.
+PWA icon assets (192x192 and 512x512 PNG, per manifest.json) — added Phase 20 Task 6. Solid Potato Corner orange (#f97316) background with a white "PC" monogram, sized 192x192 and 512x512 per manifest.json.

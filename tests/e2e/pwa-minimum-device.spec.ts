@@ -36,14 +36,10 @@ test.describe('PWA minimum-device checklist', () => {
     await expect(manifestLink).toHaveAttribute('href', '/manifest.json');
   });
 
-  // Expected to fail until real branded icons are added — see
-  // public/icons/README.md and docs/security/2026-07-17-phase19-task8-
-  // offline-pwa-hardening.md finding #4. test.fail() means: if this
-  // unexpectedly STARTS passing (icons were added), the run reports an
-  // error flagging that this annotation should be removed — not a silent
-  // gap that stays invisible once fixed.
+  // Phase 20 Task 6: real branded PNGs were added to public/icons/
+  // (previously only a README) — the test.fail() annotation that expected
+  // this to fail (Phase 19 Task 8 finding #4) has been removed accordingly.
   test('PWA icons referenced by the manifest actually exist', async ({ page, baseURL }) => {
-    test.fail(true, 'public/icons/ only has a README — real branded PNGs have not been added yet (Task 8 finding #4)');
     const res192 = await page.request.get(`${baseURL}/icons/icon-192x192.png`);
     const res512 = await page.request.get(`${baseURL}/icons/icon-512x512.png`);
     expect(res192.status()).toBe(200);

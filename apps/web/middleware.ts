@@ -153,5 +153,9 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|manifest.json|icons).*)'],
+  // sw.js and workbox-*.js must stay excluded too — next-pwa's service
+  // worker fetches these unauthenticated (before any login), and without
+  // this exclusion this middleware 307-redirects them to /login, so the
+  // service worker can never register at all (Phase 20 Task 6 finding).
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|manifest.json|icons|sw\\.js|workbox-).*)'],
 };

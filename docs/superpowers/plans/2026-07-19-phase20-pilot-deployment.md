@@ -2,13 +2,25 @@
 
 **Status:** In Progress.
 
+**Pre-operator-gate summary (2026-07-18):** All code-completable tasks finished as of 2026-07-18. Remaining tasks (10 execution, 11 execution, 16 cutover) are gated on Task 3 (production environment configuration) which requires operator access to Render/Vercel/Supabase/Upstash/Resend production environments.
+
 **Task status:**
 - Task 1 (recipe testing protocol defined): ✅ complete
 - Task 2 (hold orders backend + migration): ✅ complete
 - Task 3 (production environment configuration): ⏳ pending (external/operator — not blockable by Claude Code)
 - Task 4 (offline-sync backend endpoint): ✅ complete
 - Task 5 (`large_adjustment_approval_needed` notification producer): ✅ complete
-- Tasks 6–16: ❌ not started
+- Task 6 (PWA icons + installability): ✅ complete
+- Task 7 (staff clock-in UI): ✅ complete
+- Task 8 (branch rankings, verification-only): ✅ complete
+- Task 9 (real user onboarding prep): ✅ complete
+- Task 10 (live Playwright E2E run against staging): ⏳ config ready, execution blocked on Task 3 (staging URL)
+- Task 11 (k6 load test execution against staging): ⏳ blocked on Task 3 (staging URL)
+- Task 12 (security audit residuals, verification-only): ✅ complete
+- Task 13 (Phase 19 Task 10 audit gaps, verification-only): ✅ complete
+- Task 14 (3-day Super Admin on-call setup): ✅ complete
+- Task 15 (feedback collection mechanism): ✅ complete
+- Task 16 (pilot go-live cutover): ❌ blocked on Task 3
 
 ### Session B summary
 

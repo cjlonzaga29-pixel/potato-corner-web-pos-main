@@ -77,6 +77,15 @@ enqueues these types.
   offline sync batch endpoint implemented, notification now fires on
   successful sync.
 
+## Phase 20 carry-forward items (still open, gated on Task 3)
+
+- Staff clock-in UI gap — ✅ resolved Phase 20 Task 7 (`apps/web/app/(pos)/clock-in/page.tsx`, commit `0f60053`).
+- Hold orders backend — ✅ resolved Phase 20 Task 2.
+- Dormant `large_adjustment_approval_needed` producer — ✅ resolved Phase 20 Task 5 (see above).
+- Dormant `offline_transactions_synced` producer — ✅ resolved Phase 20 Task 4 (see above).
+- `notification-bell.tsx` no consuming hook — still open. Component (`apps/web/components/shared/notification-bell.tsx`) is presentational-only by design; callers (`pos-header.tsx`, `supervisor-sidebar.tsx`, `admin-sidebar.tsx`) render it with no `notifications` prop passed, so it always shows empty. No hook wires it to the socket `notification` event or a TanStack Query source yet.
+- `HASH_KEY` in Render — still open (Task 3, production environment configuration).
+
 ## Skills usage discrepancy (from Phase 18 Session A)
 
 Plan doc header at docs/superpowers/plans/2026-07-17-phase18-notifications-eod-summary.md

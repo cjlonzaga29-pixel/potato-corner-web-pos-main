@@ -30,12 +30,19 @@ export async function sendPasswordResetEmail(toEmail: string, resetToken: string
     return;
   }
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: 'Reset your Potato Corner POS password',
     html: `<p>Click the link below to reset your password. This link expires in 1 hour.</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
   });
+
+  if (error) {
+    console.error('Resend API Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Email delivery failed: ${error.message}`);
+  }
+
+  console.log('Email sent successfully:', data?.id);
 }
 
 /**
@@ -59,12 +66,19 @@ export async function sendWelcomeEmail(toEmail: string, firstName: string, emplo
     return;
   }
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: 'Welcome to Potato Corner POS',
     html: `<p>Hi ${firstName},</p><p>Your employee account (${employeeId}) has been created. Your temporary password is:</p><p><strong>${tempPassword}</strong></p><p>You will be required to change it on first login.</p><p><a href="${loginUrl}">Sign in</a></p>`,
   });
+
+  if (error) {
+    console.error('Resend API Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Email delivery failed: ${error.message}`);
+  }
+
+  console.log('Email sent successfully:', data?.id);
 }
 
 /**
@@ -84,12 +98,19 @@ export async function sendFraudAlertEmail(toEmail: string, payload: FraudAlertCr
     return;
   }
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: `Fraud alert (${payload.severity}) — review required`,
     html: `<p>A new ${payload.severity} severity fraud alert was created for branch ${payload.branchId}.</p><p><a href="${reviewUrl}">Review the alert</a></p>`,
   });
+
+  if (error) {
+    console.error('Resend API Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Email delivery failed: ${error.message}`);
+  }
+
+  console.log('Email sent successfully:', data?.id);
 }
 
 /**
@@ -110,12 +131,19 @@ export async function sendLargeAdjustmentApprovalEmail(
     return;
   }
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: `Adjustment approval needed — ₱${payload.amount.toLocaleString('en-PH')}`,
     html: `<p>Branch ${payload.branchId} requested an adjustment of ₱${payload.amount.toLocaleString('en-PH')} that needs Super Admin approval.</p><p><a href="${approvalUrl}">Review the adjustment</a></p>`,
   });
+
+  if (error) {
+    console.error('Resend API Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Email delivery failed: ${error.message}`);
+  }
+
+  console.log('Email sent successfully:', data?.id);
 }
 
 /**
@@ -138,10 +166,17 @@ export async function sendEodSummaryEmail(toEmail: string, payload: EodSummaryNo
     .map((branch) => `<li>${branch.branchName}: ₱${branch.revenue.toLocaleString('en-PH')}</li>`)
     .join('');
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: `EOD summary — ${payload.businessDate}`,
     html: `<p>End-of-day summary for ${payload.businessDate}:</p><ul><li>Total revenue: ₱${payload.totalRevenue.toLocaleString('en-PH')}</li><li>Transactions: ${payload.transactionCount}</li><li>Voids: ${payload.voidCount}</li><li>Unresolved cash variances: ${payload.unresolvedCashVarianceCount}</li><li>Open fraud alerts created today: ${payload.openFraudAlertsCreatedTodayCount}</li></ul><ul>${branchRows}</ul><p><a href="${reportsUrl}">View full report</a></p>`,
   });
+
+  if (error) {
+    console.error('Resend API Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Email delivery failed: ${error.message}`);
+  }
+
+  console.log('Email sent successfully:', data?.id);
 }

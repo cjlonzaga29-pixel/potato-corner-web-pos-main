@@ -9,7 +9,8 @@ export default defineConfig({
   workers: 1,
   reporter: [['html'], ['github']],
   use: {
-    baseURL: 'http://localhost:3000',
+    // Staging/live runs must set PLAYWRIGHT_BASE_URL explicitly; local dev falls back to localhost.
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },

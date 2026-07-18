@@ -27,8 +27,8 @@ vi.mock('./auth.repository.js', () => ({
 
 vi.mock('../../lib/redis.js', () => ({
   redis: {
-    set: vi.fn(),
-    get: vi.fn(),
+    set: vi.fn().mockResolvedValue('OK'),
+    get: vi.fn().mockResolvedValue(null),
     del: vi.fn(),
   },
 }));
@@ -141,6 +141,49 @@ describe('authService.refreshToken', () => {
       code: 'REFRESH_INVALID',
       statusCode: 401,
     });
+  });
+
+  it('logs and rejects when a revoked token is replayed outside the coalescing window', async () => {
+    const storedToken = {
+      id: 'rt-1',
+      userId: 'user-1',
+      deviceId: 'device-1',
+      revokedAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      user: buildUser(),
+    };
+    vi.mocked(authRepository.findRefreshToken).mockResolvedValue(storedToken as never);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({
+      code: 'REFRESH_INVALID',
+    });
+    expect(warnSpy).toHaveBeenCalledWith('Refresh token reuse detected', expect.objectContaining({ userId: 'user-1', tokenId: 'rt-1' }));
+
+    warnSpy.mockRestore();
+  });
+
+  it('returns the cached rotation result for a duplicate request instead of re-rotating', async () => {
+    const cachedResponse = { access_token: 'cached-access-token', refreshToken: 'cached-refresh-token' };
+    vi.mocked(redis.get).mockResolvedValueOnce(JSON.stringify({ deviceId: 'device-1', response: cachedResponse }));
+
+    const result = await authService.refreshToken('old-refresh-token', 'device-1');
+
+    expect(result).toEqual(cachedResponse);
+    expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('waits for and returns an in-flight rotation result when another request holds the lock', async () => {
+    vi.mocked(redis.set).mockResolvedValueOnce(null); // lock already held elsewhere
+    const cachedResponse = { access_token: 'in-flight-access-token', refreshToken: 'in-flight-refresh-token' };
+    vi.mocked(redis.get)
+      .mockResolvedValueOnce(null) // pre-lock cache check: nothing yet
+      .mockResolvedValueOnce(JSON.stringify({ deviceId: 'device-1', response: cachedResponse })); // first poll after losing the lock
+
+    const result = await authService.refreshToken('old-refresh-token', 'device-1');
+
+    expect(result).toEqual(cachedResponse);
+    expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
   });
 });
 

@@ -57,6 +57,65 @@ function generateRefreshToken(): string {
   return randomOpaqueToken();
 }
 
+// Phase 20.5: a client can present the same refresh token twice in quick
+// succession (e.g. rapid sidebar navigation triggers the middleware's
+// refresh check on two near-simultaneous requests before the first
+// response lands). Without coalescing, the second request finds the token
+// already rotated and bounces a legitimate user to /login. Rather than a
+// blanket time-based amnesty for any recently-revoked token (which would
+// also let a genuinely stolen token be replayed within that window), a
+// short-lived Redis lock serializes concurrent rotations of the exact same
+// token, and the rotation result is memoized for a few seconds under that
+// token's own hash so a near-duplicate request gets back the identical
+// replacement pair instead of racing the DB. Reuse of a token outside this
+// narrow window — or from a different device — still throws REFRESH_INVALID.
+const REFRESH_ROTATION_LOCK_TTL_MS = 5_000;
+const REFRESH_ROTATION_RESULT_TTL_SECONDS = 10;
+const REFRESH_ROTATION_WAIT_TIMEOUT_MS = 1_500;
+const REFRESH_ROTATION_WAIT_INTERVAL_MS = 100;
+
+type RefreshTokenPair = RefreshResponse & { refreshToken: string };
+
+interface CachedRotation {
+  deviceId: string;
+  response: RefreshTokenPair;
+}
+
+function refreshLockKey(tokenHash: string): string {
+  return `auth:refresh-lock:${tokenHash}`;
+}
+
+function refreshResultKey(tokenHash: string): string {
+  return `auth:refresh-result:${tokenHash}`;
+}
+
+async function readCachedRotation(tokenHash: string, deviceId: string): Promise<RefreshTokenPair | null> {
+  const raw = await redis.get(refreshResultKey(tokenHash));
+  if (!raw) return null;
+  const cached = JSON.parse(raw) as CachedRotation;
+  return cached.deviceId === deviceId ? cached.response : null;
+}
+
+async function cacheRotationResult(tokenHash: string, deviceId: string, response: RefreshTokenPair): Promise<void> {
+  const cached: CachedRotation = { deviceId, response };
+  await redis.set(refreshResultKey(tokenHash), JSON.stringify(cached), 'EX', REFRESH_ROTATION_RESULT_TTL_SECONDS);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Polls for the in-flight rotation's result while another request holds the lock for this token. */
+async function waitForRotation(tokenHash: string, deviceId: string): Promise<RefreshTokenPair | null> {
+  const deadline = Date.now() + REFRESH_ROTATION_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await delay(REFRESH_ROTATION_WAIT_INTERVAL_MS);
+    const cached = await readCachedRotation(tokenHash, deviceId);
+    if (cached) return cached;
+  }
+  return null;
+}
+
 /** Blacklists an access token until its own expiry — same TTL, no longer, no shorter. */
 async function blacklistToken(accessToken: string, expiresAt: Date): Promise<void> {
   const ttlSeconds = Math.max(Math.floor((expiresAt.getTime() - Date.now()) / 1000), 0);
@@ -166,27 +225,59 @@ export const authService = {
     };
   },
 
-  async refreshToken(refreshTokenValue: string, deviceId: string): Promise<RefreshResponse & { refreshToken: string }> {
-    const stored = await authRepository.findRefreshToken(refreshTokenValue);
+  async refreshToken(refreshTokenValue: string, deviceId: string): Promise<RefreshTokenPair> {
+    const tokenHash = sha256Hex(refreshTokenValue);
 
-    if (!stored || stored.revokedAt || stored.expiresAt.getTime() < Date.now() || stored.deviceId !== deviceId) {
-      throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
+    const alreadyRotated = await readCachedRotation(tokenHash, deviceId);
+    if (alreadyRotated) return alreadyRotated;
+
+    const lockKey = refreshLockKey(tokenHash);
+    const acquiredLock = await redis.set(lockKey, '1', 'PX', REFRESH_ROTATION_LOCK_TTL_MS, 'NX');
+
+    if (!acquiredLock) {
+      // Another request is mid-rotation for this exact token — wait for its
+      // result instead of racing it against the same DB row.
+      const waited = await waitForRotation(tokenHash, deviceId);
+      if (waited) return waited;
+      // Lock holder didn't finish in time (or crashed) — fall through to a
+      // normal, unlocked lookup below.
     }
 
-    const branchIds = stored.user.branchAssignments.map((assignment) => assignment.branchId);
-    const newRefreshToken = generateRefreshToken();
-    const newExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
-    await authRepository.rotateRefreshToken(stored.id, newRefreshToken, newExpiresAt);
+    try {
+      const stored = await authRepository.findRefreshToken(refreshTokenValue);
 
-    const accessToken = generateAccessToken({
-      id: stored.user.id,
-      role: stored.user.role,
-      email: stored.user.email,
-      branchIds,
-      mustChangePassword: stored.user.mustChangePassword,
-    });
+      if (!stored || stored.expiresAt.getTime() < Date.now() || stored.deviceId !== deviceId) {
+        throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
+      }
 
-    return { access_token: accessToken, refreshToken: newRefreshToken };
+      if (stored.revokedAt) {
+        // Already rotated, and no cache entry matched above — either a
+        // stale duplicate past the short coalescing window or a genuine
+        // replay of a stolen token. Log distinctly from a plain
+        // expired/unknown token so real reuse stays visible.
+        console.warn('Refresh token reuse detected', { userId: stored.user.id, tokenId: stored.id });
+        throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
+      }
+
+      const branchIds = stored.user.branchAssignments.map((assignment) => assignment.branchId);
+      const newRefreshToken = generateRefreshToken();
+      const newExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
+      await authRepository.rotateRefreshToken(stored.id, newRefreshToken, newExpiresAt);
+
+      const accessToken = generateAccessToken({
+        id: stored.user.id,
+        role: stored.user.role,
+        email: stored.user.email,
+        branchIds,
+        mustChangePassword: stored.user.mustChangePassword,
+      });
+
+      const response: RefreshTokenPair = { access_token: accessToken, refreshToken: newRefreshToken };
+      if (acquiredLock) await cacheRotationResult(tokenHash, deviceId, response);
+      return response;
+    } finally {
+      if (acquiredLock) await redis.del(lockKey);
+    }
   },
 
   async logout(accessToken: string, refreshTokenValue: string | undefined): Promise<void> {

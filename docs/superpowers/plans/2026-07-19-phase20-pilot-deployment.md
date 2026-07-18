@@ -166,10 +166,11 @@ Phases 14 (Supervisor dashboard) and 15 (Super Admin dashboard) had no gaps in t
 
 No code changes were required or made in this task — the one real gap was already closed by Task 7 before this task ran. Test suite baseline (658 API / 151 web / 0 typecheck errors) is unaffected and still holds.
 
-### Task 14 — 3-day Super Admin on-call setup
+### Task 14 — 3-day Super Admin on-call setup — COMPLETE (documentation)
 **Description:** Define the on-call schedule for the pilot window, route Sentry/PostHog alerts to the on-call Super Admin, define escalation path and rollback authority.
-**Files:** new `docs/runbooks/2026-phase20-pilot-on-call.md` (or equivalent — naming TBD at session start).
-**Acceptance criteria:** on-call Super Admin confirmed reachable; alert routing tested with a synthetic error before go-live; escalation path documented.
+**Files:** `docs/runbooks/pilot-on-call.md`.
+**Status:** Runbook written covering on-call contact (TBD placeholder — named person required before go-live), monitoring dashboards, alert routing (Sentry confirmed configured via `SENTRY_DSN`/`apps/api/src/server.ts`; PostHog confirmed absent from the stack — not used), severity classification, escalation path, rollback authority/criteria/procedure, synthetic error test procedure, communication channel (TBD placeholder), and end-of-pilot handoff.
+**Acceptance criteria:** on-call Super Admin confirmed reachable; alert routing tested with a synthetic error before go-live; escalation path documented. — Escalation path and rollback authority are documented; the named on-call person, reachability confirmation, and the pre-go-live synthetic error test itself remain outstanding and are called out as explicit TBDs in the runbook, to be completed immediately before Task 16 cutover.
 
 ### Task 15 — Feedback collection mechanism
 **Description:** Define how pilot-branch feedback is captured and routed back to the team during the 3-day pilot window.

@@ -174,8 +174,9 @@ No code changes were required or made in this task — the one real gap was alre
 
 ### Task 15 — Feedback collection mechanism
 **Description:** Define how pilot-branch feedback is captured and routed back to the team during the 3-day pilot window.
-**Files:** TBD at session start — likely a lightweight form or structured doc, not new application code (PostHog is explicitly product-analytics-only per CLAUDE.md/master-execution-plan.md, not a feedback-collection tool).
-**Acceptance criteria:** mechanism live and communicated to pilot staff before Task 16 cutover.
+**Files:** `docs/runbooks/pilot-feedback-template.md`.
+**Status:** Complete. Chose Option A (structured feedback doc + email) over an in-app "Send Feedback" button: pilot POS terminals are shared Android tablets not guaranteed to have a personal email client configured, so a `mailto:` link could silently fail to open for exactly the non-technical staff who need it most — a fillable doc submitted through whatever channel already works (phone, supervisor, verbal to on-call) has no such dependency, requires zero code changes, and needed no new libraries or backend infrastructure. Doc covers who uses it (staff per-shift, supervisor daily digest), submission flow, a severity guide (Critical/High/Medium/Low, with Critical routed straight to the on-call contact by phone), and the fillable template itself.
+**Acceptance criteria:** mechanism live and communicated to pilot staff before Task 16 cutover. — Doc is complete and ready to share now; the feedback email address (§3) is a TBD placeholder recommended to route to/match the on-call contact in `docs/runbooks/pilot-on-call.md`, to be filled in and the doc distributed to pilot staff before Task 16 cutover.
 
 ### Task 16 — Pilot go-live cutover
 **Description:** Pilot branch begins using the production system for real transactions.

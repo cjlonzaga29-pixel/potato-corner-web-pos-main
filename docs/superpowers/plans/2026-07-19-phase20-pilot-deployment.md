@@ -128,6 +128,20 @@ This document sequences what `docs/architecture/final-approved-architecture.md` 
 **Files:** none (data/config only — account creation via existing admin flows, no new code).
 **Acceptance criteria:** all pilot-branch users can log in; password/PIN reset flow verified live against production; Resend delivers to real inboxes.
 
+**Bootstrap Script Notes**
+
+- `bcryptjs` devDependency was added to `apps/api` in Phase 20 to support one-shot user bootstrap scripts against production.
+- `EmploymentType` enum values are: `regular`, `contractual`, `part_time` (NOT `full_time` — this was corrected during pilot user creation).
+- Bootstrap scripts must:
+  - refuse to run against localhost `DIRECT_URL`
+  - set `DIRECT_URL` and run the script in the same shell invocation on Windows PowerShell
+  - delete themselves after successful run
+  - never be committed to the repo
+- First pilot users created:
+  - `cjlonzaga29@gmail.com` (super_admin) — placeholder for real owner
+  - `cjlonzaga03@gmail.com` (supervisor) — placeholder for real supervisor
+  - `kenkenroxas.mabuang@gmail.com` (staff) — placeholder for real staff
+
 ### Task 10 — Live Playwright E2E run against staging
 **Description:** The Phase 19 Task 6 suite was authored but never run live. Run it now against staging with production-equivalent configuration, including the two new flows this plan adds real pages/endpoints for (hold orders — Task 2, offline reconnect sync — Task 4, staff clock-in — Task 7).
 **Files:** `playwright.config.ts` (env target only, no new specs expected beyond what Task 2/4/7 already require).

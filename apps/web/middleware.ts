@@ -127,6 +127,21 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
+  // Skip refresh-token rotation for prefetch requests. Next.js Link
+  // prefetches trigger this middleware, but the browser doesn't reliably
+  // process a prefetch response's Set-Cookie (prefetches are cancellable)
+  // — rotating the single-use refresh token here revokes it before the
+  // real navigation happens, so the next click fails with
+  // REFRESH_INVALID and bounces to /login. Let an authenticated prefetch
+  // through on the existing cookies without rotating; the real
+  // navigation re-runs this middleware and rotates then. See
+  // docs/architecture/phase-19-debt.md and DevTools evidence 2026-07-19.
+  const isPrefetch =
+    request.headers.get('next-router-prefetch') === '1' || request.headers.get('purpose') === 'prefetch';
+  if (isPrefetch && refreshCookie) {
+    return NextResponse.next();
+  }
+
   const { accessToken, setCookies } = await resolveAccessToken(request);
   if (!accessToken) {
     return withRotatedCookies(NextResponse.redirect(new URL('/login', request.url)), setCookies);

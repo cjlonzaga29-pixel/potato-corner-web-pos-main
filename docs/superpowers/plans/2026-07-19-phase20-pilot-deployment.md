@@ -131,6 +131,21 @@ This document sequences what `docs/architecture/final-approved-architecture.md` 
 **Files:** none expected.
 **Acceptance criteria:** written confirmation that no new critical/high findings exist since Phase 19 Task 5; the two informational notes re-confirmed as still low-risk/unchanged.
 
+**Task 12 findings summary (executed 2026-07-18):**
+
+Source: `docs/security/2026-07-17-phase19-task5-security-audit.md` (Phase 19 Task 5, scoped to auth/payments/gov-ID-touching files per `.claude/commands/review-security.md`). No separate/newer security findings file exists.
+
+Total findings identified: 2 (both originally logged as informational/low). No critical or high findings were ever recorded against this scope.
+
+- **CRITICAL:** none found.
+- **HIGH:** none found.
+- **MEDIUM:** none found.
+- **LOW:**
+  1. `requirePasswordChange` retrofit onto Phase 1–4 routers — **re-verified 2026-07-18: already resolved, not merely documented.** `requirePasswordChange` is now present on every route in `branches.router.ts`, `products.router.ts`, `flavors.router.ts`, `recipes.router.ts`, `inventory.router.ts`, `product-requests.router.ts`, `price-overrides.router.ts`, `reports.router.ts`, and `fraud.router.ts`, in addition to the originally-audited `employees.router.ts`/`transactions.router.ts`/`cash.router.ts`. No further action; `PROJECT_STATUS.md` §19 Medium item 6 can be closed as resolved.
+  2. `discounts.router.ts` unimplemented stub — **re-verified 2026-07-18: still accurate, no regression.** File still registers zero routes (`TODO(Phase 1+)` unchanged); no attack surface exists. Accepted as deferred to whenever the discounts module is actually implemented (out of Phase 20 scope) — will require its own security pass at that time.
+
+No code changes were required or made. Test suite baseline (658 API / 151 web / 0 typecheck errors) is unaffected and still holds.
+
 ### Task 13 — Phase 19 Task 10 audit gaps (verification-only)
 **Description:** The Phase 19 Task 10 verification audit (`docs/security/2026-07-17-phase19-task10-phase-verification-audit.md`) found Phases 14/15 fully match the architecture doc with no code-level gaps, and Phase 12's backend is complete and correct. Its **only** finding was the missing staff clock-in UI — already captured above as Task 7. There is no separate code-change work for this task.
 **Files:** none.

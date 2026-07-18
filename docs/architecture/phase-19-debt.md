@@ -105,6 +105,35 @@ enqueues these types.
     from pilot users), run supervisor test with trace: 'on' in
     headed mode, inspect network + navigation timeline at timeout
 
+- **Load test rate-limiter interference & elevated p95 under concurrency**
+  - Discovered: Phase 20 Task 11 (2026-07-19)
+  - Test executed: 20 VU staged ramp, 4.5 min, single-machine origin
+  - Result: 75.69% error rate driven by per-IP login limiter
+    (10 req/15min) and per-user_id API limiter (100 req/min)
+    engaging correctly against single-source load — not server
+    saturation
+  - Meaningful signal captured (successful requests only):
+    - Median: 90ms
+    - Login p95: 153ms (SLO: <400ms) ✅
+    - All-endpoint p95: 1.11s (SLO: <800ms) ⚠️
+    - Max: 3.32s
+  - p95 elevation likely attributable to Render Free tier
+    cold-start/contention under concurrent load
+  - Deferred to Phase 21 with these remediation options:
+    1. Provision distinct load-test accounts (bypass per-user limiter)
+    2. Distributed load source (bypass per-IP limiter)
+    3. Pre-seed tokens out-of-band, skip login in load loop
+    4. Consider Render Starter tier ($7/mo) for always-on backend
+       if real pilot p95 exceeds 800ms
+  - Real pilot: 3 users, monitored via Sentry + user feedback.
+    Capacity signal deemed sufficient for go-live given controlled
+    pilot scope.
+
+- **Task 11 test artifacts committed**
+  - tests/load/pilot-smoke.k6.js
+  - tests/load/results/run-20260719T0330.json (baseline)
+  - tests/load/results/run-20260719T0330.txt (baseline)
+
 ## Skills usage discrepancy (from Phase 18 Session A)
 
 Plan doc header at docs/superpowers/plans/2026-07-17-phase18-notifications-eod-summary.md

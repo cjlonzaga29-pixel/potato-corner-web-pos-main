@@ -500,8 +500,9 @@ describe('transactionsService.syncOfflineTransactions', () => {
     await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [later, earlier] }, null);
 
     const calls = vi.mocked(transactionsRepository.createTransaction).mock.calls;
-    expect(calls[0][0]).toMatchObject({ offlineProvisionalNumber: earlier.offlineProvisionalNumber });
-    expect(calls[1][0]).toMatchObject({ offlineProvisionalNumber: later.offlineProvisionalNumber });
+    const [firstCall, secondCall] = calls;
+    expect(firstCall?.[0]).toMatchObject({ offlineProvisionalNumber: earlier.offlineProvisionalNumber });
+    expect(secondCall?.[0]).toMatchObject({ offlineProvisionalNumber: later.offlineProvisionalNumber });
   });
 
   it('marks a failed item without stopping the rest of the batch from syncing', async () => {
@@ -517,7 +518,8 @@ describe('transactionsService.syncOfflineTransactions', () => {
       expect.objectContaining({ offline_provisional_number: insufficientCash.offlineProvisionalNumber, status: 'failed' }),
       expect.objectContaining({ offline_provisional_number: valid.offlineProvisionalNumber, status: 'synced' }),
     ]);
-    expect(result.results[0].error).toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
+    const [firstResult] = result.results;
+    expect(firstResult?.error).toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
     expect(result.synced_count).toBe(1);
     expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
   });

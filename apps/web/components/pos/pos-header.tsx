@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { Clock } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useOffline } from '@/hooks/use-offline';
 import { useShiftStore } from '@/stores/shift.store';
@@ -63,6 +65,13 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
         </div>
 
         <NotificationBell />
+
+        <Button variant="outline" className="touch-target" asChild>
+          <Link href="/clock-in">
+            <Clock className="mr-2 h-4 w-4" />
+            Clock In/Out
+          </Link>
+        </Button>
 
         <Button variant="danger" className="touch-target" onClick={onEndShift} disabled={!isShiftOpen}>
           End Shift

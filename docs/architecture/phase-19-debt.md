@@ -86,6 +86,25 @@ enqueues these types.
 - `notification-bell.tsx` no consuming hook — still open. Component (`apps/web/components/shared/notification-bell.tsx`) is presentational-only by design; callers (`pos-header.tsx`, `supervisor-sidebar.tsx`, `admin-sidebar.tsx`) render it with no `notifications` prop passed, so it always shows empty. No hook wires it to the socket `notification` event or a TanStack Query source yet.
 - `HASH_KEY` in Render — still open (Task 3, production environment configuration).
 
+## Phase 20 debt
+
+- **Playwright supervisor + staff login tests time out on waitForURL
+  despite backend + manual browser verification succeeding**
+  - Discovered: Phase 20 Task 10 (2026-07-18)
+  - Symptom: 2 of 5 pilot-smoke tests fail with waitForURL timeout
+    at 30s after successful login form submission
+  - Verified NOT broken: backend auth (all 3 accounts return 200 +
+    correct role + must_change_password=false), frontend redirect
+    logic (ROLE_DASHBOARDS map, middleware ownership), manual browser
+    testing in incognito (all 3 roles reach dashboards)
+  - Static analysis inconclusive — requires headed Playwright trace
+    against a throwaway test account to diagnose
+  - Impact: Test-infra only. Does not affect real users.
+  - Deferred to: Phase 21 test hardening
+  - Remediation plan: create dedicated E2E test accounts (separate
+    from pilot users), run supervisor test with trace: 'on' in
+    headed mode, inspect network + navigation timeline at timeout
+
 ## Skills usage discrepancy (from Phase 18 Session A)
 
 Plan doc header at docs/superpowers/plans/2026-07-17-phase18-notifications-eod-summary.md

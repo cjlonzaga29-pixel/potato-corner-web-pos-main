@@ -44,20 +44,6 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ data: { status: 'ok' }, error: null, meta: null });
 });
 
-app.get('/api/diag-email', (_req: Request, res: Response) => {
-  const key = process.env.RESEND_API_KEY || '';
-  res.json({
-    data: {
-      hasKey: !!key,
-      length: key.length,
-      prefix: key.substring(0, 6),
-      suffix: key.substring(key.length - 4),
-      nodeEnv: process.env.NODE_ENV,
-      emailFrom: process.env.EMAIL_FROM
-    }
-  });
-});
-
 app.use(apiLimiter);
 
 // Double-submit cookie CSRF check for state-changing requests — see

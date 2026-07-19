@@ -88,6 +88,17 @@ describe('authService.login', () => {
     expect(result.refreshToken).toEqual(expect.any(String));
     expect(authRepository.storeRefreshToken).toHaveBeenCalledWith('user-1', result.refreshToken, 'device-1', expect.any(Date));
     expect(authRepository.resetLoginAttempts).toHaveBeenCalledWith('user-1');
+    expect(authRepository.updateLastLogin).toHaveBeenCalledWith('user-1');
+  });
+
+  it('fails the login if a parallel post-auth write rejects', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(buildUser({ passwordHash }) as never);
+    vi.mocked(authRepository.storeRefreshToken).mockRejectedValueOnce(new Error('db unavailable'));
+
+    await expect(authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null)).rejects.toThrow(
+      'db unavailable',
+    );
   });
 
   it('increments the login attempt counter on wrong password', async () => {

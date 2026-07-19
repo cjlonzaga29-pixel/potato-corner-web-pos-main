@@ -146,9 +146,6 @@ export const authService = {
       throw new AuthError('INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
 
-    await authRepository.resetLoginAttempts(user.id);
-    await authRepository.updateLastLogin(user.id);
-
     const branchIds = user.branchAssignments.map((assignment) => assignment.branchId);
     const accessToken = generateAccessToken({
       id: user.id,
@@ -159,17 +156,25 @@ export const authService = {
     });
     const refreshToken = generateRefreshToken();
     const refreshExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
-    await authRepository.storeRefreshToken(user.id, refreshToken, deviceId, refreshExpiresAt);
 
-    await recordAuditLog({
-      action: 'LOGIN_SUCCESS',
-      entityType: 'user',
-      entityId: user.id,
-      actorId: user.id,
-      actorRole: user.role,
-      branchId: branchIds[0] ?? null,
-      ipAddress,
-    });
+    // Independent post-auth side effects — none read each other's result,
+    // so run them concurrently instead of serially. recordAuditLog never
+    // throws (see audit-log.ts), so a failure here still fails the login
+    // only via the other three.
+    await Promise.all([
+      authRepository.resetLoginAttempts(user.id),
+      authRepository.updateLastLogin(user.id),
+      authRepository.storeRefreshToken(user.id, refreshToken, deviceId, refreshExpiresAt),
+      recordAuditLog({
+        action: 'LOGIN_SUCCESS',
+        entityType: 'user',
+        entityId: user.id,
+        actorId: user.id,
+        actorRole: user.role,
+        branchId: branchIds[0] ?? null,
+        ipAddress,
+      }),
+    ]);
 
     return {
       access_token: accessToken,

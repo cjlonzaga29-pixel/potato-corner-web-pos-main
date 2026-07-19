@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Clock } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useOffline } from '@/hooks/use-offline';
+import { useBranch } from '@/hooks/queries/use-branches';
 import { useShiftStore } from '@/stores/shift.store';
 import { Button } from '@/components/ui/button';
 import { NotificationBell } from '@/components/shared/notification-bell';
@@ -33,6 +34,8 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
   const isShiftOpen = useShiftStore((state) => state.isShiftOpen);
   const now = useClock();
   const branchId = user?.branchIds[0];
+  const { data: branch, isLoading: isBranchLoading } = useBranch(branchId);
+  const branchLabel = !branchId ? 'No branch' : isBranchLoading ? 'Loading…' : (branch?.name ?? 'Branch unavailable');
 
   return (
     <header className="flex h-16 shrink-0 items-center justify-between border-b bg-card px-4">
@@ -41,7 +44,7 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
           PC
         </div>
         <div>
-          <p className="text-sm font-semibold">{branchId ? `Branch ${branchId.slice(0, 8)}` : 'No branch'}</p>
+          <p className="text-sm font-semibold">{branchLabel}</p>
           <p className="text-xs text-muted-foreground">
             {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Cashier'}
           </p>

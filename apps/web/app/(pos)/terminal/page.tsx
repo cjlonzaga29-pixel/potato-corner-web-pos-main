@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -403,7 +404,14 @@ export default function TerminalPage() {
           )}
 
           {chargeError && <p className="text-xs text-destructive">{chargeError}</p>}
-          {!shift && <p className="text-xs text-destructive">No active shift — open a shift before charging.</p>}
+          {!shift && (
+            <div className="space-y-1.5">
+              <p className="text-xs text-destructive">No active shift — open a shift before charging.</p>
+              <Button variant="outline" size="sm" className="w-full" asChild>
+                <Link href="/shift/open">Open Shift</Link>
+              </Button>
+            </div>
+          )}
 
           <Button variant="pos" className="w-full" disabled={!canCharge || createTransaction.isPending} onClick={() => void handleCharge()}>
             {createTransaction.isPending ? 'Charging…' : `Charge ${formatPeso(totalAmount)}`}

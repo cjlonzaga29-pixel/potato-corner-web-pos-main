@@ -1,5 +1,7 @@
 # Database Schema Reference
 
+**Last verified:** 2026-07-20 (commit `70caead`)
+
 The authoritative schema is `apps/api/prisma/schema.prisma`. This document summarizes it and records the schema-level decisions made during Phase 0 scaffolding, plus the CR-001 change request layered on top in Phase 7.5, that go beyond what the architecture document specified verbatim.
 
 ## Design principles (from Final Approved Architecture §4.1)
@@ -24,9 +26,18 @@ CR-001 added branch-level exceptions to the master catalog/recipe without touchi
 - **`Product.branchExclusive` / `Product.exclusiveBranchId`** — a branch-exclusive product (created directly by Super Admin with `branchExclusive: true`, or via an approved `ProductRequest`) skips the all-active-branches availability cascade and is only ever available at the one named branch.
 - **`User` / `Branch` / `ProductVariant`** each gained the inverse relations for the three new tables above (`priceOverrideRequests`, `productRequestsFiled`, `recipeOverridesCreated`, etc.) — no new scalar columns on these three.
 
+## Post-CR-001 additions (Phase 20–21.5, not yet layered into the sections above)
+
+- **`RevokedToken`** / **`RefreshTokenRotationCache`** — Phase 21/21.5 Postgres-native replacements for the Redis-backed JWT blacklist and refresh-rotation result cache; see `apps/api/src/lib/pg-lock.ts`.
+- **`IdCounter`** — Phase 21 Postgres-native sequence table (`key`/`value`), replaced Redis `INCR` usage for generating sequential IDs; see `apps/api/src/lib/id-counter.ts`.
+- **`HoldOrder`** / **`HoldOrderItem`** — Phase 20 held-order backend: a branch/shift-scoped saved cart and its line items, resumed later at the POS.
+- **`PasswordResetToken`** — hashed, expiring token backing the forgot-password flow, same shape as `RevokedToken`.
+- **`ReportSnapshot`** — cached materialized report output (`reportType`, optional `branchId`), avoids recomputing expensive aggregate reports on every request.
+- **`Notification`** — in-app notification record (`type`, `payload` JSON) surfaced to users via Socket.io.
+
 ## Table list
 
-`User`, `Branch`, `UserBranchAssignment`, `RefreshToken`, `PinCredential`, `Product`, `ProductVariant`, `Flavor`, `ProductVariantFlavor`, `BranchProductAvailability`, `BranchFlavorAvailability`, `BranchPriceOverride` (CR-001), `ProductRequest` (CR-001), `Ingredient`, `Recipe`, `BranchRecipeOverride` (CR-001), `InventoryMovement`, `Transaction`, `TransactionItem`, `Shift`, `ShiftCashDenomination`, `AttendanceRecord`, `AuditLog`, `FraudAlert`.
+`User`, `Branch`, `UserBranchAssignment`, `RefreshToken`, `RevokedToken`, `RefreshTokenRotationCache`, `IdCounter`, `PasswordResetToken`, `PinCredential`, `Product`, `ProductVariant`, `Flavor`, `ProductVariantFlavor`, `BranchProductAvailability`, `BranchFlavorAvailability`, `BranchPriceOverride` (CR-001), `ProductRequest` (CR-001), `Ingredient`, `Recipe`, `BranchRecipeOverride` (CR-001), `InventoryMovement`, `Transaction`, `TransactionItem`, `Shift`, `ShiftCashDenomination`, `HoldOrder`, `HoldOrderItem`, `AttendanceRecord`, `AuditLog`, `FraudAlert`, `ReportSnapshot`, `Notification`.
 
 ## Partial unique index state
 

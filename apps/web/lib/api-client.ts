@@ -97,6 +97,17 @@ export async function apiClient<T>(
   init?: RequestInit,
   _isRetry = false,
 ): Promise<ApiResponse<T>> {
+  const isAuthPath = path === '/api/auth/refresh' || path === '/api/auth/login';
+  if (refreshInFlight && !_isRetry && !isAuthPath) {
+    // A refresh is already resolving elsewhere (e.g. another mutation's 401
+    // triggered it). Wait for it instead of firing with a token we know is
+    // stale — otherwise this request 401s on its own timeline, finds
+    // refreshInFlight already cleared, and starts a redundant refresh of
+    // its own (the storm seen in the 2026-07-20 audit).
+    console.warn('[apiClient] awaiting in-flight refresh before request', path);
+    await refreshInFlight;
+  }
+
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
     credentials: 'include',
@@ -104,6 +115,7 @@ export async function apiClient<T>(
   });
 
   if (response.status === 401 && !_isRetry && path !== '/api/auth/refresh' && path !== '/api/auth/login') {
+    console.warn('[apiClient] 401, triggering refresh', path);
     const newToken = await refreshAccessToken();
     if (newToken) {
       const user = useAuthStore.getState().user;

@@ -246,17 +246,19 @@ export default function TerminalPage() {
             product.variants.map((variant) => (
               <Card
                 key={variant.id}
-                className="cursor-pointer touch-target transition hover:border-primary"
+                className="flex h-full flex-col cursor-pointer touch-target transition hover:border-primary"
                 onClick={() => handleProductTap(product, variant)}
               >
-                <CardContent className="flex flex-col gap-1 p-3">
-                  {product.image_url && (
+                <CardContent className="flex h-full flex-col gap-1 p-3">
+                  {product.image_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={product.image_url} alt={product.name} className="mb-1 h-20 w-full rounded object-cover" />
+                  ) : (
+                    <div className="mb-1 h-20 w-full rounded bg-muted" />
                   )}
-                  <p className="text-sm font-medium leading-tight">{product.name}</p>
+                  <p className="line-clamp-2 min-h-[2.5rem] text-sm font-medium leading-tight">{product.name}</p>
                   <p className="text-xs text-muted-foreground">{variant.name}</p>
-                  <p className="text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
+                  <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
                 </CardContent>
               </Card>
             )),

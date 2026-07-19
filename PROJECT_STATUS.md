@@ -488,3 +488,24 @@ The **Security** and **Feature completeness** rows were recomputed this update: 
 | Deployment readiness | 10/10 *(not re-audited 2026-07-15)* | *(partial credit, weighted)* Frontend is genuinely live and working on Vercel; backend has literally zero deployment infrastructure — split evenly. Not re-checked this session |
 
 **Read (updated 2026-07-15):** the codebase's core product gap from the last audit — no working POS terminal — is closed. The shift-open → sell → close/reconcile lifecycle is real, tested, and reviewed end to end. What's left is now cleanly enumerable: attendance, both dashboards, reporting, fraud detection, notifications, production hardening, pilot rollout, and backend hosting — plus the still-open security items from the last full audit (Socket.io auth bypass, email credential logging), which were not re-checked this session and should not be assumed fixed just because other things moved forward.
+
+---
+
+## Known Gaps (Session F, 2026-07-19)
+
+1. **Staging environment not provisioned**
+   - GitHub Environment "staging" does not exist
+   - `RENDER_DEPLOY_HOOK_STAGING` and `STAGING_DATABASE_URL` unset
+   - Blocking: staging deploys will silently skip
+   - Fix when: staging workflow is next needed
+
+2. **Production environment has no required reviewer**
+   - Workflow comment at `.github/workflows/deploy-production.yml:53-54` claims manual approval is enforced
+   - Actual GitHub environment has `protection_rules: []`
+   - Risk: production deploys have no human gate
+   - Fix: add self as required reviewer via Settings → Environments → production
+
+3. **Stray GitHub environment "potato-corner-api / production"**
+   - Auto-created by Render GitHub App on 2026-07-17
+   - Purpose unclear; likely deletion candidate
+   - Verify Render's GitHub App integration before deleting

@@ -73,8 +73,11 @@ export const productsRepository = {
     return { products, total };
   },
 
-  findById(productId: string) {
-    return prisma.product.findUnique({ where: { id: productId }, include: detailInclude });
+  async findById(productId: string) {
+    const _t0 = Date.now();
+    const result = await prisma.product.findUnique({ where: { id: productId }, include: detailInclude });
+    console.warn(`[TEMP-DIAG] product findById query: ${Date.now() - _t0}ms`);
+    return result;
   },
 
   findByName(name: string) {

@@ -111,9 +111,11 @@ router.get('/catalog', authenticate, allRoles, requirePasswordChange, branchGuar
 });
 
 router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  const _t0 = Date.now();
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.getProductById(req.params.productId as string, req.user);
+    console.warn(`[TEMP-DIAG] GET /:productId handler total (post-auth): ${Date.now() - _t0}ms`);
     res.status(200).json({ data: product, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

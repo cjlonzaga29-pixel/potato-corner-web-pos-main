@@ -56,10 +56,12 @@ export async function verifyAccessToken(token: string): Promise<JwtPayload> {
     throw new AccessTokenError('TOKEN_MALFORMED', error instanceof Error ? error.message : 'jwt malformed');
   }
 
+  const _t0 = Date.now();
   const revoked = await prisma.revokedToken.findFirst({
     where: { tokenHash: revokedTokenHash(token), expiresAt: { gt: new Date() } },
     select: { id: true },
   });
+  console.warn(`[TEMP-DIAG] revokedToken query: ${Date.now() - _t0}ms`);
   if (revoked) {
     throw new AccessTokenError('TOKEN_REVOKED', 'token revoked');
   }

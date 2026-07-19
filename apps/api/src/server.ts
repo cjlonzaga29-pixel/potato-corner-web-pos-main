@@ -6,6 +6,8 @@ import { app } from './app.js';
 import { createSocketServer } from './socket/socket.server.js';
 import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
+import { scheduleEvery } from './lib/daily-scheduler.js';
+import { authRepository } from './modules/auth/auth.repository.js';
 
 // Importing `config` above already validated every required env var (it
 // fails fast with a clear field-level error if anything is missing) —
@@ -53,6 +55,9 @@ async function start(): Promise<void> {
     console.error('Failed to register the nightly EOD summary:', error);
     Sentry.captureException(error);
   }
+
+  scheduleEvery(60 * 60 * 1000, () => authRepository.pruneRotationCache());
+  console.log('Hourly refresh-token rotation cache cleanup scheduled.');
 
   const httpServer = createServer(app);
   createSocketServer(httpServer);

@@ -293,6 +293,25 @@ model PasswordResetToken {
   @@map("password_reset_tokens")
 }
 
+/// Restores the short-lived rotation result cache that Phase 20.5 (commit
+/// 9507200) built on Redis and Phase 21 (commit 28a2956) dropped when Redis
+/// was removed. withAdvisoryLock (see auth.repository.ts) only serializes
+/// the check-then-rotate sequence — it does not make a second near-duplicate
+/// request see the first request's result, so a losing caller was getting
+/// REFRESH_INVALID on an already-rotated token instead of the rotated pair.
+/// Keyed by the pre-rotation token's hash; read/pruned by createdAt age.
+model RefreshTokenRotationCache {
+  id                 String   @id @default(uuid())
+  originalTokenHash  String   @unique @map("original_token_hash")
+  cachedAccessToken  String   @map("cached_access_token")
+  cachedRefreshToken String   @map("cached_refresh_token")
+  cachedExpiresAt    DateTime @map("cached_expires_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("refresh_token_rotation_cache")
+}
+
 /// Phase 21: Postgres replacement for Redis INCR-based ID generation
 /// (employee IDs, per-city branch codes). `key` is the counter's name
 /// (e.g. "employee_id_counter", "branch_code_counter:QC"); nextCounterValue

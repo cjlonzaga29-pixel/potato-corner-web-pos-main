@@ -36,6 +36,8 @@ vi.mock('./auth.repository.js', () => ({
     withAdvisoryLock: vi.fn((_lockId: bigint, fn: (tx: unknown) => unknown) => fn(fakeTx)),
     findRefreshTokenTx: vi.fn(),
     rotateRefreshTokenTx: vi.fn(),
+    findRotationCacheTx: vi.fn(),
+    insertRotationCacheTx: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -69,6 +71,10 @@ function buildUser(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks resets call history but not mockResolvedValue — reinstate
+  // the "no cache hit" default so a prior test's cached-result mock can't
+  // leak into a later refreshToken() test that expects a real rotation.
+  vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue(null);
 });
 
 describe('authService.login', () => {
@@ -172,24 +178,44 @@ describe('authService.refreshToken', () => {
     warnSpy.mockRestore();
   });
 
-  // Phase 21 (see the design note on authService.refreshToken and on
-  // authRepository.withAdvisoryLock): the Redis result cache that used to
-  // let a legitimate near-duplicate request succeed is gone — this is now
-  // indistinguishable from the genuine-reuse case above, by design.
-  it('rejects a second near-duplicate request the same way as genuine reuse, now that there is no result cache', async () => {
+  it('rotates the token and writes the result to the rotation cache, keyed by the pre-rotation token', async () => {
     const storedToken = {
       id: 'rt-1',
       userId: 'user-1',
       deviceId: 'device-1',
-      revokedAt: new Date(),
+      revokedAt: null,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       user: buildUser(),
     };
     vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
+    vi.mocked(authRepository.rotateRefreshTokenTx).mockResolvedValue({ id: 'rt-2' } as never);
 
-    await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({
-      code: 'REFRESH_INVALID',
-    });
+    const result = await authService.refreshToken('old-refresh-token', 'device-1');
+
+    expect(authRepository.insertRotationCacheTx).toHaveBeenCalledWith(
+      fakeTx,
+      expect.any(String),
+      result.access_token,
+      result.refreshToken,
+      expect.any(Date),
+    );
+  });
+
+  // Restores the Phase 20.5 (commit 9507200) behavior that Phase 21 (commit
+  // 28a2956) dropped along with Redis: a legitimate near-duplicate request
+  // racing right behind the one that already rotated gets that request's
+  // result back instead of REFRESH_INVALID.
+  it('returns the cached rotation result for a near-duplicate request instead of rotating again', async () => {
+    const cached = {
+      cachedAccessToken: 'cached-access-token',
+      cachedRefreshToken: 'cached-refresh-token',
+    };
+    vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue(cached as never);
+
+    const result = await authService.refreshToken('old-refresh-token', 'device-1');
+
+    expect(result).toEqual({ access_token: 'cached-access-token', refreshToken: 'cached-refresh-token' });
+    expect(authRepository.findRefreshTokenTx).not.toHaveBeenCalled();
     expect(authRepository.rotateRefreshTokenTx).not.toHaveBeenCalled();
   });
 

@@ -4,6 +4,8 @@ import { sha256Hex } from '../../lib/hash.js';
 
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 30 * 60 * 1000;
+const ROTATION_CACHE_TTL_MS = 10 * 1000;
+const ROTATION_CACHE_PRUNE_AGE_MS = 60 * 60 * 1000;
 
 /**
  * Auth repository. All Prisma calls for this module live here — the
@@ -184,12 +186,12 @@ export const authRepository = {
    * serialized against concurrent callers. The lock releases automatically
    * on transaction commit/rollback.
    *
-   * Unlike the Redis version, there is no result cache: a second request
-   * that arrives after the first has already committed will see the token
-   * as rotated/revoked and get REFRESH_INVALID, not the first request's
-   * result. This reopens the narrow concurrent-refresh race Phase 20.5
-   * closed — accepted per the Phase 21 directive to drop Redis-backed
-   * caching entirely, not merely relocate it.
+   * The Redis result cache Phase 21 dropped alongside the lock has since
+   * been reinstated on Postgres (see findRotationCacheTx/insertRotationCacheTx
+   * and the RefreshTokenRotationCache model) — the caller is expected to
+   * check the cache first and write to it after rotating, both using this
+   * same `tx`, so a second near-duplicate request sees the first request's
+   * result instead of REFRESH_INVALID.
    */
   withAdvisoryLock<T>(lockId: bigint, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     return prisma.$transaction(async (tx) => {
@@ -223,5 +225,34 @@ export const authRepository = {
 
     await tx.refreshToken.update({ where: { id: oldTokenId }, data: { replacedBy: created.id } });
     return created;
+  },
+
+  /** Looks up a still-fresh (within ROTATION_CACHE_TTL_MS) cached rotation result for the pre-rotation token's hash. */
+  findRotationCacheTx(tx: Prisma.TransactionClient, originalTokenHash: string) {
+    return tx.refreshTokenRotationCache.findFirst({
+      where: {
+        originalTokenHash,
+        createdAt: { gt: new Date(Date.now() - ROTATION_CACHE_TTL_MS) },
+      },
+    });
+  },
+
+  insertRotationCacheTx(
+    tx: Prisma.TransactionClient,
+    originalTokenHash: string,
+    cachedAccessToken: string,
+    cachedRefreshToken: string,
+    cachedExpiresAt: Date,
+  ) {
+    return tx.refreshTokenRotationCache.create({
+      data: { originalTokenHash, cachedAccessToken, cachedRefreshToken, cachedExpiresAt },
+    });
+  },
+
+  /** Hourly cleanup (see lib/daily-scheduler.ts's scheduleEvery) — cache rows are only ever read within ROTATION_CACHE_TTL_MS, so anything older than this is dead weight. */
+  async pruneRotationCache(): Promise<void> {
+    await prisma.refreshTokenRotationCache.deleteMany({
+      where: { createdAt: { lt: new Date(Date.now() - ROTATION_CACHE_PRUNE_AGE_MS) } },
+    });
   },
 };

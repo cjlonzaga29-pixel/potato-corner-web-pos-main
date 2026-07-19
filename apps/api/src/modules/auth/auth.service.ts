@@ -60,14 +60,14 @@ function generateRefreshToken(): string {
 // Phase 20.5 (commit 9507200): a client can present the same refresh token
 // twice in quick succession (e.g. rapid sidebar navigation triggers the
 // middleware's refresh check on two near-simultaneous requests before the
-// first response lands). Phase 21 replaced the Redis lock + short-lived
-// result cache that used to coalesce these with a Postgres advisory lock
-// (see authRepository.withAdvisoryLock) that only serializes the
-// check-then-rotate sequence — there is no longer a result cache, so a
-// second near-duplicate request now gets REFRESH_INVALID instead of the
-// first request's response pair (reopens the race Phase 20.5 closed; see
-// the design note on withAdvisoryLock in auth.repository.ts). Reuse of a
-// token from a different device still throws REFRESH_INVALID either way.
+// first response lands). Phase 21 (commit 28a2956) replaced the Redis lock +
+// short-lived result cache that coalesced these with a Postgres advisory
+// lock (see authRepository.withAdvisoryLock) alone, which reopened the race:
+// the lock serializes check-then-rotate but a second near-duplicate request
+// still saw the token as already-rotated and got REFRESH_INVALID. The result
+// cache has since been reinstated on Postgres (RefreshTokenRotationCache) —
+// see refreshToken() below. Reuse of a token from a different device still
+// throws REFRESH_INVALID either way.
 type RefreshTokenPair = RefreshResponse & { refreshToken: string };
 
 /** Blacklists an access token until its own expiry — same TTL, no longer, no shorter. */
@@ -183,6 +183,11 @@ export const authService = {
     const lockId = hashToLockId(tokenHash);
 
     return authRepository.withAdvisoryLock(lockId, async (tx) => {
+      const cached = await authRepository.findRotationCacheTx(tx, tokenHash);
+      if (cached) {
+        return { access_token: cached.cachedAccessToken, refreshToken: cached.cachedRefreshToken };
+      }
+
       const stored = await authRepository.findRefreshTokenTx(tx, refreshTokenValue);
 
       if (!stored || stored.expiresAt.getTime() < Date.now() || stored.deviceId !== deviceId) {
@@ -190,11 +195,9 @@ export const authService = {
       }
 
       if (stored.revokedAt) {
-        // Already rotated. Without the Redis result cache Phase 20.5 used
-        // (removed in Phase 21, see the design note above), this now also
-        // fires for a legitimate near-duplicate request racing right behind
-        // the one that already rotated — not just a genuine stolen-token
-        // replay. Logged the same either way so real reuse stays visible.
+        // No cache hit above means this isn't a near-duplicate racing behind
+        // an already-cached rotation — it's a token presented after its
+        // cache entry expired (>10s stale) or a genuine stolen-token replay.
         console.warn('Refresh token reuse detected', { userId: stored.user.id, tokenId: stored.id });
         throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
       }
@@ -211,6 +214,8 @@ export const authService = {
         branchIds,
         mustChangePassword: stored.user.mustChangePassword,
       });
+
+      await authRepository.insertRotationCacheTx(tx, tokenHash, accessToken, newRefreshToken, newExpiresAt);
 
       return { access_token: accessToken, refreshToken: newRefreshToken };
     });

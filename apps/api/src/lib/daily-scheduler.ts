@@ -40,3 +40,10 @@ export function scheduleDaily(hour: number, minute: number, timeZone: string, ta
   };
   setTimeout(run, msUntilNextOccurrence(hour, minute, timeZone));
 }
+
+/** Fixed-interval counterpart to scheduleDaily, for jobs that don't need wall-clock alignment (e.g. cache pruning). */
+export function scheduleEvery(intervalMs: number, task: () => Promise<void>): void {
+  setInterval(() => {
+    void task().catch((error: unknown) => console.error('Scheduled interval job failed:', error));
+  }, intervalMs);
+}

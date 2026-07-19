@@ -23,6 +23,39 @@ interface RefreshResponseData {
   access_token: string;
 }
 
+const REFRESH_RETRY_DELAY_MS = 300;
+
+interface RestoreAttempt {
+  accessToken: string | null;
+  /**
+   * Mirrors middleware.ts's resolveAccessToken (ae41a66): true when the
+   * refresh call failed for a reason other than the token actually being
+   * invalid/missing (network throw, or any error response other than
+   * REFRESH_MISSING/REFRESH_INVALID) — must not be treated as a dead
+   * session.
+   */
+  transientError: boolean;
+}
+
+async function attemptRefresh(): Promise<RestoreAttempt> {
+  try {
+    const response = await apiClient<RefreshResponseData>('/api/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
+    });
+
+    if (response.data?.access_token) {
+      return { accessToken: response.data.access_token, transientError: false };
+    }
+
+    const errorCode = typeof response.error === 'object' ? response.error?.code : undefined;
+    const isInvalid = errorCode === 'REFRESH_INVALID' || errorCode === 'REFRESH_MISSING';
+    return { accessToken: null, transientError: !isInvalid };
+  } catch {
+    return { accessToken: null, transientError: true };
+  }
+}
+
 function toAuthUser(user: LoginResponseData['user']): AuthUser {
   return {
     id: user.id,
@@ -61,37 +94,57 @@ export function useAuth() {
     let cancelled = false;
 
     async function restoreSession() {
-      const response = await apiClient<RefreshResponseData>('/api/auth/refresh', {
-        method: 'POST',
-        body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
-      });
+      try {
+        let attempt = await attemptRefresh();
+        if (cancelled) return;
 
-      if (cancelled) return;
-
-      if (response.data?.access_token) {
-        // The refresh endpoint only returns a new access token, not the
-        // full user profile — decode the token for id/role/email/branch_ids
-        // (first/last name aren't part of the locked JWT payload, so they
-        // stay blank until the next full login; a dedicated profile
-        // endpoint would be needed to restore them here).
-        const payload = decodeJwtPayload(response.data.access_token);
-        if (payload) {
-          setAuth(
-            {
-              id: payload.user_id,
-              role: payload.role,
-              email: payload.email,
-              firstName: '',
-              lastName: '',
-              branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
-            },
-            response.data.access_token,
-          );
-          return;
+        // A single retry absorbs short transient failures before falling
+        // back to treating it as transient — same shape as middleware.ts's
+        // REFRESH_RETRY_DELAY_MS retry, so both layers agree on how long a
+        // hiccup gets before it's accepted as real.
+        if (attempt.transientError) {
+          await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_DELAY_MS));
+          if (cancelled) return;
+          attempt = await attemptRefresh();
+          if (cancelled) return;
         }
-      }
 
-      setLoading(false);
+        if (attempt.accessToken) {
+          // The refresh endpoint only returns a new access token, not the
+          // full user profile — decode the token for id/role/email/branch_ids
+          // (first/last name aren't part of the locked JWT payload, so they
+          // stay blank until the next full login; a dedicated profile
+          // endpoint would be needed to restore them here).
+          const payload = decodeJwtPayload(attempt.accessToken);
+          if (payload) {
+            setAuth(
+              {
+                id: payload.user_id,
+                role: payload.role,
+                email: payload.email,
+                firstName: '',
+                lastName: '',
+                branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
+              },
+              attempt.accessToken,
+            );
+            return;
+          }
+        }
+
+        // Only a genuinely dead session (invalid/missing refresh token)
+        // forces a logout + redirect. A transient failure falls through
+        // here without clearing auth or navigating — the store is left as
+        // the pre-existing unauthenticated state on a hard reload, and the
+        // next navigation gets a fresh chance, mirroring middleware.ts's
+        // fail-open behavior instead of bouncing on a hiccup.
+        if (!attempt.transientError) {
+          clearAuth();
+          router.replace('/login');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
     // Skip the silent refresh if the store already holds a valid

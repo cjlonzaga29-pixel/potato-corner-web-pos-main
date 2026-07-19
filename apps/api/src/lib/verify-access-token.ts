@@ -30,6 +30,40 @@ export function revokedTokenHash(token: string): string {
   return sha256Hex(token);
 }
 
+const NOT_REVOKED_CACHE_TTL_MS = 60_000;
+const notRevokedCache = new Map<string, number>(); // tokenHash → cache-entry expiry
+
+/**
+ * Single Render instance (no Redis adapter since Phase 21), so an
+ * in-process cache is consistent across requests. Only the negative
+ * result is cached — a revoked token always hits the DB, so this never
+ * masks a *future* revocation, only delays visibility of one by up to
+ * NOT_REVOKED_CACHE_TTL_MS on tokens already cached as clean.
+ */
+async function isTokenRevoked(tokenHash: string): Promise<boolean> {
+  const now = Date.now();
+  const cachedExpiry = notRevokedCache.get(tokenHash);
+  if (cachedExpiry && cachedExpiry > now) {
+    return false;
+  }
+
+  const revoked = await prisma.revokedToken.findFirst({
+    where: { tokenHash, expiresAt: { gt: new Date() } },
+    select: { id: true },
+  });
+  if (revoked) {
+    return true;
+  }
+
+  notRevokedCache.set(tokenHash, now + NOT_REVOKED_CACHE_TTL_MS);
+  if (notRevokedCache.size > 10_000) {
+    for (const [key, expiry] of notRevokedCache) {
+      if (expiry < now) notRevokedCache.delete(key);
+    }
+  }
+  return false;
+}
+
 /**
  * Single source of truth for access-token verification, shared by the HTTP
  * `authenticate` middleware and the Socket.io handshake middleware so both
@@ -56,11 +90,7 @@ export async function verifyAccessToken(token: string): Promise<JwtPayload> {
     throw new AccessTokenError('TOKEN_MALFORMED', error instanceof Error ? error.message : 'jwt malformed');
   }
 
-  const revoked = await prisma.revokedToken.findFirst({
-    where: { tokenHash: revokedTokenHash(token), expiresAt: { gt: new Date() } },
-    select: { id: true },
-  });
-  if (revoked) {
+  if (await isTokenRevoked(revokedTokenHash(token))) {
     throw new AccessTokenError('TOKEN_REVOKED', 'token revoked');
   }
 

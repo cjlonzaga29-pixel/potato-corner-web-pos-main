@@ -38,12 +38,36 @@ const envSchema = z.object({
   SENTRY_DSN: z.string().optional(),
 });
 
+/**
+ * Supabase's transaction-mode pooler (port 6543) multiplexes connections
+ * across clients, so it can't hold server-side prepared statements — Prisma
+ * must be told to fall back to unnamed statements via `pgbouncer=true` in
+ * the connection string's query params. A missing or malformed flag here
+ * (e.g. a bad `?`/`&` separator swallowing the param) doesn't fail until
+ * requests start throwing "prepared statement already exists" under load,
+ * well after boot. Catch it at startup instead.
+ */
+function assertPgBouncerCompatible(databaseUrl: string): void {
+  const url = new URL(databaseUrl);
+  const isTransactionPooler = url.port === '6543';
+  if (isTransactionPooler && url.searchParams.get('pgbouncer') !== 'true') {
+    throw new Error(
+      'DATABASE_URL targets the Supabase transaction pooler (port 6543) but is missing ' +
+        '"pgbouncer=true" in its query string. Without it, Prisma will attempt server-side ' +
+        'prepared statements against a connection-multiplexing pooler that cannot support them, ' +
+        'causing intermittent "prepared statement already exists" errors under load. ' +
+        'Add ?pgbouncer=true (or &pgbouncer=true if other params are already present).',
+    );
+  }
+}
+
 function loadConfig() {
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
     const issues = result.error.issues.map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`).join('\n');
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
+  assertPgBouncerCompatible(result.data.DATABASE_URL);
   return result.data;
 }
 

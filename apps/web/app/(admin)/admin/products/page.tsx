@@ -17,6 +17,9 @@ import { ProductStatusBadge } from '@/components/admin/products/product-status-b
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { BranchExclusiveBadge } from '@/components/admin/products/branch-exclusive-badge';
 import { CreateProductDialog } from '@/components/admin/products/create-product-dialog';
+import { EditProductDialog } from '@/components/admin/products/edit-product-dialog';
+import { ChangeProductStatusDialog } from '@/components/admin/products/change-product-status-dialog';
+import { UploadProductImageDialog } from '@/components/admin/products/upload-product-image-dialog';
 
 const STATUS_FILTERS = [
   { value: 'all', label: 'All Statuses' },
@@ -41,6 +44,7 @@ export default function ProductCatalogPage() {
   const [seasonal, setSeasonal] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [createOpen, setCreateOpen] = useState(false);
+  const [rowAction, setRowAction] = useState<{ product: ProductResponse; dialog: 'edit' | 'status' | 'image' } | null>(null);
 
   const { data, isLoading, isError, refetch } = useProducts({
     status: status === 'all' ? undefined : (status as ProductResponse['status']),
@@ -94,6 +98,9 @@ export default function ProductCatalogPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
             <DropdownMenuItem onClick={() => router.push(`/admin/products/${row.original.id}`)}>View</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setRowAction({ product: row.original, dialog: 'edit' })}>Edit</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setRowAction({ product: row.original, dialog: 'status' })}>Change Status</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setRowAction({ product: row.original, dialog: 'image' })}>Upload Image</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       ),
@@ -189,6 +196,26 @@ export default function ProductCatalogPage() {
       />
 
       <CreateProductDialog open={createOpen} onOpenChange={setCreateOpen} />
+
+      {rowAction && (
+        <>
+          <EditProductDialog
+            open={rowAction.dialog === 'edit'}
+            onOpenChange={(open) => !open && setRowAction(null)}
+            product={rowAction.product}
+          />
+          <ChangeProductStatusDialog
+            open={rowAction.dialog === 'status'}
+            onOpenChange={(open) => !open && setRowAction(null)}
+            product={rowAction.product}
+          />
+          <UploadProductImageDialog
+            open={rowAction.dialog === 'image'}
+            onOpenChange={(open) => !open && setRowAction(null)}
+            productId={rowAction.product.id}
+          />
+        </>
+      )}
     </div>
   );
 }

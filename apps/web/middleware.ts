@@ -48,6 +48,32 @@ interface RefreshResult {
   accessToken: string | null;
   /** Raw Set-Cookie header value(s) from the upstream refresh response — must be relayed onto whatever NextResponse this middleware returns. */
   setCookies: string[];
+  /**
+   * True when the refresh call failed for a reason other than the token
+   * actually being invalid/missing (a non-401 response, or the fetch
+   * itself throwing) — e.g. the Session F transaction-pool exhaustion
+   * incident, where a healthy refresh token got a transient 500. The
+   * caller must not treat this the same as a dead session.
+   */
+  transientError: boolean;
+}
+
+const REFRESH_RETRY_DELAY_MS = 300;
+
+async function callRefreshEndpoint(
+  cookie: string,
+  deviceId: string | undefined,
+): Promise<{ response: Response | null; setCookies: string[] }> {
+  try {
+    const response = await fetch(`${API_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ device_id: deviceId ?? '' }),
+    });
+    return { response, setCookies: response.headers.getSetCookie?.() ?? [] };
+  } catch {
+    return { response: null, setCookies: [] };
+  }
 }
 
 /**
@@ -62,25 +88,34 @@ interface RefreshResult {
  * keeps the now-revoked cookie and the very next navigation fails with
  * REFRESH_INVALID, bouncing the user back to /login after exactly one
  * successful page load.
+ *
+ * A single retry absorbs short transient failures (DB pool contention,
+ * etc.) before falling back to `transientError: true` — a real 401 never
+ * retries, since that's a genuine invalid/missing token, not a hiccup.
  */
 async function resolveAccessToken(request: NextRequest): Promise<RefreshResult> {
   const deviceId = request.cookies.get('pc_device_id')?.value;
-  try {
-    const response = await fetch(`${API_URL}/api/auth/refresh`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        cookie: request.headers.get('cookie') ?? '',
-      },
-      body: JSON.stringify({ device_id: deviceId ?? '' }),
-    });
-    const setCookies = response.headers.getSetCookie?.() ?? [];
-    if (!response.ok) return { accessToken: null, setCookies };
-    const body = (await response.json()) as { data?: { access_token?: string } };
-    return { accessToken: body.data?.access_token ?? null, setCookies };
-  } catch {
-    return { accessToken: null, setCookies: [] };
+  const cookie = request.headers.get('cookie') ?? '';
+
+  let { response, setCookies } = await callRefreshEndpoint(cookie, deviceId);
+
+  if (!response || (!response.ok && response.status !== 401)) {
+    await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_DELAY_MS));
+    ({ response, setCookies } = await callRefreshEndpoint(cookie, deviceId));
   }
+
+  if (!response) {
+    return { accessToken: null, setCookies: [], transientError: true };
+  }
+  if (response.status === 401) {
+    return { accessToken: null, setCookies, transientError: false };
+  }
+  if (!response.ok) {
+    return { accessToken: null, setCookies: [], transientError: true };
+  }
+
+  const body = (await response.json()) as { data?: { access_token?: string } };
+  return { accessToken: body.data?.access_token ?? null, setCookies, transientError: false };
 }
 
 function withRotatedCookies(response: NextResponse, setCookies: string[]): NextResponse {
@@ -142,8 +177,18 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const { accessToken, setCookies } = await resolveAccessToken(request);
+  const { accessToken, setCookies, transientError } = await resolveAccessToken(request);
   if (!accessToken) {
+    if (transientError) {
+      // Don't force a logout over a refresh-endpoint hiccup — the session
+      // cookie is still there and may well be valid. This request skips
+      // the role/must-change-password checks below, but those are routing
+      // conveniences, not the security boundary: every actual API call
+      // this page makes is still authorized server-side in
+      // apps/api/src/middleware/authenticate.ts. The next navigation
+      // re-runs this middleware and gets a fresh chance to refresh.
+      return NextResponse.next();
+    }
     return withRotatedCookies(NextResponse.redirect(new URL('/login', request.url)), setCookies);
   }
 

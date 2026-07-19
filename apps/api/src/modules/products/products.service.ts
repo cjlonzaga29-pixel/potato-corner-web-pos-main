@@ -540,7 +540,15 @@ export const productsService = {
     const { error } = await supabaseAdmin.storage
       .from('product-images')
       .upload(path, compressed, { contentType: 'image/webp', upsert: true });
-    if (error) throw new ProductError('IMAGE_UPLOAD_FAILED', 'Failed to upload the product image', 502);
+    if (error) {
+      console.error('Supabase Storage upload failed for product image:', {
+        bucket: 'product-images',
+        path,
+        size: compressed.length,
+        error,
+      });
+      throw new ProductError('IMAGE_UPLOAD_FAILED', 'Failed to upload the product image', 502);
+    }
 
     const {
       data: { publicUrl },

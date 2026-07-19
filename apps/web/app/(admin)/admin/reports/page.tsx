@@ -23,6 +23,7 @@ import type {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
@@ -312,6 +313,7 @@ export default function AdminReportsPage() {
         </TabsList>
 
         <TabsContent value="DAILY_SALES">
+          {dailySales.isError ? <ErrorState retry={() => dailySales.refetch()} /> : <>
           <ReportLastUpdated timestamp={dailySales.data?.generated_at} isLoading={dailySales.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Gross Sales" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={dailySales.isLoading} />
@@ -320,9 +322,11 @@ export default function AdminReportsPage() {
             <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
           </div>
           <DataTable columns={dailySalesColumns} data={dailySales.data?.data ?? []} isLoading={dailySales.isLoading} emptyState={<EmptyState title="No sales in this range" />} />
+          </>}
         </TabsContent>
 
         <TabsContent value="SHIFT_SUMMARY">
+          {shiftSummary.isError ? <ErrorState retry={() => shiftSummary.refetch()} /> : <>
           <ReportLastUpdated timestamp={shiftSummary.data?.generated_at} isLoading={shiftSummary.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Shifts" value={(shiftSummary.data?.data ?? []).length} isLoading={shiftSummary.isLoading} />
@@ -330,9 +334,11 @@ export default function AdminReportsPage() {
             <KpiCard title="GCash Sales" value={(shiftSummary.data?.data ?? []).reduce((sum, r) => sum + r.gcash_sales_total, 0)} isLoading={shiftSummary.isLoading} />
           </div>
           <DataTable columns={shiftSummaryColumns} data={shiftSummary.data?.data ?? []} isLoading={shiftSummary.isLoading} emptyState={<EmptyState title="No shifts in this range" />} />
+          </>}
         </TabsContent>
 
         <TabsContent value="CASH_RECONCILIATION">
+          {cashReconciliation.isError ? <ErrorState retry={() => cashReconciliation.refetch()} /> : <>
           <ReportLastUpdated timestamp={cashReconciliation.data?.generated_at} isLoading={cashReconciliation.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Closed/Flagged Shifts" value={(cashReconciliation.data?.data ?? []).length} isLoading={cashReconciliation.isLoading} />
@@ -355,9 +361,11 @@ export default function AdminReportsPage() {
             isLoading={cashReconciliation.isLoading}
             emptyState={<EmptyState title="No closed or flagged shifts in this range" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="VOID_REFUND">
+          {voidRefund.isError ? <ErrorState retry={() => voidRefund.refetch()} /> : <>
           <ReportLastUpdated timestamp={voidRefund.data?.generated_at} isLoading={voidRefund.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Voided" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'voided').length} isLoading={voidRefund.isLoading} />
@@ -365,9 +373,11 @@ export default function AdminReportsPage() {
             <KpiCard title="Total Amount" value={(voidRefund.data?.data ?? []).reduce((sum, r) => sum + r.total_amount, 0)} isLoading={voidRefund.isLoading} tone="warning" />
           </div>
           <DataTable columns={voidRefundColumns} data={voidRefund.data?.data ?? []} isLoading={voidRefund.isLoading} emptyState={<EmptyState title="No voids or refunds in this range" />} />
+          </>}
         </TabsContent>
 
         <TabsContent value="DISCOUNT_COMPLIANCE">
+          {discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
           <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Discounted Transactions" value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)} isLoading={discountCompliance.isLoading} />
@@ -379,9 +389,11 @@ export default function AdminReportsPage() {
             isLoading={discountCompliance.isLoading}
             emptyState={<EmptyState title="No discounted transactions in this range" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="INVENTORY_MOVEMENT">
+          {inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
           <ReportLastUpdated timestamp={inventoryMovement.data?.generated_at} isLoading={inventoryMovement.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
@@ -398,9 +410,11 @@ export default function AdminReportsPage() {
             isLoading={inventoryMovement.isLoading}
             emptyState={<EmptyState title="No inventory movements in this range" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="ATTENDANCE_SUMMARY">
+          {attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
           <ReportLastUpdated timestamp={attendanceSummary.data?.generated_at} isLoading={attendanceSummary.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Records" value={(attendanceSummary.data?.data ?? []).length} isLoading={attendanceSummary.isLoading} />
@@ -416,9 +430,11 @@ export default function AdminReportsPage() {
             isLoading={attendanceSummary.isLoading}
             emptyState={<EmptyState title="No attendance records in this range" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="FRAUD_ALERT_SUMMARY">
+          {fraudAlertSummary.isError ? <ErrorState retry={() => fraudAlertSummary.refetch()} /> : <>
           <ReportLastUpdated timestamp={fraudAlertSummary.data?.generated_at} isLoading={fraudAlertSummary.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Alerts" value={(fraudAlertSummary.data?.data ?? []).length} isLoading={fraudAlertSummary.isLoading} />
@@ -435,9 +451,11 @@ export default function AdminReportsPage() {
             isLoading={fraudAlertSummary.isLoading}
             emptyState={<EmptyState title="No fraud alerts in this range" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="PRODUCT_PERFORMANCE">
+          {productPerformance.isError ? <ErrorState retry={() => productPerformance.refetch()} /> : <>
           <ReportLastUpdated timestamp={productPerformance.data?.computed_at} isLoading={productPerformance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Products" value={(productPerformance.data?.data ?? []).length} isLoading={productPerformance.isLoading} />
@@ -449,9 +467,11 @@ export default function AdminReportsPage() {
             isLoading={productPerformance.isLoading}
             emptyState={<EmptyState title="No product sales in the last 30 days" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="FLAVOR_PERFORMANCE">
+          {flavorPerformance.isError ? <ErrorState retry={() => flavorPerformance.refetch()} /> : <>
           <ReportLastUpdated timestamp={flavorPerformance.data?.computed_at} isLoading={flavorPerformance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Flavors" value={(flavorPerformance.data?.data ?? []).length} isLoading={flavorPerformance.isLoading} />
@@ -463,9 +483,11 @@ export default function AdminReportsPage() {
             isLoading={flavorPerformance.isLoading}
             emptyState={<EmptyState title="No flavor sales in the last 30 days" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="EMPLOYEE_PERFORMANCE">
+          {employeePerformance.isError ? <ErrorState retry={() => employeePerformance.refetch()} /> : <>
           <ReportLastUpdated timestamp={employeePerformance.data?.computed_at} isLoading={employeePerformance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Employees" value={(employeePerformance.data?.data ?? []).length} isLoading={employeePerformance.isLoading} />
@@ -477,9 +499,11 @@ export default function AdminReportsPage() {
             isLoading={employeePerformance.isLoading}
             emptyState={<EmptyState title="No employee sales in the last 30 days" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="INVENTORY_VALUATION">
+          {inventoryValuation.isError ? <ErrorState retry={() => inventoryValuation.refetch()} /> : <>
           <ReportLastUpdated timestamp={inventoryValuation.data?.computed_at} isLoading={inventoryValuation.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Ingredients" value={(inventoryValuation.data?.data ?? []).length} isLoading={inventoryValuation.isLoading} />
@@ -497,9 +521,11 @@ export default function AdminReportsPage() {
             isLoading={inventoryValuation.isLoading}
             emptyState={<EmptyState title="No ingredients found" />}
           />
+          </>}
         </TabsContent>
 
         <TabsContent value="BRANCH_COMPARISON">
+          {branchComparison.isError ? <ErrorState retry={() => branchComparison.refetch()} /> : <>
           <ReportLastUpdated timestamp={branchComparison.data?.computed_at} isLoading={branchComparison.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Branches" value={(branchComparison.data?.data ?? []).length} isLoading={branchComparison.isLoading} />
@@ -512,6 +538,7 @@ export default function AdminReportsPage() {
             isLoading={branchComparison.isLoading}
             emptyState={<EmptyState title="No branch data available" />}
           />
+          </>}
         </TabsContent>
       </Tabs>
     </div>

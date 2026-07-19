@@ -227,20 +227,33 @@ export const authService = {
 
   async refreshToken(refreshTokenValue: string, deviceId: string): Promise<RefreshTokenPair> {
     const tokenHash = sha256Hex(refreshTokenValue);
-
-    const alreadyRotated = await readCachedRotation(tokenHash, deviceId);
-    if (alreadyRotated) return alreadyRotated;
-
     const lockKey = refreshLockKey(tokenHash);
-    const acquiredLock = await redis.set(lockKey, '1', 'PX', REFRESH_ROTATION_LOCK_TTL_MS, 'NX');
 
-    if (!acquiredLock) {
-      // Another request is mid-rotation for this exact token — wait for its
-      // result instead of racing it against the same DB row.
-      const waited = await waitForRotation(tokenHash, deviceId);
-      if (waited) return waited;
-      // Lock holder didn't finish in time (or crashed) — fall through to a
-      // normal, unlocked lookup below.
+    // Coalescing is a Redis-dependent enhancement, not a correctness
+    // requirement — the DB rotation below is what actually enforces
+    // single-use tokens. If Redis is unavailable (e.g. an Upstash outage or
+    // quota rejection), skip coalescing entirely rather than letting the
+    // error bubble up and fail the whole refresh. This re-opens the narrow
+    // concurrent-refresh race Phase 20.5 (commit 9507200) closed, but a
+    // logged-out legitimate user is a smaller cost than the API being down.
+    let acquiredLock: string | null = null;
+    try {
+      const alreadyRotated = await readCachedRotation(tokenHash, deviceId);
+      if (alreadyRotated) return alreadyRotated;
+
+      acquiredLock = await redis.set(lockKey, '1', 'PX', REFRESH_ROTATION_LOCK_TTL_MS, 'NX');
+
+      if (!acquiredLock) {
+        // Another request is mid-rotation for this exact token — wait for its
+        // result instead of racing it against the same DB row.
+        const waited = await waitForRotation(tokenHash, deviceId);
+        if (waited) return waited;
+        // Lock holder didn't finish in time (or crashed) — fall through to a
+        // normal, unlocked lookup below.
+      }
+    } catch (error) {
+      console.error('Refresh-token coalescing unavailable, proceeding without lock:', error);
+      acquiredLock = null;
     }
 
     try {
@@ -273,10 +286,22 @@ export const authService = {
       });
 
       const response: RefreshTokenPair = { access_token: accessToken, refreshToken: newRefreshToken };
-      if (acquiredLock) await cacheRotationResult(tokenHash, deviceId, response);
+      if (acquiredLock) {
+        try {
+          await cacheRotationResult(tokenHash, deviceId, response);
+        } catch (error) {
+          console.error('Failed to cache refresh rotation result:', error);
+        }
+      }
       return response;
     } finally {
-      if (acquiredLock) await redis.del(lockKey);
+      if (acquiredLock) {
+        try {
+          await redis.del(lockKey);
+        } catch (error) {
+          console.error('Failed to release refresh-token rotation lock:', error);
+        }
+      }
     }
   },
 

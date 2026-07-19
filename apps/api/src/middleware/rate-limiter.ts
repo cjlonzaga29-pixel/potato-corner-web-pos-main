@@ -26,6 +26,15 @@ const rateLimitHandler: Options['handler'] = (_req: Request, res: Response) => {
   });
 };
 
+/**
+ * `passOnStoreError: true` makes express-rate-limit allow the request
+ * through (logging to console) instead of throwing when the Redis store
+ * errors — e.g. an Upstash outage or quota rejection. Since apiLimiter is
+ * mounted globally (see app.ts), an unguarded store error here would 500
+ * every /api/* request. Losing rate-limit enforcement during a Redis
+ * incident is an acceptable trade-off against the API being entirely down.
+ */
+
 /** 10 requests per 15 minutes per IP — applied to POST /api/auth/login. */
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -33,6 +42,7 @@ export const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: redisStore('rl:login:'),
+  passOnStoreError: true,
   handler: rateLimitHandler,
 });
 
@@ -43,6 +53,7 @@ export const resetLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: redisStore('rl:reset:'),
+  passOnStoreError: true,
   keyGenerator: (req: Request) => {
     const email = (req.body as Record<string, unknown> | undefined)?.email;
     return typeof email === 'string' ? email.toLowerCase() : req.ip ?? 'unknown';
@@ -57,6 +68,7 @@ export const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: redisStore('rl:api:'),
+  passOnStoreError: true,
   keyGenerator: (req: Request) => req.user?.user_id ?? req.ip ?? 'unknown',
   handler: rateLimitHandler,
 });

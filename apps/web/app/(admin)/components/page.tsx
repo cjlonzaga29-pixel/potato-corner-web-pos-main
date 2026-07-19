@@ -199,7 +199,7 @@ export default function ComponentShowcasePage() {
               <CardTitle>Currency input</CardTitle>
             </CardHeader>
             <CardContent className="max-w-xs space-y-2">
-              <CurrencyInput value={currencyValue} onChange={setCurrencyValue} />
+              <CurrencyInput value={currencyValue} onChange={setCurrencyValue} id="currency-demo" name="currency-demo" aria-label="Currency Input" />
               <p className="text-xs text-muted-foreground">Numeric value: {currencyValue}</p>
             </CardContent>
           </Card>

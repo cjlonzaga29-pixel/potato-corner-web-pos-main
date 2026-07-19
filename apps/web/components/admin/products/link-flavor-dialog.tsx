@@ -82,7 +82,7 @@ export function LinkFlavorDialog({ open, onOpenChange, productId, variantId, lin
 
           <div className="space-y-2">
             <Label>Price Premium</Label>
-            <CurrencyInput value={pricePremium} onChange={setPricePremium} />
+            <CurrencyInput value={pricePremium} onChange={setPricePremium} id="price-premium" name="price_premium" aria-label="Price Premium" />
           </div>
 
           <div className="flex items-center justify-between rounded-md border p-3">

@@ -106,7 +106,7 @@ export function VariantFormDialog({ open, onOpenChange, productId, variant }: Va
                     Base Price<span className="ml-0.5 text-destructive">*</span>
                   </FormLabel>
                   <FormControl>
-                    <CurrencyInput value={typeof field.value === 'number' ? field.value : Number(field.value)} onChange={field.onChange} onBlur={field.onBlur} />
+                    <CurrencyInput value={typeof field.value === 'number' ? field.value : Number(field.value)} onChange={field.onChange} onBlur={field.onBlur} name="base_price" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

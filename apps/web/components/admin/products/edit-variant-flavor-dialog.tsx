@@ -46,7 +46,7 @@ export function EditVariantFlavorDialog({ open, onOpenChange, productId, variant
         <div className="space-y-4">
           <div className="space-y-2">
             <Label>Price Premium</Label>
-            <CurrencyInput value={pricePremium} onChange={setPricePremium} />
+            <CurrencyInput value={pricePremium} onChange={setPricePremium} id="price-premium" name="price_premium" aria-label="Price Premium" />
           </div>
 
           <div className="flex items-center justify-between rounded-md border p-3">

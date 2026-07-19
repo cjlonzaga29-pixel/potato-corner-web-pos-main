@@ -9,10 +9,13 @@ interface CurrencyInputProps {
   onBlur?: () => void;
   disabled?: boolean;
   placeholder?: string;
+  id?: string;
+  name?: string;
+  'aria-label'?: string;
 }
 
 /** Displays a ₱-prefixed value while editing; always reports a plain number to the caller (React Hook Form), never a formatted string. */
-export function CurrencyInput({ value, onChange, onBlur, disabled, placeholder }: CurrencyInputProps) {
+export function CurrencyInput({ value, onChange, onBlur, disabled, placeholder, id, name, 'aria-label': ariaLabel }: CurrencyInputProps) {
   const [displayValue, setDisplayValue] = useState(() => (value != null ? String(value) : ''));
 
   useEffect(() => {
@@ -42,6 +45,9 @@ export function CurrencyInput({ value, onChange, onBlur, disabled, placeholder }
         ₱
       </span>
       <Input
+        id={id}
+        name={name}
+        aria-label={ariaLabel}
         inputMode="decimal"
         className="pl-7"
         value={displayValue}

@@ -2,6 +2,7 @@
 
 import { use, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus } from 'lucide-react';
 import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -11,8 +12,16 @@ import { Switch } from '@/components/ui/switch';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatDateTime } from '@/lib/utils';
-import { useBranchProductAvailability, useProduct, useUpdateBranchProductAvailability } from '@/hooks/queries/use-products';
+import {
+  useBranchProductAvailability,
+  useProduct,
+  useUpdateBranchProductAvailability,
+  useDeleteProduct,
+  useDeleteVariant,
+  useDeleteProductImage,
+} from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { VariantCard } from '@/components/admin/products/variant-card';
@@ -28,12 +37,15 @@ interface ProductDetailPageProps {
 }
 
 export default function ProductDetailPage({ params }: ProductDetailPageProps) {
+  const router = useRouter();
   const { productId } = use(params);
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
+  const deleteProduct = useDeleteProduct();
 
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -81,6 +93,9 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
             Edit Product
           </Button>
           <Button onClick={() => setStatusOpen(true)}>Change Status</Button>
+          <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+            Delete
+          </Button>
         </div>
       </div>
 
@@ -112,6 +127,18 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
       <EditProductDialog open={editOpen} onOpenChange={setEditOpen} product={product} />
       <ChangeProductStatusDialog open={statusOpen} onOpenChange={setStatusOpen} product={product} />
       <UploadProductImageDialog open={imageOpen} onOpenChange={setImageOpen} productId={productId} />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={`Delete ${product.name}?`}
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={async () => {
+          await deleteProduct.mutateAsync(productId);
+          router.push('/admin/products');
+        }}
+      />
     </div>
   );
 }
@@ -186,6 +213,8 @@ function VariantsTab({ product }: { product: ProductDetailResponse }) {
   const [editFlavor, setEditFlavor] = useState<{ variant: ProductVariantResponse; flavor: ProductVariantResponse['flavors'][number] } | null>(
     null,
   );
+  const [deletingVariant, setDeletingVariant] = useState<ProductVariantResponse | null>(null);
+  const deleteVariant = useDeleteVariant(product.id);
 
   const isArchived = product.status === 'archived';
   const sortedVariants = [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
@@ -210,6 +239,7 @@ function VariantsTab({ product }: { product: ProductDetailResponse }) {
               onEditVariant={() => setVariantDialog({ open: true, variant })}
               onLinkFlavor={() => setLinkFlavorFor(variant)}
               onEditFlavorPricing={(flavor) => setEditFlavor({ variant, flavor })}
+              onDeleteVariant={() => setDeletingVariant(variant)}
             />
           ))}
         </div>
@@ -239,6 +269,20 @@ function VariantsTab({ product }: { product: ProductDetailResponse }) {
           productId={product.id}
           variantId={editFlavor.variant.id}
           flavor={editFlavor.flavor}
+        />
+      )}
+
+      {deletingVariant && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => !open && setDeletingVariant(null)}
+          title={`Delete ${deletingVariant.name}?`}
+          description="This action cannot be undone."
+          confirmLabel="Delete"
+          variant="danger"
+          onConfirm={async () => {
+            await deleteVariant.mutateAsync(deletingVariant.id);
+          }}
         />
       )}
     </div>
@@ -304,6 +348,9 @@ function BranchAvailabilityTab({ product }: { product: ProductDetailResponse }) 
 }
 
 function MediaTab({ product, onUpload }: { product: ProductDetailResponse; onUpload: () => void }) {
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const deleteImage = useDeleteProductImage(product.id);
+
   return (
     <Card>
       <CardHeader>
@@ -319,10 +366,28 @@ function MediaTab({ product, onUpload }: { product: ProductDetailResponse; onUpl
             No image uploaded yet
           </div>
         )}
-        <Button variant="outline" onClick={onUpload} disabled={product.status === 'archived'}>
-          Upload Image
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onUpload} disabled={product.status === 'archived'}>
+            Upload Image
+          </Button>
+          {product.image_url && (
+            <Button variant="danger" onClick={() => setRemoveOpen(true)} disabled={product.status === 'archived'}>
+              Remove Image
+            </Button>
+          )}
+        </div>
       </CardContent>
+      <ConfirmDialog
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        title="Remove this image?"
+        description="This action cannot be undone."
+        confirmLabel="Remove"
+        variant="danger"
+        onConfirm={async () => {
+          await deleteImage.mutateAsync();
+        }}
+      />
     </Card>
   );
 }

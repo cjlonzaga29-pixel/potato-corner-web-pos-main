@@ -10,9 +10,10 @@ interface VariantCardProps {
   onEditVariant: () => void;
   onLinkFlavor: () => void;
   onEditFlavorPricing: (flavor: ProductVariantResponse['flavors'][number]) => void;
+  onDeleteVariant: () => void;
 }
 
-export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavorPricing }: VariantCardProps) {
+export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavorPricing, onDeleteVariant }: VariantCardProps) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
@@ -31,6 +32,9 @@ export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavor
           </Button>
           <Button size="sm" variant="outline" onClick={onLinkFlavor}>
             Link Flavor
+          </Button>
+          <Button size="sm" variant="danger" onClick={onDeleteVariant}>
+            Delete
           </Button>
         </div>
       </CardHeader>

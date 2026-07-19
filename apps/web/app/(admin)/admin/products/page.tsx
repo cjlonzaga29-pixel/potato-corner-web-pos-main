@@ -11,8 +11,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatDateTime } from '@/lib/utils';
-import { useProducts } from '@/hooks/queries/use-products';
+import { useProducts, useDeleteProduct } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { BranchExclusiveBadge } from '@/components/admin/products/branch-exclusive-badge';
@@ -101,6 +102,7 @@ export default function ProductCatalogPage() {
             <DropdownMenuItem onClick={() => setRowAction({ product: row.original, dialog: 'edit' })}>Edit</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setRowAction({ product: row.original, dialog: 'status' })}>Change Status</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setRowAction({ product: row.original, dialog: 'image' })}>Upload Image</DropdownMenuItem>
+            <DeleteProductAction product={row.original} />
           </DropdownMenuContent>
         </DropdownMenu>
       ),
@@ -217,5 +219,29 @@ export default function ProductCatalogPage() {
         </>
       )}
     </div>
+  );
+}
+
+function DeleteProductAction({ product }: { product: ProductResponse }) {
+  const [confirming, setConfirming] = useState(false);
+  const deleteProduct = useDeleteProduct();
+
+  return (
+    <>
+      <DropdownMenuItem onClick={() => setConfirming(true)} className="text-destructive">
+        Delete
+      </DropdownMenuItem>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title={`Delete ${product.name}?`}
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={async () => {
+          await deleteProduct.mutateAsync(product.id);
+        }}
+      />
+    </>
   );
 }

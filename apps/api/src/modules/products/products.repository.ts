@@ -161,6 +161,10 @@ export const productsRepository = {
     return prisma.product.update({ where: { id: productId }, data: { imageUrl }, include: detailInclude });
   },
 
+  clearImage(productId: string) {
+    return prisma.product.update({ where: { id: productId }, data: { imageUrl: null }, include: detailInclude });
+  },
+
   countActiveBranches(productId: string) {
     return prisma.branchProductAvailability.count({ where: { productId, isAvailable: true } });
   },
@@ -198,6 +202,26 @@ export const productsRepository = {
         product: true,
         variantFlavors: { include: { flavor: { select: { id: true, name: true, colorHex: true } } } },
       },
+    });
+  },
+
+  /** Deletes the variant's own flavor links first (config, not history), then the variant — one transaction so a P2003 on the variant leaves the links intact. */
+  deleteVariantCascade(variantId: string) {
+    return prisma.$transaction(async (tx) => {
+      await tx.productVariantFlavor.deleteMany({ where: { productVariantId: variantId } });
+      return tx.productVariant.delete({ where: { id: variantId } });
+    });
+  },
+
+  /** Deletes the product's own config rows (branch availability, each variant's flavor links) then its variants then the product — one transaction so a P2003 anywhere rolls the whole thing back. */
+  deleteProductCascade(productId: string, variantIds: string[]) {
+    return prisma.$transaction(async (tx) => {
+      await tx.branchProductAvailability.deleteMany({ where: { productId } });
+      for (const variantId of variantIds) {
+        await tx.productVariantFlavor.deleteMany({ where: { productVariantId: variantId } });
+        await tx.productVariant.delete({ where: { id: variantId } });
+      }
+      return tx.product.delete({ where: { id: productId } });
     });
   },
 

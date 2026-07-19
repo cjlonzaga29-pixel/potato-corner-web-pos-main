@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { Prisma } from '@prisma/client';
 import { ROLES, type JwtPayload, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
 import { ProductError, type ProductListFilters } from './products.types.js';
@@ -31,6 +32,16 @@ const GLOBAL_TRANSITIONS: Record<ProductStatus, ProductStatus[]> = {
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function extractStoragePath(imageUrl: string): string | null {
+  const marker = '/object/public/product-images/';
+  const idx = imageUrl.indexOf(marker);
+  return idx === -1 ? null : imageUrl.slice(idx + marker.length);
+}
+
+function isForeignKeyViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
 }
 
 function toBranchAvailabilityRow(row: {
@@ -675,5 +686,95 @@ export const productsService = {
     const categories = [...new Set(catalogProducts.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort();
 
     return { categories, products: catalogProducts };
+  },
+
+  async deleteProduct(productId: string, actor: ActorContext, ipAddress: string | null) {
+    const existing = await productsRepository.findById(productId);
+    if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    try {
+      await productsRepository.deleteProductCascade(
+        productId,
+        existing.variants.map((v) => v.id),
+      );
+    } catch (error) {
+      if (isForeignKeyViolation(error)) {
+        throw new ProductError(
+          'PRODUCT_HAS_DEPENDENCIES',
+          'Cannot delete: product has associated transactions or price overrides. Change status to Archived instead.',
+          409,
+        );
+      }
+      throw error;
+    }
+
+    await recordAuditLog({
+      action: 'PRODUCT_DELETED',
+      entityType: 'product',
+      entityId: productId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: toProductDetailResponse(existing as DetailRow),
+      ipAddress,
+    });
+  },
+
+  async deleteVariant(productId: string, variantId: string, actor: ActorContext, ipAddress: string | null) {
+    const existing = await productsRepository.findVariantById(variantId);
+    if (!existing || existing.productId !== productId) {
+      throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    }
+
+    try {
+      await productsRepository.deleteVariantCascade(variantId);
+    } catch (error) {
+      if (isForeignKeyViolation(error)) {
+        throw new ProductError(
+          'VARIANT_HAS_DEPENDENCIES',
+          'Cannot delete: variant has associated transactions. Change status to Archived instead.',
+          409,
+        );
+      }
+      throw error;
+    }
+
+    await recordAuditLog({
+      action: 'PRODUCT_VARIANT_DELETED',
+      entityType: 'product_variant',
+      entityId: variantId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: toVariantResponse(existing),
+      ipAddress,
+    });
+  },
+
+  async deleteProductImage(productId: string, actor: ActorContext, ipAddress: string | null) {
+    const product = await productsRepository.findById(productId);
+    if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+    if (!product.imageUrl) throw new ProductError('IMAGE_NOT_FOUND', 'This product has no image to remove', 404);
+
+    const path = extractStoragePath(product.imageUrl);
+    if (path) {
+      const { error } = await supabaseAdmin.storage.from('product-images').remove([path]);
+      if (error) {
+        console.error('Supabase Storage removal failed for product image:', { bucket: 'product-images', path, error });
+      }
+    }
+
+    await productsRepository.clearImage(productId);
+
+    await recordAuditLog({
+      action: 'PRODUCT_IMAGE_DELETED',
+      entityType: 'product',
+      entityId: productId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: { imageUrl: product.imageUrl },
+      afterState: { imageUrl: null },
+      ipAddress,
+    });
+
+    return { image_url: null };
   },
 };

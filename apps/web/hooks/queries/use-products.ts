@@ -272,6 +272,53 @@ export function useLinkVariantFlavor(productId: string, variantId: string) {
   });
 }
 
+export function useDeleteProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (productId: string) => {
+      const response = await apiClient<null>(`/api/products/${productId}`, { method: 'DELETE' });
+      if (response.error) throw new Error(errorMessage(response, 'Failed to delete product'));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Product deleted');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useDeleteVariant(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (variantId: string) => {
+      const response = await apiClient<null>(`/api/products/${productId}/variants/${variantId}`, { method: 'DELETE' });
+      if (response.error) throw new Error(errorMessage(response, 'Failed to delete variant'));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['product', productId] });
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Variant deleted');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useDeleteProductImage(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient<{ image_url: null }>(`/api/products/${productId}/image`, { method: 'DELETE' });
+      if (response.error) throw new Error(errorMessage(response, 'Failed to remove product image'));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['product', productId] });
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Product image removed');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useUpdateVariantFlavor(productId: string, variantId: string, flavorId: string) {
   const queryClient = useQueryClient();
   return useMutation({

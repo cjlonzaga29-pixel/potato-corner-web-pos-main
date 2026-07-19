@@ -166,6 +166,16 @@ router.patch('/:productId', authenticate, adminOnly, requirePasswordChange, vali
   }
 });
 
+router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    await productsService.deleteProduct(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    res.status(204).send();
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
 router.patch(
   '/:productId/status',
   authenticate,
@@ -228,6 +238,20 @@ router.post(
     }
   },
 );
+
+router.delete('/:productId/image', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const result = await productsService.deleteProductImage(
+      req.params.productId as string,
+      { id: req.user.user_id, role: req.user.role },
+      req.ip ?? null,
+    );
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
 
 router.get(
   '/:productId/branch-availability',
@@ -312,6 +336,27 @@ router.patch(
         req.ip ?? null,
       );
       res.status(200).json({ data: variant, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.delete(
+  '/:productId/variants/:variantId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      await productsService.deleteVariant(
+        req.params.productId as string,
+        req.params.variantId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(204).send();
     } catch (error) {
       handleModuleError(error, res, next);
     }

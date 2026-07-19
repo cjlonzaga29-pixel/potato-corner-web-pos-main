@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Prisma } from '@prisma/client';
 import { ROLES } from '@potato-corner/shared';
 
 vi.mock('./products.repository.js', () => ({
@@ -10,6 +11,7 @@ vi.mock('./products.repository.js', () => ({
     update: vi.fn(),
     updateStatus: vi.fn(),
     updateImage: vi.fn(),
+    clearImage: vi.fn(),
     countActiveBranches: vi.fn(),
     createVariant: vi.fn(),
     updateVariant: vi.fn(),
@@ -20,6 +22,8 @@ vi.mock('./products.repository.js', () => ({
     getProductsByGlobalStatus: vi.fn(),
     allActiveBranches: vi.fn(),
     findActiveBranch: vi.fn(),
+    deleteProductCascade: vi.fn(),
+    deleteVariantCascade: vi.fn(),
   },
 }));
 
@@ -32,6 +36,7 @@ vi.mock('../../lib/supabase.js', () => ({
     storage: {
       from: vi.fn(() => ({
         upload: vi.fn().mockResolvedValue({ error: null }),
+        remove: vi.fn().mockResolvedValue({ error: null }),
         getPublicUrl: vi.fn(() => ({ data: { publicUrl: 'https://cdn.test/product-images/img.webp' } })),
       })),
     },
@@ -49,6 +54,23 @@ vi.mock('sharp', () => ({
 const { productsRepository } = await import('./products.repository.js');
 const { productsService } = await import('./products.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
+const { supabaseAdmin } = await import('../../lib/supabase.js');
+
+function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'variant-1',
+    productId: 'prod-1',
+    name: 'Regular',
+    sizeLabel: 'Regular',
+    basePrice: { toNumber: () => 65 },
+    displayOrder: null,
+    isActive: true,
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    variantFlavors: [],
+    ...overrides,
+  };
+}
 
 const SUPER_ADMIN = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
 const SUPERVISOR = { id: 'sup-1', role: ROLES.SUPERVISOR };
@@ -421,5 +443,87 @@ describe('productsService.uploadProductImage', () => {
     expect(result.image_url).toBe('https://cdn.test/product-images/img.webp');
     expect(productsRepository.updateImage).toHaveBeenCalledWith('prod-1', 'https://cdn.test/product-images/img.webp');
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_UPLOADED' }));
+  });
+});
+
+describe('productsService.deleteProduct', () => {
+  it('deletes the product cascade and records an audit log entry', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ variants: [buildVariant()] }) as never);
+    vi.mocked(productsRepository.deleteProductCascade).mockResolvedValue(buildProduct() as never);
+
+    await productsService.deleteProduct('prod-1', SUPER_ADMIN, null);
+
+    expect(productsRepository.deleteProductCascade).toHaveBeenCalledWith('prod-1', ['variant-1']);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_DELETED', entityId: 'prod-1' }));
+  });
+
+  it('maps a P2003 foreign key violation to a 409 with a friendly message', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ variants: [] }) as never);
+    vi.mocked(productsRepository.deleteProductCascade).mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', { code: 'P2003', clientVersion: '5.0.0' }),
+    );
+
+    await expect(productsService.deleteProduct('prod-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_HAS_DEPENDENCIES',
+      statusCode: 409,
+    });
+
+    expect(recordAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.deleteVariant', () => {
+  it('deletes the variant cascade and records an audit log entry', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant() as never);
+    vi.mocked(productsRepository.deleteVariantCascade).mockResolvedValue(buildVariant() as never);
+
+    await productsService.deleteVariant('prod-1', 'variant-1', SUPER_ADMIN, null);
+
+    expect(productsRepository.deleteVariantCascade).toHaveBeenCalledWith('variant-1');
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_VARIANT_DELETED', entityId: 'variant-1' }));
+  });
+
+  it('maps a P2003 foreign key violation to a 409 with a friendly message', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant() as never);
+    vi.mocked(productsRepository.deleteVariantCascade).mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', { code: 'P2003', clientVersion: '5.0.0' }),
+    );
+
+    await expect(productsService.deleteVariant('prod-1', 'variant-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_HAS_DEPENDENCIES',
+      statusCode: 409,
+    });
+
+    expect(recordAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.deleteProductImage', () => {
+  it('removes the Storage object, clears image_url, and records an audit log entry', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(
+      buildProduct({ imageUrl: 'https://cdn.test/storage/v1/object/public/product-images/product-images/prod-1/img.webp' }) as never,
+    );
+    vi.mocked(productsRepository.clearImage).mockResolvedValue(buildProduct({ imageUrl: null }) as never);
+
+    const result = await productsService.deleteProductImage('prod-1', SUPER_ADMIN, null);
+
+    expect(result.image_url).toBeNull();
+    expect(productsRepository.clearImage).toHaveBeenCalledWith('prod-1');
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_DELETED' }));
+  });
+
+  it('still clears image_url when Supabase Storage removal fails', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(
+      buildProduct({ imageUrl: 'https://cdn.test/storage/v1/object/public/product-images/product-images/prod-1/img.webp' }) as never,
+    );
+    vi.mocked(productsRepository.clearImage).mockResolvedValue(buildProduct({ imageUrl: null }) as never);
+    vi.mocked(supabaseAdmin.storage.from).mockReturnValueOnce({
+      remove: vi.fn().mockResolvedValue({ error: 'boom' }),
+    } as never);
+
+    const result = await productsService.deleteProductImage('prod-1', SUPER_ADMIN, null);
+
+    expect(result.image_url).toBeNull();
+    expect(productsRepository.clearImage).toHaveBeenCalledWith('prod-1');
   });
 });

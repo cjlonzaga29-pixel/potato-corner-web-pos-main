@@ -8,6 +8,17 @@ vi.mock('next/navigation', () => ({
 }));
 vi.mock('@/lib/api-client', () => ({ apiClient: vi.fn() }));
 
+const mockBroadcastLogout = vi.fn();
+const mockUnsubscribeFromLogout = vi.fn();
+let capturedLogoutHandler: (() => void) | null = null;
+vi.mock('@/lib/auth-broadcast', () => ({
+  broadcastLogout: (...args: unknown[]) => mockBroadcastLogout(...args),
+  subscribeToLogout: vi.fn((onLogout: () => void) => {
+    capturedLogoutHandler = onLogout;
+    return mockUnsubscribeFromLogout;
+  }),
+}));
+
 const { apiClient } = await import('@/lib/api-client');
 const { useAuthStore } = await import('@/stores/auth.store');
 const { useAuth } = await import('./use-auth.js');
@@ -23,8 +34,18 @@ const VALID_TOKEN = fakeToken({ user_id: 'u1', role: 'staff', email: 'staff@pota
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capturedLogoutHandler = null;
   useAuthStore.setState({ user: null, accessToken: null, isAuthenticated: false, isLoading: true });
 });
+
+const STAFF_USER = {
+  id: 'u1',
+  role: 'staff' as const,
+  email: 'staff@potatocorner.test',
+  firstName: 'Juan',
+  lastName: 'Dela Cruz',
+  branchIds: ['b1'],
+};
 
 describe('useAuth restoreSession', () => {
   it('restores the session immediately on a successful refresh', async () => {
@@ -91,5 +112,54 @@ describe('useAuth restoreSession', () => {
 
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/login'));
     expect(apiClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useAuth cross-tab logout sync', () => {
+  it('logout() clears local auth and broadcasts to other tabs', async () => {
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'tok', isAuthenticated: true, isLoading: false });
+    vi.mocked(apiClient).mockResolvedValue({ data: { success: true }, error: null, meta: null });
+
+    const { result } = renderHook(() => useAuth());
+    await result.current.logout();
+
+    expect(apiClient).toHaveBeenCalledWith('/api/auth/logout', { method: 'POST' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(mockBroadcastLogout).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith('/login');
+  });
+
+  it('logoutAll() clears local auth and broadcasts to other tabs', async () => {
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'tok', isAuthenticated: true, isLoading: false });
+    vi.mocked(apiClient).mockResolvedValue({ data: { success: true }, error: null, meta: null });
+
+    const { result } = renderHook(() => useAuth());
+    await result.current.logoutAll();
+
+    expect(apiClient).toHaveBeenCalledWith('/api/auth/logout-all', { method: 'POST' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(mockBroadcastLogout).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith('/login');
+  });
+
+  it('subscribes to cross-tab logout signals on mount and unsubscribes on unmount', () => {
+    const { unmount } = renderHook(() => useAuth());
+    expect(capturedLogoutHandler).toBeInstanceOf(Function);
+
+    unmount();
+    expect(mockUnsubscribeFromLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears auth and redirects to /login when another tab broadcasts a logout', () => {
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'tok', isAuthenticated: true, isLoading: false });
+
+    renderHook(() => useAuth());
+    expect(capturedLogoutHandler).toBeInstanceOf(Function);
+
+    capturedLogoutHandler?.();
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(mockReplace).toHaveBeenCalledWith('/login');
   });
 });

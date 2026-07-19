@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
+import { broadcastLogout, subscribeToLogout } from '@/lib/auth-broadcast';
 import { getOrCreateDeviceId } from '@/lib/device';
 import { decodeJwtPayload } from '@/lib/jwt';
 import { useAuthStore, type AuthUser } from '@/stores/auth.store';
@@ -166,6 +167,17 @@ export function useAuth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    // A logout in another tab only revokes the shared refresh cookie —
+    // this tab's own in-memory Zustand state and access token don't know
+    // that happened. Listen for the cross-tab signal and follow suit.
+    return subscribeToLogout(() => {
+      clearAuth();
+      router.replace('/login');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function login(email: string, password: string) {
     const deviceId = getOrCreateDeviceId();
     const response = await apiClient<LoginResponseData>('/api/auth/login', {
@@ -184,12 +196,14 @@ export function useAuth() {
   async function logout() {
     await apiClient('/api/auth/logout', { method: 'POST' });
     clearAuth();
+    broadcastLogout();
     router.push('/login');
   }
 
   async function logoutAll() {
     await apiClient('/api/auth/logout-all', { method: 'POST' });
     clearAuth();
+    broadcastLogout();
     router.push('/login');
   }
 

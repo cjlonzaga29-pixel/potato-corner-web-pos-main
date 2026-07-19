@@ -23,7 +23,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     await page.goto('/login');
     await page.getByLabel('Email').fill(user.email);
     await page.getByRole('textbox', { name: 'Password' }).fill(user.password);
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.waitForURL(`**${user.dashboardPath}`);
 
     await context.storageState({ path: path.join(__dirname, 'fixtures', `${key}.auth.json`) });

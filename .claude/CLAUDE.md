@@ -1,12 +1,19 @@
 # Potato Corner POS — Claude Code Project Rules
 
+**Last verified:** 2026-07-20 (see `docs/SYSTEM_OVERVIEW.md` for authoritative current state)
+
 ## Project Overview
 
 Enterprise Web POS and Branch Management Platform for the Potato Corner franchise. Multi-branch QSR operation in the Philippines. Three role-based interfaces (Super Admin, Supervisor, Staff POS) from one Next.js codebase.
 
 Full specifications: `docs/architecture/final-approved-architecture.md` (business rules, database schema, algorithms) and `docs/architecture/master-execution-plan.md` (stack, standards, 20-phase roadmap). Nothing in those documents is open for discussion without a formal change request — implement what they say, don't redesign it.
 
-**Current status:** Phases 0–19 complete (through production hardening), plus CR-001 (product catalog refactor + branch recipe overrides, layered on top of Phase 7). Phase 20 (pilot branch deployment) is in progress — recipe testing protocol, hold orders backend, offline sync batch endpoint, and the large-adjustment approval producer are done; production environment config, PWA device verification, staff clock-in UI, and pilot cutover remain open. External services (Supabase, Render, Vercel, Upstash, Resend) are live and wired.
+**Current status:** Phases 0–19 complete (through production hardening), plus CR-001 (product catalog refactor + branch recipe overrides, layered on top of Phase 7). Phase 20 (pilot branch deployment) is in progress — recipe testing protocol, hold orders backend, offline sync batch endpoint, and the large-adjustment approval producer are done; production environment config, PWA device verification, staff clock-in UI, and pilot cutover remain open. External services (Supabase, Render, Vercel, Resend) are live and wired. Upstash/Redis was fully removed in Phase 21 (see "Recent phases" below).
+
+**Recent phases (post Phase 20, not yet reflected above):**
+- Phase 20.5 — refresh-token race fix: Postgres advisory lock + rotation-result cache (commit `9507200`).
+- Phase 21 — Redis eradication: locks/blacklist/queues migrated to Postgres-native (`pg-lock.ts`, `id-counter.ts`, `job-runner.ts`) (commit `28a2956`).
+- Phase 21.5 — restored a Postgres rotation-result cache that Phase 21 had inadvertently dropped (commit `6116ff1`).
 
 ## Architecture
 
@@ -14,8 +21,8 @@ Full specifications: `docs/architecture/final-approved-architecture.md` (busines
 - Frontend: Next.js 15 App Router, React 19, TypeScript, Tailwind CSS v3, shadcn/ui
 - Backend: Node.js Express 5 modular monolith, TypeScript
 - Database: PostgreSQL via Supabase Pro, Prisma ORM
-- Queue: BullMQ with Upstash Redis
-- Realtime: Socket.io with Redis adapter
+- Queue: Postgres-native job runner (`apps/api/src/lib/job-runner.ts`) — replaced BullMQ/Upstash Redis in Phase 21
+- Realtime: Socket.io, single in-memory adapter — no Redis adapter (removed Phase 21); does not horizontally scale past one instance
 - Offline: Service Worker (`@ducanh2912/next-pwa`) + Dexie.js IndexedDB
 
 ## Critical Business Rules — Never Modify Without Explicit Instruction

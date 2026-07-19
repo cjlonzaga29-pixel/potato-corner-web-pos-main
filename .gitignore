@@ -48,5 +48,8 @@ pnpm-debug.log*
 # Git worktrees (superpowers:using-git-worktrees)
 .worktrees/
 
+# Local MCP server config (machine-specific)
+.mcp.json
+
 # temp test files (never commit)
 test-*.env

@@ -390,6 +390,12 @@ model ProductVariant {
   displayOrder Int?    @map("display_order")
   isActive     Boolean @default(true) @map("is_active")
 
+  // Phase 21: kcal is the variant's base calorie count (before flavor
+  // kcalOffset); maxFlavors caps how many flavors a customer may pick for
+  // this size (e.g. Mega/Giga fries = 2, Tera = 3, everything else = 1).
+  kcal         Int?    @map("kcal")
+  maxFlavors   Int     @default(1) @map("max_flavors")
+
   product          Product                @relation(fields: [productId], references: [id])
   variantFlavors   ProductVariantFlavor[]
   recipes          Recipe[]
@@ -414,6 +420,16 @@ model Flavor {
   colorHex     String? @map("color_hex")
   displayOrder Int?    @map("display_order")
   isActive     Boolean @default(true) @map("is_active")
+
+  // Phase 21: catalog-level defaults. isPremium flags upsell flavors (e.g.
+  // Sweet Corn); addOnPrice is the default add-on charge seeded into each
+  // ProductVariantFlavor.pricePremium at variant-assignment time — the
+  // per-variant pricePremium remains the source of truth actually read at
+  // checkout, this is just the catalog default so a new size doesn't need
+  // its premium re-entered by hand.
+  isPremium   Boolean @default(false) @map("is_premium")
+  addOnPrice  Decimal @default(0) @map("add_on_price") @db.Decimal(10, 2)
+  kcalOffset  Int     @default(0) @map("kcal_offset")
 
   variantFlavors     ProductVariantFlavor[]
   branchAvailability BranchFlavorAvailability[]

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -28,6 +28,7 @@ interface LoginErrorState {
 
 export function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { login } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -53,7 +54,8 @@ export function LoginForm() {
     setIsSubmitting(true);
     try {
       const user = await login(values.email, values.password);
-      router.push(ROLE_DASHBOARD_PATHS[user.role] ?? '/');
+      const returnTo = getSafeReturnTo(searchParams.get('returnTo'));
+      router.push(returnTo ?? ROLE_DASHBOARD_PATHS[user.role] ?? '/');
     } catch (err) {
       setError(parseLoginError(err));
     } finally {
@@ -115,6 +117,20 @@ export function LoginForm() {
       )}
     </div>
   );
+}
+
+/**
+ * Only a same-origin relative path is a safe post-login redirect target.
+ * Rejects absolute URLs, protocol-relative URLs (`//evil.com`, which
+ * browsers resolve as same-protocol absolute), and the backslash variant
+ * (`/\evil.com`) some browsers also normalize to protocol-relative — all
+ * of which would otherwise let a crafted login link redirect off-site
+ * after a real login.
+ */
+function getSafeReturnTo(value: string | null): string | null {
+  if (!value || !value.startsWith('/')) return null;
+  if (value.length > 1 && (value[1] === '/' || value[1] === '\\')) return null;
+  return value;
 }
 
 function parseLoginError(err: unknown): LoginErrorState {

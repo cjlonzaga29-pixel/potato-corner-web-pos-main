@@ -126,6 +126,21 @@ function withRotatedCookies(response: NextResponse, setCookies: string[]): NextR
 }
 
 /**
+ * Builds the /login redirect target with the originally-requested URL
+ * preserved as ?returnTo=, so login-form.tsx can send the user back where
+ * they meant to go instead of always landing on their role's default
+ * dashboard. The value is the raw request path/query — it comes from this
+ * server's own routing, not user input, so no sanitization is needed here;
+ * login-form.tsx re-validates it before use since URL query params are
+ * attacker-controllable once they're echoed into a shareable login link.
+ */
+function loginRedirectUrl(request: NextRequest): URL {
+  const url = new URL('/login', request.url);
+  url.searchParams.set('returnTo', request.nextUrl.pathname + request.nextUrl.search);
+  return url;
+}
+
+/**
  * Protects every route under (admin), (supervisor), and (pos), redirects
  * an already-authenticated user away from /login, and redirects a
  * wrong-role user from a route it doesn't own to its own dashboard. The
@@ -159,7 +174,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (!refreshCookie) {
-    return NextResponse.redirect(new URL('/login', request.url));
+    return NextResponse.redirect(loginRedirectUrl(request));
   }
 
   // Skip refresh-token rotation for prefetch requests. Next.js Link
@@ -189,7 +204,7 @@ export async function middleware(request: NextRequest) {
       // re-runs this middleware and gets a fresh chance to refresh.
       return NextResponse.next();
     }
-    return withRotatedCookies(NextResponse.redirect(new URL('/login', request.url)), setCookies);
+    return withRotatedCookies(NextResponse.redirect(loginRedirectUrl(request)), setCookies);
   }
 
   const { role, mustChangePassword } = decodeAuthClaims(accessToken);

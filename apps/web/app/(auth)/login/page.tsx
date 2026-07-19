@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { LoginForm } from './_components/login-form';
 
@@ -13,7 +14,9 @@ export default function LoginPage() {
           <CardDescription>Sign in to continue</CardDescription>
         </CardHeader>
         <CardContent>
-          <LoginForm />
+          <Suspense fallback={null}>
+            <LoginForm />
+          </Suspense>
         </CardContent>
       </Card>
     </main>

@@ -30,6 +30,12 @@ import { AuthError } from './modules/auth/auth.types.js';
 
 export const app: Express = express();
 
+// Render puts the app behind exactly one reverse proxy hop — trusting
+// only that hop (not `true`, which trusts the whole chain) keeps
+// X-Forwarded-For spoofable-client-side while still letting
+// express-rate-limit read the real client IP.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(cors({ origin: config.frontendUrl, credentials: true }));
 app.use(express.json());

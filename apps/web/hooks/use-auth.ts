@@ -194,14 +194,25 @@ export function useAuth() {
   }
 
   async function logout() {
-    await apiClient('/api/auth/logout', { method: 'POST' });
+    // Defensive logout: clear client state and redirect even if the
+    // network call fails — the user asked to log out, and a dead network
+    // shouldn't leave them stuck looking "logged in" client-side.
+    try {
+      await apiClient('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Server-side revocation may not have happened; client state still clears below.
+    }
     clearAuth();
     broadcastLogout();
     router.push('/login');
   }
 
   async function logoutAll() {
-    await apiClient('/api/auth/logout-all', { method: 'POST' });
+    try {
+      await apiClient('/api/auth/logout-all', { method: 'POST' });
+    } catch {
+      // Server-side revocation may not have happened; client state still clears below.
+    }
     clearAuth();
     broadcastLogout();
     router.push('/login');

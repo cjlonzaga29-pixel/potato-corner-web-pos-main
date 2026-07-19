@@ -129,6 +129,20 @@ describe('useAuth cross-tab logout sync', () => {
     expect(mockPush).toHaveBeenCalledWith('/login');
   });
 
+  it('logout() still clears auth and redirects when the apiClient call throws (network failure)', async () => {
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'tok', isAuthenticated: true, isLoading: false });
+    vi.mocked(apiClient).mockRejectedValue(new Error('network down'));
+
+    const { result } = renderHook(() => useAuth());
+    await result.current.logout();
+
+    expect(apiClient).toHaveBeenCalledWith('/api/auth/logout', { method: 'POST' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(mockBroadcastLogout).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith('/login');
+  });
+
   it('logoutAll() clears local auth and broadcasts to other tabs', async () => {
     useAuthStore.setState({ user: STAFF_USER, accessToken: 'tok', isAuthenticated: true, isLoading: false });
     vi.mocked(apiClient).mockResolvedValue({ data: { success: true }, error: null, meta: null });
@@ -138,6 +152,20 @@ describe('useAuth cross-tab logout sync', () => {
 
     expect(apiClient).toHaveBeenCalledWith('/api/auth/logout-all', { method: 'POST' });
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(mockBroadcastLogout).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith('/login');
+  });
+
+  it('logoutAll() still clears auth and redirects when the apiClient call throws (network failure)', async () => {
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'tok', isAuthenticated: true, isLoading: false });
+    vi.mocked(apiClient).mockRejectedValue(new Error('network down'));
+
+    const { result } = renderHook(() => useAuth());
+    await result.current.logoutAll();
+
+    expect(apiClient).toHaveBeenCalledWith('/api/auth/logout-all', { method: 'POST' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().user).toBeNull();
     expect(mockBroadcastLogout).toHaveBeenCalledTimes(1);
     expect(mockPush).toHaveBeenCalledWith('/login');
   });

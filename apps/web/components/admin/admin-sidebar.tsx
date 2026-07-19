@@ -43,7 +43,7 @@ const NAV_ITEMS = [
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
-  { label: 'Recipes', href: '/admin/recipes', icon: ChefHat },
+  { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },
   { label: 'Shifts', href: '/admin/shifts', icon: Banknote },
   // CR-001 — Approvals section (Super Admin reviews supervisor submissions)
   { label: 'Product Requests', href: '/admin/approvals/product-requests', icon: Package },

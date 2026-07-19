@@ -1,6 +1,8 @@
 # API Contracts
 
-All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE.md` status line). Modules whose routers are still Phase-0 skeletons (no real routes yet — `attendance`, `audit`, `discounts`, `fraud`, `notifications`, `receipts`, `reports`) are listed at the bottom under "Not yet implemented."
+**Last verified:** 2026-07-20 (commit `d7a3d28`)
+
+All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE.md` status line). Modules whose routers are still Phase-0 skeletons (no real routes yet — `audit`, `discounts`, `receipts`) are listed at the bottom under "Not yet implemented." `attendance`, `fraud`, `notifications`, and `reports` now have real routes (Phases 12/16/17/18) but their endpoint tables aren't written up yet — see "Also implemented" below.
 
 ## Conventions
 
@@ -26,6 +28,8 @@ All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE
 | POST | `/pin/set` | authenticated | `pinSetSchema` (`pin`, 6 digits) | Requires `x-device-id` header and an existing active session on that device. |
 | POST | `/pin/login` | public, `loginLimiter` | `pinLoginSchema` (`user_id`, `pin`, `device_id`) | Device must already have completed full email/password login. |
 | POST | `/admin/unlock-account` | **admin** | `unlockAccountSchema` (`user_id`) | Manual override for the 5-failed-attempt lockout — clears `loginAttempts`/`lockedUntil` via the same repository call the auto-unlock-after-window path in `login()` uses. Returns `{ message: "Account unlocked" }`. |
+
+`/refresh` rotation is guarded by a Postgres advisory lock plus a rotation-result cache (Phase 20.5, restored after an inadvertent drop in Phase 21.5, commit `6116ff1`) — concurrent refresh calls with the same stale token coalesce onto one rotation instead of racing.
 
 ## branches — mounted at `/api/branches`
 
@@ -159,16 +163,23 @@ All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE
 | POST | `/:shiftId/approve-variance` | **admin** | `approveVarianceSchema` | |
 | POST | `/:shiftId/void` | **admin** | `voidShiftSchema` | |
 
+## Also implemented (endpoint tables not yet written up)
+
+These modules have real routes now, not the Phase-0 scaffold this doc previously described — see the router file for the current contract until a full table is added here:
+
+| Module | Mounted at | Router |
+|---|---|---|
+| `attendance` | `/api/attendance` | `apps/api/src/modules/attendance/attendance.router.ts` |
+| `reports` | `/api/reports` | `apps/api/src/modules/reports/reports.router.ts` |
+| `fraud` | `/api/fraud` | `apps/api/src/modules/fraud/fraud.router.ts` |
+| `notifications` | `/api/notifications` | `apps/api/src/modules/notifications/notifications.router.ts` |
+
 ## Not yet implemented
 
 The following modules exist as `apps/api/src/modules/<name>/` scaffolds (router, service, types files present, service imported but unused via `void <name>Service;`) but have zero real routes — each is a single `TODO(Phase 1+)` comment. They're still mounted in `app.ts` at their eventual prefix so the prefix reservation is visible, but every path under them currently 404s:
 
 | Module | Mounted at | Corresponds to |
 |---|---|---|
-| `attendance` | `/api/attendance` | Phase 12 — clock in/out, GPS validation, correction workflow |
-| `reports` | `/api/reports` | Phase 16 — 13 report types, pre-compute jobs, CSV/PDF export |
-| `fraud` | `/api/fraud` | Phase 17 — nightly detection job, investigate/dismiss/escalate |
-| `notifications` | `/api/notifications` | Phase 18 — delivery pipeline, EOD summary job |
 | `discounts` | `/api/discounts` | Discount-type reference data supporting the Phase 10 POS discount flow (VAT/PWD/senior-citizen calc itself already lives in `transactions`) |
 | `receipts` | `/api/receipts` | Receipt formatting/reprint support for the Phase 10 POS transaction flow |
 | `audit` | `/api/audit` | Audit-log query/export UI backing — writes already happen via `recordAuditLog` from every other module; this module is the read/export API |

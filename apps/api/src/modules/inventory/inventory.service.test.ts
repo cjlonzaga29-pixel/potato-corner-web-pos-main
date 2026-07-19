@@ -22,12 +22,12 @@ vi.mock('../../middleware/audit-log.js', () => ({
 }));
 
 vi.mock('../../queues/notification.queue.js', () => ({
-  notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+  enqueueRawNotificationJob: vi.fn().mockResolvedValue(undefined),
   enqueueNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { inventoryRepository } = await import('./inventory.repository.js');
-const { notificationQueue, enqueueNotification } = await import('../../queues/notification.queue.js');
+const { enqueueRawNotificationJob, enqueueNotification } = await import('../../queues/notification.queue.js');
 const { inventoryService } = await import('./inventory.service.js');
 
 const ACTOR = { id: 'user-1', role: 'supervisor' };
@@ -193,7 +193,7 @@ describe('inventoryService.stockIn', () => {
 
     await inventoryService.stockIn('ing-1', { quantity: 30 }, ACTOR, null);
 
-    expect(notificationQueue.add).toHaveBeenCalledWith(
+    expect(enqueueRawNotificationJob).toHaveBeenCalledWith(
       'low_stock_alert',
       expect.objectContaining({ branchId: 'branch-1', ingredientId: 'ing-1', currentStock: 8, severity: 'low' }),
     );
@@ -205,7 +205,7 @@ describe('inventoryService.stockIn', () => {
 
     await inventoryService.stockIn('ing-1', { quantity: 30 }, ACTOR, null);
 
-    expect(notificationQueue.add).not.toHaveBeenCalled();
+    expect(enqueueRawNotificationJob).not.toHaveBeenCalled();
   });
 });
 

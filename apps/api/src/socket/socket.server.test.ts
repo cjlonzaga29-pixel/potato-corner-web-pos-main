@@ -4,16 +4,16 @@ import jwt from 'jsonwebtoken';
 import type { Socket } from 'socket.io';
 import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
 
-vi.mock('../lib/redis.js', () => ({
-  redis: {
-    get: vi.fn(),
-    set: vi.fn(),
-    del: vi.fn(),
+vi.mock('../lib/prisma.js', () => ({
+  prisma: {
+    revokedToken: {
+      findFirst: vi.fn(),
+    },
   },
 }));
 
-const { redis } = await import('../lib/redis.js');
-const { blacklistKey } = await import('../lib/verify-access-token.js');
+const { prisma } = await import('../lib/prisma.js');
+const { revokedTokenHash } = await import('../lib/verify-access-token.js');
 const { socketAuthMiddleware, joinRoomsForUser } = await import('./socket.server.js');
 const { SUPER_ADMIN_ROOM, branchRoom, userRoom } = await import('./rooms.js');
 const { generateStaffToken, generateSuperAdminToken } = await import('../test-utils/auth-tokens.js');
@@ -35,8 +35,8 @@ function mockJoinableSocket(): { join: ReturnType<typeof vi.fn> } {
 const IAT_EXP = { iat: 0, exp: 0 };
 
 beforeEach(() => {
-  vi.mocked(redis.get).mockReset();
-  vi.mocked(redis.get).mockResolvedValue(null);
+  vi.mocked(prisma.revokedToken.findFirst).mockReset();
+  vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
 });
 
 describe('socketAuthMiddleware', () => {
@@ -119,7 +119,8 @@ describe('socketAuthMiddleware', () => {
 
   it('rejects a blacklisted token — "Token revoked"', async () => {
     const token = generateSuperAdminToken();
-    vi.mocked(redis.get).mockImplementation(async (key) => (key === blacklistKey(token) ? '1' : null));
+    vi.mocked(prisma.revokedToken.findFirst).mockImplementation((async (args: { where: { tokenHash: string } }) =>
+      args.where.tokenHash === revokedTokenHash(token) ? { id: 'revoked-1' } : null) as never);
     const socket = mockSocket({ auth: { token } });
     const next = vi.fn();
 

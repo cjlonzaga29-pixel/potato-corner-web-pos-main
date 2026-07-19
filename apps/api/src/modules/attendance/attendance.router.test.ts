@@ -19,11 +19,11 @@ vi.mock('./attendance.service.js', () => ({
   },
 }));
 
-vi.mock('../../lib/redis.js', () => ({
-  redis: { get: vi.fn(), set: vi.fn(), del: vi.fn() },
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { revokedToken: { findFirst: vi.fn() } },
 }));
 
-const { redis } = await import('../../lib/redis.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { attendanceService } = await import('./attendance.service.js');
 const { attendanceRouter } = await import('./attendance.router.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
@@ -77,7 +77,7 @@ const RECORD_1 = randomUUID();
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(redis.get).mockResolvedValue(null);
+  vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
 });
 
 describe('attendance routes — authentication', () => {

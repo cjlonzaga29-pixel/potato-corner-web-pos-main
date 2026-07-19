@@ -4,11 +4,11 @@ import { ROLES, type Role } from '@potato-corner/shared';
 import { authRepository } from './auth.repository.js';
 import { AuthError, type AuthenticatedUserSummary, type LoginResponse, type RefreshResponse } from './auth.types.js';
 import { config } from '../../config/index.js';
-import { redis } from '../../lib/redis.js';
+import { hashToLockId } from '../../lib/pg-lock.js';
 import { sha256Hex, randomOpaqueToken } from '../../lib/hash.js';
 import { parseDurationMs } from '../../lib/duration.js';
 import { sendPasswordResetEmail } from '../../lib/email.js';
-import { blacklistKey } from '../../middleware/authenticate.js';
+import { revokedTokenHash } from '../../middleware/authenticate.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 const BCRYPT_COST_FACTOR = 12;
@@ -57,70 +57,23 @@ function generateRefreshToken(): string {
   return randomOpaqueToken();
 }
 
-// Phase 20.5: a client can present the same refresh token twice in quick
-// succession (e.g. rapid sidebar navigation triggers the middleware's
-// refresh check on two near-simultaneous requests before the first
-// response lands). Without coalescing, the second request finds the token
-// already rotated and bounces a legitimate user to /login. Rather than a
-// blanket time-based amnesty for any recently-revoked token (which would
-// also let a genuinely stolen token be replayed within that window), a
-// short-lived Redis lock serializes concurrent rotations of the exact same
-// token, and the rotation result is memoized for a few seconds under that
-// token's own hash so a near-duplicate request gets back the identical
-// replacement pair instead of racing the DB. Reuse of a token outside this
-// narrow window — or from a different device — still throws REFRESH_INVALID.
-const REFRESH_ROTATION_LOCK_TTL_MS = 5_000;
-const REFRESH_ROTATION_RESULT_TTL_SECONDS = 10;
-const REFRESH_ROTATION_WAIT_TIMEOUT_MS = 1_500;
-const REFRESH_ROTATION_WAIT_INTERVAL_MS = 100;
-
+// Phase 20.5 (commit 9507200): a client can present the same refresh token
+// twice in quick succession (e.g. rapid sidebar navigation triggers the
+// middleware's refresh check on two near-simultaneous requests before the
+// first response lands). Phase 21 replaced the Redis lock + short-lived
+// result cache that used to coalesce these with a Postgres advisory lock
+// (see authRepository.withAdvisoryLock) that only serializes the
+// check-then-rotate sequence — there is no longer a result cache, so a
+// second near-duplicate request now gets REFRESH_INVALID instead of the
+// first request's response pair (reopens the race Phase 20.5 closed; see
+// the design note on withAdvisoryLock in auth.repository.ts). Reuse of a
+// token from a different device still throws REFRESH_INVALID either way.
 type RefreshTokenPair = RefreshResponse & { refreshToken: string };
-
-interface CachedRotation {
-  deviceId: string;
-  response: RefreshTokenPair;
-}
-
-function refreshLockKey(tokenHash: string): string {
-  return `auth:refresh-lock:${tokenHash}`;
-}
-
-function refreshResultKey(tokenHash: string): string {
-  return `auth:refresh-result:${tokenHash}`;
-}
-
-async function readCachedRotation(tokenHash: string, deviceId: string): Promise<RefreshTokenPair | null> {
-  const raw = await redis.get(refreshResultKey(tokenHash));
-  if (!raw) return null;
-  const cached = JSON.parse(raw) as CachedRotation;
-  return cached.deviceId === deviceId ? cached.response : null;
-}
-
-async function cacheRotationResult(tokenHash: string, deviceId: string, response: RefreshTokenPair): Promise<void> {
-  const cached: CachedRotation = { deviceId, response };
-  await redis.set(refreshResultKey(tokenHash), JSON.stringify(cached), 'EX', REFRESH_ROTATION_RESULT_TTL_SECONDS);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Polls for the in-flight rotation's result while another request holds the lock for this token. */
-async function waitForRotation(tokenHash: string, deviceId: string): Promise<RefreshTokenPair | null> {
-  const deadline = Date.now() + REFRESH_ROTATION_WAIT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await delay(REFRESH_ROTATION_WAIT_INTERVAL_MS);
-    const cached = await readCachedRotation(tokenHash, deviceId);
-    if (cached) return cached;
-  }
-  return null;
-}
 
 /** Blacklists an access token until its own expiry — same TTL, no longer, no shorter. */
 async function blacklistToken(accessToken: string, expiresAt: Date): Promise<void> {
-  const ttlSeconds = Math.max(Math.floor((expiresAt.getTime() - Date.now()) / 1000), 0);
-  if (ttlSeconds === 0) return;
-  await redis.set(blacklistKey(accessToken), '1', 'EX', ttlSeconds);
+  if (expiresAt.getTime() <= Date.now()) return;
+  await authRepository.insertRevokedToken(revokedTokenHash(accessToken), expiresAt);
 }
 
 function decodeExpiry(accessToken: string): Date {
@@ -227,47 +180,21 @@ export const authService = {
 
   async refreshToken(refreshTokenValue: string, deviceId: string): Promise<RefreshTokenPair> {
     const tokenHash = sha256Hex(refreshTokenValue);
-    const lockKey = refreshLockKey(tokenHash);
+    const lockId = hashToLockId(tokenHash);
 
-    // Coalescing is a Redis-dependent enhancement, not a correctness
-    // requirement — the DB rotation below is what actually enforces
-    // single-use tokens. If Redis is unavailable (e.g. an Upstash outage or
-    // quota rejection), skip coalescing entirely rather than letting the
-    // error bubble up and fail the whole refresh. This re-opens the narrow
-    // concurrent-refresh race Phase 20.5 (commit 9507200) closed, but a
-    // logged-out legitimate user is a smaller cost than the API being down.
-    let acquiredLock: string | null = null;
-    try {
-      const alreadyRotated = await readCachedRotation(tokenHash, deviceId);
-      if (alreadyRotated) return alreadyRotated;
-
-      acquiredLock = await redis.set(lockKey, '1', 'PX', REFRESH_ROTATION_LOCK_TTL_MS, 'NX');
-
-      if (!acquiredLock) {
-        // Another request is mid-rotation for this exact token — wait for its
-        // result instead of racing it against the same DB row.
-        const waited = await waitForRotation(tokenHash, deviceId);
-        if (waited) return waited;
-        // Lock holder didn't finish in time (or crashed) — fall through to a
-        // normal, unlocked lookup below.
-      }
-    } catch (error) {
-      console.error('Refresh-token coalescing unavailable, proceeding without lock:', error);
-      acquiredLock = null;
-    }
-
-    try {
-      const stored = await authRepository.findRefreshToken(refreshTokenValue);
+    return authRepository.withAdvisoryLock(lockId, async (tx) => {
+      const stored = await authRepository.findRefreshTokenTx(tx, refreshTokenValue);
 
       if (!stored || stored.expiresAt.getTime() < Date.now() || stored.deviceId !== deviceId) {
         throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
       }
 
       if (stored.revokedAt) {
-        // Already rotated, and no cache entry matched above — either a
-        // stale duplicate past the short coalescing window or a genuine
-        // replay of a stolen token. Log distinctly from a plain
-        // expired/unknown token so real reuse stays visible.
+        // Already rotated. Without the Redis result cache Phase 20.5 used
+        // (removed in Phase 21, see the design note above), this now also
+        // fires for a legitimate near-duplicate request racing right behind
+        // the one that already rotated — not just a genuine stolen-token
+        // replay. Logged the same either way so real reuse stays visible.
         console.warn('Refresh token reuse detected', { userId: stored.user.id, tokenId: stored.id });
         throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
       }
@@ -275,7 +202,7 @@ export const authService = {
       const branchIds = stored.user.branchAssignments.map((assignment) => assignment.branchId);
       const newRefreshToken = generateRefreshToken();
       const newExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
-      await authRepository.rotateRefreshToken(stored.id, newRefreshToken, newExpiresAt);
+      await authRepository.rotateRefreshTokenTx(tx, stored.id, newRefreshToken, newExpiresAt);
 
       const accessToken = generateAccessToken({
         id: stored.user.id,
@@ -285,24 +212,8 @@ export const authService = {
         mustChangePassword: stored.user.mustChangePassword,
       });
 
-      const response: RefreshTokenPair = { access_token: accessToken, refreshToken: newRefreshToken };
-      if (acquiredLock) {
-        try {
-          await cacheRotationResult(tokenHash, deviceId, response);
-        } catch (error) {
-          console.error('Failed to cache refresh rotation result:', error);
-        }
-      }
-      return response;
-    } finally {
-      if (acquiredLock) {
-        try {
-          await redis.del(lockKey);
-        } catch (error) {
-          console.error('Failed to release refresh-token rotation lock:', error);
-        }
-      }
-    }
+      return { access_token: accessToken, refreshToken: newRefreshToken };
+    });
   },
 
   async logout(accessToken: string, refreshTokenValue: string | undefined): Promise<void> {
@@ -401,7 +312,8 @@ export const authService = {
     if (!user) return;
 
     const token = randomOpaqueToken();
-    await redis.set(`auth:password-reset:${sha256Hex(token)}`, user.id, 'EX', PASSWORD_RESET_TTL_SECONDS);
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000);
+    await authRepository.storePasswordResetToken(sha256Hex(token), user.id, expiresAt);
     await sendPasswordResetEmail(user.email, token).catch((error: unknown) => {
       console.error('Failed to send password reset email:', error);
     });
@@ -416,16 +328,17 @@ export const authService = {
   },
 
   async resetPassword(resetToken: string, newPassword: string): Promise<void> {
-    const key = `auth:password-reset:${sha256Hex(resetToken)}`;
-    const userId = await redis.get(key);
-    if (!userId) {
+    const tokenHash = sha256Hex(resetToken);
+    const stored = await authRepository.findPasswordResetToken(tokenHash);
+    if (!stored || stored.expiresAt.getTime() < Date.now()) {
       throw new AuthError('RESET_TOKEN_INVALID', 'Invalid or expired reset token', 400);
     }
+    const userId = stored.userId;
 
     const newHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);
     await authRepository.updatePasswordHash(userId, newHash);
     await authRepository.revokeAllUserTokens(userId);
-    await redis.del(key);
+    await authRepository.deletePasswordResetToken(tokenHash);
 
     await recordAuditLog({
       action: 'PASSWORD_RESET_COMPLETED',

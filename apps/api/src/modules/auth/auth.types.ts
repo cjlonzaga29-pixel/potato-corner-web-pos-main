@@ -7,9 +7,10 @@ import type { JwtPayload, Role } from '@potato-corner/shared';
  * structure. Deliberately does NOT include a `jti` field: the locked
  * structure is `{ user_id, role, email, branch_ids?, iat, exp }` with no
  * other fields. Token revocation (blacklisting) is implemented by hashing
- * the raw token string itself as the Redis key (see middleware/authenticate.ts
- * `blacklistKey`), which achieves the same "check token ID against
- * blacklist" requirement without adding an unapproved payload field.
+ * the raw token string itself as the RevokedToken table's lookup key (see
+ * middleware/authenticate.ts `revokedTokenHash`), which achieves the same
+ * "check token ID against blacklist" requirement without adding an
+ * unapproved payload field.
  */
 export type { JwtPayload };
 

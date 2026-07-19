@@ -25,7 +25,6 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
   API_PORT: z.coerce.number().int().positive().default(4000),
   DATABASE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1),
   JWT_PRIVATE_KEY: z.string().min(1).transform(normalizePem),
   JWT_PUBLIC_KEY: z.string().min(1).transform(normalizePem),
   JWT_ACCESS_TOKEN_TTL: z.string().default('15m'),
@@ -57,7 +56,6 @@ export const config = {
   port: env.API_PORT,
   frontendUrl: env.NEXT_PUBLIC_APP_URL,
   database: { url: env.DATABASE_URL },
-  redis: { url: env.REDIS_URL },
   jwt: {
     privateKey: env.JWT_PRIVATE_KEY,
     publicKey: env.JWT_PUBLIC_KEY,

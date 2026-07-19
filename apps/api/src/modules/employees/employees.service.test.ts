@@ -30,7 +30,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 }));
 
 vi.mock('../../queues/notification.queue.js', () => ({
-  notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+  enqueueRawNotificationJob: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../auth/auth.repository.js', () => ({

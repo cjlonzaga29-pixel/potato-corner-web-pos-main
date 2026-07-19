@@ -1,6 +1,4 @@
-import { Queue, Worker, type Job } from 'bullmq';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
-import { redis, createWorkerConnection } from '../lib/redis.js';
 import { transactionsRepository } from '../modules/transactions/transactions.repository.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
 import { notifyBranch } from '../lib/notify.js';
@@ -11,27 +9,31 @@ export interface HoldOrderExpiryJobData {
   shiftId: string;
 }
 
-export const holdOrderQueue = new Queue('hold-order', { connection: redis });
-
 /**
- * Schedules the 15-minute expiry check (Architecture doc §Part 8). jobId =
- * holdOrderId, matching inventory.queue.ts's idempotency pattern — releasing
- * a hold before expiry doesn't need to cancel this job explicitly, since
- * processHoldOrderExpiry below is a no-op against anything not still `held`.
+ * Phase 21: BullMQ removed — a plain setTimeout replaces the delayed job
+ * (see lib/job-runner.ts's design note). Process-lifetime only: a restart
+ * before the timer fires drops it silently, same as the old queue's
+ * `jobId: holdOrderId` dedup being lost — acceptable per
+ * processHoldOrderExpiry's existing no-op-if-not-held guard below, and the
+ * comment this function already carried: "a missed expiry check is caught
+ * by the next read of the hold order's expiresAt, not silently lost."
  */
-export function enqueueHoldOrderExpiry(data: HoldOrderExpiryJobData, delayMs: number): Promise<Job> {
-  return holdOrderQueue.add('hold_order_expiry', data, {
-    jobId: data.holdOrderId,
-    delay: delayMs,
-  });
+export function enqueueHoldOrderExpiry(data: HoldOrderExpiryJobData, delayMs: number): Promise<void> {
+  setTimeout(() => {
+    processHoldOrderExpiry(data).catch((error: unknown) => {
+      console.error(`Hold order expiry check failed for ${data.holdOrderId}:`, error);
+    });
+  }, delayMs);
+  return Promise.resolve();
 }
 
-export async function processHoldOrderExpiry(job: Job<HoldOrderExpiryJobData>): Promise<void> {
-  const { holdOrderId, branchId, shiftId } = job.data;
+export async function processHoldOrderExpiry(job: HoldOrderExpiryJobData): Promise<void> {
+  const { holdOrderId, branchId, shiftId } = job;
 
   const result = await transactionsRepository.expireHoldOrderIfStillHeld(holdOrderId);
   // count === 0 means the hold was already released (or expired by a
-  // duplicate job run) before this fired — nothing left to do.
+  // duplicate timer firing, e.g. two enqueueHoldOrderExpiry calls for the
+  // same hold) before this fired — nothing left to do.
   if (result.count === 0) return;
 
   await recordAuditLog({
@@ -49,15 +51,3 @@ export async function processHoldOrderExpiry(job: Job<HoldOrderExpiryJobData>): 
   // API call is required on the frontend's part.
   notifyBranch(branchId, SOCKET_EVENTS.HOLD_ORDER_EXPIRED, { holdOrderId, branchId, shiftId });
 }
-
-/** Hold order queue worker. Single job type (hold_order_expiry), no retries needed — a missed expiry check is caught by the next read of the hold order's expiresAt, not silently lost. */
-export const holdOrderWorker = new Worker(
-  'hold-order',
-  async (job: Job) => {
-    if (job.name === 'hold_order_expiry') {
-      await processHoldOrderExpiry(job as Job<HoldOrderExpiryJobData>);
-      return;
-    }
-  },
-  { connection: createWorkerConnection() },
-);

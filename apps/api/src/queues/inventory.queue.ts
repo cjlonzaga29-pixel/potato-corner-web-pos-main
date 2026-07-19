@@ -1,11 +1,13 @@
-import { Queue, Worker, type Job } from 'bullmq';
 import { MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS, SOCKET_EVENTS } from '@potato-corner/shared';
-import { redis, createWorkerConnection } from '../lib/redis.js';
+import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
+import { hashToLockId } from '../lib/pg-lock.js';
+import { sha256Hex } from '../lib/hash.js';
 import { inventoryRepository } from '../modules/inventory/inventory.repository.js';
 import { computeDeduction } from '../modules/recipes/recipes.service.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
-import { notificationQueue } from './notification.queue.js';
+import { enqueueRawNotificationJob } from './notification.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
+import { prisma } from '../lib/prisma.js';
 
 export interface SaleDeductionItem {
   productVariantId: string;
@@ -19,33 +21,47 @@ export interface SaleDeductionJobData {
   items: SaleDeductionItem[];
 }
 
-export const inventoryQueue = new Queue('inventory', { connection: redis });
-
-/** Architecture doc §3.6: 10s / 60s / 300s backoff, one delay per retry attempt. */
+/**
+ * Phase 21: BullMQ removed — see lib/job-runner.ts. RETRY_DELAYS_MS below
+ * preserves Architecture doc §3.6's 10s/60s/300s backoff. BullMQ's
+ * `jobId: transactionId` used to also dedupe concurrent enqueues of the
+ * same transaction at the queue level; a Postgres advisory lock keyed by
+ * transactionId (see refreshToken's use of the same pattern in
+ * auth.service.ts) now serializes concurrent processSaleDeduction calls for
+ * the same transaction instead — hasMovementForReference's per-ingredient
+ * check below is what actually makes a re-run a no-op, the lock just
+ * prevents two concurrent runs from both passing that check before either
+ * has written.
+ */
 const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length;
 
-function retryDelayMs(attemptsMade: number): number {
-  return RETRY_DELAYS_MS[attemptsMade - 1] ?? 300_000;
-}
-
 /**
- * Enqueues Phase 8's post-sale deduction job. jobId = transactionId, so
- * re-enqueuing the same transaction (e.g. a caller retrying after a
- * timeout) is a no-op against the already-queued/processed job — this is
- * the worker's idempotency guarantee, enforced by BullMQ itself rather
- * than application-level dedup logic.
+ * Enqueues Phase 8's post-sale deduction job. Runs in the background;
+ * returns immediately (matching the old queue.add()'s "enqueued, not yet
+ * processed" semantics) with retry/backoff preserved via runWithRetry. On
+ * final failure, notifies the same way BullMQ's `worker.on('failed', ...)`
+ * used to (see the end of this file).
  */
-export function enqueueSaleDeduction(data: SaleDeductionJobData): Promise<Job> {
-  return inventoryQueue.add('sale_deduction', data, {
-    jobId: data.transactionId,
-    attempts: MAX_ATTEMPTS,
-    backoff: { type: 'custom' },
-  });
+export function enqueueSaleDeduction(data: SaleDeductionJobData): Promise<void> {
+  runFireAndForget(
+    () => runWithRetry((attempt) => processSaleDeductionWithLock(data, attempt), RETRY_DELAYS_MS),
+    (error) => handleSaleDeductionFailure(data, error, MAX_ATTEMPTS),
+  );
+  return Promise.resolve();
 }
 
-export async function processSaleDeduction(job: Job<SaleDeductionJobData>): Promise<void> {
-  const { transactionId, branchId, items } = job.data;
+async function processSaleDeductionWithLock(data: SaleDeductionJobData, attempt: number): Promise<void> {
+  const lockId = hashToLockId(sha256Hex(data.transactionId));
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+    await processSaleDeduction(data);
+  });
+  void attempt;
+}
+
+export async function processSaleDeduction(job: SaleDeductionJobData): Promise<void> {
+  const { transactionId, branchId, items } = job;
 
   // Aggregate every item's deduction lines by ingredient first, so a
   // transaction with multiple products sharing an ingredient produces one
@@ -112,7 +128,7 @@ export async function processSaleDeduction(job: Job<SaleDeductionJobData>): Prom
     const lowThreshold = ingredient.lowStockThreshold.toNumber();
     const criticalThreshold = ingredient.criticalThreshold.toNumber();
     if (currentStock <= lowThreshold) {
-      await notificationQueue.add('low_stock_alert', {
+      await enqueueRawNotificationJob('low_stock_alert', {
         branchId,
         ingredientId,
         ingredientName: total.ingredientName,
@@ -141,7 +157,7 @@ export async function processSaleDeduction(job: Job<SaleDeductionJobData>): Prom
         };
         notifyBranch(branchId, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
         notifySuperAdmin(SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
-        await notificationQueue.add('inventory_product_unavailable', cascadePayload);
+        await enqueueRawNotificationJob('inventory_product_unavailable', cascadePayload);
       }
     }
   }
@@ -150,38 +166,15 @@ export async function processSaleDeduction(job: Job<SaleDeductionJobData>): Prom
 }
 
 /**
- * Inventory queue worker. Phase 8 wires up the one job type it needs
- * (sale_deduction) per the architecture spec's retry policy (10s, 60s, 300s
- * backoff; see Architecture doc §3.6 for the per-queue behavior).
- */
-export const inventoryWorker = new Worker(
-  'inventory',
-  async (job: Job) => {
-    if (job.name === 'sale_deduction') {
-      await processSaleDeduction(job as Job<SaleDeductionJobData>);
-      return;
-    }
-    // TODO(Phase 8+): implement remaining inventory job types.
-  },
-  {
-    connection: createWorkerConnection(),
-    settings: {
-      backoffStrategy: retryDelayMs,
-    },
-  },
-);
-
-/**
- * After the 3rd failed attempt, mark the transaction's deduction as failed
+ * After the final retry attempt, mark the transaction's deduction as failed
  * (Architecture doc §3.6: "after 3 failures mark deduction failed, notify
- * supervisor") instead of leaving it stuck at `pending` forever.
+ * supervisor") instead of leaving it stuck at `pending` forever. Mirrors
+ * the old inventoryWorker.on('failed', ...) handler.
  */
-inventoryWorker.on('failed', (job, error) => {
-  if (!job || job.name !== 'sale_deduction') return;
-  if (job.attemptsMade < (job.opts.attempts ?? MAX_ATTEMPTS)) return;
-
-  const { transactionId, branchId } = job.data as SaleDeductionJobData;
-  console.error(`Inventory deduction permanently failed for transaction ${transactionId}:`, error.message);
+function handleSaleDeductionFailure(data: SaleDeductionJobData, error: unknown, attemptsMade: number): void {
+  const { transactionId, branchId } = data;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`Inventory deduction permanently failed for transaction ${transactionId}:`, message);
 
   void inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.FAILED);
   void recordAuditLog({
@@ -191,7 +184,7 @@ inventoryWorker.on('failed', (job, error) => {
     actorId: null,
     actorRole: 'system',
     branchId,
-    afterState: { transaction_id: transactionId, error: error.message, attempts: job.attemptsMade },
+    afterState: { transaction_id: transactionId, error: message, attempts: attemptsMade },
   });
-  void notificationQueue.add('inventory_deduction_failed', { transactionId, branchId, error: error.message });
-});
+  void enqueueRawNotificationJob('inventory_deduction_failed', { transactionId, branchId, error: message });
+}

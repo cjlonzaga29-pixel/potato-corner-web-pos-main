@@ -27,10 +27,10 @@ function buildPayload(role: Role, options: TestTokenOptions): Record<string, unk
  * Generates a real RS256-signed JWT for tests, using the same keys and
  * payload shape as auth.service.ts's `buildJwtPayload` — no `jti`, per the
  * locked JWT structure (see auth.types.ts). There is no `blacklisted`
- * option here: blacklisting is a Redis lookup keyed by the token's own
- * hash (see middleware/authenticate.ts `blacklistKey`), not anything
+ * option here: blacklisting is a Postgres lookup keyed by the token's own
+ * hash (see middleware/authenticate.ts `revokedTokenHash`), not anything
  * encoded in the token — simulate it in the consuming test by mocking
- * `redis.get` to resolve truthy for that token.
+ * `prisma.revokedToken.findFirst` to resolve truthy for that token.
  */
 export function generateTestToken(role: Role, options: TestTokenOptions = {}): string {
   const payload = buildPayload(role, options);

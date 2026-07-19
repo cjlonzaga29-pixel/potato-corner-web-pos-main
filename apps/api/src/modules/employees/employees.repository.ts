@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { redis } from '../../lib/redis.js';
+import { nextCounterValue } from '../../lib/id-counter.js';
 import type { CreateEmployeeData, EmployeeActivityData, EmployeeListFilters, UpdateEmployeeData } from './employees.types.js';
 
 /**
@@ -119,12 +119,13 @@ export const employeesRepository = {
 
   /**
    * Atomically allocates the next employee number — two concurrent create
-   * requests can never receive the same number because Redis INCR is a
-   * single atomic operation server-side. Same pattern as
+   * requests can never receive the same number because the underlying
+   * INSERT ... ON CONFLICT is a single atomic statement server-side (Phase
+   * 21: Postgres replacement for Redis INCR). Same pattern as
    * branches.repository.ts's generateBranchCode.
    */
   async generateEmployeeId(): Promise<string> {
-    const next = await redis.incr('employee_id_counter');
+    const next = await nextCounterValue('employee_id_counter');
     return `PC-EMP-${String(next).padStart(6, '0')}`;
   },
 

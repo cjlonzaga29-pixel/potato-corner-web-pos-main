@@ -1,21 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../lib/redis.js', () => ({
-  redis: {},
-  createWorkerConnection: vi.fn(() => ({ on: vi.fn() })),
-}));
-vi.mock('bullmq', () => {
-  class Queue {
-    add = vi.fn().mockResolvedValue({ id: 'job-1' });
-  }
-  class Worker {
-    handler: (job: unknown) => Promise<void>;
-    constructor(_name: string, handler: (job: unknown) => Promise<void>) {
-      this.handler = handler;
-    }
-    on = vi.fn();
-  }
-  return { Queue, Worker };
+/**
+ * Phase 21: BullMQ removed — enqueueGenerateExport/enqueueRefreshSnapshot
+ * now run processGenerateExport/processRefreshSnapshot directly in-process
+ * (fired via lib/job-runner.ts's runFireAndForget; generate_export retried
+ * via runWithRetry, refresh_snapshot intentionally not — see the design note
+ * at the top of report.queue.ts) instead of dispatching through a BullMQ
+ * Worker. job-runner is mocked as a thin wrapper around the real
+ * implementation (via importOriginal) so retry/fire-and-forget behavior
+ * stays real while still letting us assert on call arguments.
+ */
+vi.mock('../lib/job-runner.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('../lib/job-runner.js');
+  return {
+    ...actual,
+    runWithRetry: vi.fn(actual.runWithRetry),
+    runFireAndForget: vi.fn(actual.runFireAndForget),
+  };
 });
 vi.mock('../lib/supabase.js', () => ({ supabaseAdmin: { storage: { from: vi.fn() } } }));
 vi.mock('../lib/notify.js', () => ({ notifyUser: vi.fn() }));
@@ -28,38 +29,42 @@ vi.mock('../modules/reports/reports.repository.js', () => ({ reportsRepository: 
 vi.mock('../lib/prisma.js', () => ({ prisma: { branch: { findUnique: vi.fn().mockResolvedValue({ name: 'SM North' }) } } }));
 vi.mock('@sentry/node', () => ({ captureException: vi.fn() }));
 
+const { runWithRetry } = await import('../lib/job-runner.js');
 const { supabaseAdmin } = await import('../lib/supabase.js');
 const { notifyUser } = await import('../lib/notify.js');
 const { recordAuditLog } = await import('../middleware/audit-log.js');
+const { getReportRows } = await import('../modules/reports/reports.columns.js');
 const { reportsRepository } = await import('../modules/reports/reports.repository.js');
 const Sentry = await import('@sentry/node');
-const { reportWorker } = await import('./report.queue.js');
+const { processGenerateExport, enqueueGenerateExport, enqueueRefreshSnapshot } = await import('./report.queue.js');
 
-// Captured immediately after import, before any `beforeEach` runs —
-// `reportWorker.on('failed', ...)` is registered once at module-load time,
-// and `vi.clearAllMocks()` below wipes accumulated `.mock.calls` (including
-// this pre-test-run registration) on every subsequent test, so re-deriving
-// this handler from `reportWorker.on.mock.calls` inside a test would always
-// find nothing by the time the "failed handler" describe block runs.
-const failedHandler = vi.mocked(reportWorker.on).mock.calls.find(([event]) => event === 'failed')?.[1] as
-  | ((job: unknown, error: Error) => void)
-  | undefined;
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(getReportRows).mockResolvedValue([{ report_date: '2026-07-01' }]);
+});
 
-beforeEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-describe('report worker — generate_export (CSV)', () => {
+describe('processGenerateExport — CSV', () => {
   it('generates CSV, uploads to storage, and emits report:export_ready to the requester only', async () => {
     const upload = vi.fn().mockResolvedValue({ error: null });
     const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/x.csv' }, error: null });
     vi.mocked(supabaseAdmin.storage.from).mockReturnValue({ upload, createSignedUrl } as never);
 
-    await (reportWorker as unknown as { handler: (job: unknown) => Promise<void> }).handler({
-      id: 'job-1',
-      name: 'generate_export',
-      data: { reportType: 'DAILY_SALES', filters: { page: 1, limit: 100 }, format: 'csv', requesterId: 'user-1', branchId: 'b1' },
+    await processGenerateExport('job-1', {
+      reportType: 'DAILY_SALES',
+      filters: { page: 1, limit: 100 },
+      format: 'csv',
+      requesterId: 'user-1',
+      branchId: 'b1',
     });
 
-    expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.csv$/), expect.any(Buffer), { contentType: 'text/csv', upsert: false });
+    expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.csv$/), expect.any(Buffer), {
+      contentType: 'text/csv',
+      upsert: false,
+    });
     expect(createSignedUrl).toHaveBeenCalledWith(expect.any(String), 86_400);
     expect(notifyUser).toHaveBeenCalledWith('user-1', 'report:export_ready', expect.objectContaining({ download_url: 'https://signed.example/x.csv' }));
     expect(notifyUser).toHaveBeenCalledTimes(1);
@@ -67,45 +72,92 @@ describe('report worker — generate_export (CSV)', () => {
   });
 });
 
-describe('report worker — generate_export (PDF)', () => {
+describe('processGenerateExport — PDF', () => {
   it('generates a PDF buffer, uploads, and emits report:export_ready', async () => {
     const upload = vi.fn().mockResolvedValue({ error: null });
     const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/x.pdf' }, error: null });
     vi.mocked(supabaseAdmin.storage.from).mockReturnValue({ upload, createSignedUrl } as never);
 
-    await (reportWorker as unknown as { handler: (job: unknown) => Promise<void> }).handler({
-      id: 'job-2',
-      name: 'generate_export',
-      data: { reportType: 'DAILY_SALES', filters: { page: 1, limit: 100 }, format: 'pdf', requesterId: 'user-1', branchId: 'b1' },
+    await processGenerateExport('job-2', {
+      reportType: 'DAILY_SALES',
+      filters: { page: 1, limit: 100 },
+      format: 'pdf',
+      requesterId: 'user-1',
+      branchId: 'b1',
     });
 
-    expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.pdf$/), expect.any(Buffer), { contentType: 'application/pdf', upsert: false });
+    expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.pdf$/), expect.any(Buffer), {
+      contentType: 'application/pdf',
+      upsert: false,
+    });
   });
 });
 
-describe('report worker — refresh_snapshot', () => {
-  it('recomputes rows and saves a new snapshot', async () => {
-    await (reportWorker as unknown as { handler: (job: unknown) => Promise<void> }).handler({
-      id: 'job-3',
-      name: 'refresh_snapshot',
-      data: { reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', filters: { branchId: 'b1', page: 1, limit: 100 } },
+describe('enqueueGenerateExport', () => {
+  it('returns a job id immediately and runs processGenerateExport in the background, under the Decision 7 retry policy', async () => {
+    const upload = vi.fn().mockResolvedValue({ error: null });
+    const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/x.csv' }, error: null });
+    vi.mocked(supabaseAdmin.storage.from).mockReturnValue({ upload, createSignedUrl } as never);
+
+    const result = await enqueueGenerateExport({
+      reportType: 'DAILY_SALES',
+      filters: { page: 1, limit: 100 },
+      format: 'csv',
+      requesterId: 'user-1',
+      branchId: 'b1',
     });
 
+    expect(result.id).toEqual(expect.any(String));
+    await vi.waitFor(() => expect(notifyUser).toHaveBeenCalled());
+    expect(runWithRetry).toHaveBeenCalledWith(expect.any(Function), [10_000, 60_000, 300_000]);
+    expect(notifyUser).toHaveBeenCalledWith('user-1', 'report:export_ready', expect.any(Object));
+  });
+
+  it('emits report:export_failed to the requester and reports to Sentry only after every retry attempt is exhausted', async () => {
+    vi.useFakeTimers();
+    vi.mocked(getReportRows).mockRejectedValue(new Error('upload failed'));
+
+    const result = await enqueueGenerateExport({
+      reportType: 'DAILY_SALES',
+      filters: { page: 1, limit: 100 },
+      format: 'csv',
+      requesterId: 'user-1',
+      branchId: 'b1',
+    });
+    await vi.advanceTimersByTimeAsync(10_000 + 60_000 + 300_000);
+    await vi.waitFor(() => expect(notifyUser).toHaveBeenCalled());
+
+    expect(getReportRows).toHaveBeenCalledTimes(3);
+    expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(notifyUser).toHaveBeenCalledWith(
+      'user-1',
+      'report:export_failed',
+      expect.objectContaining({ job_id: result.id, report_type: 'DAILY_SALES', error: 'upload failed', requester_id: 'user-1' }),
+    );
+    expect(notifyUser).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('enqueueRefreshSnapshot', () => {
+  it('recomputes rows and saves a new snapshot in the background', async () => {
+    await enqueueRefreshSnapshot({ reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', filters: { branchId: 'b1', page: 1, limit: 100 } });
+
+    await vi.waitFor(() => expect(reportsRepository.saveSnapshot).toHaveBeenCalled());
     expect(reportsRepository.saveSnapshot).toHaveBeenCalledWith('PRODUCT_PERFORMANCE', 'b1', [{ report_date: '2026-07-01' }], expect.anything());
   });
-});
 
-describe('report worker — failed handler', () => {
-  it('emits report:export_failed to the requester only after max retries, and reports to Sentry', () => {
-    expect(failedHandler).toBeDefined();
+  it('logs the failure without retrying (matches the old attempts: 1 — no Sentry report, no user notification)', async () => {
+    vi.mocked(getReportRows).mockRejectedValue(new Error('db unreachable'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    failedHandler?.(
-      { id: 'job-4', name: 'generate_export', attemptsMade: 3, opts: { attempts: 3 }, data: { reportType: 'DAILY_SALES', requesterId: 'user-1', branchId: 'b1' } },
-      new Error('upload failed'),
-    );
+    await enqueueRefreshSnapshot({ reportType: 'PRODUCT_PERFORMANCE', branchId: 'b1', filters: { branchId: 'b1', page: 1, limit: 100 } });
 
-    expect(Sentry.captureException).toHaveBeenCalled();
-    expect(notifyUser).toHaveBeenCalledWith('user-1', 'report:export_failed', expect.objectContaining({ job_id: 'job-4', error: 'upload failed' }));
-    expect(notifyUser).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(consoleErrorSpy).toHaveBeenCalled());
+    expect(getReportRows).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Report snapshot refresh failed:', expect.any(Error));
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(notifyUser).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
   });
 });

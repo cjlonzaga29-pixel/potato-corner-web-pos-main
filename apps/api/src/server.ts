@@ -4,7 +4,6 @@ import * as Sentry from '@sentry/node';
 import { config } from './config/index.js';
 import { app } from './app.js';
 import { createSocketServer } from './socket/socket.server.js';
-import { redis } from './lib/redis.js';
 import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 
@@ -19,12 +18,10 @@ Sentry.init({
 });
 
 /**
- * Background infrastructure (Redis pub/sub for the Socket.io adapter,
- * BullMQ workers) can reject a promise outside any request's try/catch —
- * e.g. the Socket.io Redis adapter's internal SUBSCRIBE command rejecting
- * because Redis is unreachable. Node's default behavior for an unhandled
- * rejection or uncaught exception is to crash the process; that's correct
- * for a bug in request-handling code, but wrong for a transient
+ * Background infrastructure (BullMQ workers, previously) could reject a
+ * promise outside any request's try/catch. Node's default behavior for an
+ * unhandled rejection or uncaught exception is to crash the process; that's
+ * correct for a bug in request-handling code, but wrong for a transient
  * infrastructure hiccup that shouldn't take the whole API down. Report to
  * Sentry and keep running.
  */
@@ -37,44 +34,24 @@ process.on('uncaughtException', (error) => {
   Sentry.captureException(error);
 });
 
-/**
- * `redis` is configured with `maxRetriesPerRequest: null` (required by
- * BullMQ workers — see lib/redis.ts), which means a command like `.ping()`
- * never rejects when Redis is unreachable; it just retries forever. This
- * check needs its own timeout so an unreachable Redis doesn't block server
- * startup indefinitely.
- */
-async function checkRedisConnection(timeoutMs = 3000): Promise<boolean> {
-  return Promise.race([
-    redis.ping().then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
-  ]);
-}
-
 async function start(): Promise<void> {
-  const redisOk = await checkRedisConnection();
-  if (redisOk) {
-    console.log('Redis connection verified.');
-  } else {
-    console.error('Redis is unreachable at startup — continuing, but sessions/rate-limiting/queues will not work.');
+  // Phase 21: no Redis reachability gate — schedulers are in-process
+  // setTimeout timers now (see lib/daily-scheduler.ts), not Redis-backed
+  // repeatable jobs, so there's nothing here that depends on Redis being up.
+  try {
+    await scheduleNightlyFraudScan();
+    console.log('Nightly fraud detection scan scheduled (23:00 Asia/Manila).');
+  } catch (error) {
+    console.error('Failed to register the nightly fraud detection scan:', error);
+    Sentry.captureException(error);
   }
 
-  if (redisOk) {
-    try {
-      await scheduleNightlyFraudScan();
-      console.log('Nightly fraud detection scan scheduled (23:00 Asia/Manila).');
-    } catch (error) {
-      console.error('Failed to register the nightly fraud detection scan:', error);
-      Sentry.captureException(error);
-    }
-
-    try {
-      await scheduleNightlyEodSummary();
-      console.log('Nightly EOD summary scheduled (23:59 Asia/Manila).');
-    } catch (error) {
-      console.error('Failed to register the nightly EOD summary:', error);
-      Sentry.captureException(error);
-    }
+  try {
+    await scheduleNightlyEodSummary();
+    console.log('Nightly EOD summary scheduled (23:59 Asia/Manila).');
+  } catch (error) {
+    console.error('Failed to register the nightly EOD summary:', error);
+    Sentry.captureException(error);
   }
 
   const httpServer = createServer(app);

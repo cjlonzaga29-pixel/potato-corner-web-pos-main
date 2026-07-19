@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { jwtPayloadSchema, type JwtPayload } from '@potato-corner/shared';
-import { redis } from './redis.js';
+import { prisma } from './prisma.js';
 import { sha256Hex } from './hash.js';
 import { config } from '../config/index.js';
 
@@ -21,9 +21,13 @@ export class AccessTokenError extends Error {
   }
 }
 
-/** Redis key for a blacklisted access token — see the Phase 1 design note in auth.service.ts. */
-export function blacklistKey(token: string): string {
-  return `auth:blacklist:${sha256Hex(token)}`;
+/**
+ * Phase 21: token hash used as the RevokedToken table's key — see the
+ * Phase 1 design note in auth.service.ts (blacklistToken). Renamed from
+ * blacklistKey now that it's a plain hash, not a Redis key.
+ */
+export function revokedTokenHash(token: string): string {
+  return sha256Hex(token);
 }
 
 /**
@@ -32,7 +36,7 @@ export function blacklistKey(token: string): string {
  * transports enforce identical rules:
  * 1. Verify signature (RS256 public key)
  * 2. Check token expiry
- * 3. Check the token against the Redis blacklist (logged-out/revoked tokens)
+ * 3. Check the token against the Postgres revocation table (logged-out/revoked tokens)
  * 4. Validate the decoded payload shape
  * Throws `AccessTokenError` with a specific code on any failure; callers
  * map that code to their transport's own error format (HTTP status/body,
@@ -52,8 +56,11 @@ export async function verifyAccessToken(token: string): Promise<JwtPayload> {
     throw new AccessTokenError('TOKEN_MALFORMED', error instanceof Error ? error.message : 'jwt malformed');
   }
 
-  const isBlacklisted = await redis.get(blacklistKey(token));
-  if (isBlacklisted) {
+  const revoked = await prisma.revokedToken.findFirst({
+    where: { tokenHash: revokedTokenHash(token), expiresAt: { gt: new Date() } },
+    select: { id: true },
+  });
+  if (revoked) {
     throw new AccessTokenError('TOKEN_REVOKED', 'token revoked');
   }
 

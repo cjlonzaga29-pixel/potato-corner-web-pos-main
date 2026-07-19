@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { verifyAccessToken, AccessTokenError, blacklistKey } from '../lib/verify-access-token.js';
+import { verifyAccessToken, AccessTokenError, revokedTokenHash } from '../lib/verify-access-token.js';
 
 export type AuthErrorCode = 'TOKEN_MISSING' | 'TOKEN_INVALID' | 'TOKEN_EXPIRED' | 'TOKEN_REVOKED';
 
@@ -8,14 +8,14 @@ function unauthorized(res: Response, code: AuthErrorCode): void {
 }
 
 /** Re-exported so existing call sites (auth.service.ts, tests) don't need to change their import path. */
-export { blacklistKey };
+export { revokedTokenHash };
 
 /**
  * Request authentication flow (Architecture doc §3.3):
  * 1. Extract JWT from Authorization header
  * 2. Verify signature (RS256 public key)
  * 3. Check token expiry
- * 4. Check token ID against the Redis blacklist (logged-out/revoked tokens)
+ * 4. Check token ID against the Postgres revocation table (logged-out/revoked tokens)
  * 5. Extract identity/role and attach to req.user
  * 6. Hand off to route-specific authorization middleware
  * Any failure returns 401 with a specific error code so the client can

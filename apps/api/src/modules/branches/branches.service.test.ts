@@ -22,8 +22,8 @@ vi.mock('./branches.repository.js', () => ({
   },
 }));
 
-vi.mock('../../lib/redis.js', () => ({
-  redis: { incr: vi.fn() },
+vi.mock('../../lib/id-counter.js', () => ({
+  nextCounterValue: vi.fn(),
 }));
 
 vi.mock('../../middleware/audit-log.js', () => ({
@@ -116,18 +116,18 @@ describe('branchesService.createBranch', () => {
   });
 });
 
-describe('branchesRepository.generateBranchCode (real implementation, Redis mocked)', () => {
+describe('branchesRepository.generateBranchCode (real implementation, Postgres counter mocked)', () => {
   it('increments the counter atomically per city prefix and pads to 3 digits', async () => {
-    const { redis } = await import('../../lib/redis.js');
-    vi.mocked(redis.incr).mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    const { nextCounterValue } = await import('../../lib/id-counter.js');
+    vi.mocked(nextCounterValue).mockResolvedValueOnce(1).mockResolvedValueOnce(2);
 
     const actual = await vi.importActual<typeof import('./branches.repository.js')>('./branches.repository.js');
 
     const first = await actual.branchesRepository.generateBranchCode('Manila');
     const second = await actual.branchesRepository.generateBranchCode('Manila');
 
-    expect(redis.incr).toHaveBeenNthCalledWith(1, 'branch_code_counter:MAN');
-    expect(redis.incr).toHaveBeenNthCalledWith(2, 'branch_code_counter:MAN');
+    expect(nextCounterValue).toHaveBeenNthCalledWith(1, 'branch_code_counter:MAN');
+    expect(nextCounterValue).toHaveBeenNthCalledWith(2, 'branch_code_counter:MAN');
     expect(first).toBe('PC-MAN-001');
     expect(second).toBe('PC-MAN-002');
   });

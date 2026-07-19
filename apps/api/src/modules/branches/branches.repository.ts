@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { redis } from '../../lib/redis.js';
+import { nextCounterValue } from '../../lib/id-counter.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
 
@@ -188,8 +188,10 @@ export const branchesRepository = {
 
   /**
    * Atomically allocates the next branch number for a city prefix — two
-   * concurrent requests can never receive the same number because Redis
-   * INCR is a single atomic operation server-side.
+   * concurrent requests can never receive the same number because the
+   * underlying INSERT ... ON CONFLICT is a single atomic statement
+   * server-side (Phase 21: Postgres replacement for Redis INCR). One
+   * counter row per city prefix (created on first use).
    */
   async generateBranchCode(city: string): Promise<string> {
     const citySlug = city
@@ -198,7 +200,7 @@ export const branchesRepository = {
       .replace(/[^A-Z]/g, '')
       .slice(0, 3);
     const key = `branch_code_counter:${citySlug}`;
-    const next = await redis.incr(key);
+    const next = await nextCounterValue(key);
     return `PC-${citySlug}-${String(next).padStart(3, '0')}`;
   },
 };

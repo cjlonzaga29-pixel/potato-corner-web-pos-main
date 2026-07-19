@@ -12,7 +12,7 @@ import type {
 import { inventoryRepository } from './inventory.repository.js';
 import { IngredientError, LARGE_ADJUSTMENT_APPROVAL_THRESHOLD_PHP } from './inventory.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { notificationQueue, enqueueNotification } from '../../queues/notification.queue.js';
+import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -110,7 +110,7 @@ async function notifyIfLowStock(params: {
   if (currentStock > lowThreshold) return;
 
   try {
-    await notificationQueue.add('low_stock_alert', {
+    await enqueueRawNotificationJob('low_stock_alert', {
       branchId: params.branchId,
       ingredientId: params.ingredientId,
       ingredientName: params.ingredientName,

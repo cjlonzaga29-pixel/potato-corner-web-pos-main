@@ -31,11 +31,11 @@ vi.mock('./inventory.service.js', () => ({
   },
 }));
 
-vi.mock('../../lib/redis.js', () => ({
-  redis: { get: vi.fn(), set: vi.fn(), del: vi.fn() },
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { revokedToken: { findFirst: vi.fn() } },
 }));
 
-const { redis } = await import('../../lib/redis.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { inventoryService } = await import('./inventory.service.js');
 const { IngredientError } = await import('./inventory.types.js');
 const { inventoryRouter, inventoryBranchRouter } = await import('./inventory.router.js');
@@ -96,7 +96,7 @@ const INGREDIENT_1 = randomUUID();
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(redis.get).mockResolvedValue(null);
+  vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
 });
 
 describe('inventory routes — authentication', () => {

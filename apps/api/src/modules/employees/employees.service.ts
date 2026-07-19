@@ -16,7 +16,7 @@ import { employeesRepository, type EmployeeWithAssignments, type EmployeeWithGov
 import { EmployeeError } from './employees.types.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { notificationQueue } from '../../queues/notification.queue.js';
+import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { authRepository } from '../auth/auth.repository.js';
 
 const BCRYPT_COST_FACTOR = 12;
@@ -194,16 +194,16 @@ export const employeesService = {
     });
 
     // Best-effort — a failed welcome email must never fail employee creation itself.
-    // removeOnComplete/removeOnFail minimize how long the temporary password sits in Redis job data.
-    await notificationQueue
-      .add(
-        'employee_welcome',
-        { toEmail: employee.email, firstName: employee.firstName, employeeId: employee.employeeId, tempPassword: data.initial_password },
-        { removeOnComplete: true, removeOnFail: true },
-      )
-      .catch((error: unknown) => {
-        console.error('Failed to enqueue welcome email:', error);
-      });
+    // Phase 21: runs in-process now (no queue), so the temporary password only
+    // lives as long as this call's in-memory closure, not a persisted job record.
+    await enqueueRawNotificationJob('employee_welcome', {
+      toEmail: employee.email,
+      firstName: employee.firstName,
+      employeeId: employee.employeeId,
+      tempPassword: data.initial_password,
+    }).catch((error: unknown) => {
+      console.error('Failed to enqueue welcome email:', error);
+    });
 
     return toEmployeeResponse(employee);
   },

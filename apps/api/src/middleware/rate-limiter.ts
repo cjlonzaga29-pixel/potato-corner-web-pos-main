@@ -1,14 +1,14 @@
 import rateLimit, { type Options } from 'express-rate-limit';
-import { RedisStore } from 'rate-limit-redis';
 import type { Request, Response } from 'express';
-import { redis } from '../lib/redis.js';
 
-function redisStore(prefix: string): RedisStore {
-  return new RedisStore({
-    sendCommand: (...args: string[]) => redis.call(...(args as [string, ...string[]])) as Promise<never>,
-    prefix,
-  });
-}
+/**
+ * Phase 21: Redis-backed store removed — falls back to express-rate-limit's
+ * default in-memory MemoryStore. That store is per-process, so limits are
+ * no longer shared across API instances (each instance enforces its own
+ * window independently); acceptable for now per the Phase 21 directive,
+ * revisit with a Postgres-backed store if/when the API runs as more than
+ * one instance.
+ */
 
 /**
  * express-rate-limit's default limit-exceeded response is a plain-text
@@ -26,23 +26,12 @@ const rateLimitHandler: Options['handler'] = (_req: Request, res: Response) => {
   });
 };
 
-/**
- * `passOnStoreError: true` makes express-rate-limit allow the request
- * through (logging to console) instead of throwing when the Redis store
- * errors — e.g. an Upstash outage or quota rejection. Since apiLimiter is
- * mounted globally (see app.ts), an unguarded store error here would 500
- * every /api/* request. Losing rate-limit enforcement during a Redis
- * incident is an acceptable trade-off against the API being entirely down.
- */
-
 /** 10 requests per 15 minutes per IP — applied to POST /api/auth/login. */
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  store: redisStore('rl:login:'),
-  passOnStoreError: true,
   handler: rateLimitHandler,
 });
 
@@ -52,8 +41,6 @@ export const resetLimiter = rateLimit({
   limit: 3,
   standardHeaders: true,
   legacyHeaders: false,
-  store: redisStore('rl:reset:'),
-  passOnStoreError: true,
   keyGenerator: (req: Request) => {
     const email = (req.body as Record<string, unknown> | undefined)?.email;
     return typeof email === 'string' ? email.toLowerCase() : req.ip ?? 'unknown';
@@ -67,8 +54,6 @@ export const apiLimiter = rateLimit({
   limit: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  store: redisStore('rl:api:'),
-  passOnStoreError: true,
   keyGenerator: (req: Request) => req.user?.user_id ?? req.ip ?? 'unknown',
   handler: rateLimitHandler,
 });

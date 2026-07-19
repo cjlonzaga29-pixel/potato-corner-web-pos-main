@@ -22,11 +22,11 @@ vi.mock('./cash.service.js', () => ({
   },
 }));
 
-vi.mock('../../lib/redis.js', () => ({
-  redis: { get: vi.fn(), set: vi.fn(), del: vi.fn() },
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { revokedToken: { findFirst: vi.fn() } },
 }));
 
-const { redis } = await import('../../lib/redis.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { cashService } = await import('./cash.service.js');
 const { cashRouter } = await import('./cash.router.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
@@ -79,7 +79,7 @@ const SHIFT_1 = randomUUID();
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(redis.get).mockResolvedValue(null);
+  vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
 });
 
 describe('cash routes — authentication', () => {

@@ -20,6 +20,10 @@ vi.mock('./fraud.service.js', () => ({
   },
 }));
 
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { revokedToken: { findFirst: vi.fn().mockResolvedValue(null) } },
+}));
+
 const { fraudService } = await import('./fraud.service.js');
 const { fraudRouter } = await import('./fraud.router.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');

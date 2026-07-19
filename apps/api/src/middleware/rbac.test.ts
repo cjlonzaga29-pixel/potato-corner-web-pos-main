@@ -3,11 +3,11 @@ import type { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { ROLES } from '@potato-corner/shared';
 
-vi.mock('../lib/redis.js', () => ({
-  redis: {
-    get: vi.fn(),
-    set: vi.fn(),
-    del: vi.fn(),
+vi.mock('../lib/prisma.js', () => ({
+  prisma: {
+    revokedToken: {
+      findFirst: vi.fn(),
+    },
   },
 }));
 
@@ -17,9 +17,9 @@ vi.mock('../modules/cash/cash.repository.js', () => ({
   },
 }));
 
-const { redis } = await import('../lib/redis.js');
+const { prisma } = await import('../lib/prisma.js');
 const { cashRepository } = await import('../modules/cash/cash.repository.js');
-const { authenticate, blacklistKey } = await import('./authenticate.js');
+const { authenticate, revokedTokenHash } = await import('./authenticate.js');
 const { authorize, adminOnly, adminOrSupervisor, allRoles } = await import('./authorize.js');
 const { branchGuard } = await import('./branch-guard.js');
 const { shiftGuard } = await import('./shift-guard.js');
@@ -71,8 +71,8 @@ const BRANCH_2 = randomUUID();
 const BRANCH_OTHER = randomUUID();
 
 beforeEach(() => {
-  vi.mocked(redis.get).mockReset();
-  vi.mocked(redis.get).mockResolvedValue(null);
+  vi.mocked(prisma.revokedToken.findFirst).mockReset();
+  vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
   vi.mocked(cashRepository.findActiveShift).mockReset();
 });
 
@@ -104,9 +104,8 @@ describe('authenticate middleware', () => {
 
   it('returns 401 TOKEN_REVOKED for a blacklisted token', async () => {
     const token = generateSuperAdminToken();
-    vi.mocked(redis.get).mockImplementation(async (key) =>
-      key === blacklistKey(token) ? '1' : null,
-    );
+    vi.mocked(prisma.revokedToken.findFirst).mockImplementation((async (args: { where: { tokenHash: string } }) =>
+      args.where.tokenHash === revokedTokenHash(token) ? { id: 'revoked-1' } : null) as never);
     const req = mockReq(authHeader(token));
     const res = mockRes();
     await authenticate(req, res, vi.fn());

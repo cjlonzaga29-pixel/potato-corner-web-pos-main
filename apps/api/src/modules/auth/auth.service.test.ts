@@ -3,6 +3,13 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { ROLES } from '@potato-corner/shared';
 
+// Phase 21: authRepository.withAdvisoryLock replaces the Redis lock — the
+// mock just invokes the callback with a stand-in tx client, matching
+// prisma.$transaction's real shape closely enough for findRefreshTokenTx /
+// rotateRefreshTokenTx (also mocked below, and also tx-aware in prod) to be
+// exercised without a real Postgres connection.
+const fakeTx = { __fakeTransactionClient: true };
+
 vi.mock('./auth.repository.js', () => ({
   authRepository: {
     findUserByEmail: vi.fn(),
@@ -22,14 +29,13 @@ vi.mock('./auth.repository.js', () => ({
     hasActiveDeviceSession: vi.fn(),
     updatePasswordHash: vi.fn(),
     setMustChangePassword: vi.fn(),
-  },
-}));
-
-vi.mock('../../lib/redis.js', () => ({
-  redis: {
-    set: vi.fn().mockResolvedValue('OK'),
-    get: vi.fn().mockResolvedValue(null),
-    del: vi.fn(),
+    insertRevokedToken: vi.fn().mockResolvedValue(undefined),
+    storePasswordResetToken: vi.fn().mockResolvedValue(undefined),
+    findPasswordResetToken: vi.fn(),
+    deletePasswordResetToken: vi.fn().mockResolvedValue(undefined),
+    withAdvisoryLock: vi.fn((_lockId: bigint, fn: (tx: unknown) => unknown) => fn(fakeTx)),
+    findRefreshTokenTx: vi.fn(),
+    rotateRefreshTokenTx: vi.fn(),
   },
 }));
 
@@ -42,7 +48,6 @@ vi.mock('../../lib/email.js', () => ({
 }));
 
 const { authRepository } = await import('./auth.repository.js');
-const { redis } = await import('../../lib/redis.js');
 const { authService } = await import('./auth.service.js');
 const { config } = await import('../../config/index.js');
 
@@ -116,7 +121,7 @@ describe('authService.login', () => {
 });
 
 describe('authService.refreshToken', () => {
-  it('rotates the refresh token and issues a new access token', async () => {
+  it('acquires the Postgres advisory lock, rotates the refresh token, and issues a new access token', async () => {
     const storedToken = {
       id: 'rt-1',
       userId: 'user-1',
@@ -125,17 +130,21 @@ describe('authService.refreshToken', () => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       user: buildUser(),
     };
-    vi.mocked(authRepository.findRefreshToken).mockResolvedValue(storedToken as never);
-    vi.mocked(authRepository.rotateRefreshToken).mockResolvedValue({ id: 'rt-2' } as never);
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
+    vi.mocked(authRepository.rotateRefreshTokenTx).mockResolvedValue({ id: 'rt-2' } as never);
 
     const result = await authService.refreshToken('old-refresh-token', 'device-1');
 
-    expect(authRepository.rotateRefreshToken).toHaveBeenCalledWith('rt-1', expect.any(String), expect.any(Date));
+    const lockCall = vi.mocked(authRepository.withAdvisoryLock).mock.calls[0];
+    expect(lockCall).toHaveLength(2);
+    expect(typeof lockCall?.[0]).toBe('bigint');
+    expect(authRepository.findRefreshTokenTx).toHaveBeenCalledWith(fakeTx, 'old-refresh-token');
+    expect(authRepository.rotateRefreshTokenTx).toHaveBeenCalledWith(fakeTx, 'rt-1', expect.any(String), expect.any(Date));
     expect(result.access_token).toEqual(expect.any(String));
   });
 
   it('rejects an invalid or missing refresh token with 401', async () => {
-    vi.mocked(authRepository.findRefreshToken).mockResolvedValue(null);
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(null);
 
     await expect(authService.refreshToken('bogus-token', 'device-1')).rejects.toMatchObject({
       code: 'REFRESH_INVALID',
@@ -143,7 +152,7 @@ describe('authService.refreshToken', () => {
     });
   });
 
-  it('logs and rejects when a revoked token is replayed outside the coalescing window', async () => {
+  it('logs and rejects when a revoked token is replayed', async () => {
     const storedToken = {
       id: 'rt-1',
       userId: 'user-1',
@@ -152,7 +161,7 @@ describe('authService.refreshToken', () => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       user: buildUser(),
     };
-    vi.mocked(authRepository.findRefreshToken).mockResolvedValue(storedToken as never);
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({
@@ -163,32 +172,46 @@ describe('authService.refreshToken', () => {
     warnSpy.mockRestore();
   });
 
-  it('returns the cached rotation result for a duplicate request instead of re-rotating', async () => {
-    const cachedResponse = { access_token: 'cached-access-token', refreshToken: 'cached-refresh-token' };
-    vi.mocked(redis.get).mockResolvedValueOnce(JSON.stringify({ deviceId: 'device-1', response: cachedResponse }));
+  // Phase 21 (see the design note on authService.refreshToken and on
+  // authRepository.withAdvisoryLock): the Redis result cache that used to
+  // let a legitimate near-duplicate request succeed is gone — this is now
+  // indistinguishable from the genuine-reuse case above, by design.
+  it('rejects a second near-duplicate request the same way as genuine reuse, now that there is no result cache', async () => {
+    const storedToken = {
+      id: 'rt-1',
+      userId: 'user-1',
+      deviceId: 'device-1',
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      user: buildUser(),
+    };
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
 
-    const result = await authService.refreshToken('old-refresh-token', 'device-1');
-
-    expect(result).toEqual(cachedResponse);
-    expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
+    await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({
+      code: 'REFRESH_INVALID',
+    });
+    expect(authRepository.rotateRefreshTokenTx).not.toHaveBeenCalled();
   });
 
-  it('waits for and returns an in-flight rotation result when another request holds the lock', async () => {
-    vi.mocked(redis.set).mockResolvedValueOnce(null); // lock already held elsewhere
-    const cachedResponse = { access_token: 'in-flight-access-token', refreshToken: 'in-flight-refresh-token' };
-    vi.mocked(redis.get)
-      .mockResolvedValueOnce(null) // pre-lock cache check: nothing yet
-      .mockResolvedValueOnce(JSON.stringify({ deviceId: 'device-1', response: cachedResponse })); // first poll after losing the lock
+  it('rejects a token presented from a different device', async () => {
+    const storedToken = {
+      id: 'rt-1',
+      userId: 'user-1',
+      deviceId: 'device-1',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      user: buildUser(),
+    };
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
 
-    const result = await authService.refreshToken('old-refresh-token', 'device-1');
-
-    expect(result).toEqual(cachedResponse);
-    expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
+    await expect(authService.refreshToken('old-refresh-token', 'device-2')).rejects.toMatchObject({
+      code: 'REFRESH_INVALID',
+    });
   });
 });
 
 describe('authService.logout', () => {
-  it('blacklists the access token in Redis', async () => {
+  it('blacklists the access token in the Postgres revocation table', async () => {
     const accessToken = authService.generateAccessToken({
       id: 'user-1',
       role: ROLES.STAFF,
@@ -199,7 +222,7 @@ describe('authService.logout', () => {
 
     await authService.logout(accessToken, undefined);
 
-    expect(redis.set).toHaveBeenCalledWith(expect.stringContaining('auth:blacklist:'), '1', 'EX', expect.any(Number));
+    expect(authRepository.insertRevokedToken).toHaveBeenCalledWith(expect.any(String), expect.any(Date));
   });
 });
 
@@ -221,7 +244,7 @@ describe('authService.changePassword', () => {
 
     expect(authRepository.setMustChangePassword).toHaveBeenCalledWith('user-1', false);
     expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(redis.set).toHaveBeenCalledWith(expect.stringContaining('auth:blacklist:'), '1', 'EX', expect.any(Number));
+    expect(authRepository.insertRevokedToken).toHaveBeenCalledWith(expect.any(String), expect.any(Date));
     expect(result.access_token).toEqual(expect.any(String));
     expect(result.refreshToken).toEqual(expect.any(String));
     expect(authRepository.storeRefreshToken).toHaveBeenCalledWith('user-1', result.refreshToken, 'device-1', expect.any(Date));

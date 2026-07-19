@@ -26,11 +26,11 @@ vi.mock('../cash/cash.repository.js', () => ({
   cashRepository: { findActiveShift: vi.fn() },
 }));
 
-vi.mock('../../lib/redis.js', () => ({
-  redis: { get: vi.fn(), set: vi.fn(), del: vi.fn() },
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { revokedToken: { findFirst: vi.fn() } },
 }));
 
-const { redis } = await import('../../lib/redis.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { transactionsRouter } = await import('./transactions.router.js');
@@ -97,7 +97,7 @@ function validCreateBody(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(redis.get).mockResolvedValue(null);
+  vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
   vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: SHIFT_1 } as never);
 });
 

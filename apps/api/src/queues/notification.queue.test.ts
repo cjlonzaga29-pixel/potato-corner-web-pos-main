@@ -1,22 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Job } from 'bullmq';
 
-const addMock = vi.fn();
-const onMock = vi.fn();
-
-vi.mock('bullmq', () => ({
-  Queue: vi.fn().mockImplementation(() => ({ add: addMock })),
-  Worker: vi.fn().mockImplementation((_name: string, processor: (job: Job) => Promise<void>, options: unknown) => ({
-    on: onMock,
-    __processor: processor,
-    __options: options,
-  })),
-}));
-
-vi.mock('../lib/redis.js', () => ({
-  redis: {},
-  createWorkerConnection: vi.fn().mockReturnValue({ on: vi.fn() }),
-}));
+/**
+ * Phase 21: BullMQ removed — enqueueNotification/enqueueRawNotificationJob
+ * now run processNotification directly in-process (fired via
+ * lib/job-runner.ts's runFireAndForget, retried via runWithRetry) instead of
+ * dispatching through a BullMQ Worker. job-runner is mocked as a thin
+ * wrapper around the real implementation (via importOriginal) so
+ * retry/fire-and-forget behavior stays real while still letting us assert on
+ * call arguments (e.g. the RETRY_DELAYS_MS array). Most of this file calls
+ * processNotification directly — deterministic and synchronous — since
+ * that's where all the per-job-name recipient/payload logic under test
+ * actually lives; only the "enqueueNotification/enqueueRawNotificationJob"
+ * describe blocks below exercise the fire-and-forget wiring itself.
+ */
+vi.mock('../lib/job-runner.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('../lib/job-runner.js');
+  return {
+    ...actual,
+    runWithRetry: vi.fn(actual.runWithRetry),
+    runFireAndForget: vi.fn(actual.runFireAndForget),
+  };
+});
 
 vi.mock('../lib/email.js', () => ({
   sendWelcomeEmail: vi.fn(),
@@ -39,21 +43,25 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
   },
 }));
 
+const { runWithRetry } = await import('../lib/job-runner.js');
 const { sendWelcomeEmail, sendFraudAlertEmail, sendLargeAdjustmentApprovalEmail, sendEodSummaryEmail } = await import('../lib/email.js');
 const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
 const { notificationsRepository } = await import('../modules/notifications/notifications.repository.js');
-const { notificationWorker, enqueueNotification } = await import('./notification.queue.js');
-
-function processor(): (job: Job) => Promise<void> {
-  return (notificationWorker as unknown as { __processor: (job: Job) => Promise<void> }).__processor;
-}
+const { processNotification, enqueueNotification, enqueueRawNotificationJob } = await import('./notification.queue.js');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // vi.clearAllMocks() only clears call history, not a mock's configured
+  // implementation — reset these back to their happy-path default so a
+  // preceding test's mockRejectedValue(...) can't bleed into the next test.
+  vi.mocked(sendWelcomeEmail).mockResolvedValue(undefined);
+  vi.mocked(sendFraudAlertEmail).mockResolvedValue(undefined);
+  vi.mocked(sendLargeAdjustmentApprovalEmail).mockResolvedValue(undefined);
+  vi.mocked(sendEodSummaryEmail).mockResolvedValue(undefined);
 });
 
 describe('enqueueNotification', () => {
-  it('enqueues a job named for the type, with the payload as job data and Decision 7 retry options', async () => {
+  it('runs processNotification with the type as job name and the payload as job data, under the Decision 7 retry policy', async () => {
     const payload = {
       type: 'cash_variance_flagged' as const,
       shiftId: 'shift-1',
@@ -63,17 +71,18 @@ describe('enqueueNotification', () => {
       variance: -150,
       flaggedBy: 'supervisor-1',
     };
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
 
     await enqueueNotification('cash_variance_flagged', payload);
+    // enqueueNotification returns before the background job runs (fire-and-forget) — wait for its observable side effect.
+    await vi.waitFor(() => expect(notifyBranch).toHaveBeenCalled());
 
-    expect(addMock).toHaveBeenCalledWith('cash_variance_flagged', payload, { attempts: 3, backoff: { type: 'custom' } });
+    expect(runWithRetry).toHaveBeenCalledWith(expect.any(Function), [10_000, 60_000, 300_000]);
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'cash:variance_flagged', payload);
   });
 
   it.each([
-    [
-      'fraud_alert_created' as const,
-      { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' },
-    ],
+    ['fraud_alert_created' as const, { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' }],
     [
       'eod_summary' as const,
       {
@@ -100,37 +109,55 @@ describe('enqueueNotification', () => {
         reason: 'customer changed mind',
       },
     ],
-  ])('enqueues a %s job named for the type, with the exact payload as job data and Decision 7 retry options', async (type, payload) => {
+  ])('runs processNotification for a %s payload under the Decision 7 retry policy', async (type, payload) => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([]);
+    vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([]);
+
     await enqueueNotification(type, payload);
+    await vi.waitFor(() => expect(runWithRetry).toHaveBeenCalled());
 
-    expect(addMock).toHaveBeenCalledWith(type, payload, { attempts: 3, backoff: { type: 'custom' } });
+    expect(runWithRetry).toHaveBeenCalledWith(expect.any(Function), [10_000, 60_000, 300_000]);
   });
 });
 
-describe('notificationWorker backoff strategy', () => {
-  it('resolves the 10s/60s/300s Decision 7 backoff schedule, falling back to 300s beyond the 3rd attempt', () => {
-    const options = (notificationWorker as unknown as { __options: { settings: { backoffStrategy: (attemptsMade: number) => number } } })
-      .__options;
+describe('enqueueRawNotificationJob', () => {
+  it('runs processNotification for job names that are not NotificationType values (e.g. employee_welcome), under the Decision 7 retry policy', async () => {
+    const data = { toEmail: 'a@b.com', firstName: 'Ana', employeeId: 'emp-1', tempPassword: 'temp123' };
 
-    expect(options.settings.backoffStrategy(1)).toBe(10_000);
-    expect(options.settings.backoffStrategy(2)).toBe(60_000);
-    expect(options.settings.backoffStrategy(3)).toBe(300_000);
-    expect(options.settings.backoffStrategy(4)).toBe(300_000);
+    await enqueueRawNotificationJob('employee_welcome', data);
+    await vi.waitFor(() => expect(sendWelcomeEmail).toHaveBeenCalled());
+
+    expect(runWithRetry).toHaveBeenCalledWith(expect.any(Function), [10_000, 60_000, 300_000]);
+    expect(sendWelcomeEmail).toHaveBeenCalledWith('a@b.com', 'Ana', 'emp-1', 'temp123');
+  });
+
+  it('logs (and does not throw) once every retry attempt is exhausted', async () => {
+    vi.useFakeTimers();
+    vi.mocked(sendWelcomeEmail).mockRejectedValue(new Error('Resend outage'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const data = { toEmail: 'a@b.com', firstName: 'Ana', employeeId: 'emp-1', tempPassword: 'temp123' };
+
+    await enqueueRawNotificationJob('employee_welcome', data);
+    await vi.advanceTimersByTimeAsync(10_000 + 60_000 + 300_000);
+    await vi.waitFor(() => expect(consoleErrorSpy).toHaveBeenCalled());
+
+    expect(sendWelcomeEmail).toHaveBeenCalledTimes(3);
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Notification job "employee_welcome" failed after 3 attempt(s):', expect.any(Error));
+
+    consoleErrorSpy.mockRestore();
+    vi.useRealTimers();
   });
 });
 
-describe('notificationWorker processor — employee_welcome', () => {
+describe('processNotification — employee_welcome', () => {
   it('sends the welcome email unchanged', async () => {
-    await processor()({
-      name: 'employee_welcome',
-      data: { toEmail: 'a@b.com', firstName: 'Ana', employeeId: 'emp-1', tempPassword: 'temp123' },
-    } as Job);
+    await processNotification('employee_welcome', { toEmail: 'a@b.com', firstName: 'Ana', employeeId: 'emp-1', tempPassword: 'temp123' });
 
     expect(sendWelcomeEmail).toHaveBeenCalledWith('a@b.com', 'Ana', 'emp-1', 'temp123');
   });
 });
 
-describe('notificationWorker processor — low_stock_alert', () => {
+describe('processNotification — low_stock_alert', () => {
   function stockJobData(overrides: Partial<Record<string, unknown>> = {}) {
     return {
       branchId: 'branch-1',
@@ -144,11 +171,11 @@ describe('notificationWorker processor — low_stock_alert', () => {
     };
   }
 
-  it('emits the low-stock socket event to branch and super admin unchanged, and persists a low_stock Notification per branch supervisor/admin', async () => {
+  it('emits the low-stock socket event to branch and super admin, and persists a low_stock Notification per branch supervisor/admin', async () => {
     vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = stockJobData();
 
-    await processor()({ name: 'low_stock_alert', data } as Job);
+    await processNotification('low_stock_alert', data);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'inventory:low_stock', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('inventory:low_stock', data);
@@ -173,7 +200,7 @@ describe('notificationWorker processor — low_stock_alert', () => {
     vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
     const data = stockJobData({ currentStock: 2, severity: 'critical' as const });
 
-    await processor()({ name: 'low_stock_alert', data } as Job);
+    await processNotification('low_stock_alert', data);
 
     expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ type: 'critical_stock' }));
   });
@@ -182,21 +209,18 @@ describe('notificationWorker processor — low_stock_alert', () => {
     vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
     const data = stockJobData({ currentStock: 0, severity: 'critical' as const });
 
-    await processor()({ name: 'low_stock_alert', data } as Job);
+    await processNotification('low_stock_alert', data);
 
     expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ type: 'out_of_stock' }));
   });
 });
 
-describe('notificationWorker processor — inventory_deduction_failed', () => {
+describe('processNotification — inventory_deduction_failed', () => {
   it('persists a Notification row for every super admin and keeps logging the failure', async () => {
     vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1' }, { id: 'admin-2' }] as never);
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    await processor()({
-      name: 'inventory_deduction_failed',
-      data: { transactionId: 'txn-1', branchId: 'branch-1', error: 'ingredient not found' },
-    } as Job);
+    await processNotification('inventory_deduction_failed', { transactionId: 'txn-1', branchId: 'branch-1', error: 'ingredient not found' });
 
     expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
     expect(notificationsRepository.create).toHaveBeenCalledWith({
@@ -212,16 +236,13 @@ describe('notificationWorker processor — inventory_deduction_failed', () => {
       branchId: 'branch-1',
     });
     expect(notificationsRepository.create).toHaveBeenCalledTimes(2);
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      'Inventory deduction failed for transaction txn-1 (branch branch-1):',
-      'ingredient not found',
-    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Inventory deduction failed for transaction txn-1 (branch branch-1):', 'ingredient not found');
 
     consoleErrorSpy.mockRestore();
   });
 });
 
-describe('notificationWorker processor — inventory_product_unavailable', () => {
+describe('processNotification — inventory_product_unavailable', () => {
   it('persists a Notification row for branch supervisors and super admins, without re-emitting a socket event', async () => {
     vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }, { id: 'admin-1' }] as never);
     const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -234,7 +255,7 @@ describe('notificationWorker processor — inventory_product_unavailable', () =>
       affectedProducts: [{ productId: 'prod-1', name: 'Potato Corner Regular' }],
     };
 
-    await processor()({ name: 'inventory_product_unavailable', data } as Job);
+    await processNotification('inventory_product_unavailable', data);
 
     expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
     expect(notificationsRepository.create).toHaveBeenCalledWith({
@@ -260,7 +281,7 @@ describe('notificationWorker processor — inventory_product_unavailable', () =>
   });
 });
 
-describe('notificationWorker processor — cash_variance_flagged', () => {
+describe('processNotification — cash_variance_flagged', () => {
   it('emits the socket event and persists a Notification per branch supervisor/admin', async () => {
     vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = {
@@ -273,7 +294,7 @@ describe('notificationWorker processor — cash_variance_flagged', () => {
       flaggedBy: 'supervisor-1',
     };
 
-    await processor()({ name: 'cash_variance_flagged', data } as Job);
+    await processNotification('cash_variance_flagged', data);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'cash:variance_flagged', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_flagged', data);
@@ -287,7 +308,7 @@ describe('notificationWorker processor — cash_variance_flagged', () => {
   });
 });
 
-describe('notificationWorker processor — void_requested', () => {
+describe('processNotification — void_requested', () => {
   it('emits the socket event and persists a Notification per branch supervisor only (no super admins)', async () => {
     vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = {
@@ -299,7 +320,7 @@ describe('notificationWorker processor — void_requested', () => {
       reason: 'customer changed mind',
     };
 
-    await processor()({ name: 'void_requested', data } as Job);
+    await processNotification('void_requested', data);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'void:requested', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', data);
@@ -313,7 +334,7 @@ describe('notificationWorker processor — void_requested', () => {
   });
 });
 
-describe('notificationWorker processor — large_adjustment_approval_needed', () => {
+describe('processNotification — large_adjustment_approval_needed', () => {
   it('emits the socket event to the branch and super admins, persists a Notification per branch supervisor + super admin, and emails each', async () => {
     vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
       { id: 'admin-1', email: 'admin-1@potatocorner.test' },
@@ -327,7 +348,7 @@ describe('notificationWorker processor — large_adjustment_approval_needed', ()
       amount: 5000,
     };
 
-    await processor()({ name: 'large_adjustment_approval_needed', data } as Job);
+    await processNotification('large_adjustment_approval_needed', data);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'notification:large_adjustment_approval_needed', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('notification:large_adjustment_approval_needed', data);
@@ -362,19 +383,19 @@ describe('notificationWorker processor — large_adjustment_approval_needed', ()
       amount: 5000,
     };
 
-    await expect(processor()({ name: 'large_adjustment_approval_needed', data } as Job)).resolves.toBeUndefined();
+    await expect(processNotification('large_adjustment_approval_needed', data)).resolves.toBeUndefined();
 
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });
 });
 
-describe('notificationWorker processor — fraud_alert_created', () => {
+describe('processNotification — fraud_alert_created', () => {
   it('persists a Notification per super admin, emails each super admin, without re-emitting a socket event (already broadcast by detection.service.ts)', async () => {
     vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
     const data = { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' };
 
-    await processor()({ name: 'fraud_alert_created', data } as Job);
+    await processNotification('fraud_alert_created', data);
 
     expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
     expect(notificationsRepository.create).toHaveBeenCalledWith({
@@ -394,19 +415,19 @@ describe('notificationWorker processor — fraud_alert_created', () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const data = { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' };
 
-    await expect(processor()({ name: 'fraud_alert_created', data } as Job)).resolves.toBeUndefined();
+    await expect(processNotification('fraud_alert_created', data)).resolves.toBeUndefined();
 
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });
 });
 
-describe('notificationWorker processor — offline_transactions_synced', () => {
+describe('processNotification — offline_transactions_synced', () => {
   it('emits the socket event to the branch and persists a Notification per branch supervisor only', async () => {
     vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = { type: 'offline_transactions_synced' as const, branchId: 'branch-1', syncedCount: 4 };
 
-    await processor()({ name: 'offline_transactions_synced', data } as Job);
+    await processNotification('offline_transactions_synced', data);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'notification:offline_transactions_synced', data);
     expect(notifySuperAdmin).not.toHaveBeenCalled();
@@ -420,7 +441,7 @@ describe('notificationWorker processor — offline_transactions_synced', () => {
   });
 });
 
-describe('notificationWorker processor — eod_summary', () => {
+describe('processNotification — eod_summary', () => {
   it('emits the socket event to super admins, persists a Notification per super admin, and emails each super admin', async () => {
     vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
     const data = {
@@ -439,7 +460,7 @@ describe('notificationWorker processor — eod_summary', () => {
       ],
     };
 
-    await processor()({ name: 'eod_summary', data } as Job);
+    await processNotification('eod_summary', data);
 
     expect(notifySuperAdmin).toHaveBeenCalledWith('notification:eod_summary', data);
     expect(notificationsRepository.findSuperAdminUserIds).toHaveBeenCalled();
@@ -472,7 +493,7 @@ describe('notificationWorker processor — eod_summary', () => {
       ],
     };
 
-    await expect(processor()({ name: 'eod_summary', data } as Job)).resolves.toBeUndefined();
+    await expect(processNotification('eod_summary', data)).resolves.toBeUndefined();
 
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();

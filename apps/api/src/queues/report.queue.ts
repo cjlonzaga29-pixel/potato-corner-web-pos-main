@@ -1,7 +1,7 @@
-import { Queue, Worker, type Job } from 'bullmq';
 import * as Sentry from '@sentry/node';
+import { randomUUID } from 'node:crypto';
 import { SOCKET_EVENTS, type ReportType } from '@potato-corner/shared';
-import { redis, createWorkerConnection } from '../lib/redis.js';
+import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyUser } from '../lib/notify.js';
 import { generateCsv } from '../lib/reports/csv.js';
@@ -12,12 +12,14 @@ import { reportsRepository } from '../modules/reports/reports.repository.js';
 import { getReportRows, REPORT_COLUMNS } from '../modules/reports/reports.columns.js';
 import type { ReportFilters } from '../modules/reports/reports.types.js';
 
+/**
+ * Phase 21: BullMQ removed — see lib/job-runner.ts. RETRY_DELAYS_MS below
+ * preserves the architecture spec's 10s/60s/300s schedule (Architecture doc
+ * §3.6) for generate_export; refresh_snapshot keeps its original
+ * `attempts: 1` (no retry).
+ */
 const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length;
-
-function retryDelayMs(attemptsMade: number): number {
-  return RETRY_DELAYS_MS[attemptsMade - 1] ?? 300_000;
-}
 
 export interface GenerateExportJobData {
   reportType: ReportType;
@@ -33,27 +35,36 @@ export interface RefreshSnapshotJobData {
   filters: ReportFilters;
 }
 
-export const reportQueue = new Queue('report', { connection: redis });
-
 /**
- * Enqueues an async export job (large CSV or any PDF, Task 12). Processed
- * by `reportWorker` below via `processGenerateExport`.
+ * Enqueues an async export job (large CSV or any PDF, Task 12). Runs in the
+ * background with Decision 7's retry policy; returns immediately.
  */
-export function enqueueGenerateExport(data: GenerateExportJobData): Promise<Job> {
-  return reportQueue.add('generate_export', data, { attempts: MAX_ATTEMPTS, backoff: { type: 'custom' } });
+export function enqueueGenerateExport(data: GenerateExportJobData): Promise<{ id: string }> {
+  const jobId = randomUUID();
+  runFireAndForget(
+    () => runWithRetry(() => processGenerateExport(jobId, data), RETRY_DELAYS_MS),
+    (error) => handleGenerateExportFailure(jobId, data, error, MAX_ATTEMPTS),
+  );
+  return Promise.resolve({ id: jobId });
 }
 
 /**
  * Enqueues a background recompute of a pre-computed report snapshot
  * (Task 11's stale-while-revalidate path). Fire-and-forget from the
  * caller's perspective — the request already served the stale snapshot.
+ * No retry (matches the old `attempts: 1`).
  */
-export function enqueueRefreshSnapshot(data: RefreshSnapshotJobData): Promise<Job> {
-  return reportQueue.add('refresh_snapshot', data, { attempts: 1 });
+export function enqueueRefreshSnapshot(data: RefreshSnapshotJobData): Promise<{ id: string }> {
+  const jobId = randomUUID();
+  runFireAndForget(
+    () => processRefreshSnapshot(data),
+    (error) => console.error('Report snapshot refresh failed:', error),
+  );
+  return Promise.resolve({ id: jobId });
 }
 
-async function processGenerateExport(job: Job<GenerateExportJobData>): Promise<void> {
-  const { reportType, filters, format, requesterId, branchId } = job.data;
+export async function processGenerateExport(jobId: string, data: GenerateExportJobData): Promise<void> {
+  const { reportType, filters, format, requesterId, branchId } = data;
   const rows = await getReportRows(reportType, filters);
   const columns = REPORT_COLUMNS[reportType];
   const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
@@ -70,7 +81,7 @@ async function processGenerateExport(job: Job<GenerateExportJobData>): Promise<v
   if (signError || !signed) throw new Error(`Failed to create signed URL for report export: ${signError?.message}`);
 
   const expiresAt = new Date(Date.now() + 86_400 * 1000).toISOString();
-  const payload = { job_id: job.id ?? '', report_type: reportType, format, download_url: signed.signedUrl, expires_at: expiresAt, requester_id: requesterId };
+  const payload = { job_id: jobId, report_type: reportType, format, download_url: signed.signedUrl, expires_at: expiresAt, requester_id: requesterId };
 
   notifyUser(requesterId, SOCKET_EVENTS.REPORT_EXPORT_READY, payload);
 
@@ -85,40 +96,17 @@ async function processGenerateExport(job: Job<GenerateExportJobData>): Promise<v
   });
 }
 
-async function processRefreshSnapshot(job: Job<RefreshSnapshotJobData>): Promise<void> {
-  const { reportType, branchId, filters } = job.data;
+async function processRefreshSnapshot(data: RefreshSnapshotJobData): Promise<void> {
+  const { reportType, branchId, filters } = data;
   const rows = await getReportRows(reportType, filters);
   await reportsRepository.saveSnapshot(reportType, branchId, rows, filters);
 }
 
-/**
- * Report queue worker. Handles two job types: `generate_export` (async CSV
- * or PDF export, uploaded to Supabase Storage and delivered via a signed
- * URL over Socket.io) and `refresh_snapshot` (stale-while-revalidate
- * recompute of a pre-computed report, Task 11). Retry backoff follows the
- * architecture spec's 10s/60s/300s schedule (Architecture doc §3.6).
- */
-export const reportWorker = new Worker(
-  'report',
-  async (job: Job) => {
-    if (job.name === 'generate_export') {
-      await processGenerateExport(job as Job<GenerateExportJobData>);
-      return;
-    }
-    if (job.name === 'refresh_snapshot') {
-      await processRefreshSnapshot(job as Job<RefreshSnapshotJobData>);
-      return;
-    }
-  },
-  { connection: createWorkerConnection(), settings: { backoffStrategy: retryDelayMs } },
-);
-
-reportWorker.on('failed', (job, error) => {
-  if (!job || job.name !== 'generate_export') return;
-  if (job.attemptsMade < (job.opts.attempts ?? MAX_ATTEMPTS)) return;
-
+/** After the final retry attempt, report to Sentry and notify the requester — mirrors the old reportWorker.on('failed', ...) handler. */
+function handleGenerateExportFailure(jobId: string, data: GenerateExportJobData, error: unknown, attemptsMade: number): void {
+  const message = error instanceof Error ? error.message : String(error);
   Sentry.captureException(error);
-  const { reportType, requesterId } = job.data as GenerateExportJobData;
-  const payload = { job_id: job.id ?? '', report_type: reportType, error: error.message, requester_id: requesterId };
-  notifyUser(requesterId, SOCKET_EVENTS.REPORT_EXPORT_FAILED, payload);
-});
+  const payload = { job_id: jobId, report_type: data.reportType, error: message, requester_id: data.requesterId };
+  notifyUser(data.requesterId, SOCKET_EVENTS.REPORT_EXPORT_FAILED, payload);
+  void attemptsMade;
+}

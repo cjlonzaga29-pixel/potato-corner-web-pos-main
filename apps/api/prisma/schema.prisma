@@ -168,6 +168,7 @@ model User {
   refreshTokens              RefreshToken[]
   pinCredentials             PinCredential[]
   holdOrders                 HoldOrder[]
+  passwordResetTokens        PasswordResetToken[]
 
   // CR-001
   priceOverrideRequests   BranchPriceOverride[]  @relation("PriceOverrideRequester")
@@ -257,6 +258,50 @@ model RefreshToken {
   @@index([deviceId])
   @@index([userId, revokedAt])
   @@map("refresh_tokens")
+}
+
+/// Phase 21: Postgres replacement for the Redis access-token blacklist.
+/// Populated by logout / logout-all-devices / password-change. Rows past
+/// their own expiresAt are inert (verify-access-token.ts filters on it) —
+/// left in place rather than actively swept, since a dead row is harmless
+/// and this table is small (one row per revoked token, cleared by its own
+/// natural access-token TTL).
+model RevokedToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("revoked_tokens")
+}
+
+/// Phase 21: Postgres replacement for the Redis-backed password reset token.
+/// One live token per request (requestPasswordReset overwrites any prior
+/// token for the same value via upsert-by-hash); consumed (deleted) by
+/// resetPassword or left to expire via expiresAt.
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique @map("token_hash")
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/// Phase 21: Postgres replacement for Redis INCR-based ID generation
+/// (employee IDs, per-city branch codes). `key` is the counter's name
+/// (e.g. "employee_id_counter", "branch_code_counter:QC"); nextCounterValue
+/// (lib/id-counter.ts) increments it atomically via INSERT ... ON CONFLICT.
+model IdCounter {
+  key   String @id
+  value Int    @default(0)
+
+  @@map("id_counters")
 }
 
 /// One PIN per (user, device) pair. Only usable on a device that has already

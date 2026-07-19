@@ -22,6 +22,10 @@ vi.mock('./reports.service.js', () => ({
   },
 }));
 
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { revokedToken: { findFirst: vi.fn().mockResolvedValue(null) } },
+}));
+
 const { reportsService } = await import('./reports.service.js');
 const { reportsRouter } = await import('./reports.router.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');

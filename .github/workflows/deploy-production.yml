@@ -75,5 +75,34 @@ jobs:
       # apps/web needs no step here — Vercel's GitHub integration auto-deploys
       # on push to `main` directly, independent of this workflow.
 
-      # TODO: run Playwright smoke tests against production, then create a
-      # GitHub release with an auto-generated changelog.
+      # Both the Render deploy hook above and Vercel's own GitHub-triggered
+      # deploy are async — give them a little runway before hitting the live
+      # site, rather than racing a still-rolling-out deployment.
+      - name: Wait for deployments to roll out
+        run: sleep 45
+
+      - name: Install Playwright Chromium (pilot smoke suite only needs Desktop Chrome)
+        if: ${{ env.E2E_SUPER_ADMIN_EMAIL != '' }}
+        run: pnpm exec playwright install --with-deps chromium
+        env:
+          E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
+
+      - name: Run Playwright smoke tests against production
+        # Skips instead of failing the run when pilot accounts haven't been
+        # provisioned yet (Phase 20 Task 16 — pilot go-live cutover). Same
+        # graceful-skip pattern as the Render deploy step above.
+        if: ${{ env.E2E_SUPER_ADMIN_EMAIL != '' }}
+        run: pnpm exec playwright test --config=tests/e2e/playwright.pilot.config.ts
+        env:
+          PLAYWRIGHT_BASE_URL: https://www.potatorenovare.com
+          E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
+          E2E_SUPER_ADMIN_PASSWORD: ${{ secrets.E2E_SUPER_ADMIN_PASSWORD }}
+          E2E_SUPERVISOR_EMAIL: ${{ secrets.E2E_SUPERVISOR_EMAIL }}
+          E2E_SUPERVISOR_PASSWORD: ${{ secrets.E2E_SUPERVISOR_PASSWORD }}
+          E2E_STAFF_EMAIL: ${{ secrets.E2E_STAFF_EMAIL }}
+          E2E_STAFF_PASSWORD: ${{ secrets.E2E_STAFF_PASSWORD }}
+
+      - name: Create GitHub release with auto-generated changelog
+        run: gh release create "prod-$(date +%Y%m%d-%H%M%S)" --title "Production deploy $(date +%Y-%m-%d)" --generate-notes --target main
+        env:
+          GH_TOKEN: ${{ github.token }}

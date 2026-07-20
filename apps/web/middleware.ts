@@ -20,28 +20,62 @@ const PUBLIC_PATH_PREFIXES = ['/reset-password', '/r/', '/api/'];
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
+// Mirrors auth.router.ts's ACCESS_HINT_COOKIE_NAME — an HttpOnly cookie
+// carrying the same signed access token the client already holds in memory,
+// parked here purely so this middleware can read role/expiry locally
+// instead of paying a full refresh-token rotation (5 sequential Postgres
+// queries) on every single navigation. See ACCESS_HINT_SAFETY_BUFFER_MS
+// below for how "close enough to expiry" is decided.
+const ACCESS_HINT_COOKIE_NAME = 'pc_access_hint';
+const ACCESS_HINT_SAFETY_BUFFER_MS = 5000;
+
 interface DecodedAuthClaims {
   role: string | null;
   mustChangePassword: boolean;
+  expiresAtMs: number | null;
 }
 
 /**
  * Decodes (does not verify) a JWT payload — sufficient here since it comes
  * straight from our own backend's refresh response within this same
- * request; only used to decide which dashboard to redirect to, not to
- * authorize anything. Real verification happens server-side in
+ * request (or, for the access-hint cookie, from a Set-Cookie this same
+ * server issued earlier); only used to decide which dashboard to redirect
+ * to, not to authorize anything. Real verification happens server-side in
  * apps/api/src/middleware/authenticate.ts on every actual API call.
  */
 function decodeAuthClaims(accessToken: string): DecodedAuthClaims {
   try {
     const payload = accessToken.split('.')[1];
-    if (!payload) return { role: null, mustChangePassword: false };
+    if (!payload) return { role: null, mustChangePassword: false, expiresAtMs: null };
     const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-    const parsed = JSON.parse(json) as { role?: string; must_change_password?: boolean };
-    return { role: parsed.role ?? null, mustChangePassword: parsed.must_change_password ?? false };
+    const parsed = JSON.parse(json) as { role?: string; must_change_password?: boolean; exp?: number };
+    return {
+      role: parsed.role ?? null,
+      mustChangePassword: parsed.must_change_password ?? false,
+      expiresAtMs: typeof parsed.exp === 'number' ? parsed.exp * 1000 : null,
+    };
   } catch {
-    return { role: null, mustChangePassword: false };
+    return { role: null, mustChangePassword: false, expiresAtMs: null };
   }
+}
+
+/**
+ * Fast path for the common case: a still-fresh access token was already
+ * mirrored into the pc_access_hint cookie by a recent login/refresh. If
+ * it's not within ACCESS_HINT_SAFETY_BUFFER_MS of expiring, this middleware
+ * can make its routing decision from it directly — zero network calls —
+ * instead of unconditionally rotating the refresh token on every
+ * navigation. Falls back to the full resolveAccessToken() flow (the
+ * existing, carefully-raced rotation) whenever the hint is missing, expired,
+ * or unparseable.
+ */
+function readFreshAccessHint(request: NextRequest): DecodedAuthClaims | null {
+  const hint = request.cookies.get(ACCESS_HINT_COOKIE_NAME)?.value;
+  if (!hint) return null;
+  const claims = decodeAuthClaims(hint);
+  if (!claims.role || !claims.expiresAtMs) return null;
+  if (claims.expiresAtMs <= Date.now() + ACCESS_HINT_SAFETY_BUFFER_MS) return null;
+  return claims;
 }
 
 interface RefreshResult {
@@ -156,6 +190,13 @@ export async function middleware(request: NextRequest) {
     // Already-authenticated users shouldn't see the login page — bounce
     // them to their dashboard instead.
     if (refreshCookie) {
+      const freshHint = readFreshAccessHint(request);
+      if (freshHint?.role) {
+        return NextResponse.redirect(
+          new URL(ROLE_DASHBOARDS[freshHint.role as keyof typeof ROLE_DASHBOARDS] ?? '/', request.url),
+        );
+      }
+
       const { accessToken, setCookies } = await resolveAccessToken(request);
       const { role } = accessToken ? decodeAuthClaims(accessToken) : { role: null };
       if (role) {
@@ -189,6 +230,26 @@ export async function middleware(request: NextRequest) {
   const isPrefetch =
     request.headers.get('next-router-prefetch') === '1' || request.headers.get('purpose') === 'prefetch';
   if (isPrefetch && refreshCookie) {
+    return NextResponse.next();
+  }
+
+  // Fast path: a still-fresh access token was mirrored into pc_access_hint
+  // by a recent login/refresh. Route straight from it, skipping the
+  // refresh-token rotation (and its Postgres round trips) entirely — that
+  // rotation only actually needs to happen once per access-token lifetime
+  // (15m), not on every navigation.
+  const freshHint = readFreshAccessHint(request);
+  if (freshHint) {
+    if (freshHint.mustChangePassword && pathname !== '/change-password') {
+      return NextResponse.redirect(new URL('/change-password', request.url));
+    }
+    const ownership = ROLE_PATH_OWNERSHIP.find((entry) => pathname.startsWith(entry.prefix));
+    if (freshHint.role && ownership && !ownership.roles.includes(freshHint.role)) {
+      const correctPrefix = ROLE_DASHBOARDS[freshHint.role as keyof typeof ROLE_DASHBOARDS];
+      if (correctPrefix) {
+        return NextResponse.redirect(new URL(correctPrefix, request.url));
+      }
+    }
     return NextResponse.next();
   }
 

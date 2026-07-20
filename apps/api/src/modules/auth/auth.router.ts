@@ -28,6 +28,17 @@ const REFRESH_COOKIE_NAME = 'refresh_token';
 // bounced straight back to /login.
 const REFRESH_COOKIE_PATH = '/';
 
+// Mirrors the just-issued access token (same JWT, unmodified) into an
+// HttpOnly cookie purely so apps/web/middleware.ts can read role/expiry
+// locally on the next few navigations without hitting POST /api/auth/refresh
+// (a 5-query Postgres round trip) on every single click. Not a new trust
+// boundary: it's the identical signed token the client already holds in
+// memory, just also parked where the server-side middleware can see it.
+// Real authorization is unaffected — apps/api's authenticate middleware
+// still verifies signature + expiry + revocation on every actual API call.
+const ACCESS_HINT_COOKIE_NAME = 'pc_access_hint';
+const ACCESS_HINT_COOKIE_PATH = '/';
+
 function setRefreshCookie(res: Response, token: string): void {
   res.cookie(REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
@@ -40,6 +51,20 @@ function setRefreshCookie(res: Response, token: string): void {
 
 function clearRefreshCookie(res: Response): void {
   res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+}
+
+function setAccessHintCookie(res: Response, accessToken: string): void {
+  res.cookie(ACCESS_HINT_COOKIE_NAME, accessToken, {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: ACCESS_HINT_COOKIE_PATH,
+    maxAge: parseDurationMs(config.jwt.accessTokenTtl),
+  });
+}
+
+function clearAccessHintCookie(res: Response): void {
+  res.clearCookie(ACCESS_HINT_COOKIE_NAME, { path: ACCESS_HINT_COOKIE_PATH });
 }
 
 function getBearerToken(req: Request): string | undefined {
@@ -61,6 +86,7 @@ router.post('/login', loginLimiter, validate(loginSchema), async (req: Request, 
     const { email, password, device_id } = req.body as { email: string; password: string; device_id: string };
     const result = await authService.login(email, password, device_id, req.ip ?? null);
     setRefreshCookie(res, result.refreshToken);
+    setAccessHintCookie(res, result.access_token);
     res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
   } catch (error) {
     handleAuthError(error, res, next);
@@ -77,6 +103,7 @@ router.post('/refresh', validate(refreshSchema), async (req: Request, res: Respo
     const { device_id } = req.body as { device_id: string };
     const result = await authService.refreshToken(refreshTokenValue, device_id);
     setRefreshCookie(res, result.refreshToken);
+    setAccessHintCookie(res, result.access_token);
     res.status(200).json({ data: { access_token: result.access_token }, error: null, meta: null });
   } catch (error) {
     handleAuthError(error, res, next);
@@ -91,6 +118,7 @@ router.post('/logout', authenticate, async (req: Request, res: Response, next: N
       await authService.logout(accessToken, refreshTokenValue);
     }
     clearRefreshCookie(res);
+    clearAccessHintCookie(res);
     res.status(200).json({ data: { success: true }, error: null, meta: null });
   } catch (error) {
     handleAuthError(error, res, next);
@@ -104,6 +132,7 @@ router.post('/logout-all', authenticate, async (req: Request, res: Response, nex
       await authService.logoutAllDevices(req.user.user_id, accessToken);
     }
     clearRefreshCookie(res);
+    clearAccessHintCookie(res);
     res.status(200).json({ data: { success: true }, error: null, meta: null });
   } catch (error) {
     handleAuthError(error, res, next);
@@ -129,6 +158,7 @@ router.post(
       }
       const result = await authService.changePassword(req.user.user_id, current_password, new_password, accessToken, deviceId);
       setRefreshCookie(res, result.refreshToken);
+      setAccessHintCookie(res, result.access_token);
       res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);

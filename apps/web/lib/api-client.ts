@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/stores/auth.store';
+import { broadcastLogout } from './auth-broadcast';
 import { getOrCreateDeviceId } from './device';
 import { API_URL } from './constants';
 
@@ -124,8 +125,14 @@ export async function apiClient<T>(
     }
 
     useAuthStore.getState().clearAuth();
+    // A hard `window.location.href` reload here throws away the whole SPA
+    // (and any in-flight work on the page) just to reach /login. Broadcasting
+    // instead reuses the cross-tab logout channel — this tab's own
+    // subscribeToLogout listener (registered by useAuth) picks it up and does
+    // a normal router.replace('/login'), so a background query's dead
+    // session doesn't feel like a random full-page reload.
     if (typeof window !== 'undefined') {
-      window.location.href = '/login';
+      broadcastLogout();
     }
   }
 

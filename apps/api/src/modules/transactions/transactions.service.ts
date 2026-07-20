@@ -197,6 +197,7 @@ interface ResolvedItem {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  vatableCapAmount: number | null;
 }
 
 /**
@@ -263,6 +264,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       unitPrice,
       quantity: item.quantity,
       lineTotal,
+      vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
     });
   }
   return resolved;
@@ -287,27 +289,35 @@ interface ComputedAmounts {
  */
 function computeAmounts(
   subtotal: number,
+  items: ResolvedItem[],
   discountType: CreateTransactionData['discountType'],
-  requestedDiscountAmount: number | undefined,
 ): ComputedAmounts {
+  const vatableSubtotal = round2(
+    items.reduce((sum, item) => {
+      const cap = item.vatableCapAmount;
+      const vatableLine = cap != null ? Math.min(item.lineTotal, round2(cap * item.quantity)) : item.lineTotal;
+      return sum + vatableLine;
+    }, 0),
+  );
+  const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
+
   if (discountType === DISCOUNT_TYPE.PWD || discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) {
-    const vatableBase = subtotal / 1.12;
+    const vatableBase = vatableSubtotal / 1.12;
     const discountAmount = round2(vatableBase * STATUTORY_DISCOUNT_RATE);
     const discountedBase = round2(vatableBase - discountAmount);
     const vatAmount = round2(discountedBase * VAT_RATE);
-    const totalAmount = round2(discountedBase + vatAmount);
-    return { discountAmount, vatAmount, vatExemptAmount: 0, totalAmount };
+    const totalAmount = round2(discountedBase + vatAmount + nonVatableSubtotal);
+    return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount };
   }
 
   let discountAmount = 0;
   if (discountType === DISCOUNT_TYPE.EMPLOYEE) {
-    discountAmount = round2(subtotal * EMPLOYEE_DISCOUNT_RATE);
-  } else if (discountType === DISCOUNT_TYPE.PROMOTIONAL) {
-    discountAmount = round2(requestedDiscountAmount ?? 0);
+    discountAmount = round2(vatableSubtotal * EMPLOYEE_DISCOUNT_RATE);
   }
-  const totalAfterDiscount = round2(subtotal - discountAmount);
-  const vatAmount = round2(totalAfterDiscount * (12 / 112));
-  return { discountAmount, vatAmount, vatExemptAmount: 0, totalAmount: totalAfterDiscount };
+  const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
+  const vatAmount = round2(vatableAfterDiscount * (12 / 112));
+  const totalAfterDiscount = round2(vatableAfterDiscount + nonVatableSubtotal);
+  return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount: totalAfterDiscount };
 }
 
 async function generateReceiptNumber(branchCode: string, attempt: number): Promise<string> {
@@ -351,13 +361,20 @@ export const transactionsService = {
         422,
       );
     }
+    if (data.discountType === DISCOUNT_TYPE.PROMOTIONAL) {
+      throw new TransactionError(
+        'DISCOUNT_TYPE_NOT_SUPPORTED',
+        'Promotional discounts are not yet implemented. Contact admin.',
+        400,
+      );
+    }
     if ((data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) && !data.discountIdReference) {
       throw new TransactionError('DISCOUNT_ID_REQUIRED', 'discount_id_reference is required for PWD/Senior Citizen discounts', 422);
     }
 
     const resolvedItems = await resolveCartItems(data.branchId, data.items);
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
-    const { discountAmount, vatAmount, vatExemptAmount, totalAmount } = computeAmounts(subtotal, data.discountType, data.discountAmount);
+    const { discountAmount, vatAmount, vatExemptAmount, totalAmount } = computeAmounts(subtotal, resolvedItems, data.discountType);
 
     let changeGiven: number | null = null;
     if (data.paymentMethod === 'cash') {

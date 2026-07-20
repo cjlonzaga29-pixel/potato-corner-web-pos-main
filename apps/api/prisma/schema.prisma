@@ -387,6 +387,8 @@ model ProductVariant {
   name         String
   sizeLabel    String  @map("size_label")
   basePrice    Decimal @map("base_price") @db.Decimal(10, 2)
+  // For Tera Mix products, caps VATable portion to Mega Mix SRP. NULL = full SRP is VATable.
+  vatableCapAmount Decimal? @map("vatable_cap_amount") @db.Decimal(10, 2)
   displayOrder Int?    @map("display_order")
   isActive     Boolean @default(true) @map("is_active")
 

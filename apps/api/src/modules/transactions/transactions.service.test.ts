@@ -177,16 +177,17 @@ describe('transactionsService.createTransaction — VAT calculation', () => {
     );
   });
 
-  it('applies the architecture doc\'s locked PWD/Senior Citizen 5-step formula (₱100 item, PWD discount)', async () => {
+  it('applies the PWD/Senior Citizen VAT-exempt formula (₱100 item, PWD discount)', async () => {
     await transactionsService.createTransaction(
       { ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-000123' },
       null,
     );
 
-    // Step 1: 100 / 1.12 = 89.2857..., Step 2: ×0.20 = 17.86, Step 3: 71.43,
-    // Step 4: ×0.12 = 8.57, Step 5: 71.43 + 8.57 = 80.00.
+    // Step 1: 100 / 1.12 = 89.2857..., Step 2: ×0.20 = 17.86, Step 3: 71.43.
+    // No VAT is charged — PWD/Senior sales are true VAT-exempt (RA 9994 /
+    // RA 10754), so total is the discounted base with nothing added back.
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountAmount: 17.86, vatAmount: 8.57, vatExemptAmount: 0, totalAmount: 80 }),
+      expect.objectContaining({ discountAmount: 17.86, vatAmount: 0, vatExemptAmount: 0, totalAmount: 71.43 }),
     );
   });
 });

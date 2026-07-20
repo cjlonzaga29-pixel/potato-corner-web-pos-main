@@ -37,12 +37,14 @@ Step 5: Deduct atomically
 ```
 
 **PWD/Senior Citizen VAT Formula**
+
+Per RA 9994 / RA 10754, PWD and Senior Citizen sales are true VAT-exempt transactions — VAT is never charged, not even added back after the discount (updated 2026-07-21, commit 4 of the P1 discount fix; superseded the prior "VAT still charged on discounted base" formula).
+
 ```
 VATable base = total ÷ 1.12
 Discount = VATable base × 0.20
 Discounted base = VATable base - discount
-VAT = discounted base × 0.12
-Total = discounted base + VAT
+Total = discounted base (no VAT added — fully exempt)
 ```
 
 **Transaction Number**

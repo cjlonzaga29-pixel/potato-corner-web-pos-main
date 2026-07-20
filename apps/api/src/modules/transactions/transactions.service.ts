@@ -26,7 +26,6 @@ type ActorContext = { id: string; role: string };
 const STATUTORY_DISCOUNT_RATE = 0.2;
 /** "Employee (configurable %)" per the architecture doc — no settings model yet, so this constant is the one a future settings feature would read from instead. */
 const EMPLOYEE_DISCOUNT_RATE = 0.2;
-const VAT_RATE = 0.12;
 /** How many bumped-sequence attempts before giving up on a receipt number collision (P2002 on the daily per-branch sequence). */
 const RECEIPT_SEQUENCE_RETRY_LIMIT = 5;
 
@@ -278,16 +277,14 @@ interface ComputedAmounts {
 }
 
 /**
- * VAT + discount calculation. PWD/Senior Citizen follows the architecture
- * doc's locked 5-step formula exactly (see the constants above) — that
- * formula still charges VAT on the discounted base, it does not exempt the
- * sale from VAT, despite what a "vat_exempt_amount" field name might
- * suggest; see the module's ambiguity note in the Phase 10 report. Every
- * other discount type (or none) uses the general VAT-inclusive-pricing
- * extraction: the VAT component is embedded in the post-discount total, not
- * added on top of it.
+ * VAT + discount calculation. PWD/Senior Citizen sales are true VAT-exempt
+ * transactions per RA 9994 / RA 10754 (confirmed by business owner) — VAT is
+ * never charged on the discounted base, not even added back. Every other
+ * discount type (or none) uses the general VAT-inclusive-pricing extraction:
+ * the VAT component is embedded in the post-discount total, not added on
+ * top of it.
  */
-function computeAmounts(
+export function computeAmounts(
   subtotal: number,
   items: ResolvedItem[],
   discountType: CreateTransactionData['discountType'],
@@ -305,9 +302,8 @@ function computeAmounts(
     const vatableBase = vatableSubtotal / 1.12;
     const discountAmount = round2(vatableBase * STATUTORY_DISCOUNT_RATE);
     const discountedBase = round2(vatableBase - discountAmount);
-    const vatAmount = round2(discountedBase * VAT_RATE);
-    const totalAmount = round2(discountedBase + vatAmount + nonVatableSubtotal);
-    return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount };
+    const totalAmount = round2(discountedBase + nonVatableSubtotal);
+    return { discountAmount, vatAmount: 0, vatExemptAmount: nonVatableSubtotal, totalAmount };
   }
 
   let discountAmount = 0;

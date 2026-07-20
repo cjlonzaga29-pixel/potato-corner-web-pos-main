@@ -23,6 +23,7 @@ type VariantSeed = {
   basePrice: number;
   maxFlavors: number;
   withFlavors: boolean;
+  vatableCapAmount?: number;
 };
 
 type ProductSeed = {
@@ -72,7 +73,7 @@ const PRODUCTS: ProductSeed[] = [
     variants: [
       { sizeLabel: 'Large Mix', basePrice: 99, maxFlavors: 0, withFlavors: false },
       { sizeLabel: 'Mega Mix', basePrice: 149, maxFlavors: 0, withFlavors: false },
-      { sizeLabel: 'Tera Mix', basePrice: 259, maxFlavors: 0, withFlavors: false },
+      { sizeLabel: 'Tera Mix', basePrice: 259, maxFlavors: 0, withFlavors: false, vatableCapAmount: 149.0 },
     ],
   },
   {
@@ -113,6 +114,7 @@ async function upsertVariant(productId: string, seed: VariantSeed) {
     sizeLabel: seed.sizeLabel,
     basePrice: seed.basePrice,
     maxFlavors: seed.maxFlavors,
+    vatableCapAmount: seed.vatableCapAmount ?? null,
   };
   if (existing) {
     return prisma.productVariant.update({ where: { id: existing.id }, data });

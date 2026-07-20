@@ -135,7 +135,8 @@ async function main() {
 
       if (variantSeed.withFlavors) {
         for (const flavorSeed of FLAVORS) {
-          const flavorId = flavors.get(flavorSeed.name)!;
+          const flavorId = flavors.get(flavorSeed.name);
+          if (!flavorId) throw new Error(`Flavor "${flavorSeed.name}" was not seeded before product variants — check FLAVORS ordering.`);
           await prisma.productVariantFlavor.upsert({
             where: { productVariantId_flavorId: { productVariantId: variant.id, flavorId } },
             update: { pricePremium: flavorSeed.addOnPrice },

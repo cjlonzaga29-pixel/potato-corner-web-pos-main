@@ -19,12 +19,18 @@ function makeRequest(url: string, cookie?: string): NextRequest {
   return new NextRequest(new Request(url, { headers }));
 }
 
+function requireLocation(response: Response): URL {
+  const location = response.headers.get('location');
+  if (!location) throw new Error('expected a Location header on the redirect response');
+  return new URL(location);
+}
+
 describe('middleware /login redirect preserves returnTo', () => {
   it('appends the original path+query as ?returnTo= when there is no refresh cookie at all', async () => {
     const request = makeRequest('https://app.potatocorner.test/admin/reports?tab=sales');
     const response = await middleware(request);
 
-    const location = new URL(response.headers.get('location')!);
+    const location = requireLocation(response);
     expect(location.pathname).toBe('/login');
     expect(location.searchParams.get('returnTo')).toBe('/admin/reports?tab=sales');
   });
@@ -37,7 +43,7 @@ describe('middleware /login redirect preserves returnTo', () => {
     const request = makeRequest('https://app.potatocorner.test/supervisor/reports', 'refresh_token=dead-token');
     const response = await middleware(request);
 
-    const location = new URL(response.headers.get('location')!);
+    const location = requireLocation(response);
     expect(location.pathname).toBe('/login');
     expect(location.searchParams.get('returnTo')).toBe('/supervisor/reports');
     expect(fetchMock).toHaveBeenCalledTimes(1); // a genuine 401 never retries

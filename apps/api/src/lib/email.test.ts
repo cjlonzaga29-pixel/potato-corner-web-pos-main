@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
  * `resend` is null at module load time.
  */
 const sendMock = vi.fn();
+sendMock.mockResolvedValue({ data: { id: 'test-email-id' }, error: null });
 
 vi.mock('resend', () => ({
   Resend: vi.fn().mockImplementation(() => ({ emails: { send: sendMock } })),

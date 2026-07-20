@@ -60,7 +60,7 @@ describe('apiClient refresh race', () => {
       apiClient('/api/products'),
     ]);
 
-    const refreshCalls = fetchMock.mock.calls.filter(([url]: [string]) => url.includes('/api/auth/refresh'));
+    const refreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
     expect(refreshCalls.length).toBe(1);
   });
 
@@ -77,7 +77,7 @@ describe('apiClient refresh race', () => {
     });
 
     // Kick off a request that 401s and starts a refresh.
-    fetchMock.mockImplementationOnce((url: string) => Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null })));
+    fetchMock.mockImplementationOnce((_url: string) => Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null })));
     const first = apiClient('/api/products');
 
     // Give the 401 handler a tick to call refreshAccessToken() and set refreshInFlight.
@@ -88,13 +88,13 @@ describe('apiClient refresh race', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     // The second request must not have hit the network yet — it's waiting on refreshInFlight.
-    const productCallsBeforeResolve = fetchMock.mock.calls.filter(([url]: [string]) => url.includes('/api/products/123'));
+    const productCallsBeforeResolve = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/products/123'));
     expect(productCallsBeforeResolve.length).toBe(0);
 
     refreshResolve(jsonResponse(200, { data: { access_token: 'new-token' }, error: null, meta: null }));
     await Promise.all([first, second]);
 
-    const refreshCalls = fetchMock.mock.calls.filter(([url]: [string]) => url.includes('/api/auth/refresh'));
+    const refreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
     expect(refreshCalls.length).toBe(1);
   });
 
@@ -109,8 +109,8 @@ describe('apiClient refresh race', () => {
 
     await apiClient('/api/products');
 
-    const refreshCalls = fetchMock.mock.calls.filter(([url]: [string]) => url.includes('/api/auth/refresh'));
-    const productCalls = fetchMock.mock.calls.filter(([url]: [string]) => url.includes('/api/products'));
+    const refreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
+    const productCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/products'));
     expect(refreshCalls.length).toBe(1);
     expect(productCalls.length).toBe(2); // original + exactly one retry, no loop
   });

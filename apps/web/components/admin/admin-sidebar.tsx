@@ -21,6 +21,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   LogOut,
+  Loader2,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -31,6 +32,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { NotificationBell } from '@/components/shared/notification-bell';
+import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 
 /**
  * Route paths match the existing app/(admin)/admin/* folder structure
@@ -60,6 +62,16 @@ export function AdminSidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    setIsLoggingOut(true);
+    try {
+      await logout();
+    } finally {
+      setIsLoggingOut(false);
+    }
+  }
   const { data: pendingProductRequests } = useProductRequests({ status: 'pending', limit: 1 });
   const { data: pendingPriceOverrides } = usePriceOverrides({ status: 'pending', limit: 1 });
   const badgeCounts: Record<string, number> = {
@@ -102,7 +114,7 @@ export function AdminSidebar() {
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
               )}
             >
-              <item.icon className="h-4 w-4 shrink-0" />
+              <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
               {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
               {count > 0 && (
                 <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
@@ -133,10 +145,11 @@ export function AdminSidebar() {
             variant="ghost"
             size="icon"
             className="h-8 w-8 shrink-0"
-            onClick={() => void logout()}
+            onClick={() => void handleLogout()}
+            disabled={isLoggingOut}
             aria-label="Log out"
           >
-            <LogOut className="h-4 w-4" />
+            {isLoggingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
           </Button>
         </div>
       </div>

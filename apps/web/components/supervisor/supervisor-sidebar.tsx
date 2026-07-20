@@ -15,6 +15,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   LogOut,
+  Loader2,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -26,6 +27,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { NotificationBell } from '@/components/shared/notification-bell';
+import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 import { BranchSelector } from './branch-selector';
 
 const NAV_ITEMS = [
@@ -45,6 +47,16 @@ export function SupervisorSidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    setIsLoggingOut(true);
+    try {
+      await logout();
+    } finally {
+      setIsLoggingOut(false);
+    }
+  }
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   const { data: myProductRequests } = useProductRequests({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
   const { data: myPriceOverrides } = usePriceOverrides({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
@@ -95,7 +107,7 @@ export function SupervisorSidebar() {
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
               )}
             >
-              <item.icon className="h-4 w-4 shrink-0" />
+              <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
               {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
               {showBadge && (
                 <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
@@ -126,10 +138,11 @@ export function SupervisorSidebar() {
             variant="ghost"
             size="icon"
             className="h-8 w-8 shrink-0"
-            onClick={() => void logout()}
+            onClick={() => void handleLogout()}
+            disabled={isLoggingOut}
             aria-label="Log out"
           >
-            <LogOut className="h-4 w-4" />
+            {isLoggingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
           </Button>
         </div>
       </div>

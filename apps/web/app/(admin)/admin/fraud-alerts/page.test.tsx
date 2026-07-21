@@ -110,6 +110,8 @@ function branch(overrides: Partial<BranchResponse> = {}): BranchResponse {
     gpsLongitude: 120.9842,
     gpsRadiusMeters: 100,
     status: 'active',
+    gcashQrUrl: null,
+    gcashQrKey: null,
     activeSupervisorCount: 1,
     activeStaffCount: 5,
     currentStatusLabel: 'Open',

@@ -141,6 +141,22 @@ export function useUpdateBranch(branchId: string) {
   });
 }
 
+export function useUploadBranchGcashQr(branchId: string) {
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.set('qr', file);
+      const response = await apiClient<{ url: string; key: string }>(`/api/branches/${branchId}/gcash-qr`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload QR image'));
+      return response.data;
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useChangeBranchStatus(branchId: string) {
   const queryClient = useQueryClient();
   return useMutation({

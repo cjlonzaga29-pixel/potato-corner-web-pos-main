@@ -1,10 +1,16 @@
 import type { Prisma } from '@prisma/client';
+import sharp from 'sharp';
 import { ROLES, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO } from '../../socket/socket.server.js';
 import { SUPER_ADMIN_ROOM } from '../../socket/rooms.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
 
 const STATUS_LABELS: Record<BranchStatus, string> = {
   active: 'Active',
@@ -41,6 +47,8 @@ function toBranchResponse(branch: BranchWithAssignments) {
     gpsLongitude: branch.gpsLongitude ? branch.gpsLongitude.toNumber() : null,
     gpsRadiusMeters: branch.gpsRadiusMeters,
     status: branch.status,
+    gcashQrUrl: branch.gcashQrUrl,
+    gcashQrKey: branch.gcashQrKey,
     activeSupervisorCount,
     activeStaffCount,
     currentStatusLabel: STATUS_LABELS[branch.status],
@@ -161,6 +169,30 @@ export const branchesService = {
     });
 
     return toBranchResponse(branch);
+  },
+
+  async uploadGcashQr(branchId: string, file: { buffer: Buffer; originalname: string }) {
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+
+    const compressed = await sharp(file.buffer)
+      .resize({ width: 800, withoutEnlargement: true })
+      .webp({ quality: 85 })
+      .toBuffer();
+
+    const path = `branch-gcash-qr/${branchId}/${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
+    const { error } = await supabaseAdmin.storage
+      .from('branch-gcash-qr')
+      .upload(path, compressed, { contentType: 'image/webp', upsert: true });
+    if (error) {
+      throw new BranchError('QR_UPLOAD_FAILED', 'Failed to upload the GCash QR image', 502);
+    }
+
+    const {
+      data: { publicUrl },
+    } = supabaseAdmin.storage.from('branch-gcash-qr').getPublicUrl(path);
+
+    return { url: publicUrl, key: path };
   },
 
   async changeBranchStatus(

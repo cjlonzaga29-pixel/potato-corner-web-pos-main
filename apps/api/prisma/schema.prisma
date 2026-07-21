@@ -115,6 +115,17 @@ enum FraudAlertStatus {
   escalated
 }
 
+enum InventoryRequestType {
+  stock_in
+  stock_out
+}
+
+enum InventoryRequestStatus {
+  pending
+  approved
+  rejected
+}
+
 // ---------------------------------------------------------------------------
 // Core tables
 // ---------------------------------------------------------------------------
@@ -177,6 +188,9 @@ model User {
   productRequestsReviewed ProductRequest[]       @relation("ProductRequestReviewer")
   recipeOverridesCreated  BranchRecipeOverride[]
 
+  requestedInventoryRequests InventoryRequest[] @relation("RequestedInventoryRequests")
+  approvedInventoryRequests  InventoryRequest[] @relation("ApprovedInventoryRequests")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -193,6 +207,8 @@ model Branch {
   gpsLongitude    Decimal?     @map("gps_longitude") @db.Decimal(11, 8)
   gpsRadiusMeters Int          @default(100) @map("gps_radius_meters")
   status          BranchStatus @default(active)
+  gcashQrUrl      String?
+  gcashQrKey      String?
 
   userAssignments     UserBranchAssignment[]
   productAvailability BranchProductAvailability[]
@@ -211,6 +227,8 @@ model Branch {
   priceOverrides    BranchPriceOverride[]
   productRequests   ProductRequest[]
   recipeOverrides   BranchRecipeOverride[]
+
+  inventoryRequests InventoryRequest[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -591,6 +609,7 @@ model Ingredient {
   recipes         Recipe[]
   movements       InventoryMovement[]
   recipeOverrides BranchRecipeOverride[]
+  inventoryRequests InventoryRequest[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1045,4 +1064,30 @@ model Notification {
   @@index([recipientUserId, readAt])
   @@index([branchId, createdAt])
   @@map("notifications")
+}
+
+model InventoryRequest {
+  id              String                 @id @default(cuid())
+  branchId        String
+  ingredientId    String
+  type            InventoryRequestType
+  quantity        Decimal                @db.Decimal(10, 3)
+  reason          String
+  status          InventoryRequestStatus @default(pending)
+  requestedById   String
+  requestedByName String
+  approvedById    String?
+  approvedByName  String?
+  rejectionReason String?
+  createdAt       DateTime               @default(now())
+  approvedAt      DateTime?
+
+  branch       Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+  requestedBy  User       @relation("RequestedInventoryRequests", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy   User?      @relation("ApprovedInventoryRequests", fields: [approvedById], references: [id], onDelete: Restrict)
+
+  @@index([branchId, status])
+  @@index([ingredientId])
+  @@map("inventory_requests")
 }

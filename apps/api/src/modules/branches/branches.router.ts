@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import {
   createBranchSchema,
@@ -17,6 +18,18 @@ import { requirePasswordChange } from '../../middleware/require-password-change.
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
+
+const qrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      callback(new BranchError('INVALID_IMAGE_TYPE', 'Image must be JPEG, PNG, or WebP', 422));
+      return;
+    }
+    callback(null, true);
+  },
+});
 
 const branchStatusValues = Object.values(BRANCH_STATUS) as [BranchStatus, ...BranchStatus[]];
 
@@ -100,6 +113,44 @@ router.patch('/:branchId', authenticate, adminOnly, requirePasswordChange, valid
     handleBranchError(error, res, next);
   }
 });
+
+router.post(
+  '/:branchId/gcash-qr',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  (req: Request, res: Response, next: NextFunction) => {
+    qrUpload.single('qr')(req, res, (error: unknown) => {
+      if (error) {
+        handleBranchError(
+          error instanceof multer.MulterError
+            ? new BranchError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422)
+            : error,
+          res,
+          next,
+        );
+        return;
+      }
+      next();
+    });
+  },
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A QR image file is required' }, meta: null });
+        return;
+      }
+      const result = await branchesService.uploadGcashQr(req.params.branchId as string, {
+        buffer: req.file.buffer,
+        originalname: req.file.originalname,
+      });
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
 
 router.patch(
   '/:branchId/status',

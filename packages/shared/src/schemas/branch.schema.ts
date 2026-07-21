@@ -29,6 +29,8 @@ export const updateBranchSchema = z.object({
   gpsLongitude: z.number().min(-180).max(180).optional(),
   gpsRadiusMeters: z.number().int().min(10).max(1000).optional(),
   status: z.enum(branchStatusValues).optional(),
+  gcashQrUrl: z.string().nullable().optional(),
+  gcashQrKey: z.string().nullable().optional(),
 });
 
 export const changeBranchStatusSchema = z.object({
@@ -45,6 +47,8 @@ export const branchResponseSchema = z.object({
   gpsLongitude: z.number().nullable(),
   gpsRadiusMeters: z.number(),
   status: z.enum(branchStatusValues),
+  gcashQrUrl: z.string().nullable(),
+  gcashQrKey: z.string().nullable(),
   activeSupervisorCount: z.number().int(),
   activeStaffCount: z.number().int(),
   currentStatusLabel: z.string(),

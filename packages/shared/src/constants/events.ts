@@ -47,6 +47,10 @@ export const SOCKET_EVENTS = {
   // Phase 16 — report export lifecycle (async CSV/PDF jobs)
   REPORT_EXPORT_READY: 'report:export_ready',
   REPORT_EXPORT_FAILED: 'report:export_failed',
+
+  INVENTORY_REQUEST_SUBMITTED: 'inventory_request:submitted',
+  INVENTORY_REQUEST_APPROVED: 'inventory_request:approved',
+  INVENTORY_REQUEST_REJECTED: 'inventory_request:rejected',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

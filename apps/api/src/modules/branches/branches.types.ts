@@ -29,6 +29,8 @@ export interface UpdateBranchData {
   gpsLongitude?: number;
   gpsRadiusMeters?: number;
   status?: BranchStatus;
+  gcashQrUrl?: string | null;
+  gcashQrKey?: string | null;
 }
 
 export interface BranchStatsData {

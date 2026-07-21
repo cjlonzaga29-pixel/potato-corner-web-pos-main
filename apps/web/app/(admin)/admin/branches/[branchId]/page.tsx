@@ -15,7 +15,15 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatCurrency, formatDate } from '@/lib/utils';
-import { useBranch, useBranchAssignments, useBranchStats, useRemoveSupervisor, useChangeBranchStatus } from '@/hooks/queries/use-branches';
+import {
+  useBranch,
+  useBranchAssignments,
+  useBranchStats,
+  useRemoveSupervisor,
+  useChangeBranchStatus,
+  useUpdateBranch,
+  useUploadBranchGcashQr,
+} from '@/hooks/queries/use-branches';
 import { EditBranchDialog } from '@/components/admin/branches/edit-branch-dialog';
 import { ChangeStatusDialog } from '@/components/admin/branches/change-status-dialog';
 import { AssignSupervisorDialog } from '@/components/admin/branches/assign-supervisor-dialog';
@@ -265,13 +273,20 @@ function SettingsTab({
   onEdit,
   onChangeStatus,
 }: {
-  branch: { id: string; name: string; status: string };
+  branch: { id: string; name: string; status: string; gcashQrUrl: string | null };
   onEdit: () => void;
   onChangeStatus: () => void;
 }) {
   const changeStatus = useChangeBranchStatus(branch.id);
+  const updateBranch = useUpdateBranch(branch.id);
+  const uploadGcashQr = useUploadBranchGcashQr(branch.id);
   const [confirmName, setConfirmName] = useState('');
   const canClose = confirmName.trim() === branch.name && branch.status !== 'closed';
+
+  async function handleQrFileSelected(file: File) {
+    const { url, key } = await uploadGcashQr.mutateAsync(file);
+    await updateBranch.mutateAsync({ gcashQrUrl: url, gcashQrKey: key });
+  }
 
   return (
     <div className="space-y-4">
@@ -284,6 +299,43 @@ function SettingsTab({
           <Button variant="outline" onClick={onEdit}>
             Edit Branch Details
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">GCash QR Code</CardTitle>
+          <CardDescription>Shown to customers paying via GCash at this branch.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {branch.gcashQrUrl && (
+            // eslint-disable-next-line @next/next/no-img-element -- remote Supabase Storage asset, not a local optimizable image
+            <img src={branch.gcashQrUrl} alt="GCash QR code" className="h-48 w-48 rounded-md border object-contain" />
+          )}
+          <div className="space-y-2">
+            <Label htmlFor="gcash-qr-upload">Upload new QR image</Label>
+            <Input
+              id="gcash-qr-upload"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              disabled={uploadGcashQr.isPending || updateBranch.isPending}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void handleQrFileSelected(file);
+              }}
+            />
+          </div>
+          {branch.gcashQrUrl && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={updateBranch.isPending}
+              onClick={() => void updateBranch.mutateAsync({ gcashQrUrl: null, gcashQrKey: null })}
+            >
+              Remove QR
+            </Button>
+          )}
         </CardContent>
       </Card>
 

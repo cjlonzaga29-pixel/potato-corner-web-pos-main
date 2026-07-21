@@ -31,7 +31,7 @@ import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { NotificationBell } from '@/components/shared/notification-bell';
+import { NotificationBellConnected } from '@/components/shared/notification-bell-connected';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 
 /**
@@ -91,7 +91,7 @@ export function AdminSidebar() {
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
-          <NotificationBell />
+          <NotificationBellConnected />
           <Button variant="ghost" size="icon" onClick={() => setCollapsed((prev) => !prev)} aria-label="Toggle sidebar">
             {collapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
           </Button>

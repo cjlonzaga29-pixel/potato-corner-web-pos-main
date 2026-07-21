@@ -8,7 +8,7 @@ import { useOffline } from '@/hooks/use-offline';
 import { useBranch } from '@/hooks/queries/use-branches';
 import { useShiftStore } from '@/stores/shift.store';
 import { Button } from '@/components/ui/button';
-import { NotificationBell } from '@/components/shared/notification-bell';
+import { NotificationBellConnected } from '@/components/shared/notification-bell-connected';
 import { ShiftStatusIndicator } from './shift-status-indicator';
 import { cn } from '@/lib/utils';
 
@@ -67,7 +67,7 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
           )}
         </div>
 
-        <NotificationBell />
+        <NotificationBellConnected />
 
         <Button variant="outline" className="touch-target" asChild>
           <Link href="/clock-in">

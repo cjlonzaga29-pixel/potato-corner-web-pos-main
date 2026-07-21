@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import * as React from 'react';
 
 const mockUseRequestExport = { mutate: vi.fn(), isPending: false };
 let realtimeSyncCallback: ((payload: unknown) => void) | undefined;
@@ -27,7 +28,26 @@ vi.mock('@/hooks/queries/use-reports', () => {
     }),
   };
 });
-vi.mock('@/hooks/queries/use-branches', () => ({ useBranches: vi.fn(() => ({ data: { branches: [] } })) }));
+vi.mock('@/hooks/queries/use-branches', () => ({
+  useBranches: vi.fn(() => ({ data: { branches: [{ id: 'branch-1', name: 'Main Branch' }] } })),
+}));
+
+// Radix Select has no jsdom-friendly interaction path without user-event (not a
+// project dependency); flatten it to plain buttons, matching attendance/page.test.tsx.
+vi.mock('@/components/ui/select', () => {
+  const SelectContext = React.createContext<{ onValueChange?: (value: string) => void }>({});
+  function Select({ onValueChange, children }: { value?: string; onValueChange?: (value: string) => void; children?: React.ReactNode }) {
+    return <SelectContext.Provider value={{ onValueChange }}>{children}</SelectContext.Provider>;
+  }
+  function SelectTrigger({ children }: { children?: React.ReactNode }) { return <>{children}</>; }
+  function SelectValue() { return null; }
+  function SelectContent({ children }: { children?: React.ReactNode }) { return <>{children}</>; }
+  function SelectItem({ value, children }: { value: string; children?: React.ReactNode }) {
+    const ctx = React.useContext(SelectContext);
+    return <button type="button" onClick={() => ctx.onValueChange?.(value)}>{children}</button>;
+  }
+  return { Select, SelectTrigger, SelectValue, SelectContent, SelectItem };
+});
 vi.mock('@/stores/auth.store', () => ({ useAuthStore: vi.fn((selector: (s: { user: { id: string } }) => unknown) => selector({ user: { id: 'admin-1' } })) }));
 vi.mock('@/stores/socket.store', () => ({ useSocketStore: vi.fn((selector: (s: { isConnected: boolean }) => unknown) => selector({ isConnected: true })) }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -119,8 +139,14 @@ describe('AdminReportsPage', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it('renders an empty state for the active tab when data is empty', () => {
+  it('renders a "select a branch" empty state by default', () => {
     render(<AdminReportsPage />);
+    expect(screen.getByText(/select a branch/i)).toBeInTheDocument();
+  });
+
+  it('renders an empty state for the active tab when a branch is selected and data is empty', () => {
+    render(<AdminReportsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
     expect(screen.getByText(/no sales in this range/i)).toBeInTheDocument();
   });
 
@@ -130,6 +156,7 @@ describe('AdminReportsPage', () => {
     // while isLoading — assert on its class instead of text, since there is no "not yet
     // computed"/"last updated" text present during loading.
     const { container } = render(<AdminReportsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
   });
 });

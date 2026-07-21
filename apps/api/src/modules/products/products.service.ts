@@ -4,6 +4,7 @@ import { ROLES, type JwtPayload, type ProductStatus } from '@potato-corner/share
 import { productsRepository } from './products.repository.js';
 import { ProductError, type ProductListFilters } from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 
@@ -637,6 +638,50 @@ export const productsService = {
     });
 
     return toBranchAvailabilityRow(row);
+  },
+
+  async bulkUpdateBranchProductAvailability(
+    productId: string,
+    updates: { branch_id: string; is_available: boolean }[],
+    actor: ActorContext,
+    ipAddress: string | null,
+  ) {
+    const product = await productsRepository.findById(productId);
+    if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    const globallyLocked = product.status === 'discontinued' || product.status === 'archived';
+    if (globallyLocked && updates.some((u) => u.is_available)) {
+      throw new ProductError(
+        'PRODUCT_GLOBALLY_UNAVAILABLE',
+        'Cannot enable a globally discontinued or archived product for a branch',
+        409,
+      );
+    }
+
+    const rows = await prisma.$transaction(async (tx) => {
+      const results = [];
+      for (const update of updates) {
+        results.push(
+          await productsRepository.upsertBranchProductAvailability(update.branch_id, productId, update.is_available, actor.id, tx),
+        );
+      }
+      return results;
+    });
+
+    for (const row of rows) {
+      await recordAuditLog({
+        action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
+        entityType: 'branch_product_availability',
+        entityId: row.id,
+        actorId: actor.id,
+        actorRole: actor.role,
+        branchId: row.branchId,
+        afterState: { productId, isAvailable: row.isAvailable },
+        ipAddress,
+      });
+    }
+
+    return { updated_count: rows.length, product_id: productId };
   },
 
   /**

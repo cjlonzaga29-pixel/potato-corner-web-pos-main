@@ -226,8 +226,14 @@ export const productsRepository = {
     });
   },
 
-  async upsertBranchProductAvailability(branchId: string, productId: string, isAvailable: boolean, updatedBy: string) {
-    return prisma.branchProductAvailability.upsert({
+  async upsertBranchProductAvailability(
+    branchId: string,
+    productId: string,
+    isAvailable: boolean,
+    updatedBy: string,
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ) {
+    return tx.branchProductAvailability.upsert({
       where: { branchId_productId: { branchId, productId } },
       create: { branchId, productId, isAvailable, updatedBy },
       update: { isAvailable, updatedBy },

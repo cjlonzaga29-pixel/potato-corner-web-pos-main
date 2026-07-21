@@ -9,6 +9,7 @@ import {
   updateVariantSchema,
   linkVariantFlavorSchema,
   updateVariantFlavorSchema,
+  bulkBranchProductAvailabilitySchema,
   PRODUCT_STATUS,
   ROLES,
   type ProductStatus,
@@ -266,6 +267,30 @@ router.get(
         role: req.user.role,
       });
       res.status(200).json({ data: matrix, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/:productId/branch-availability/bulk',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  branchGuard,
+  validate(bulkBranchProductAvailabilitySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { updates } = req.body as { updates: { branch_id: string; is_available: boolean }[] };
+      const result = await productsService.bulkUpdateBranchProductAvailability(
+        req.params.productId as string,
+        updates,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

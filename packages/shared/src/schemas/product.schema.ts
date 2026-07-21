@@ -181,6 +181,28 @@ export const branchProductAvailabilityRowSchema = z.object({
   updated_at: z.iso.datetime().nullable(),
 });
 
+/** Body shape for PATCH /api/products/:productId/branch-availability/bulk. */
+export const bulkBranchProductAvailabilitySchema = z
+  .object({
+    updates: z
+      .array(
+        z.object({
+          branch_id: z.uuid(),
+          is_available: z.boolean(),
+        }),
+      )
+      .min(1)
+      .max(100),
+  })
+  .refine((data) => new Set(data.updates.map((u) => u.branch_id)).size === data.updates.length, {
+    message: 'Duplicate branch_id entries are not allowed',
+  });
+
+export const bulkBranchProductAvailabilityResponseSchema = z.object({
+  updated_count: z.number().int(),
+  product_id: z.uuid(),
+});
+
 export const productResponseSchema = z.object({
   id: z.uuid(),
   name: z.string(),

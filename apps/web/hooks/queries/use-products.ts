@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tansta
 import { toast } from 'sonner';
 import type {
   BranchProductAvailabilityRow,
+  BulkBranchProductAvailabilityResponse,
   ChangeProductStatusInput,
   CreateProductInput,
   CreateVariantInput,
@@ -200,6 +201,30 @@ export function useUpdateBranchProductAvailability(productId: string) {
         method: 'PATCH',
         body: JSON.stringify({ is_available: isAvailable }),
       });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update branch availability'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'branch-availability'] });
+      void queryClient.invalidateQueries({ queryKey: ['product', productId] });
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Branch availability updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useBulkUpdateBranchProductAvailability(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (updates: { branch_id: string; is_available: boolean }[]) => {
+      const response = await apiClient<BulkBranchProductAvailabilityResponse>(
+        `/api/products/${productId}/branch-availability/bulk`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ updates }),
+        },
+      );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to update branch availability'));
       return response.data;
     },

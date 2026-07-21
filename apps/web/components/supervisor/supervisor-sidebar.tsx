@@ -121,19 +121,21 @@ export function SupervisorSidebar() {
 
       <div className="border-t p-3">
         <div className={cn('flex items-center gap-3', collapsed && 'justify-center')}>
-          <Avatar className="h-8 w-8">
-            <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
-              {user ? generateInitials(user.firstName || 'S', user.lastName || 'V') : 'SV'}
-            </AvatarFallback>
-          </Avatar>
-          {!collapsed && (
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">
-                {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
-            </div>
-          )}
+          <Link href="/supervisor/profile" className="flex min-w-0 flex-1 items-center gap-3">
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+                {user ? generateInitials(user.firstName || 'S', user.lastName || 'V') : 'SV'}
+              </AvatarFallback>
+            </Avatar>
+            {!collapsed && (
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">
+                  {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+              </div>
+            )}
+          </Link>
           <Button
             variant="ghost"
             size="icon"

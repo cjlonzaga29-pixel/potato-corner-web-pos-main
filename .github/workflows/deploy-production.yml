@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+  deployments: write
+
 jobs:
   deploy-production:
     runs-on: ubuntu-latest

@@ -135,17 +135,13 @@ router.get(
 router.post(
   '/',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(createEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const employee = await employeesService.createEmployee(
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
+      const employee = await employeesService.createEmployee(req.body, req.user, req.ip ?? null);
       res.status(201).json({ data: employee, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);
@@ -162,12 +158,7 @@ router.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const employee = await employeesService.updateEmployee(
-        req.params.employeeId as string,
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
+      const employee = await employeesService.updateEmployee(req.params.employeeId as string, req.body, req.user, req.ip ?? null);
       res.status(200).json({ data: employee, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);
@@ -187,7 +178,7 @@ router.post(
       const employee = await employeesService.deactivateEmployee(
         req.params.employeeId as string,
         req.body,
-        { id: req.user.user_id, role: req.user.role },
+        req.user,
         req.ip ?? null,
       );
       res.status(200).json({ data: employee, error: null, meta: null });
@@ -205,11 +196,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const employee = await employeesService.reactivateEmployee(
-        req.params.employeeId as string,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
+      const employee = await employeesService.reactivateEmployee(req.params.employeeId as string, req.user, req.ip ?? null);
       res.status(200).json({ data: employee, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);
@@ -227,12 +214,7 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const { new_password } = req.body as { new_password: string };
-      await employeesService.resetEmployeePassword(
-        req.params.employeeId as string,
-        new_password,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
+      await employeesService.resetEmployeePassword(req.params.employeeId as string, new_password, req.user, req.ip ?? null);
       res.status(200).json({ data: { success: true }, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);

@@ -47,8 +47,6 @@ const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { authRepository } = await import('../auth/auth.repository.js');
 const { encryptField } = await import('../../lib/encryption.js');
 
-const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
-
 const SUPER_ADMIN_USER = {
   user_id: 'admin-1',
   role: ROLES.SUPER_ADMIN,
@@ -56,6 +54,8 @@ const SUPER_ADMIN_USER = {
   iat: 0,
   exp: 9999999999,
 } as const;
+
+const ACTOR = SUPER_ADMIN_USER;
 
 const SUPERVISOR_USER = {
   user_id: 'sup-1',
@@ -338,7 +338,7 @@ describe('employeesService.deactivateEmployee', () => {
       null,
     );
 
-    expect(employeesRepository.deactivate).toHaveBeenCalledWith('emp-1', ACTOR.id, 'Policy violation reported');
+    expect(employeesRepository.deactivate).toHaveBeenCalledWith('emp-1', ACTOR.user_id, 'Policy violation reported');
     expect(result.is_active).toBe(false);
   });
 
@@ -353,7 +353,7 @@ describe('employeesService.deactivateEmployee', () => {
     await employeesService.deactivateEmployee('emp-1', { reason: 'No longer employed here', acknowledge_active_shift: false }, ACTOR, null);
 
     expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('emp-1');
-    expect(employeesRepository.updateBranchAssignments).toHaveBeenCalledWith('emp-1', [], ACTOR.id);
+    expect(employeesRepository.updateBranchAssignments).toHaveBeenCalledWith('emp-1', [], ACTOR.user_id);
   });
 
   it('rejects deactivating an already-inactive employee', async () => {

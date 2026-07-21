@@ -31,10 +31,7 @@ export interface EmployeeListQuery {
   limit: number;
 }
 
-interface ActorContext {
-  id: string;
-  role: string;
-}
+type ActorContext = JwtPayload;
 
 function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse {
   return {
@@ -158,6 +155,16 @@ export const employeesService = {
       throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
     }
 
+    if (createdBy.role === ROLES.SUPERVISOR) {
+      if (data.role !== ROLES.STAFF) {
+        throw new EmployeeError('SUPERVISOR_ROLE_FORBIDDEN', 'Supervisors may only create staff accounts', 403);
+      }
+      const outOfScope = data.branch_ids.some((id) => !createdBy.branch_ids.includes(id));
+      if (outOfScope) {
+        throw new EmployeeError('BRANCH_ACCESS_DENIED', 'You do not have access to one or more of the requested branches', 400);
+      }
+    }
+
     const employeeId = await employeesRepository.generateEmployeeId();
     const passwordHash = await bcrypt.hash(data.initial_password, BCRYPT_COST_FACTOR);
 
@@ -181,7 +188,7 @@ export const employeesService = {
       action: 'EMPLOYEE_CREATED',
       entityType: 'user',
       entityId: employee.id,
-      actorId: createdBy.id,
+      actorId: createdBy.user_id,
       actorRole: createdBy.role,
       afterState: {
         email: employee.email,
@@ -218,7 +225,7 @@ export const employeesService = {
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
 
     if (data.branch_ids) {
-      await employeesRepository.updateBranchAssignments(employeeId, data.branch_ids, updatedBy.id);
+      await employeesRepository.updateBranchAssignments(employeeId, data.branch_ids, updatedBy.user_id);
     }
 
     const employee = await employeesRepository.update(employeeId, {
@@ -236,7 +243,7 @@ export const employeesService = {
       action: 'EMPLOYEE_UPDATED',
       entityType: 'user',
       entityId: employeeId,
-      actorId: updatedBy.id,
+      actorId: updatedBy.user_id,
       actorRole: updatedBy.role,
       beforeState: toEmployeeResponse(before),
       afterState: toEmployeeResponse(employee),
@@ -266,9 +273,9 @@ export const employeesService = {
       );
     }
 
-    await employeesRepository.deactivate(employeeId, deactivatedBy.id, data.reason);
+    await employeesRepository.deactivate(employeeId, deactivatedBy.user_id, data.reason);
     await authRepository.revokeAllUserTokens(employeeId);
-    await employeesRepository.updateBranchAssignments(employeeId, [], deactivatedBy.id);
+    await employeesRepository.updateBranchAssignments(employeeId, [], deactivatedBy.user_id);
 
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
@@ -277,7 +284,7 @@ export const employeesService = {
       action: 'EMPLOYEE_DEACTIVATED',
       entityType: 'user',
       entityId: employeeId,
-      actorId: deactivatedBy.id,
+      actorId: deactivatedBy.user_id,
       actorRole: deactivatedBy.role,
       beforeState: { isActive: true },
       afterState: { isActive: false, reason: data.reason, hadActiveShift: hasActiveShift },
@@ -292,13 +299,13 @@ export const employeesService = {
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     if (before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_ACTIVE', 'This employee is already active', 409);
 
-    const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.id);
+    const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.user_id);
 
     await recordAuditLog({
       action: 'EMPLOYEE_REACTIVATED',
       entityType: 'user',
       entityId: employeeId,
-      actorId: reactivatedBy.id,
+      actorId: reactivatedBy.user_id,
       actorRole: reactivatedBy.role,
       beforeState: { isActive: false },
       afterState: { isActive: true },
@@ -326,7 +333,7 @@ export const employeesService = {
       action: 'PASSWORD_RESET_BY_ADMIN',
       entityType: 'user',
       entityId: employeeId,
-      actorId: resetBy.id,
+      actorId: resetBy.user_id,
       actorRole: resetBy.role,
       ipAddress,
     });

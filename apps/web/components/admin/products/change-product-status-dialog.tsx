@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/use-auth';
 import { useBranchStore } from '@/stores/branch.store';
 import { useChangeProductStatus } from '@/hooks/queries/use-products';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 
 interface ChangeProductStatusDialogProps {
   open: boolean;
@@ -56,6 +57,7 @@ export function ChangeProductStatusDialog({ open, onOpenChange, product }: Chang
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   const changeStatus = useChangeProductStatus(product.id);
   const [selected, setSelected] = useState<ChangeableStatus | ''>('');
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const isSuperAdmin = user?.role === ROLES.SUPER_ADMIN;
   const globallyLocked = product.status === 'discontinued' || product.status === 'archived';
@@ -67,13 +69,22 @@ export function ChangeProductStatusDialog({ open, onOpenChange, product }: Chang
     onOpenChange(next);
   }
 
-  async function handleSave() {
+  async function handleSaveConfirmed() {
     if (!selected) return;
     await changeStatus.mutateAsync({
       status: selected,
       branch_id: isSuperAdmin ? undefined : (activeBranchId ?? undefined),
     });
     onOpenChange(false);
+  }
+
+  function handleSave() {
+    if (!selected) return;
+    if (selected === 'archived') {
+      setConfirmOpen(true);
+      return;
+    }
+    void handleSaveConfirmed();
   }
 
   return (
@@ -122,12 +133,22 @@ export function ChangeProductStatusDialog({ open, onOpenChange, product }: Chang
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button type="button" onClick={() => void handleSave()} disabled={!selected || !canSubmit || changeStatus.isPending}>
+          <Button type="button" onClick={handleSave} disabled={!selected || !canSubmit || changeStatus.isPending}>
             {changeStatus.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Save
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Archive Product"
+        description="Archiving makes this product permanently read-only and unavailable at every branch. This cannot be undone from this screen."
+        confirmLabel="Archive"
+        variant="danger"
+        onConfirm={handleSaveConfirmed}
+      />
     </Dialog>
   );
 }

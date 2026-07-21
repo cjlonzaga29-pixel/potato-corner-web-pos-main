@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { useBranchStore } from '@/stores/branch.store';
 import { useProducts, useProduct } from '@/hooks/queries/use-products';
 import { useIngredients } from '@/hooks/queries/use-inventory';
@@ -38,6 +39,7 @@ export default function SupervisorRecipeOverridesPage() {
   const simulate = useSimulateDeduction();
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [ingredientId, setIngredientId] = useState('');
   const [overrideFlavor, setOverrideFlavor] = useState('none');
   const [quantity, setQuantity] = useState('');
@@ -152,7 +154,7 @@ export default function SupervisorRecipeOverridesPage() {
                       <span>
                         {o.ingredient_name} — {o.quantity} {o.unit} {o.flavor_name ? `(${o.flavor_name})` : '(base)'}
                       </span>
-                      <Button variant="ghost" size="icon" onClick={() => void deleteOverride.mutateAsync(o.id)}>
+                      <Button variant="ghost" size="icon" onClick={() => setDeleteTargetId(o.id)}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </li>
@@ -266,6 +268,19 @@ export default function SupervisorRecipeOverridesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTargetId}
+        onOpenChange={(o) => !o && setDeleteTargetId(null)}
+        title="Delete Recipe Override"
+        description="This removes the branch-specific override and reverts to the base recipe."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={async () => {
+          if (!deleteTargetId) return;
+          await deleteOverride.mutateAsync(deleteTargetId);
+        }}
+      />
     </div>
   );
 }

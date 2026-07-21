@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { useFieldArray, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -65,13 +66,19 @@ function CountPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ingredients]);
 
-  async function onSubmit(values: FormValues) {
-    const parsed = formSchema.parse(values);
+  const [pendingValues, setPendingValues] = useState<z.output<typeof formSchema> | null>(null);
+
+  function onSubmit(values: FormValues) {
+    setPendingValues(formSchema.parse(values));
+  }
+
+  async function handleConfirm() {
+    if (!pendingValues) return;
     await submitCount.mutateAsync({
       branch_id: activeBranchId as string,
-      started_at: parsed.started_at,
-      notes: parsed.notes || undefined,
-      counts: parsed.counts.map((c) => ({ ingredient_id: c.ingredient_id, counted_quantity: c.counted_quantity })),
+      started_at: pendingValues.started_at,
+      notes: pendingValues.notes || undefined,
+      counts: pendingValues.counts.map((c) => ({ ingredient_id: c.ingredient_id, counted_quantity: c.counted_quantity })),
     });
     router.push('/supervisor/inventory');
   }
@@ -131,6 +138,15 @@ function CountPage() {
           </form>
         </Form>
       )}
+      <ConfirmDialog
+        open={!!pendingValues}
+        onOpenChange={(o) => !o && setPendingValues(null)}
+        title="Confirm Physical Count"
+        description="This posts inventory movements for every ingredient that differs from the current recorded stock."
+        confirmLabel="Submit Count"
+        variant="danger"
+        onConfirm={handleConfirm}
+      />
     </div>
   );
 }

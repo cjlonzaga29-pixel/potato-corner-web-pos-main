@@ -1,7 +1,8 @@
 'use client';
 
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -58,14 +59,20 @@ function WasteForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  async function onSubmit(values: FormValues) {
-    const parsed = formSchema.parse(values);
+  const [pendingValues, setPendingValues] = useState<z.output<typeof formSchema> | null>(null);
+
+  function onSubmit(values: FormValues) {
+    setPendingValues(formSchema.parse(values));
+  }
+
+  async function handleConfirm() {
+    if (!pendingValues) return;
     await waste.mutateAsync({
-      quantity: parsed.quantity,
-      reason_code: parsed.reason_code,
-      notes: parsed.notes || undefined,
-      image_proof_url: parsed.image_proof_url || undefined,
-      image_proof_type: parsed.image_proof_url ? 'gallery_upload' : undefined,
+      quantity: pendingValues.quantity,
+      reason_code: pendingValues.reason_code,
+      notes: pendingValues.notes || undefined,
+      image_proof_url: pendingValues.image_proof_url || undefined,
+      image_proof_type: pendingValues.image_proof_url ? 'gallery_upload' : undefined,
     });
     router.push('/supervisor/inventory');
   }
@@ -171,6 +178,15 @@ function WasteForm() {
           </div>
         </form>
       </Form>
+      <ConfirmDialog
+        open={!!pendingValues}
+        onOpenChange={(o) => !o && setPendingValues(null)}
+        title="Confirm Waste Entry"
+        description="This immediately removes the stock from the ledger."
+        confirmLabel="Record Waste"
+        variant="danger"
+        onConfirm={handleConfirm}
+      />
     </div>
   );
 }

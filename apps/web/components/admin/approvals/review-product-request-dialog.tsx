@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatCurrency } from '@/lib/utils';
 import { useReviewProductRequest } from '@/hooks/queries/use-product-requests';
 
@@ -20,6 +21,7 @@ export function ReviewProductRequestDialog({ open, onOpenChange, request }: Revi
   const review = useReviewProductRequest(request.id);
   const [notes, setNotes] = useState('');
   const [editing, setEditing] = useState(false);
+  const [confirmApproveOpen, setConfirmApproveOpen] = useState(false);
   const [name, setName] = useState(request.proposed_name);
   const [description, setDescription] = useState(request.proposed_description ?? '');
   const [category, setCategory] = useState(request.proposed_category ?? '');
@@ -166,12 +168,25 @@ export function ReviewProductRequestDialog({ open, onOpenChange, request }: Revi
             {review.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Reject
           </Button>
-          <Button type="button" disabled={review.isPending} onClick={() => void handleApprove()}>
+          <Button
+            type="button"
+            disabled={review.isPending}
+            onClick={() => (editing ? void handleApprove() : setConfirmApproveOpen(true))}
+          >
             {review.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {editing ? 'Approve with Modifications' : 'Approve as Requested'}
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <ConfirmDialog
+        open={confirmApproveOpen}
+        onOpenChange={setConfirmApproveOpen}
+        title="Approve Product Request"
+        description="This approves the request exactly as submitted, with no modifications."
+        confirmLabel="Approve"
+        onConfirm={handleApprove}
+      />
     </Dialog>
   );
 }

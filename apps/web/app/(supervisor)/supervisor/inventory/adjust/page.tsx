@@ -1,7 +1,8 @@
 'use client';
 
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -51,12 +52,18 @@ function AdjustForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  async function onSubmit(values: FormValues) {
-    const parsed = formSchema.parse(values);
+  const [pendingValues, setPendingValues] = useState<z.output<typeof formSchema> | null>(null);
+
+  function onSubmit(values: FormValues) {
+    setPendingValues(formSchema.parse(values));
+  }
+
+  async function handleConfirm() {
+    if (!pendingValues) return;
     await adjust.mutateAsync({
-      quantity_delta: parsed.quantity_delta,
-      reason_code: parsed.reason_code,
-      notes: parsed.notes || undefined,
+      quantity_delta: pendingValues.quantity_delta,
+      reason_code: pendingValues.reason_code,
+      notes: pendingValues.notes || undefined,
     });
     router.push('/supervisor/inventory');
   }
@@ -161,6 +168,15 @@ function AdjustForm() {
           </div>
         </form>
       </Form>
+      <ConfirmDialog
+        open={!!pendingValues}
+        onOpenChange={(o) => !o && setPendingValues(null)}
+        title="Confirm Stock Adjustment"
+        description="This immediately changes the recorded stock level."
+        confirmLabel="Adjust Stock"
+        variant="danger"
+        onConfirm={handleConfirm}
+      />
     </div>
   );
 }

@@ -6,7 +6,9 @@ import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   AdjustIngredientInput,
   BranchInventoryResponse,
+  CreateIngredientInput,
   IngredientListResponse,
+  IngredientResponse,
   InventoryAlertListResponse,
   MovementListResponse,
   MovementResponse,
@@ -14,6 +16,7 @@ import type {
   PhysicalCountResultResponse,
   PhysicalCountSubmission,
   StockInInput,
+  UpdateIngredientInput,
   WasteIngredientInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
@@ -119,6 +122,44 @@ export function useInventoryRealtimeSync(branchId: string | null | undefined): v
     [SOCKET_EVENTS.INVENTORY_LOW_STOCK, SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE],
     [['ingredients', branchId], ['branch-inventory', branchId]],
   );
+}
+
+export function useCreateIngredient(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateIngredientInput) => {
+      const response = await apiClient<IngredientResponse>('/api/inventory/ingredients', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to create ingredient'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventory(queryClient, branchId);
+      toast.success('Ingredient created');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useUpdateIngredient(branchId: string | null | undefined, ingredientId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateIngredientInput) => {
+      const response = await apiClient<IngredientResponse>(`/api/inventory/ingredients/${ingredientId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update ingredient'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventory(queryClient, branchId);
+      toast.success('Ingredient updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 }
 
 export function useStockIn(branchId: string | null | undefined, ingredientId: string) {

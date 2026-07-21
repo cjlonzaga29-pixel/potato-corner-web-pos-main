@@ -1,16 +1,18 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ArrowRightLeft, ClipboardList, History, MinusCircle, PlusCircle, TriangleAlert } from 'lucide-react';
-import type { BranchInventoryRow } from '@potato-corner/shared';
+import { ArrowRightLeft, ClipboardList, History, MinusCircle, Pencil, Plus, PlusCircle, TriangleAlert } from 'lucide-react';
+import type { BranchInventoryRow, IngredientResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useBranchStore } from '@/stores/branch.store';
-import { useBranchInventory, useBranchInventoryAlerts, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
+import { useBranchInventory, useBranchInventoryAlerts, useIngredients, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
+import { IngredientDialog } from '@/components/supervisor/inventory/ingredient-dialog';
 
 export default function SupervisorInventoryPage() {
   const router = useRouter();
@@ -18,6 +20,19 @@ export default function SupervisorInventoryPage() {
   useInventoryRealtimeSync(activeBranchId);
   const { data, isLoading, isError, refetch } = useBranchInventory(activeBranchId);
   const { data: alertsData } = useBranchInventoryAlerts(activeBranchId);
+  const { data: ingredients } = useIngredients(activeBranchId);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingIngredient, setEditingIngredient] = useState<IngredientResponse | null>(null);
+
+  function openCreateDialog() {
+    setEditingIngredient(null);
+    setDialogOpen(true);
+  }
+
+  function openEditDialog(ingredientId: string) {
+    setEditingIngredient(ingredients?.find((i) => i.id === ingredientId) ?? null);
+    setDialogOpen(true);
+  }
 
   const alertCount = alertsData?.alerts.length ?? 0;
   const criticalCount = alertsData?.alerts.filter((a) => a.severity === 'critical').length ?? 0;
@@ -76,6 +91,10 @@ export default function SupervisorInventoryPage() {
             <MinusCircle className="mr-1 h-4 w-4" />
             Waste
           </Button>
+          <Button variant="ghost" size="sm" onClick={() => openEditDialog(row.original.ingredient_id)}>
+            <Pencil className="mr-1 h-4 w-4" />
+            Edit
+          </Button>
         </div>
       ),
     },
@@ -100,6 +119,10 @@ export default function SupervisorInventoryPage() {
           <Button variant="outline" onClick={() => router.push('/supervisor/inventory/count')}>
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
+          </Button>
+          <Button onClick={openCreateDialog} disabled={!activeBranchId}>
+            <Plus className="mr-2 h-4 w-4" />
+            Create Ingredient
           </Button>
         </div>
       </div>
@@ -132,6 +155,13 @@ export default function SupervisorInventoryPage() {
             description="Ingredients are created by an admin — once added, their stock movements appear here."
           />
         }
+      />
+
+      <IngredientDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        branchId={activeBranchId}
+        ingredient={editingIngredient}
       />
     </div>
   );

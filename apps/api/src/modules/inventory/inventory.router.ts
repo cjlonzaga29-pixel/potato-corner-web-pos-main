@@ -90,12 +90,20 @@ inventoryRouter.get(
 inventoryRouter.post(
   '/ingredients',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(createIngredientSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      const body = req.body as { branch_id: string };
+      if (req.user.role !== ROLES.SUPER_ADMIN) {
+        const branchIds = req.user.branch_ids ?? [];
+        if (!branchIds.includes(body.branch_id)) {
+          res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
+          return;
+        }
+      }
       const ingredient = await inventoryService.createIngredient(
         req.body,
         { id: req.user.user_id, role: req.user.role },
@@ -111,12 +119,25 @@ inventoryRouter.post(
 inventoryRouter.patch(
   '/ingredients/:id',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(updateIngredientSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      let existing;
+      try {
+        existing = await inventoryService.getIngredientById(req.params.id as string);
+      } catch (error) {
+        return handleModuleError(error, res, next);
+      }
+      if (req.user.role !== ROLES.SUPER_ADMIN) {
+        const branchIds = req.user.branch_ids ?? [];
+        if (!branchIds.includes(existing.branch_id)) {
+          res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
+          return;
+        }
+      }
       const ingredient = await inventoryService.updateIngredient(
         req.params.id as string,
         req.body,

@@ -135,16 +135,35 @@ describe('POST /ingredients — role guard', () => {
     expect(inventoryService.createIngredient).not.toHaveBeenCalled();
   });
 
-  it('supervisor token is rejected with 403 — only super_admin may create ingredients', async () => {
+  it('supervisor token is rejected with 403 BRANCH_NOT_ASSIGNED when branch_id is outside their assigned branches', async () => {
     const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients');
     const token = generateSupervisorToken([BRANCH_1]);
-    const req = mockReq(authHeader(token));
+    const req = mockReq({
+      ...authHeader(token),
+      body: { branch_id: BRANCH_2, name: 'Potato', unit: 'kg', current_stock: 0, low_stock_threshold: 10, critical_threshold: 5 },
+    });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(inventoryService.createIngredient).not.toHaveBeenCalled();
+  });
+
+  it('supervisor token passes the guard and reaches the service for their own branch', async () => {
+    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      body: { branch_id: BRANCH_1, name: 'Potato', unit: 'kg', current_stock: 0, low_stock_threshold: 10, critical_threshold: 5 },
+    });
+    const res = mockRes();
+    vi.mocked(inventoryService.createIngredient).mockResolvedValue({ id: INGREDIENT_1 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(inventoryService.createIngredient).toHaveBeenCalledOnce();
+    expect(res.status).toHaveBeenCalledWith(201);
   });
 
   it('super_admin token passes the guard and reaches the service', async () => {

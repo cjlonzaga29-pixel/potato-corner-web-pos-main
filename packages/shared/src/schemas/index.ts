@@ -14,3 +14,4 @@ export * from './attendance.schema.js';
 export * from './fraud.schema.js';
 export * from './reports.schema.js';
 export * from './notification.schema.js';
+export * from './audit.schema.js';

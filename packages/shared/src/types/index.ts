@@ -144,3 +144,7 @@ export type DismissFraudAlertInput = z.infer<typeof schemas.dismissFraudAlertSch
 export type EscalateFraudAlertInput = z.infer<typeof schemas.escalateFraudAlertSchema>;
 export type FraudAlertResponse = z.infer<typeof schemas.fraudAlertResponseSchema>;
 export type FraudAlertListResponse = z.infer<typeof schemas.fraudAlertListResponseSchema>;
+
+export type AuditLogListQuery = z.infer<typeof schemas.auditLogListQuerySchema>;
+export type AuditLogResponse = z.infer<typeof schemas.auditLogResponseSchema>;
+export type AuditLogListResponse = z.infer<typeof schemas.auditLogListResponseSchema>;

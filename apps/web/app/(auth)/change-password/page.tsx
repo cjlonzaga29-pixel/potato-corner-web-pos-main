@@ -83,10 +83,16 @@ export default function ChangePasswordPage() {
 
   async function onSubmit(values: FormValues) {
     setError(null);
-    const response = await apiClient<ChangePasswordResponseData>('/api/auth/change-password', {
-      method: 'POST',
-      body: JSON.stringify(values),
-    });
+    let response;
+    try {
+      response = await apiClient<ChangePasswordResponseData>('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify(values),
+      });
+    } catch {
+      setError('Something went wrong. Please try again.');
+      return;
+    }
 
     if (!response.data) {
       setError(

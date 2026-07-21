@@ -35,6 +35,7 @@ type ResetValues = z.infer<typeof resetSchema>;
 
 function RequestResetForm() {
   const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -42,9 +43,14 @@ function RequestResetForm() {
   } = useForm<RequestValues>({ resolver: zodResolver(requestSchema) });
 
   async function onSubmit(values: RequestValues) {
-    await apiClient('/api/auth/request-reset', { method: 'POST', body: JSON.stringify(values) });
-    // Always show the same success state — never confirm whether the email exists.
-    setSubmitted(true);
+    setError(null);
+    try {
+      await apiClient('/api/auth/request-reset', { method: 'POST', body: JSON.stringify(values) });
+      // Always show the same success state — never confirm whether the email exists.
+      setSubmitted(true);
+    } catch {
+      setError('Something went wrong. Please try again.');
+    }
   }
 
   if (submitted) {
@@ -62,6 +68,8 @@ function RequestResetForm() {
         <Input id="email" type="email" autoComplete="email" {...register('email')} />
         {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
       </div>
+      {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
+
       <Button type="submit" disabled={isSubmitting}>
         {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send reset link'}
       </Button>
@@ -82,15 +90,19 @@ function ResetPasswordForm({ token }: { token: string }) {
 
   async function onSubmit(values: ResetValues) {
     setError(null);
-    const response = await apiClient('/api/auth/reset-password', {
-      method: 'POST',
-      body: JSON.stringify({ token, ...values }),
-    });
-    if (!response.data) {
-      setError('This reset link is invalid or has expired. Request a new one.');
-      return;
+    try {
+      const response = await apiClient('/api/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ token, ...values }),
+      });
+      if (!response.data) {
+        setError('This reset link is invalid or has expired. Request a new one.');
+        return;
+      }
+      router.push('/login');
+    } catch {
+      setError('Something went wrong. Please try again.');
     }
-    router.push('/login');
   }
 
   return (

@@ -44,19 +44,33 @@ const DISCOUNT_LABELS: Record<DiscountChoice, string> = {
  * recomputes and persists the authoritative figures. Never trust this for
  * the actual charge.
  */
-function previewAmounts(subtotal: number, discountType: DiscountChoice, promoAmount: number) {
+function previewAmounts(
+  cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null }[],
+  discountType: DiscountChoice,
+  promoAmount: number,
+) {
+  const subtotal = round2(cartLines.reduce((sum, l) => sum + l.lineTotal, 0));
+  const vatableSubtotal = round2(
+    cartLines.reduce((sum, l) => {
+      const cap = l.vatableCapAmount;
+      const vatableLine = cap != null ? Math.min(l.lineTotal, round2(cap * l.quantity)) : l.lineTotal;
+      return sum + vatableLine;
+    }, 0),
+  );
+  const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
+
   if (discountType === 'pwd' || discountType === 'senior_citizen') {
-    const vatableBase = subtotal / 1.12;
+    const vatableBase = vatableSubtotal / 1.12;
     const discountAmount = round2(vatableBase * 0.2);
     const discountedBase = round2(vatableBase - discountAmount);
-    const vatAmount = round2(discountedBase * 0.12);
-    return { discountAmount, vatAmount, totalAmount: round2(discountedBase + vatAmount) };
+    return { discountAmount, vatAmount: 0, totalAmount: round2(discountedBase + nonVatableSubtotal) };
   }
   let discountAmount = 0;
-  if (discountType === 'employee') discountAmount = round2(subtotal * 0.2);
+  if (discountType === 'employee') discountAmount = round2(vatableSubtotal * 0.2);
   else if (discountType === 'promotional') discountAmount = round2(promoAmount || 0);
-  const totalAfterDiscount = round2(subtotal - discountAmount);
-  return { discountAmount, vatAmount: round2(totalAfterDiscount * (12 / 112)), totalAmount: totalAfterDiscount };
+  const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
+  const vatAmount = round2(vatableAfterDiscount * (12 / 112));
+  return { discountAmount, vatAmount, totalAmount: round2(vatableAfterDiscount + nonVatableSubtotal) };
 }
 
 export default function TerminalPage() {
@@ -152,12 +166,14 @@ export default function TerminalPage() {
       variantName: info?.variant.name ?? '',
       flavorName: flavor?.name ?? null,
       unitPrice,
+      quantity: item.quantity,
       lineTotal: round2(unitPrice * item.quantity),
+      vatableCapAmount: info?.variant.vatable_cap_amount ?? null,
     };
   });
 
   const subtotal = round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0));
-  const { discountAmount, vatAmount, totalAmount } = previewAmounts(subtotal, discountType, Number(promoAmount));
+  const { discountAmount, vatAmount, totalAmount } = previewAmounts(cartLines, discountType, Number(promoAmount));
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
 

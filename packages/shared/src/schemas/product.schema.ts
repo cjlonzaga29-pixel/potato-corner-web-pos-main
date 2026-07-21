@@ -238,6 +238,7 @@ export const posCatalogVariantSchema = z.object({
   name: z.string(),
   size_label: z.string(),
   price: z.number(),
+  vatable_cap_amount: z.number().nullable(),
   flavors: z.array(posCatalogFlavorSchema),
 });
 

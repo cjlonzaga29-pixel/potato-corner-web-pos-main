@@ -662,6 +662,7 @@ export const productsService = {
               name: variant.name,
               size_label: variant.sizeLabel,
               price,
+              vatable_cap_amount: variant.vatableCapAmount?.toNumber() ?? null,
               flavors: variant.variantFlavors
                 .filter((vf) => !disabledFlavors.has(vf.flavorId))
                 .map((vf) => ({

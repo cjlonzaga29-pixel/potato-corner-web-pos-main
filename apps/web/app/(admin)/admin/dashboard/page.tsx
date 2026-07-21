@@ -11,6 +11,7 @@ import { DashboardBranchGrid } from '@/components/admin/dashboard-branch-grid';
 import { DashboardPendingRequests } from '@/components/admin/dashboard-pending-requests';
 import { DashboardPendingOverrides } from '@/components/admin/dashboard-pending-overrides';
 import { DashboardShortcutCards } from '@/components/admin/dashboard-shortcut-cards';
+import { InventoryRollupCard } from '@/components/admin/inventory-rollup-card';
 
 const BRANCH_LIST_LIMIT = 100;
 const SHIFT_LIST_LIMIT = 100;
@@ -109,6 +110,8 @@ export default function AdminDashboardPage() {
           isLoading={isLoadingPendingPriceOverridesList}
         />
       </div>
+
+      <InventoryRollupCard />
 
       <DashboardShortcutCards />
     </div>

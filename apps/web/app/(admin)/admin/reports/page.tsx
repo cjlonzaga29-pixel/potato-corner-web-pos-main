@@ -313,7 +313,9 @@ export default function AdminReportsPage() {
         </TabsList>
 
         <TabsContent value="DAILY_SALES">
-          {dailySales.isError ? <ErrorState retry={() => dailySales.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : dailySales.isError ? <ErrorState retry={() => dailySales.refetch()} /> : <>
           <ReportLastUpdated timestamp={dailySales.data?.generated_at} isLoading={dailySales.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Gross Sales" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={dailySales.isLoading} />
@@ -326,7 +328,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="SHIFT_SUMMARY">
-          {shiftSummary.isError ? <ErrorState retry={() => shiftSummary.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : shiftSummary.isError ? <ErrorState retry={() => shiftSummary.refetch()} /> : <>
           <ReportLastUpdated timestamp={shiftSummary.data?.generated_at} isLoading={shiftSummary.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Shifts" value={(shiftSummary.data?.data ?? []).length} isLoading={shiftSummary.isLoading} />
@@ -338,7 +342,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="CASH_RECONCILIATION">
-          {cashReconciliation.isError ? <ErrorState retry={() => cashReconciliation.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : cashReconciliation.isError ? <ErrorState retry={() => cashReconciliation.refetch()} /> : <>
           <ReportLastUpdated timestamp={cashReconciliation.data?.generated_at} isLoading={cashReconciliation.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Closed/Flagged Shifts" value={(cashReconciliation.data?.data ?? []).length} isLoading={cashReconciliation.isLoading} />
@@ -365,7 +371,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="VOID_REFUND">
-          {voidRefund.isError ? <ErrorState retry={() => voidRefund.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : voidRefund.isError ? <ErrorState retry={() => voidRefund.refetch()} /> : <>
           <ReportLastUpdated timestamp={voidRefund.data?.generated_at} isLoading={voidRefund.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Voided" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'voided').length} isLoading={voidRefund.isLoading} />
@@ -377,7 +385,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="DISCOUNT_COMPLIANCE">
-          {discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
           <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Discounted Transactions" value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)} isLoading={discountCompliance.isLoading} />
@@ -393,7 +403,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="INVENTORY_MOVEMENT">
-          {inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
           <ReportLastUpdated timestamp={inventoryMovement.data?.generated_at} isLoading={inventoryMovement.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
@@ -414,7 +426,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="ATTENDANCE_SUMMARY">
-          {attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
           <ReportLastUpdated timestamp={attendanceSummary.data?.generated_at} isLoading={attendanceSummary.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Records" value={(attendanceSummary.data?.data ?? []).length} isLoading={attendanceSummary.isLoading} />
@@ -455,7 +469,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="PRODUCT_PERFORMANCE">
-          {productPerformance.isError ? <ErrorState retry={() => productPerformance.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : productPerformance.isError ? <ErrorState retry={() => productPerformance.refetch()} /> : <>
           <ReportLastUpdated timestamp={productPerformance.data?.computed_at} isLoading={productPerformance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Products" value={(productPerformance.data?.data ?? []).length} isLoading={productPerformance.isLoading} />
@@ -471,7 +487,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="FLAVOR_PERFORMANCE">
-          {flavorPerformance.isError ? <ErrorState retry={() => flavorPerformance.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : flavorPerformance.isError ? <ErrorState retry={() => flavorPerformance.refetch()} /> : <>
           <ReportLastUpdated timestamp={flavorPerformance.data?.computed_at} isLoading={flavorPerformance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Flavors" value={(flavorPerformance.data?.data ?? []).length} isLoading={flavorPerformance.isLoading} />
@@ -487,7 +505,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="EMPLOYEE_PERFORMANCE">
-          {employeePerformance.isError ? <ErrorState retry={() => employeePerformance.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : employeePerformance.isError ? <ErrorState retry={() => employeePerformance.refetch()} /> : <>
           <ReportLastUpdated timestamp={employeePerformance.data?.computed_at} isLoading={employeePerformance.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Employees" value={(employeePerformance.data?.data ?? []).length} isLoading={employeePerformance.isLoading} />
@@ -503,7 +523,9 @@ export default function AdminReportsPage() {
         </TabsContent>
 
         <TabsContent value="INVENTORY_VALUATION">
-          {inventoryValuation.isError ? <ErrorState retry={() => inventoryValuation.refetch()} /> : <>
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : inventoryValuation.isError ? <ErrorState retry={() => inventoryValuation.refetch()} /> : <>
           <ReportLastUpdated timestamp={inventoryValuation.data?.computed_at} isLoading={inventoryValuation.isLoading} />
           <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Ingredients" value={(inventoryValuation.data?.data ?? []).length} isLoading={inventoryValuation.isLoading} />

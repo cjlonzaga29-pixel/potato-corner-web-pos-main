@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Clock } from 'lucide-react';
+import { Clock, LogOut, Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useOffline } from '@/hooks/use-offline';
 import { useBranch } from '@/hooks/queries/use-branches';
@@ -29,10 +29,20 @@ interface PosHeaderProps {
 
 /** Minimal header for the POS terminal, not a sidebar. Every interactive element is touch-target sized for Android tablet in landscape. */
 export function PosHeader({ onEndShift }: PosHeaderProps) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { isOnline, pendingSyncCount } = useOffline();
   const isShiftOpen = useShiftStore((state) => state.isShiftOpen);
   const now = useClock();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    setIsLoggingOut(true);
+    try {
+      await logout();
+    } finally {
+      setIsLoggingOut(false);
+    }
+  }
   const branchId = user?.branchIds[0];
   const { data: branch, isLoading: isBranchLoading } = useBranch(branchId);
   const branchLabel = !branchId ? 'No branch' : isBranchLoading ? 'Loading…' : (branch?.name ?? 'Branch unavailable');
@@ -78,6 +88,17 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
 
         <Button variant="danger" className="touch-target" onClick={onEndShift} disabled={!isShiftOpen}>
           End Shift
+        </Button>
+
+        <Button
+          variant="outline"
+          className="touch-target"
+          onClick={() => void handleLogout()}
+          disabled={isLoggingOut}
+          aria-label="Log out"
+        >
+          {isLoggingOut ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogOut className="mr-2 h-4 w-4" />}
+          Log Out
         </Button>
       </div>
     </header>

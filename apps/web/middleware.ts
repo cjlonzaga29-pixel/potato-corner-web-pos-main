@@ -5,6 +5,7 @@ const ROLE_PATH_OWNERSHIP: Array<{ prefix: string; roles: string[] }> = [
   { prefix: '/admin', roles: ['super_admin'] },
   { prefix: '/supervisor', roles: ['supervisor'] },
   { prefix: '/terminal', roles: ['staff'] },
+  { prefix: '/clock-in', roles: ['staff'] },
   { prefix: '/shift', roles: ['staff'] },
   { prefix: '/receipts', roles: ['staff'] },
 ];

@@ -17,6 +17,7 @@ const {
   mockUsePriceOverrideRealtimeSync,
   mockUseSocketStore,
   mockUseAdminInventoryRollup,
+  mockUseAllBranchStats,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseShifts: vi.fn(),
@@ -30,6 +31,7 @@ const {
   mockUsePriceOverrideRealtimeSync: vi.fn(),
   mockUseSocketStore: vi.fn(),
   mockUseAdminInventoryRollup: vi.fn(),
+  mockUseAllBranchStats: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -56,6 +58,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
 vi.mock('@/hooks/queries/use-branches', () => ({
   useBranches: mockUseBranches,
   useBranchRealtimeSync: mockUseBranchRealtimeSync,
+  useAllBranchStats: mockUseAllBranchStats,
 }));
 
 vi.mock('@/hooks/queries/use-product-requests', () => ({
@@ -247,6 +250,7 @@ beforeEach(() => {
   mockProductRequestsData([], 0);
   mockPriceOverridesData([], 0);
   mockUseBranches.mockReturnValue({ data: { branches: [], total: 0, page: 1, limit: 100 }, isLoading: false });
+  mockUseAllBranchStats.mockReturnValue({ data: [], isLoading: false, isError: false });
   mockUseAdminInventoryRollup.mockReturnValue({
     data: { report_type: 'INVENTORY_VALUATION', computed_at: '2026-07-21T00:00:00.000Z', branch_id: null, data: [] },
     isLoading: false,

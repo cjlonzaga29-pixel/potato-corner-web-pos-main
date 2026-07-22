@@ -7,6 +7,10 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
+vi.mock('@/hooks/queries/use-branches', () => ({
+  useAllBranchStats: () => ({ data: undefined, isLoading: false, isError: false }),
+}));
+
 afterEach(() => {
   cleanup();
 });

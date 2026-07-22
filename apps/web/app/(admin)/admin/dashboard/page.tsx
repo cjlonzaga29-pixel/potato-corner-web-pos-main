@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useSocketStore } from '@/stores/socket.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
@@ -20,7 +21,7 @@ const SHIFT_LIST_LIMIT = 100;
 const TOTAL_ONLY_LIMIT = 1;
 const PANEL_LIST_LIMIT = 5;
 
-export default function AdminDashboardPage() {
+function AdminDashboardPageContent() {
   const isConnected = useSocketStore((s) => s.isConnected);
   const isReconnecting = useSocketStore((s) => s.isReconnecting);
 
@@ -137,5 +138,13 @@ export default function AdminDashboardPage() {
 
       <DashboardShortcutCards />
     </div>
+  );
+}
+
+export default function AdminDashboardPage() {
+  return (
+    <Suspense fallback={<div>Loading dashboard...</div>}>
+      <AdminDashboardPageContent />
+    </Suspense>
   );
 }

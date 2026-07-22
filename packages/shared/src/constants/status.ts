@@ -163,6 +163,14 @@ export const FRAUD_ALERT_STATUS = {
 } as const;
 export type FraudAlertStatus = (typeof FRAUD_ALERT_STATUS)[keyof typeof FRAUD_ALERT_STATUS];
 
+export const EXPENSE_CATEGORY = {
+  UTILITIES: 'utilities',
+  SUPPLIES: 'supplies',
+  STAFF_MEALS: 'staff_meals',
+  MISCELLANEOUS: 'miscellaneous',
+} as const;
+export type ExpenseCategory = (typeof EXPENSE_CATEGORY)[keyof typeof EXPENSE_CATEGORY];
+
 export const REPORT_TYPE = {
   DAILY_SALES: 'DAILY_SALES',
   SHIFT_SUMMARY: 'SHIFT_SUMMARY',

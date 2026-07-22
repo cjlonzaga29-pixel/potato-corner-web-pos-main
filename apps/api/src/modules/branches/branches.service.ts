@@ -109,8 +109,17 @@ export const branchesService = {
     }));
   },
 
-  async getAllBranchStats(requestingUser: JwtPayload) {
+  async getAllBranchStats(requestingUser: JwtPayload, branchId?: string) {
     const accessible = accessibleBranchIds(requestingUser);
+
+    if (branchId) {
+      if (accessible !== 'all' && !accessible.includes(branchId)) {
+        throw new BranchError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+      }
+      const stats = await branchesRepository.branchStats(branchId);
+      return [{ branchId, ...stats }];
+    }
+
     const stats = await branchesRepository.findAllStatsGrouped();
     return accessible === 'all' ? stats : stats.filter((s) => accessible.includes(s.branchId));
   },

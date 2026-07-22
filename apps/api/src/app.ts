@@ -27,6 +27,7 @@ import { reportsRouter } from './modules/reports/reports.router.js';
 import { notificationsRouter } from './modules/notifications/notifications.router.js';
 import { auditRouter } from './modules/audit/audit.router.js';
 import { fraudRouter } from './modules/fraud/fraud.router.js';
+import { expensesRouter } from './modules/expenses/expenses.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
 
 export const app: Express = express();
@@ -80,6 +81,7 @@ app.use('/api/reports', reportsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/fraud', fraudRouter);
+app.use('/api/expenses', expensesRouter);
 
 // Express 5 catch-all syntax (path-to-regexp v8) — '*' alone is no longer valid.
 app.use('/{*splat}', (_req: Request, res: Response) => {

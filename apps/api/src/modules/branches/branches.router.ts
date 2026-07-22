@@ -41,6 +41,10 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
+const statsQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+});
+
 /** Routes BranchError to its declared status code; unexpected errors fall through to the global handler. */
 function handleBranchError(error: unknown, res: Response, next: NextFunction): void {
   if (error instanceof BranchError) {
@@ -92,7 +96,16 @@ router.get('/accounts', authenticate, adminOnly, requirePasswordChange, async (r
 router.get('/stats', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const stats = await branchesService.getAllBranchStats(req.user);
+    const parsed = statsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const stats = await branchesService.getAllBranchStats(req.user, parsed.data.branch_id);
     res.status(200).json({ data: stats, error: null, meta: null });
   } catch (error) {
     handleBranchError(error, res, next);

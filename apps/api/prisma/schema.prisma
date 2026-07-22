@@ -126,6 +126,13 @@ enum InventoryRequestStatus {
   rejected
 }
 
+enum ExpenseCategory {
+  utilities
+  supplies
+  staff_meals
+  miscellaneous
+}
+
 // ---------------------------------------------------------------------------
 // Core tables
 // ---------------------------------------------------------------------------
@@ -191,6 +198,8 @@ model User {
   requestedInventoryRequests InventoryRequest[] @relation("RequestedInventoryRequests")
   approvedInventoryRequests  InventoryRequest[] @relation("ApprovedInventoryRequests")
 
+  expenses Expense[]
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -229,6 +238,7 @@ model Branch {
   recipeOverrides   BranchRecipeOverride[]
 
   inventoryRequests InventoryRequest[]
+  expenses          Expense[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1091,4 +1101,39 @@ model InventoryRequest {
   @@index([branchId, status])
   @@index([ingredientId])
   @@map("inventory_requests")
+}
+
+model Expense {
+  id          String          @id @default(uuid())
+  branchId    String          @map("branch_id")
+  category    ExpenseCategory
+  amount      Decimal         @db.Decimal(12, 2)
+  vendorName  String?         @map("vendor_name")
+  description String?
+  receiptUrl  String?         @map("receipt_url")
+  receiptKey  String?         @map("receipt_key")
+  incurredAt  DateTime        @map("incurred_at")
+  createdBy   String          @map("created_by")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+  deletedAt   DateTime?       @map("deleted_at")
+
+  branch  Branch @relation(fields: [branchId], references: [id])
+  creator User   @relation(fields: [createdBy], references: [id])
+
+  @@index([branchId, incurredAt])
+  @@index([createdBy])
+  @@index([deletedAt])
+  @@map("expenses")
+}
+
+model ExpenseIdempotencyKey {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  userId    String   @map("user_id")
+  expenseId String?  @map("expense_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("expense_idempotency_keys")
 }

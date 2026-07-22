@@ -415,6 +415,38 @@ export const authService = {
     });
   },
 
+  async listUserSessions(userId: string, currentDeviceId: string | null) {
+    const sessions = await authRepository.findActiveSessionsByUser(userId);
+    return sessions.map((session) => ({
+      id: session.id,
+      deviceId: session.deviceId,
+      deviceLabel: `Device ${session.deviceId.slice(0, 8)}`,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+      isCurrent: session.deviceId === currentDeviceId,
+    }));
+  },
+
+  /** Self-service revoke — rejects the current session to avoid a mid-request lockout; use /logout for that. */
+  async revokeSession(userId: string, sessionId: string, currentDeviceId: string | null, actorRole: string): Promise<void> {
+    const session = await authRepository.findSessionById(sessionId);
+    if (!session || session.userId !== userId) {
+      throw new AuthError('SESSION_NOT_FOUND', 'Session not found', 404);
+    }
+    if (session.deviceId === currentDeviceId) {
+      throw new AuthError('CANNOT_REVOKE_CURRENT_SESSION', 'Use /logout to end the current session', 400);
+    }
+
+    await authRepository.revokeRefreshToken(sessionId);
+    await recordAuditLog({
+      action: 'SESSION_REVOKED',
+      entityType: 'refresh_token',
+      entityId: sessionId,
+      actorId: userId,
+      actorRole,
+    });
+  },
+
   async setPin(userId: string, deviceId: string, pin: string): Promise<void> {
     const hasSession = await authRepository.hasActiveDeviceSession(userId, deviceId);
     if (!hasSession) {

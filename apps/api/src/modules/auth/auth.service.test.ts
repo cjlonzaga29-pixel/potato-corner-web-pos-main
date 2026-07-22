@@ -24,6 +24,8 @@ vi.mock('./auth.repository.js', () => ({
     rotateRefreshToken: vi.fn(),
     revokeAllUserTokens: vi.fn(),
     revokeRefreshToken: vi.fn(),
+    findActiveSessionsByUser: vi.fn(),
+    findSessionById: vi.fn(),
     storePinHash: vi.fn(),
     findPinHash: vi.fn(),
     hasActiveDeviceSession: vi.fn(),
@@ -305,6 +307,84 @@ describe('authService.unlockAccount', () => {
       statusCode: 404,
     });
     expect(authRepository.resetLoginAttempts).not.toHaveBeenCalled();
+  });
+});
+
+describe('authService.listUserSessions', () => {
+  it('returns only active refresh tokens for the user', async () => {
+    vi.mocked(authRepository.findActiveSessionsByUser).mockResolvedValue([
+      { id: 'session-1', deviceId: 'device-aaaaaaaa', createdAt: new Date(), expiresAt: new Date(), revokedAt: null },
+    ] as never);
+
+    const sessions = await authService.listUserSessions('user-1', 'device-aaaaaaaa');
+
+    expect(authRepository.findActiveSessionsByUser).toHaveBeenCalledWith('user-1');
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ id: 'session-1', deviceId: 'device-aaaaaaaa' });
+  });
+
+  it('marks the session matching currentDeviceId with isCurrent=true', async () => {
+    vi.mocked(authRepository.findActiveSessionsByUser).mockResolvedValue([
+      { id: 'session-1', deviceId: 'device-current', createdAt: new Date(), expiresAt: new Date(), revokedAt: null },
+      { id: 'session-2', deviceId: 'device-other', createdAt: new Date(), expiresAt: new Date(), revokedAt: null },
+    ] as never);
+
+    const sessions = await authService.listUserSessions('user-1', 'device-current');
+
+    expect(sessions.find((s) => s.id === 'session-1')?.isCurrent).toBe(true);
+    expect(sessions.find((s) => s.id === 'session-2')?.isCurrent).toBe(false);
+  });
+
+  it('excludes expired and revoked tokens (repository filters, service trusts it)', async () => {
+    // The repository query itself filters revokedAt IS NULL AND expiresAt > NOW() —
+    // this asserts the service doesn't re-include anything the repository already excluded.
+    vi.mocked(authRepository.findActiveSessionsByUser).mockResolvedValue([]);
+
+    const sessions = await authService.listUserSessions('user-1', 'device-current');
+
+    expect(sessions).toEqual([]);
+  });
+});
+
+describe('authService.revokeSession', () => {
+  it('sets revokedAt on the target session', async () => {
+    vi.mocked(authRepository.findSessionById).mockResolvedValue({
+      id: 'session-1',
+      userId: 'user-1',
+      deviceId: 'device-other',
+    } as never);
+
+    await authService.revokeSession('user-1', 'session-1', 'device-current', ROLES.STAFF);
+
+    expect(authRepository.revokeRefreshToken).toHaveBeenCalledWith('session-1');
+  });
+
+  it('throws when the session belongs to another user', async () => {
+    vi.mocked(authRepository.findSessionById).mockResolvedValue({
+      id: 'session-1',
+      userId: 'someone-else',
+      deviceId: 'device-other',
+    } as never);
+
+    await expect(authService.revokeSession('user-1', 'session-1', 'device-current', ROLES.STAFF)).rejects.toMatchObject({
+      code: 'SESSION_NOT_FOUND',
+      statusCode: 404,
+    });
+    expect(authRepository.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('throws 400 when attempting to revoke the current session', async () => {
+    vi.mocked(authRepository.findSessionById).mockResolvedValue({
+      id: 'session-1',
+      userId: 'user-1',
+      deviceId: 'device-current',
+    } as never);
+
+    await expect(authService.revokeSession('user-1', 'session-1', 'device-current', ROLES.STAFF)).rejects.toMatchObject({
+      code: 'CANNOT_REVOKE_CURRENT_SESSION',
+      statusCode: 400,
+    });
+    expect(authRepository.revokeRefreshToken).not.toHaveBeenCalled();
   });
 });
 

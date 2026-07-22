@@ -6,6 +6,7 @@ import { ROLE_LABELS } from '@potato-corner/shared';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ActiveSessionsSection } from '@/components/profile/active-sessions-section';
 
 const THEME_OPTIONS = [
   { value: 'light', label: 'Light' },
@@ -66,6 +67,8 @@ export function ProfilePageContent() {
           ))}
         </CardContent>
       </Card>
+
+      <ActiveSessionsSection />
 
       <Button variant="outline" asChild>
         <Link href="/change-password">Change Password</Link>

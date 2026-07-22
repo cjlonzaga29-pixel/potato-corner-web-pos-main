@@ -116,6 +116,18 @@ export const authRepository = {
     return prisma.refreshToken.update({ where: { id }, data: { revokedAt: new Date() } });
   },
 
+  findActiveSessionsByUser(userId: string) {
+    return prisma.refreshToken.findMany({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, deviceId: true, createdAt: true, expiresAt: true, revokedAt: true },
+    });
+  },
+
+  findSessionById(sessionId: string) {
+    return prisma.refreshToken.findUnique({ where: { id: sessionId } });
+  },
+
   findUserWithPasswordById(id: string) {
     return prisma.user.findUnique({ where: { id } });
   },

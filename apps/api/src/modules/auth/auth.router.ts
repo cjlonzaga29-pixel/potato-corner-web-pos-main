@@ -225,6 +225,44 @@ router.post('/pin/login', loginLimiter, validate(pinLoginSchema), async (req: Re
   }
 });
 
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function getDeviceIdHeader(req: Request): string | null {
+  const header = req.headers['x-device-id'];
+  return typeof header === 'string' ? header : null;
+}
+
+router.get('/sessions', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+      return;
+    }
+    const sessions = await authService.listUserSessions(req.user.user_id, getDeviceIdHeader(req));
+    res.status(200).json({ data: sessions, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.delete('/sessions/:sessionId', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+      return;
+    }
+    const sessionId = req.params.sessionId as string;
+    if (!SESSION_ID_RE.test(sessionId)) {
+      res.status(400).json({ data: null, error: { code: 'INVALID_SESSION_ID' }, meta: null });
+      return;
+    }
+    await authService.revokeSession(req.user.user_id, sessionId, getDeviceIdHeader(req), req.user.role);
+    res.status(200).json({ data: { success: true }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
 router.post(
   '/admin/unlock-account',
   authenticate,

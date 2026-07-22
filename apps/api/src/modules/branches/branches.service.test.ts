@@ -344,4 +344,30 @@ describe('branchesService.getAllBranchStats', () => {
     expect(result).toHaveLength(2);
     expect(result.map((r) => r.branchId)).toEqual(['branch-1', 'branch-2']);
   });
+
+  it('with a branchId the requester can access returns a single-branch result via branchStats', async () => {
+    vi.mocked(branchesRepository.branchStats).mockResolvedValue({
+      activeShiftsCount: 1,
+      todayTransactionCount: 3,
+      todayRevenue: 500,
+      activeStaffCount: 2,
+      lowStockIngredientCount: 0,
+    });
+
+    const result = await branchesService.getAllBranchStats(SUPER_ADMIN as never, 'branch-1');
+
+    expect(branchesRepository.branchStats).toHaveBeenCalledWith('branch-1');
+    expect(branchesRepository.findAllStatsGrouped).not.toHaveBeenCalled();
+    expect(result).toEqual([statsRow({ branchId: 'branch-1' })]);
+  });
+
+  it('with a branchId the requester cannot access throws BRANCH_ACCESS_DENIED (403)', async () => {
+    await expect(branchesService.getAllBranchStats(SUPERVISOR as never, 'branch-2')).rejects.toMatchObject({
+      code: 'BRANCH_ACCESS_DENIED',
+      statusCode: 403,
+    });
+
+    expect(branchesRepository.branchStats).not.toHaveBeenCalled();
+    expect(branchesRepository.findAllStatsGrouped).not.toHaveBeenCalled();
+  });
 });

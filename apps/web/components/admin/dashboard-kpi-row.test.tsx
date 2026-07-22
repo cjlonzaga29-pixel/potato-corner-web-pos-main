@@ -29,10 +29,14 @@ const BASE_PROPS = {
   liveRevenue: 12345.5,
   pendingApprovalsCount: 0,
   flaggedShiftsCount: 0,
+  transactionsCount: 10,
+  activeCashiersCount: 4,
+  lowStockCount: 0,
   isLoadingShifts: false,
   isLoadingRevenue: false,
   isLoadingApprovals: false,
   isLoadingFlagged: false,
+  isLoadingStats: false,
 };
 
 afterEach(() => {
@@ -41,13 +45,21 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders 4 KpiCards', () => {
+  it('renders 7 KpiCards', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
     expect(screen.getByText('Active Shifts')).toBeInTheDocument();
     expect(screen.getByText('Live Revenue (Open Shifts)')).toBeInTheDocument();
     expect(screen.getByText('Pending Approvals')).toBeInTheDocument();
     expect(screen.getByText('Flagged Shifts')).toBeInTheDocument();
+    expect(screen.getByText('Transactions Today')).toBeInTheDocument();
+    expect(screen.getByText('Active Cashiers')).toBeInTheDocument();
+    expect(screen.getByText('Low Stock')).toBeInTheDocument();
+  });
+
+  it('applies a warning treatment to low stock when count > 0', () => {
+    const { container } = render(<DashboardKpiRow {...BASE_PROPS} lowStockCount={3} />);
+    expect(container.querySelector('[data-tone="warning"]')).toBeInTheDocument();
   });
 
   it('formats revenue as PHP currency', () => {

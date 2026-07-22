@@ -18,6 +18,7 @@ const {
   mockUseSocketStore,
   mockUseAdminInventoryRollup,
   mockUseAllBranchStats,
+  mockUseSelectedBranch,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseShifts: vi.fn(),
@@ -32,10 +33,21 @@ const {
   mockUseSocketStore: vi.fn(),
   mockUseAdminInventoryRollup: vi.fn(),
   mockUseAllBranchStats: vi.fn(),
+  mockUseSelectedBranch: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: mockPush }),
+  useRouter: () => ({ push: mockPush, replace: vi.fn() }),
+  usePathname: () => '/admin/dashboard',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+vi.mock('@/hooks/use-selected-branch', () => ({
+  useSelectedBranch: mockUseSelectedBranch,
+}));
+
+vi.mock('@/components/admin/branch-selector', () => ({
+  BranchSelector: () => <div>Branch Selector</div>,
 }));
 
 vi.mock('next/link', () => ({
@@ -251,6 +263,13 @@ beforeEach(() => {
   mockPriceOverridesData([], 0);
   mockUseBranches.mockReturnValue({ data: { branches: [], total: 0, page: 1, limit: 100 }, isLoading: false });
   mockUseAllBranchStats.mockReturnValue({ data: [], isLoading: false, isError: false });
+  mockUseSelectedBranch.mockReturnValue({
+    selectedBranchId: 'all',
+    setSelectedBranch: vi.fn(),
+    availableBranches: [],
+    allLabel: 'All Branches',
+    isSingleBranchUser: false,
+  });
   mockUseAdminInventoryRollup.mockReturnValue({
     data: { report_type: 'INVENTORY_VALUATION', computed_at: '2026-07-21T00:00:00.000Z', branch_id: null, data: [] },
     isLoading: false,

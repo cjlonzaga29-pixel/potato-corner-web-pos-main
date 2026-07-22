@@ -43,6 +43,7 @@ import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 const NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
+  { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
   { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },
@@ -54,7 +55,9 @@ const NAV_ITEMS = [
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Fraud Alerts', href: '/admin/fraud-alerts', icon: ShieldAlert },
+  { label: 'Discount Audit', href: '/admin/discount-audit', icon: ShieldAlert },
   { label: 'Audit Logs', href: '/admin/audit-logs', icon: FileSearch },
+  { label: 'Login Audit', href: '/admin/login-audit', icon: FileSearch },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];
 

@@ -3,8 +3,11 @@ import { AlertTriangle } from 'lucide-react';
 import type { BranchResponse } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Badge } from '@/components/ui/badge';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { useAllBranchStats } from '@/hooks/queries/use-branches';
+import { formatCurrency } from '@/lib/utils';
 
 const SKELETON_COUNT = 6;
 
@@ -14,9 +17,11 @@ interface DashboardBranchGridProps {
   isLoading: boolean;
 }
 
-/** Row 2 of the super admin dashboard — every branch's health at a glance. Pure display, no data fetching. */
+/** Row 2 of the super admin dashboard — every branch's health at a glance, including today's live stats. */
 export function DashboardBranchGrid({ branches, flaggedBranchIds, isLoading }: DashboardBranchGridProps) {
   const router = useRouter();
+  const { data: allStats } = useAllBranchStats();
+  const statsByBranchId = new Map((allStats ?? []).map((s) => [s.branchId, s]));
 
   if (isLoading) {
     return (
@@ -44,10 +49,11 @@ export function DashboardBranchGrid({ branches, flaggedBranchIds, isLoading }: D
     <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
       {branches.map((branch) => {
         const isFlagged = flaggedBranchIds.has(branch.id);
+        const stats = statsByBranchId.get(branch.id);
         return (
           <Card
             key={branch.id}
-            onClick={() => router.push('/admin/branches')}
+            onClick={() => router.push(`/admin/branches/${branch.id}`)}
             className="cursor-pointer transition-colors hover:bg-accent/50"
           >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -61,6 +67,19 @@ export function DashboardBranchGrid({ branches, flaggedBranchIds, isLoading }: D
                   <AlertTriangle className="h-3 w-3" />
                   Shift flagged
                 </p>
+              )}
+              {stats && (
+                <div className="space-y-1 pt-1 text-xs text-muted-foreground">
+                  <p>{formatCurrency(stats.todayRevenue)} today &middot; {stats.todayTransactionCount} txns</p>
+                  <div className="flex items-center gap-2">
+                    <span>{stats.activeStaffCount} staff on</span>
+                    {stats.lowStockIngredientCount > 0 && (
+                      <Badge variant="warning" className="px-1.5 py-0 text-[10px]">
+                        {stats.lowStockIngredientCount} low stock
+                      </Badge>
+                    )}
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>

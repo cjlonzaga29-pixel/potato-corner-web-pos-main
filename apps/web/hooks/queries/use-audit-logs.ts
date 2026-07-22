@@ -7,6 +7,7 @@ import { apiClient } from '@/lib/api-client';
 export interface AuditLogFilters {
   action?: string;
   entity_type?: string;
+  actor_id?: string;
   branch_id?: string;
   date_from?: string;
   date_to?: string;
@@ -27,6 +28,7 @@ function buildQueryString(filters: AuditLogFilters): string {
   const params = new URLSearchParams();
   if (filters.action) params.set('action', filters.action);
   if (filters.entity_type) params.set('entity_type', filters.entity_type);
+  if (filters.actor_id) params.set('actor_id', filters.actor_id);
   if (filters.branch_id) params.set('branch_id', filters.branch_id);
   if (filters.date_from) params.set('date_from', filters.date_from);
   if (filters.date_to) params.set('date_to', filters.date_to);

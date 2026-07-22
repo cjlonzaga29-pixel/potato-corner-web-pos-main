@@ -57,6 +57,54 @@ export function useBranches(filters: BranchFilters = {}) {
   });
 }
 
+export interface BranchAccountOverview {
+  assignment_id: string;
+  user_id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  role: string;
+  branch_id: string;
+  branch_name: string;
+  branch_code: string;
+}
+
+/** Cross-branch roster (super_admin only) — GET /api/branches/accounts. */
+export function useBranchAccountsOverview() {
+  return useQuery({
+    queryKey: ['branches', 'accounts-overview'],
+    queryFn: async () => {
+      const response = await apiClient<BranchAccountOverview[]>('/api/branches/accounts');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch accounts'));
+      return response.data;
+    },
+    staleTime: 60 * 1000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export interface BranchStatsOverview {
+  branchId: string;
+  activeShiftsCount: number;
+  activeStaffCount: number;
+  todayRevenue: number;
+  todayTransactionCount: number;
+  lowStockIngredientCount: number;
+}
+
+/** Every branch's live stats in one call — GET /api/branches/stats, used by the dashboard branch grid. */
+export function useAllBranchStats() {
+  return useQuery({
+    queryKey: ['branches', 'all-stats'],
+    queryFn: async () => {
+      const response = await apiClient<BranchStatsOverview[]>('/api/branches/stats');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch stats'));
+      return response.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
 export function useBranch(branchId: string | null | undefined) {
   return useQuery({
     queryKey: ['branch', branchId],

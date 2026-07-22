@@ -1032,6 +1032,7 @@ enum ReportType {
   EMPLOYEE_PERFORMANCE
   INVENTORY_VALUATION
   BRANCH_COMPARISON
+  AUDIT_LOG
 }
 
 model ReportSnapshot {

@@ -1,0 +1,2 @@
+-- Add AUDIT_LOG to ReportType enum
+ALTER TYPE "ReportType" ADD VALUE IF NOT EXISTS 'AUDIT_LOG';

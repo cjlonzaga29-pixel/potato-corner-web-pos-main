@@ -13,7 +13,7 @@ vi.mock('@/components/shared/charts/kpi-card', () => ({
     value: number;
     prefix?: string;
     isLoading?: boolean;
-    tone?: 'default' | 'warning' | 'danger';
+    tone?: 'default' | 'warning' | 'danger' | 'positive' | 'negative';
   }) => (
     <div data-tone={tone ?? 'default'}>
       <span>{title}</span>
@@ -32,6 +32,9 @@ const BASE_PROPS = {
   transactionsCount: 10,
   activeCashiersCount: 4,
   lowStockCount: 0,
+  grossSales: 20000,
+  expenses: 3000,
+  netProfit: 15000,
   isLoadingShifts: false,
   isLoadingRevenue: false,
   isLoadingApprovals: false,
@@ -45,7 +48,7 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders 7 KpiCards', () => {
+  it('renders 10 KpiCards', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
     expect(screen.getByText('Active Shifts')).toBeInTheDocument();
@@ -55,6 +58,32 @@ describe('DashboardKpiRow', () => {
     expect(screen.getByText('Transactions Today')).toBeInTheDocument();
     expect(screen.getByText('Active Cashiers')).toBeInTheDocument();
     expect(screen.getByText('Low Stock')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Expenses')).toBeInTheDocument();
+    expect(screen.getByText('Net Profit')).toBeInTheDocument();
+  });
+
+  it('renders the Gross Sales card with correct currency formatting', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} grossSales={20000} />);
+    expect(screen.getByText('Gross Sales').closest('div')?.textContent).toContain('₱20000');
+  });
+
+  it('renders the Expenses card with correct currency formatting', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} expenses={3000} />);
+    expect(screen.getByText('Expenses').closest('div')?.textContent).toContain('₱3000');
+  });
+
+  it('renders the Net Profit card with positive tone when profit > 0', () => {
+    const { container } = render(<DashboardKpiRow {...BASE_PROPS} netProfit={15000} />);
+    const netProfitRow = screen.getByText('Net Profit').closest('div');
+    expect(netProfitRow).toHaveAttribute('data-tone', 'positive');
+    expect(container.querySelector('[data-tone="positive"]')).toBeInTheDocument();
+  });
+
+  it('renders the Net Profit card with negative tone when profit < 0', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} netProfit={-500} />);
+    const netProfitRow = screen.getByText('Net Profit').closest('div');
+    expect(netProfitRow).toHaveAttribute('data-tone', 'negative');
   });
 
   it('applies a warning treatment to low stock when count > 0', () => {

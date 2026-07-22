@@ -80,6 +80,9 @@ function AdminDashboardPageContent() {
   const transactionsCount = branchStats?.reduce((sum, b) => sum + b.todayTransactionCount, 0);
   const activeCashiersCount = branchStats?.reduce((sum, b) => sum + b.activeStaffCount, 0);
   const lowStockCount = branchStats?.reduce((sum, b) => sum + b.lowStockIngredientCount, 0);
+  const grossSales = branchStats?.reduce((sum, b) => sum + b.todayGrossSales, 0);
+  const expenses = branchStats?.reduce((sum, b) => sum + b.todayExpenses, 0);
+  const netProfit = branchStats?.reduce((sum, b) => sum + b.todayNetProfit, 0);
 
   const flaggedBranchIds = new Set((flaggedShiftsData?.shifts ?? []).map((shift) => shift.branch_id));
 
@@ -110,6 +113,9 @@ function AdminDashboardPageContent() {
         transactionsCount={transactionsCount}
         activeCashiersCount={activeCashiersCount}
         lowStockCount={lowStockCount}
+        grossSales={grossSales}
+        expenses={expenses}
+        netProfit={netProfit}
         isLoadingShifts={isLoadingActiveShifts}
         isLoadingRevenue={isLoadingActiveShifts}
         isLoadingApprovals={isLoadingApprovals}

@@ -88,6 +88,10 @@ export interface BranchStatsOverview {
   activeShiftsCount: number;
   activeStaffCount: number;
   todayRevenue: number;
+  todayGrossSales: number;
+  todayVat: number;
+  todayExpenses: number;
+  todayNetProfit: number;
   todayTransactionCount: number;
   lowStockIngredientCount: number;
 }

@@ -397,4 +397,46 @@ describe('AdminDashboardPage', () => {
     expect(mockUsePriceOverrideRealtimeSync).toHaveBeenCalled();
     expect(mockUseBranchRealtimeSync).toHaveBeenCalled();
   });
+
+  it('aggregates Gross Sales, Expenses, and Net Profit across branches in "All Branches" mode', () => {
+    mockUseAllBranchStats.mockReturnValue({
+      data: [
+        {
+          branchId: 'b1',
+          activeShiftsCount: 1,
+          activeStaffCount: 2,
+          todayRevenue: 1000,
+          todayGrossSales: 1000,
+          todayVat: 107.14,
+          todayExpenses: 200,
+          todayNetProfit: 692.86,
+          todayTransactionCount: 5,
+          lowStockIngredientCount: 0,
+        },
+        {
+          branchId: 'b2',
+          activeShiftsCount: 1,
+          activeStaffCount: 3,
+          todayRevenue: 500,
+          todayGrossSales: 500,
+          todayVat: 53.57,
+          todayExpenses: 50,
+          todayNetProfit: 396.43,
+          todayTransactionCount: 2,
+          lowStockIngredientCount: 0,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱1500')).toBeInTheDocument();
+    expect(screen.getByText('Expenses')).toBeInTheDocument();
+    expect(screen.getByText('₱250')).toBeInTheDocument();
+    expect(screen.getByText('Net Profit')).toBeInTheDocument();
+    expect(screen.getByText('₱1089.29')).toBeInTheDocument();
+  });
 });

@@ -25,6 +25,7 @@ import {
   Loader2,
   Wallet,
   Activity,
+  TrendingUp,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -59,6 +60,7 @@ const NAV_ITEMS = [
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
+  { label: 'Inventory Analytics', href: '/admin/reports/inventory-analytics', icon: TrendingUp },
   { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
   { label: 'Fraud Alerts', href: '/admin/fraud-alerts', icon: ShieldAlert },
   { label: 'Discount Audit', href: '/admin/discount-audit', icon: ShieldAlert },

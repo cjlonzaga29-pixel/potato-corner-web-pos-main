@@ -225,6 +225,73 @@ export const BranchComparisonReportRowSchema = z.object({
 });
 export type BranchComparisonReportRow = z.infer<typeof BranchComparisonReportRowSchema>;
 
+// ---------- Inventory Analytics (Step 10) ----------
+
+export const InventoryAnalyticsQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+  period: z.enum(['7d', '30d', '90d', '1yr']).default('30d'),
+});
+export type InventoryAnalyticsQueryInput = z.infer<typeof InventoryAnalyticsQuerySchema>;
+
+export const InventoryFastMoverSchema = z.object({
+  ingredient_id: z.uuid(),
+  name: z.string(),
+  unit: z.string(),
+  total_consumed: z.number(),
+  avg_daily_consumption: z.number(),
+});
+export type InventoryFastMover = z.infer<typeof InventoryFastMoverSchema>;
+
+export const InventorySlowMoverSchema = z.object({
+  ingredient_id: z.uuid(),
+  name: z.string(),
+  unit: z.string(),
+  total_consumed: z.number(),
+  days_since_last_movement: z.number().int().nullable(),
+});
+export type InventorySlowMover = z.infer<typeof InventorySlowMoverSchema>;
+
+export const InventoryWasteTrendPointSchema = z.object({
+  date: z.string(),
+  total_waste_quantity: z.number(),
+  total_waste_cost: z.number(),
+});
+export type InventoryWasteTrendPoint = z.infer<typeof InventoryWasteTrendPointSchema>;
+
+export const InventoryTurnoverByBranchSchema = z.object({
+  branch_id: z.uuid(),
+  branch_name: z.string(),
+  turnover_rate: z.number(),
+  total_consumed: z.number(),
+  avg_inventory_value: z.number(),
+});
+export type InventoryTurnoverByBranch = z.infer<typeof InventoryTurnoverByBranchSchema>;
+
+export const InventoryReorderRecommendationSchema = z.object({
+  ingredient_id: z.uuid(),
+  name: z.string(),
+  current_stock: z.number(),
+  avg_daily_consumption: z.number(),
+  days_until_stockout: z.number().nullable(),
+  recommended_reorder_qty: z.number(),
+});
+export type InventoryReorderRecommendation = z.infer<typeof InventoryReorderRecommendationSchema>;
+
+export const InventoryAnalyticsReportSchema = z.object({
+  fast_movers: z.array(InventoryFastMoverSchema),
+  slow_movers: z.array(InventorySlowMoverSchema),
+  waste_trends: z.array(InventoryWasteTrendPointSchema),
+  turnover_by_branch: z.array(InventoryTurnoverByBranchSchema),
+  reorder_recommendations: z.array(InventoryReorderRecommendationSchema),
+  summary: z.object({
+    total_movements: z.number().int(),
+    total_waste_cost: z.number(),
+    total_consumption_cost: z.number(),
+    avg_turnover_rate: z.number(),
+  }),
+});
+export type InventoryAnalyticsReport = z.infer<typeof InventoryAnalyticsReportSchema>;
+
 // ---------- Generic response wrappers (plain TS — not request-validated) ----------
 
 export interface ReportResponse<T> {

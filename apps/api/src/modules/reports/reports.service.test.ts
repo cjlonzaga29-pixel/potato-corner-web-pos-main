@@ -15,6 +15,7 @@ vi.mock('./reports.repository.js', () => ({
     getEmployeePerformance: vi.fn(),
     getInventoryValuation: vi.fn(),
     getBranchComparison: vi.fn(),
+    getInventoryAnalytics: vi.fn(),
     getLatestSnapshot: vi.fn(),
     saveSnapshot: vi.fn(),
     countRows: vi.fn(),
@@ -153,6 +154,24 @@ describe('reportsService.getBranchComparisonReport', () => {
     await reportsService.getBranchComparisonReport(null, 'admin-1', 'super_admin');
 
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'BRANCH_COMPARISON', actorRole: 'super_admin', branchId: null }));
+  });
+});
+
+describe('reportsService.getInventoryAnalyticsReport', () => {
+  it('defaults to a 30d period and delegates to the repository', async () => {
+    vi.mocked(reportsRepository.getInventoryAnalytics).mockResolvedValue({ summary: { total_movements: 0 } } as never);
+
+    await reportsService.getInventoryAnalyticsReport({ branchId: 'b1' }, 'user-1', 'supervisor');
+
+    expect(reportsRepository.getInventoryAnalytics).toHaveBeenCalledWith(expect.objectContaining({ branchId: 'b1', periodDays: 30 }));
+  });
+
+  it('writes REPORT_ACCESSED for the requested branch and period', async () => {
+    vi.mocked(reportsRepository.getInventoryAnalytics).mockResolvedValue({ summary: { total_movements: 0 } } as never);
+
+    await reportsService.getInventoryAnalyticsReport({ branchId: 'b1', period: '90d' }, 'user-1', 'supervisor');
+
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'INVENTORY_ANALYTICS', branchId: 'b1', actorRole: 'supervisor' }));
   });
 });
 

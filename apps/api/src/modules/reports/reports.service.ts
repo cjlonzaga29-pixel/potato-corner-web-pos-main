@@ -96,6 +96,15 @@ async function realtimeReport<T>(
   };
 }
 
+const INVENTORY_ANALYTICS_PERIOD_DAYS: Record<'7d' | '30d' | '90d' | '1yr', number> = { '7d': 7, '30d': 30, '90d': 90, '1yr': 365 };
+
+function inventoryAnalyticsDateRange(period: '7d' | '30d' | '90d' | '1yr'): { dateFrom: Date; dateTo: Date; periodDays: number } {
+  const periodDays = INVENTORY_ANALYTICS_PERIOD_DAYS[period];
+  const dateTo = new Date();
+  const dateFrom = new Date(dateTo.getTime() - periodDays * 24 * 60 * 60 * 1000);
+  return { dateFrom, dateTo, periodDays };
+}
+
 const PRECOMPUTED_WINDOW_DAYS = 30;
 const SNAPSHOT_STALE_MS = 15 * 60 * 1000;
 
@@ -164,6 +173,22 @@ export const reportsService = {
     precomputedReport('INVENTORY_VALUATION', branchId, actorId, actorRole),
   getBranchComparisonReport: (branchId: string | null, actorId: string, actorRole: string) =>
     precomputedReport('BRANCH_COMPARISON', branchId, actorId, actorRole),
+
+  async getInventoryAnalyticsReport(params: { branchId?: string; period?: '7d' | '30d' | '90d' | '1yr' }, actorId: string, actorRole: string) {
+    const period = params.period ?? '30d';
+    const { dateFrom, dateTo, periodDays } = inventoryAnalyticsDateRange(period);
+    const data = await reportsRepository.getInventoryAnalytics({ branchId: params.branchId, dateFrom, dateTo, periodDays });
+    await recordAuditLog({
+      action: 'REPORT_ACCESSED',
+      entityType: 'report',
+      entityId: 'INVENTORY_ANALYTICS',
+      actorId,
+      actorRole,
+      branchId: params.branchId ?? null,
+      afterState: { reportType: 'INVENTORY_ANALYTICS', period, branchId: params.branchId ?? null },
+    });
+    return data;
+  },
 
   async requestExport(
     reportType: ReportType,

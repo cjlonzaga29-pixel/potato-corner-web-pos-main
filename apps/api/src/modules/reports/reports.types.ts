@@ -20,6 +20,13 @@ export type {
   EmployeePerformanceReportRow,
   InventoryValuationReportRow,
   BranchComparisonReportRow,
+  InventoryAnalyticsQueryInput,
+  InventoryAnalyticsReport,
+  InventoryFastMover,
+  InventorySlowMover,
+  InventoryWasteTrendPoint,
+  InventoryTurnoverByBranch,
+  InventoryReorderRecommendation,
 } from '@potato-corner/shared';
 
 import type { ReportType } from '@potato-corner/shared';

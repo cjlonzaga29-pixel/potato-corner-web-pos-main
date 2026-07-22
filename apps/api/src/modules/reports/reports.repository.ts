@@ -16,6 +16,7 @@ import type {
   EmployeePerformanceReportRow,
   InventoryValuationReportRow,
   BranchComparisonReportRow,
+  InventoryAnalyticsReport,
 } from './reports.types.js';
 
 /**
@@ -455,6 +456,150 @@ export const reportsRepository = {
         };
       })
       .sort((a, b) => b.gross_sales - a.gross_sales);
+  },
+
+  async getInventoryAnalytics(params: { branchId?: string; dateFrom: Date; dateTo: Date; periodDays: number }): Promise<InventoryAnalyticsReport> {
+    const REORDER_LOOKBACK_DAYS = 30;
+    const REORDER_COVERAGE_DAYS = 14;
+    const REORDER_THRESHOLD_MULTIPLIER = 1.5;
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    const { branchId, dateFrom, dateTo, periodDays } = params;
+    const branchWhere = branchId ? { branchId } : {};
+    const reorderLookbackFrom = new Date(dateTo.getTime() - REORDER_LOOKBACK_DAYS * MS_PER_DAY);
+
+    const [consumptionGrouped, wasteMovements, lastMovementByIngredient, reorderConsumptionGrouped, ingredients, branches, totalMovements] = await Promise.all([
+      prisma.inventoryMovement.groupBy({
+        by: ['ingredientId'],
+        where: { movementType: 'sale_deduction', createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere },
+        _sum: { quantityChange: true },
+      }),
+      prisma.inventoryMovement.findMany({
+        where: { movementType: 'waste', createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere },
+        select: { quantityChange: true, createdAt: true, ingredientId: true },
+      }),
+      prisma.inventoryMovement.groupBy({ by: ['ingredientId'], where: { ...branchWhere }, _max: { createdAt: true } }),
+      prisma.inventoryMovement.groupBy({
+        by: ['ingredientId'],
+        where: { movementType: 'sale_deduction', createdAt: { gte: reorderLookbackFrom, lte: dateTo }, ...branchWhere },
+        _sum: { quantityChange: true },
+      }),
+      prisma.ingredient.findMany({
+        where: { deletedAt: null, ...branchWhere },
+        select: { id: true, name: true, unit: true, currentStock: true, lowStockThreshold: true, unitCost: true, branchId: true },
+      }),
+      prisma.branch.findMany({ select: { id: true, name: true } }),
+      prisma.inventoryMovement.count({ where: { createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere } }),
+    ]);
+
+    const ingredientById = new Map(ingredients.map((i) => [i.id, i]));
+    const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
+    const lastMovementById = new Map(lastMovementByIngredient.map((m) => [m.ingredientId, m._max.createdAt]));
+
+    const consumption = consumptionGrouped
+      .map((g) => ({ ingredient: ingredientById.get(g.ingredientId), totalConsumed: Math.abs(g._sum.quantityChange?.toNumber() ?? 0) }))
+      .filter((c): c is { ingredient: NonNullable<typeof c.ingredient>; totalConsumed: number } => c.ingredient !== undefined);
+
+    const fastMovers = [...consumption]
+      .sort((a, b) => b.totalConsumed - a.totalConsumed)
+      .slice(0, 10)
+      .map((c) => ({
+        ingredient_id: c.ingredient.id,
+        name: c.ingredient.name,
+        unit: c.ingredient.unit,
+        total_consumed: c.totalConsumed,
+        avg_daily_consumption: Math.round((c.totalConsumed / periodDays) * 1000) / 1000,
+      }));
+
+    const slowMovers = [...consumption]
+      .sort((a, b) => a.totalConsumed - b.totalConsumed)
+      .slice(0, 10)
+      .map((c) => {
+        const lastMovement = lastMovementById.get(c.ingredient.id) ?? null;
+        return {
+          ingredient_id: c.ingredient.id,
+          name: c.ingredient.name,
+          unit: c.ingredient.unit,
+          total_consumed: c.totalConsumed,
+          days_since_last_movement: lastMovement ? Math.floor((dateTo.getTime() - lastMovement.getTime()) / MS_PER_DAY) : null,
+        };
+      });
+
+    const wasteByDay = new Map<string, { quantity: number; cost: number }>();
+    for (const w of wasteMovements) {
+      const day = w.createdAt.toISOString().slice(0, 10);
+      const qty = Math.abs(w.quantityChange.toNumber());
+      const unitCost = ingredientById.get(w.ingredientId)?.unitCost?.toNumber() ?? 0;
+      const existing = wasteByDay.get(day) ?? { quantity: 0, cost: 0 };
+      existing.quantity += qty;
+      existing.cost += qty * unitCost;
+      wasteByDay.set(day, existing);
+    }
+    const wasteTrends = [...wasteByDay.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, v]) => ({ date, total_waste_quantity: Math.round(v.quantity * 1000) / 1000, total_waste_cost: Math.round(v.cost * 100) / 100 }));
+
+    // Turnover is a cost ratio (consumption cost ÷ inventory value), so
+    // per-branch consumption here is priced, not raw quantity — mixing
+    // units (kg, pieces, L) across ingredients only works once costed.
+    const consumedCostByBranch = new Map<string, number>();
+    for (const c of consumption) {
+      const unitCost = c.ingredient.unitCost?.toNumber() ?? 0;
+      consumedCostByBranch.set(c.ingredient.branchId, (consumedCostByBranch.get(c.ingredient.branchId) ?? 0) + c.totalConsumed * unitCost);
+    }
+    const inventoryValueByBranch = new Map<string, number>();
+    for (const ingredient of ingredients) {
+      const unitCost = ingredient.unitCost?.toNumber() ?? 0;
+      inventoryValueByBranch.set(ingredient.branchId, (inventoryValueByBranch.get(ingredient.branchId) ?? 0) + ingredient.currentStock.toNumber() * unitCost);
+    }
+    const branchIdsWithData = branchId ? [branchId] : [...new Set(ingredients.map((i) => i.branchId))];
+    const turnoverByBranch = branchIdsWithData.map((id) => {
+      const consumedCost = consumedCostByBranch.get(id) ?? 0;
+      const avgInventoryValue = inventoryValueByBranch.get(id) ?? 0;
+      return {
+        branch_id: id,
+        branch_name: branchNameById.get(id) ?? 'Unknown Branch',
+        turnover_rate: avgInventoryValue > 0 ? Math.round((consumedCost / avgInventoryValue) * 1000) / 1000 : 0,
+        total_consumed: Math.round(consumedCost * 100) / 100,
+        avg_inventory_value: Math.round(avgInventoryValue * 100) / 100,
+      };
+    });
+
+    const reorderConsumedByIngredient = new Map(reorderConsumptionGrouped.map((g) => [g.ingredientId, Math.abs(g._sum.quantityChange?.toNumber() ?? 0)]));
+    const reorderRecommendations = ingredients
+      .filter((i) => i.currentStock.toNumber() <= i.lowStockThreshold.toNumber() * REORDER_THRESHOLD_MULTIPLIER)
+      .map((i) => {
+        const currentStock = i.currentStock.toNumber();
+        const avgDailyConsumption = (reorderConsumedByIngredient.get(i.id) ?? 0) / REORDER_LOOKBACK_DAYS;
+        const daysUntilStockout = avgDailyConsumption > 0 ? Math.round((currentStock / avgDailyConsumption) * 10) / 10 : null;
+        return {
+          ingredient_id: i.id,
+          name: i.name,
+          current_stock: currentStock,
+          avg_daily_consumption: Math.round(avgDailyConsumption * 1000) / 1000,
+          days_until_stockout: daysUntilStockout,
+          recommended_reorder_qty: Math.round(avgDailyConsumption * REORDER_COVERAGE_DAYS * 1000) / 1000,
+        };
+      })
+      .sort((a, b) => (a.days_until_stockout ?? Infinity) - (b.days_until_stockout ?? Infinity));
+
+    const totalWasteCost = wasteTrends.reduce((sum, w) => sum + w.total_waste_cost, 0);
+    const totalConsumptionCost = consumption.reduce((sum, c) => sum + c.totalConsumed * (c.ingredient.unitCost?.toNumber() ?? 0), 0);
+    const avgTurnoverRate = turnoverByBranch.length ? turnoverByBranch.reduce((sum, t) => sum + t.turnover_rate, 0) / turnoverByBranch.length : 0;
+
+    return {
+      fast_movers: fastMovers,
+      slow_movers: slowMovers,
+      waste_trends: wasteTrends,
+      turnover_by_branch: turnoverByBranch,
+      reorder_recommendations: reorderRecommendations,
+      summary: {
+        total_movements: totalMovements,
+        total_waste_cost: Math.round(totalWasteCost * 100) / 100,
+        total_consumption_cost: Math.round(totalConsumptionCost * 100) / 100,
+        avg_turnover_rate: Math.round(avgTurnoverRate * 1000) / 1000,
+      },
+    };
   },
 
   async saveSnapshot(reportType: ReportType, branchId: string | null, data: unknown, parameters: unknown): Promise<void> {

@@ -1,5 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { ExportRequestSchema, ReportFiltersSchema, ROLES, type ExportRequestInput, type ReportType } from '@potato-corner/shared';
+import { ExportRequestSchema, InventoryAnalyticsQuerySchema, ReportFiltersSchema, ROLES, type ExportRequestInput, type ReportType } from '@potato-corner/shared';
 import { reportsService } from './reports.service.js';
 import { ReportError } from './reports.types.js';
 import type { ReportFilters } from './reports.types.js';
@@ -145,6 +145,27 @@ router.get('/branch-comparison', authenticate, adminOnly, requirePasswordChange,
     if (!requireUser(req, res)) return;
     const branchId = typeof req.query.branch_id === 'string' ? req.query.branch_id : null;
     const data = await reportsService.getBranchComparisonReport(branchId, req.user.user_id, req.user.role);
+    res.status(200).json({ data, error: null, meta: null });
+  } catch (error) {
+    handleReportError(error, res, next);
+  }
+});
+
+// ---------- Inventory Analytics (Step 10, real-time, both roles, branchGuard applied) ----------
+
+router.get('/inventory-analytics', authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = InventoryAnalyticsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) }, meta: null });
+      return;
+    }
+    const data = await reportsService.getInventoryAnalyticsReport(
+      { branchId: parsed.data.branch_id, period: parsed.data.period },
+      req.user.user_id,
+      req.user.role,
+    );
     res.status(200).json({ data, error: null, meta: null });
   } catch (error) {
     handleReportError(error, res, next);

@@ -6,8 +6,8 @@ loadEnv({ path: path.resolve(__dirname, '.env.e2e') });
 
 /**
  * Production config for expenses.production.spec.ts, branch-selector.production.spec.ts,
- * notifications-page.production.spec.ts, payments-gcash-qr.production.spec.ts, and
- * monitoring-page.production.spec.ts.
+ * notifications-page.production.spec.ts, payments-gcash-qr.production.spec.ts,
+ * monitoring-page.production.spec.ts, and inventory-analytics-page.production.spec.ts.
  * Uses its own global-setup.production.ts (distinct from the shared
  * global-setup.ts, which logs in seeded local accounts that don't exist on
  * production) to perform ONE real login and save it as storageState.
@@ -21,7 +21,7 @@ loadEnv({ path: path.resolve(__dirname, '.env.e2e') });
  */
 export default defineConfig({
   testDir: '.',
-  testMatch: /(expenses|branch-selector|notifications-page|payments-gcash-qr|monitoring-page)\.production\.spec\.ts/,
+  testMatch: /(expenses|branch-selector|notifications-page|payments-gcash-qr|monitoring-page|inventory-analytics-page)\.production\.spec\.ts/,
   globalSetup: require.resolve('./global-setup.production.ts'),
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

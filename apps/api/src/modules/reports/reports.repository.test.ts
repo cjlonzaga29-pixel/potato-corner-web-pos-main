@@ -181,6 +181,141 @@ describe('reportsRepository.getInventoryValuation', () => {
   });
 });
 
+describe('reportsRepository.getInventoryAnalytics', () => {
+  const dateFrom = new Date('2026-06-23T00:00:00.000Z');
+  const dateTo = new Date('2026-07-23T00:00:00.000Z');
+  const ingredientRows = [
+    { id: 'ing-fast', name: 'Potato', unit: 'kg', currentStock: decimal(100), lowStockThreshold: decimal(10), unitCost: decimal(5), branchId: 'b1' },
+    { id: 'ing-slow', name: 'Cheese Powder', unit: 'kg', currentStock: decimal(50), lowStockThreshold: decimal(10), unitCost: decimal(20), branchId: 'b1' },
+    { id: 'ing-low', name: 'Ketchup', unit: 'L', currentStock: decimal(5), lowStockThreshold: decimal(4), unitCost: decimal(10), branchId: 'b1' },
+  ];
+
+  function mockPrismaCalls(overrides: {
+    consumption?: unknown[];
+    waste?: unknown[];
+    lastMovement?: unknown[];
+    reorderConsumption?: unknown[];
+    ingredients?: unknown[];
+    branches?: unknown[];
+    totalMovements?: number;
+  }) {
+    vi.mocked(prisma.inventoryMovement.groupBy)
+      .mockResolvedValueOnce((overrides.consumption ?? []) as never)
+      .mockResolvedValueOnce((overrides.lastMovement ?? []) as never)
+      .mockResolvedValueOnce((overrides.reorderConsumption ?? []) as never);
+    vi.mocked(prisma.inventoryMovement.findMany).mockResolvedValue((overrides.waste ?? []) as never);
+    vi.mocked(prisma.ingredient.findMany).mockResolvedValue((overrides.ingredients ?? ingredientRows) as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue((overrides.branches ?? [{ id: 'b1', name: 'SM North' }]) as never);
+    vi.mocked(prisma.inventoryMovement.count).mockResolvedValue((overrides.totalMovements ?? 0) as never);
+  }
+
+  it('returns fast movers ordered by consumption desc', async () => {
+    mockPrismaCalls({
+      consumption: [
+        { ingredientId: 'ing-slow', _sum: { quantityChange: decimal(-5) } },
+        { ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-50) } },
+      ],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result.fast_movers.map((m) => m.ingredient_id)).toEqual(['ing-fast', 'ing-slow']);
+    expect(result.fast_movers[0]).toMatchObject({ total_consumed: 50, avg_daily_consumption: 1.667 });
+  });
+
+  it('returns slow movers ordered by ascending consumption', async () => {
+    mockPrismaCalls({
+      consumption: [
+        { ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-50) } },
+        { ingredientId: 'ing-slow', _sum: { quantityChange: decimal(-5) } },
+      ],
+      lastMovement: [{ ingredientId: 'ing-slow', _max: { createdAt: new Date('2026-07-10T00:00:00.000Z') } }],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result.slow_movers.map((m) => m.ingredient_id)).toEqual(['ing-slow', 'ing-fast']);
+    // Non-null: the mocked consumption fixture guarantees exactly one slow mover.
+    expect(result.slow_movers[0]!.days_since_last_movement).toBe(13);
+  });
+
+  it('computes waste trends grouped by day', async () => {
+    mockPrismaCalls({
+      waste: [
+        { ingredientId: 'ing-fast', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z') },
+        { ingredientId: 'ing-fast', quantityChange: decimal(-3), createdAt: new Date('2026-07-10T20:00:00.000Z') },
+        { ingredientId: 'ing-slow', quantityChange: decimal(-1), createdAt: new Date('2026-07-11T08:00:00.000Z') },
+      ],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result.waste_trends).toEqual([
+      { date: '2026-07-10', total_waste_quantity: 5, total_waste_cost: 25 },
+      { date: '2026-07-11', total_waste_quantity: 1, total_waste_cost: 20 },
+    ]);
+  });
+
+  it('computes turnover rate per branch', async () => {
+    mockPrismaCalls({
+      consumption: [{ ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-10) } }],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    // consumed cost = 10 * 5 = 50; inventory value = 100*5 + 50*20 + 5*10 = 1550
+    expect(result.turnover_by_branch).toEqual([
+      { branch_id: 'b1', branch_name: 'SM North', turnover_rate: 0.032, total_consumed: 50, avg_inventory_value: 1550 },
+    ]);
+  });
+
+  it('computes reorder recommendations with days until stockout', async () => {
+    mockPrismaCalls({
+      reorderConsumption: [{ ingredientId: 'ing-low', _sum: { quantityChange: decimal(-30) } }],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result.reorder_recommendations).toHaveLength(1);
+    expect(result.reorder_recommendations[0]).toMatchObject({ ingredient_id: 'ing-low', current_stock: 5, avg_daily_consumption: 1, days_until_stockout: 5 });
+  });
+
+  it('respects branchId filter', async () => {
+    mockPrismaCalls({ ingredients: [ingredientRows[0]] });
+
+    await reportsRepository.getInventoryAnalytics({ branchId: 'b1', dateFrom, dateTo, periodDays: 30 });
+
+    expect(prisma.ingredient.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }));
+    expect(prisma.inventoryMovement.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }));
+  });
+
+  it('respects the period parameter when computing avg daily consumption', async () => {
+    mockPrismaCalls({
+      consumption: [{ ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-90) } }],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 90 });
+
+    // Non-null: the mocked consumption fixture guarantees exactly one fast mover.
+    expect(result.fast_movers[0]!.avg_daily_consumption).toBe(1);
+  });
+
+  it('returns empty structures gracefully with no data', async () => {
+    mockPrismaCalls({ ingredients: [] });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result).toEqual({
+      fast_movers: [],
+      slow_movers: [],
+      waste_trends: [],
+      turnover_by_branch: [],
+      reorder_recommendations: [],
+      summary: { total_movements: 0, total_waste_cost: 0, total_consumption_cost: 0, avg_turnover_rate: 0 },
+    });
+  });
+});
+
 describe('reportsRepository.saveSnapshot', () => {
   it('writes a new ReportSnapshot row with the given payload and parameters', async () => {
     vi.mocked(prisma.reportSnapshot.create).mockResolvedValue({ id: 'snap-new' } as never);

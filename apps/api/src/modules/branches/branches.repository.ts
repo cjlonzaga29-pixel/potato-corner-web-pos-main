@@ -17,6 +17,10 @@ const activeAssignmentsInclude = {
   },
 } satisfies Prisma.BranchInclude;
 
+function round2(amount: number): number {
+  return Math.round(amount * 100) / 100;
+}
+
 function buildWhere(filters: Pick<BranchListFilters, 'status' | 'city' | 'search' | 'ids'>): Prisma.BranchWhereInput {
   return {
     ...(filters.status && { status: filters.status }),
@@ -142,15 +146,19 @@ export const branchesRepository = {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
-    const [activeShiftsCount, todayTransactions, activeStaffCount, ingredients] = await Promise.all([
+    const [activeShiftsCount, todayTransactions, activeStaffCount, todayExpenses, ingredients] = await Promise.all([
       prisma.shift.count({ where: { branchId, status: 'active' } }),
       prisma.transaction.aggregate({
         where: { branchId, createdAt: { gte: startOfDay }, status: 'completed' },
         _count: { _all: true },
-        _sum: { totalAmount: true },
+        _sum: { totalAmount: true, vatAmount: true },
       }),
       prisma.userBranchAssignment.count({
         where: { branchId, removedAt: null, user: { role: 'staff' } },
+      }),
+      prisma.expense.aggregate({
+        where: { branchId, deletedAt: null, incurredAt: { gte: startOfDay } },
+        _sum: { amount: true },
       }),
       // Prisma's filter API can't compare two columns of the same row
       // (currentStock <= lowStockThreshold) without raw SQL, which this
@@ -177,10 +185,18 @@ export const branchesRepository = {
       return currentStock <= ingredient.lowStockThreshold.toNumber();
     }).length;
 
+    const todayGrossSales = Number(todayTransactions._sum.totalAmount ?? 0);
+    const todayVat = Number(todayTransactions._sum.vatAmount ?? 0);
+    const todayExpensesTotal = Number(todayExpenses._sum.amount ?? 0);
+
     return {
       activeShiftsCount,
       todayTransactionCount: todayTransactions._count._all,
-      todayRevenue: Number(todayTransactions._sum.totalAmount ?? 0),
+      todayRevenue: todayGrossSales,
+      todayGrossSales,
+      todayVat,
+      todayExpenses: todayExpensesTotal,
+      todayNetProfit: round2(todayGrossSales - todayVat - todayExpensesTotal),
       activeStaffCount,
       lowStockIngredientCount,
     };
@@ -202,7 +218,7 @@ export const branchesRepository = {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
-    const [branches, shiftGroups, staffGroups, txnGroups, ingredients] = await Promise.all([
+    const [branches, shiftGroups, staffGroups, txnGroups, expenseGroups, ingredients] = await Promise.all([
       prisma.branch.findMany({
         where: { status: 'active' },
         select: { id: true },
@@ -220,8 +236,13 @@ export const branchesRepository = {
       prisma.transaction.groupBy({
         by: ['branchId'],
         where: { status: 'completed', createdAt: { gte: startOfDay } },
-        _sum: { totalAmount: true },
+        _sum: { totalAmount: true, vatAmount: true },
         _count: { _all: true },
+      }),
+      prisma.expense.groupBy({
+        by: ['branchId'],
+        where: { deletedAt: null, incurredAt: { gte: startOfDay } },
+        _sum: { amount: true },
       }),
       prisma.ingredient.findMany({
         where: { deletedAt: null },
@@ -238,14 +259,25 @@ export const branchesRepository = {
       }
     }
 
-    return branches.map((b) => ({
-      branchId: b.id,
-      activeShiftsCount: shiftGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
-      activeStaffCount: staffGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
-      todayRevenue: Number(txnGroups.find((g) => g.branchId === b.id)?._sum.totalAmount ?? 0),
-      todayTransactionCount: txnGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
-      lowStockIngredientCount: lowStockByBranch.get(b.id) ?? 0,
-    }));
+    return branches.map((b) => {
+      const txnGroup = txnGroups.find((g) => g.branchId === b.id);
+      const todayGrossSales = Number(txnGroup?._sum.totalAmount ?? 0);
+      const todayVat = Number(txnGroup?._sum.vatAmount ?? 0);
+      const todayExpenses = Number(expenseGroups.find((g) => g.branchId === b.id)?._sum.amount ?? 0);
+
+      return {
+        branchId: b.id,
+        activeShiftsCount: shiftGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
+        activeStaffCount: staffGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
+        todayRevenue: todayGrossSales,
+        todayGrossSales,
+        todayVat,
+        todayExpenses,
+        todayNetProfit: round2(todayGrossSales - todayVat - todayExpenses),
+        todayTransactionCount: txnGroup?._count._all ?? 0,
+        lowStockIngredientCount: lowStockByBranch.get(b.id) ?? 0,
+      };
+    });
   },
 
   /**

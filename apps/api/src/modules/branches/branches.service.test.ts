@@ -316,6 +316,10 @@ describe('branchesService.getAllBranchStats', () => {
       activeShiftsCount: 1,
       activeStaffCount: 2,
       todayRevenue: 500,
+      todayGrossSales: 500,
+      todayVat: 53.57,
+      todayExpenses: 100,
+      todayNetProfit: 346.43,
       todayTransactionCount: 3,
       lowStockIngredientCount: 0,
       ...overrides,
@@ -350,6 +354,10 @@ describe('branchesService.getAllBranchStats', () => {
       activeShiftsCount: 1,
       todayTransactionCount: 3,
       todayRevenue: 500,
+      todayGrossSales: 500,
+      todayVat: 53.57,
+      todayExpenses: 100,
+      todayNetProfit: 346.43,
       activeStaffCount: 2,
       lowStockIngredientCount: 0,
     });
@@ -369,5 +377,36 @@ describe('branchesService.getAllBranchStats', () => {
 
     expect(branchesRepository.branchStats).not.toHaveBeenCalled();
     expect(branchesRepository.findAllStatsGrouped).not.toHaveBeenCalled();
+  });
+
+  it('passes through the new financial fields (todayGrossSales, todayVat, todayExpenses, todayNetProfit) unchanged', async () => {
+    vi.mocked(branchesRepository.findAllStatsGrouped).mockResolvedValue([statsRow({ branchId: 'branch-1' })] as never);
+
+    const result = await branchesService.getAllBranchStats(SUPER_ADMIN as never);
+
+    expect(result[0]).toMatchObject({
+      todayGrossSales: 500,
+      todayVat: 53.57,
+      todayExpenses: 100,
+      todayNetProfit: 346.43,
+    });
+  });
+
+  it('filtering by branchId still returns the new financial fields', async () => {
+    vi.mocked(branchesRepository.branchStats).mockResolvedValue({
+      activeShiftsCount: 1,
+      todayTransactionCount: 3,
+      todayRevenue: 500,
+      todayGrossSales: 500,
+      todayVat: 53.57,
+      todayExpenses: 100,
+      todayNetProfit: 346.43,
+      activeStaffCount: 2,
+      lowStockIngredientCount: 0,
+    });
+
+    const result = await branchesService.getAllBranchStats(SUPER_ADMIN as never, 'branch-1');
+
+    expect(result[0]).toMatchObject({ todayGrossSales: 500, todayVat: 53.57, todayExpenses: 100, todayNetProfit: 346.43 });
   });
 });

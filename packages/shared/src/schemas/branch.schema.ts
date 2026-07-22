@@ -82,6 +82,10 @@ export const branchStatsResponseSchema = z.object({
   activeShiftsCount: z.number().int(),
   todayTransactionCount: z.number().int(),
   todayRevenue: z.number(),
+  todayGrossSales: z.number(),
+  todayVat: z.number(),
+  todayExpenses: z.number(),
+  todayNetProfit: z.number(),
   activeStaffCount: z.number().int(),
   lowStockIngredientCount: z.number().int(),
 });

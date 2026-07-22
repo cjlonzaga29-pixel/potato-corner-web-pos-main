@@ -7,6 +7,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { posthog } from '../../lib/posthog.js';
 
 const router: Router = Router();
 
@@ -62,6 +63,17 @@ router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validat
     if (!requireUser(req, res)) return;
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
     const expense = await expensesService.createExpense(req.body, req.user, req.ip ?? null, idempotencyKey);
+    posthog.capture({
+      distinctId: req.user.user_id,
+      event: 'expense_created',
+      properties: {
+        expense_id: expense.id,
+        branch_id: expense.branch_id,
+        category: expense.category,
+        role: req.user.role,
+      },
+    });
+    await posthog.flush();
     res.status(201).json({ data: expense, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

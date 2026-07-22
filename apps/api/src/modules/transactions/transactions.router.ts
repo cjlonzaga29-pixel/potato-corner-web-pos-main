@@ -19,6 +19,7 @@ import { branchGuard } from '../../middleware/branch-guard.js';
 import { shiftGuard } from '../../middleware/shift-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { posthog } from '../../lib/posthog.js';
 
 const router: Router = Router();
 
@@ -92,6 +93,20 @@ router.post(
         },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'transaction_completed',
+        properties: {
+          transaction_id: transaction.id,
+          branch_id: body.branch_id,
+          shift_id: body.shift_id,
+          payment_method: body.payment_method,
+          discount_type: body.discount_type ?? null,
+          item_count: body.items.length,
+          is_offline_transaction: body.is_offline_transaction,
+        },
+      });
+      await posthog.flush();
       res.status(201).json({ data: transaction, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -146,6 +161,17 @@ router.post(
         },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'offline_transactions_synced',
+        properties: {
+          branch_id: body.branch_id,
+          transaction_count: body.transactions.length,
+          synced_count: result.synced_count,
+          failed_count: body.transactions.length - result.synced_count,
+        },
+      });
+      await posthog.flush();
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -188,6 +214,17 @@ router.post(
         },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'hold_order_created',
+        properties: {
+          hold_order_id: holdOrder.id,
+          branch_id: body.branch_id,
+          shift_id: body.shift_id,
+          item_count: body.items.length,
+        },
+      });
+      await posthog.flush();
       res.status(201).json({ data: holdOrder, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -331,6 +368,17 @@ router.post(
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'transaction_voided',
+        properties: {
+          transaction_id: req.params.transactionId,
+          branch_id: transaction.branch_id,
+          void_reason: body.void_reason,
+          role: req.user.role,
+        },
+      });
+      await posthog.flush();
       res.status(200).json({ data: updated, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -359,6 +407,17 @@ router.post(
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'transaction_refunded',
+        properties: {
+          transaction_id: req.params.transactionId,
+          branch_id: transaction.branch_id,
+          refund_reason: body.refund_reason,
+          role: req.user.role,
+        },
+      });
+      await posthog.flush();
       res.status(200).json({ data: updated, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);

@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import * as Sentry from '@sentry/node';
 import { config } from './config/index.js';
+import { posthog } from './lib/posthog.js';
 import { apiLimiter } from './middleware/rate-limiter.js';
 import { csrfGuard } from './middleware/csrf-guard.js';
 
@@ -100,6 +101,7 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     tags: { path: req.path, method: req.method },
     user: req.user ? { id: req.user.user_id } : undefined,
   });
+  posthog.captureException(error, req.user?.user_id, { path: req.path, method: req.method });
   console.error('Unhandled error:', error);
 
   // Never leak internals to the client — generic message only.

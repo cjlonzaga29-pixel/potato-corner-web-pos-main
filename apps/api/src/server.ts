@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import * as Sentry from '@sentry/node';
 import { config } from './config/index.js';
 import { app } from './app.js';
+import { posthog } from './lib/posthog.js';
 import { createSocketServer } from './socket/socket.server.js';
 import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
@@ -34,6 +35,15 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
   Sentry.captureException(error);
+});
+
+process.on('SIGINT', async () => {
+  await posthog.shutdown();
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  await posthog.shutdown();
+  process.exit(0);
 });
 
 async function start(): Promise<void> {

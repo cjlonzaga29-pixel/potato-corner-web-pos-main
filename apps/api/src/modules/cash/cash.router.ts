@@ -8,6 +8,7 @@ import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authori
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { posthog } from '../../lib/posthog.js';
 
 const router: Router = Router();
 
@@ -55,6 +56,17 @@ router.post(
         },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'shift_opened',
+        properties: {
+          shift_id: shift.id,
+          branch_id: body.branch_id,
+          cashier_id: body.cashier_id,
+          starting_cash: body.starting_cash,
+        },
+      });
+      await posthog.flush();
       res.status(201).json({ data: shift, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -151,6 +163,17 @@ router.post(
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'shift_closed',
+        properties: {
+          shift_id: req.params.shiftId,
+          branch_id: shift.branch_id,
+          role: req.user.role,
+          has_variance_explanation: !!body.variance_explanation,
+        },
+      });
+      await posthog.flush();
       res.status(200).json({ data: shift, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);

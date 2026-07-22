@@ -11,6 +11,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { posthog } from '../../lib/posthog.js';
 
 const router: Router = Router();
 
@@ -119,6 +120,17 @@ router.post(
       if (!requireUser(req, res)) return;
       const body = req.body as { notes?: string };
       const alert = await fraudService.escalateAlert(req.params.id as string, req.user.user_id, { notes: body.notes });
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'fraud_alert_escalated',
+        properties: {
+          alert_id: req.params.id,
+          alert_type: alert.alert_type,
+          severity: alert.severity,
+          branch_id: alert.branch_id,
+        },
+      });
+      await posthog.flush();
       res.status(200).json({ data: alert, error: null, meta: null });
     } catch (error) {
       handleFraudError(error, res, next);

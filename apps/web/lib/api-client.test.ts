@@ -7,6 +7,7 @@ vi.mock('@/stores/auth.store', () => ({
       user: { id: 'u1' },
       isLoading: false,
       setAuth: vi.fn(),
+      setAccessToken: vi.fn(),
       clearAuth: vi.fn(),
     })),
     subscribe: vi.fn(() => () => {}),
@@ -145,6 +146,7 @@ interface MockAuthState {
   user: { id: string } | null;
   isLoading: boolean;
   setAuth: ReturnType<typeof vi.fn>;
+  setAccessToken: ReturnType<typeof vi.fn>;
   clearAuth: ReturnType<typeof vi.fn>;
 }
 
@@ -162,7 +164,14 @@ describe('apiClient awaitAuthReady gate', () => {
     vi.restoreAllMocks();
     vi.stubGlobal('fetch', vi.fn());
     listeners = [];
-    currentState = { accessToken: null, user: null, isLoading: true, setAuth: vi.fn(), clearAuth: vi.fn() };
+    currentState = {
+      accessToken: null,
+      user: null,
+      isLoading: true,
+      setAuth: vi.fn(),
+      setAccessToken: vi.fn((token: string) => updateState({ accessToken: token })),
+      clearAuth: vi.fn(),
+    };
 
     (useAuthStore.getState as ReturnType<typeof vi.fn>).mockImplementation(() => currentState);
     (useAuthStore.subscribe as ReturnType<typeof vi.fn>).mockImplementation(
@@ -240,5 +249,51 @@ describe('apiClient awaitAuthReady gate', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('retry after 401 attaches new token even when user is null', async () => {
+    currentState.isLoading = false;
+    currentState.user = null;
+    currentState.accessToken = null;
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/auth/refresh')) {
+        return Promise.resolve(jsonResponse(200, { data: { access_token: 'xyz' }, error: null, meta: null }));
+      }
+      return Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null }));
+    });
+    fetchMock.mockImplementationOnce((_url: string) =>
+      Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null })),
+    );
+
+    await apiClient('/api/notifications');
+
+    const productCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/notifications'));
+    expect(productCalls.length).toBe(2);
+    const [, retryInit] = productCalls[1] as [string, RequestInit];
+    const headers = retryInit.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer xyz');
+  });
+
+  it('retry updates store accessToken via setAccessToken', async () => {
+    currentState.isLoading = false;
+    currentState.user = null;
+    currentState.accessToken = null;
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/auth/refresh')) {
+        return Promise.resolve(jsonResponse(200, { data: { access_token: 'xyz' }, error: null, meta: null }));
+      }
+      return Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null }));
+    });
+    fetchMock.mockImplementationOnce((_url: string) =>
+      Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null })),
+    );
+
+    await apiClient('/api/notifications');
+
+    expect(useAuthStore.getState().accessToken).toBe('xyz');
   });
 });

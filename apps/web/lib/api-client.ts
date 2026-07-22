@@ -157,8 +157,7 @@ export async function apiClient<T>(
     console.warn('[apiClient] 401, triggering refresh', path);
     const newToken = await refreshAccessToken();
     if (newToken) {
-      const user = useAuthStore.getState().user;
-      if (user) useAuthStore.getState().setAuth(user, newToken);
+      useAuthStore.getState().setAccessToken(newToken);
       return apiClient<T>(path, init, true);
     }
 

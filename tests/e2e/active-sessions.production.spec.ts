@@ -6,7 +6,7 @@ import { test } from './helpers/prod-login';
 import { expect } from '@playwright/test';
 
 test('active sessions section loads on profile page', async ({ page }) => {
-  await page.goto('/profile');
+  await page.goto('/admin/profile');
   await page.waitForLoadState('networkidle', { timeout: 15000 });
   await page.waitForTimeout(2000);
 
@@ -18,7 +18,7 @@ test('active sessions section loads on profile page', async ({ page }) => {
 });
 
 test('current device is marked with "This device" badge', async ({ page }) => {
-  await page.goto('/profile');
+  await page.goto('/admin/profile');
   await page.waitForLoadState('networkidle', { timeout: 15000 });
   await page.waitForTimeout(2000);
 

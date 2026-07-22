@@ -63,36 +63,6 @@ async function refreshAccessToken(): Promise<string | null> {
   return refreshInFlight;
 }
 
-/**
- * Defers a request until useAuthStore's initial hydration (useAuth's
- * restoreSession on mount) has settled, so buildHeaders() doesn't read a
- * still-null accessToken on a hard reload and send an authenticated request
- * with no Authorization header (TOKEN_MISSING) — see the 2026-07-22 audit of
- * the /notifications page-load race. 5s timeout is a safety net: if auth
- * never settles, proceed anyway and let the normal 401 path surface it
- * instead of hanging the request forever.
- */
-async function awaitAuthReady(timeoutMs = 5000): Promise<void> {
-  const state = useAuthStore.getState();
-  if (state.accessToken) return;
-  if (state.isLoading === false) return;
-
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      unsub();
-      resolve();
-    }, timeoutMs);
-
-    const unsub = useAuthStore.subscribe((s) => {
-      if (s.accessToken || s.isLoading === false) {
-        clearTimeout(timer);
-        unsub();
-        resolve();
-      }
-    });
-  });
-}
-
 function buildHeaders(init?: RequestInit): Headers {
   const headers = new Headers(init?.headers);
   // FormData (multipart uploads, e.g. product images) must not get a manual
@@ -129,14 +99,6 @@ export async function apiClient<T>(
   _isRetry = false,
 ): Promise<ApiResponse<T>> {
   const isAuthPath = path === '/api/auth/refresh' || path === '/api/auth/login';
-
-  // Excluded for auth paths: /api/auth/refresh is what *makes* isLoading flip
-  // to false (see use-auth.ts's restoreSession), so waiting on it here would
-  // deadlock the refresh call against its own completion.
-  if (!isAuthPath) {
-    await awaitAuthReady();
-  }
-
   if (refreshInFlight && !_isRetry && !isAuthPath) {
     // A refresh is already resolving elsewhere (e.g. another mutation's 401
     // triggered it). Wait for it instead of firing with a token we know is

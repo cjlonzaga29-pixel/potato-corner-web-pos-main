@@ -5,11 +5,9 @@ vi.mock('@/stores/auth.store', () => ({
     getState: vi.fn(() => ({
       accessToken: 'stale-token',
       user: { id: 'u1' },
-      isLoading: false,
       setAuth: vi.fn(),
       clearAuth: vi.fn(),
     })),
-    subscribe: vi.fn(() => () => {}),
   },
 }));
 
@@ -137,108 +135,5 @@ describe('apiClient refresh race', () => {
     await apiClient('/api/products');
 
     expect(clearAuth).toHaveBeenCalled();
-  });
-});
-
-interface MockAuthState {
-  accessToken: string | null;
-  user: { id: string } | null;
-  isLoading: boolean;
-  setAuth: ReturnType<typeof vi.fn>;
-  clearAuth: ReturnType<typeof vi.fn>;
-}
-
-describe('apiClient awaitAuthReady gate', () => {
-  let listeners: Array<(state: MockAuthState, prev: MockAuthState) => void>;
-  let currentState: MockAuthState;
-
-  function updateState(partial: Partial<MockAuthState>) {
-    const prev = currentState;
-    currentState = { ...currentState, ...partial };
-    listeners.forEach((listener) => listener(currentState, prev));
-  }
-
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    vi.stubGlobal('fetch', vi.fn());
-    listeners = [];
-    currentState = { accessToken: null, user: null, isLoading: true, setAuth: vi.fn(), clearAuth: vi.fn() };
-
-    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockImplementation(() => currentState);
-    (useAuthStore.subscribe as ReturnType<typeof vi.fn>).mockImplementation(
-      (listener: (state: MockAuthState, prev: MockAuthState) => void) => {
-        listeners.push(listener);
-        return () => {
-          listeners = listeners.filter((l) => l !== listener);
-        };
-      },
-    );
-  });
-
-  it('proceeds immediately when accessToken is set', async () => {
-    currentState.accessToken = 'abc';
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValue(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
-
-    await apiClient('/api/products');
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('proceeds immediately when isLoading is false (unauth)', async () => {
-    currentState.isLoading = false;
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValue(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
-
-    await apiClient('/api/products');
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('waits for auth to settle before firing request', async () => {
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValue(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
-
-    const pending = apiClient('/api/products');
-
-    await new Promise((r) => setTimeout(r, 0));
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    updateState({ isLoading: false });
-    await pending;
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('attaches Authorization header once token arrives during wait', async () => {
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValue(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
-
-    const pending = apiClient('/api/products');
-    await new Promise((r) => setTimeout(r, 0));
-
-    updateState({ accessToken: 'abc', isLoading: false });
-    await pending;
-
-    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = requestInit.headers as Headers;
-    expect(headers.get('Authorization')).toBe('Bearer abc');
-  });
-
-  it('proceeds after 5s timeout even if auth never resolves', async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-      fetchMock.mockResolvedValue(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
-
-      const pending = apiClient('/api/products');
-
-      await vi.advanceTimersByTimeAsync(5000);
-      await pending;
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

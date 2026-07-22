@@ -6,6 +6,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { posthog } from '../../lib/posthog.js';
 
 const router: Router = Router();
 
@@ -35,6 +36,16 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const request = await inventoryRequestsService.submitRequest(req.body, req.user, req.ip ?? null);
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'inventory_request_submitted',
+        properties: {
+          request_id: request.id,
+          branch_id: request.branchId,
+          role: req.user.role,
+        },
+      });
+      await posthog.flush();
       res.status(201).json({ data: request, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -62,6 +73,16 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const request = await inventoryRequestsService.approveRequest(req.params.id as string, req.user, req.ip ?? null);
+      posthog.capture({
+        distinctId: req.user.user_id,
+        event: 'inventory_request_approved',
+        properties: {
+          request_id: request.id,
+          branch_id: request.branchId,
+          role: req.user.role,
+        },
+      });
+      await posthog.flush();
       res.status(200).json({ data: request, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);

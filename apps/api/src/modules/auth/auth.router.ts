@@ -17,6 +17,7 @@ import { adminOnly } from '../../middleware/authorize.js';
 import { loginLimiter, resetLimiter } from '../../middleware/rate-limiter.js';
 import { config } from '../../config/index.js';
 import { parseDurationMs } from '../../lib/duration.js';
+import { posthog } from '../../lib/posthog.js';
 
 const router: Router = Router();
 
@@ -87,6 +88,9 @@ router.post('/login', loginLimiter, validate(loginSchema), async (req: Request, 
     const result = await authService.login(email, password, device_id, req.ip ?? null);
     setRefreshCookie(res, result.refreshToken);
     setAccessHintCookie(res, result.access_token);
+    posthog.identify({ distinctId: result.user.id, properties: { $set: { role: result.user.role } } });
+    posthog.capture({ distinctId: result.user.id, event: 'user_logged_in', properties: { role: result.user.role, device_id } });
+    await posthog.flush();
     res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
   } catch (error) {
     handleAuthError(error, res, next);
@@ -119,6 +123,10 @@ router.post('/logout', authenticate, async (req: Request, res: Response, next: N
     }
     clearRefreshCookie(res);
     clearAccessHintCookie(res);
+    if (req.user) {
+      posthog.capture({ distinctId: req.user.user_id, event: 'user_logged_out', properties: { role: req.user.role } });
+      await posthog.flush();
+    }
     res.status(200).json({ data: { success: true }, error: null, meta: null });
   } catch (error) {
     handleAuthError(error, res, next);
@@ -159,6 +167,8 @@ router.post(
       const result = await authService.changePassword(req.user.user_id, current_password, new_password, accessToken, deviceId);
       setRefreshCookie(res, result.refreshToken);
       setAccessHintCookie(res, result.access_token);
+      posthog.capture({ distinctId: req.user.user_id, event: 'password_changed', properties: { role: req.user.role } });
+      await posthog.flush();
       res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);

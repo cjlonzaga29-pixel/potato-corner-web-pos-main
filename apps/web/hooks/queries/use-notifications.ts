@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
+import { useAuthStore } from '@/stores/auth.store';
 import type { NotificationItem } from '@/components/shared/notification-bell';
 
 interface NotificationRow {
@@ -56,6 +57,9 @@ function toItem(row: NotificationRow): NotificationItem {
 }
 
 export function useNotifications() {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const isLoading = useAuthStore((s) => s.isLoading);
+
   return useQuery({
     queryKey: ['notifications'],
     queryFn: async () => {
@@ -64,6 +68,7 @@ export function useNotifications() {
       return response.data.notifications.map(toItem);
     },
     staleTime: 15_000,
+    enabled: !!accessToken && !isLoading,
   });
 }
 

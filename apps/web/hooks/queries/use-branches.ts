@@ -92,12 +92,18 @@ export interface BranchStatsOverview {
   lowStockIngredientCount: number;
 }
 
-/** Every branch's live stats in one call — GET /api/branches/stats, used by the dashboard branch grid. */
-export function useAllBranchStats() {
+/**
+ * Every branch's live stats in one call — GET /api/branches/stats, used by
+ * the dashboard branch grid and KPI row. Pass a branchId to scope the result
+ * to a single branch (still returned as a length-1 array); omit it for the
+ * existing all-accessible-branches behavior.
+ */
+export function useAllBranchStats(branchId?: string) {
   return useQuery({
-    queryKey: ['branches', 'all-stats'],
+    queryKey: ['branches', 'all-stats', branchId ?? 'all'],
     queryFn: async () => {
-      const response = await apiClient<BranchStatsOverview[]>('/api/branches/stats');
+      const query = branchId ? `?branch_id=${branchId}` : '';
+      const response = await apiClient<BranchStatsOverview[]>(`/api/branches/stats${query}`);
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch stats'));
       return response.data;
     },

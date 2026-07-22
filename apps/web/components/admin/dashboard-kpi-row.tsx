@@ -5,22 +5,30 @@ interface DashboardKpiRowProps {
   liveRevenue: number | undefined;
   pendingApprovalsCount: number | undefined;
   flaggedShiftsCount: number | undefined;
+  transactionsCount: number | undefined;
+  activeCashiersCount: number | undefined;
+  lowStockCount: number | undefined;
   isLoadingShifts: boolean;
   isLoadingRevenue: boolean;
   isLoadingApprovals: boolean;
   isLoadingFlagged: boolean;
+  isLoadingStats: boolean;
 }
 
-/** Row 1 of the super admin dashboard — 4 independent KPIs, each with its own loading state so one slow query never blocks the others. Pure display, no data fetching. */
+/** Row 1 of the super admin dashboard — 7 independent KPIs, each with its own loading state so one slow query never blocks the others. Pure display, no data fetching. */
 export function DashboardKpiRow({
   activeShiftsCount,
   liveRevenue,
   pendingApprovalsCount,
   flaggedShiftsCount,
+  transactionsCount,
+  activeCashiersCount,
+  lowStockCount,
   isLoadingShifts,
   isLoadingRevenue,
   isLoadingApprovals,
   isLoadingFlagged,
+  isLoadingStats,
 }: DashboardKpiRowProps) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
@@ -37,6 +45,14 @@ export function DashboardKpiRow({
         value={flaggedShiftsCount ?? 0}
         isLoading={isLoadingFlagged}
         tone={(flaggedShiftsCount ?? 0) > 0 ? 'danger' : 'default'}
+      />
+      <KpiCard title="Transactions Today" value={transactionsCount ?? 0} isLoading={isLoadingStats} />
+      <KpiCard title="Active Cashiers" value={activeCashiersCount ?? 0} isLoading={isLoadingStats} />
+      <KpiCard
+        title="Low Stock"
+        value={lowStockCount ?? 0}
+        isLoading={isLoadingStats}
+        tone={(lowStockCount ?? 0) > 0 ? 'warning' : 'default'}
       />
     </div>
   );

@@ -19,6 +19,8 @@ vi.mock('./branches.repository.js', () => ({
     countActiveShifts: vi.fn(),
     branchStats: vi.fn(),
     generateBranchCode: vi.fn(),
+    findAllAccounts: vi.fn(),
+    findAllStatsGrouped: vi.fn(),
   },
 }));
 
@@ -245,5 +247,101 @@ describe('branchesService.removeSupervisor', () => {
       code: 'ASSIGNMENT_NOT_FOUND',
       statusCode: 404,
     });
+  });
+});
+
+describe('branchesService.getAllAccounts', () => {
+  const SUPERVISOR = { user_id: 'sup-1', role: ROLES.SUPERVISOR, email: 'sup@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 };
+  const SUPER_ADMIN = { user_id: 'admin-1', role: ROLES.SUPER_ADMIN, email: 'admin@test.com', iat: 0, exp: 9999999999 } as const;
+
+  function assignmentRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'assignment-1',
+      user: { id: 'user-1', firstName: 'Juan', lastName: 'Cruz', email: 'juan@test.com', role: 'staff' },
+      branch: { id: 'branch-1', name: 'Main Branch', code: 'PC-MNL-001' },
+      ...overrides,
+    };
+  }
+
+  it('throws BranchError BRANCH_ACCESS_DENIED (403) when the requesting role is not super_admin', async () => {
+    await expect(branchesService.getAllAccounts(SUPERVISOR as never)).rejects.toMatchObject({
+      code: 'BRANCH_ACCESS_DENIED',
+      statusCode: 403,
+    });
+
+    expect(branchesRepository.findAllAccounts).not.toHaveBeenCalled();
+  });
+
+  it('returns a flat array with the expected keys for a super_admin', async () => {
+    vi.mocked(branchesRepository.findAllAccounts).mockResolvedValue([assignmentRow()] as never);
+
+    const result = await branchesService.getAllAccounts(SUPER_ADMIN as never);
+
+    expect(result).toEqual([
+      {
+        assignment_id: 'assignment-1',
+        user_id: 'user-1',
+        first_name: 'Juan',
+        last_name: 'Cruz',
+        email: 'juan@test.com',
+        role: 'staff',
+        branch_id: 'branch-1',
+        branch_name: 'Main Branch',
+        branch_code: 'PC-MNL-001',
+      },
+    ]);
+  });
+
+  it('delegates entirely to branchesRepository.findAllAccounts, which restricts results to removedAt: null assignments', async () => {
+    // getAllAccounts takes no repository filter argument — the removedAt:
+    // null clause lives inside branchesRepository.findAllAccounts itself
+    // (see branches.repository.ts). This asserts the service calls the
+    // repository with no additional arguments, i.e. it never widens the
+    // repository's built-in filter.
+    vi.mocked(branchesRepository.findAllAccounts).mockResolvedValue([] as never);
+
+    await branchesService.getAllAccounts(SUPER_ADMIN as never);
+
+    expect(branchesRepository.findAllAccounts).toHaveBeenCalledWith();
+  });
+});
+
+describe('branchesService.getAllBranchStats', () => {
+  const SUPERVISOR = { user_id: 'sup-1', role: ROLES.SUPERVISOR, email: 'sup@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 };
+  const SUPER_ADMIN = { user_id: 'admin-1', role: ROLES.SUPER_ADMIN, email: 'admin@test.com', iat: 0, exp: 9999999999 } as const;
+
+  function statsRow(overrides: Record<string, unknown> = {}) {
+    return {
+      branchId: 'branch-1',
+      activeShiftsCount: 1,
+      activeStaffCount: 2,
+      todayRevenue: 500,
+      todayTransactionCount: 3,
+      lowStockIngredientCount: 0,
+      ...overrides,
+    };
+  }
+
+  it('filters results to accessible branches when accessibleBranchIds returns an array (supervisor)', async () => {
+    vi.mocked(branchesRepository.findAllStatsGrouped).mockResolvedValue([
+      statsRow({ branchId: 'branch-1' }),
+      statsRow({ branchId: 'branch-2' }),
+    ] as never);
+
+    const result = await branchesService.getAllBranchStats(SUPERVISOR as never);
+
+    expect(result).toEqual([statsRow({ branchId: 'branch-1' })]);
+  });
+
+  it("returns all stats when accessibleBranchIds returns 'all' (super_admin)", async () => {
+    vi.mocked(branchesRepository.findAllStatsGrouped).mockResolvedValue([
+      statsRow({ branchId: 'branch-1' }),
+      statsRow({ branchId: 'branch-2' }),
+    ] as never);
+
+    const result = await branchesService.getAllBranchStats(SUPER_ADMIN as never);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.branchId)).toEqual(['branch-1', 'branch-2']);
   });
 });

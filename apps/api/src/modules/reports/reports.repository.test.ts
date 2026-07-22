@@ -15,6 +15,7 @@ vi.mock('../../lib/prisma.js', () => {
     flavor: { findMany: vi.fn() },
     ingredient: { findMany: vi.fn() },
     reportSnapshot: { create: vi.fn(), findFirst: vi.fn(), deleteMany: vi.fn() },
+    auditLog: { findMany: vi.fn() },
   };
   return { prisma: prismaMock };
 });
@@ -252,5 +253,103 @@ describe('reportsRepository.countRows', () => {
     const count = await reportsRepository.countRows('INVENTORY_MOVEMENT', { page: 1, limit: 25 });
 
     expect(count).toBe(3);
+  });
+});
+
+describe('reportsRepository.getAuditLog', () => {
+  function auditLogRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'audit-1',
+      createdAt: new Date('2026-07-14T10:00:00.000Z'),
+      action: 'LOGIN_SUCCESS',
+      actorId: 'user-1',
+      actorRole: 'staff',
+      ipAddress: '127.0.0.1',
+      ...overrides,
+    };
+  }
+
+  it('filters to only the login-related actions', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getAuditLog(baseFilters);
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          action: { in: ['LOGIN_SUCCESS', 'LOGIN_FAILURE', 'LOGOUT', 'LOGOUT_ALL_DEVICES', 'PIN_LOGIN_SUCCESS', 'ACCOUNT_UNLOCKED'] },
+        }),
+      }),
+    );
+  });
+
+  it('applies the branchId filter when provided', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getAuditLog({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }),
+    );
+  });
+
+  it('does not apply a branchId filter when none is provided', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getAuditLog(baseFilters);
+
+    const callArgs = vi.mocked(prisma.auditLog.findMany).mock.calls[0]?.[0];
+    expect(callArgs?.where).not.toHaveProperty('branchId');
+  });
+
+  it('applies the date range filter via dateRangeFilter when dateFrom/dateTo are present', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getAuditLog({ dateFrom: new Date('2026-07-01T00:00:00.000Z'), dateTo: new Date('2026-07-31T23:59:59.999Z'), page: 1, limit: 25 });
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          createdAt: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-31T23:59:59.999Z') },
+        }),
+      }),
+    );
+  });
+
+  it('returns the snake_case shape (created_at, actor_id, actor_role, ip_address)', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([auditLogRow()] as never);
+
+    const rows = await reportsRepository.getAuditLog(baseFilters);
+
+    expect(rows).toEqual([
+      {
+        id: 'audit-1',
+        created_at: '2026-07-14T10:00:00.000Z',
+        action: 'LOGIN_SUCCESS',
+        actor_id: 'user-1',
+        actor_role: 'staff',
+        ip_address: '127.0.0.1',
+      },
+    ]);
+  });
+
+  it('respects pagination via filters.page and filters.limit', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getAuditLog({ page: 3, limit: 10 });
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: (3 - 1) * 10, take: 10 }),
+    );
+  });
+
+  it('orders by createdAt desc', async () => {
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getAuditLog(baseFilters);
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ orderBy: { createdAt: 'desc' } }),
+    );
   });
 });

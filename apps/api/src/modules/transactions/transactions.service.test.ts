@@ -25,6 +25,13 @@ vi.mock('./transactions.repository.js', () => ({
     findHoldOrderById: vi.fn(),
     listActiveHoldOrdersForShift: vi.fn(),
     releaseHoldOrder: vi.fn(),
+    findDiscountAuditTrail: vi.fn(),
+  },
+}));
+
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: {
+    fraudAlert: { findMany: vi.fn() },
   },
 }));
 
@@ -43,6 +50,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 vi.mock('../../lib/encryption.js', () => ({
   encryptField: vi.fn((value: string) => `encrypted(${value})`),
   hashField: vi.fn((value: string) => `hashed(${value})`),
+  decryptField: vi.fn((value: string) => `decrypted(${value})`),
 }));
 
 vi.mock('../../queues/inventory.queue.js', () => ({
@@ -64,6 +72,8 @@ const { enqueueSaleDeduction } = await import('../../queues/inventory.queue.js')
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
+const { recordAuditLog } = await import('../../middleware/audit-log.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { TransactionError } = await import('./transactions.types.js');
 
@@ -620,5 +630,173 @@ describe('transactionsService.releaseHoldOrder', () => {
     const result = await transactionsService.releaseHoldOrder('hold-1', { id: 'user-1', role: 'staff' }, null);
 
     expect(result).toMatchObject({ id: 'hold-1', status: 'released' });
+  });
+});
+
+describe('transactionsService.getDiscountAuditTrail', () => {
+  function discountAuditRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'txn-1',
+      branchId: 'branch-1',
+      transactionNumber: 'MNL001-20260714-000001',
+      discountType: 'pwd',
+      discountAmount: decimal(20),
+      discountCustomerIdEncrypted: null,
+      discountCustomerIdHash: 'hashed(PWD-12345)',
+      createdAt: new Date('2026-07-14T10:00:00.000Z'),
+      ...overrides,
+    };
+  }
+
+  const baseFilters = { branchIds: 'all' as const, page: 1, limit: 25 };
+  const superAdminActor = { id: 'admin-1', role: 'super_admin' };
+  const staffActor = { id: 'staff-1', role: 'staff' };
+
+  beforeEach(() => {
+    vi.mocked(prisma.fraudAlert.findMany).mockResolvedValue([]);
+  });
+
+  it('returns empty data when no discount transactions exist', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({ rows: [], total: 0 } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data).toEqual([]);
+    expect(result.total).toBe(0);
+    // No branches referenced by the (empty) row set, so the fraud-alert
+    // lookup is skipped entirely rather than querying with branchId: { in: [] }.
+    expect(prisma.fraudAlert.findMany).not.toHaveBeenCalled();
+  });
+
+  it('sets fraudFlagged true when a FraudAlert.evidence.transaction_ids includes the row id', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ id: 'txn-flagged' })],
+      total: 1,
+    } as never);
+    vi.mocked(prisma.fraudAlert.findMany).mockResolvedValue([
+      { branchId: 'branch-1', status: 'open', evidence: { transaction_ids: ['txn-flagged'] } },
+    ] as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, staffActor, null);
+
+    expect(result.data[0]).toMatchObject({ fraudFlagged: true });
+  });
+
+  it('sets fraudFlagged false when no matching fraud alert exists', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ id: 'txn-clean' })],
+      total: 1,
+    } as never);
+    vi.mocked(prisma.fraudAlert.findMany).mockResolvedValue([
+      { branchId: 'branch-1', status: 'open', evidence: { transaction_ids: ['some-other-txn'] } },
+    ] as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, staffActor, null);
+
+    expect(result.data[0]).toMatchObject({ fraudFlagged: false });
+  });
+
+  it('decrypts discountCustomerId only when actor.role === super_admin AND the encrypted field is present', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data[0]).toMatchObject({ discountCustomerId: 'decrypted(encrypted(PWD-12345))' });
+  });
+
+  it('leaves discountCustomerId null when actor.role !== super_admin', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, staffActor, null);
+
+    expect(result.data[0]).toMatchObject({ discountCustomerId: null });
+  });
+
+  it('leaves discountCustomerId null when discountCustomerIdEncrypted is null', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: null })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data[0]).toMatchObject({ discountCustomerId: null });
+  });
+
+  it('calls recordAuditLog with DISCOUNT_AUDIT_PII_ACCESSED only when at least one decryption occurred', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
+      total: 1,
+    } as never);
+
+    await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, '127.0.0.1');
+
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'DISCOUNT_AUDIT_PII_ACCESSED',
+        actorId: 'admin-1',
+        actorRole: 'super_admin',
+        ipAddress: '127.0.0.1',
+      }),
+    );
+  });
+
+  it('does NOT call recordAuditLog when no decryption occurred (non-super-admin actor)', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
+      total: 1,
+    } as never);
+
+    await transactionsService.getDiscountAuditTrail(baseFilters, staffActor, null);
+
+    expect(recordAuditLog).not.toHaveBeenCalled();
+  });
+
+  // NOTE: skip/take and the branchId where-clause are actually built inside
+  // transactionsRepository.findDiscountAuditTrail (transactions.repository.ts),
+  // which is mocked out for this service-level suite. The two tests below
+  // verify the service's side of the contract — that it forwards `filters`
+  // to the repository unchanged rather than re-deriving or dropping fields.
+  // Asserting the resulting Prisma `where`/`skip`/`take` shape belongs in a
+  // transactions.repository-level test, not here.
+  it('forwards filters.page and filters.limit unchanged to the repository (pagination)', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({ rows: [], total: 0 } as never);
+    const filters = { branchIds: 'all' as const, page: 3, limit: 10 };
+
+    await transactionsService.getDiscountAuditTrail(filters, superAdminActor, null);
+
+    expect(transactionsRepository.findDiscountAuditTrail).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 3, limit: 10 }),
+    );
+  });
+
+  it("forwards branchIds: 'all' unchanged so the repository applies no branchId where clause", async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({ rows: [], total: 0 } as never);
+
+    await transactionsService.getDiscountAuditTrail({ branchIds: 'all', page: 1, limit: 25 }, superAdminActor, null);
+
+    expect(transactionsRepository.findDiscountAuditTrail).toHaveBeenCalledWith(
+      expect.objectContaining({ branchIds: 'all' }),
+    );
+  });
+
+  it('forwards branchIds as an array unchanged so the repository builds a branchId `in` where clause', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({ rows: [], total: 0 } as never);
+
+    await transactionsService.getDiscountAuditTrail(
+      { branchIds: ['branch-1', 'branch-2'], page: 1, limit: 25 },
+      superAdminActor,
+      null,
+    );
+
+    expect(transactionsRepository.findDiscountAuditTrail).toHaveBeenCalledWith(
+      expect.objectContaining({ branchIds: ['branch-1', 'branch-2'] }),
+    );
   });
 });

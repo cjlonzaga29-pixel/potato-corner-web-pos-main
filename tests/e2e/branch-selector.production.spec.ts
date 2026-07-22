@@ -111,3 +111,22 @@ test('super admin dropdown lists at least one active branch', async ({ page }) =
   // have "All Branches" itself as an option, so we can't assert > 1 here.
   expect(count).toBeGreaterThanOrEqual(1);
 });
+
+const FINANCIAL_KPI_TITLES = ['Gross Sales', 'Expenses', 'Net Profit'];
+
+function kpiCardLocator(page: import('@playwright/test').Page, title: string) {
+  return page.locator('.rounded-xl', { hasText: title });
+}
+
+test('renders 3 new Financial KPIs on dashboard', async ({ page }) => {
+  await page.goto('/admin/dashboard');
+  // KpiCard renders a Skeleton (no title text) while loading, so waiting for
+  // each title's value to be visible ensures we never capture a skeleton frame.
+  for (const title of FINANCIAL_KPI_TITLES) {
+    await expect(kpiValueLocator(page, title)).toBeVisible({ timeout: 10_000 });
+    await expect(kpiCardLocator(page, title)).toBeVisible();
+  }
+
+  // Net Profit's title carries an info icon (tooltip trigger) explaining the formula.
+  await expect(kpiCardLocator(page, 'Net Profit').locator('svg.lucide-info')).toBeVisible();
+});

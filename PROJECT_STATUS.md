@@ -42,6 +42,24 @@ Unplanned follow-on work, not yet reflected in the phase table or feature status
 
 ---
 
+## 2026-07-22 — Phase 1 (Foundation) of Super Admin Dashboard redesign — COMPLETE
+
+Phase 1 (Foundation) of Super Admin Dashboard redesign — COMPLETE.
+
+- Step 1.1 + 1.2: Branch selector at top of dashboard + rewired 7 KPIs to be branch-scoped
+- Step 1.3: Full Expenses Module (backend + frontend + receipt upload, audit logged)
+- Step 1.4: Gross Sales, Expenses, and Net Profit KPIs added (10 total, grouped Financial/Operational)
+
+Test coverage:
+
+- Backend vitest: 838 -> 868 (+30 across Phase 1)
+- Frontend vitest: 197 -> 245 (+48 across Phase 1)
+- Playwright E2E production: 10 pass / 0 fail / 2 skip (single-branch tenant conditions)
+
+Live at: <https://www.potatorenovare.com>.
+
+---
+
 ## 1. Project Overview
 
 **Potato Corner Enterprise Web POS & Branch Management Platform** — a unified web application serving three role-based interfaces (Super Admin, Supervisor, Staff POS) for a multi-branch Philippine QSR (quick-service restaurant) franchise, from a single Next.js + Express codebase. Core design principles per the locked architecture spec: one web app, no mobile app, no separate deployments; offline-first POS terminal; recipe-driven inventory deduction; cash as a primary financial control (denomination-level reconciliation); immutable hash-chained audit trail; and Philippine legal compliance (PWD/Senior Citizen VAT, BIR receipts) built into the core transaction engine, not bolted on.

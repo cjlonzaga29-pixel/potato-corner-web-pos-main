@@ -163,6 +163,8 @@ Actual repo root is **nested one level** below the folder named on disk: `.../po
 
 **Orders/Cash:** `Transaction`, `TransactionItem`, `Shift`, `HoldOrder`, `HoldOrderItem`, `ShiftCashDenomination`
 
+**Expenses (Super Admin Dashboard Phase 1.3):** `Expense`, `ExpenseCategory`, `ExpenseIdempotencyKey`
+
 **System:** `IdCounter` (Phase 21 Redis-INCR replacement), `AttendanceRecord`, `AuditLog`, `FraudAlert`, `ReportSnapshot`, `Notification`
 
 For full field-level detail and cascade rules, read `apps/api/prisma/schema.prisma` directly or `docs/architecture/database-schema.md` — the latter is flagged stale in `PROJECT_STATUS.md` §19 (still describes a pre-CR-001 model list) and should be spot-checked against the schema before trusting it.
@@ -216,7 +218,7 @@ erDiagram
 | Module | Endpoints (router methods) | Notes |
 |---|---|---|
 | `auth` | 10 | Login, refresh, logout, password reset/change |
-| `branches` | 11 | CRUD + inventory sub-routes (mounted twice: `/api/branches`); now includes bulk `/accounts` (cross-branch user-branch assignments) and `/stats` (per-branch grouped stats for the overview grid) |
+| `branches` | 11 | CRUD + inventory sub-routes (mounted twice: `/api/branches`); now includes bulk `/accounts` (cross-branch user-branch assignments) and `/stats` (per-branch grouped stats for the overview grid; `/api/branches/stats?branch_id` param scopes results to a single branch, powering the Phase 1 dashboard branch selector) |
 | `products` | 16 | Largest module — catalog + variants + branch availability + price overrides surface |
 | `transactions` | 11 | Cart/checkout/void/refund; now includes a discount-audit endpoint (PWD/Senior fraud log, super_admin only, PII decryption + CSV export) |
 | `employees` | 9 | Staff CRUD, branch assignment |
@@ -230,6 +232,7 @@ erDiagram
 | `product-requests` | 4 | CR-001 branch → HQ product requests |
 | `notifications` | 3 | List/mark-read |
 | `price-overrides` | 3 | CR-001 branch price overrides |
+| `expenses` | 6+ | **Live** (Super Admin Dashboard Phase 1.3) — full CRUD + receipt upload/delete, backs the Gross Sales/Expenses/Net Profit KPIs (Phase 1.4); audit-logged |
 | `audit` | **0** | **Stub** — router file exists (13 lines) with no routes wired |
 | `discounts` | **0** | **Stub** — same shape |
 | `receipts` | **0** | **Stub** — same shape (public `/r/[txn]` frontend route has nothing to call) |
@@ -252,7 +255,7 @@ Route groups under `apps/web/app/` (51 `page.tsx` files total):
 
 | Route group | Purpose | Notes |
 |---|---|---|
-| `(admin)/admin/*` | Super Admin console | approvals, attendance, audit-logs, branches, dashboard, employees, flavors, fraud-alerts, products, recipes, reports, settings, shifts, plus 4 new pages added 2026-07-22 (discount audit report, branch accounts, login audit report) and an enhanced branch overview grid on the dashboard |
+| `(admin)/admin/*` | Super Admin console | approvals, attendance, audit-logs, branches, dashboard, employees, expenses (list, new, `[id]` — Phase 1.3), flavors, fraud-alerts, products, recipes, reports, settings, shifts, plus 4 pages added 2026-07-22 (discount audit report, branch accounts, login audit report); dashboard now has a branch selector (Phase 1.1/1.2, scopes all KPIs and the overview grid to a single branch or "all branches") and a 10-KPI grid grouped into Financial and Operational sections (Phase 1.4 added Gross Sales, Expenses, Net Profit) |
 | `(supervisor)/supervisor/*` | Branch supervisor console | approvals, attendance, cash, dashboard, employees, inventory, price-overrides, product-requests, recipes, reports |
 | `(pos)/*` | Staff POS terminal | clock-in, receipts, shift open/close, terminal (offline-first) |
 | `(auth)/*` | Auth flows | login, change-password, reset-password |

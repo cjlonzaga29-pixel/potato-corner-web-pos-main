@@ -9,3 +9,13 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     disconnect() {}
   };
 }
+
+// jsdom has no createObjectURL/revokeObjectURL — needed by file-preview
+// components (e.g. GcashQrUploader) that build an <img> preview from a
+// locally-selected File.
+if (typeof URL.createObjectURL === 'undefined') {
+  URL.createObjectURL = () => 'blob:mock-url';
+}
+if (typeof URL.revokeObjectURL === 'undefined') {
+  URL.revokeObjectURL = () => {};
+}

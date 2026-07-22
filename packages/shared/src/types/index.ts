@@ -32,6 +32,7 @@ export type CreateBranchInput = z.infer<typeof schemas.createBranchSchema>;
 export type UpdateBranchInput = z.infer<typeof schemas.updateBranchSchema>;
 export type ChangeBranchStatusInput = z.infer<typeof schemas.changeBranchStatusSchema>;
 export type AssignSupervisorInput = z.infer<typeof schemas.assignSupervisorSchema>;
+export type BulkAssignGcashQrInput = z.infer<typeof schemas.bulkAssignGcashQrSchema>;
 export type BranchResponse = z.infer<typeof schemas.branchResponseSchema>;
 export type BranchListResponse = z.infer<typeof schemas.branchListResponseSchema>;
 export type BranchAssignmentResponse = z.infer<typeof schemas.branchAssignmentResponseSchema>;

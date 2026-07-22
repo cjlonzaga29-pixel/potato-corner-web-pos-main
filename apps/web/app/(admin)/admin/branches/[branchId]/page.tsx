@@ -336,6 +336,9 @@ function SettingsTab({
               Remove QR
             </Button>
           )}
+          <Link href="/admin/payments/gcash-qr" className="block text-sm text-muted-foreground underline-offset-4 hover:underline">
+            Bulk assign to multiple branches &rarr;
+          </Link>
         </CardContent>
       </Card>
 

@@ -6,6 +6,7 @@ import {
   updateBranchSchema,
   changeBranchStatusSchema,
   assignSupervisorSchema,
+  bulkAssignGcashQrSchema,
   BRANCH_STATUS,
   type BranchStatus,
 } from '@potato-corner/shared';
@@ -178,6 +179,65 @@ router.post(
         buffer: req.file.buffer,
         originalname: req.file.originalname,
       });
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/gcash-qr/bulk-assign',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  (req: Request, res: Response, next: NextFunction) => {
+    qrUpload.single('file')(req, res, (error: unknown) => {
+      if (error) {
+        handleBranchError(
+          error instanceof multer.MulterError
+            ? new BranchError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422)
+            : error,
+          res,
+          next,
+        );
+        return;
+      }
+      next();
+    });
+  },
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A QR image file is required' }, meta: null });
+        return;
+      }
+
+      let branchIdsRaw: unknown;
+      try {
+        branchIdsRaw = JSON.parse((req.body as { branchIds?: string }).branchIds ?? '');
+      } catch {
+        res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'branchIds must be a JSON-encoded array' }, meta: null });
+        return;
+      }
+
+      const parsed = bulkAssignGcashQrSchema.safeParse({ branchIds: branchIdsRaw });
+      if (!parsed.success) {
+        res.status(422).json({
+          data: null,
+          error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+          meta: null,
+        });
+        return;
+      }
+
+      const result = await branchesService.bulkAssignGcashQr(
+        parsed.data.branchIds,
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleBranchError(error, res, next);

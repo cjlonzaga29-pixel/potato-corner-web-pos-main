@@ -23,6 +23,7 @@ import {
   ChevronsRight,
   LogOut,
   Loader2,
+  Wallet,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -45,6 +46,7 @@ const NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
+  { label: 'GCash QR', href: '/admin/payments/gcash-qr', icon: Wallet },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
   { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },

@@ -67,6 +67,10 @@ export const assignSupervisorSchema = z.object({
   userId: z.uuid(),
 });
 
+export const bulkAssignGcashQrSchema = z.object({
+  branchIds: z.array(z.uuid()).min(1).max(50),
+});
+
 export const branchAssignmentResponseSchema = z.object({
   id: z.uuid(),
   userId: z.uuid(),

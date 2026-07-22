@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { ROLES } from '@potato-corner/shared';
-import { branchCodeSchema } from '@potato-corner/shared';
+import { branchCodeSchema, bulkAssignGcashQrSchema } from '@potato-corner/shared';
 
 vi.mock('./branches.repository.js', () => ({
   branchesRepository: {
@@ -36,9 +37,29 @@ vi.mock('../../socket/socket.server.js', () => ({
   getIO: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../../lib/supabase.js', () => ({
+  supabaseAdmin: {
+    storage: {
+      from: vi.fn(() => ({
+        upload: vi.fn().mockResolvedValue({ error: null }),
+        getPublicUrl: vi.fn(() => ({ data: { publicUrl: 'https://cdn.test/branch-gcash-qr/img.webp' } })),
+      })),
+    },
+  },
+}));
+
+vi.mock('sharp', () => ({
+  default: vi.fn(() => ({
+    resize: vi.fn().mockReturnThis(),
+    webp: vi.fn().mockReturnThis(),
+    toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake-image-bytes')),
+  })),
+}));
+
 const { branchesRepository } = await import('./branches.repository.js');
 const { branchesService } = await import('./branches.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
+const { supabaseAdmin } = await import('../../lib/supabase.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
 
@@ -408,5 +429,85 @@ describe('branchesService.getAllBranchStats', () => {
     const result = await branchesService.getAllBranchStats(SUPER_ADMIN as never, 'branch-1');
 
     expect(result[0]).toMatchObject({ todayGrossSales: 500, todayVat: 53.57, todayExpenses: 100, todayNetProfit: 346.43 });
+  });
+});
+
+describe('bulkAssignGcashQrSchema', () => {
+  it('rejects non-UUID branchIds', () => {
+    expect(bulkAssignGcashQrSchema.safeParse({ branchIds: ['not-a-uuid'] }).success).toBe(false);
+  });
+
+  it('rejects an empty branchIds array', () => {
+    expect(bulkAssignGcashQrSchema.safeParse({ branchIds: [] }).success).toBe(false);
+  });
+
+  it('rejects more than 50 branchIds', () => {
+    const ids = Array.from({ length: 51 }, () => randomUUID());
+    expect(bulkAssignGcashQrSchema.safeParse({ branchIds: ids }).success).toBe(false);
+  });
+
+  it('accepts 1-50 valid UUIDs', () => {
+    expect(bulkAssignGcashQrSchema.safeParse({ branchIds: [randomUUID()] }).success).toBe(true);
+  });
+});
+
+describe('branchesService.bulkAssignGcashQr', () => {
+  const FILE = { buffer: Buffer.from('fake'), originalname: 'qr.png' };
+
+  it('uploads to multiple branches successfully', async () => {
+    vi.mocked(branchesRepository.findByIds).mockResolvedValue([
+      buildBranch({ id: 'branch-1' }),
+      buildBranch({ id: 'branch-2' }),
+    ] as never);
+    vi.mocked(branchesRepository.update).mockResolvedValue(buildBranch() as never);
+
+    const result = await branchesService.bulkAssignGcashQr(['branch-1', 'branch-2'], FILE, ACTOR, null);
+
+    expect(result.successful).toEqual([
+      { branchId: 'branch-1', gcashQrUrl: 'https://cdn.test/branch-gcash-qr/img.webp' },
+      { branchId: 'branch-2', gcashQrUrl: 'https://cdn.test/branch-gcash-qr/img.webp' },
+    ]);
+    expect(result.failed).toEqual([]);
+    expect(branchesRepository.update).toHaveBeenCalledTimes(2);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'BULK_GCASH_QR_ASSIGN' }));
+  });
+
+  it('returns partial success when one branch fails', async () => {
+    vi.mocked(branchesRepository.findByIds).mockResolvedValue([
+      buildBranch({ id: 'branch-1' }),
+      buildBranch({ id: 'branch-2' }),
+    ] as never);
+    vi.mocked(branchesRepository.update)
+      .mockResolvedValueOnce(buildBranch() as never)
+      .mockRejectedValueOnce(new Error('DB update failed'));
+
+    const result = await branchesService.bulkAssignGcashQr(['branch-1', 'branch-2'], FILE, ACTOR, null);
+
+    expect(result.successful).toEqual([{ branchId: 'branch-1', gcashQrUrl: 'https://cdn.test/branch-gcash-qr/img.webp' }]);
+    expect(result.failed).toEqual([{ branchId: 'branch-2', error: 'DB update failed' }]);
+  });
+
+  it('rejects if any branch does not exist', async () => {
+    vi.mocked(branchesRepository.findByIds).mockResolvedValue([buildBranch({ id: 'branch-1' })] as never);
+
+    await expect(
+      branchesService.bulkAssignGcashQr(['branch-1', 'branch-missing'], FILE, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'BRANCH_NOT_FOUND', statusCode: 404 });
+
+    expect(branchesRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a storage upload failure as a per-branch failure, not a thrown error', async () => {
+    vi.mocked(branchesRepository.findByIds).mockResolvedValue([buildBranch({ id: 'branch-1' })] as never);
+    vi.mocked(supabaseAdmin.storage.from).mockReturnValueOnce({
+      upload: vi.fn().mockResolvedValue({ error: { message: 'storage down' } }),
+      getPublicUrl: vi.fn(),
+    } as never);
+
+    const result = await branchesService.bulkAssignGcashQr(['branch-1'], FILE, ACTOR, null);
+
+    expect(result.successful).toEqual([]);
+    expect(result.failed).toEqual([{ branchId: 'branch-1', error: 'Failed to upload the GCash QR image' }]);
+    expect(branchesRepository.update).not.toHaveBeenCalled();
   });
 });

@@ -215,6 +215,34 @@ export function useUploadBranchGcashQr(branchId: string) {
   });
 }
 
+export interface BulkAssignGcashQrResult {
+  successful: Array<{ branchId: string; gcashQrUrl: string }>;
+  failed: Array<{ branchId: string; error: string }>;
+}
+
+/** POST /api/branches/gcash-qr/bulk-assign — one QR image applied to many branches in a single admin action. */
+export function useBulkAssignGcashQr() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ file, branchIds }: { file: File; branchIds: string[] }) => {
+      const formData = new FormData();
+      formData.set('file', file);
+      formData.set('branchIds', JSON.stringify(branchIds));
+      const response = await apiClient<BulkAssignGcashQrResult>('/api/branches/gcash-qr/bulk-assign', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to assign GCash QR'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['branches'] });
+      void queryClient.invalidateQueries({ queryKey: ['branch'] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useChangeBranchStatus(branchId: string) {
   const queryClient = useQueryClient();
   return useMutation({

@@ -90,6 +90,30 @@ function assertBranchAccess(requestingUser: JwtPayload, branchId: string): void 
   }
 }
 
+async function uploadGcashQrToStorage(
+  branchId: string,
+  file: { buffer: Buffer; originalname: string },
+): Promise<{ url: string; key: string }> {
+  const compressed = await sharp(file.buffer)
+    .resize({ width: 800, withoutEnlargement: true })
+    .webp({ quality: 85 })
+    .toBuffer();
+
+  const path = `branch-gcash-qr/${branchId}/${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
+  const { error } = await supabaseAdmin.storage
+    .from('branch-gcash-qr')
+    .upload(path, compressed, { contentType: 'image/webp', upsert: true });
+  if (error) {
+    throw new BranchError('QR_UPLOAD_FAILED', 'Failed to upload the GCash QR image', 502);
+  }
+
+  const {
+    data: { publicUrl },
+  } = supabaseAdmin.storage.from('branch-gcash-qr').getPublicUrl(path);
+
+  return { url: publicUrl, key: path };
+}
+
 export const branchesService = {
   async getAllAccounts(requestingUser: JwtPayload) {
     if (requestingUser.role !== ROLES.SUPER_ADMIN) {
@@ -208,24 +232,56 @@ export const branchesService = {
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 
-    const compressed = await sharp(file.buffer)
-      .resize({ width: 800, withoutEnlargement: true })
-      .webp({ quality: 85 })
-      .toBuffer();
+    return uploadGcashQrToStorage(branchId, file);
+  },
 
-    const path = `branch-gcash-qr/${branchId}/${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
-    const { error } = await supabaseAdmin.storage
-      .from('branch-gcash-qr')
-      .upload(path, compressed, { contentType: 'image/webp', upsert: true });
-    if (error) {
-      throw new BranchError('QR_UPLOAD_FAILED', 'Failed to upload the GCash QR image', 502);
+  /**
+   * Uploads one QR image to every listed branch's own storage key, then
+   * persists gcashQrUrl/gcashQrKey per branch — mirroring the two-step
+   * upload-then-update flow the single-branch UI already does client-side
+   * (upload endpoint + PATCH). Non-fatal per branch: one failure doesn't
+   * stop the rest, so the response carries a partial-success shape.
+   */
+  async bulkAssignGcashQr(
+    branchIds: string[],
+    file: { buffer: Buffer; originalname: string },
+    assignedBy: { id: string; role: string },
+    ipAddress: string | null,
+  ): Promise<{
+    successful: Array<{ branchId: string; gcashQrUrl: string }>;
+    failed: Array<{ branchId: string; error: string }>;
+  }> {
+    const branches = await branchesRepository.findByIds(branchIds);
+    const foundIds = new Set(branches.map((b) => b.id));
+    const missingIds = branchIds.filter((id) => !foundIds.has(id));
+    if (missingIds.length > 0) {
+      throw new BranchError('BRANCH_NOT_FOUND', `Branch(es) not found: ${missingIds.join(', ')}`, 404);
     }
 
-    const {
-      data: { publicUrl },
-    } = supabaseAdmin.storage.from('branch-gcash-qr').getPublicUrl(path);
+    const successful: Array<{ branchId: string; gcashQrUrl: string }> = [];
+    const failed: Array<{ branchId: string; error: string }> = [];
 
-    return { url: publicUrl, key: path };
+    for (const branchId of branchIds) {
+      try {
+        const { url, key } = await uploadGcashQrToStorage(branchId, file);
+        await branchesRepository.update(branchId, { gcashQrUrl: url, gcashQrKey: key });
+        successful.push({ branchId, gcashQrUrl: url });
+      } catch (error) {
+        failed.push({ branchId, error: error instanceof Error ? error.message : 'Upload failed' });
+      }
+    }
+
+    await recordAuditLog({
+      action: 'BULK_GCASH_QR_ASSIGN',
+      entityType: 'branch',
+      entityId: branchIds.join(','),
+      actorId: assignedBy.id,
+      actorRole: assignedBy.role,
+      afterState: { branchIds, successCount: successful.length, failureCount: failed.length },
+      ipAddress,
+    });
+
+    return { successful, failed };
   },
 
   async changeBranchStatus(

@@ -235,8 +235,9 @@ describe('reportsRepository.getInventoryAnalytics', () => {
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
     expect(result.slow_movers.map((m) => m.ingredient_id)).toEqual(['ing-slow', 'ing-fast']);
-    // Non-null: the mocked consumption fixture guarantees exactly one slow mover.
-    expect(result.slow_movers[0]!.days_since_last_movement).toBe(13);
+    const slowest = result.slow_movers[0];
+    expect(slowest).toBeDefined();
+    expect(slowest?.days_since_last_movement).toBe(13);
   });
 
   it('computes waste trends grouped by day', async () => {
@@ -296,8 +297,9 @@ describe('reportsRepository.getInventoryAnalytics', () => {
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 90 });
 
-    // Non-null: the mocked consumption fixture guarantees exactly one fast mover.
-    expect(result.fast_movers[0]!.avg_daily_consumption).toBe(1);
+    const fastest = result.fast_movers[0];
+    expect(fastest).toBeDefined();
+    expect(fastest?.avg_daily_consumption).toBe(1);
   });
 
   it('returns empty structures gracefully with no data', async () => {

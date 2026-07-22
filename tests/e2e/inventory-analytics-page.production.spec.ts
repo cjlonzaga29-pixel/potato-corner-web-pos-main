@@ -11,7 +11,7 @@ test('inventory analytics page loads and renders panels', async ({ page }) => {
   await page.goto('/admin/reports/inventory-analytics');
   await expect(page.getByRole('heading', { name: 'Inventory Analytics' })).toBeVisible();
   for (const title of PANEL_TITLES) {
-    await expect(page.getByText(title)).toBeVisible();
+    await expect(page.getByRole('heading', { name: title })).toBeVisible();
   }
 });
 

@@ -155,6 +155,14 @@ model User {
   tinNumberEncrypted        String? @map("tin_number_encrypted")
   pagibigNumberEncrypted    String? @map("pagibig_number_encrypted")
 
+  // Step 11b Phase 1: TOTP 2FA enrollment. totpSecret is application-layer
+  // AES-256-GCM ciphertext (src/lib/encryption.ts), same as the government ID
+  // fields above. totpBackupCodes stores bcrypt hashes, never plaintext.
+  totpSecret      String?   @map("totp_secret")
+  totpEnabled     Boolean   @default(false) @map("totp_enabled")
+  totpEnrolledAt  DateTime? @map("totp_enrolled_at")
+  totpBackupCodes String[]  @default([]) @map("totp_backup_codes")
+
   isActive    Boolean   @default(true) @map("is_active")
   lastLoginAt DateTime? @map("last_login_at")
 

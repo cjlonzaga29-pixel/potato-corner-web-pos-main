@@ -267,4 +267,36 @@ export const authRepository = {
       where: { createdAt: { lt: new Date(Date.now() - ROTATION_CACHE_PRUNE_AGE_MS) } },
     });
   },
+
+  // -- Step 11b Phase 1: 2FA (TOTP) enrollment -----------------------------
+
+  findTotpFieldsById(userId: string) {
+    return prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, role: true, totpSecret: true, totpEnabled: true, totpEnrolledAt: true, totpBackupCodes: true },
+    });
+  },
+
+  /** Stores the pending (not-yet-confirmed) secret — enrollment isn't active until confirm2FAEnrollment sets totpEnabled. */
+  setPendingTotpSecret(userId: string, encryptedSecret: string) {
+    return prisma.user.update({ where: { id: userId }, data: { totpSecret: encryptedSecret } });
+  },
+
+  enableTotp(userId: string, hashedBackupCodes: string[]) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { totpEnabled: true, totpEnrolledAt: new Date(), totpBackupCodes: hashedBackupCodes },
+    });
+  },
+
+  disableTotp(userId: string) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { totpSecret: null, totpEnabled: false, totpEnrolledAt: null, totpBackupCodes: [] },
+    });
+  },
+
+  setBackupCodes(userId: string, hashedBackupCodes: string[]) {
+    return prisma.user.update({ where: { id: userId }, data: { totpBackupCodes: hashedBackupCodes } });
+  },
 };

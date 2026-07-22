@@ -118,3 +118,24 @@ export const jwtPayloadSchema = z.discriminatedUnion('role', [
 ]);
 
 export const roleSchema = z.enum(roleValues);
+
+/**
+ * Accepts either a 6-digit TOTP code or a 10-char alphanumeric backup code
+ * (see totp.service.ts's BACKUP_CODE_LENGTH) — disable2FA accepts both,
+ * confirm/regenerate only ever receive a TOTP code but reuse the same
+ * permissive shape rather than defining a second near-identical schema.
+ */
+export const totpTokenSchema = z.string().min(6).max(10);
+
+export const confirm2FASchema = z.object({
+  token: totpTokenSchema,
+});
+
+export const disable2FASchema = z.object({
+  current_password: z.string().min(8),
+  token: totpTokenSchema,
+});
+
+export const regenerateBackupCodesSchema = z.object({
+  token: totpTokenSchema,
+});

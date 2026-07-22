@@ -40,6 +40,11 @@ vi.mock('./auth.repository.js', () => ({
     rotateRefreshTokenTx: vi.fn(),
     findRotationCacheTx: vi.fn(),
     insertRotationCacheTx: vi.fn().mockResolvedValue(undefined),
+    findTotpFieldsById: vi.fn(),
+    setPendingTotpSecret: vi.fn().mockResolvedValue(undefined),
+    enableTotp: vi.fn().mockResolvedValue(undefined),
+    disableTotp: vi.fn().mockResolvedValue(undefined),
+    setBackupCodes: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -51,8 +56,28 @@ vi.mock('../../lib/email.js', () => ({
   sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Real AES-256-GCM would require a live ENCRYPTION_KEY; these tests only
+// care that whatever setPendingTotpSecret stored is what confirm/disable/
+// regenerate later decrypt, so a reversible stand-in is enough.
+vi.mock('../../lib/encryption.js', () => ({
+  encryptField: vi.fn((plaintext: string) => `enc:${plaintext}`),
+  decryptField: vi.fn((encoded: string) => encoded.replace(/^enc:/, '')),
+}));
+
+vi.mock('./totp.service.js', () => ({
+  totpService: {
+    generateSecret: vi.fn(() => 'MOCKSECRET'),
+    generateQrCodeDataUrl: vi.fn().mockResolvedValue('data:image/png;base64,mock'),
+    verifyToken: vi.fn(),
+    generateBackupCodes: vi.fn(() => ['CODE0000A', 'CODE0000B']),
+    hashBackupCode: vi.fn((code: string) => Promise.resolve(`hashed:${code}`)),
+    verifyBackupCode: vi.fn(),
+  },
+}));
+
 const { authRepository } = await import('./auth.repository.js');
 const { authService } = await import('./auth.service.js');
+const { totpService } = await import('./totp.service.js');
 const { config } = await import('../../config/index.js');
 
 function buildUser(overrides: Partial<Record<string, unknown>> = {}) {
@@ -426,5 +451,137 @@ describe('generateAccessToken payload structure', () => {
     const decoded = jwt.verify(token, config.jwt.publicKey, { algorithms: ['RS256'] }) as Record<string, unknown>;
 
     expect(decoded.branch_ids).toEqual(['branch-1']);
+  });
+});
+
+describe('authService.initiate2FAEnrollment', () => {
+  it('stores the encrypted secret and returns the secret + QR code', async () => {
+    const result = await authService.initiate2FAEnrollment('user-1', 'staff@potatocorner.test');
+
+    expect(result.secret).toBe('MOCKSECRET');
+    expect(result.qrCodeDataUrl).toBe('data:image/png;base64,mock');
+    expect(authRepository.setPendingTotpSecret).toHaveBeenCalledWith('user-1', 'enc:MOCKSECRET');
+  });
+});
+
+describe('authService.confirm2FAEnrollment', () => {
+  it('enables 2FA and returns backup codes for a valid token', async () => {
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: false,
+      totpEnrolledAt: null,
+      totpBackupCodes: [],
+    } as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(true);
+
+    const result = await authService.confirm2FAEnrollment('user-1', '123456');
+
+    expect(result.backupCodes).toEqual(['CODE0000A', 'CODE0000B']);
+    expect(authRepository.enableTotp).toHaveBeenCalledWith('user-1', ['hashed:CODE0000A', 'hashed:CODE0000B']);
+  });
+
+  it('throws INVALID_TOKEN for an invalid token', async () => {
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: false,
+      totpEnrolledAt: null,
+      totpBackupCodes: [],
+    } as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(false);
+
+    await expect(authService.confirm2FAEnrollment('user-1', '000000')).rejects.toMatchObject({ code: 'INVALID_TOKEN' });
+    expect(authRepository.enableTotp).not.toHaveBeenCalled();
+  });
+});
+
+describe('authService.disable2FA', () => {
+  it('requires both the correct password and a valid TOTP code', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserWithPasswordById).mockResolvedValue(
+      buildUser({ passwordHash }) as never,
+    );
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: ['hashed:CODE0000A'],
+    } as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(true);
+
+    await authService.disable2FA('user-1', 'CorrectHorse1', '123456');
+
+    expect(authRepository.disableTotp).toHaveBeenCalledWith('user-1');
+  });
+
+  it('rejects a wrong password even with a valid TOTP code', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserWithPasswordById).mockResolvedValue(
+      buildUser({ passwordHash }) as never,
+    );
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: [],
+    } as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(true);
+
+    await expect(authService.disable2FA('user-1', 'WrongPassword1', '123456')).rejects.toMatchObject({
+      code: 'INVALID_PASSWORD',
+    });
+    expect(authRepository.disableTotp).not.toHaveBeenCalled();
+  });
+
+  it('clears the secret and backup codes on success', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserWithPasswordById).mockResolvedValue(
+      buildUser({ passwordHash }) as never,
+    );
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: [],
+    } as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(true);
+
+    await authService.disable2FA('user-1', 'CorrectHorse1', '123456');
+
+    expect(authRepository.disableTotp).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('authService.regenerateBackupCodes', () => {
+  it('replaces the old backup codes with a new set', async () => {
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: ['hashed:OLDCODE'],
+    } as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(true);
+
+    const result = await authService.regenerateBackupCodes('user-1', '123456');
+
+    expect(result.backupCodes).toEqual(['CODE0000A', 'CODE0000B']);
+    expect(authRepository.setBackupCodes).toHaveBeenCalledWith('user-1', ['hashed:CODE0000A', 'hashed:CODE0000B']);
   });
 });

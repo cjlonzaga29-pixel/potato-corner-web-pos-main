@@ -8,6 +8,9 @@ import {
   pinSetSchema,
   pinLoginSchema,
   unlockAccountSchema,
+  confirm2FASchema,
+  disable2FASchema,
+  regenerateBackupCodesSchema,
 } from '@potato-corner/shared';
 import { authService } from './auth.service.js';
 import { AuthError } from './auth.types.js';
@@ -277,6 +280,94 @@ router.post(
       const { user_id } = req.body as { user_id: string };
       await authService.unlockAccount(user_id, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
       res.status(200).json({ data: { message: 'Account unlocked' }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+// -- Step 11b Phase 1: 2FA (TOTP) enrollment --------------------------------
+// Login flow is untouched here — these endpoints only let an already
+// authenticated user opt into/out of 2FA. Phase 2 wires enforcement into
+// /login itself.
+
+router.get('/2fa/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+      return;
+    }
+    const status = await authService.get2FAStatus(req.user.user_id);
+    res.status(200).json({ data: { enabled: status.enabled, enrolledAt: status.enrolledAt }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post('/2fa/enroll', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+      return;
+    }
+    const result = await authService.initiate2FAEnrollment(req.user.user_id, req.user.email);
+    res.status(200).json({ data: { qrCodeDataUrl: result.qrCodeDataUrl, secret: result.secret }, error: null, meta: null });
+  } catch (error) {
+    handleAuthError(error, res, next);
+  }
+});
+
+router.post(
+  '/2fa/confirm',
+  authenticate,
+  validate(confirm2FASchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      const { token } = req.body as { token: string };
+      const result = await authService.confirm2FAEnrollment(req.user.user_id, token);
+      res.status(200).json({ data: { backupCodes: result.backupCodes }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/2fa/disable',
+  authenticate,
+  validate(disable2FASchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      const { current_password, token } = req.body as { current_password: string; token: string };
+      await authService.disable2FA(req.user.user_id, current_password, token);
+      res.status(200).json({ data: { success: true }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/2fa/regenerate-backup-codes',
+  authenticate,
+  validate(regenerateBackupCodesSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      const { token } = req.body as { token: string };
+      const result = await authService.regenerateBackupCodes(req.user.user_id, token);
+      res.status(200).json({ data: { backupCodes: result.backupCodes }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);
     }

@@ -2,12 +2,14 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { ROLES, type Role } from '@potato-corner/shared';
 import { authRepository } from './auth.repository.js';
+import { totpService } from './totp.service.js';
 import { AuthError, type AuthenticatedUserSummary, type LoginResponse, type RefreshResponse } from './auth.types.js';
 import { config } from '../../config/index.js';
 import { hashToLockId } from '../../lib/pg-lock.js';
 import { sha256Hex, randomOpaqueToken } from '../../lib/hash.js';
 import { parseDurationMs } from '../../lib/duration.js';
 import { sendPasswordResetEmail } from '../../lib/email.js';
+import { encryptField, decryptField } from '../../lib/encryption.js';
 import { revokedTokenHash } from '../../middleware/authenticate.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
@@ -459,5 +461,111 @@ export const authService = {
 
     const pinHash = await bcrypt.hash(pin, BCRYPT_COST_FACTOR);
     await authRepository.storePinHash(userId, deviceId, pinHash);
+  },
+
+  // -- Step 11b Phase 1: 2FA (TOTP) enrollment. Login flow is untouched —
+  // enabling 2FA here does not yet gate login (Phase 2 wires that up).
+
+  async get2FAStatus(userId: string): Promise<{ enabled: boolean; enrolledAt: Date | null }> {
+    const user = await authRepository.findTotpFieldsById(userId);
+    if (!user) {
+      throw new AuthError('USER_NOT_FOUND', 'User not found', 404);
+    }
+    return { enabled: user.totpEnabled, enrolledAt: user.totpEnrolledAt };
+  },
+
+  /** Generates a new secret and stores it (not yet enabled) pending confirm2FAEnrollment. */
+  async initiate2FAEnrollment(userId: string, email: string): Promise<{ secret: string; qrCodeDataUrl: string }> {
+    const secret = totpService.generateSecret();
+    await authRepository.setPendingTotpSecret(userId, encryptField(secret));
+    const qrCodeDataUrl = await totpService.generateQrCodeDataUrl(email, secret);
+    return { secret, qrCodeDataUrl };
+  },
+
+  /** Verifies the pending secret against a real TOTP code, then enables 2FA and issues one-time-shown backup codes. */
+  async confirm2FAEnrollment(userId: string, token: string): Promise<{ backupCodes: string[] }> {
+    const user = await authRepository.findTotpFieldsById(userId);
+    if (!user?.totpSecret) {
+      throw new AuthError('TOTP_NOT_INITIATED', 'Start 2FA enrollment before confirming it', 400);
+    }
+
+    const secret = decryptField(user.totpSecret);
+    if (!totpService.verifyToken(token, secret)) {
+      throw new AuthError('INVALID_TOKEN', 'Invalid authentication code', 401);
+    }
+
+    const backupCodes = totpService.generateBackupCodes();
+    const hashedCodes = await Promise.all(backupCodes.map((code) => totpService.hashBackupCode(code)));
+    await authRepository.enableTotp(userId, hashedCodes);
+
+    await recordAuditLog({
+      action: 'TOTP_ENROLLED',
+      entityType: 'user',
+      entityId: userId,
+      actorId: userId,
+      actorRole: user.role,
+    });
+
+    return { backupCodes };
+  },
+
+  /** Requires both the account password and a valid TOTP/backup code — either factor alone is not enough to turn 2FA off. */
+  async disable2FA(userId: string, currentPassword: string, token: string): Promise<void> {
+    const [user, totpUser] = await Promise.all([
+      authRepository.findUserWithPasswordById(userId),
+      authRepository.findTotpFieldsById(userId),
+    ]);
+    if (!user || !totpUser?.totpEnabled || !totpUser.totpSecret) {
+      throw new AuthError('TOTP_NOT_ENABLED', '2FA is not enabled for this account', 400);
+    }
+
+    const passwordValid = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!passwordValid) {
+      throw new AuthError('INVALID_PASSWORD', 'Current password is incorrect', 401);
+    }
+
+    const secret = decryptField(totpUser.totpSecret);
+    const totpValid = totpService.verifyToken(token, secret);
+    const backupResult = totpValid ? null : await totpService.verifyBackupCode(token, totpUser.totpBackupCodes);
+    if (!totpValid && !backupResult?.matched) {
+      throw new AuthError('INVALID_TOKEN', 'Invalid authentication code', 401);
+    }
+
+    await authRepository.disableTotp(userId);
+
+    await recordAuditLog({
+      action: 'TOTP_DISABLED',
+      entityType: 'user',
+      entityId: userId,
+      actorId: userId,
+      actorRole: user.role,
+    });
+  },
+
+  /** Requires a valid TOTP code (not a backup code — regenerating via a backup code would let one leaked code mint a fresh full set). */
+  async regenerateBackupCodes(userId: string, token: string): Promise<{ backupCodes: string[] }> {
+    const user = await authRepository.findTotpFieldsById(userId);
+    if (!user?.totpEnabled || !user.totpSecret) {
+      throw new AuthError('TOTP_NOT_ENABLED', '2FA is not enabled for this account', 400);
+    }
+
+    const secret = decryptField(user.totpSecret);
+    if (!totpService.verifyToken(token, secret)) {
+      throw new AuthError('INVALID_TOKEN', 'Invalid authentication code', 401);
+    }
+
+    const backupCodes = totpService.generateBackupCodes();
+    const hashedCodes = await Promise.all(backupCodes.map((code) => totpService.hashBackupCode(code)));
+    await authRepository.setBackupCodes(userId, hashedCodes);
+
+    await recordAuditLog({
+      action: 'TOTP_BACKUP_CODES_REGENERATED',
+      entityType: 'user',
+      entityId: userId,
+      actorId: userId,
+      actorRole: user.role,
+    });
+
+    return { backupCodes };
   },
 };

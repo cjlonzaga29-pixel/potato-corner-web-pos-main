@@ -7,6 +7,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ActiveSessionsSection } from '@/components/profile/active-sessions-section';
+import { TwoFactorSection } from '@/components/profile/two-factor-section';
 
 const THEME_OPTIONS = [
   { value: 'light', label: 'Light' },
@@ -69,6 +70,8 @@ export function ProfilePageContent() {
       </Card>
 
       <ActiveSessionsSection />
+
+      <TwoFactorSection />
 
       <Button variant="outline" asChild>
         <Link href="/change-password">Change Password</Link>

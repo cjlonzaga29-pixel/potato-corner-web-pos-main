@@ -18,6 +18,30 @@
 
 ---
 
+## 2026-07-22 update — 4 super-admin feature gaps closed
+
+Unplanned follow-on work, not yet reflected in the phase table or feature status table below (§2, §5) — treat those as lagging this note.
+
+**Features shipped:**
+- **Discount Audit Report** — per-card PWD/Senior fraud log with search, fraud badges, PII decryption (super_admin only), CSV export
+- **Branch Accounts** — bulk cross-branch view of all user-branch assignments
+- **Login Audit Report** — filtered view of login events with CSV export via the existing report pipeline
+- **Enhanced Branch Overview Grid** — per-card today's revenue/txn count/staff/low-stock, click-through to branch detail
+
+**Backend:** 4 new endpoints (discount-audit on `transactions`; `/accounts` and `/stats` bulk endpoints on `branches`; `AUDIT_LOG` added to the `reports` module's `ReportType` enum), 34 new Vitest tests, **836 total passing**.
+
+**Frontend:** 4 new pages, 3 new sidebar entries, 1 dashboard component enhancement (branch overview grid), 1 bug fix (employee `ActivityTab` now shows the real audit log instead of a placeholder).
+
+**Migration:** `20260722021611_add_audit_log_report_type` — adds `AUDIT_LOG` to the `ReportType` enum.
+
+**E2E:** 4 new Playwright specs, 9 test cases, all passing.
+
+**Bug fixed live:** `findAllStatsGrouped` was dropping zero-activity branches from grouped stats — regression test added alongside the fix.
+
+**Known tech debt surfaced:** the shared `storageState` fixture used by Playwright has a refresh-token rotation collision when multiple spec files run in parallel against the same stored session — test-infra only, does not affect production auth behavior. Tracked as a follow-up; see `docs/architecture/phase-19-debt.md` for the existing debt-tracking convention.
+
+---
+
 ## 1. Project Overview
 
 **Potato Corner Enterprise Web POS & Branch Management Platform** — a unified web application serving three role-based interfaces (Super Admin, Supervisor, Staff POS) for a multi-branch Philippine QSR (quick-service restaurant) franchise, from a single Next.js + Express codebase. Core design principles per the locked architecture spec: one web app, no mobile app, no separate deployments; offline-first POS terminal; recipe-driven inventory deduction; cash as a primary financial control (denomination-level reconciliation); immutable hash-chained audit trail; and Philippine legal compliance (PWD/Senior Citizen VAT, BIR receipts) built into the core transaction engine, not bolted on.

@@ -48,7 +48,7 @@ Potato Corner POS is a unified web application serving three role-based interfac
 | Backend test files | 64 |
 | Frontend test files | 28 |
 | Playwright E2E spec files | 11 |
-| Frontend pages (`page.tsx`) | 51 |
+| Frontend pages (`page.tsx`) | 55 (added 2026-07-22: discount audit report, branch accounts, login audit report, plus one existing admin page enhanced with the overview grid) |
 
 ---
 
@@ -216,16 +216,16 @@ erDiagram
 | Module | Endpoints (router methods) | Notes |
 |---|---|---|
 | `auth` | 10 | Login, refresh, logout, password reset/change |
-| `branches` | 9 | CRUD + inventory sub-routes (mounted twice: `/api/branches`) |
+| `branches` | 11 | CRUD + inventory sub-routes (mounted twice: `/api/branches`); now includes bulk `/accounts` (cross-branch user-branch assignments) and `/stats` (per-branch grouped stats for the overview grid) |
 | `products` | 16 | Largest module — catalog + variants + branch availability + price overrides surface |
-| `transactions` | 10 | Cart/checkout/void/refund |
+| `transactions` | 11 | Cart/checkout/void/refund; now includes a discount-audit endpoint (PWD/Senior fraud log, super_admin only, PII decryption + CSV export) |
 | `employees` | 9 | Staff CRUD, branch assignment |
 | `recipes` | 9 | Base + branch-override recipes |
 | `inventory` | 13 | Stock-in, adjust, waste, transfer, physical count |
 | `cash` | 8 | Shift open/close, denomination counting, variance |
 | `flavors` | 6 | Flavor master + variant linkage |
 | `fraud` | 6 | Alert list/investigate/dismiss/escalate |
-| `reports` | 5 | X-read/Z-read/analytics |
+| `reports` | 5 | X-read/Z-read/analytics; `ReportType` enum now includes `AUDIT_LOG` (login audit report, exported via the existing report pipeline) |
 | `attendance` | 5 | Clock-in/out, corrections |
 | `product-requests` | 4 | CR-001 branch → HQ product requests |
 | `notifications` | 3 | List/mark-read |
@@ -252,7 +252,7 @@ Route groups under `apps/web/app/` (51 `page.tsx` files total):
 
 | Route group | Purpose | Notes |
 |---|---|---|
-| `(admin)/admin/*` | Super Admin console | approvals, attendance, audit-logs, branches, dashboard, employees, flavors, fraud-alerts, products, recipes, reports, settings, shifts |
+| `(admin)/admin/*` | Super Admin console | approvals, attendance, audit-logs, branches, dashboard, employees, flavors, fraud-alerts, products, recipes, reports, settings, shifts, plus 4 new pages added 2026-07-22 (discount audit report, branch accounts, login audit report) and an enhanced branch overview grid on the dashboard |
 | `(supervisor)/supervisor/*` | Branch supervisor console | approvals, attendance, cash, dashboard, employees, inventory, price-overrides, product-requests, recipes, reports |
 | `(pos)/*` | Staff POS terminal | clock-in, receipts, shift open/close, terminal (offline-first) |
 | `(auth)/*` | Auth flows | login, change-password, reset-password |

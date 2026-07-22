@@ -5,7 +5,7 @@ Unified web application serving three role-based interfaces (Super Admin, Superv
 ## Stack
 
 - **Frontend:** Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS v3, shadcn/ui, Magic UI, Zustand, TanStack Query v5, TanStack Table, React Hook Form + Zod, Recharts + Tremor, Sonner, Dexie.js, Socket.io client
-- **Backend:** Node.js, Express 5, TypeScript, Prisma, PostgreSQL (Supabase), BullMQ + Redis, Socket.io server, Zod
+- **Backend:** Node.js, Express 5, TypeScript, Prisma, PostgreSQL (Supabase), Postgres-native queue/locks/IDs (`pg-lock.ts`, `id-counter.ts`, `job-runner.ts`), Socket.io server, Zod
 - **Monorepo:** pnpm workspaces + Turborepo
 
 ## Getting Started

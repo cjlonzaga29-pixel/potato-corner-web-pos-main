@@ -500,8 +500,40 @@ export const reportsRepository = {
         return this.getInventoryValuation(filters).then((rows) => rows.length);
       case 'BRANCH_COMPARISON':
         return this.getBranchComparison(filters).then((rows) => rows.length);
+      case 'AUDIT_LOG':
+        return this.getAuditLog(filters).then((rows) => rows.length);
       default:
         return 0;
     }
+  },
+
+  async getAuditLog(filters: ReportFilters) {
+    const range = dateRangeFilter(filters);
+    const rows = await prisma.auditLog.findMany({
+      where: {
+        action: { in: ['LOGIN_SUCCESS', 'LOGIN_FAILURE', 'LOGOUT', 'LOGOUT_ALL_DEVICES', 'PIN_LOGIN_SUCCESS', 'ACCOUNT_UNLOCKED'] },
+        ...(filters.branchId ? { branchId: filters.branchId } : {}),
+        ...(range ? { createdAt: range } : {}),
+      },
+      select: {
+        id: true,
+        createdAt: true,
+        action: true,
+        actorId: true,
+        actorRole: true,
+        ipAddress: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (filters.page - 1) * filters.limit,
+      take: filters.limit,
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      created_at: r.createdAt.toISOString(),
+      action: r.action,
+      actor_id: r.actorId,
+      actor_role: r.actorRole,
+      ip_address: r.ipAddress,
+    }));
   },
 };

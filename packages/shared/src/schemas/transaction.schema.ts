@@ -75,6 +75,15 @@ export const transactionListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
+export const discountAuditQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+  discount_type: z.enum(['pwd', 'senior_citizen', 'employee', 'manager_override', 'promotional']).optional(),
+  date_from: z.iso.date().optional(),
+  date_to: z.iso.date().optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(25),
+});
+
 export const transactionItemResponseSchema = z.object({
   id: z.uuid(),
   product_id: z.uuid(),

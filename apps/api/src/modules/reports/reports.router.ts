@@ -18,7 +18,7 @@ const router: Router = Router();
 // "branch_id required" guard below would otherwise reject a non-admin's
 // request before the service ever gets a chance to return its 403
 // FORBIDDEN_REPORT_TYPE for them.
-const SUPER_ADMIN_ONLY_REPORT_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON']);
+const SUPER_ADMIN_ONLY_REPORT_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON', 'AUDIT_LOG']);
 
 function requireUser(req: Request, res: Response): req is Request & { user: NonNullable<Request['user']> } {
   if (!req.user) {
@@ -95,6 +95,23 @@ router.get('/fraud-alert-summary', authenticate, adminOnly, requirePasswordChang
       return;
     }
     const data = await reportsService.getFraudAlertSummaryReport(result.filters, req.user.user_id, req.user.role);
+    res.status(200).json({ data, error: null, meta: null });
+  } catch (error) {
+    handleReportError(error, res, next);
+  }
+});
+
+// ---------- Audit Log (real-time, super_admin only, no branchGuard) ----------
+
+router.get('/audit-log', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const result = parseFilters(req.query);
+    if (!result.ok) {
+      res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', fields: result.issues }, meta: null });
+      return;
+    }
+    const data = await reportsService.getAuditLogReport(result.filters, req.user.user_id, req.user.role);
     res.status(200).json({ data, error: null, meta: null });
   } catch (error) {
     handleReportError(error, res, next);

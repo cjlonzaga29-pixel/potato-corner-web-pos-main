@@ -4,6 +4,7 @@ import {
   voidTransactionRequestSchema,
   refundTransactionRequestSchema,
   transactionListQuerySchema,
+  discountAuditQuerySchema,
   createHoldOrderSchema,
   syncOfflineTransactionsSchema,
   ROLES,
@@ -251,6 +252,41 @@ router.get('/', authenticate, allRoles, requirePasswordChange, branchGuard, asyn
       page: parsed.data.page,
       limit: parsed.data.limit,
     });
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = discountAuditQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const branchIds = parsed.data.branch_id
+      ? [parsed.data.branch_id]
+      : req.user.role === ROLES.SUPER_ADMIN
+        ? ('all' as const)
+        : req.user.branch_ids;
+    const result = await transactionsService.getDiscountAuditTrail(
+      {
+        branchIds,
+        discountType: parsed.data.discount_type,
+        dateFrom: parsed.data.date_from,
+        dateTo: parsed.data.date_to,
+        page: parsed.data.page,
+        limit: parsed.data.limit,
+      },
+      { id: req.user.user_id, role: req.user.role },
+      req.ip ?? null,
+    );
     res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

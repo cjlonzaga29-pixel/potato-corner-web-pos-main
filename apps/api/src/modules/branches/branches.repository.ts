@@ -186,6 +186,68 @@ export const branchesRepository = {
     };
   },
 
+  async findAllAccounts() {
+    return prisma.userBranchAssignment.findMany({
+      where: { removedAt: null },
+      select: {
+        id: true,
+        user: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+        branch: { select: { id: true, name: true, code: true } },
+      },
+      orderBy: [{ branch: { name: 'asc' } }, { user: { lastName: 'asc' } }],
+    });
+  },
+
+  async findAllStatsGrouped() {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const [branches, shiftGroups, staffGroups, txnGroups, ingredients] = await Promise.all([
+      prisma.branch.findMany({
+        where: { status: 'active' },
+        select: { id: true },
+      }),
+      prisma.shift.groupBy({
+        by: ['branchId'],
+        where: { status: 'active' },
+        _count: { _all: true },
+      }),
+      prisma.userBranchAssignment.groupBy({
+        by: ['branchId'],
+        where: { removedAt: null, user: { role: 'staff' } },
+        _count: { _all: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ['branchId'],
+        where: { status: 'completed', createdAt: { gte: startOfDay } },
+        _sum: { totalAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.ingredient.findMany({
+        where: { deletedAt: null },
+        select: { id: true, branchId: true, lowStockThreshold: true },
+      }),
+    ]);
+
+    const stockMap = await inventoryRepository.getCurrentStockMap(ingredients.map((i) => i.id));
+    const lowStockByBranch = new Map<string, number>();
+    for (const ing of ingredients) {
+      const current = stockMap.get(ing.id)?.toNumber() ?? 0;
+      if (current <= ing.lowStockThreshold.toNumber()) {
+        lowStockByBranch.set(ing.branchId, (lowStockByBranch.get(ing.branchId) ?? 0) + 1);
+      }
+    }
+
+    return branches.map((b) => ({
+      branchId: b.id,
+      activeShiftsCount: shiftGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
+      activeStaffCount: staffGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
+      todayRevenue: Number(txnGroups.find((g) => g.branchId === b.id)?._sum.totalAmount ?? 0),
+      todayTransactionCount: txnGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
+      lowStockIngredientCount: lowStockByBranch.get(b.id) ?? 0,
+    }));
+  },
+
   /**
    * Atomically allocates the next branch number for a city prefix — two
    * concurrent requests can never receive the same number because the

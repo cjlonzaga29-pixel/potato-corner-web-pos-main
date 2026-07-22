@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { TransactionListFilters } from './transactions.types.js';
+import type { DiscountAuditFilters } from './transactions.types.js';
 
 const transactionInclude = {
   items: true,
@@ -81,6 +82,36 @@ function buildListWhere(filters: TransactionListFilters): Prisma.TransactionWher
  * router and service layers never call Prisma directly.
  */
 export const transactionsRepository = {
+  findDiscountAuditTrail(filters: DiscountAuditFilters) {
+    const where: Prisma.TransactionWhereInput = {
+      discountType: { not: null },
+      ...(filters.branchIds !== 'all' ? { branchId: { in: filters.branchIds } } : {}),
+      ...(filters.discountType ? { discountType: filters.discountType } : {}),
+      ...(filters.dateFrom || filters.dateTo
+        ? { createdAt: { ...(filters.dateFrom ? { gte: new Date(filters.dateFrom) } : {}), ...(filters.dateTo ? { lte: new Date(filters.dateTo) } : {}) } }
+        : {}),
+    };
+    return Promise.all([
+      prisma.transaction.findMany({
+        where,
+        select: {
+          id: true,
+          branchId: true,
+          transactionNumber: true,
+          discountType: true,
+          discountAmount: true,
+          discountCustomerIdEncrypted: true,
+          discountCustomerIdHash: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (filters.page - 1) * filters.limit,
+        take: filters.limit,
+      }),
+      prisma.transaction.count({ where }),
+    ]).then(([rows, total]) => ({ rows, total }));
+  },
+
   findBranch(branchId: string) {
     return prisma.branch.findUnique({ where: { id: branchId }, select: { id: true, code: true, status: true } });
   },

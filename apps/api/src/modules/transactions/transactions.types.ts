@@ -45,6 +45,15 @@ export interface TransactionListFilters {
   limit: number;
 }
 
+export interface DiscountAuditFilters {
+  branchIds: 'all' | string[];
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  dateFrom?: string;
+  dateTo?: string;
+  page: number;
+  limit: number;
+}
+
 export interface CreateHoldOrderData {
   branchId: string;
   shiftId: string;

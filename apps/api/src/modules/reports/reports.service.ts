@@ -53,6 +53,7 @@ const REPOSITORY_PAGINATED_TYPES = new Set<ReportType>([
   'INVENTORY_MOVEMENT',
   'ATTENDANCE_SUMMARY',
   'FRAUD_ALERT_SUMMARY',
+  'AUDIT_LOG',
 ]);
 
 async function realtimeReport<T>(
@@ -130,7 +131,7 @@ async function precomputedReport<T>(
 }
 
 const SYNC_CSV_ROW_LIMIT = 10_000;
-const SUPER_ADMIN_ONLY_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON']);
+const SUPER_ADMIN_ONLY_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON', 'AUDIT_LOG']);
 const PRECOMPUTED_TYPES = new Set<ReportType>(['PRODUCT_PERFORMANCE', 'FLAVOR_PERFORMANCE', 'EMPLOYEE_PERFORMANCE', 'INVENTORY_VALUATION', 'BRANCH_COMPARISON']);
 
 export const reportsService = {
@@ -150,6 +151,8 @@ export const reportsService = {
     realtimeReport('ATTENDANCE_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getAttendanceSummary(f)),
   getFraudAlertSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('FRAUD_ALERT_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getFraudAlertSummary(f)),
+  getAuditLogReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
+    realtimeReport('AUDIT_LOG', filters, actorId, actorRole, (f) => reportsRepository.getAuditLog(f)),
 
   getProductPerformanceReport: (branchId: string | null, actorId: string, actorRole: string) =>
     precomputedReport('PRODUCT_PERFORMANCE', branchId, actorId, actorRole),

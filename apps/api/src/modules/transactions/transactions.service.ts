@@ -10,15 +10,17 @@ import {
   type CreateHoldOrderData,
   type TransactionListFilters,
   type SyncOfflineTransactionsData,
+  type DiscountAuditFilters,
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { encryptField, hashField } from '../../lib/encryption.js';
+import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
 import { enqueueSaleDeduction } from '../../queues/inventory.queue.js';
 import { enqueueNotification } from '../../queues/notification.queue.js';
 import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
+import { prisma } from '../../lib/prisma.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -324,6 +326,50 @@ async function generateReceiptNumber(branchCode: string, attempt: number): Promi
 }
 
 export const transactionsService = {
+  async getDiscountAuditTrail(
+    filters: DiscountAuditFilters,
+    actor: { id: string; role: string },
+    ipAddress: string | null,
+  ) {
+    const { rows, total } = await transactionsRepository.findDiscountAuditTrail(filters);
+    const branchIds = [...new Set(rows.map((r) => r.branchId))];
+
+    const alerts = branchIds.length > 0
+      ? await prisma.fraudAlert.findMany({
+          where: { alertType: 'discount_id_reuse', branchId: { in: branchIds } },
+          select: { branchId: true, status: true, evidence: true },
+        })
+      : [];
+
+    let decrypted = false;
+    const data = rows.map((row) => {
+      const fraudFlagged = alerts.some((a) => {
+        const evidence = a.evidence as { transaction_ids?: string[] };
+        return evidence.transaction_ids?.includes(row.id);
+      });
+
+      let discountCustomerId: string | null = null;
+      if (row.discountCustomerIdEncrypted && actor.role === 'super_admin') {
+        discountCustomerId = decryptField(row.discountCustomerIdEncrypted);
+        decrypted = true;
+      }
+
+      return { ...row, discountCustomerId, fraudFlagged };
+    });
+
+    if (decrypted) {
+      await recordAuditLog({
+        action: 'DISCOUNT_AUDIT_PII_ACCESSED',
+        entityType: 'transaction',
+        actorId: actor.id,
+        actorRole: actor.role,
+        ipAddress,
+      });
+    }
+
+    return { data, total, page: filters.page, limit: filters.limit };
+  },
+
   async createTransaction(data: CreateTransactionData, ipAddress: string | null) {
     const branch = await transactionsRepository.findBranch(data.branchId);
     if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);

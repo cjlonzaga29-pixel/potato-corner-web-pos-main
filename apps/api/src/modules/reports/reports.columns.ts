@@ -136,6 +136,13 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'active_shift_count', header: 'Active Shifts' },
     { key: 'low_stock_ingredient_count', header: 'Low Stock Items' },
   ],
+  AUDIT_LOG: [
+    { key: 'created_at', header: 'Timestamp' },
+    { key: 'actor_id', header: 'Actor ID', isAudit: true },
+    { key: 'actor_role', header: 'Role' },
+    { key: 'action', header: 'Action' },
+    { key: 'ip_address', header: 'IP Address', isAudit: true },
+  ],
 };
 
 export async function getReportRows(reportType: ReportType, filters: ReportFilters): Promise<Record<string, unknown>[]> {
@@ -166,6 +173,8 @@ export async function getReportRows(reportType: ReportType, filters: ReportFilte
       return reportsRepository.getInventoryValuation(filters);
     case 'BRANCH_COMPARISON':
       return reportsRepository.getBranchComparison(filters);
+    case 'AUDIT_LOG':
+      return reportsRepository.getAuditLog(filters);
     default:
       return [];
   }

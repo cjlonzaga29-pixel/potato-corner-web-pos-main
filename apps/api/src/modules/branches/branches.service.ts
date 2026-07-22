@@ -91,6 +91,30 @@ function assertBranchAccess(requestingUser: JwtPayload, branchId: string): void 
 }
 
 export const branchesService = {
+  async getAllAccounts(requestingUser: JwtPayload) {
+    if (requestingUser.role !== ROLES.SUPER_ADMIN) {
+      throw new BranchError('BRANCH_ACCESS_DENIED', 'Only super_admin may view cross-branch accounts', 403);
+    }
+    const assignments = await branchesRepository.findAllAccounts();
+    return assignments.map((a) => ({
+      assignment_id: a.id,
+      user_id: a.user.id,
+      first_name: a.user.firstName,
+      last_name: a.user.lastName,
+      email: a.user.email,
+      role: a.user.role,
+      branch_id: a.branch.id,
+      branch_name: a.branch.name,
+      branch_code: a.branch.code,
+    }));
+  },
+
+  async getAllBranchStats(requestingUser: JwtPayload) {
+    const accessible = accessibleBranchIds(requestingUser);
+    const stats = await branchesRepository.findAllStatsGrouped();
+    return accessible === 'all' ? stats : stats.filter((s) => accessible.includes(s.branchId));
+  },
+
   async getAllBranches(requestingUser: JwtPayload, filters: BranchListFilters) {
     const accessible = accessibleBranchIds(requestingUser);
     const effectiveFilters: BranchListFilters = {

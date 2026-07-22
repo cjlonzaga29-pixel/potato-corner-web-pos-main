@@ -79,6 +79,26 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
   }
 });
 
+router.get('/accounts', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const accounts = await branchesService.getAllAccounts(req.user);
+    res.status(200).json({ data: accounts, error: null, meta: null });
+  } catch (error) {
+    handleBranchError(error, res, next);
+  }
+});
+
+router.get('/stats', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const stats = await branchesService.getAllBranchStats(req.user);
+    res.status(200).json({ data: stats, error: null, meta: null });
+  } catch (error) {
+    handleBranchError(error, res, next);
+  }
+});
+
 router.get('/:branchId', authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;

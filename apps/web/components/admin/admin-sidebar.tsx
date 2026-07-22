@@ -24,6 +24,7 @@ import {
   LogOut,
   Loader2,
   Wallet,
+  Activity,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -44,6 +45,7 @@ import { NavLinkIcon } from '@/components/shared/nav-link-icon';
  */
 const NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
+  { label: 'Live Dashboard', href: '/admin/monitoring', icon: Activity },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
   { label: 'GCash QR', href: '/admin/payments/gcash-qr', icon: Wallet },

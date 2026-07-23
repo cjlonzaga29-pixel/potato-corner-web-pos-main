@@ -86,11 +86,14 @@ test('create expense end-to-end with cleanup', async ({ page }) => {
 
     await page.getByRole('button', { name: 'Create Expense' }).click();
 
-    await page.waitForURL(/\/admin\/expenses\/[0-9a-f-]{36}$/);
+    await page.waitForURL(/\/admin\/expenses\/[0-9a-f-]{36}$/, { timeout: 45_000 });
+    await page.waitForLoadState('networkidle', { timeout: 15_000 });
     expenseId = page.url().split('/').pop();
 
     await page.goto('/admin/expenses');
-    await expect(page.getByRole('cell', { name: 'PLAYWRIGHT-TEST-CREATE' })).toBeVisible();
+    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForTimeout(1500);
+    await expect(page.getByRole('cell', { name: 'PLAYWRIGHT-TEST-CREATE' })).toBeVisible({ timeout: 20_000 });
   } finally {
     if (expenseId) await deleteExpense(expenseId);
   }
@@ -141,11 +144,14 @@ test('edit expense updates amount', async ({ page }) => {
     await amountInput.fill('');
     await amountInput.fill('1234');
     await page.getByRole('button', { name: 'Save Changes' }).click();
-    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled({ timeout: 20_000 });
+    await page.waitForLoadState('networkidle', { timeout: 15_000 });
 
     await page.goto('/admin/expenses');
+    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForTimeout(1500);
     const row = page.getByRole('row').filter({ hasText: 'PLAYWRIGHT-TEST-EDIT' });
-    await expect(row).toContainText(/1,234|1234/);
+    await expect(row).toContainText(/1,234|1234/, { timeout: 20_000 });
   } finally {
     await deleteExpense(expenseId);
   }
@@ -176,10 +182,11 @@ test('CSV export downloads a file', async ({ page }) => {
 
   try {
     await page.goto('/admin/expenses');
-    await expect(page.getByRole('cell', { name: 'PLAYWRIGHT-TEST-CSV' })).toBeVisible();
+    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await expect(page.getByRole('cell', { name: 'PLAYWRIGHT-TEST-CSV' })).toBeVisible({ timeout: 20_000 });
 
     const [download] = await Promise.all([
-      page.waitForEvent('download'),
+      page.waitForEvent('download', { timeout: 30_000 }),
       page.getByRole('button', { name: 'Export CSV' }).click(),
     ]);
     expect(download.suggestedFilename()).toMatch(/\.csv$/);

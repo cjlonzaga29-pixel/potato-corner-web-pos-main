@@ -37,6 +37,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
+import type { NavItem } from '@/components/shared/nav-types';
 
 /**
  * Route paths match the existing app/(admin)/admin/* folder structure
@@ -74,12 +75,7 @@ export const ADMIN_NAV_ITEMS = [
     ],
   },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
-] satisfies ReadonlyArray<{
-  label: string;
-  icon: typeof LayoutDashboard;
-  href?: string;
-  children?: ReadonlyArray<{ label: string; href: string; icon: typeof LayoutDashboard }>;
-}>;
+] satisfies ReadonlyArray<NavItem>;
 
 /** Purely presentational grouping — a section label rendered above the nav item whose `label` is used as the key. */
 const SECTION_LABELS: Record<string, string> = {

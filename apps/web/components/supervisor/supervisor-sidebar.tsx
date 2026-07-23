@@ -30,11 +30,12 @@ import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { NotificationBellConnected } from '@/components/shared/notification-bell-connected';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
+import type { NavItem } from '@/components/shared/nav-types';
 import { BranchSelector } from './branch-selector';
 
-const NAV_ITEMS = [
+export const SUPERVISOR_NAV_ITEMS = [
   { label: 'Dashboard', href: '/supervisor/dashboard', icon: LayoutDashboard },
   { label: 'Inventory', href: '/supervisor/inventory', icon: Package },
   { label: 'Attendance', href: '/supervisor/attendance', icon: Clock },
@@ -49,7 +50,7 @@ const NAV_ITEMS = [
   { label: 'Inventory Requests', href: '/supervisor/inventory-requests', icon: ClipboardList },
   { label: 'Price Overrides', href: '/supervisor/price-overrides', icon: DollarSign },
   { label: 'Recipes', href: '/supervisor/recipes', icon: ChefHat },
-];
+] satisfies ReadonlyArray<NavItem>;
 
 export function SupervisorSidebar() {
   const pathname = usePathname();
@@ -92,7 +93,6 @@ export function SupervisorSidebar() {
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
-          <NotificationBellConnected />
           <Button
             variant="ghost"
             size="icon"
@@ -112,32 +112,40 @@ export function SupervisorSidebar() {
       )}
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-2">
-        {NAV_ITEMS.map((item) => {
-          const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
-          const count = badgeCounts[item.href] ?? 0;
-          const showBadge = count > 0;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              title={collapsed ? item.label : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
-                isActive
-                  ? 'bg-primary text-primary-foreground shadow-glow'
-                  : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-              )}
-            >
-              <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
-              {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-              {showBadge && (
-                <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
-                  {count}
-                </Badge>
-              )}
-            </Link>
-          );
-        })}
+        <TooltipProvider delayDuration={200}>
+          {SUPERVISOR_NAV_ITEMS.map((item) => {
+            const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+            const count = badgeCounts[item.href] ?? 0;
+            const showBadge = count > 0;
+            const link = (
+              <Link
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                  isActive
+                    ? 'bg-primary text-primary-foreground shadow-glow'
+                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                )}
+              >
+                <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                {showBadge && (
+                  <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
+                    {count}
+                  </Badge>
+                )}
+              </Link>
+            );
+            return collapsed ? (
+              <Tooltip key={item.href}>
+                <TooltipTrigger asChild>{link}</TooltipTrigger>
+                <TooltipContent side="right">{item.label}</TooltipContent>
+              </Tooltip>
+            ) : (
+              <div key={item.href}>{link}</div>
+            );
+          })}
+        </TooltipProvider>
       </nav>
 
       <div className="border-t border-border/60 p-3">

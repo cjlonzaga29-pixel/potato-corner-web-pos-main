@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import { AdminSidebar } from '@/components/admin/admin-sidebar';
-import { AdminHeader } from '@/components/admin/admin-header';
+import { AdminSidebar, ADMIN_NAV_ITEMS } from '@/components/admin/admin-sidebar';
+import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
 
 /**
@@ -17,7 +17,13 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       <SocketInitializer />
       <AdminSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <AdminHeader />
+        <DashboardHeader
+          navItems={ADMIN_NAV_ITEMS}
+          homeHref="/admin/dashboard"
+          homeLabel="Admin"
+          profileHref="/admin/profile"
+          fallbackInitials="AD"
+        />
         <main className="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
       </div>
     </div>

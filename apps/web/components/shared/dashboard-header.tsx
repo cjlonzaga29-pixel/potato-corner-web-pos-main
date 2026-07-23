@@ -25,12 +25,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { NotificationBellConnected } from '@/components/shared/notification-bell-connected';
 import { ThemeToggle } from '@/components/shared/theme-toggle';
-import { ADMIN_NAV_ITEMS } from '@/components/admin/admin-sidebar';
-import { AdminSearchCommand } from '@/components/admin/admin-search-command';
+import { NavSearchCommand } from '@/components/shared/nav-search-command';
+import type { NavItem } from '@/components/shared/nav-types';
 
-function useBreadcrumbLabel(pathname: string | null): string {
+function findBreadcrumbLabel(pathname: string | null, navItems: ReadonlyArray<NavItem>): string {
   if (!pathname) return 'Dashboard';
-  for (const item of ADMIN_NAV_ITEMS) {
+  for (const item of navItems) {
     if (item.href === pathname) return item.label;
     for (const child of item.children ?? []) {
       if (child.href.split('?')[0] === pathname) return `${item.label} / ${child.label}`;
@@ -43,11 +43,21 @@ function useBreadcrumbLabel(pathname: string | null): string {
     .join(' ');
 }
 
-/** Persistent top bar for the admin shell — page identity + global actions, distinct from the sidebar's navigation role. */
-export function AdminHeader() {
+interface DashboardHeaderProps {
+  navItems: ReadonlyArray<NavItem>;
+  homeHref: string;
+  homeLabel: string;
+  profileHref: string;
+  fallbackInitials: string;
+}
+
+/** Persistent top bar shared by the admin and supervisor shells — page identity + global actions, distinct from the sidebar's navigation role. */
+export function DashboardHeader({ navItems, homeHref, homeLabel, profileHref, fallbackInitials }: DashboardHeaderProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
-  const label = useBreadcrumbLabel(pathname);
+  const label = findBreadcrumbLabel(pathname, navItems);
+  const firstFallback = fallbackInitials.charAt(0) || 'A';
+  const lastFallback = fallbackInitials.charAt(1) || 'D';
 
   return (
     <header className="flex h-16 shrink-0 items-center gap-4 border-b border-border/60 bg-card/60 px-4 backdrop-blur-xl lg:px-6">
@@ -55,7 +65,7 @@ export function AdminHeader() {
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
             <BreadcrumbLink asChild>
-              <Link href="/admin/dashboard">Admin</Link>
+              <Link href={homeHref}>{homeLabel}</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
@@ -66,7 +76,7 @@ export function AdminHeader() {
       </Breadcrumb>
 
       <div className="flex-1 sm:max-w-sm">
-        <AdminSearchCommand />
+        <NavSearchCommand items={navItems} />
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">
@@ -82,7 +92,7 @@ export function AdminHeader() {
             >
               <Avatar className="h-8 w-8 ring-2 ring-primary/20">
                 <AvatarFallback className="bg-gradient-to-br from-primary to-blue-700 text-xs font-semibold text-primary-foreground">
-                  {user ? generateInitials(user.firstName || 'A', user.lastName || 'D') : 'AD'}
+                  {user ? generateInitials(user.firstName || firstFallback, user.lastName || lastFallback) : fallbackInitials}
                 </AvatarFallback>
               </Avatar>
             </button>
@@ -96,7 +106,7 @@ export function AdminHeader() {
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <Link href="/admin/profile">
+              <Link href={profileHref}>
                 <User className="mr-2 h-4 w-4" /> Profile
               </Link>
             </DropdownMenuItem>

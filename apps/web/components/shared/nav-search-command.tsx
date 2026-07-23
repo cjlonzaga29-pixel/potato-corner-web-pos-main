@@ -13,10 +13,14 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
-import { ADMIN_NAV_ITEMS } from '@/components/admin/admin-sidebar';
+import type { NavItem } from '@/components/shared/nav-types';
 
-/** Cmd/Ctrl+K palette over the static admin nav tree — page navigation only, not a business-data search. */
-export function AdminSearchCommand() {
+interface NavSearchCommandProps {
+  items: ReadonlyArray<NavItem>;
+}
+
+/** Cmd/Ctrl+K palette over a static nav tree — page navigation only, not a business-data search. */
+export function NavSearchCommand({ items }: NavSearchCommandProps) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
 
@@ -55,7 +59,7 @@ export function AdminSearchCommand() {
         <CommandList>
           <CommandEmpty>No matching page.</CommandEmpty>
           <CommandGroup heading="Pages">
-            {ADMIN_NAV_ITEMS.flatMap((item) =>
+            {items.flatMap((item) =>
               item.href
                 ? [
                     <CommandItem key={item.href} value={item.label} onSelect={() => go(item.href as string)}>

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { SupervisorSidebar } from '@/components/supervisor/supervisor-sidebar';
+import { SupervisorSidebar, SUPERVISOR_NAV_ITEMS } from '@/components/supervisor/supervisor-sidebar';
+import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
 
 /**
@@ -14,7 +15,16 @@ export default function SupervisorLayout({ children }: { children: ReactNode }) 
     <div className="flex h-screen overflow-hidden bg-background">
       <SocketInitializer />
       <SupervisorSidebar />
-      <main className="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <DashboardHeader
+          navItems={SUPERVISOR_NAV_ITEMS}
+          homeHref="/supervisor/dashboard"
+          homeLabel="Supervisor"
+          profileHref="/supervisor/profile"
+          fallbackInitials="SV"
+        />
+        <main className="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
+      </div>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -113,30 +114,30 @@ export default function FlavorDetailPage({ params }: FlavorDetailPageProps) {
             <EmptyState title="Not linked to any variant" description="Link this flavor to a product variant to start using it." />
           ) : (
             <div className="rounded-md border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/50 text-left">
-                    <th className="p-3 font-medium">Product</th>
-                    <th className="p-3 font-medium">Variant</th>
-                    <th className="p-3 font-medium">Price Premium</th>
-                    <th className="p-3 font-medium">Available</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Product</TableHead>
+                    <TableHead>Variant</TableHead>
+                    <TableHead>Price Premium</TableHead>
+                    <TableHead>Available</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {flavor.linked_variants.map((link) => (
-                    <tr key={link.product_variant_id} className="border-b last:border-0">
-                      <td className="p-3">{link.product_name}</td>
-                      <td className="p-3">
+                    <TableRow key={link.product_variant_id}>
+                      <TableCell>{link.product_name}</TableCell>
+                      <TableCell>
                         {link.variant_name} ({link.size_label})
-                      </td>
-                      <td className="p-3">{formatCurrency(link.price_premium)}</td>
-                      <td className="p-3">
+                      </TableCell>
+                      <TableCell>{formatCurrency(link.price_premium)}</TableCell>
+                      <TableCell>
                         <Badge variant={link.is_available ? 'active' : 'inactive'}>{link.is_available ? 'Available' : 'Unavailable'}</Badge>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
           )}
         </TabsContent>

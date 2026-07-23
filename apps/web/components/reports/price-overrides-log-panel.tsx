@@ -23,6 +23,10 @@ const STATUS_BADGE_VARIANT: Record<string, 'pending' | 'active' | 'critical'> = 
   rejected: 'critical',
 };
 
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 const columns: ColumnDef<PriceOverrideResponse>[] = [
   { accessorKey: 'branch_name', header: 'Requesting Branch' },
   {
@@ -34,7 +38,13 @@ const columns: ColumnDef<PriceOverrideResponse>[] = [
   { id: 'requested_price', header: 'Requested Price', cell: ({ row }) => formatCurrency(row.original.requested_price) },
   { accessorKey: 'requested_by_name', header: 'Requested By' },
   { id: 'reviewed_by_name', header: 'Reviewed By', cell: ({ row }) => row.original.reviewed_by_name ?? '—' },
-  { id: 'status', header: 'Status', cell: ({ row }) => <Badge variant={STATUS_BADGE_VARIANT[row.original.status]}>{row.original.status}</Badge> },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => (
+      <Badge variant={STATUS_BADGE_VARIANT[row.original.status]}>{capitalize(row.original.status)}</Badge>
+    ),
+  },
 ];
 
 /** Read-only history — reviewing pending overrides still happens at /admin/approvals/price-overrides. */

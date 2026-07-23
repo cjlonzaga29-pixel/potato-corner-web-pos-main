@@ -257,7 +257,7 @@ export function TwoFactorSection() {
 
         {!isLoading && !isError && status?.enabled && (
           <div className="space-y-3">
-            <Badge variant="secondary" className="bg-green-100 text-green-800">
+            <Badge variant="active">
               2FA Enabled since {status.enrolledAt ? format(new Date(status.enrolledAt), 'PPP') : '—'}
             </Badge>
             <p className="text-sm text-muted-foreground">

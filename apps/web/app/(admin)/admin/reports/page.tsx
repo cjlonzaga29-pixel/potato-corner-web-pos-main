@@ -17,6 +17,8 @@ import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
+import { Badge, type BadgeProps } from '@/components/ui/badge';
+import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
@@ -45,6 +47,27 @@ function daysAgoDateString(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+function humanize(value: string): string {
+  return value
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/** Mirrors the fallback severity treatment in fraud-alert-columns.tsx — StatusBadge has no severity map. */
+const REPORT_SEVERITY_CLASSES: Record<string, string> = {
+  critical: 'border-transparent bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  high: 'border-transparent bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
+  medium: 'border-transparent bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
+  low: 'border-transparent bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+};
+
+/** voided/refunded aren't covered by StatusBadge's status maps, so they get an explicit Badge variant here (same fallback pattern used elsewhere for domains StatusBadge doesn't know about). */
+const VOID_REFUND_BADGE_VARIANT: Record<VoidRefundReportRow['status'], BadgeProps['variant']> = {
+  voided: 'critical',
+  refunded: 'warning',
+};
+
 const dailySalesColumns: ColumnDef<DailySalesReportRow>[] = [
   { accessorKey: 'report_date', header: 'Date' },
   { accessorKey: 'branch_name', header: 'Branch' },
@@ -59,7 +82,11 @@ const dailySalesColumns: ColumnDef<DailySalesReportRow>[] = [
 const cashReconciliationColumns: ColumnDef<CashReconciliationReportRow>[] = [
   { accessorKey: 'cashier_name', header: 'Cashier' },
   { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'status', header: 'Status' },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => <StatusBadge status={row.original.status} type="shift" />,
+  },
   { accessorKey: 'opening_counted_total', header: 'Opening', cell: ({ row }) => formatCurrency(row.original.opening_counted_total) },
   {
     accessorKey: 'closing_counted_total',
@@ -82,7 +109,13 @@ const voidRefundColumns: ColumnDef<VoidRefundReportRow>[] = [
   { accessorKey: 'transaction_number', header: 'Receipt #' },
   { accessorKey: 'branch_name', header: 'Branch' },
   { accessorKey: 'cashier_name', header: 'Cashier' },
-  { accessorKey: 'status', header: 'Status' },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => (
+      <Badge variant={VOID_REFUND_BADGE_VARIANT[row.original.status]}>{humanize(row.original.status)}</Badge>
+    ),
+  },
   { accessorKey: 'total_amount', header: 'Amount', cell: ({ row }) => formatCurrency(row.original.total_amount) },
   { accessorKey: 'reason', header: 'Reason', cell: ({ row }) => row.original.reason ?? '—' },
   { accessorKey: 'actioned_by_name', header: 'Actioned By', cell: ({ row }) => row.original.actioned_by_name ?? '—' },
@@ -90,9 +123,21 @@ const voidRefundColumns: ColumnDef<VoidRefundReportRow>[] = [
 
 const fraudAlertSummaryColumns: ColumnDef<FraudAlertSummaryReportRow>[] = [
   { accessorKey: 'alert_type', header: 'Type' },
-  { accessorKey: 'severity', header: 'Severity' },
+  {
+    id: 'severity',
+    header: 'Severity',
+    cell: ({ row }) => (
+      <Badge className={REPORT_SEVERITY_CLASSES[row.original.severity] ?? undefined}>
+        {humanize(row.original.severity)}
+      </Badge>
+    ),
+  },
   { accessorKey: 'branch_name', header: 'Branch', cell: ({ row }) => row.original.branch_name ?? 'All Branches' },
-  { accessorKey: 'status', header: 'Status' },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => <StatusBadge status={row.original.status} type="fraud" />,
+  },
   { accessorKey: 'created_at', header: 'Created', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
@@ -176,16 +221,19 @@ function AdminReportsPageContent() {
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
   }
 
+  const connectionLabel = isSocketConnected ? 'Connected' : 'Disconnected';
+
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">Reports</h1>
           <p className="text-muted-foreground text-sm">Real-time and pre-computed reporting across all branches.</p>
         </div>
         <span
-          className={`h-2 w-2 rounded-full ${isSocketConnected ? 'bg-green-500' : 'bg-red-500'}`}
-          title={isSocketConnected ? 'Connected' : 'Disconnected'}
+          title={connectionLabel}
+          aria-label={connectionLabel}
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${isSocketConnected ? 'bg-green-500' : 'bg-red-500'}`}
         />
       </div>
 

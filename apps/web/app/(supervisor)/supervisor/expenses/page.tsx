@@ -1,18 +1,25 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Plus } from 'lucide-react';
+import type { ColumnDef } from '@tanstack/react-table';
+import { Loader2, Plus, Receipt } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
+import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useBranchStore } from '@/stores/branch.store';
 import { formatCurrency, formatDate } from '@/lib/utils';
-import { useExpenses, useCreateExpense, useExpensesRealtimeSync, type ExpenseCategory } from '@/hooks/queries/use-expenses';
+import {
+  useExpenses,
+  useCreateExpense,
+  useExpensesRealtimeSync,
+  type ExpenseCategory,
+  type ExpenseRow,
+} from '@/hooks/queries/use-expenses';
 
 const CATEGORY_LABEL: Record<ExpenseCategory, string> = {
   utilities: 'Utilities',
@@ -96,11 +103,24 @@ function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onO
   );
 }
 
+const columns: ColumnDef<ExpenseRow>[] = [
+  { id: 'incurred_at', header: 'Date', cell: ({ row }) => formatDate(row.original.incurred_at) },
+  { id: 'category', header: 'Category', cell: ({ row }) => CATEGORY_LABEL[row.original.category] },
+  { id: 'vendor_name', header: 'Vendor', cell: ({ row }) => row.original.vendor_name ?? '—' },
+  {
+    id: 'description',
+    header: 'Description',
+    cell: ({ row }) => <span className="line-clamp-1 max-w-xs text-muted-foreground">{row.original.description ?? '—'}</span>,
+  },
+  { id: 'amount', header: 'Amount', cell: ({ row }) => formatCurrency(row.original.amount) },
+  { id: 'created_by_name', header: 'Recorded By', cell: ({ row }) => row.original.created_by_name },
+];
+
 export default function SupervisorExpensesPage() {
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   useExpensesRealtimeSync();
   const [createOpen, setCreateOpen] = useState(false);
-  const { data, isLoading, isError } = useExpenses({ branch_id: activeBranchId ?? undefined, limit: 25 });
+  const { data, isLoading, isError, refetch } = useExpenses({ branch_id: activeBranchId ?? undefined, limit: 25 });
 
   if (!activeBranchId) {
     return (
@@ -129,45 +149,22 @@ export default function SupervisorExpensesPage() {
         </Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <EmptyState title="Failed to load expenses" description="Please try again." />}
-      {!isLoading && !isError && expenses.length === 0 && (
-        <EmptyState title="No expenses yet" description="Expenses recorded for this branch will appear here." />
+      {expenses.length > 0 && (
+        <p className="text-sm text-muted-foreground">
+          Total: <span className="font-medium text-foreground">{formatCurrency(data?.total_amount ?? 0)}</span>
+        </p>
       )}
 
-      {!isLoading && !isError && expenses.length > 0 && (
-        <>
-          <p className="text-sm text-muted-foreground">
-            Total: <span className="font-medium text-foreground">{formatCurrency(data?.total_amount ?? 0)}</span>
-          </p>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Vendor</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Amount</TableHead>
-                <TableHead>Recorded By</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {expenses.map((expense) => (
-                <TableRow key={expense.id}>
-                  <TableCell>{formatDate(expense.incurred_at)}</TableCell>
-                  <TableCell>{CATEGORY_LABEL[expense.category]}</TableCell>
-                  <TableCell>{expense.vendor_name ?? '—'}</TableCell>
-                  <TableCell className="max-w-xs">
-                    <span className="line-clamp-1 text-muted-foreground">{expense.description ?? '—'}</span>
-                  </TableCell>
-                  <TableCell>{formatCurrency(expense.amount)}</TableCell>
-                  <TableCell>{expense.created_by_name}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </>
-      )}
+      <DataTable
+        columns={columns}
+        data={expenses}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={() => void refetch()}
+        emptyState={
+          <EmptyState icon={Receipt} title="No expenses yet" description="Expenses recorded for this branch will appear here." />
+        }
+      />
 
       {createOpen && <CreateExpenseDialog branchId={activeBranchId} onOpenChange={setCreateOpen} />}
     </div>

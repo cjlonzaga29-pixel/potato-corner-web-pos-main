@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { DataTable } from '@/components/shared/data-table';
 import { StatusBadge } from '@/components/shared/status-badge';
@@ -89,16 +90,29 @@ function InventoryRequestDialog({
 
         <div className="space-y-3">
           <div className="space-y-1">
-            <label className="text-sm font-medium">
+            <Label htmlFor="inventory-request-quantity">
               Quantity<span className="ml-0.5 text-destructive">*</span>
-            </label>
-            <Input type="number" step="any" min="0" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+            </Label>
+            <Input
+              id="inventory-request-quantity"
+              type="number"
+              step="any"
+              min="0"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">
+            <Label htmlFor="inventory-request-reason">
               Reason<span className="ml-0.5 text-destructive">*</span>
-            </label>
-            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} placeholder="Reason for this request" />
+            </Label>
+            <Textarea
+              id="inventory-request-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              placeholder="Reason for this request"
+            />
           </div>
         </div>
 

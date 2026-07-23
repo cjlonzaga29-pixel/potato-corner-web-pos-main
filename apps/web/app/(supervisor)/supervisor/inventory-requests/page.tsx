@@ -3,14 +3,15 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Loader2 } from 'lucide-react';
+import type { ColumnDef } from '@tanstack/react-table';
+import { ClipboardList, Loader2 } from 'lucide-react';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type { InventoryRequestResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
+import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
 import { apiClient } from '@/lib/api-client';
@@ -114,7 +115,7 @@ function RejectDialog({ request, onOpenChange }: { request: InventoryRequestResp
 }
 
 export default function SupervisorInventoryRequestsPage() {
-  const { data, isLoading, isError } = usePendingInventoryRequests();
+  const { data, isLoading, isError, refetch } = usePendingInventoryRequests();
   const approve = useApproveInventoryRequest();
   const [rejecting, setRejecting] = useState<InventoryRequestResponse | null>(null);
 
@@ -125,6 +126,42 @@ export default function SupervisorInventoryRequestsPage() {
 
   const requests = data?.requests ?? [];
 
+  const columns: ColumnDef<InventoryRequestResponse>[] = [
+    { id: 'branchName', header: 'Branch', cell: ({ row }) => row.original.branchName },
+    { id: 'ingredientName', header: 'Ingredient', cell: ({ row }) => row.original.ingredientName },
+    {
+      id: 'type',
+      header: 'Type',
+      cell: ({ row }) => (
+        <Badge variant={row.original.type === 'stock_in' ? 'active' : 'warning'}>
+          {TYPE_LABEL[row.original.type] ?? row.original.type}
+        </Badge>
+      ),
+    },
+    { id: 'quantity', header: 'Quantity', cell: ({ row }) => row.original.quantity },
+    {
+      id: 'reason',
+      header: 'Reason',
+      cell: ({ row }) => <span className="line-clamp-1 max-w-xs text-muted-foreground">{row.original.reason}</span>,
+    },
+    { id: 'requestedByName', header: 'Requested By', cell: ({ row }) => row.original.requestedByName },
+    { id: 'createdAt', header: 'Date', cell: ({ row }) => formatDateTime(row.original.createdAt) },
+    {
+      id: 'actions',
+      header: '',
+      cell: ({ row }) => (
+        <div className="flex gap-2">
+          <Button size="sm" disabled={approve.isPending} onClick={() => approve.mutate(row.original.id)}>
+            Approve
+          </Button>
+          <Button size="sm" variant="destructive" onClick={() => setRejecting(row.original)}>
+            Reject
+          </Button>
+        </div>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <div>
@@ -132,55 +169,20 @@ export default function SupervisorInventoryRequestsPage() {
         <p className="text-sm text-muted-foreground">Pending stock in/out requests awaiting your approval.</p>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <EmptyState title="Failed to load inventory requests" description="Please try again." />}
-      {!isLoading && !isError && requests.length === 0 && (
-        <EmptyState title="No pending requests" description="There are no inventory requests awaiting approval." />
-      )}
-
-      {!isLoading && !isError && requests.length > 0 && (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Branch</TableHead>
-              <TableHead>Ingredient</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Quantity</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>Requested By</TableHead>
-              <TableHead>Date</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {requests.map((request) => (
-              <TableRow key={request.id}>
-                <TableCell>{request.branchName}</TableCell>
-                <TableCell>{request.ingredientName}</TableCell>
-                <TableCell>
-                  <Badge variant={request.type === 'stock_in' ? 'active' : 'warning'}>{TYPE_LABEL[request.type] ?? request.type}</Badge>
-                </TableCell>
-                <TableCell>{request.quantity}</TableCell>
-                <TableCell className="max-w-xs">
-                  <span className="line-clamp-1 text-muted-foreground">{request.reason}</span>
-                </TableCell>
-                <TableCell>{request.requestedByName}</TableCell>
-                <TableCell>{formatDateTime(request.createdAt)}</TableCell>
-                <TableCell>
-                  <div className="flex gap-2">
-                    <Button size="sm" disabled={approve.isPending} onClick={() => approve.mutate(request.id)}>
-                      Approve
-                    </Button>
-                    <Button size="sm" variant="destructive" onClick={() => setRejecting(request)}>
-                      Reject
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
+      <DataTable
+        columns={columns}
+        data={requests}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={() => void refetch()}
+        emptyState={
+          <EmptyState
+            icon={ClipboardList}
+            title="No pending requests"
+            description="There are no inventory requests awaiting approval."
+          />
+        }
+      />
 
       {rejecting && <RejectDialog request={rejecting} onOpenChange={(open) => !open && setRejecting(null)} />}
     </div>

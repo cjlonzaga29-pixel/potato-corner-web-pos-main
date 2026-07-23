@@ -104,24 +104,15 @@ export default function SupervisorDashboardPage() {
         )}
       </div>
 
-      <div>
-        <h2 className="mb-2 text-sm font-medium text-muted-foreground">Recent Transactions</h2>
-        <DashboardTransactionsFeed
-          transactions={transactionsData?.transactions}
-          isLoading={isTransactionsLoading}
-          onRowClick={() => router.push('/supervisor/cash')}
-        />
-      </div>
+      <DashboardTransactionsFeed
+        transactions={transactionsData?.transactions}
+        isLoading={isTransactionsLoading}
+        onRowClick={() => router.push('/supervisor/cash')}
+      />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div>
-          <h2 className="mb-2 text-sm font-medium text-muted-foreground">Inventory Alerts</h2>
-          <DashboardInventoryAlerts alerts={alertsData?.alerts} isLoading={isAlertsLoading} />
-        </div>
-        <div>
-          <h2 className="mb-2 text-sm font-medium text-muted-foreground">Attendance Overview</h2>
-          <DashboardAttendanceOverview records={attendanceData?.records} isLoading={isAttendanceLoading} />
-        </div>
+        <DashboardInventoryAlerts alerts={alertsData?.alerts} isLoading={isAlertsLoading} />
+        <DashboardAttendanceOverview records={attendanceData?.records} isLoading={isAttendanceLoading} />
       </div>
     </div>
   );

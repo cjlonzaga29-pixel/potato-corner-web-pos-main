@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -364,22 +365,22 @@ function BranchAvailabilityTab({ product }: { product: ProductDetailResponse }) 
         </Select>
       </div>
       <div className="rounded-md border">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b bg-muted/50 text-left">
-              <th className="p-3 font-medium">Branch Code</th>
-              <th className="p-3 font-medium">Branch Name</th>
-              <th className="p-3 font-medium">City</th>
-              <th className="p-3 font-medium">Available</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Branch Code</TableHead>
+              <TableHead>Branch Name</TableHead>
+              <TableHead>City</TableHead>
+              <TableHead>Available</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {data.map((row) => (
-              <tr key={row.branch_id} className="border-b last:border-0">
-                <td className="p-3 font-mono text-xs">{row.branch_code}</td>
-                <td className="p-3">{row.branch_name}</td>
-                <td className="p-3">{row.city}</td>
-                <td className="p-3">
+              <TableRow key={row.branch_id}>
+                <TableCell className="font-mono text-xs">{row.branch_code}</TableCell>
+                <TableCell>{row.branch_name}</TableCell>
+                <TableCell>{row.city}</TableCell>
+                <TableCell>
                   <Switch
                     checked={row.is_available}
                     disabled={globallyLocked && !row.is_available}
@@ -387,11 +388,11 @@ function BranchAvailabilityTab({ product }: { product: ProductDetailResponse }) 
                       void updateAvailability.mutateAsync({ branchId: row.branch_id, isAvailable: checked })
                     }
                   />
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       <ConfirmDialog
         open={confirmAction !== null}

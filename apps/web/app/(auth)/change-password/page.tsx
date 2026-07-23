@@ -9,9 +9,10 @@ import { Loader2 } from 'lucide-react';
 import { ROLE_DASHBOARDS, type Role } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from '@/components/ui/form';
+import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { apiClient } from '@/lib/api-client';
 import { useAuthStore, type AuthUser } from '@/stores/auth.store';
 
@@ -72,14 +73,13 @@ export default function ChangePasswordPage() {
   const router = useRouter();
   const setAuth = useAuthStore((state) => state.setAuth);
   const [error, setError] = useState<string | null>(null);
-  const {
-    register,
-    handleSubmit,
-    watch,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({ resolver: zodResolver(formSchema) });
-  const newPassword = watch('new_password') ?? '';
+  const form = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: { current_password: '', new_password: '', confirm_password: '' },
+  });
+  const newPassword = form.watch('new_password') ?? '';
   const score = strengthScore(newPassword);
+  const { isSubmitting } = form.formState;
 
   async function onSubmit(values: FormValues) {
     setError(null);
@@ -135,50 +135,46 @@ export default function ChangePasswordPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="current_password">Current password</Label>
-              <Input
-                id="current_password"
-                type="password"
-                autoComplete="current-password"
-                {...register('current_password')}
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
+              <FormFieldWrapper<FormValues> name="current_password" label="Current password">
+                <Input type="password" autoComplete="current-password" />
+              </FormFieldWrapper>
+
+              <FormField
+                control={form.control}
+                name="new_password"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>New password</FormLabel>
+                    <FormControl>
+                      <Input type="password" autoComplete="new-password" {...field} />
+                    </FormControl>
+                    {newPassword.length > 0 && <Progress value={score} className={`h-1.5 ${strengthColorClass(score)}`} />}
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-              {errors.current_password && <p className="text-sm text-destructive">{errors.current_password.message}</p>}
-            </div>
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="new_password">New password</Label>
-              <Input id="new_password" type="password" autoComplete="new-password" {...register('new_password')} />
-              {newPassword.length > 0 && <Progress value={score} className={`h-1.5 ${strengthColorClass(score)}`} />}
-              {errors.new_password && <p className="text-sm text-destructive">{errors.new_password.message}</p>}
-            </div>
+              <ul className="space-y-1 text-xs">
+                {PASSWORD_RULES.map((rule) => (
+                  <li key={rule.label} className={rule.test(newPassword) ? 'text-green-600' : 'text-muted-foreground'}>
+                    {rule.test(newPassword) ? '✓' : '·'} {rule.label}
+                  </li>
+                ))}
+              </ul>
 
-            <ul className="space-y-1 text-xs">
-              {PASSWORD_RULES.map((rule) => (
-                <li key={rule.label} className={rule.test(newPassword) ? 'text-green-600' : 'text-muted-foreground'}>
-                  {rule.test(newPassword) ? '✓' : '·'} {rule.label}
-                </li>
-              ))}
-            </ul>
+              <FormFieldWrapper<FormValues> name="confirm_password" label="Confirm new password">
+                <Input type="password" autoComplete="new-password" />
+              </FormFieldWrapper>
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="confirm_password">Confirm new password</Label>
-              <Input
-                id="confirm_password"
-                type="password"
-                autoComplete="new-password"
-                {...register('confirm_password')}
-              />
-              {errors.confirm_password && <p className="text-sm text-destructive">{errors.confirm_password.message}</p>}
-            </div>
+              {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
 
-            {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
-
-            <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Set new password'}
-            </Button>
-          </form>
+              <Button type="submit" disabled={isSubmitting}>
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Set new password'}
+              </Button>
+            </form>
+          </Form>
         </CardContent>
       </Card>
     </main>

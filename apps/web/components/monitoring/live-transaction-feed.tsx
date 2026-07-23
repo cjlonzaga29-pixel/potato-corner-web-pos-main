@@ -9,6 +9,7 @@ import { useBranches } from '@/hooks/queries/use-branches';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { cn, formatTimeAgo } from '@/lib/utils';
 
@@ -61,13 +62,9 @@ export function LiveTransactionFeed() {
       </CardHeader>
       <CardContent>
         {newCount > 0 && (
-          <button
-            type="button"
-            onClick={jumpToNewest}
-            className="mb-2 w-full rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
-          >
+          <Button type="button" size="sm" onClick={jumpToNewest} className="mb-2 w-full">
             {newCount} new event{newCount === 1 ? '' : 's'}
-          </button>
+          </Button>
         )}
         <div
           ref={containerRef}

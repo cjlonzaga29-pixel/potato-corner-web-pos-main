@@ -31,7 +31,7 @@ function SettingsPageContent() {
   }
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold">System Settings</h1>
         <p className="text-muted-foreground text-sm">Security, notification, receipt, and payment method configuration.</p>

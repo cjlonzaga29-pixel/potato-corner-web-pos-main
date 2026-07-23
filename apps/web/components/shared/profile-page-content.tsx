@@ -5,7 +5,7 @@ import { useTheme } from 'next-themes';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ActiveSessionsSection } from '@/components/profile/active-sessions-section';
 import { TwoFactorSection } from '@/components/profile/two-factor-section';
 
@@ -28,8 +28,11 @@ export function ProfilePageContent({ showActiveSessions = true }: ProfilePageCon
     !user?.branchIds || user.branchIds.length === 0 ? 'All Branches' : user.branchIds.join(', ');
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6 p-6">
-      <h1 className="text-2xl font-semibold">Profile</h1>
+    <div className="mx-auto max-w-2xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Profile</h1>
+        <p className="text-sm text-muted-foreground">Manage your account, security, and preferences.</p>
+      </div>
 
       <Card>
         <CardHeader>
@@ -78,9 +81,17 @@ export function ProfilePageContent({ showActiveSessions = true }: ProfilePageCon
 
       <TwoFactorSection />
 
-      <Button variant="outline" asChild>
-        <Link href="/change-password">Change Password</Link>
-      </Button>
+      <Card>
+        <CardHeader>
+          <CardTitle>Password</CardTitle>
+          <CardDescription>Update the password used to sign in to your account.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" asChild>
+            <Link href="/change-password">Change Password</Link>
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

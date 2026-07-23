@@ -8,8 +8,9 @@ import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Form } from '@/components/ui/form';
+import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { apiClient } from '@/lib/api-client';
 
 const requestSchema = z.object({ email: z.email('Enter a valid email address') });
@@ -36,11 +37,8 @@ type ResetValues = z.infer<typeof resetSchema>;
 function RequestResetForm() {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-  } = useForm<RequestValues>({ resolver: zodResolver(requestSchema) });
+  const form = useForm<RequestValues>({ resolver: zodResolver(requestSchema), defaultValues: { email: '' } });
+  const { isSubmitting } = form.formState;
 
   async function onSubmit(values: RequestValues) {
     setError(null);
@@ -62,31 +60,31 @@ function RequestResetForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="email">Email</Label>
-        <Input id="email" type="email" autoComplete="email" {...register('email')} />
-        {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
-      </div>
-      {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
+        <FormFieldWrapper<RequestValues> name="email" label="Email">
+          <Input type="email" autoComplete="email" />
+        </FormFieldWrapper>
 
-      <Button type="submit" disabled={isSubmitting}>
-        {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send reset link'}
-      </Button>
-    </form>
+        {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
+
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send reset link'}
+        </Button>
+      </form>
+    </Form>
   );
 }
 
 function ResetPasswordForm({ token }: { token: string }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
-  const {
-    register,
-    handleSubmit,
-    watch,
-    formState: { errors, isSubmitting },
-  } = useForm<ResetValues>({ resolver: zodResolver(resetSchema) });
-  const newPassword = watch('new_password') ?? '';
+  const form = useForm<ResetValues>({
+    resolver: zodResolver(resetSchema),
+    defaultValues: { new_password: '', confirm_password: '' },
+  });
+  const { isSubmitting } = form.formState;
+  const newPassword = form.watch('new_password') ?? '';
 
   async function onSubmit(values: ResetValues) {
     setError(null);
@@ -106,33 +104,31 @@ function ResetPasswordForm({ token }: { token: string }) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="new_password">New password</Label>
-        <Input id="new_password" type="password" autoComplete="new-password" {...register('new_password')} />
-        {errors.new_password && <p className="text-sm text-destructive">{errors.new_password.message}</p>}
-      </div>
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
+        <FormFieldWrapper<ResetValues> name="new_password" label="New password">
+          <Input type="password" autoComplete="new-password" />
+        </FormFieldWrapper>
 
-      <ul className="space-y-1 text-xs">
-        {PASSWORD_RULES.map((rule) => (
-          <li key={rule.label} className={rule.test(newPassword) ? 'text-green-600' : 'text-muted-foreground'}>
-            {rule.test(newPassword) ? '✓' : '·'} {rule.label}
-          </li>
-        ))}
-      </ul>
+        <ul className="space-y-1 text-xs">
+          {PASSWORD_RULES.map((rule) => (
+            <li key={rule.label} className={rule.test(newPassword) ? 'text-green-600' : 'text-muted-foreground'}>
+              {rule.test(newPassword) ? '✓' : '·'} {rule.label}
+            </li>
+          ))}
+        </ul>
 
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="confirm_password">Confirm password</Label>
-        <Input id="confirm_password" type="password" autoComplete="new-password" {...register('confirm_password')} />
-        {errors.confirm_password && <p className="text-sm text-destructive">{errors.confirm_password.message}</p>}
-      </div>
+        <FormFieldWrapper<ResetValues> name="confirm_password" label="Confirm password">
+          <Input type="password" autoComplete="new-password" />
+        </FormFieldWrapper>
 
-      {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
+        {error && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
 
-      <Button type="submit" disabled={isSubmitting}>
-        {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Reset password'}
-      </Button>
-    </form>
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Reset password'}
+        </Button>
+      </form>
+    </Form>
   );
 }
 

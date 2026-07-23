@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { ErrorState } from '@/components/shared/feedback/error-state';
 import { ShiftStatusBadge } from '@/components/admin/shifts/shift-status-badge';
 import { ShiftDenominationTable } from '@/components/admin/shifts/shift-denomination-table';
 import { ReviewVarianceDialog } from '@/components/admin/shifts/review-variance-dialog';
@@ -39,7 +41,7 @@ export function ShiftDetailView() {
   const [reviewing, setReviewing] = useState(false);
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
 
-  const { data: shift, isLoading: shiftLoading } = useShift(shiftId);
+  const { data: shift, isLoading: shiftLoading, isError: shiftError, refetch: refetchShift } = useShift(shiftId);
   const { data: summaryData } = useShiftSummary(shiftId);
   // useTransactions is `enabled: Boolean(filters.branch_id)` — passing shift.branch_id
   // once the parent shift has loaded also satisfies branchGuard for a supervisor caller.
@@ -68,8 +70,16 @@ export function ShiftDetailView() {
     },
   ];
 
-  if (shiftLoading) return <p className="p-6 text-sm text-muted-foreground">Loading shift…</p>;
-  if (!shift) return <p className="p-6 text-sm text-destructive">Shift not found.</p>;
+  if (shiftLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
+  if (shiftError || !shift) {
+    return <ErrorState title="Shift not found" retry={() => void refetchShift()} />;
+  }
 
   const summary = summaryData?.summary;
   const canReview = shift.status === 'flagged' && user?.role === 'super_admin';

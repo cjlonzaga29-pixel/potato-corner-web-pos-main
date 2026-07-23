@@ -70,8 +70,19 @@ router.post(
       if (!requireUser(req, res)) return;
       const body = req.body as CreateTransactionBody;
       // Staff tokens pin exactly one branch_id — use it, never the client body.
-      // Non-null: jwtPayloadSchema requires staff branch_ids to have length 1.
-      const branchId = req.user.role === ROLES.STAFF ? req.user.branch_ids[0]! : body.branch_id;
+      // jwtPayloadSchema requires staff branch_ids to have length 1, but guard
+      // defensively rather than asserting non-null.
+      let branchId: string;
+      if (req.user.role === ROLES.STAFF) {
+        const staffBranchId = req.user.branch_ids[0];
+        if (!staffBranchId) {
+          res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
+          return;
+        }
+        branchId = staffBranchId;
+      } else {
+        branchId = body.branch_id;
+      }
       const transaction = await transactionsService.createTransaction(
         {
           branchId,

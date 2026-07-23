@@ -1,6 +1,7 @@
 import { useAuthStore } from '@/stores/auth.store';
 import { broadcastLogout } from './auth-broadcast';
 import { getOrCreateDeviceId } from './device';
+import { decodeJwtPayload } from './jwt';
 import { API_URL } from './constants';
 
 interface ApiResponse<T> {
@@ -119,9 +120,28 @@ export async function apiClient<T>(
     console.warn('[apiClient] 401, triggering refresh', path);
     const newToken = await refreshAccessToken();
     if (newToken) {
-      const user = useAuthStore.getState().user;
-      if (user) useAuthStore.getState().setAuth(user, newToken);
-      return apiClient<T>(path, init, true);
+      // Rebuild from the new token's own claims rather than reusing the
+      // stale cached user object — a role change server-side (e.g. a
+      // promotion to super_admin) must take effect the moment the refreshed
+      // token carries it, not stay pinned to whatever role was cached at
+      // login. First/last name aren't in the JWT, so they're carried over
+      // from the prior cached user (login-only fields).
+      const payload = decodeJwtPayload(newToken);
+      const previousUser = useAuthStore.getState().user;
+      if (payload && previousUser) {
+        useAuthStore.getState().setAuth(
+          {
+            id: payload.user_id,
+            role: payload.role,
+            email: payload.email,
+            firstName: previousUser.firstName,
+            lastName: previousUser.lastName,
+            branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
+          },
+          newToken,
+        );
+        return apiClient<T>(path, init, true);
+      }
     }
 
     useAuthStore.getState().clearAuth();

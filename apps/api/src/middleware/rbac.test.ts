@@ -19,6 +19,7 @@ vi.mock('../modules/cash/cash.repository.js', () => ({
 
 const { prisma } = await import('../lib/prisma.js');
 const { cashRepository } = await import('../modules/cash/cash.repository.js');
+const { config } = await import('../config/index.js');
 const { authenticate, revokedTokenHash } = await import('./authenticate.js');
 const { authorize, adminOnly, adminOrSupervisor, allRoles } = await import('./authorize.js');
 const { branchGuard } = await import('./branch-guard.js');
@@ -146,7 +147,61 @@ describe('authorize middleware', () => {
     const res = mockRes();
     adminOnly(req, res, vi.fn());
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'INSUFFICIENT_PERMISSIONS' } }));
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({ code: 'INSUFFICIENT_PERMISSIONS' }),
+      }),
+    );
+  });
+
+  it('non-production 403 includes diagnostic details', () => {
+    const req = reqWithRole(ROLES.SUPERVISOR);
+    const res = mockRes();
+    adminOnly(req, res, vi.fn());
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: 'INSUFFICIENT_PERMISSIONS',
+          details: expect.objectContaining({
+            authenticated: true,
+            userId: 'u1',
+            role: ROLES.SUPERVISOR,
+            allowedRoles: expect.arrayContaining([ROLES.SUPER_ADMIN]),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('production 403 omits diagnostic details', () => {
+    const wasProduction = config.isProduction;
+    (config as { isProduction: boolean }).isProduction = true;
+    try {
+      const req = reqWithRole(ROLES.SUPERVISOR);
+      const res = mockRes();
+      adminOnly(req, res, vi.fn());
+      expect(res.json).toHaveBeenCalledWith({
+        data: null,
+        error: { code: 'INSUFFICIENT_PERMISSIONS' },
+        meta: null,
+      });
+    } finally {
+      (config as { isProduction: boolean }).isProduction = wasProduction;
+    }
+  });
+
+  it('missing req.user still reports authenticated: false in diagnostics', () => {
+    const req = mockReq();
+    const res = mockRes();
+    adminOnly(req, res, vi.fn());
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          details: expect.objectContaining({ authenticated: false, userId: null, role: null }),
+        }),
+      }),
+    );
   });
 
   it('staff fails adminOnly with 403', () => {

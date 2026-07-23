@@ -363,12 +363,8 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('No pending price overrides')).toBeInTheDocument();
   });
 
-  it('renders shortcut cards linking to inventory reports and /admin/attendance', () => {
+  it('renders the attendance shortcut card linking to /admin/attendance', () => {
     render(<AdminDashboardPage />);
-    expect(screen.getByText('Inventory Alerts').closest('a')).toHaveAttribute(
-      'href',
-      '/admin/reports?tab=INVENTORY_VALUATION',
-    );
     expect(screen.getByText('Attendance').closest('a')).toHaveAttribute('href', '/admin/attendance');
   });
 

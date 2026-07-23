@@ -41,13 +41,13 @@ export function DashboardKpiRow({
   isLoadingStats,
 }: DashboardKpiRowProps) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Financial</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
-          <KpiCard title="Live Revenue (Open Shifts)" value={liveRevenue ?? 0} prefix="₱" isLoading={isLoadingRevenue} />
-          <KpiCard title="Gross Sales" value={grossSales ?? 0} prefix="₱" isLoading={isLoadingStats} />
-          <KpiCard title="Expenses" value={expenses ?? 0} prefix="₱" isLoading={isLoadingStats} />
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Financial</h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard title="Live Revenue (Open Shifts)" value={liveRevenue ?? 0} prefix="₱" isLoading={isLoadingRevenue} emphasize />
+          <KpiCard title="Gross Sales" value={grossSales ?? 0} prefix="₱" isLoading={isLoadingStats} emphasize />
+          <KpiCard title="Expenses" value={expenses ?? 0} prefix="₱" isLoading={isLoadingStats} emphasize />
           <KpiCard
             title="Net Profit"
             value={netProfit ?? 0}
@@ -55,13 +55,14 @@ export function DashboardKpiRow({
             isLoading={isLoadingStats}
             tone={(netProfit ?? 0) >= 0 ? 'positive' : 'negative'}
             tooltip="Gross Sales - VAT - Expenses"
+            emphasize
           />
         </div>
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Operational</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Operational</h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <KpiCard title="Active Shifts" value={activeShiftsCount ?? 0} isLoading={isLoadingShifts} />
           <KpiCard
             title="Pending Approvals"

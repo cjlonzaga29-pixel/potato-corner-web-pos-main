@@ -16,7 +16,6 @@ import { DashboardPendingOverrides } from '@/components/admin/dashboard-pending-
 import { DashboardShortcutCards } from '@/components/admin/dashboard-shortcut-cards';
 import { DashboardAttendanceOverview } from '@/components/admin/dashboard-attendance-overview';
 import { DashboardInventoryAlerts } from '@/components/admin/dashboard-inventory-alerts';
-import { InventoryRollupCard } from '@/components/admin/inventory-rollup-card';
 import { LiveTransactionFeed } from '@/components/monitoring/live-transaction-feed';
 import { ActiveCashiersPanel } from '@/components/monitoring/active-cashiers-panel';
 import { LiveAlertsStream } from '@/components/monitoring/live-alerts-stream';
@@ -92,20 +91,21 @@ function AdminDashboardPageContent() {
   const connectionColor = isReconnecting ? 'bg-yellow-500' : isConnected ? 'bg-green-500' : 'bg-red-500';
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Super Admin Dashboard</h1>
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold tracking-tight">Super Admin Dashboard</h1>
           <p className="text-sm text-muted-foreground">Live overview across every branch.</p>
         </div>
-        <span
-          title={connectionLabel}
-          aria-label={connectionLabel}
-          className={`h-2.5 w-2.5 rounded-full ${connectionColor}`}
-        />
+        <div className="flex items-center gap-3">
+          <BranchSelector />
+          <span
+            title={connectionLabel}
+            aria-label={connectionLabel}
+            className={`h-2.5 w-2.5 shrink-0 rounded-full ${connectionColor}`}
+          />
+        </div>
       </div>
-
-      <BranchSelector />
 
       <DashboardKpiRow
         activeShiftsCount={activeShiftsData?.total}
@@ -127,28 +127,32 @@ function AdminDashboardPageContent() {
 
       <DashboardTrendsSection branchFilter={branchFilter} />
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <DashboardPendingRequests
-          requests={pendingProductRequestsList?.requests}
-          isLoading={isLoadingPendingProductRequestsList}
-        />
-        <DashboardPendingOverrides
-          overrides={pendingPriceOverridesList?.overrides}
-          isLoading={isLoadingPendingPriceOverridesList}
-        />
+      <div className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight">Approvals</h2>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <DashboardPendingRequests
+            requests={pendingProductRequestsList?.requests}
+            isLoading={isLoadingPendingProductRequestsList}
+          />
+          <DashboardPendingOverrides
+            overrides={pendingPriceOverridesList?.overrides}
+            isLoading={isLoadingPendingPriceOverridesList}
+          />
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <DashboardAttendanceOverview branchFilter={branchFilter} />
-        <DashboardInventoryAlerts branchFilter={branchFilter} />
+      <div className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight">Operations</h2>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <DashboardAttendanceOverview branchFilter={branchFilter} />
+          <DashboardInventoryAlerts branchFilter={branchFilter} />
+        </div>
       </div>
-
-      <InventoryRollupCard />
 
       <DashboardShortcutCards />
 
       <div className="space-y-4 border-t pt-6">
-        <h2 className="text-lg font-semibold">Live Activity</h2>
+        <h2 className="text-lg font-semibold tracking-tight">Live Activity</h2>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <LiveTransactionFeed />
           <ActiveCashiersPanel />

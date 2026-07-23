@@ -4,12 +4,15 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { ROLES, EMPLOYMENT_TYPE } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useCreateBranch } from '@/hooks/queries/use-branches';
+import { useCreateEmployee } from '@/hooks/queries/use-employees';
 
 /** Empty string -> undefined (skips validation for optional GPS fields) before coercing to a number. */
 function optionalCoercedNumber(min: number, max: number) {
@@ -19,14 +22,24 @@ function optionalCoercedNumber(min: number, max: number) {
   );
 }
 
-const formSchema = z.object({
-  name: z.string().min(2, 'Minimum 2 characters').max(100),
-  city: z.string().min(2, 'Minimum 2 characters'),
-  address: z.string().min(5, 'Minimum 5 characters'),
-  gpsLatitude: optionalCoercedNumber(-90, 90),
-  gpsLongitude: optionalCoercedNumber(-180, 180),
-  gpsRadiusMeters: z.coerce.number().int().min(10).max(1000).default(100),
-});
+const formSchema = z
+  .object({
+    name: z.string().min(2, 'Minimum 2 characters').max(100),
+    city: z.string().min(2, 'Minimum 2 characters'),
+    address: z.string().min(5, 'Minimum 5 characters'),
+    gpsLatitude: optionalCoercedNumber(-90, 90),
+    gpsLongitude: optionalCoercedNumber(-180, 180),
+    gpsRadiusMeters: z.coerce.number().int().min(10).max(1000).default(100),
+    accountFirstName: z.string().min(2, 'Minimum 2 characters').max(50),
+    accountLastName: z.string().min(2, 'Minimum 2 characters').max(50),
+    username: z.email('Must be a valid email'),
+    password: z.string().min(8, 'Minimum 8 characters'),
+    confirmPassword: z.string().min(8, 'Minimum 8 characters'),
+  })
+  .refine((values) => values.password === values.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
 
 type FormValues = z.input<typeof formSchema>;
 
@@ -37,6 +50,11 @@ const DEFAULT_VALUES: FormValues = {
   gpsLatitude: '',
   gpsLongitude: '',
   gpsRadiusMeters: 100,
+  accountFirstName: '',
+  accountLastName: '',
+  username: '',
+  password: '',
+  confirmPassword: '',
 };
 
 interface CreateBranchDialogProps {
@@ -55,9 +73,11 @@ function previewCityPrefix(city: string): string {
 
 export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogProps) {
   const createBranch = useCreateBranch();
+  const createAccount = useCreateEmployee();
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   const city = form.watch('city');
   const prefix = previewCityPrefix(city ?? '');
+  const isPending = createBranch.isPending || createAccount.isPending;
 
   function handleOpenChange(next: boolean) {
     if (!next) form.reset(DEFAULT_VALUES);
@@ -66,7 +86,7 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
-    await createBranch.mutateAsync({
+    const branch = await createBranch.mutateAsync({
       name: parsed.name,
       city: parsed.city,
       address: parsed.address,
@@ -75,6 +95,18 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
       gpsRadiusMeters: parsed.gpsRadiusMeters,
       status: 'active',
     });
+
+    await createAccount.mutateAsync({
+      email: parsed.username,
+      first_name: parsed.accountFirstName,
+      last_name: parsed.accountLastName,
+      role: ROLES.SUPERVISOR,
+      employment_type: EMPLOYMENT_TYPE.REGULAR,
+      branch_ids: [branch.id],
+      initial_password: parsed.password,
+    });
+
+    toast.success('Branch created, branch account created, login credentials set');
     handleOpenChange(false);
   }
 
@@ -113,12 +145,34 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
               <Input inputMode="numeric" />
             </FormFieldWrapper>
 
+            <div className="grid grid-cols-2 gap-3">
+              <FormFieldWrapper<FormValues> name="accountFirstName" label="Account First Name" required>
+                <Input placeholder="Juan" />
+              </FormFieldWrapper>
+              <FormFieldWrapper<FormValues> name="accountLastName" label="Account Last Name" required>
+                <Input placeholder="Dela Cruz" />
+              </FormFieldWrapper>
+            </div>
+
+            <FormFieldWrapper<FormValues> name="username" label="Username" description="Used as the branch account login (email format)" required>
+              <Input type="email" placeholder="branch.manila@potatocorner.com" />
+            </FormFieldWrapper>
+
+            <div className="grid grid-cols-2 gap-3">
+              <FormFieldWrapper<FormValues> name="password" label="Password" required>
+                <Input type="password" />
+              </FormFieldWrapper>
+              <FormFieldWrapper<FormValues> name="confirmPassword" label="Confirm Password" required>
+                <Input type="password" />
+              </FormFieldWrapper>
+            </div>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={createBranch.isPending}>
-                {createBranch.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Button type="submit" disabled={isPending}>
+                {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Create Branch
               </Button>
             </DialogFooter>

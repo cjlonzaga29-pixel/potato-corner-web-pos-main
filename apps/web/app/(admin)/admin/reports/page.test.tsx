@@ -6,30 +6,39 @@ const mockUseRequestExport = { mutate: vi.fn(), isPending: false };
 let realtimeSyncCallback: ((payload: unknown) => void) | undefined;
 
 vi.mock('@/hooks/queries/use-reports', () => {
-  const emptyRealtime = { data: undefined, isLoading: false, refetch: vi.fn() };
-  const emptyPrecomputed = { data: undefined, isLoading: false, refetch: vi.fn() };
+  const empty = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() };
   return {
-    useDailySalesReport: vi.fn(() => emptyRealtime),
-    useShiftSummaryReport: vi.fn(() => emptyRealtime),
-    useCashReconciliationReport: vi.fn(() => emptyRealtime),
-    useVoidRefundReport: vi.fn(() => emptyRealtime),
-    useDiscountComplianceReport: vi.fn(() => emptyRealtime),
-    useInventoryMovementReport: vi.fn(() => emptyRealtime),
-    useAttendanceSummaryReport: vi.fn(() => emptyRealtime),
-    useFraudAlertSummaryReport: vi.fn(() => emptyRealtime),
-    useProductPerformanceReport: vi.fn(() => emptyPrecomputed),
-    useFlavorPerformanceReport: vi.fn(() => emptyPrecomputed),
-    useEmployeePerformanceReport: vi.fn(() => emptyPrecomputed),
-    useInventoryValuationReport: vi.fn(() => emptyPrecomputed),
-    useBranchComparisonReport: vi.fn(() => emptyPrecomputed),
+    useDailySalesReport: vi.fn(() => empty),
+    useCashReconciliationReport: vi.fn(() => empty),
+    useVoidRefundReport: vi.fn(() => empty),
+    useFraudAlertSummaryReport: vi.fn(() => empty),
     useRequestExport: vi.fn(() => mockUseRequestExport),
     useReportsRealtimeSync: vi.fn((cb: (payload: unknown) => void) => {
       realtimeSyncCallback = cb;
     }),
   };
 });
+
+vi.mock('@/hooks/queries/use-expenses', () => ({
+  useExpenses: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  useExpensesRealtimeSync: vi.fn(),
+}));
+
+vi.mock('@/hooks/queries/use-shifts', () => ({
+  useShifts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  useShiftsRealtimeSync: vi.fn(),
+}));
+
+vi.mock('@/hooks/queries/use-fraud-alerts', () => ({
+  useFraudAlerts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  useFraudAlertsRealtimeSync: vi.fn(),
+  useInvestigateAlert: vi.fn(() => ({ isPending: false, variables: undefined, mutateAsync: vi.fn() })),
+  useDismissAlert: vi.fn(() => ({ isPending: false, variables: undefined, mutateAsync: vi.fn() })),
+  useEscalateAlert: vi.fn(() => ({ isPending: false, variables: undefined, mutateAsync: vi.fn() })),
+}));
+
 vi.mock('@/hooks/queries/use-branches', () => ({
-  useBranches: vi.fn(() => ({ data: { branches: [{ id: 'branch-1', name: 'Main Branch' }] } })),
+  useBranches: vi.fn(() => ({ data: { branches: [{ id: 'branch-1', name: 'Main Branch' }], total: 1, page: 1, limit: 100 }, isLoading: false })),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -81,26 +90,18 @@ afterEach(() => {
 });
 
 describe('AdminReportsPage', () => {
-  it('renders all 19 report tabs', () => {
+  it('renders the 6 report tabs', () => {
     render(<AdminReportsPage />);
-    const tabLabels = [
-      'Daily Sales', 'Shift Summary', 'Cash Reconciliation', 'Void/Refund', 'Discount Compliance',
-      'Inventory Movement', 'Attendance Summary', 'Fraud Alert Summary', 'Product Performance',
-      'Flavor Performance', 'Employee Performance', 'Inventory Valuation', 'Branch Comparison',
-      'Inventory Analytics', 'Shift Log', 'Product Requests Log', 'Price Overrides Log',
-      'Audit Logs', 'Login Audit',
-    ];
+    const tabLabels = ['Daily Sales', 'Cash Reconciliation', 'Expenses', 'Voided / Refund', 'Shift Reports', 'Alerts'];
     for (const label of tabLabels) expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
   });
 
   it('only enables the active tab\'s data hook', () => {
     render(<AdminReportsPage />);
     expect(reportsHooks.useDailySalesReport).toHaveBeenCalledWith(expect.anything(), true);
-    expect(reportsHooks.useShiftSummaryReport).toHaveBeenCalledWith(expect.anything(), false);
-    // useBranchComparisonReport's first arg is `selectedBranchId ?? undefined`, and the
-    // page's default selection ("All Branches") is null -> undefined here. expect.anything()
-    // does not match undefined, so only the `enabled` (2nd) arg is asserted.
-    expect(reportsHooks.useBranchComparisonReport).toHaveBeenCalledWith(undefined, false);
+    expect(reportsHooks.useCashReconciliationReport).toHaveBeenCalledWith(expect.anything(), false);
+    expect(reportsHooks.useVoidRefundReport).toHaveBeenCalledWith(expect.anything(), false);
+    expect(reportsHooks.useFraudAlertSummaryReport).toHaveBeenCalledWith(expect.anything(), false);
   });
 
   it('disables the refresh button for 60 seconds after click, showing a countdown', async () => {
@@ -147,7 +148,7 @@ describe('AdminReportsPage', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it('renders a "select a branch" empty state by default', () => {
+  it('renders a "select a branch" empty state on Daily Sales by default', () => {
     render(<AdminReportsPage />);
     expect(screen.getByText(/select a branch/i)).toBeInTheDocument();
   });
@@ -159,12 +160,29 @@ describe('AdminReportsPage', () => {
   });
 
   it('renders a loading skeleton for the active tab', () => {
-    vi.mocked(reportsHooks.useDailySalesReport).mockReturnValue({ data: undefined, isLoading: true, refetch: vi.fn() } as never);
-    // ReportLastUpdated (Task 17) renders a plain Skeleton <div> with no accessible text
-    // while isLoading — assert on its class instead of text, since there is no "not yet
-    // computed"/"last updated" text present during loading.
+    vi.mocked(reportsHooks.useDailySalesReport).mockReturnValue({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() } as never);
+    // ReportLastUpdated renders a plain Skeleton <div> with no accessible text while
+    // isLoading — assert on its class instead of text.
     const { container } = render(<AdminReportsPage />);
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
+  });
+
+  it('renders the Expenses tab empty state without requiring a branch selection', () => {
+    render(<AdminReportsPage />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Expenses' }));
+    expect(screen.getByText('No expenses recorded')).toBeInTheDocument();
+  });
+
+  it('renders the ShiftLogPanel when the Shift Reports tab is active', () => {
+    render(<AdminReportsPage />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Shift Reports' }));
+    expect(screen.getByText('Every Shift, Every Branch')).toBeInTheDocument();
+  });
+
+  it('renders the FraudAlertManagementPanel when the Alerts tab is active', () => {
+    render(<AdminReportsPage />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Alerts' }));
+    expect(screen.getByText('Alert Management')).toBeInTheDocument();
   });
 });

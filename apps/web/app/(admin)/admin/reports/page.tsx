@@ -1,29 +1,18 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { toast } from 'sonner';
 import type {
   DailySalesReportRow,
-  ShiftSummaryReportRow,
   CashReconciliationReportRow,
   VoidRefundReportRow,
-  DiscountComplianceReportRow,
-  InventoryMovementReportRow,
-  AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
-  ProductPerformanceReportRow,
-  FlavorPerformanceReportRow,
-  EmployeePerformanceReportRow,
-  InventoryValuationReportRow,
-  BranchComparisonReportRow,
   ExportReadyPayload,
   ExportRequestInput,
 } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
@@ -31,31 +20,17 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
-import { DiscountAuditPanel } from '@/components/reports/discount-audit-panel';
-import { AuditLogsPanel } from '@/components/reports/audit-logs-panel';
-import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
-import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
-import { ProductRequestsLogPanel } from '@/components/reports/product-requests-log-panel';
-import { FlavorRequestsLogPanel } from '@/components/reports/flavor-requests-log-panel';
-import { PriceOverridesLogPanel } from '@/components/reports/price-overrides-log-panel';
+import { expenseColumns } from '@/components/admin/expense-columns';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
+import { useExpenses, useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import {
   useDailySalesReport,
-  useShiftSummaryReport,
   useCashReconciliationReport,
   useVoidRefundReport,
-  useDiscountComplianceReport,
-  useInventoryMovementReport,
-  useAttendanceSummaryReport,
   useFraudAlertSummaryReport,
-  useProductPerformanceReport,
-  useFlavorPerformanceReport,
-  useEmployeePerformanceReport,
-  useInventoryValuationReport,
-  useBranchComparisonReport,
   useRequestExport,
   useReportsRealtimeSync,
 } from '@/hooks/queries/use-reports';
@@ -79,17 +54,6 @@ const dailySalesColumns: ColumnDef<DailySalesReportRow>[] = [
   { accessorKey: 'completed_count', header: 'Completed' },
   { accessorKey: 'voided_count', header: 'Voided' },
   { accessorKey: 'refunded_count', header: 'Refunded' },
-];
-
-const shiftSummaryColumns: ColumnDef<ShiftSummaryReportRow>[] = [
-  { accessorKey: 'cashier_name', header: 'Cashier' },
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'status', header: 'Status' },
-  { accessorKey: 'started_at', header: 'Started', cell: ({ row }) => formatDateTime(row.original.started_at) },
-  { accessorKey: 'closed_at', header: 'Closed', cell: ({ row }) => (row.original.closed_at ? formatDateTime(row.original.closed_at) : '—') },
-  { accessorKey: 'cash_sales_total', header: 'Cash Sales', cell: ({ row }) => formatCurrency(row.original.cash_sales_total) },
-  { accessorKey: 'gcash_sales_total', header: 'GCash Sales', cell: ({ row }) => formatCurrency(row.original.gcash_sales_total) },
-  { accessorKey: 'total_transaction_count', header: 'Transactions' },
 ];
 
 const cashReconciliationColumns: ColumnDef<CashReconciliationReportRow>[] = [
@@ -124,32 +88,6 @@ const voidRefundColumns: ColumnDef<VoidRefundReportRow>[] = [
   { accessorKey: 'actioned_by_name', header: 'Actioned By', cell: ({ row }) => row.original.actioned_by_name ?? '—' },
 ];
 
-const discountComplianceColumns: ColumnDef<DiscountComplianceReportRow>[] = [
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'discount_type', header: 'Discount Type' },
-  { accessorKey: 'transaction_count', header: 'Transactions' },
-  { accessorKey: 'total_discount_amount', header: 'Total Discount', cell: ({ row }) => formatCurrency(row.original.total_discount_amount) },
-];
-
-const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
-  { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'movement_type', header: 'Type' },
-  { accessorKey: 'quantity_change', header: 'Change' },
-  { accessorKey: 'quantity_after', header: 'Balance After' },
-  { accessorKey: 'recorded_by_name', header: 'Recorded By', cell: ({ row }) => row.original.recorded_by_name ?? '—' },
-  { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-];
-
-const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
-  { accessorKey: 'employee_name', header: 'Employee' },
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'clock_in', header: 'Clock In', cell: ({ row }) => formatDateTime(row.original.clock_in) },
-  { accessorKey: 'clock_out', header: 'Clock Out', cell: ({ row }) => (row.original.clock_out ? formatDateTime(row.original.clock_out) : '—') },
-  { accessorKey: 'actual_work_minutes', header: 'Minutes Worked', cell: ({ row }) => row.original.actual_work_minutes ?? '—' },
-  { accessorKey: 'status', header: 'Status' },
-];
-
 const fraudAlertSummaryColumns: ColumnDef<FraudAlertSummaryReportRow>[] = [
   { accessorKey: 'alert_type', header: 'Type' },
   { accessorKey: 'severity', header: 'Severity' },
@@ -158,71 +96,13 @@ const fraudAlertSummaryColumns: ColumnDef<FraudAlertSummaryReportRow>[] = [
   { accessorKey: 'created_at', header: 'Created', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-const productPerformanceColumns: ColumnDef<ProductPerformanceReportRow>[] = [
-  { accessorKey: 'product_name', header: 'Product' },
-  { accessorKey: 'variant_name', header: 'Variant' },
-  { accessorKey: 'units_sold', header: 'Units Sold' },
-  { accessorKey: 'gross_revenue', header: 'Revenue', cell: ({ row }) => formatCurrency(row.original.gross_revenue) },
-];
-
-const flavorPerformanceColumns: ColumnDef<FlavorPerformanceReportRow>[] = [
-  { accessorKey: 'flavor_name', header: 'Flavor' },
-  { accessorKey: 'units_sold', header: 'Units Sold' },
-  { accessorKey: 'gross_revenue', header: 'Revenue', cell: ({ row }) => formatCurrency(row.original.gross_revenue) },
-];
-
-const employeePerformanceColumns: ColumnDef<EmployeePerformanceReportRow>[] = [
-  { accessorKey: 'employee_name', header: 'Employee' },
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'transaction_count', header: 'Transactions' },
-  { accessorKey: 'gross_sales', header: 'Gross Sales', cell: ({ row }) => formatCurrency(row.original.gross_sales) },
-  { accessorKey: 'hours_worked', header: 'Hours Worked' },
-];
-
-const inventoryValuationColumns: ColumnDef<InventoryValuationReportRow>[] = [
-  { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { accessorKey: 'unit', header: 'Unit' },
-  { accessorKey: 'current_stock', header: 'Current Stock' },
-  { accessorKey: 'unit_cost', header: 'Unit Cost', cell: ({ row }) => (row.original.unit_cost !== null ? formatCurrency(row.original.unit_cost) : '—') },
-  { accessorKey: 'total_value', header: 'Total Value', cell: ({ row }) => formatCurrency(row.original.total_value) },
-  { accessorKey: 'status', header: 'Status' },
-];
-
-const branchComparisonColumns: ColumnDef<BranchComparisonReportRow>[] = [
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'gross_sales', header: 'Gross Sales', cell: ({ row }) => formatCurrency(row.original.gross_sales) },
-  { accessorKey: 'transaction_count', header: 'Transactions' },
-  { accessorKey: 'active_shift_count', header: 'Active Shifts' },
-  { accessorKey: 'low_stock_ingredient_count', header: 'Low Stock Items' },
-];
-
-const VALID_TABS = new Set([
-  'DAILY_SALES',
-  'SHIFT_SUMMARY',
-  'CASH_RECONCILIATION',
-  'VOID_REFUND',
-  'DISCOUNT_COMPLIANCE',
-  'INVENTORY_MOVEMENT',
-  'ATTENDANCE_SUMMARY',
-  'FRAUD_ALERT_SUMMARY',
-  'PRODUCT_PERFORMANCE',
-  'FLAVOR_PERFORMANCE',
-  'EMPLOYEE_PERFORMANCE',
-  'INVENTORY_VALUATION',
-  'BRANCH_COMPARISON',
-  'AUDIT_LOGS',
-  'LOGIN_AUDIT',
-  'INVENTORY_ANALYTICS',
-  'PRODUCT_REQUESTS_LOG',
-  'FLAVOR_REQUESTS_LOG',
-  'PRICE_OVERRIDES_LOG',
-  'SHIFT_LOG',
-]);
+const VALID_TABS = new Set(['DAILY_SALES', 'CASH_RECONCILIATION', 'EXPENSES', 'VOID_REFUND', 'SHIFT_SUMMARY', 'FRAUD_ALERT_SUMMARY']);
 
 function AdminReportsPageContent() {
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSocketConnected = useSocketStore((s) => s.isConnected);
   const searchParams = useSearchParams();
+  useExpensesRealtimeSync();
 
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
@@ -260,33 +140,23 @@ function AdminReportsPageContent() {
   const realtimeFilters = { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
 
   const dailySales = useDailySalesReport(realtimeFilters, activeTab === 'DAILY_SALES');
-  const shiftSummary = useShiftSummaryReport(realtimeFilters, activeTab === 'SHIFT_SUMMARY');
   const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeTab === 'CASH_RECONCILIATION');
   const voidRefund = useVoidRefundReport(realtimeFilters, activeTab === 'VOID_REFUND');
-  const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeTab === 'DISCOUNT_COMPLIANCE');
-  const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeTab === 'INVENTORY_MOVEMENT');
-  const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeTab === 'ATTENDANCE_SUMMARY');
   const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeTab === 'FRAUD_ALERT_SUMMARY');
-  const productPerformance = useProductPerformanceReport(selectedBranchId ?? undefined, activeTab === 'PRODUCT_PERFORMANCE');
-  const flavorPerformance = useFlavorPerformanceReport(selectedBranchId ?? undefined, activeTab === 'FLAVOR_PERFORMANCE');
-  const employeePerformance = useEmployeePerformanceReport(selectedBranchId ?? undefined, activeTab === 'EMPLOYEE_PERFORMANCE');
-  const inventoryValuation = useInventoryValuationReport(selectedBranchId ?? undefined, activeTab === 'INVENTORY_VALUATION');
-  const branchComparison = useBranchComparisonReport(selectedBranchId ?? undefined, activeTab === 'BRANCH_COMPARISON');
+  const expenses = useExpenses({
+    branch_id: selectedBranchId ?? undefined,
+    date_from: dateFrom,
+    date_to: dateTo,
+    page: 1,
+    limit: 100,
+  });
 
   const activeQueryByTab: Record<string, { refetch: () => void }> = {
     DAILY_SALES: dailySales,
-    SHIFT_SUMMARY: shiftSummary,
     CASH_RECONCILIATION: cashReconciliation,
     VOID_REFUND: voidRefund,
-    DISCOUNT_COMPLIANCE: discountCompliance,
-    INVENTORY_MOVEMENT: inventoryMovement,
-    ATTENDANCE_SUMMARY: attendanceSummary,
     FRAUD_ALERT_SUMMARY: fraudAlertSummary,
-    PRODUCT_PERFORMANCE: productPerformance,
-    FLAVOR_PERFORMANCE: flavorPerformance,
-    EMPLOYEE_PERFORMANCE: employeePerformance,
-    INVENTORY_VALUATION: inventoryValuation,
-    BRANCH_COMPARISON: branchComparison,
+    EXPENSES: expenses,
   };
 
   function handleRefresh() {
@@ -296,6 +166,7 @@ function AdminReportsPageContent() {
   }
 
   function handleExport(format: 'csv' | 'pdf') {
+    if (activeTab === 'EXPENSES') return;
     setIsExporting(true);
     const input: ExportRequestInput = {
       report_type: activeTab as ExportRequestInput['report_type'],
@@ -318,41 +189,6 @@ function AdminReportsPageContent() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Link href="/admin/expenses">
-          <Card className="h-full transition-colors hover:bg-accent">
-            <CardHeader>
-              <CardTitle>Expenses</CardTitle>
-              <CardDescription>Branch expense records and approvals</CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-        <button type="button" className="text-left" onClick={() => setActiveTab('SHIFT_SUMMARY')}>
-          <Card className="h-full transition-colors hover:bg-accent">
-            <CardHeader>
-              <CardTitle>Shifts</CardTitle>
-              <CardDescription>Cashier shift summaries and cash handling</CardDescription>
-            </CardHeader>
-          </Card>
-        </button>
-        <button type="button" className="text-left" onClick={() => setActiveTab('FRAUD_ALERT_SUMMARY')}>
-          <Card className="h-full transition-colors hover:bg-accent">
-            <CardHeader>
-              <CardTitle>Fraud Alerts</CardTitle>
-              <CardDescription>Flagged transactions and investigations</CardDescription>
-            </CardHeader>
-          </Card>
-        </button>
-        <button type="button" className="text-left" onClick={() => setActiveTab('AUDIT_LOGS')}>
-          <Card className="h-full transition-colors hover:bg-accent">
-            <CardHeader>
-              <CardTitle>Audit Logs</CardTitle>
-              <CardDescription>System-wide action history</CardDescription>
-            </CardHeader>
-          </Card>
-        </button>
-      </div>
-
       <ReportFilterBar
         branchId={selectedBranchId}
         onBranchChange={setSelectedBranchId}
@@ -370,53 +206,14 @@ function AdminReportsPageContent() {
       />
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <div className="space-y-3">
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Financial</p>
-            <TabsList className="flex-wrap">
-              <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
-              <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
-              <TabsTrigger value="VOID_REFUND">Void/Refund</TabsTrigger>
-              <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
-            </TabsList>
-          </div>
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Operations</p>
-            <TabsList className="flex-wrap">
-              <TabsTrigger value="SHIFT_SUMMARY">Shift Summary</TabsTrigger>
-              <TabsTrigger value="SHIFT_LOG">Shift Log</TabsTrigger>
-              <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
-              <TabsTrigger value="PRODUCT_REQUESTS_LOG">Product Requests Log</TabsTrigger>
-              <TabsTrigger value="FLAVOR_REQUESTS_LOG">Flavor Requests Log</TabsTrigger>
-              <TabsTrigger value="PRICE_OVERRIDES_LOG">Price Overrides Log</TabsTrigger>
-            </TabsList>
-          </div>
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Inventory</p>
-            <TabsList className="flex-wrap">
-              <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
-              <TabsTrigger value="INVENTORY_VALUATION">Inventory Valuation</TabsTrigger>
-              <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
-            </TabsList>
-          </div>
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Performance</p>
-            <TabsList className="flex-wrap">
-              <TabsTrigger value="PRODUCT_PERFORMANCE">Product Performance</TabsTrigger>
-              <TabsTrigger value="FLAVOR_PERFORMANCE">Flavor Performance</TabsTrigger>
-              <TabsTrigger value="EMPLOYEE_PERFORMANCE">Employee Performance</TabsTrigger>
-              <TabsTrigger value="BRANCH_COMPARISON">Branch Comparison</TabsTrigger>
-            </TabsList>
-          </div>
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Audit &amp; Security</p>
-            <TabsList className="flex-wrap">
-              <TabsTrigger value="FRAUD_ALERT_SUMMARY">Fraud Alert Summary</TabsTrigger>
-              <TabsTrigger value="AUDIT_LOGS">Audit Logs</TabsTrigger>
-              <TabsTrigger value="LOGIN_AUDIT">Login Audit</TabsTrigger>
-            </TabsList>
-          </div>
-        </div>
+        <TabsList className="flex-wrap">
+          <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
+          <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
+          <TabsTrigger value="EXPENSES">Expenses</TabsTrigger>
+          <TabsTrigger value="VOID_REFUND">Voided / Refund</TabsTrigger>
+          <TabsTrigger value="SHIFT_SUMMARY">Shift Reports</TabsTrigger>
+          <TabsTrigger value="FRAUD_ALERT_SUMMARY">Alerts</TabsTrigger>
+        </TabsList>
 
         <TabsContent value="DAILY_SALES">
           {!selectedBranchId ? (
@@ -430,20 +227,6 @@ function AdminReportsPageContent() {
             <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
           </div>
           <DataTable columns={dailySalesColumns} data={dailySales.data?.data ?? []} isLoading={dailySales.isLoading} emptyState={<EmptyState title="No sales in this range" />} />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="SHIFT_SUMMARY">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : shiftSummary.isError ? <ErrorState retry={() => shiftSummary.refetch()} /> : <>
-          <ReportLastUpdated timestamp={shiftSummary.data?.generated_at} isLoading={shiftSummary.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard title="Shifts" value={(shiftSummary.data?.data ?? []).length} isLoading={shiftSummary.isLoading} />
-            <KpiCard title="Cash Sales" value={(shiftSummary.data?.data ?? []).reduce((sum, r) => sum + r.cash_sales_total, 0)} isLoading={shiftSummary.isLoading} />
-            <KpiCard title="GCash Sales" value={(shiftSummary.data?.data ?? []).reduce((sum, r) => sum + r.gcash_sales_total, 0)} isLoading={shiftSummary.isLoading} />
-          </div>
-          <DataTable columns={shiftSummaryColumns} data={shiftSummary.data?.data ?? []} isLoading={shiftSummary.isLoading} emptyState={<EmptyState title="No shifts in this range" />} />
           </>}
         </TabsContent>
 
@@ -476,6 +259,26 @@ function AdminReportsPageContent() {
           </>}
         </TabsContent>
 
+        <TabsContent value="EXPENSES">
+          {expenses.isError ? <ErrorState retry={() => expenses.refetch()} /> : <>
+          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <KpiCard title="Expenses" value={expenses.data?.total ?? 0} isLoading={expenses.isLoading} />
+            <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
+          </div>
+          <DataTable
+            columns={expenseColumns}
+            data={expenses.data?.expenses ?? []}
+            isLoading={expenses.isLoading}
+            emptyState={
+              <EmptyState
+                title="No expenses recorded"
+                description="Expenses are submitted by branch supervisors and appear here automatically."
+              />
+            }
+          />
+          </>}
+        </TabsContent>
+
         <TabsContent value="VOID_REFUND">
           {!selectedBranchId ? (
             <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
@@ -490,70 +293,8 @@ function AdminReportsPageContent() {
           </>}
         </TabsContent>
 
-        <TabsContent value="DISCOUNT_COMPLIANCE">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
-          <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Discounted Transactions" value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)} isLoading={discountCompliance.isLoading} />
-            <KpiCard title="Total Discount" value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_discount_amount, 0)} isLoading={discountCompliance.isLoading} />
-          </div>
-          <DataTable
-            columns={discountComplianceColumns}
-            data={discountCompliance.data?.data ?? []}
-            isLoading={discountCompliance.isLoading}
-            emptyState={<EmptyState title="No discounted transactions in this range" />}
-          />
-          </>}
-          <div className="mt-6 border-t pt-6">
-            <DiscountAuditPanel />
-          </div>
-        </TabsContent>
-
-        <TabsContent value="INVENTORY_MOVEMENT">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
-          <ReportLastUpdated timestamp={inventoryMovement.data?.generated_at} isLoading={inventoryMovement.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
-            <KpiCard
-              title="Waste Events"
-              value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'waste').length}
-              isLoading={inventoryMovement.isLoading}
-              tone="warning"
-            />
-          </div>
-          <DataTable
-            columns={inventoryMovementColumns}
-            data={inventoryMovement.data?.data ?? []}
-            isLoading={inventoryMovement.isLoading}
-            emptyState={<EmptyState title="No inventory movements in this range" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="ATTENDANCE_SUMMARY">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
-          <ReportLastUpdated timestamp={attendanceSummary.data?.generated_at} isLoading={attendanceSummary.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Records" value={(attendanceSummary.data?.data ?? []).length} isLoading={attendanceSummary.isLoading} />
-            <KpiCard
-              title="Total Overtime Minutes"
-              value={(attendanceSummary.data?.data ?? []).reduce((sum, r) => sum + r.overtime_minutes, 0)}
-              isLoading={attendanceSummary.isLoading}
-            />
-          </div>
-          <DataTable
-            columns={attendanceSummaryColumns}
-            data={attendanceSummary.data?.data ?? []}
-            isLoading={attendanceSummary.isLoading}
-            emptyState={<EmptyState title="No attendance records in this range" />}
-          />
-          </>}
+        <TabsContent value="SHIFT_SUMMARY">
+          <ShiftLogPanel />
         </TabsContent>
 
         <TabsContent value="FRAUD_ALERT_SUMMARY">
@@ -578,129 +319,6 @@ function AdminReportsPageContent() {
             <FraudAlertManagementPanel />
           </div>
           </>}
-        </TabsContent>
-
-        <TabsContent value="PRODUCT_PERFORMANCE">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : productPerformance.isError ? <ErrorState retry={() => productPerformance.refetch()} /> : <>
-          <ReportLastUpdated timestamp={productPerformance.data?.computed_at} isLoading={productPerformance.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Products" value={(productPerformance.data?.data ?? []).length} isLoading={productPerformance.isLoading} />
-            <KpiCard title="Total Revenue" value={(productPerformance.data?.data ?? []).reduce((sum, r) => sum + r.gross_revenue, 0)} isLoading={productPerformance.isLoading} />
-          </div>
-          <DataTable
-            columns={productPerformanceColumns}
-            data={productPerformance.data?.data ?? []}
-            isLoading={productPerformance.isLoading}
-            emptyState={<EmptyState title="No product sales in the last 30 days" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="FLAVOR_PERFORMANCE">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : flavorPerformance.isError ? <ErrorState retry={() => flavorPerformance.refetch()} /> : <>
-          <ReportLastUpdated timestamp={flavorPerformance.data?.computed_at} isLoading={flavorPerformance.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Flavors" value={(flavorPerformance.data?.data ?? []).length} isLoading={flavorPerformance.isLoading} />
-            <KpiCard title="Total Revenue" value={(flavorPerformance.data?.data ?? []).reduce((sum, r) => sum + r.gross_revenue, 0)} isLoading={flavorPerformance.isLoading} />
-          </div>
-          <DataTable
-            columns={flavorPerformanceColumns}
-            data={flavorPerformance.data?.data ?? []}
-            isLoading={flavorPerformance.isLoading}
-            emptyState={<EmptyState title="No flavor sales in the last 30 days" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="EMPLOYEE_PERFORMANCE">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : employeePerformance.isError ? <ErrorState retry={() => employeePerformance.refetch()} /> : <>
-          <ReportLastUpdated timestamp={employeePerformance.data?.computed_at} isLoading={employeePerformance.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Employees" value={(employeePerformance.data?.data ?? []).length} isLoading={employeePerformance.isLoading} />
-            <KpiCard title="Total Sales" value={(employeePerformance.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={employeePerformance.isLoading} />
-          </div>
-          <DataTable
-            columns={employeePerformanceColumns}
-            data={employeePerformance.data?.data ?? []}
-            isLoading={employeePerformance.isLoading}
-            emptyState={<EmptyState title="No employee sales in the last 30 days" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="INVENTORY_VALUATION">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : inventoryValuation.isError ? <ErrorState retry={() => inventoryValuation.refetch()} /> : <>
-          <ReportLastUpdated timestamp={inventoryValuation.data?.computed_at} isLoading={inventoryValuation.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard title="Ingredients" value={(inventoryValuation.data?.data ?? []).length} isLoading={inventoryValuation.isLoading} />
-            <KpiCard title="Total Value" value={(inventoryValuation.data?.data ?? []).reduce((sum, r) => sum + r.total_value, 0)} isLoading={inventoryValuation.isLoading} />
-            <KpiCard
-              title="Low/Critical"
-              value={(inventoryValuation.data?.data ?? []).filter((r) => r.status !== 'ok').length}
-              isLoading={inventoryValuation.isLoading}
-              tone="warning"
-            />
-          </div>
-          <DataTable
-            columns={inventoryValuationColumns}
-            data={inventoryValuation.data?.data ?? []}
-            isLoading={inventoryValuation.isLoading}
-            emptyState={<EmptyState title="No ingredients found" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="BRANCH_COMPARISON">
-          {branchComparison.isError ? <ErrorState retry={() => branchComparison.refetch()} /> : <>
-          <ReportLastUpdated timestamp={branchComparison.data?.computed_at} isLoading={branchComparison.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard title="Branches" value={(branchComparison.data?.data ?? []).length} isLoading={branchComparison.isLoading} />
-            <KpiCard title="Total Sales" value={(branchComparison.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={branchComparison.isLoading} />
-            <KpiCard title="Active Shifts" value={(branchComparison.data?.data ?? []).reduce((sum, r) => sum + r.active_shift_count, 0)} isLoading={branchComparison.isLoading} />
-          </div>
-          <DataTable
-            columns={branchComparisonColumns}
-            data={branchComparison.data?.data ?? []}
-            isLoading={branchComparison.isLoading}
-            emptyState={<EmptyState title="No branch data available" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="INVENTORY_ANALYTICS">
-          <InventoryAnalyticsPanel />
-        </TabsContent>
-
-        <TabsContent value="SHIFT_LOG">
-          <ShiftLogPanel />
-        </TabsContent>
-
-        <TabsContent value="PRODUCT_REQUESTS_LOG">
-          <ProductRequestsLogPanel />
-        </TabsContent>
-
-        <TabsContent value="FLAVOR_REQUESTS_LOG">
-          <FlavorRequestsLogPanel />
-        </TabsContent>
-
-        <TabsContent value="PRICE_OVERRIDES_LOG">
-          <PriceOverridesLogPanel />
-        </TabsContent>
-
-        <TabsContent value="AUDIT_LOGS">
-          <AuditLogsPanel />
-        </TabsContent>
-
-        <TabsContent value="LOGIN_AUDIT">
-          <LoginAuditPanel />
         </TabsContent>
       </Tabs>
     </div>

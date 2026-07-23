@@ -31,6 +31,7 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpenses: mockUseExpenses,
+  useExpensesRealtimeSync: vi.fn(),
 }));
 
 vi.mock('@/hooks/use-selected-branch', () => ({

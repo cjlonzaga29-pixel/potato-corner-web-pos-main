@@ -2,9 +2,8 @@
 
 import { Suspense } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import Link from 'next/link';
 import type { PaginationState } from '@tanstack/react-table';
-import { Download, Plus, Receipt } from 'lucide-react';
+import { Download, Receipt } from 'lucide-react';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Button } from '@/components/ui/button';
@@ -99,12 +98,6 @@ function ExpensesPageContent() {
             <Download className="mr-2 h-4 w-4" />
             Export CSV
           </Button>
-          <Button size="sm" asChild>
-            <Link href="/admin/expenses/new">
-              <Plus className="mr-2 h-4 w-4" />
-              Create Expense
-            </Link>
-          </Button>
         </div>
       </div>
 
@@ -146,7 +139,11 @@ function ExpensesPageContent() {
               }
             />
           ) : (
-            <EmptyState icon={Receipt} title="No expenses recorded" description="No expenses have been recorded yet." />
+            <EmptyState
+              icon={Receipt}
+              title="No expenses recorded"
+              description="Expenses are submitted by branch supervisors and appear here automatically."
+            />
           )
         }
       />

@@ -24,7 +24,6 @@ import {
   Wallet,
   ShieldCheck,
   ShieldAlert,
-  FileClock,
   Clock,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
@@ -70,9 +69,8 @@ const NAV_ITEMS = [
     children: [
       { label: 'Financial', href: '/admin/reports', icon: BarChart3 },
       { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
-      { label: 'Shifts', href: '/admin/shifts', icon: Clock },
+      { label: 'Shifts', href: '/admin/reports?tab=SHIFT_SUMMARY', icon: Clock },
       { label: 'Fraud Alerts', href: '/admin/reports?tab=FRAUD_ALERT_SUMMARY', icon: ShieldAlert },
-      { label: 'Audit Logs', href: '/admin/reports?tab=AUDIT_LOGS', icon: FileClock },
     ],
   },
   { label: 'Settings', href: '/admin/settings', icon: Settings },

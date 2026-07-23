@@ -15,7 +15,12 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
 ] as const;
 
-export function ProfilePageContent() {
+interface ProfilePageContentProps {
+  /** Hides the Active Sessions card. Defaults to shown (Supervisor keeps device management; Super Admin does not). */
+  showActiveSessions?: boolean;
+}
+
+export function ProfilePageContent({ showActiveSessions = true }: ProfilePageContentProps) {
   const { user } = useAuth();
   const { theme = 'system', setTheme } = useTheme();
 
@@ -69,7 +74,7 @@ export function ProfilePageContent() {
         </CardContent>
       </Card>
 
-      <ActiveSessionsSection />
+      {showActiveSessions && <ActiveSessionsSection />}
 
       <TwoFactorSection />
 

@@ -20,6 +20,8 @@ interface KpiCardProps {
   tone?: 'default' | 'warning' | 'danger' | 'positive' | 'negative';
   /** Explanatory text shown via an info icon + tooltip next to the title (e.g. spelling out a derived KPI's formula). */
   tooltip?: string;
+  /** Bumps the value's type scale for cards that should read as the primary figures in a mixed KPI grid (e.g. the Financial group vs. the Operational group). */
+  emphasize?: boolean;
 }
 
 const TREND_ICONS = { up: ArrowUp, down: ArrowDown, neutral: Minus } as const;
@@ -60,6 +62,7 @@ export function KpiCard({
   icon: Icon,
   tone = 'default',
   tooltip,
+  emphasize = false,
 }: KpiCardProps) {
   if (isLoading) {
     return (
@@ -69,7 +72,7 @@ export function KpiCard({
           {Icon && <Skeleton className="h-4 w-4 rounded-full" />}
         </CardHeader>
         <CardContent>
-          <Skeleton className="h-8 w-32" />
+          <Skeleton className={cn('w-32', emphasize ? 'h-9' : 'h-8')} />
         </CardContent>
       </Card>
     );
@@ -99,7 +102,7 @@ export function KpiCard({
         {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
       </CardHeader>
       <CardContent>
-        <div className={cn('text-2xl font-bold', TONE_TEXT[tone])}>
+        <div className={cn(emphasize ? 'text-3xl' : 'text-2xl', 'font-bold', TONE_TEXT[tone])}>
           {prefix}
           <NumberTicker value={value} decimalPlaces={Number.isInteger(value) ? 0 : 2} className="text-inherit" />
           {suffix}

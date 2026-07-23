@@ -3,5 +3,5 @@
 import { ProfilePageContent } from '@/components/shared/profile-page-content';
 
 export default function AdminProfilePage() {
-  return <ProfilePageContent />;
+  return <ProfilePageContent showActiveSessions={false} />;
 }

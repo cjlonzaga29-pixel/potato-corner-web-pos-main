@@ -25,7 +25,7 @@ describe('AdminRecipesPage', () => {
 
     expect(screen.getByRole('heading', { name: /master recipes/i })).toBeInTheDocument();
     expect(screen.getByText('Classic BBQ')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /manage recipes/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /view recipes/i })).toBeInTheDocument();
   });
 
   it('shows an error state with retry when the product list fails to load', () => {

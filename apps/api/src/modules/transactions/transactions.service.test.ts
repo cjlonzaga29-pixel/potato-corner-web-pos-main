@@ -29,10 +29,20 @@ vi.mock('./transactions.repository.js', () => ({
   },
 }));
 
-vi.mock('../../lib/prisma.js', () => ({
-  prisma: {
+vi.mock('../../lib/prisma.js', () => {
+  const prismaMock = {
     fraudAlert: { findMany: vi.fn() },
-  },
+    transaction: { update: vi.fn().mockResolvedValue({}) },
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prismaMock)),
+  };
+  return { prisma: prismaMock };
+});
+
+// Inventory deduction/reversal is exercised by inventory.integration.test.ts;
+// these tests cover pricing, VAT, and sync — stub the recipe lookup to no-op
+// so prisma.$transaction's callback doesn't need real recipe/ingredient rows.
+vi.mock('../recipes/recipes.service.js', () => ({
+  computeDeduction: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../cash/cash.repository.js', () => ({
@@ -179,6 +189,7 @@ describe('transactionsService.createTransaction — VAT calculation', () => {
 
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ subtotal: 100, discountAmount: 0, vatAmount: 10.71, totalAmount: 100 }),
+      expect.anything(),
     );
   });
 
@@ -193,6 +204,7 @@ describe('transactionsService.createTransaction — VAT calculation', () => {
     // RA 10754), so total is the discounted base with nothing added back.
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ discountAmount: 17.86, vatAmount: 0, vatExemptAmount: 0, totalAmount: 71.43 }),
+      expect.anything(),
     );
   });
 });
@@ -258,6 +270,7 @@ describe('transactionsService.createTransaction — pricing and snapshots', () =
     expect(priceOverridesService.getActivePriceForBranch).toHaveBeenCalledWith('branch-1', 'variant-1', 100);
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ subtotal: 45, items: [expect.objectContaining({ unitPrice: 45, lineTotal: 45 })] }),
+      expect.anything(),
     );
   });
 
@@ -286,6 +299,7 @@ describe('transactionsService.createTransaction — pricing and snapshots', () =
           }),
         ],
       }),
+      expect.anything(),
     );
   });
 
@@ -340,6 +354,7 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
         discountCustomerIdEncrypted: 'encrypted(PWD-12345)',
         discountCustomerIdHash: 'hashed(PWD-12345)',
       }),
+      expect.anything(),
     );
   });
 
@@ -367,6 +382,7 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
 
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ discountCustomerIdEncrypted: null, discountCustomerIdHash: null }),
+      expect.anything(),
     );
   });
 });

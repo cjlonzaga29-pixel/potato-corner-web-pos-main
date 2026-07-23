@@ -425,7 +425,7 @@ describe('reportsRepository.getAuditLog', () => {
     };
   }
 
-  it('filters to only the login-related actions', async () => {
+  it('filters to only the login-related and operational audit actions', async () => {
     vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
 
     await reportsRepository.getAuditLog(baseFilters);
@@ -433,7 +433,20 @@ describe('reportsRepository.getAuditLog', () => {
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          action: { in: ['LOGIN_SUCCESS', 'LOGIN_FAILURE', 'LOGOUT', 'LOGOUT_ALL_DEVICES', 'PIN_LOGIN_SUCCESS', 'ACCOUNT_UNLOCKED'] },
+          action: {
+            in: [
+              'LOGIN_SUCCESS',
+              'LOGIN_FAILURE',
+              'LOGOUT',
+              'LOGOUT_ALL_DEVICES',
+              'PIN_LOGIN_SUCCESS',
+              'ACCOUNT_UNLOCKED',
+              'VOID_TRANSACTION',
+              'REFUND_TRANSACTION',
+              'PRICE_OVERRIDE_APPROVED',
+              'PRODUCT_REQUEST_APPROVED',
+            ],
+          },
         }),
       }),
     );

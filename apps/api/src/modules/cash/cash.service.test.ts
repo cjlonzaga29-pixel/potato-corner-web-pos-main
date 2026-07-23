@@ -46,7 +46,7 @@ function decimal(value: number): { toNumber(): number } {
 
 /** cashRepository.closeShift's real `computed` param is plain numbers, but the row it resolves to (like every Prisma row) carries Decimal-like fields — wraps the ones toShiftResponse expects to call .toNumber() on. */
 function asShiftRow(computed: Record<string, unknown>) {
-  const decimalFields = ['closingCashAmount', 'expectedClosingCash', 'cashVariance', 'cashSalesTotal', 'gcashSalesTotal', 'totalDiscountAmount'];
+  const decimalFields = ['closingCashAmount', 'expectedClosingCash', 'cashVariance', 'cashSalesTotal', 'gcashSalesTotal', 'mayaSalesTotal', 'otherSalesTotal', 'grossSalesTotal', 'totalDiscountAmount'];
   const wrapped: Record<string, unknown> = { ...computed };
   for (const field of decimalFields) {
     if (typeof wrapped[field] === 'number') wrapped[field] = decimal(wrapped[field] as number);

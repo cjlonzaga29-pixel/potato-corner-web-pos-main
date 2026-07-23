@@ -7,7 +7,7 @@ import { recipesRepository } from '../recipes/recipes.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
-import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
+import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -125,11 +125,15 @@ export const productRequestsService = {
   /** super_admin sees everything; supervisor is scoped to their own branch_ids regardless of query filters. */
   async listRequests(actor: JwtPayload, filters: Omit<ProductRequestListFilters, 'branchIds'>) {
     const branchIds = getAccessibleBranchIds(actor);
-    if (filters.branch_id) {
-      assertBranchAccess(actor, filters.branch_id, ProductRequestError);
-    }
+    // Supervisors are always scoped to their own branch — a client-supplied
+    // branch_id outside that scope is silently overridden, never rejected,
+    // matching flavor-requests.service.ts's listRequests convention.
+    const scoped =
+      actor.role === ROLES.SUPERVISOR
+        ? { ...filters, branch_id: filters.branch_id && actor.branch_ids.includes(filters.branch_id) ? filters.branch_id : actor.branch_ids[0] }
+        : filters;
 
-    const { requests, total } = await productRequestsRepository.findAll({ ...filters, branchIds });
+    const { requests, total } = await productRequestsRepository.findAll({ ...scoped, branchIds });
     return {
       requests: (requests as RequestRow[]).map(toResponse),
       total,

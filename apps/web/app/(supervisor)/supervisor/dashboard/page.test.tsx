@@ -258,8 +258,8 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
   });
 
-  it('renders gross sales as cash_sales_total + gcash_sales_total formatted as PHP currency', () => {
-    mockUseCurrentShift.mockReturnValue({ data: shift({ cash_sales_total: 3000, gcash_sales_total: 1500.5 }), isLoading: false });
+  it('renders gross sales from gross_sales_total formatted as PHP currency', () => {
+    mockUseCurrentShift.mockReturnValue({ data: shift({ gross_sales_total: 4500.5 }), isLoading: false });
     render(<SupervisorDashboardPage />);
     expect(screen.getByText('₱4500.50')).toBeInTheDocument();
   });

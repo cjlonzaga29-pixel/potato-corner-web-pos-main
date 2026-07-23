@@ -329,12 +329,12 @@ describe('SupervisorDashboardPage', () => {
   it('renders a green connection indicator when connected', () => {
     mockSocketState({ isConnected: true, isReconnecting: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByTitle('Connected').className).toContain('bg-green-500');
+    expect(screen.getByTitle('Connected').className).toContain('bg-success');
   });
 
   it('renders a red connection indicator when disconnected', () => {
     mockSocketState({ isConnected: false, isReconnecting: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByTitle('Disconnected').className).toContain('bg-red-500');
+    expect(screen.getByTitle('Disconnected').className).toContain('bg-destructive');
   });
 });

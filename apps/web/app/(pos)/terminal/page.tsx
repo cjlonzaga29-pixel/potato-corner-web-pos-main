@@ -239,7 +239,7 @@ export default function TerminalPage() {
   return (
     <div className="flex h-full">
       {!isOnline && (
-        <div className="absolute inset-x-0 top-0 z-10 bg-orange-500 px-4 py-1 text-center text-xs font-medium text-white">
+        <div className="absolute inset-x-0 top-0 z-10 bg-warning px-4 py-1 text-center text-xs font-medium text-warning-foreground">
           Offline — sales will be queued and synced automatically once you reconnect.
         </div>
       )}

@@ -48,6 +48,6 @@ describe('DashboardInventoryAlerts', () => {
 
   it('renders a critical severity badge', () => {
     render(<DashboardInventoryAlerts alerts={[alert({ severity: 'critical' })]} isLoading={false} />);
-    expect(screen.getByText('Critical').className).toContain('bg-red-100');
+    expect(screen.getByText('Critical').className).toContain('bg-destructive/15');
   });
 });

@@ -112,7 +112,7 @@ function ResetPasswordForm({ token }: { token: string }) {
 
         <ul className="space-y-1 text-xs">
           {PASSWORD_RULES.map((rule) => (
-            <li key={rule.label} className={rule.test(newPassword) ? 'text-green-600' : 'text-muted-foreground'}>
+            <li key={rule.label} className={rule.test(newPassword) ? 'text-success' : 'text-muted-foreground'}>
               {rule.test(newPassword) ? '✓' : '·'} {rule.label}
             </li>
           ))}

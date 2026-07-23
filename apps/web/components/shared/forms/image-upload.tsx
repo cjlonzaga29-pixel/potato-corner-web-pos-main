@@ -141,7 +141,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', required }: Imag
       {isCameraActive && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-red-500" />
+            <span className="h-2 w-2 rounded-full bg-destructive" />
             Live capture
           </div>
           <video ref={videoRef} className="w-full rounded-md bg-black" muted playsInline />
@@ -159,7 +159,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', required }: Imag
       {previewUrl && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-red-500' : 'bg-blue-500')} />
+            <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-destructive' : 'bg-info')} />
             {mode === 'live_capture' ? 'Live capture' : 'Gallery upload'}
           </div>
           {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}

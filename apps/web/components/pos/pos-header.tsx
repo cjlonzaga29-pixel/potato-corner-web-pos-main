@@ -50,7 +50,7 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
   return (
     <header className="glass-panel flex h-16 shrink-0 items-center justify-between border-b px-4">
       <div className="flex items-center gap-4">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-700 text-sm font-bold text-primary-foreground shadow-glow">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/70 text-sm font-bold text-primary-foreground shadow-glow">
           PC
         </div>
         <div>
@@ -68,10 +68,10 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
         </p>
 
         <div className="flex items-center gap-1.5 text-xs font-medium">
-          <span className={cn('h-2.5 w-2.5 rounded-full', isOnline ? 'bg-green-500' : 'bg-orange-500')} aria-hidden="true" />
+          <span className={cn('h-2.5 w-2.5 rounded-full', isOnline ? 'bg-success' : 'bg-warning')} aria-hidden="true" />
           {isOnline ? 'Online' : 'Offline'}
           {pendingSyncCount > 0 && (
-            <span className="ml-1 rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] font-semibold text-orange-800 dark:bg-orange-900/40 dark:text-orange-300">
+            <span className="ml-1 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold text-warning">
               {pendingSyncCount} pending
             </span>
           )}

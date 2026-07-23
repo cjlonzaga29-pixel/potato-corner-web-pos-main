@@ -26,30 +26,30 @@ interface KpiCardProps {
 
 const TREND_ICONS = { up: ArrowUp, down: ArrowDown, neutral: Minus } as const;
 const TREND_BADGE = {
-  up: 'bg-green-500/10 text-green-600 dark:text-green-400',
-  down: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  up: 'bg-success/10 text-success',
+  down: 'bg-destructive/10 text-destructive',
   neutral: 'bg-muted text-muted-foreground',
 } as const;
 const TONE_BORDER = {
   default: '',
-  warning: 'border-yellow-300 dark:border-yellow-800',
-  danger: 'border-red-300 dark:border-red-800',
-  positive: 'border-green-300 dark:border-green-800',
-  negative: 'border-red-300 dark:border-red-800',
+  warning: 'border-warning/40',
+  danger: 'border-destructive/40',
+  positive: 'border-success/40',
+  negative: 'border-destructive/40',
 } as const;
 const TONE_TEXT = {
   default: '',
-  warning: 'text-yellow-700 dark:text-yellow-500',
-  danger: 'text-red-700 dark:text-red-500',
-  positive: 'text-green-700 dark:text-green-500',
-  negative: 'text-red-700 dark:text-red-500',
+  warning: 'text-warning',
+  danger: 'text-destructive',
+  positive: 'text-success',
+  negative: 'text-destructive',
 } as const;
 const TONE_ICON_CHIP = {
   default: 'bg-primary/10 text-primary',
-  warning: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-500',
-  danger: 'bg-red-500/10 text-red-600 dark:text-red-500',
-  positive: 'bg-green-500/10 text-green-600 dark:text-green-500',
-  negative: 'bg-red-500/10 text-red-600 dark:text-red-500',
+  warning: 'bg-warning/10 text-warning',
+  danger: 'bg-destructive/10 text-destructive',
+  positive: 'bg-success/10 text-success',
+  negative: 'bg-destructive/10 text-destructive',
 } as const;
 
 /**

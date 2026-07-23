@@ -38,9 +38,9 @@ const ALERT_META: Record<string, { label: string; icon: typeof ShieldAlert; seve
 };
 
 const SEVERITY_CLASSES: Record<'red' | 'orange' | 'yellow', string> = {
-  red: 'text-red-600 dark:text-red-400',
-  orange: 'text-orange-600 dark:text-orange-400',
-  yellow: 'text-yellow-600 dark:text-yellow-500',
+  red: 'text-destructive',
+  orange: 'text-warning',
+  yellow: 'text-accent',
 };
 
 export function LiveAlertsStream() {

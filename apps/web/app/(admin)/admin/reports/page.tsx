@@ -56,10 +56,10 @@ function humanize(value: string): string {
 
 /** Mirrors the fallback severity treatment in fraud-alert-columns.tsx — StatusBadge has no severity map. */
 const REPORT_SEVERITY_CLASSES: Record<string, string> = {
-  critical: 'border-transparent bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  high: 'border-transparent bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
-  medium: 'border-transparent bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
-  low: 'border-transparent bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  critical: 'border-transparent bg-destructive/15 text-destructive',
+  high: 'border-transparent bg-warning/15 text-warning',
+  medium: 'border-transparent bg-accent/15 text-accent',
+  low: 'border-transparent bg-info/15 text-info',
 };
 
 /** voided/refunded aren't covered by StatusBadge's status maps, so they get an explicit Badge variant here (same fallback pattern used elsewhere for domains StatusBadge doesn't know about). */
@@ -233,7 +233,7 @@ function AdminReportsPageContent() {
         <span
           title={connectionLabel}
           aria-label={connectionLabel}
-          className={`h-2.5 w-2.5 shrink-0 rounded-full ${isSocketConnected ? 'bg-green-500' : 'bg-red-500'}`}
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${isSocketConnected ? 'bg-success' : 'bg-destructive'}`}
         />
       </div>
 

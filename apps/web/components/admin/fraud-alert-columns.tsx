@@ -15,10 +15,10 @@ import { formatDateTime, formatTimeAgo } from '@/lib/utils';
  * instead, per the task's fallback instruction.
  */
 const SEVERITY_CLASSES: Record<FraudAlertSeverity, string> = {
-  critical: 'border-transparent bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  high: 'border-transparent bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
-  medium: 'border-transparent bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
-  low: 'border-transparent bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  critical: 'border-transparent bg-destructive/15 text-destructive',
+  high: 'border-transparent bg-warning/15 text-warning',
+  medium: 'border-transparent bg-accent/15 text-accent',
+  low: 'border-transparent bg-info/15 text-info',
 };
 
 function humanize(value: string): string {

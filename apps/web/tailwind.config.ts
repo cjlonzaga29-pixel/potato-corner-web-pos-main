@@ -43,6 +43,18 @@ const config: Config = {
           DEFAULT: 'hsl(var(--accent) / <alpha-value>)',
           foreground: 'hsl(var(--accent-foreground) / <alpha-value>)',
         },
+        success: {
+          DEFAULT: 'hsl(var(--success) / <alpha-value>)',
+          foreground: 'hsl(var(--success-foreground) / <alpha-value>)',
+        },
+        warning: {
+          DEFAULT: 'hsl(var(--warning) / <alpha-value>)',
+          foreground: 'hsl(var(--warning-foreground) / <alpha-value>)',
+        },
+        info: {
+          DEFAULT: 'hsl(var(--info) / <alpha-value>)',
+          foreground: 'hsl(var(--info-foreground) / <alpha-value>)',
+        },
         card: {
           DEFAULT: 'hsl(var(--card) / <alpha-value>)',
           foreground: 'hsl(var(--card-foreground) / <alpha-value>)',
@@ -52,7 +64,9 @@ const config: Config = {
           foreground: 'hsl(var(--popover-foreground) / <alpha-value>)',
         },
         brand: {
-          yellow: '#EAB308',
+          green: '#1B7A3D',
+          yellow: '#F7C331',
+          gold: '#F5A623',
           dark: '#111827',
         },
       },

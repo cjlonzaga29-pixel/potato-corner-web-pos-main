@@ -380,7 +380,7 @@ describe('AdminDashboardPage', () => {
   it('renders a green connection indicator when connected', () => {
     mockSocketState({ isConnected: true, isReconnecting: false });
     render(<AdminDashboardPage />);
-    expect(screen.getByTitle('Connected').className).toContain('bg-green-500');
+    expect(screen.getByTitle('Connected').className).toContain('bg-success');
   });
 
   it('calls all 5 realtime sync hooks on mount', () => {

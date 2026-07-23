@@ -10,12 +10,12 @@ describe('StatusBadge', () => {
 
   it('maps a known status to its domain-specific variant class', () => {
     render(<StatusBadge status="active" type="shift" />);
-    expect(screen.getByText('Active').className).toContain('bg-green-100');
+    expect(screen.getByText('Active').className).toContain('bg-success/15');
   });
 
   it('maps flagged shift status to the critical variant class', () => {
     render(<StatusBadge status="flagged" type="shift" />);
-    expect(screen.getByText('Flagged').className).toContain('bg-red-100');
+    expect(screen.getByText('Flagged').className).toContain('bg-destructive/15');
   });
 
   it('falls back to the default variant for an unrecognized status', () => {

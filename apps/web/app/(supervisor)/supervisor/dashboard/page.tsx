@@ -63,7 +63,7 @@ export default function SupervisorDashboardPage() {
 
   const grossSales = shift ? shift.gross_sales_total : 0;
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
-  const connectionColor = isReconnecting ? 'bg-yellow-500' : isConnected ? 'bg-green-500' : 'bg-red-500';
+  const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
 
   return (
     <div className="space-y-6">

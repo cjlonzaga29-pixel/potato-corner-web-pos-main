@@ -88,7 +88,7 @@ function AdminDashboardPageContent() {
   const netProfit = branchStats?.reduce((sum, b) => sum + b.todayNetProfit, 0);
 
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
-  const connectionColor = isReconnecting ? 'bg-yellow-500' : isConnected ? 'bg-green-500' : 'bg-red-500';
+  const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
 
   return (
     <div className="space-y-8">

@@ -64,6 +64,6 @@ describe('DashboardShiftCard', () => {
 
   it('renders the FLAGGED status badge when the shift is flagged', () => {
     render(<DashboardShiftCard shift={shift({ status: 'flagged' })} isLoading={false} />);
-    expect(screen.getByText('Flagged').className).toContain('bg-red-100');
+    expect(screen.getByText('Flagged').className).toContain('bg-destructive/15');
   });
 });

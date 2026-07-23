@@ -148,7 +148,7 @@ const cashReconciliationColumns: ColumnDef<ShiftResponse>[] = [
     cell: ({ row }) => {
       const variance = row.original.cash_variance;
       if (variance === null) return '—';
-      const tone = variance < 0 ? 'text-destructive' : variance === 0 ? 'text-green-600 dark:text-green-400' : '';
+      const tone = variance < 0 ? 'text-destructive' : variance === 0 ? 'text-success' : '';
       return <span className={tone}>{formatCurrency(variance)}</span>;
     },
   },

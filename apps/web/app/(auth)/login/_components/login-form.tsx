@@ -171,7 +171,7 @@ export function LoginForm() {
         </div>
 
         {lowBackupCodesWarning && (
-          <p role="alert" className="rounded-lg bg-amber-100 p-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-300">
+          <p role="alert" className="rounded-lg bg-warning/15 p-3 text-sm text-warning">
             You have 2 or fewer backup codes remaining. Regenerate them from your account settings soon.
           </p>
         )}

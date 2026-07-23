@@ -119,7 +119,7 @@ export function AdminSidebar() {
       <div className="flex h-16 items-center justify-between border-b border-border/60 px-3">
         {!collapsed && (
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-700 text-sm font-bold text-primary-foreground shadow-glow">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/70 text-sm font-bold text-primary-foreground shadow-glow">
               PC
             </div>
             <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
@@ -258,7 +258,7 @@ export function AdminSidebar() {
         <div className={cn('flex items-center gap-3 rounded-lg p-1.5 transition-colors hover:bg-accent/50', collapsed && 'justify-center')}>
           <Link href="/admin/profile" className="flex min-w-0 flex-1 items-center gap-3">
             <Avatar className="h-8 w-8 ring-2 ring-primary/20">
-              <AvatarFallback className="bg-gradient-to-br from-primary to-blue-700 text-xs font-semibold text-primary-foreground">
+              <AvatarFallback className="bg-gradient-to-br from-primary to-primary/70 text-xs font-semibold text-primary-foreground">
                 {user ? generateInitials(user.firstName || 'A', user.lastName || 'D') : 'AD'}
               </AvatarFallback>
             </Avatar>

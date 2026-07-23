@@ -91,7 +91,7 @@ export function DashboardHeader({ navItems, homeHref, homeLabel, profileHref, fa
               aria-label="Account menu"
             >
               <Avatar className="h-8 w-8 ring-2 ring-primary/20">
-                <AvatarFallback className="bg-gradient-to-br from-primary to-blue-700 text-xs font-semibold text-primary-foreground">
+                <AvatarFallback className="bg-gradient-to-br from-primary to-primary/70 text-xs font-semibold text-primary-foreground">
                   {user ? generateInitials(user.firstName || firstFallback, user.lastName || lastFallback) : fallbackInitials}
                 </AvatarFallback>
               </Avatar>

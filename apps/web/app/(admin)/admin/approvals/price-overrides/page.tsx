@@ -50,7 +50,7 @@ export default function PriceOverridesApprovalPage() {
       header: 'Difference',
       cell: ({ row }) => {
         const diff = row.original.requested_price - row.original.master_price;
-        return <span className={diff >= 0 ? 'text-emerald-600' : 'text-destructive'}>{diff >= 0 ? '+' : ''}{formatCurrency(diff)}</span>;
+        return <span className={diff >= 0 ? 'text-success' : 'text-destructive'}>{diff >= 0 ? '+' : ''}{formatCurrency(diff)}</span>;
       },
     },
     { accessorKey: 'requested_by_name', header: 'Requested By' },

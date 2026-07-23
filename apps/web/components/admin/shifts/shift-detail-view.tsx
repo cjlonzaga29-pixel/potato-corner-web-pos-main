@@ -135,9 +135,9 @@ export function ShiftDetailView() {
       )}
 
       {shift.status === 'flagged' && (
-        <Card className="border-orange-400">
+        <Card className="border-warning/50">
           <CardHeader>
-            <CardTitle className="text-sm text-orange-600">Pending Variance Review</CardTitle>
+            <CardTitle className="text-sm text-warning">Pending Variance Review</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1 text-sm">
             <p>Cashier&apos;s explanation: {shift.variance_explanation}</p>

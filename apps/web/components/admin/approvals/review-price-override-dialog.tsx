@@ -59,7 +59,7 @@ export function ReviewPriceOverrideDialog({ open, onOpenChange, override }: Revi
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Difference</p>
-              <p className={`font-medium ${difference >= 0 ? 'text-emerald-600' : 'text-destructive'}`}>
+              <p className={`font-medium ${difference >= 0 ? 'text-success' : 'text-destructive'}`}>
                 {difference >= 0 ? '+' : ''}
                 {formatCurrency(difference)}
               </p>

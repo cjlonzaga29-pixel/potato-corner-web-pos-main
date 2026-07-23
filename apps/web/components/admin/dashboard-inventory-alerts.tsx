@@ -110,7 +110,7 @@ export function DashboardInventoryAlerts({ branchFilter }: DashboardInventoryAle
                   <div key={row.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <AlertTriangle
-                        className={`h-3 w-3 shrink-0 ${row.severity === 'critical' ? 'text-destructive' : 'text-amber-600 dark:text-amber-500'}`}
+                        className={`h-3 w-3 shrink-0 ${row.severity === 'critical' ? 'text-destructive' : 'text-warning'}`}
                       />
                       <span className="truncate">{row.name}</span>
                     </div>

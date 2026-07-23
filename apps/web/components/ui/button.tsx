@@ -17,8 +17,8 @@ const buttonVariants = cva(
         /** Large touch-friendly button for the POS terminal — never used in admin/supervisor. */
         pos: 'min-h-[56px] rounded-xl bg-primary text-lg font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow-glow',
         /** Destructive actions (void, delete) that shouldn't share styling with the outline `destructive` variant. */
-        danger: 'bg-red-600 text-white shadow-sm hover:bg-red-700',
-        'ghost-yellow': 'bg-transparent text-primary hover:bg-primary/10',
+        danger: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
+        'ghost-yellow': 'bg-transparent text-accent hover:bg-accent/10',
       },
       size: {
         default: 'h-9 px-4 py-2',

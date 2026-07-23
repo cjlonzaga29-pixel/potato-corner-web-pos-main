@@ -125,7 +125,7 @@ export default function CloseShiftPage() {
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Variance</p>
-            <p className={`text-lg font-semibold tabular-nums ${outsideTolerance ? 'text-destructive' : 'text-green-600'}`}>
+            <p className={`text-lg font-semibold tabular-nums ${outsideTolerance ? 'text-destructive' : 'text-success'}`}>
               {variance >= 0 ? '+' : ''}
               {formatPeso(variance)}
             </p>
@@ -137,9 +137,9 @@ export default function CloseShiftPage() {
       {entries.length === 0 && <p className="text-sm text-destructive">Enter at least one denomination.</p>}
 
       {outsideTolerance && (
-        <Card className="border-orange-400">
+        <Card className="border-warning/50">
           <CardHeader>
-            <CardTitle className="text-sm text-orange-600">
+            <CardTitle className="text-sm text-warning">
               This shift will be flagged for review — a super admin must approve or reject the variance before it counts as fully closed
             </CardTitle>
           </CardHeader>

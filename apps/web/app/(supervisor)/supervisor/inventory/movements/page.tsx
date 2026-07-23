@@ -53,7 +53,7 @@ export default function InventoryMovementsPage() {
       id: 'quantity_change',
       header: 'Change',
       cell: ({ row }) => (
-        <span className={`tabular-nums ${row.original.quantity_change < 0 ? 'text-destructive' : 'text-green-600'}`}>
+        <span className={`tabular-nums ${row.original.quantity_change < 0 ? 'text-destructive' : 'text-success'}`}>
           {row.original.quantity_change > 0 ? '+' : ''}
           {row.original.quantity_change}
         </span>

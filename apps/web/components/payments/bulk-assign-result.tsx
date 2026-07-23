@@ -12,16 +12,16 @@ export function BulkAssignResult({ result, branchName }: BulkAssignResultProps) 
     <div className="space-y-4">
       {result.successful.length > 0 && (
         <div className="space-y-2">
-          <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+          <p className="text-sm font-medium text-success">
             Assigned successfully ({result.successful.length})
           </p>
           <ul className="space-y-1">
             {result.successful.map((item) => (
               <li
                 key={item.branchId}
-                className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm dark:border-emerald-900 dark:bg-emerald-950"
+                className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-3 py-2 text-sm"
               >
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-hidden="true" />
                 <span>{branchName(item.branchId)}</span>
               </li>
             ))}

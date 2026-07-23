@@ -60,6 +60,6 @@ describe('DashboardAttendanceOverview', () => {
   it('renders the clocked-in staff list with a GPS status badge', () => {
     render(<DashboardAttendanceOverview records={[record({ employee_id: 'employee-1234-5678', clock_in_gps_status: 'outside_radius' })]} isLoading={false} />);
     expect(screen.getByText(/employee-123/)).toBeInTheDocument();
-    expect(screen.getByText('Outside Radius').className).toContain('bg-red-100');
+    expect(screen.getByText('Outside Radius').className).toContain('bg-destructive/15');
   });
 });

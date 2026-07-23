@@ -65,8 +65,8 @@ function strengthScore(password: string): number {
 
 function strengthColorClass(score: number): string {
   if (score < 40) return '[&>div]:bg-destructive';
-  if (score < 100) return '[&>div]:bg-yellow-500';
-  return '[&>div]:bg-green-600';
+  if (score < 100) return '[&>div]:bg-warning';
+  return '[&>div]:bg-success';
 }
 
 export default function ChangePasswordPage() {
@@ -158,7 +158,7 @@ export default function ChangePasswordPage() {
 
               <ul className="space-y-1 text-xs">
                 {PASSWORD_RULES.map((rule) => (
-                  <li key={rule.label} className={rule.test(newPassword) ? 'text-green-600' : 'text-muted-foreground'}>
+                  <li key={rule.label} className={rule.test(newPassword) ? 'text-success' : 'text-muted-foreground'}>
                     {rule.test(newPassword) ? '✓' : '·'} {rule.label}
                   </li>
                 ))}

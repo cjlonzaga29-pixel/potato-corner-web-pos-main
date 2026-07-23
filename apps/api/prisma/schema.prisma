@@ -208,6 +208,11 @@ model User {
 
   expenses Expense[]
 
+  // Step 12a (System Settings)
+  systemSettingsUpdated       SystemSetting[]           @relation("SystemSettingUpdater")
+  notificationPreference      NotificationPreference?
+  branchReceiptConfigsUpdated BranchReceiptConfig[]     @relation("BranchReceiptConfigUpdater")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -247,6 +252,9 @@ model Branch {
 
   inventoryRequests InventoryRequest[]
   expenses          Expense[]
+
+  // Step 12a (System Settings)
+  receiptConfig BranchReceiptConfig?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1144,4 +1152,61 @@ model ExpenseIdempotencyKey {
 
   @@index([userId, createdAt])
   @@map("expense_idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Step 12a — System Settings
+// ---------------------------------------------------------------------------
+
+// Generic JSON key/value store for admin-editable system-wide config (e.g. key='security_policy').
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique @db.VarChar(100)
+  value       Json
+  description String?  @db.VarChar(500)
+  updatedBy   String   @map("updated_by")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  updater User @relation("SystemSettingUpdater", fields: [updatedBy], references: [id])
+
+  @@index([key])
+  @@map("system_settings")
+}
+
+model NotificationPreference {
+  id                   String   @id @default(uuid())
+  userId               String   @unique @map("user_id")
+  emailDigestEnabled   Boolean  @default(true) @map("email_digest_enabled")
+  emailDigestFrequency String   @default("daily") @map("email_digest_frequency")
+  alertFraud           Boolean  @default(true) @map("alert_fraud")
+  alertLowStock        Boolean  @default(true) @map("alert_low_stock")
+  alertCashVariance    Boolean  @default(true) @map("alert_cash_variance")
+  alertVoidRequests    Boolean  @default(true) @map("alert_void_requests")
+  dndEnabled           Boolean  @default(false) @map("dnd_enabled")
+  dndStartHour         Int      @default(22) @map("dnd_start_hour")
+  dndEndHour           Int      @default(7) @map("dnd_end_hour")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+model BranchReceiptConfig {
+  id             String   @id @default(uuid())
+  branchId       String   @unique @map("branch_id")
+  headerText     String?  @map("header_text") @db.VarChar(500)
+  footerText     String?  @map("footer_text") @db.VarChar(500)
+  showBranchLogo Boolean  @default(true) @map("show_branch_logo")
+  updatedBy      String   @map("updated_by")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  updater User   @relation("BranchReceiptConfigUpdater", fields: [updatedBy], references: [id])
+
+  @@index([branchId])
+  @@map("branch_receipt_configs")
 }

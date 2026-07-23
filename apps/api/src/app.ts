@@ -28,6 +28,7 @@ import { notificationsRouter } from './modules/notifications/notifications.route
 import { auditRouter } from './modules/audit/audit.router.js';
 import { fraudRouter } from './modules/fraud/fraud.router.js';
 import { expensesRouter } from './modules/expenses/expenses.router.js';
+import { settingsRouter, branchReceiptConfigRouter } from './modules/settings/settings.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
 
 export const app: Express = express();
@@ -82,6 +83,10 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/fraud', fraudRouter);
 app.use('/api/expenses', expensesRouter);
+app.use('/api/settings', settingsRouter);
+// Same prefix as branchesRouter — no path collision (branchesRouter owns
+// /:branchId; this owns /:branchId/receipt-config).
+app.use('/api/branches', branchReceiptConfigRouter);
 
 // Express 5 catch-all syntax (path-to-regexp v8) — '*' alone is no longer valid.
 app.use('/{*splat}', (_req: Request, res: Response) => {

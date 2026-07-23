@@ -151,3 +151,11 @@ export type FraudAlertListResponse = z.infer<typeof schemas.fraudAlertListRespon
 export type AuditLogListQuery = z.infer<typeof schemas.auditLogListQuerySchema>;
 export type AuditLogResponse = z.infer<typeof schemas.auditLogResponseSchema>;
 export type AuditLogListResponse = z.infer<typeof schemas.auditLogListResponseSchema>;
+
+export type SecurityPolicy = z.infer<typeof schemas.securityPolicySchema>;
+export type UpdateSecurityPolicyInput = z.infer<typeof schemas.updateSecurityPolicySchema>;
+export type NotificationPreferences = z.infer<typeof schemas.notificationPreferencesSchema>;
+export type UpdateNotificationPreferencesInput = z.infer<typeof schemas.updateNotificationPreferencesSchema>;
+export type ReceiptConfig = z.infer<typeof schemas.receiptConfigSchema>;
+export type UpdateReceiptConfigInput = z.infer<typeof schemas.updateReceiptConfigSchema>;
+export type ReceiptConfigResponse = z.infer<typeof schemas.receiptConfigResponseSchema>;

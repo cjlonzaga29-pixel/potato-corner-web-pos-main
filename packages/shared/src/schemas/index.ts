@@ -17,3 +17,4 @@ export * from './notification.schema.js';
 export * from './audit.schema.js';
 export * from './inventory-request.schema.js';
 export * from './expense.schema.js';
+export * from './settings.schema.js';

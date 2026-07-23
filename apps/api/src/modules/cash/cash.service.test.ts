@@ -72,9 +72,14 @@ function shiftRow(overrides: Partial<Record<string, unknown>> = {}) {
     varianceApprovalReason: null,
     cashSalesTotal: decimal(0),
     gcashSalesTotal: decimal(0),
+    mayaSalesTotal: decimal(0),
+    otherSalesTotal: decimal(0),
+    grossSalesTotal: decimal(0),
     transactionCount: 0,
     cashSalesCount: 0,
     gcashSalesCount: 0,
+    mayaSalesCount: 0,
+    otherSalesCount: 0,
     voidedCount: 0,
     refundedCount: 0,
     totalTransactionCount: 0,
@@ -175,6 +180,9 @@ describe('cashService.getCurrentShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(250),
       gcashSalesTotal: new Prisma.Decimal(75),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 6,
     });
 
@@ -236,11 +244,16 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 0,
       gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 0,
@@ -261,11 +274,16 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 0,
       gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 0,
@@ -288,11 +306,16 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(500),
       gcashSalesTotal: new Prisma.Decimal(300),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 4,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 0,
       gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 0,
@@ -316,11 +339,16 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(500),
       gcashSalesTotal: new Prisma.Decimal(300),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 4,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 3,
       gcashSalesCount: 2,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 1,
       refundedCount: 1,
       totalTransactionCount: 7,
@@ -385,11 +413,16 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 0,
       gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 0,
@@ -409,6 +442,9 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
 
@@ -423,11 +459,16 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 0,
       gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 0,
@@ -453,10 +494,13 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
-      cashSalesCount: 0, gcashSalesCount: 0, voidedCount: 0, refundedCount: 0,
+      cashSalesCount: 0, gcashSalesCount: 0, mayaSalesCount: 0, otherSalesCount: 0, voidedCount: 0, refundedCount: 0,
       totalTransactionCount: 0, totalDiscountAmount: 0, pwdScTransactionCount: 0,
     });
     vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) =>
@@ -487,6 +531,9 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) =>
@@ -503,10 +550,13 @@ describe('cashService.closeShift', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
-      cashSalesCount: 0, gcashSalesCount: 0, voidedCount: 0, refundedCount: 0,
+      cashSalesCount: 0, gcashSalesCount: 0, mayaSalesCount: 0, otherSalesCount: 0, voidedCount: 0, refundedCount: 0,
       totalTransactionCount: 0, totalDiscountAmount: 0, pwdScTransactionCount: 0,
     });
     vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
@@ -617,11 +667,16 @@ describe('cashService.getShiftSummary', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(200),
       gcashSalesTotal: new Prisma.Decimal(50),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 3,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 2,
       gcashSalesCount: 1,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 3,
@@ -651,6 +706,8 @@ describe('cashService.getShiftSummary', () => {
         gcashSalesTotal: decimal(100),
         cashSalesCount: 4,
         gcashSalesCount: 1,
+        mayaSalesCount: 0,
+        otherSalesCount: 0,
         voidedCount: 0,
         refundedCount: 1,
         totalTransactionCount: 6,
@@ -682,11 +739,16 @@ describe('cashService.getShiftSummary', () => {
     vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
       cashSalesTotal: new Prisma.Decimal(0),
       gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 0,
     });
     vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
       cashSalesCount: 0,
       gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
       voidedCount: 0,
       refundedCount: 0,
       totalTransactionCount: 0,

@@ -11,6 +11,7 @@ import {
   BarChart3,
   DollarSign,
   ChefHat,
+  Palette,
   Users,
   ChevronsLeft,
   ChevronsRight,
@@ -22,6 +23,7 @@ import { cn, generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import { useBranchStore } from '@/stores/branch.store';
 import { useProductRequests } from '@/hooks/queries/use-product-requests';
+import { useFlavorRequests } from '@/hooks/queries/use-flavor-requests';
 import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -39,6 +41,8 @@ const NAV_ITEMS = [
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
   // CR-001
   { label: 'Product Requests', href: '/supervisor/product-requests', icon: Package },
+  // CR-002
+  { label: 'Flavor Requests', href: '/supervisor/flavor-requests', icon: Palette },
   { label: 'Price Overrides', href: '/supervisor/price-overrides', icon: DollarSign },
   { label: 'Recipe Overrides', href: '/supervisor/recipes', icon: ChefHat },
 ];
@@ -59,9 +63,11 @@ export function SupervisorSidebar() {
   }
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   const { data: myProductRequests } = useProductRequests({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
+  const { data: myFlavorRequests } = useFlavorRequests({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
   const { data: myPriceOverrides } = usePriceOverrides({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
   const badgeCounts: Record<string, number> = {
     '/supervisor/product-requests': myProductRequests?.total ?? 0,
+    '/supervisor/flavor-requests': myFlavorRequests?.total ?? 0,
     '/supervisor/price-overrides': myPriceOverrides?.total ?? 0,
   };
 

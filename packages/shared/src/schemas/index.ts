@@ -7,6 +7,7 @@ export * from './flavor.schema.js';
 export * from './inventory.schema.js';
 export * from './recipe-override.schema.js';
 export * from './product-request.schema.js';
+export * from './flavor-request.schema.js';
 export * from './price-override.schema.js';
 export * from './transaction.schema.js';
 export * from './shift.schema.js';

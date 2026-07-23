@@ -105,6 +105,11 @@ export type ProposedRecipe = z.infer<typeof schemas.proposedRecipeSchema>;
 export type ProductRequestResponse = z.infer<typeof schemas.productRequestResponseSchema>;
 export type ProductRequestListResponse = z.infer<typeof schemas.productRequestListResponseSchema>;
 
+export type CreateFlavorRequestInput = z.infer<typeof schemas.createFlavorRequestSchema>;
+export type ReviewFlavorRequestInput = z.infer<typeof schemas.reviewFlavorRequestSchema>;
+export type FlavorRequestResponse = z.infer<typeof schemas.flavorRequestResponseSchema>;
+export type FlavorRequestListResponse = z.infer<typeof schemas.flavorRequestListResponseSchema>;
+
 export type CreatePriceOverrideInput = z.infer<typeof schemas.createPriceOverrideSchema>;
 export type ReviewPriceOverrideInput = z.infer<typeof schemas.reviewPriceOverrideSchema>;
 export type PriceOverrideResponse = z.infer<typeof schemas.priceOverrideResponseSchema>;
@@ -159,3 +164,6 @@ export type UpdateNotificationPreferencesInput = z.infer<typeof schemas.updateNo
 export type ReceiptConfig = z.infer<typeof schemas.receiptConfigSchema>;
 export type UpdateReceiptConfigInput = z.infer<typeof schemas.updateReceiptConfigSchema>;
 export type ReceiptConfigResponse = z.infer<typeof schemas.receiptConfigResponseSchema>;
+export type PaymentMethodConfig = z.infer<typeof schemas.paymentMethodConfigSchema>;
+export type UpdatePaymentMethodConfigInput = z.infer<typeof schemas.updatePaymentMethodConfigSchema>;
+export type PaymentMethodConfigResponse = z.infer<typeof schemas.paymentMethodConfigResponseSchema>;

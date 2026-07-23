@@ -10,6 +10,8 @@ vi.mock('./settings.repository.js', () => ({
     updateNotificationPreference: vi.fn(),
     findBranchReceiptConfig: vi.fn(),
     upsertBranchReceiptConfig: vi.fn(),
+    findPaymentMethodConfig: vi.fn(),
+    upsertPaymentMethodConfig: vi.fn(),
   },
 }));
 
@@ -31,6 +33,24 @@ const ACTOR = {
   user_id: 'admin-1',
   role: ROLES.SUPER_ADMIN,
   email: 'admin@test.com',
+  iat: 0,
+  exp: 9999999999,
+} as const;
+
+const SUPERVISOR_ACTOR = {
+  user_id: 'supervisor-1',
+  role: ROLES.SUPERVISOR,
+  email: 'supervisor@test.com',
+  branch_ids: ['branch-1'] as string[],
+  iat: 0,
+  exp: 9999999999,
+} as const;
+
+const OTHER_BRANCH_SUPERVISOR_ACTOR = {
+  user_id: 'supervisor-2',
+  role: ROLES.SUPERVISOR,
+  email: 'supervisor2@test.com',
+  branch_ids: ['branch-2'] as string[],
   iat: 0,
   exp: 9999999999,
 } as const;
@@ -71,6 +91,19 @@ function buildReceiptConfig(overrides: Partial<Record<string, unknown>> = {}) {
     headerText: null,
     footerText: null,
     showBranchLogo: true,
+    updatedBy: 'admin-1',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+function buildPaymentMethodConfig(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'bpmc-1',
+    branchId: 'branch-1',
+    cashEnabled: true,
+    gcashEnabled: true,
     updatedBy: 'admin-1',
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -191,5 +224,89 @@ describe('settingsService.updateBranchReceiptConfig', () => {
     await expect(settingsService.updateBranchReceiptConfig('missing-branch', { headerText: 'x' }, ACTOR, null)).rejects.toThrow(
       'Branch not found',
     );
+  });
+});
+
+describe('settingsService.getPaymentMethodConfig', () => {
+  it('returns null if not configured', async () => {
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(null);
+
+    const result = await settingsService.getPaymentMethodConfig('branch-1', ACTOR);
+
+    expect(result).toBeNull();
+  });
+
+  it('allows a super admin regardless of branch_ids', async () => {
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(buildPaymentMethodConfig() as never);
+
+    const result = await settingsService.getPaymentMethodConfig('branch-1', ACTOR);
+
+    expect(result?.cashEnabled).toBe(true);
+  });
+
+  it('allows a supervisor assigned to the branch', async () => {
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(buildPaymentMethodConfig() as never);
+
+    const result = await settingsService.getPaymentMethodConfig('branch-1', SUPERVISOR_ACTOR);
+
+    expect(result?.cashEnabled).toBe(true);
+  });
+
+  it('rejects a supervisor not assigned to the branch with BRANCH_ACCESS_DENIED', async () => {
+    await expect(settingsService.getPaymentMethodConfig('branch-1', OTHER_BRANCH_SUPERVISOR_ACTOR)).rejects.toMatchObject({
+      code: 'BRANCH_ACCESS_DENIED',
+      statusCode: 403,
+    });
+  });
+});
+
+describe('settingsService.updatePaymentMethodConfig', () => {
+  it('upserts record', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1' } as never);
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(null);
+    vi.mocked(settingsRepository.upsertPaymentMethodConfig).mockResolvedValue(
+      buildPaymentMethodConfig({ gcashEnabled: false }) as never,
+    );
+
+    const result = await settingsService.updatePaymentMethodConfig('branch-1', { gcashEnabled: false }, ACTOR, null);
+
+    expect(settingsRepository.upsertPaymentMethodConfig).toHaveBeenCalledWith('branch-1', { gcashEnabled: false }, 'admin-1');
+    expect(result.gcashEnabled).toBe(false);
+  });
+
+  it('rejects disabling the last remaining enabled method (merged against current state)', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1' } as never);
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(
+      buildPaymentMethodConfig({ cashEnabled: true, gcashEnabled: false }) as never,
+    );
+
+    await expect(settingsService.updatePaymentMethodConfig('branch-1', { cashEnabled: false }, ACTOR, null)).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_ALL_DISABLED',
+      statusCode: 422,
+    });
+    expect(settingsRepository.upsertPaymentMethodConfig).not.toHaveBeenCalled();
+  });
+
+  it('rejects disabling both methods at once when no record exists yet', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1' } as never);
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(null);
+
+    await expect(
+      settingsService.updatePaymentMethodConfig('branch-1', { cashEnabled: false, gcashEnabled: false }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'PAYMENT_METHOD_ALL_DISABLED', statusCode: 422 });
+  });
+
+  it('requires branch to exist', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(null);
+
+    await expect(
+      settingsService.updatePaymentMethodConfig('missing-branch', { cashEnabled: false }, ACTOR, null),
+    ).rejects.toThrow('Branch not found');
+  });
+
+  it('rejects a supervisor not assigned to the branch with BRANCH_ACCESS_DENIED', async () => {
+    await expect(
+      settingsService.updatePaymentMethodConfig('branch-1', { cashEnabled: false }, OTHER_BRANCH_SUPERVISOR_ACTOR, null),
+    ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
   });
 });

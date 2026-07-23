@@ -6,8 +6,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { SecurityPolicySection } from '@/components/settings/security-policy-section';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
 import { ReceiptTemplatesSection } from '@/components/settings/receipt-templates-section';
+import { PaymentMethodsSection } from '@/components/settings/payment-methods-section';
 
-const TABS = ['security', 'notifications', 'receipts'] as const;
+const TABS = ['security', 'notifications', 'receipts', 'payments'] as const;
 type TabValue = (typeof TABS)[number];
 const DEFAULT_TAB: TabValue = 'security';
 
@@ -33,7 +34,7 @@ function SettingsPageContent() {
     <div className="space-y-6 p-6">
       <div>
         <h1 className="text-xl font-semibold">System Settings</h1>
-        <p className="text-muted-foreground text-sm">Security, notification, and receipt configuration.</p>
+        <p className="text-muted-foreground text-sm">Security, notification, receipt, and payment method configuration.</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
@@ -41,6 +42,7 @@ function SettingsPageContent() {
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="receipts">Receipt Templates</TabsTrigger>
+          <TabsTrigger value="payments">Payment Methods</TabsTrigger>
         </TabsList>
 
         <TabsContent value="security">
@@ -53,6 +55,10 @@ function SettingsPageContent() {
 
         <TabsContent value="receipts">
           <ReceiptTemplatesSection />
+        </TabsContent>
+
+        <TabsContent value="payments">
+          <PaymentMethodsSection />
         </TabsContent>
       </Tabs>
     </div>

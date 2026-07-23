@@ -35,6 +35,11 @@ export interface UpdateBranchReceiptConfigData {
   showBranchLogo?: boolean;
 }
 
+export interface UpdateBranchPaymentMethodConfigData {
+  cashEnabled?: boolean;
+  gcashEnabled?: boolean;
+}
+
 /** Mirrors auth.types.ts's AuthError / employees.types.ts's EmployeeError — this module's own domain error → HTTP status mapping. */
 export class SettingsError extends Error {
   constructor(

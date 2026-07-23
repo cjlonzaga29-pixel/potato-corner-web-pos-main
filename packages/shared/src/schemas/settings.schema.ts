@@ -50,3 +50,16 @@ export const receiptConfigResponseSchema = receiptConfigSchema.extend({
   branchId: z.uuid(),
   updatedAt: z.iso.datetime(),
 });
+
+export const paymentMethodConfigSchema = z.object({
+  cashEnabled: z.boolean(),
+  gcashEnabled: z.boolean(),
+});
+
+/** Partial PUT — same precedent as updateReceiptConfigSchema: only the provided fields are changed. */
+export const updatePaymentMethodConfigSchema = paymentMethodConfigSchema.partial();
+
+export const paymentMethodConfigResponseSchema = paymentMethodConfigSchema.extend({
+  branchId: z.uuid(),
+  updatedAt: z.iso.datetime(),
+});

@@ -1,6 +1,10 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { UpdateBranchReceiptConfigData, UpdateNotificationPreferenceData } from './settings.types.js';
+import type {
+  UpdateBranchPaymentMethodConfigData,
+  UpdateBranchReceiptConfigData,
+  UpdateNotificationPreferenceData,
+} from './settings.types.js';
 
 export const settingsRepository = {
   findSystemSetting(key: string) {
@@ -39,6 +43,23 @@ export const settingsRepository = {
         headerText: data.headerText,
         footerText: data.footerText,
         showBranchLogo: data.showBranchLogo ?? true,
+        updatedBy,
+      },
+      update: { ...data, updatedBy },
+    });
+  },
+
+  findPaymentMethodConfig(branchId: string) {
+    return prisma.branchPaymentMethodConfig.findUnique({ where: { branchId } });
+  },
+
+  upsertPaymentMethodConfig(branchId: string, data: UpdateBranchPaymentMethodConfigData, updatedBy: string) {
+    return prisma.branchPaymentMethodConfig.upsert({
+      where: { branchId },
+      create: {
+        branchId,
+        cashEnabled: data.cashEnabled ?? true,
+        gcashEnabled: data.gcashEnabled ?? true,
         updatedBy,
       },
       update: { ...data, updatedBy },

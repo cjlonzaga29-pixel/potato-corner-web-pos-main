@@ -35,6 +35,7 @@ import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
 import { ProductRequestsLogPanel } from '@/components/reports/product-requests-log-panel';
+import { FlavorRequestsLogPanel } from '@/components/reports/flavor-requests-log-panel';
 import { PriceOverridesLogPanel } from '@/components/reports/price-overrides-log-panel';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
@@ -211,6 +212,7 @@ const VALID_TABS = new Set([
   'LOGIN_AUDIT',
   'INVENTORY_ANALYTICS',
   'PRODUCT_REQUESTS_LOG',
+  'FLAVOR_REQUESTS_LOG',
   'PRICE_OVERRIDES_LOG',
   'SHIFT_LOG',
 ]);
@@ -348,6 +350,7 @@ function AdminReportsPageContent() {
           <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
           <TabsTrigger value="SHIFT_LOG">Shift Log</TabsTrigger>
           <TabsTrigger value="PRODUCT_REQUESTS_LOG">Product Requests Log</TabsTrigger>
+          <TabsTrigger value="FLAVOR_REQUESTS_LOG">Flavor Requests Log</TabsTrigger>
           <TabsTrigger value="PRICE_OVERRIDES_LOG">Price Overrides Log</TabsTrigger>
           <TabsTrigger value="AUDIT_LOGS">Audit Logs</TabsTrigger>
           <TabsTrigger value="LOGIN_AUDIT">Login Audit</TabsTrigger>
@@ -620,6 +623,10 @@ function AdminReportsPageContent() {
 
         <TabsContent value="PRODUCT_REQUESTS_LOG">
           <ProductRequestsLogPanel />
+        </TabsContent>
+
+        <TabsContent value="FLAVOR_REQUESTS_LOG">
+          <FlavorRequestsLogPanel />
         </TabsContent>
 
         <TabsContent value="PRICE_OVERRIDES_LOG">

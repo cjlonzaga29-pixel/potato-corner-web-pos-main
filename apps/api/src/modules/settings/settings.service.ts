@@ -1,15 +1,19 @@
-import type {
-  JwtPayload,
-  NotificationPreferences,
-  ReceiptConfigResponse,
-  SecurityPolicy,
-  UpdateNotificationPreferencesInput,
-  UpdateReceiptConfigInput,
-  UpdateSecurityPolicyInput,
+import {
+  ROLES,
+  type JwtPayload,
+  type NotificationPreferences,
+  type PaymentMethodConfigResponse,
+  type ReceiptConfigResponse,
+  type SecurityPolicy,
+  type UpdateNotificationPreferencesInput,
+  type UpdatePaymentMethodConfigInput,
+  type UpdateReceiptConfigInput,
+  type UpdateSecurityPolicyInput,
 } from '@potato-corner/shared';
 import type {
   NotificationPreference as NotificationPreferenceRow,
   BranchReceiptConfig as BranchReceiptConfigRow,
+  BranchPaymentMethodConfig as BranchPaymentMethodConfigRow,
   Prisma,
 } from '@prisma/client';
 import { settingsRepository } from './settings.repository.js';
@@ -41,6 +45,25 @@ function toReceiptConfigResponse(row: BranchReceiptConfigRow): ReceiptConfigResp
     showBranchLogo: row.showBranchLogo,
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function toPaymentMethodConfigResponse(row: BranchPaymentMethodConfigRow): PaymentMethodConfigResponse {
+  return {
+    branchId: row.branchId,
+    cashEnabled: row.cashEnabled,
+    gcashEnabled: row.gcashEnabled,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** Default state assumed when no BranchPaymentMethodConfig row exists yet (both methods enabled). */
+const DEFAULT_PAYMENT_METHOD_CONFIG = { cashEnabled: true, gcashEnabled: true };
+
+/** Throws BRANCH_ACCESS_DENIED unless the actor is a Super Admin or is assigned to this branch. */
+function assertBranchAccess(branchId: string, actor: ActorContext): void {
+  if (actor.role !== ROLES.SUPER_ADMIN && !actor.branch_ids.includes(branchId)) {
+    throw new SettingsError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+  }
 }
 
 export const settingsService = {
@@ -142,5 +165,53 @@ export const settingsService = {
     });
 
     return toReceiptConfigResponse(updated);
+  },
+
+  async getPaymentMethodConfig(branchId: string, actor: ActorContext): Promise<PaymentMethodConfigResponse | null> {
+    assertBranchAccess(branchId, actor);
+
+    const config = await settingsRepository.findPaymentMethodConfig(branchId);
+    return config ? toPaymentMethodConfigResponse(config) : null;
+  },
+
+  async updatePaymentMethodConfig(
+    branchId: string,
+    data: UpdatePaymentMethodConfigInput,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<PaymentMethodConfigResponse> {
+    assertBranchAccess(branchId, actor);
+
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+
+    const before = await settingsRepository.findPaymentMethodConfig(branchId);
+
+    // Partial PUT — merge the incoming partial data over the currently persisted (or default) state
+    // before validating the "at least one enabled" business rule, since only one field may be sent.
+    const currentState = before
+      ? { cashEnabled: before.cashEnabled, gcashEnabled: before.gcashEnabled }
+      : DEFAULT_PAYMENT_METHOD_CONFIG;
+    const merged = { ...currentState, ...data };
+
+    if (!merged.cashEnabled && !merged.gcashEnabled) {
+      throw new SettingsError('PAYMENT_METHOD_ALL_DISABLED', 'At least one payment method must remain enabled', 422);
+    }
+
+    const updated = await settingsRepository.upsertPaymentMethodConfig(branchId, data, actor.user_id);
+
+    await recordAuditLog({
+      action: 'PAYMENT_METHOD_CONFIG_UPDATED',
+      entityType: 'branch_payment_method_config',
+      entityId: branchId,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId,
+      beforeState: before ? toPaymentMethodConfigResponse(before) : null,
+      afterState: data,
+      ipAddress,
+    });
+
+    return toPaymentMethodConfigResponse(updated);
   },
 };

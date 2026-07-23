@@ -38,6 +38,11 @@ export const PERMISSIONS = {
   PRODUCT_REQUEST_LIST: 'adminOrSupervisor + role-scoped',
   PRODUCT_REQUEST_REVIEW: 'adminOnly',
 
+  // CR-002 — flavor requests (supervisor submits, Super Admin approves)
+  FLAVOR_REQUEST_SUBMIT: 'supervisorOnly',
+  FLAVOR_REQUEST_LIST: 'adminOrSupervisor + role-scoped',
+  FLAVOR_REQUEST_REVIEW: 'adminOnly',
+
   // CR-001 — branch price overrides (supervisor submits, Super Admin approves)
   PRICE_OVERRIDE_SUBMIT: 'supervisorOnly',
   PRICE_OVERRIDE_LIST: 'adminOrSupervisor + role-scoped',

@@ -203,15 +203,20 @@ model User {
   productRequestsReviewed ProductRequest[]       @relation("ProductRequestReviewer")
   recipeOverridesCreated  BranchRecipeOverride[]
 
+  // CR-002 — flavor requests (supervisor submits, Super Admin approves)
+  flavorRequestsFiled    FlavorRequest[] @relation("FlavorRequestRequester")
+  flavorRequestsReviewed FlavorRequest[] @relation("FlavorRequestReviewer")
+
   requestedInventoryRequests InventoryRequest[] @relation("RequestedInventoryRequests")
   approvedInventoryRequests  InventoryRequest[] @relation("ApprovedInventoryRequests")
 
   expenses Expense[]
 
   // Step 12a (System Settings)
-  systemSettingsUpdated       SystemSetting[]           @relation("SystemSettingUpdater")
-  notificationPreference      NotificationPreference?
-  branchReceiptConfigsUpdated BranchReceiptConfig[]     @relation("BranchReceiptConfigUpdater")
+  systemSettingsUpdated             SystemSetting[]             @relation("SystemSettingUpdater")
+  notificationPreference            NotificationPreference?
+  branchReceiptConfigsUpdated       BranchReceiptConfig[]       @relation("BranchReceiptConfigUpdater")
+  branchPaymentMethodConfigsUpdated BranchPaymentMethodConfig[] @relation("BranchPaymentMethodConfigUpdater")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -250,11 +255,15 @@ model Branch {
   productRequests   ProductRequest[]
   recipeOverrides   BranchRecipeOverride[]
 
+  // CR-002
+  flavorRequests FlavorRequest[]
+
   inventoryRequests InventoryRequest[]
   expenses          Expense[]
 
   // Step 12a (System Settings)
-  receiptConfig BranchReceiptConfig?
+  receiptConfig       BranchReceiptConfig?
+  paymentMethodConfig BranchPaymentMethodConfig?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -426,21 +435,21 @@ model Product {
 }
 
 model ProductVariant {
-  id           String  @id @default(uuid())
-  productId    String  @map("product_id")
-  name         String
-  sizeLabel    String  @map("size_label")
-  basePrice    Decimal @map("base_price") @db.Decimal(10, 2)
+  id               String   @id @default(uuid())
+  productId        String   @map("product_id")
+  name             String
+  sizeLabel        String   @map("size_label")
+  basePrice        Decimal  @map("base_price") @db.Decimal(10, 2)
   // For Tera Mix products, caps VATable portion to Mega Mix SRP. NULL = full SRP is VATable.
   vatableCapAmount Decimal? @map("vatable_cap_amount") @db.Decimal(10, 2)
-  displayOrder Int?    @map("display_order")
-  isActive     Boolean @default(true) @map("is_active")
+  displayOrder     Int?     @map("display_order")
+  isActive         Boolean  @default(true) @map("is_active")
 
   // Phase 21: kcal is the variant's base calorie count (before flavor
   // kcalOffset); maxFlavors caps how many flavors a customer may pick for
   // this size (e.g. Mega/Giga fries = 2, Tera = 3, everything else = 1).
-  kcal         Int?    @map("kcal")
-  maxFlavors   Int     @default(1) @map("max_flavors")
+  kcal       Int? @map("kcal")
+  maxFlavors Int  @default(1) @map("max_flavors")
 
   product          Product                @relation(fields: [productId], references: [id])
   variantFlavors   ProductVariantFlavor[]
@@ -473,9 +482,9 @@ model Flavor {
   // per-variant pricePremium remains the source of truth actually read at
   // checkout, this is just the catalog default so a new size doesn't need
   // its premium re-entered by hand.
-  isPremium   Boolean @default(false) @map("is_premium")
-  addOnPrice  Decimal @default(0) @map("add_on_price") @db.Decimal(10, 2)
-  kcalOffset  Int     @default(0) @map("kcal_offset")
+  isPremium  Boolean @default(false) @map("is_premium")
+  addOnPrice Decimal @default(0) @map("add_on_price") @db.Decimal(10, 2)
+  kcalOffset Int     @default(0) @map("kcal_offset")
 
   variantFlavors     ProductVariantFlavor[]
   branchAvailability BranchFlavorAvailability[]
@@ -483,6 +492,9 @@ model Flavor {
   transactionItems   TransactionItem[]
   recipeOverrides    BranchRecipeOverride[]
   holdOrderItems     HoldOrderItem[]
+
+  // CR-002
+  flavorRequests FlavorRequest[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -610,6 +622,39 @@ model ProductRequest {
   @@map("product_requests")
 }
 
+/// CR-002 — supervisor-submitted request to add a brand-new flavor to the
+/// catalog. Mirrors ProductRequest's shape/conventions: status is a plain
+/// String checked against REQUEST_STATUS in application code, and approval
+/// creates the real Flavor row (via flavorsRepository.create) only once a
+/// Super Admin approves — nothing here is a committed catalog row until then.
+model FlavorRequest {
+  id                   String    @id @default(uuid())
+  branchId             String    @map("branch_id")
+  requestedBy          String    @map("requested_by")
+  proposedName         String    @map("proposed_name")
+  proposedDescription  String?   @map("proposed_description")
+  proposedColorHex     String    @map("proposed_color_hex")
+  proposedDisplayOrder Int?      @map("proposed_display_order")
+  requestReason        String    @map("request_reason")
+  status               String    @default("pending")
+  reviewedBy           String?   @map("reviewed_by")
+  reviewedAt           DateTime? @map("reviewed_at")
+  reviewNotes          String?   @map("review_notes")
+  createdFlavorId      String?   @map("created_flavor_id")
+
+  branch        Branch  @relation(fields: [branchId], references: [id])
+  requester     User    @relation("FlavorRequestRequester", fields: [requestedBy], references: [id])
+  reviewer      User?   @relation("FlavorRequestReviewer", fields: [reviewedBy], references: [id])
+  createdFlavor Flavor? @relation(fields: [createdFlavorId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId])
+  @@index([status])
+  @@map("flavor_requests")
+}
+
 // ---------------------------------------------------------------------------
 // Inventory and recipes
 // ---------------------------------------------------------------------------
@@ -631,10 +676,10 @@ model Ingredient {
   branchId          String    @map("branch_id")
   deletedAt         DateTime? @map("deleted_at")
 
-  branch          Branch                 @relation(fields: [branchId], references: [id])
-  recipes         Recipe[]
-  movements       InventoryMovement[]
-  recipeOverrides BranchRecipeOverride[]
+  branch            Branch                 @relation(fields: [branchId], references: [id])
+  recipes           Recipe[]
+  movements         InventoryMovement[]
+  recipeOverrides   BranchRecipeOverride[]
   inventoryRequests InventoryRequest[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -1109,10 +1154,10 @@ model InventoryRequest {
   createdAt       DateTime               @default(now())
   approvedAt      DateTime?
 
-  branch       Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
-  requestedBy  User       @relation("RequestedInventoryRequests", fields: [requestedById], references: [id], onDelete: Restrict)
-  approvedBy   User?      @relation("ApprovedInventoryRequests", fields: [approvedById], references: [id], onDelete: Restrict)
+  branch      Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ingredient  Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+  requestedBy User       @relation("RequestedInventoryRequests", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy  User?      @relation("ApprovedInventoryRequests", fields: [approvedById], references: [id], onDelete: Restrict)
 
   @@index([branchId, status])
   @@index([ingredientId])
@@ -1209,4 +1254,20 @@ model BranchReceiptConfig {
 
   @@index([branchId])
   @@map("branch_receipt_configs")
+}
+
+model BranchPaymentMethodConfig {
+  id           String   @id @default(uuid())
+  branchId     String   @unique @map("branch_id")
+  cashEnabled  Boolean  @default(true) @map("cash_enabled")
+  gcashEnabled Boolean  @default(true) @map("gcash_enabled")
+  updatedBy    String   @map("updated_by")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  updater User   @relation("BranchPaymentMethodConfigUpdater", fields: [updatedBy], references: [id])
+
+  @@index([branchId])
+  @@map("branch_payment_method_configs")
 }

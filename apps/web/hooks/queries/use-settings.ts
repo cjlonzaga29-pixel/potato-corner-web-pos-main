@@ -4,9 +4,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type {
   NotificationPreferences,
+  PaymentMethodConfigResponse,
   ReceiptConfigResponse,
   SecurityPolicy,
   UpdateNotificationPreferencesInput,
+  UpdatePaymentMethodConfigInput,
   UpdateReceiptConfigInput,
   UpdateSecurityPolicyInput,
 } from '@potato-corner/shared';
@@ -113,6 +115,39 @@ export function useUpdateBranchReceiptConfig(branchId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'receipt-config', branchId] });
       toast.success('Receipt configuration updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function usePaymentMethodConfig(branchId: string | null | undefined) {
+  const { accessToken, isLoading } = useAuth();
+
+  return useQuery({
+    queryKey: ['settings', 'payment-methods', branchId],
+    queryFn: async () => {
+      const response = await apiClient<PaymentMethodConfigResponse | null>(`/api/branches/${branchId}/payment-methods`);
+      if (response.error) throw new Error(errorMessage(response, 'Failed to load payment method configuration'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading && !!branchId,
+  });
+}
+
+export function useUpdatePaymentMethodConfig(branchId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdatePaymentMethodConfigInput) => {
+      const response = await apiClient<PaymentMethodConfigResponse>(`/api/branches/${branchId}/payment-methods`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update payment method configuration'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'payment-methods', branchId] });
+      toast.success('Payment method configuration updated');
     },
     onError: (error: Error) => toast.error(error.message),
   });

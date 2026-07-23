@@ -1,5 +1,11 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { ROLES, updateSecurityPolicySchema, updateNotificationPreferencesSchema, updateReceiptConfigSchema } from '@potato-corner/shared';
+import {
+  ROLES,
+  updateSecurityPolicySchema,
+  updateNotificationPreferencesSchema,
+  updateReceiptConfigSchema,
+  updatePaymentMethodConfigSchema,
+} from '@potato-corner/shared';
 import { settingsService } from './settings.service.js';
 import { SettingsError } from './settings.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -117,6 +123,44 @@ branchReceiptConfigRouter.put(
     try {
       if (!requireUser(req, res)) return;
       const config = await settingsService.updateBranchReceiptConfig(
+        req.params.branchId as string,
+        req.body,
+        req.user,
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: config, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+branchReceiptConfigRouter.get(
+  '/:branchId/payment-methods',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const config = await settingsService.getPaymentMethodConfig(req.params.branchId as string, req.user);
+      res.status(200).json({ data: config, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+branchReceiptConfigRouter.put(
+  '/:branchId/payment-methods',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updatePaymentMethodConfigSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const config = await settingsService.updatePaymentMethodConfig(
         req.params.branchId as string,
         req.body,
         req.user,

@@ -63,6 +63,9 @@ vi.mock('@/components/settings/notification-preferences-section', () => ({
 vi.mock('@/components/settings/receipt-templates-section', () => ({
   ReceiptTemplatesSection: () => <div>Receipts Section Content</div>,
 }));
+vi.mock('@/components/settings/payment-methods-section', () => ({
+  PaymentMethodsSection: () => <div>Payment Methods Section Content</div>,
+}));
 
 afterEach(() => {
   cleanup();
@@ -71,12 +74,13 @@ afterEach(() => {
 });
 
 describe('SettingsPage', () => {
-  it('renders 3 tabs', () => {
+  it('renders 4 tabs', () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole('tab', { name: 'Security' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Receipt Templates' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Payment Methods' })).toBeInTheDocument();
   });
 
   it('default tab is Security', () => {
@@ -99,5 +103,13 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(screen.getByText('Receipts Section Content')).toBeInTheDocument();
+  });
+
+  it('renders payment methods section for the payments tab', () => {
+    mockUseSearchParams.mockReturnValue(new URLSearchParams('tab=payments'));
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText('Payment Methods Section Content')).toBeInTheDocument();
   });
 });

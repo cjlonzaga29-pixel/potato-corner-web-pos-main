@@ -441,6 +441,46 @@ describe('processNotification — offline_transactions_synced', () => {
   });
 });
 
+describe('processNotification — branch_offline', () => {
+  it('emits the socket event to the branch and super admins, and persists a Notification per branch supervisor/admin', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
+      { id: 'supervisor-1' },
+      { id: 'admin-1' },
+    ] as never);
+    const data = { type: 'branch_offline' as const, branchId: 'branch-1', branchName: 'Manila', lastSeenAt: '2026-07-24T00:00:00.000Z' };
+
+    await processNotification('branch_offline', data);
+
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'branch:offline', data);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('branch:offline', data);
+    expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'branch_offline',
+      payload: data,
+      recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'branch_offline',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — branch_online', () => {
+  it('emits the socket event to the branch and super admins, without persisting a Notification row', async () => {
+    const data = { type: 'branch_online' as const, branchId: 'branch-1', branchName: 'Manila' };
+
+    await processNotification('branch_online', data);
+
+    expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'branch:online', data);
+    expect(notifySuperAdmin).toHaveBeenCalledWith('branch:online', data);
+    expect(notificationsRepository.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('processNotification — eod_summary', () => {
   it('emits the socket event to super admins, persists a Notification per super admin, and emails each super admin', async () => {
     vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);

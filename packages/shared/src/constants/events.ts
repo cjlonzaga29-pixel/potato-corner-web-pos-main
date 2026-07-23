@@ -42,6 +42,11 @@ export const SOCKET_EVENTS = {
   BRANCH_STATUS_CHANGED: 'branch:status_changed',
   BRANCH_SUPERVISOR_ASSIGNED: 'branch:supervisor_assigned',
   BRANCH_SUPERVISOR_REMOVED: 'branch:supervisor_removed',
+  // Realtime-sync pass — connection-presence based (no staff socket
+  // connected to a branch's room for OFFLINE_DEBOUNCE_MS), not a hardware/
+  // network-level signal. See socket/presence.ts.
+  BRANCH_OFFLINE: 'branch:offline',
+  BRANCH_ONLINE: 'branch:online',
 
   // CR-001 — approval workflow notifications
   PRODUCT_REQUEST_SUBMITTED: 'product_request:submitted',

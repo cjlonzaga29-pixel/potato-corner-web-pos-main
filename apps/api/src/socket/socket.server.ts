@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import { verifyAccessToken, AccessTokenError, type AccessTokenErrorCode } from '../lib/verify-access-token.js';
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
 import { SUPER_ADMIN_ROOM, branchRoom, userRoom } from './rooms.js';
+import { onBranchSocketJoined, onBranchSocketLeft } from './presence.js';
 
 /**
  * Initializes Socket.io with its default in-memory adapter. Phase 21
@@ -108,7 +109,21 @@ export function createSocketServer(httpServer: HttpServer): Server {
   io.use(socketAuthMiddleware);
 
   io.on('connection', (socket) => {
-    joinRoomsForUser(socket, socket.data.user);
+    const user = socket.data.user as JwtPayload;
+    joinRoomsForUser(socket, user);
+
+    if (user.role !== ROLES.SUPER_ADMIN) {
+      for (const branchId of user.branch_ids) {
+        onBranchSocketJoined(branchId);
+      }
+    }
+
+    socket.on('disconnect', () => {
+      if (user.role === ROLES.SUPER_ADMIN) return;
+      for (const branchId of user.branch_ids) {
+        onBranchSocketLeft(io, branchId);
+      }
+    });
   });
 
   ioInstance = io;

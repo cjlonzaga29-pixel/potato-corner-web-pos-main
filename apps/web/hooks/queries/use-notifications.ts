@@ -45,6 +45,7 @@ const MESSAGE_BY_TYPE: Record<string, string> = {
   inventory_deduction_failed: 'Inventory deduction failed for a transaction.',
   offline_transactions_synced: 'Offline transactions were synced.',
   eod_summary: 'End-of-day summary is ready.',
+  branch_offline: 'A branch went offline.',
 };
 
 function toItem(row: NotificationRow): NotificationItem {
@@ -84,6 +85,7 @@ export function useNotificationsRealtimeSync(): void {
       SOCKET_EVENTS.LARGE_ADJUSTMENT_APPROVAL_NEEDED,
       SOCKET_EVENTS.OFFLINE_TRANSACTIONS_SYNCED,
       SOCKET_EVENTS.EOD_SUMMARY,
+      SOCKET_EVENTS.BRANCH_OFFLINE,
     ],
     [['notifications']],
   );

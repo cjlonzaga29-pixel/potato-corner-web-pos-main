@@ -279,6 +279,27 @@ export async function processNotification(jobName: string, data: unknown): Promi
     );
     return;
   }
+  if (jobName === 'branch_offline') {
+    const payload = data as Extract<NotificationPayload, { type: 'branch_offline' }>;
+    notifyBranch(payload.branchId, SOCKET_EVENTS.BRANCH_OFFLINE, payload);
+    notifySuperAdmin(SOCKET_EVENTS.BRANCH_OFFLINE, payload);
+    const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'branch_offline', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'branch_online') {
+    const payload = data as Extract<NotificationPayload, { type: 'branch_online' }>;
+    notifyBranch(payload.branchId, SOCKET_EVENTS.BRANCH_ONLINE, payload);
+    notifySuperAdmin(SOCKET_EVENTS.BRANCH_ONLINE, payload);
+    // Informational recovery signal only — no persisted Notification row,
+    // matching the "not every socket event needs a durable row" precedent
+    // set by cash_variance_flagged's approval counterpart elsewhere.
+    return;
+  }
   if (jobName === 'eod_summary') {
     const payload = data as Extract<NotificationPayload, { type: 'eod_summary' }>;
     notifySuperAdmin(SOCKET_EVENTS.EOD_SUMMARY, payload);

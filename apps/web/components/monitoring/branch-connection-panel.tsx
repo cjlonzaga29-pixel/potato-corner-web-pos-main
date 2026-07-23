@@ -17,8 +17,10 @@ interface BranchScopedPayload {
 /**
  * Branch activity is inferred from any event carrying that branch's id —
  * the same broad vocabulary the other panels already subscribe to
- * (transactions, alerts, shift lifecycle) — rather than a dedicated
- * "branch:<id>" event, which nothing in the backend currently emits.
+ * (transactions, alerts, shift lifecycle). BRANCH_OFFLINE/BRANCH_ONLINE
+ * (socket/presence.ts — no staff socket connected to the branch's room for
+ * 30s) are the authoritative signal when present and override the inferred
+ * "Idle" state below.
  */
 const ACTIVITY_EVENTS = [
   SOCKET_EVENTS.TRANSACTION_COMPLETED,
@@ -30,6 +32,8 @@ const ACTIVITY_EVENTS = [
   SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK,
   SOCKET_EVENTS.CASH_VARIANCE_FLAGGED,
   SOCKET_EVENTS.VOID_REQUESTED,
+  SOCKET_EVENTS.BRANCH_OFFLINE,
+  SOCKET_EVENTS.BRANCH_ONLINE,
 ];
 
 const FEED_MAX_SIZE = 100;
@@ -48,11 +52,15 @@ export function BranchConnectionPanel() {
   }, []);
 
   const lastSeenByBranch = new Map<string, number>();
+  const latestEventByBranch = new Map<string, string>();
   for (const entry of entries) {
     const branchId = entry.payload.branchId ?? entry.payload.branch_id;
     if (!branchId) continue;
     const existing = lastSeenByBranch.get(branchId);
-    if (!existing || entry.receivedAt > existing) lastSeenByBranch.set(branchId, entry.receivedAt);
+    if (!existing || entry.receivedAt > existing) {
+      lastSeenByBranch.set(branchId, entry.receivedAt);
+      latestEventByBranch.set(branchId, entry.event);
+    }
   }
 
   const isLoading = !accessToken || isLoadingAuth || isLoadingBranches;
@@ -77,7 +85,14 @@ export function BranchConnectionPanel() {
             <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
               {branches.map((branch) => {
                 const lastSeen = lastSeenByBranch.get(branch.id);
-                const status = !lastSeen ? 'Never seen' : now - lastSeen < ACTIVE_WINDOW_MS ? 'Active' : 'Idle';
+                const latestEvent = latestEventByBranch.get(branch.id);
+                const status = !lastSeen
+                  ? 'Never seen'
+                  : latestEvent === SOCKET_EVENTS.BRANCH_OFFLINE
+                    ? 'Offline'
+                    : now - lastSeen < ACTIVE_WINDOW_MS
+                      ? 'Active'
+                      : 'Idle';
                 const dot = status === 'Active' ? '🟢' : status === 'Idle' ? '⚪' : '🔴';
                 return (
                   <div key={branch.id} className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm">
@@ -89,7 +104,7 @@ export function BranchConnectionPanel() {
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground">🟢 Active (event &lt;60s ago) · ⚪ Idle · 🔴 Never seen</p>
+            <p className="text-xs text-muted-foreground">🟢 Active (event &lt;60s ago) · ⚪ Idle · 🔴 Offline / never seen</p>
           </>
         )}
       </CardContent>

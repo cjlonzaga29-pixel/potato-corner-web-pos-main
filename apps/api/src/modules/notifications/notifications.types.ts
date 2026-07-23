@@ -114,6 +114,22 @@ export interface EodSummaryNotificationPayload {
   branchRevenue: { branchId: string; branchName: string; revenue: number }[];
 }
 
+// Connection-presence based (no staff socket connected to the branch's room
+// for OFFLINE_DEBOUNCE_MS) — see socket/presence.ts. Not a hardware/network
+// uptime signal.
+export interface BranchOfflineNotificationPayload {
+  type: 'branch_offline';
+  branchId: string;
+  branchName: string;
+  lastSeenAt: string;
+}
+
+export interface BranchOnlineNotificationPayload {
+  type: 'branch_online';
+  branchId: string;
+  branchName: string;
+}
+
 export type NotificationPayload =
   | LowStockNotificationPayload
   | CriticalStockNotificationPayload
@@ -125,7 +141,9 @@ export type NotificationPayload =
   | FraudAlertCreatedNotificationPayload
   | InventoryDeductionFailedNotificationPayload
   | OfflineTransactionsSyncedNotificationPayload
-  | EodSummaryNotificationPayload;
+  | EodSummaryNotificationPayload
+  | BranchOfflineNotificationPayload
+  | BranchOnlineNotificationPayload;
 
 export type NotificationType = NotificationPayload['type'];
 

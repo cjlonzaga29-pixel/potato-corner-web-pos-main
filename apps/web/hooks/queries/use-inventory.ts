@@ -125,7 +125,7 @@ export function useInventoryRealtimeSync(branchId: string | null | undefined): v
       SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE,
       SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED,
     ],
-    [['ingredients', branchId], ['branch-inventory', branchId]],
+    [['ingredients', branchId], ['branch-inventory', branchId], ['branches']],
   );
 }
 

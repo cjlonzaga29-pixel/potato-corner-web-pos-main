@@ -102,7 +102,7 @@ export function useExpense(expenseId: string | null | undefined) {
 export function useExpensesRealtimeSync(): void {
   useRealtimeInvalidate(
     [SOCKET_EVENTS.EXPENSE_CREATED, SOCKET_EVENTS.EXPENSE_UPDATED, SOCKET_EVENTS.EXPENSE_DELETED],
-    [['expenses']],
+    [['expenses'], ['branches']],
   );
 }
 

@@ -10,7 +10,7 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { FlavorColorSwatch } from '@/components/admin/flavors/flavor-color-swatch';
 import { formatDateTime } from '@/lib/utils';
-import { useFlavorRequests } from '@/hooks/queries/use-flavor-requests';
+import { useFlavorRequests, useFlavorRequestsRealtimeSync } from '@/hooks/queries/use-flavor-requests';
 import { ReviewFlavorRequestDialog } from '@/components/admin/approvals/review-flavor-request-dialog';
 
 const STATUS_FILTERS = [
@@ -30,6 +30,8 @@ export default function FlavorRequestsApprovalPage() {
   const [status, setStatus] = useState<string>('pending');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [reviewing, setReviewing] = useState<FlavorRequestResponse | null>(null);
+
+  useFlavorRequestsRealtimeSync();
 
   const { data, isLoading, isError, refetch } = useFlavorRequests({
     status: status === 'all' ? undefined : (status as 'pending' | 'approved' | 'rejected'),

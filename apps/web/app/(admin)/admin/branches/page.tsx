@@ -18,7 +18,7 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { useBranches } from '@/hooks/queries/use-branches';
+import { useBranches, useBranchRealtimeSync } from '@/hooks/queries/use-branches';
 import { CreateBranchDialog } from '@/components/admin/branches/create-branch-dialog';
 import { EditBranchDialog } from '@/components/admin/branches/edit-branch-dialog';
 import { ChangeStatusDialog } from '@/components/admin/branches/change-status-dialog';
@@ -39,6 +39,8 @@ export default function BranchListPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingBranch, setEditingBranch] = useState<BranchResponse | null>(null);
   const [statusBranch, setStatusBranch] = useState<BranchResponse | null>(null);
+
+  useBranchRealtimeSync();
 
   const { data, isLoading, isError, refetch } = useBranches({
     status: status === 'all' ? undefined : (status as BranchStatus),

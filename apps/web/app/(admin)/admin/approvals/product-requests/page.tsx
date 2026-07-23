@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
-import { useProductRequests } from '@/hooks/queries/use-product-requests';
+import { useProductRequests, useProductRequestsRealtimeSync } from '@/hooks/queries/use-product-requests';
 import { ReviewProductRequestDialog } from '@/components/admin/approvals/review-product-request-dialog';
 
 const STATUS_FILTERS = [
@@ -29,6 +29,8 @@ export default function ProductRequestsApprovalPage() {
   const [status, setStatus] = useState<string>('pending');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [reviewing, setReviewing] = useState<ProductRequestResponse | null>(null);
+
+  useProductRequestsRealtimeSync();
 
   const { data, isLoading, isError, refetch } = useProductRequests({
     status: status === 'all' ? undefined : (status as 'pending' | 'approved' | 'rejected'),

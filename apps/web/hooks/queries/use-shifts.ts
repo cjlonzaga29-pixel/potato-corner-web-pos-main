@@ -104,9 +104,17 @@ function invalidateShifts(queryClient: ReturnType<typeof useQueryClient>, branch
   void queryClient.invalidateQueries({ queryKey: ['shifts'] });
 }
 
-/** Keeps shift DataTables/dashboards in sync with opens/closes recorded from any other terminal, without a manual refresh. */
+/** Keeps shift DataTables/dashboards in sync with opens/closes and variance flag/approval decisions recorded from any other terminal or session, without a manual refresh. */
 export function useShiftsRealtimeSync(): void {
-  useRealtimeInvalidate([SOCKET_EVENTS.SHIFT_OPENED, SOCKET_EVENTS.SHIFT_CLOSED], [['current-shift'], ['shifts']]);
+  useRealtimeInvalidate(
+    [
+      SOCKET_EVENTS.SHIFT_OPENED,
+      SOCKET_EVENTS.SHIFT_CLOSED,
+      SOCKET_EVENTS.CASH_VARIANCE_FLAGGED,
+      SOCKET_EVENTS.CASH_VARIANCE_APPROVED,
+    ],
+    [['current-shift'], ['shifts'], ['branches']],
+  );
 }
 
 export function useOpenShift(branchId: string | null | undefined) {

@@ -11,7 +11,7 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatCurrency } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
-import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
+import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
 
 const STATUS_BADGE_VARIANT: Record<string, 'pending' | 'active' | 'critical'> = {
   pending: 'pending',
@@ -23,6 +23,7 @@ export default function SupervisorPriceOverridesPage() {
   const router = useRouter();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  usePriceOverridesRealtimeSync();
   const { data, isLoading, isError, refetch } = usePriceOverrides({
     branch_id: activeBranchId ?? undefined,
     page: pagination.pageIndex + 1,

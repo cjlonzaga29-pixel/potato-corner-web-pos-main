@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, ShieldAlert, PackageX, Banknote, Ban } from 'lucide-react';
+import { AlertTriangle, ShieldAlert, PackageX, Banknote, Ban, SearchX } from 'lucide-react';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { useRealtimeFeed } from '@/hooks/use-realtime-feed';
 import { useBranches } from '@/hooks/queries/use-branches';
@@ -25,6 +25,7 @@ const ALERT_EVENTS = [
   SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK,
   SOCKET_EVENTS.CASH_VARIANCE_FLAGGED,
   SOCKET_EVENTS.VOID_REQUESTED,
+  SOCKET_EVENTS.FRAUD_SCAN_FAILED,
 ];
 
 const FEED_MAX_SIZE = 20;
@@ -35,6 +36,7 @@ const ALERT_META: Record<string, { label: string; icon: typeof ShieldAlert; seve
   [SOCKET_EVENTS.INVENTORY_LOW_STOCK]: { label: 'Low stock', icon: PackageX, severity: 'orange' },
   [SOCKET_EVENTS.CASH_VARIANCE_FLAGGED]: { label: 'Cash variance', icon: Banknote, severity: 'orange' },
   [SOCKET_EVENTS.VOID_REQUESTED]: { label: 'Void request', icon: Ban, severity: 'yellow' },
+  [SOCKET_EVENTS.FRAUD_SCAN_FAILED]: { label: 'Fraud scan failed', icon: SearchX, severity: 'red' },
 };
 
 const SEVERITY_CLASSES: Record<'red' | 'orange' | 'yellow', string> = {

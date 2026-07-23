@@ -55,11 +55,6 @@ export function usePriceOverride(id: string | null | undefined) {
   return data?.overrides.find((o) => o.id === id);
 }
 
-/** Keeps pending price-override lists (dashboard KPI, sidebar badge, approvals queue) in sync with submissions from any branch, without a manual refresh. */
-export function usePriceOverrideRealtimeSync(): void {
-  useRealtimeInvalidate([SOCKET_EVENTS.PRICE_OVERRIDE_SUBMITTED], [['price-overrides']]);
-}
-
 export function useSubmitPriceOverride() {
   const queryClient = useQueryClient();
   return useMutation({

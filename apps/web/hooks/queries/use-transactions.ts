@@ -92,7 +92,7 @@ export function useCreateTransaction() {
 export function useTransactionsRealtimeSync(): void {
   useRealtimeInvalidate(
     [SOCKET_EVENTS.TRANSACTION_COMPLETED, SOCKET_EVENTS.VOID_REQUESTED, SOCKET_EVENTS.TRANSACTION_REFUNDED],
-    [['transactions'], ['current-shift']],
+    [['transactions'], ['current-shift'], ['branches']],
   );
 }
 

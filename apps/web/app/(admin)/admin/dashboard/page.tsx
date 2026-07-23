@@ -5,8 +5,12 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats } from '@/hooks/queries/use-branches';
-import { useProductRequests, useProductRequestRealtimeSync } from '@/hooks/queries/use-product-requests';
-import { usePriceOverrides, usePriceOverrideRealtimeSync } from '@/hooks/queries/use-price-overrides';
+import { useProductRequests, useProductRequestsRealtimeSync } from '@/hooks/queries/use-product-requests';
+import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
+import { useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
+import { useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
+import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
@@ -29,14 +33,18 @@ function AdminDashboardPageContent() {
   const isConnected = useSocketStore((s) => s.isConnected);
   const isReconnecting = useSocketStore((s) => s.isReconnecting);
 
-  useShiftsRealtimeSync();
-  useTransactionsRealtimeSync();
-  useProductRequestRealtimeSync();
-  usePriceOverrideRealtimeSync();
-  useBranchRealtimeSync();
-
   const { selectedBranchId } = useSelectedBranch();
   const branchFilter = selectedBranchId === 'all' ? undefined : selectedBranchId;
+
+  useShiftsRealtimeSync();
+  useTransactionsRealtimeSync();
+  useProductRequestsRealtimeSync();
+  usePriceOverridesRealtimeSync();
+  useBranchRealtimeSync();
+  useExpensesRealtimeSync();
+  useAttendanceRealtimeSync();
+  useInventoryRealtimeSync(branchFilter);
+  useAdminInventoryRollupRealtimeSync();
 
   const { data: activeShiftsData, isLoading: isLoadingActiveShifts } = useShifts({
     status: 'active',

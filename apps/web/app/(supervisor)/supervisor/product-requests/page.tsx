@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
-import { useProductRequests } from '@/hooks/queries/use-product-requests';
+import { useProductRequests, useProductRequestsRealtimeSync } from '@/hooks/queries/use-product-requests';
 
 const STATUS_BADGE_VARIANT: Record<string, 'pending' | 'active' | 'critical'> = {
   pending: 'pending',
@@ -21,6 +21,7 @@ const STATUS_BADGE_VARIANT: Record<string, 'pending' | 'active' | 'critical'> = 
 export default function SupervisorProductRequestsPage() {
   const router = useRouter();
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  useProductRequestsRealtimeSync();
   const { data, isLoading, isError, refetch } = useProductRequests({ page: pagination.pageIndex + 1, limit: pagination.pageSize });
 
   const columns: ColumnDef<ProductRequestResponse>[] = [

@@ -69,7 +69,7 @@ function invalidateAttendance(queryClient: ReturnType<typeof useQueryClient>) {
 export function useAttendanceRealtimeSync(): void {
   useRealtimeInvalidate(
     [SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN, SOCKET_EVENTS.ATTENDANCE_CLOCKED_OUT],
-    [['attendance-branch'], ['attendance-employee']],
+    [['attendance-branch'], ['attendance-employee'], ['branches']],
   );
 }
 

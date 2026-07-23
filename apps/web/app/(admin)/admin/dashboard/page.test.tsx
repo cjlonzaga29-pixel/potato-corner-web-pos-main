@@ -11,13 +11,17 @@ const {
   mockUseTransactionsRealtimeSync,
   mockUseBranchRealtimeSync,
   mockUseProductRequests,
-  mockUseProductRequestRealtimeSync,
+  mockUseProductRequestsRealtimeSync,
   mockUsePriceOverrides,
-  mockUsePriceOverrideRealtimeSync,
+  mockUsePriceOverridesRealtimeSync,
   mockUseSocketStore,
   mockUseAdminInventoryRollup,
+  mockUseAdminInventoryRollupRealtimeSync,
   mockUseAllBranchStats,
   mockUseSelectedBranch,
+  mockUseInventoryRealtimeSync,
+  mockUseExpensesRealtimeSync,
+  mockUseAttendanceRealtimeSync,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseShifts: vi.fn(),
@@ -25,13 +29,17 @@ const {
   mockUseTransactionsRealtimeSync: vi.fn(),
   mockUseBranchRealtimeSync: vi.fn(),
   mockUseProductRequests: vi.fn(),
-  mockUseProductRequestRealtimeSync: vi.fn(),
+  mockUseProductRequestsRealtimeSync: vi.fn(),
   mockUsePriceOverrides: vi.fn(),
-  mockUsePriceOverrideRealtimeSync: vi.fn(),
+  mockUsePriceOverridesRealtimeSync: vi.fn(),
   mockUseSocketStore: vi.fn(),
   mockUseAdminInventoryRollup: vi.fn(),
+  mockUseAdminInventoryRollupRealtimeSync: vi.fn(),
   mockUseAllBranchStats: vi.fn(),
   mockUseSelectedBranch: vi.fn(),
+  mockUseInventoryRealtimeSync: vi.fn(),
+  mockUseExpensesRealtimeSync: vi.fn(),
+  mockUseAttendanceRealtimeSync: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -88,16 +96,29 @@ vi.mock('@/components/monitoring/branch-connection-panel', () => ({
 
 vi.mock('@/hooks/queries/use-product-requests', () => ({
   useProductRequests: mockUseProductRequests,
-  useProductRequestRealtimeSync: mockUseProductRequestRealtimeSync,
+  useProductRequestsRealtimeSync: mockUseProductRequestsRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-price-overrides', () => ({
   usePriceOverrides: mockUsePriceOverrides,
-  usePriceOverrideRealtimeSync: mockUsePriceOverrideRealtimeSync,
+  usePriceOverridesRealtimeSync: mockUsePriceOverridesRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-admin-inventory-rollup', () => ({
   useAdminInventoryRollup: mockUseAdminInventoryRollup,
+  useAdminInventoryRollupRealtimeSync: mockUseAdminInventoryRollupRealtimeSync,
+}));
+
+vi.mock('@/hooks/queries/use-inventory', () => ({
+  useInventoryRealtimeSync: mockUseInventoryRealtimeSync,
+}));
+
+vi.mock('@/hooks/queries/use-expenses', () => ({
+  useExpensesRealtimeSync: mockUseExpensesRealtimeSync,
+}));
+
+vi.mock('@/hooks/queries/use-attendance', () => ({
+  useAttendanceRealtimeSync: mockUseAttendanceRealtimeSync,
 }));
 
 vi.mock('@/components/admin/dashboard-trends-section', () => ({
@@ -264,8 +285,8 @@ beforeEach(() => {
   mockUseShiftsRealtimeSync.mockReturnValue(undefined);
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
   mockUseBranchRealtimeSync.mockReturnValue(undefined);
-  mockUseProductRequestRealtimeSync.mockReturnValue(undefined);
-  mockUsePriceOverrideRealtimeSync.mockReturnValue(undefined);
+  mockUseProductRequestsRealtimeSync.mockReturnValue(undefined);
+  mockUsePriceOverridesRealtimeSync.mockReturnValue(undefined);
   mockShiftsData([], []);
   mockProductRequestsData([], 0);
   mockPriceOverridesData([], 0);
@@ -387,8 +408,8 @@ describe('AdminDashboardPage', () => {
     render(<AdminDashboardPage />);
     expect(mockUseShiftsRealtimeSync).toHaveBeenCalled();
     expect(mockUseTransactionsRealtimeSync).toHaveBeenCalled();
-    expect(mockUseProductRequestRealtimeSync).toHaveBeenCalled();
-    expect(mockUsePriceOverrideRealtimeSync).toHaveBeenCalled();
+    expect(mockUseProductRequestsRealtimeSync).toHaveBeenCalled();
+    expect(mockUsePriceOverridesRealtimeSync).toHaveBeenCalled();
     expect(mockUseBranchRealtimeSync).toHaveBeenCalled();
   });
 

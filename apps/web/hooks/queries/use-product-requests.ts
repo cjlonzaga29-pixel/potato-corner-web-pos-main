@@ -63,11 +63,6 @@ export function useProductRequest(id: string | null | undefined) {
   });
 }
 
-/** Keeps pending product-request lists (dashboard KPI, sidebar badge, approvals queue) in sync with submissions from any branch, without a manual refresh. */
-export function useProductRequestRealtimeSync(): void {
-  useRealtimeInvalidate([SOCKET_EVENTS.PRODUCT_REQUEST_SUBMITTED], [['product-requests']]);
-}
-
 export function useSubmitProductRequest() {
   const queryClient = useQueryClient();
   return useMutation({

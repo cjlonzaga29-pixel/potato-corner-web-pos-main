@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatCurrency } from '@/lib/utils';
-import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
+import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
 import { ReviewPriceOverrideDialog } from '@/components/admin/approvals/review-price-override-dialog';
 
 const STATUS_FILTERS = [
@@ -29,6 +29,8 @@ export default function PriceOverridesApprovalPage() {
   const [status, setStatus] = useState<string>('pending');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [reviewing, setReviewing] = useState<PriceOverrideResponse | null>(null);
+
+  usePriceOverridesRealtimeSync();
 
   const { data, isLoading, isError, refetch } = usePriceOverrides({
     status: status === 'all' ? undefined : (status as 'pending' | 'approved' | 'rejected'),

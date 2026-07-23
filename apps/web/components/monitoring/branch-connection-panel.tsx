@@ -74,14 +74,14 @@ export function BranchConnectionPanel() {
           </div>
         ) : (
           <>
-            <div className="max-h-64 space-y-1 overflow-y-auto">
+            <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
               {branches.map((branch) => {
                 const lastSeen = lastSeenByBranch.get(branch.id);
                 const status = !lastSeen ? 'Never seen' : now - lastSeen < ACTIVE_WINDOW_MS ? 'Active' : 'Idle';
                 const dot = status === 'Active' ? '🟢' : status === 'Idle' ? '⚪' : '🔴';
                 return (
-                  <div key={branch.id} className="flex items-center justify-between rounded-md border px-3 py-1.5 text-sm">
-                    <span className="truncate">{branch.name}</span>
+                  <div key={branch.id} className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{branch.name}</span>
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {dot} {status}
                     </span>

@@ -94,9 +94,9 @@ export function GcashQrUploader({ file, onFileChange, disabled }: GcashQrUploade
       </div>
 
       {file && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="truncate text-muted-foreground">{file.name}</span>
-          <Button variant="ghost" size="sm" disabled={disabled} onClick={() => onFileChange(null)}>
+        <div className="flex items-center justify-between gap-2 text-sm">
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{file.name}</span>
+          <Button variant="ghost" size="sm" disabled={disabled} onClick={() => onFileChange(null)} className="shrink-0">
             <X className="mr-1 h-3 w-3" />
             Remove
           </Button>

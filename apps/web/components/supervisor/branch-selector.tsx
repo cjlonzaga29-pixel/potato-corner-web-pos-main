@@ -54,17 +54,17 @@ export function BranchSelector() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="w-full justify-between">
-          <span className="truncate">{selected?.name ?? 'Select branch'}</span>
+        <Button variant="outline" size="sm" className="w-full min-w-0 justify-between">
+          <span className="min-w-0 flex-1 truncate text-left">{selected?.name ?? 'Select branch'}</span>
           <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         {branches.map((branch) => (
           <DropdownMenuItem key={branch.id} onClick={() => handleSelect(branch as BranchResponse)}>
-            <div className="flex flex-col">
-              <span>{branch.name}</span>
-              <span className="text-xs text-muted-foreground">{branch.code}</span>
+            <div className="flex min-w-0 w-full flex-col">
+              <span className="truncate">{branch.name}</span>
+              <span className="truncate text-xs text-muted-foreground">{branch.code}</span>
             </div>
           </DropdownMenuItem>
         ))}

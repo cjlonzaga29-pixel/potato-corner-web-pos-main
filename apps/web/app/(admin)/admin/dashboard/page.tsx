@@ -97,7 +97,7 @@ function AdminDashboardPageContent() {
           <h1 className="text-2xl font-bold tracking-tight">Super Admin Dashboard</h1>
           <p className="text-sm text-muted-foreground">Live overview across every branch.</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <BranchSelector />
           <span
             title={connectionLabel}

@@ -25,10 +25,10 @@ interface KpiCardProps {
 }
 
 const TREND_ICONS = { up: ArrowUp, down: ArrowDown, neutral: Minus } as const;
-const TREND_COLORS = {
-  up: 'text-green-600 dark:text-green-400',
-  down: 'text-red-600 dark:text-red-400',
-  neutral: 'text-muted-foreground',
+const TREND_BADGE = {
+  up: 'bg-green-500/10 text-green-600 dark:text-green-400',
+  down: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  neutral: 'bg-muted text-muted-foreground',
 } as const;
 const TONE_BORDER = {
   default: '',
@@ -43,6 +43,13 @@ const TONE_TEXT = {
   danger: 'text-red-700 dark:text-red-500',
   positive: 'text-green-700 dark:text-green-500',
   negative: 'text-red-700 dark:text-red-500',
+} as const;
+const TONE_ICON_CHIP = {
+  default: 'bg-primary/10 text-primary',
+  warning: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-500',
+  danger: 'bg-red-500/10 text-red-600 dark:text-red-500',
+  positive: 'bg-green-500/10 text-green-600 dark:text-green-500',
+  negative: 'bg-red-500/10 text-red-600 dark:text-red-500',
 } as const;
 
 /**
@@ -69,7 +76,7 @@ export function KpiCard({
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <Skeleton className="h-4 w-24" />
-          {Icon && <Skeleton className="h-4 w-4 rounded-full" />}
+          {Icon && <Skeleton className="h-9 w-9 rounded-xl" />}
         </CardHeader>
         <CardContent>
           <Skeleton className={cn('w-32', emphasize ? 'h-9' : 'h-8')} />
@@ -84,7 +91,7 @@ export function KpiCard({
   const percentageChange = previousValue !== undefined ? calculatePercentageChange(value, previousValue) : null;
 
   return (
-    <Card className={cn(tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`)}>
+    <Card className={cn('hover-elevate', tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`)}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
           {title}
@@ -99,7 +106,11 @@ export function KpiCard({
             </TooltipProvider>
           )}
         </CardTitle>
-        {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
+        {Icon && (
+          <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl', TONE_ICON_CHIP[tone])}>
+            <Icon className="h-4 w-4" />
+          </div>
+        )}
       </CardHeader>
       <CardContent>
         <div className={cn(emphasize ? 'text-3xl' : 'text-2xl', 'font-bold', TONE_TEXT[tone])}>
@@ -108,11 +119,13 @@ export function KpiCard({
           {suffix}
         </div>
         {resolvedTrend && TrendIcon && (
-          <p className={cn('mt-1 flex items-center gap-1 text-xs', TREND_COLORS[resolvedTrend])}>
-            <TrendIcon className="h-3 w-3" />
-            {percentageChange !== null && `${Math.abs(percentageChange).toFixed(1)}%`}
-            {trendLabel && <span className="text-muted-foreground">{trendLabel}</span>}
-          </p>
+          <div className="mt-2 flex items-center gap-1.5">
+            <span className={cn('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium', TREND_BADGE[resolvedTrend])}>
+              <TrendIcon className="h-3 w-3" />
+              {percentageChange !== null && `${Math.abs(percentageChange).toFixed(1)}%`}
+            </span>
+            {trendLabel && <span className="text-xs text-muted-foreground">{trendLabel}</span>}
+          </div>
         )}
       </CardContent>
     </Card>

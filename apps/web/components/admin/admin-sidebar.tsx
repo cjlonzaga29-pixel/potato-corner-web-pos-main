@@ -35,7 +35,7 @@ import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { NotificationBellConnected } from '@/components/shared/notification-bell-connected';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 
 /**
@@ -44,7 +44,7 @@ import { NavLinkIcon } from '@/components/shared/nav-link-icon';
  * ROLE_PATH_OWNERSHIP), not the shorthand "/dashboard"-style paths — the
  * real routes are prefixed with /admin.
  */
-const NAV_ITEMS = [
+export const ADMIN_NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
@@ -74,7 +74,20 @@ const NAV_ITEMS = [
     ],
   },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
-];
+] satisfies ReadonlyArray<{
+  label: string;
+  icon: typeof LayoutDashboard;
+  href?: string;
+  children?: ReadonlyArray<{ label: string; href: string; icon: typeof LayoutDashboard }>;
+}>;
+
+/** Purely presentational grouping — a section label rendered above the nav item whose `label` is used as the key. */
+const SECTION_LABELS: Record<string, string> = {
+  Dashboard: 'Overview',
+  Branches: 'Management',
+  Employees: 'People',
+  Settings: 'System',
+};
 
 export function AdminSidebar() {
   const pathname = usePathname();
@@ -117,7 +130,6 @@ export function AdminSidebar() {
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
-          <NotificationBellConnected />
           <Button
             variant="ghost"
             size="icon"
@@ -131,33 +143,51 @@ export function AdminSidebar() {
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-2">
-        {NAV_ITEMS.map((item) => {
+        <TooltipProvider delayDuration={200}>
+        {ADMIN_NAV_ITEMS.map((item) => {
+          const sectionLabel = SECTION_LABELS[item.label];
+          const sectionHeading = sectionLabel && !collapsed ? (
+            <p className="mb-1 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 first:mt-1">
+              {sectionLabel}
+            </p>
+          ) : null;
+
           if (item.children) {
             const childActive = item.children.some(
               (child) => pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`),
             );
             const isOpen = openGroups[item.label] ?? childActive;
+            const groupButton = (
+              <button
+                type="button"
+                onClick={() => setOpenGroups((prev) => ({ ...prev, [item.label]: !isOpen }))}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                  childActive
+                    ? 'bg-primary/12 text-primary shadow-[inset_2px_0_0_0_hsl(var(--primary))]'
+                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                )}
+              >
+                <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                {!collapsed && (
+                  <>
+                    <span className="flex-1 truncate text-left">{item.label}</span>
+                    <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', isOpen && 'rotate-180')} />
+                  </>
+                )}
+              </button>
+            );
             return (
               <div key={item.label}>
-                <button
-                  type="button"
-                  title={collapsed ? item.label : undefined}
-                  onClick={() => setOpenGroups((prev) => ({ ...prev, [item.label]: !isOpen }))}
-                  className={cn(
-                    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
-                    childActive
-                      ? 'bg-primary/12 text-primary shadow-[inset_2px_0_0_0_hsl(var(--primary))]'
-                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-                  )}
-                >
-                  <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
-                  {!collapsed && (
-                    <>
-                      <span className="flex-1 truncate text-left">{item.label}</span>
-                      <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', isOpen && 'rotate-180')} />
-                    </>
-                  )}
-                </button>
+                {sectionHeading}
+                {collapsed ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>{groupButton}</TooltipTrigger>
+                    <TooltipContent side="right">{item.label}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  groupButton
+                )}
                 {isOpen && !collapsed && (
                   <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-2">
                     {item.children.map((child) => {
@@ -192,11 +222,9 @@ export function AdminSidebar() {
 
           const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           const count = badgeCounts[item.href] ?? 0;
-          return (
+          const link = (
             <Link
-              key={item.href}
               href={item.href}
-              title={collapsed ? item.label : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                 isActive
@@ -213,7 +241,21 @@ export function AdminSidebar() {
               )}
             </Link>
           );
+          return (
+            <div key={item.href}>
+              {sectionHeading}
+              {collapsed ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right">{item.label}</TooltipContent>
+                </Tooltip>
+              ) : (
+                link
+              )}
+            </div>
+          );
         })}
+        </TooltipProvider>
       </nav>
 
       <div className="border-t border-border/60 p-3">

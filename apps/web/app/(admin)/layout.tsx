@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { AdminSidebar } from '@/components/admin/admin-sidebar';
+import { AdminHeader } from '@/components/admin/admin-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
 
 /**
@@ -15,7 +16,10 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <div className="flex h-screen overflow-hidden bg-background">
       <SocketInitializer />
       <AdminSidebar />
-      <main className="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AdminHeader />
+        <main className="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
+      </div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import type { BranchResponse, PriceOverrideResponse, ProductRequestResponse, ShiftResponse } from '@potato-corner/shared';
+import type { PriceOverrideResponse, ProductRequestResponse, ShiftResponse } from '@potato-corner/shared';
 import AdminDashboardPage from './page';
 
 const {
@@ -9,7 +9,6 @@ const {
   mockUseShifts,
   mockUseShiftsRealtimeSync,
   mockUseTransactionsRealtimeSync,
-  mockUseBranches,
   mockUseBranchRealtimeSync,
   mockUseProductRequests,
   mockUseProductRequestRealtimeSync,
@@ -24,7 +23,6 @@ const {
   mockUseShifts: vi.fn(),
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
-  mockUseBranches: vi.fn(),
   mockUseBranchRealtimeSync: vi.fn(),
   mockUseProductRequests: vi.fn(),
   mockUseProductRequestRealtimeSync: vi.fn(),
@@ -68,9 +66,24 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
 }));
 
 vi.mock('@/hooks/queries/use-branches', () => ({
-  useBranches: mockUseBranches,
   useBranchRealtimeSync: mockUseBranchRealtimeSync,
   useAllBranchStats: mockUseAllBranchStats,
+}));
+
+vi.mock('@/components/monitoring/live-transaction-feed', () => ({
+  LiveTransactionFeed: () => <div>Live Transaction Feed</div>,
+}));
+
+vi.mock('@/components/monitoring/active-cashiers-panel', () => ({
+  ActiveCashiersPanel: () => <div>Active Cashiers Panel</div>,
+}));
+
+vi.mock('@/components/monitoring/live-alerts-stream', () => ({
+  LiveAlertsStream: () => <div>Live Alerts Stream</div>,
+}));
+
+vi.mock('@/components/monitoring/branch-connection-panel', () => ({
+  BranchConnectionPanel: () => <div>Branch Connection Panel</div>,
 }));
 
 vi.mock('@/hooks/queries/use-product-requests', () => ({
@@ -85,6 +98,10 @@ vi.mock('@/hooks/queries/use-price-overrides', () => ({
 
 vi.mock('@/hooks/queries/use-admin-inventory-rollup', () => ({
   useAdminInventoryRollup: mockUseAdminInventoryRollup,
+}));
+
+vi.mock('@/components/admin/dashboard-trends-section', () => ({
+  DashboardTrendsSection: () => <div>Dashboard Trends Section</div>,
 }));
 
 /**
@@ -142,28 +159,6 @@ function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
     shift_notes: null,
     started_at: '2026-07-16T02:32:00.000Z',
     closed_at: null,
-    ...overrides,
-  };
-}
-
-function branch(overrides: Partial<BranchResponse> = {}): BranchResponse {
-  return {
-    id: 'branch-1',
-    name: 'Manila Branch',
-    code: 'PC-MNL-001',
-    address: '123 Rizal Ave',
-    city: 'Manila',
-    gpsLatitude: 14.5995,
-    gpsLongitude: 120.9842,
-    gpsRadiusMeters: 100,
-    status: 'active',
-    gcashQrUrl: null,
-    gcashQrKey: null,
-    activeSupervisorCount: 1,
-    activeStaffCount: 5,
-    currentStatusLabel: 'Active',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
 }
@@ -261,7 +256,6 @@ beforeEach(() => {
   mockShiftsData([], []);
   mockProductRequestsData([], 0);
   mockPriceOverridesData([], 0);
-  mockUseBranches.mockReturnValue({ data: { branches: [], total: 0, page: 1, limit: 100 }, isLoading: false });
   mockUseAllBranchStats.mockReturnValue({ data: [], isLoading: false, isError: false });
   mockUseSelectedBranch.mockReturnValue({
     selectedBranchId: 'all',
@@ -288,7 +282,6 @@ describe('AdminDashboardPage', () => {
     mockShiftsData([], [], true);
     mockProductRequestsData([], 0, true);
     mockPriceOverridesData([], 0, true);
-    mockUseBranches.mockReturnValue({ data: undefined, isLoading: true });
 
     const { container } = render(<AdminDashboardPage />);
 
@@ -330,26 +323,6 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  it('renders the branch grid with branch names and status badges', () => {
-    mockUseBranches.mockReturnValue({
-      data: { branches: [branch({ id: 'b1', name: 'Manila Branch', status: 'active' })], total: 1, page: 1, limit: 100 },
-      isLoading: false,
-    });
-    render(<AdminDashboardPage />);
-    expect(screen.getByText('Manila Branch')).toBeInTheDocument();
-    expect(screen.getByText('Active')).toBeInTheDocument();
-  });
-
-  it('renders a flagged warning on a branch card when the branch has a flagged shift', () => {
-    mockUseBranches.mockReturnValue({
-      data: { branches: [branch({ id: 'b1', name: 'Manila Branch' })], total: 1, page: 1, limit: 100 },
-      isLoading: false,
-    });
-    mockShiftsData([], [shift({ id: 's1', branch_id: 'b1', status: 'flagged' })]);
-    render(<AdminDashboardPage />);
-    expect(screen.getByText('Shift flagged')).toBeInTheDocument();
-  });
-
   it('renders the pending product requests list with branch_name and proposed_name', () => {
     mockProductRequestsData([productRequest({ branch_name: 'Manila Branch', proposed_name: 'Cheese Overload' })], 1);
     render(<AdminDashboardPage />);
@@ -377,10 +350,22 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('No pending price overrides')).toBeInTheDocument();
   });
 
-  it('renders shortcut cards linking to /admin/branches and /admin/attendance', () => {
+  it('renders shortcut cards linking to inventory reports and /admin/attendance', () => {
     render(<AdminDashboardPage />);
-    expect(screen.getByText('Inventory Alerts').closest('a')).toHaveAttribute('href', '/admin/branches');
+    expect(screen.getByText('Inventory Alerts').closest('a')).toHaveAttribute(
+      'href',
+      '/admin/reports?tab=INVENTORY_VALUATION',
+    );
     expect(screen.getByText('Attendance').closest('a')).toHaveAttribute('href', '/admin/attendance');
+  });
+
+  it('renders the Live Activity section with the embedded monitoring panels', () => {
+    render(<AdminDashboardPage />);
+    expect(screen.getByText('Live Activity')).toBeInTheDocument();
+    expect(screen.getByText('Live Transaction Feed')).toBeInTheDocument();
+    expect(screen.getByText('Active Cashiers Panel')).toBeInTheDocument();
+    expect(screen.getByText('Live Alerts Stream')).toBeInTheDocument();
+    expect(screen.getByText('Branch Connection Panel')).toBeInTheDocument();
   });
 
   it('renders a green connection indicator when connected', () => {

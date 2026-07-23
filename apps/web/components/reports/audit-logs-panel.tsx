@@ -16,29 +16,29 @@ const DEFAULT_PAGE_SIZE = 25;
 
 const columns = createAuditLogColumns();
 
-function AuditLogsPageContent() {
+function AuditLogsPanelContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const branchId = searchParams.get('branch_id') ?? ALL_BRANCHES;
-  const dateFrom = searchParams.get('date_from') ?? '';
-  const dateTo = searchParams.get('date_to') ?? '';
-  const action = searchParams.get('action') ?? '';
-  const entityType = searchParams.get('entity_type') ?? '';
-  const page = Number(searchParams.get('page') ?? '1') || 1;
-  const pageSize = Number(searchParams.get('limit') ?? String(DEFAULT_PAGE_SIZE)) || DEFAULT_PAGE_SIZE;
+  const branchId = searchParams.get('audit_branch_id') ?? ALL_BRANCHES;
+  const dateFrom = searchParams.get('audit_date_from') ?? '';
+  const dateTo = searchParams.get('audit_date_to') ?? '';
+  const action = searchParams.get('audit_action') ?? '';
+  const entityType = searchParams.get('audit_entity_type') ?? '';
+  const page = Number(searchParams.get('audit_page') ?? '1') || 1;
+  const pageSize = Number(searchParams.get('audit_limit') ?? String(DEFAULT_PAGE_SIZE)) || DEFAULT_PAGE_SIZE;
 
   const pagination: PaginationState = { pageIndex: Math.max(page - 1, 0), pageSize };
 
-  /** Pushes URL param updates (shallow, no scroll jump) — the URL is the single source of truth for every filter and the pagination state. */
+  /** Namespaced with an `audit_` prefix so this panel's filters don't collide with the parent Reports page's own params. */
   function pushParams(updates: Record<string, string | null>, resetPage: boolean) {
     const params = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === 'all') params.delete(key);
       else params.set(key, value);
     }
-    if (resetPage) params.set('page', '1');
+    if (resetPage) params.set('audit_page', '1');
     const query = params.toString();
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
@@ -59,19 +59,32 @@ function AuditLogsPageContent() {
     branchId !== ALL_BRANCHES || dateFrom !== '' || dateTo !== '' || action !== '' || entityType !== '';
 
   function clearFilters() {
-    router.push(pathname, { scroll: false });
+    const params = new URLSearchParams(searchParams.toString());
+    for (const key of ['audit_branch_id', 'audit_date_from', 'audit_date_to', 'audit_action', 'audit_entity_type', 'audit_page', 'audit_limit']) {
+      params.delete(key);
+    }
+    const query = params.toString();
+    router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Audit Logs</h1>
-        <p className="text-sm text-muted-foreground">Review system activity and record changes</p>
-      </div>
+    <div className="space-y-4">
+      <h3 className="text-base font-semibold">System Activity</h3>
 
       <AuditLogFilterBar
         filters={{ branchId, dateFrom, dateTo, action, entityType }}
-        onChange={(updates) => pushParams(updates, true)}
+        onChange={(updates) =>
+          pushParams(
+            {
+              audit_branch_id: updates.branch_id ?? null,
+              audit_date_from: updates.date_from ?? null,
+              audit_date_to: updates.date_to ?? null,
+              audit_action: updates.action ?? null,
+              audit_entity_type: updates.entity_type ?? null,
+            },
+            true,
+          )
+        }
       />
 
       <DataTable
@@ -82,7 +95,7 @@ function AuditLogsPageContent() {
         onRetry={() => void refetch()}
         pagination={pagination}
         onPaginationChange={(next) =>
-          pushParams({ page: String(next.pageIndex + 1), limit: String(next.pageSize) }, false)
+          pushParams({ audit_page: String(next.pageIndex + 1), audit_limit: String(next.pageSize) }, false)
         }
         rowCount={data?.total ?? 0}
         emptyState={
@@ -106,10 +119,10 @@ function AuditLogsPageContent() {
   );
 }
 
-export default function AuditLogsPage() {
+export function AuditLogsPanel() {
   return (
     <Suspense fallback={<div>Loading audit logs...</div>}>
-      <AuditLogsPageContent />
+      <AuditLogsPanelContent />
     </Suspense>
   );
 }

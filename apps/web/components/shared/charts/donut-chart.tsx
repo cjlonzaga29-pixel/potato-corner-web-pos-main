@@ -15,10 +15,11 @@ interface DonutChartProps {
   height?: number;
   showLegend?: boolean;
   centerLabel?: string;
+  animate?: boolean;
 }
 
 /** Wrapper around Recharts PieChart configured as a donut — used for payment method breakdown and category performance. */
-export function DonutChart({ data, height = CHART_DEFAULT_HEIGHT, showLegend = true, centerLabel }: DonutChartProps) {
+export function DonutChart({ data, height = CHART_DEFAULT_HEIGHT, showLegend = true, centerLabel, animate = true }: DonutChartProps) {
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
   }
@@ -29,7 +30,15 @@ export function DonutChart({ data, height = CHART_DEFAULT_HEIGHT, showLegend = t
     <div className="relative" style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
-          <Pie data={data} dataKey="value" nameKey="name" innerRadius="60%" outerRadius="85%" paddingAngle={2}>
+          <Pie
+            data={data}
+            dataKey="value"
+            nameKey="name"
+            innerRadius="60%"
+            outerRadius="85%"
+            paddingAngle={2}
+            isAnimationActive={animate}
+          >
             {data.map((entry) => (
               <Cell key={entry.name} fill={entry.color} />
             ))}

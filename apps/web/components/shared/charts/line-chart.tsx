@@ -18,6 +18,7 @@ interface LineChartProps {
   showGrid?: boolean;
   showTooltip?: boolean;
   showLegend?: boolean;
+  animate?: boolean;
 }
 
 /** Wrapper around Recharts LineChart — used for hourly sales and trend charts on dashboards. */
@@ -29,6 +30,7 @@ export function LineChart({
   showGrid = true,
   showTooltip = true,
   showLegend = false,
+  animate = true,
 }: LineChartProps) {
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
@@ -51,6 +53,7 @@ export function LineChart({
             stroke={line.color}
             strokeWidth={2}
             dot={false}
+            isAnimationActive={animate}
           />
         ))}
       </RechartsLineChart>

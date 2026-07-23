@@ -46,7 +46,7 @@ interface ResetPasswordDialogProps {
   employee: EmployeeResponse;
 }
 
-export function ResetPasswordDialog({ open, onOpenChange, employee }: ResetPasswordDialogProps) {
+export function SupervisorResetPasswordDialog({ open, onOpenChange, employee }: ResetPasswordDialogProps) {
   const [showPassword, setShowPassword] = useState(false);
   const resetPassword = useResetEmployeePassword(employee.id);
   const form = useForm<FormValues>({

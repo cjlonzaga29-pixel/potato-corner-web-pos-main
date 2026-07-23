@@ -24,7 +24,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { TEST_USERS } from './fixtures/test-users';
-import { apiLogin, authedGet, authedPost } from './fixtures/api-helpers';
+import { apiLogin, authedGet, authedPost, createProductViaRequest } from './fixtures/api-helpers';
 
 const OFFLINE_PRODUCT = { name: 'E2E Offline Item', variantName: 'Standard', price: 40.0 };
 
@@ -34,26 +34,24 @@ let shiftId: string;
 test.beforeAll(async ({ request, baseURL }) => {
   const url = baseURL ?? 'http://localhost:3000';
   const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
+  const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
 
   const branches = await authedGet<{ branches: { id: string; code: string }[] }>(request, '/api/branches', admin.accessToken);
   const branch = branches.data?.branches.find((b) => b.code === 'MAIN01');
   if (!branch) throw new Error('Seeded "Main Branch" (MAIN01) not found — run apps/api/prisma/seed.ts first');
   branchId = branch.id;
 
-  const product = await authedPost<{ id: string }>(request, url, '/api/products', admin.accessToken, {
-    name: OFFLINE_PRODUCT.name,
-    status: 'active',
-    category: 'E2E',
-    branch_exclusive: false,
-  });
-  if (!product.data?.id) throw new Error(`Failed to create offline test product: ${JSON.stringify(product.error)}`);
-  await authedPost(request, url, `/api/products/${product.data.id}/variants`, admin.accessToken, {
-    name: OFFLINE_PRODUCT.variantName,
-    size_label: 'Regular',
-    base_price: OFFLINE_PRODUCT.price,
+  // Direct POST /api/products was removed in the Super Admin IA restructure
+  // — products are seeded via the real supervisor request + admin approval
+  // flow now, same as production.
+  await createProductViaRequest(request, url, {
+    branchId,
+    supervisorAccessToken: supervisor.accessToken,
+    adminAccessToken: admin.accessToken,
+    proposedName: OFFLINE_PRODUCT.name,
+    variants: [{ name: OFFLINE_PRODUCT.variantName, size_label: 'Regular', base_price: OFFLINE_PRODUCT.price }],
   });
 
-  const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
   const shift = await authedPost<{ id: string }>(request, url, '/api/cash/open', supervisor.accessToken, {
     branch_id: branchId,
     cashier_id: supervisor.userId,

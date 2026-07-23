@@ -19,10 +19,6 @@ import { useEmployee, useEmployeeActivity } from '@/hooks/queries/use-employees'
 import { useAuditLogs } from '@/hooks/queries/use-audit-logs';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { EditEmployeeDialog } from '@/components/admin/employees/edit-employee-dialog';
-import { DeactivateEmployeeDialog } from '@/components/admin/employees/deactivate-employee-dialog';
-import { ResetPasswordDialog } from '@/components/admin/employees/reset-password-dialog';
-import { AssignmentManagerDialog } from '@/components/admin/employees/assignment-manager-dialog';
 import { PayrollDataDialog } from '@/components/admin/employees/payroll-data-dialog';
 
 interface EmployeeDetailPageProps {
@@ -33,10 +29,6 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
   const { employeeId } = use(params);
   const { data: employee, isLoading, isError, refetch } = useEmployee(employeeId);
 
-  const [editOpen, setEditOpen] = useState(false);
-  const [deactivateOpen, setDeactivateOpen] = useState(false);
-  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
-  const [assignmentsOpen, setAssignmentsOpen] = useState(false);
   const [payrollOpen, setPayrollOpen] = useState(false);
 
   if (isLoading) {
@@ -88,14 +80,9 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
 
         <TabsContent value="profile" className="space-y-4">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="text-base">Contact & Employment</CardTitle>
-                <CardDescription>Basic profile information.</CardDescription>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-                Edit
-              </Button>
+            <CardHeader>
+              <CardTitle className="text-base">Contact & Employment</CardTitle>
+              <CardDescription>Basic profile information. Edit from the Supervisor console.</CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 text-sm">
               <div>
@@ -142,14 +129,9 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
 
         <TabsContent value="assignments" className="space-y-4">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="text-base">Branch Assignments</CardTitle>
-                <CardDescription>Branches this employee currently has access to.</CardDescription>
-              </div>
-              <Button size="sm" onClick={() => setAssignmentsOpen(true)}>
-                Manage Assignments
-              </Button>
+            <CardHeader>
+              <CardTitle className="text-base">Branch Assignments</CardTitle>
+              <CardDescription>Branches this employee currently has access to. Manage from the Supervisor console.</CardDescription>
             </CardHeader>
             <CardContent>
               {employee.branch_assignments.length === 0 ? (
@@ -188,18 +170,9 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
                   {employee.must_change_password ? 'Yes' : 'No'}
                 </Badge>
               </div>
-              <Button variant="outline" onClick={() => setResetPasswordOpen(true)}>
-                Reset Password
-              </Button>
-              {employee.is_active ? (
-                <Button variant="danger" onClick={() => setDeactivateOpen(true)}>
-                  Deactivate Employee
-                </Button>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  This employee is deactivated. Reactivate from the employee list.
-                </p>
-              )}
+              <p className="text-sm text-muted-foreground">
+                Password resets and activation status changes are managed from the Supervisor console.
+              </p>
             </CardContent>
           </Card>
 
@@ -212,10 +185,6 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
         </TabsContent>
       </Tabs>
 
-      <EditEmployeeDialog open={editOpen} onOpenChange={setEditOpen} employee={employee} />
-      <DeactivateEmployeeDialog open={deactivateOpen} onOpenChange={setDeactivateOpen} employee={employee} />
-      <ResetPasswordDialog open={resetPasswordOpen} onOpenChange={setResetPasswordOpen} employee={employee} />
-      <AssignmentManagerDialog open={assignmentsOpen} onOpenChange={setAssignmentsOpen} employee={employee} />
       <RoleGuard allowedRoles={['super_admin']}>
         <PayrollDataDialog open={payrollOpen} onOpenChange={setPayrollOpen} employee={employee} />
       </RoleGuard>
@@ -254,7 +223,7 @@ function ActivityTab({ employeeId }: { employeeId: string }) {
         <StatTile
           label="Open Fraud Alerts"
           value={String(activity.open_fraud_alerts_count)}
-          href={activity.open_fraud_alerts_count > 0 ? '/admin/fraud-alerts' : undefined}
+          href={activity.open_fraud_alerts_count > 0 ? '/admin/reports?tab=FRAUD_ALERT_SUMMARY' : undefined}
         />
       </div>
       <Card>

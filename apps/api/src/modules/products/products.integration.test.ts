@@ -23,33 +23,12 @@ describe.skipIf(!canRunIntegrationTests)('products integration', () => {
     // Prisma connection opened for this suite.
   });
 
-  it('POST /api/products creates a product as super_admin', async () => {
-    // TODO: POST /api/products as super_admin with status "draft"; assert
-    // 201 and response.data.status === 'draft'.
-    expect(true).toBe(true);
-  });
-
-  it('POST /api/products with a supervisor token returns 403 USE_PRODUCT_REQUEST (CR-001)', async () => {
-    // TODO: POST /api/products as the seeded supervisor; assert 403 with
-    // error.code === 'USE_PRODUCT_REQUEST' (not the generic
-    // INSUFFICIENT_PERMISSIONS — CR-001 requires this specific code so the
-    // client can redirect the supervisor to the product-requests flow).
-    expect(true).toBe(true);
-  });
-
-  it('POST /api/products with branch_exclusive false cascades branch_product_availability to every active branch (CR-001)', async () => {
-    // TODO: seed 3 active branches; POST /api/products as super_admin with
-    // branch_exclusive: false; assert a branch_product_availability row
-    // with is_available true exists for all 3 branches.
-    expect(true).toBe(true);
-  });
-
-  it('POST /api/products with branch_exclusive true only creates a row for the exclusive branch (CR-001)', async () => {
-    // TODO: POST /api/products as super_admin with branch_exclusive: true,
-    // exclusive_branch_id: branchA.id; assert exactly one
-    // branch_product_availability row exists, scoped to branchA.
-    expect(true).toBe(true);
-  });
+  // Direct product creation (POST /api/products) was removed in the Super
+  // Admin IA restructure — the only path to a new Product is now a
+  // supervisor's product request approved by an admin (see
+  // product-requests.integration.test.ts). The branch_exclusive
+  // true/false cascade behavior this used to cover is still exercised by
+  // productsRepository.createWithCascade via that approval flow.
 
   it('GET /api/products returns a paginated list', async () => {
     // TODO: GET /api/products as super_admin; assert response.data.products

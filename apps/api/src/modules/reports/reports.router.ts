@@ -83,6 +83,7 @@ realtimeRoute('/void-refund', (f, id, role) => reportsService.getVoidRefundRepor
 realtimeRoute('/discount-compliance', (f, id, role) => reportsService.getDiscountComplianceReport(f, id, role));
 realtimeRoute('/inventory-movement', (f, id, role) => reportsService.getInventoryMovementReport(f, id, role));
 realtimeRoute('/attendance-summary', (f, id, role) => reportsService.getAttendanceSummaryReport(f, id, role));
+realtimeRoute('/payment-method-mix', (f, id, role) => reportsService.getPaymentMethodMixReport(f, id, role));
 
 // ---------- Fraud Alert Summary (real-time, super_admin only, no branchGuard) ----------
 

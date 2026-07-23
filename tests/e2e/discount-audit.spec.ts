@@ -18,18 +18,20 @@ const NAV_TIMEOUT = 30_000;
  * within this file.
  */
 test.describe('Discount audit', () => {
-  test('discount audit page: loads, filters, and exports', async ({ page }) => {
-    await test.step('discount audit page loads and shows seeded rows', async () => {
+  test('discount audit panel: loads, filters, and exports', async ({ page }) => {
+    await test.step('discount audit panel loads and shows seeded rows', async () => {
       await page.goto('/login', { waitUntil: 'networkidle' });
       await page.getByLabel('Email').fill('admin@potatocorner.test');
       await page.getByRole('textbox', { name: 'Password' }).fill('SuperAdmin123');
       await page.getByRole('button', { name: 'Sign in', exact: true }).click();
       await page.waitForURL('**/admin/dashboard', { timeout: NAV_TIMEOUT });
 
-      await page.getByRole('link', { name: 'Discount Audit' }).click();
-      await expect(page).toHaveURL(/\/admin\/discount-audit$/, { timeout: NAV_TIMEOUT });
+      await page.getByRole('link', { name: 'Reports', exact: true }).click();
+      await expect(page).toHaveURL(/\/admin\/reports$/, { timeout: NAV_TIMEOUT });
+      await page.getByRole('tab', { name: 'Discount Compliance' }).click();
+      await expect(page.getByText('Discount Audit Trail')).toBeVisible({ timeout: NAV_TIMEOUT });
 
-      const rows = page.locator('table tbody tr');
+      const rows = page.locator('table').filter({ hasText: 'Receipt #' }).locator('tbody tr');
       await expect(rows.first()).toBeVisible({ timeout: NAV_TIMEOUT });
       expect(await rows.count()).toBeGreaterThanOrEqual(5);
 
@@ -37,7 +39,7 @@ test.describe('Discount audit', () => {
     });
 
     await test.step('filter by discount type narrows results', async () => {
-      const rows = page.locator('table tbody tr');
+      const rows = page.locator('table').filter({ hasText: 'Receipt #' }).locator('tbody tr');
       const countBefore = await rows.count();
 
       await page.getByLabel('Discount Type').click();

@@ -110,6 +110,25 @@ describe('reportsRepository.getDiscountCompliance', () => {
   });
 });
 
+describe('reportsRepository.getPaymentMethodMix', () => {
+  it('groups completed transactions by payment method', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
+      { paymentMethod: 'cash', _count: { _all: 4 }, _sum: { totalAmount: decimal(400) } },
+      { paymentMethod: 'gcash', _count: { _all: 2 }, _sum: { totalAmount: decimal(200) } },
+    ] as never);
+
+    const rows = await reportsRepository.getPaymentMethodMix(baseFilters);
+
+    expect(rows).toEqual([
+      { payment_method: 'cash', transaction_count: 4, total_amount: 400 },
+      { payment_method: 'gcash', transaction_count: 2, total_amount: 200 },
+    ]);
+    expect(prisma.transaction.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({ by: ['paymentMethod'], where: expect.objectContaining({ status: 'completed' }) }),
+    );
+  });
+});
+
 describe('reportsRepository.getFraudAlertSummary', () => {
   it('returns [] gracefully when no alerts exist', async () => {
     vi.mocked(prisma.fraudAlert.findMany).mockResolvedValue([]);

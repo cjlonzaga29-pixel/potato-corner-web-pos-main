@@ -7,6 +7,7 @@ vi.mock('./reports.repository.js', () => ({
     getCashReconciliation: vi.fn(),
     getVoidRefund: vi.fn(),
     getDiscountCompliance: vi.fn(),
+    getPaymentMethodMix: vi.fn(),
     getInventoryMovement: vi.fn(),
     getAttendanceSummary: vi.fn(),
     getFraudAlertSummary: vi.fn(),
@@ -77,6 +78,32 @@ describe('reportsService.getDailySalesReport', () => {
     expect(result.data[0]).toEqual(rows[10]);
     expect(result.total).toBe(30);
     expect(result.page).toBe(2);
+  });
+});
+
+describe('reportsService.getPaymentMethodMixReport', () => {
+  it('defaults to the last 7 days when no date range is given, then writes REPORT_ACCESSED', async () => {
+    vi.mocked(reportsRepository.getPaymentMethodMix).mockResolvedValue([{ payment_method: 'cash', transaction_count: 4, total_amount: 400 }]);
+
+    const result = await reportsService.getPaymentMethodMixReport({ page: 1, limit: 25 }, 'user-1', 'supervisor');
+
+    expect(reportsRepository.getPaymentMethodMix).toHaveBeenCalledWith(
+      expect.objectContaining({ dateFrom: expect.any(Date), dateTo: expect.any(Date) }),
+    );
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'REPORT_ACCESSED', entityType: 'report', entityId: 'PAYMENT_METHOD_MIX', actorId: 'user-1', actorRole: 'supervisor' }),
+    );
+    expect(result).toEqual([{ payment_method: 'cash', transaction_count: 4, total_amount: 400 }]);
+  });
+
+  it('respects an explicit date range instead of applying the 7-day default', async () => {
+    vi.mocked(reportsRepository.getPaymentMethodMix).mockResolvedValue([]);
+    const dateFrom = new Date('2026-06-01T00:00:00.000Z');
+    const dateTo = new Date('2026-06-30T23:59:59.999Z');
+
+    await reportsService.getPaymentMethodMixReport({ dateFrom, dateTo, page: 1, limit: 25 }, 'user-1', 'supervisor');
+
+    expect(reportsRepository.getPaymentMethodMix).toHaveBeenCalledWith(expect.objectContaining({ dateFrom, dateTo }));
   });
 });
 

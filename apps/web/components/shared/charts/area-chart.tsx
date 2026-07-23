@@ -17,6 +17,7 @@ interface AreaChartProps {
   height?: number;
   showGrid?: boolean;
   gradient?: boolean;
+  animate?: boolean;
 }
 
 /** Wrapper around Recharts AreaChart — used for transaction volume trends. */
@@ -27,6 +28,7 @@ export function AreaChart({
   height = CHART_DEFAULT_HEIGHT,
   showGrid = true,
   gradient = true,
+  animate = true,
 }: AreaChartProps) {
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
@@ -59,6 +61,7 @@ export function AreaChart({
             fill={gradient ? `url(#gradient-${area.dataKey})` : area.color}
             fillOpacity={gradient ? 1 : 0.2}
             strokeWidth={2}
+            isAnimationActive={animate}
           />
         ))}
       </RechartsAreaChart>

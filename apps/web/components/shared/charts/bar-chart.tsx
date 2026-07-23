@@ -18,6 +18,7 @@ interface BarChartProps {
   showGrid?: boolean;
   showTooltip?: boolean;
   stacked?: boolean;
+  animate?: boolean;
 }
 
 /** Wrapper around Recharts BarChart — used for daily revenue and branch comparison charts. */
@@ -29,6 +30,7 @@ export function BarChart({
   showGrid = true,
   showTooltip = true,
   stacked = false,
+  animate = true,
 }: BarChartProps) {
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
@@ -50,6 +52,7 @@ export function BarChart({
             fill={bar.color}
             stackId={stacked ? 'stack' : undefined}
             radius={stacked ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+            isAnimationActive={animate}
           />
         ))}
       </RechartsBarChart>

@@ -3,28 +3,15 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { MoreHorizontal, Plus } from 'lucide-react';
 import { ROLE_LABELS, type EmployeeResponse, type EmploymentType, type Role } from '@potato-corner/shared';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatDateTime } from '@/lib/utils';
-import { useEmployees, useReactivateEmployee } from '@/hooks/queries/use-employees';
-import { CreateEmployeeDialog } from '@/components/admin/employees/create-employee-dialog';
-import { EditEmployeeDialog } from '@/components/admin/employees/edit-employee-dialog';
-import { DeactivateEmployeeDialog } from '@/components/admin/employees/deactivate-employee-dialog';
-import { ResetPasswordDialog } from '@/components/admin/employees/reset-password-dialog';
+import { useEmployees } from '@/hooks/queries/use-employees';
 
 const ROLE_FILTERS: { value: string; label: string }[] = [
   { value: 'all', label: 'All Roles' },
@@ -46,27 +33,7 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: 'false', label: 'Inactive' },
 ];
 
-function ReactivateAction({ employeeId }: { employeeId: string }) {
-  const [confirming, setConfirming] = useState(false);
-  const reactivate = useReactivateEmployee(employeeId);
-
-  return (
-    <>
-      <DropdownMenuItem onClick={() => setConfirming(true)}>Reactivate</DropdownMenuItem>
-      <ConfirmDialog
-        open={confirming}
-        onOpenChange={setConfirming}
-        title="Reactivate this employee?"
-        description="They will be required to set a new password on next login."
-        confirmLabel="Reactivate"
-        onConfirm={async () => {
-          await reactivate.mutateAsync();
-        }}
-      />
-    </>
-  );
-}
-
+/** Read-only overview — employee creation and management happen in the Supervisor console. */
 export default function EmployeeListPage() {
   const router = useRouter();
   const [search, setSearch] = useState('');
@@ -74,10 +41,6 @@ export default function EmployeeListPage() {
   const [employmentType, setEmploymentType] = useState('all');
   const [status, setStatus] = useState('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editingEmployee, setEditingEmployee] = useState<EmployeeResponse | null>(null);
-  const [deactivatingEmployee, setDeactivatingEmployee] = useState<EmployeeResponse | null>(null);
-  const [resettingEmployee, setResettingEmployee] = useState<EmployeeResponse | null>(null);
 
   const { data, isLoading, isError, refetch } = useEmployees({
     role: role === 'all' ? undefined : (role as Role),
@@ -127,52 +90,13 @@ export default function EmployeeListPage() {
       header: 'Last Login',
       cell: ({ row }) => (row.original.last_login_at ? formatDateTime(row.original.last_login_at) : 'Never'),
     },
-    {
-      id: 'actions',
-      cell: ({ row }) => {
-        const employee = row.original;
-        return (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={(event) => event.stopPropagation()}
-                aria-label="Employee actions"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
-              <DropdownMenuItem onClick={() => router.push(`/admin/employees/${employee.id}`)}>View</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setEditingEmployee(employee)}>Edit</DropdownMenuItem>
-              {employee.is_active ? (
-                <DropdownMenuItem onClick={() => setDeactivatingEmployee(employee)} className="text-destructive">
-                  Deactivate
-                </DropdownMenuItem>
-              ) : (
-                <ReactivateAction employeeId={employee.id} />
-              )}
-              <DropdownMenuItem onClick={() => setResettingEmployee(employee)}>Reset Password</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        );
-      },
-    },
   ];
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Employee Management</h1>
-          <p className="text-sm text-muted-foreground">Manage employee accounts, branch assignments, and access.</p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create Employee
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Employees</h1>
+        <p className="text-sm text-muted-foreground">Read-only overview across all branches. Creation and management happen in the Supervisor console.</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -251,23 +175,8 @@ export default function EmployeeListPage() {
         onPaginationChange={setPagination}
         rowCount={data?.total ?? 0}
         onRowClick={(employee) => router.push(`/admin/employees/${employee.id}`)}
-        emptyState={<EmptyState title="No employees yet" description="Create your first employee to get started." />}
+        emptyState={<EmptyState title="No employees yet" description="Employees are created in the Supervisor console." />}
       />
-
-      <CreateEmployeeDialog open={createOpen} onOpenChange={setCreateOpen} />
-      {editingEmployee && (
-        <EditEmployeeDialog open onOpenChange={(open) => !open && setEditingEmployee(null)} employee={editingEmployee} />
-      )}
-      {deactivatingEmployee && (
-        <DeactivateEmployeeDialog
-          open
-          onOpenChange={(open) => !open && setDeactivatingEmployee(null)}
-          employee={deactivatingEmployee}
-        />
-      )}
-      {resettingEmployee && (
-        <ResetPasswordDialog open onOpenChange={(open) => !open && setResettingEmployee(null)} employee={resettingEmployee} />
-      )}
     </div>
   );
 }

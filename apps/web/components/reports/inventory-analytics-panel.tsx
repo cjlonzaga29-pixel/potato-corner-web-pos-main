@@ -58,13 +58,13 @@ const reorderColumns: ColumnDef<InventoryReorderRecommendation>[] = [
   { accessorKey: 'recommended_reorder_qty', header: 'Recommended Reorder Qty' },
 ];
 
-function InventoryAnalyticsPageContent() {
+function InventoryAnalyticsPanelContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const branchId = searchParams.get('branch_id') ?? ALL_BRANCHES;
-  const period = (searchParams.get('period') as InventoryAnalyticsPeriod | null) ?? DEFAULT_PERIOD;
+  const branchId = searchParams.get('inv_branch_id') ?? ALL_BRANCHES;
+  const period = (searchParams.get('inv_period') as InventoryAnalyticsPeriod | null) ?? DEFAULT_PERIOD;
 
   function pushParams(updates: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -85,16 +85,13 @@ function InventoryAnalyticsPageContent() {
   });
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Inventory Analytics</h1>
-        <p className="text-sm text-muted-foreground">Fast/slow movers, waste trends, turnover, and reorder recommendations</p>
-      </div>
+    <div className="space-y-4">
+      <h3 className="text-base font-semibold">Fast/Slow Movers, Waste &amp; Reorder Recommendations</h3>
 
       <div className="flex flex-wrap items-end gap-4">
         <div>
           <Label htmlFor="inventory-analytics-branch-filter">Branch</Label>
-          <Select value={branchId} onValueChange={(value) => pushParams({ branch_id: value })}>
+          <Select value={branchId} onValueChange={(value) => pushParams({ inv_branch_id: value })}>
             <SelectTrigger id="inventory-analytics-branch-filter" className="w-[220px]" disabled={isBranchesLoading}>
               <SelectValue />
             </SelectTrigger>
@@ -111,7 +108,7 @@ function InventoryAnalyticsPageContent() {
 
         <div>
           <Label htmlFor="inventory-analytics-period-filter">Period</Label>
-          <Select value={period} onValueChange={(value) => pushParams({ period: value })}>
+          <Select value={period} onValueChange={(value) => pushParams({ inv_period: value })}>
             <SelectTrigger id="inventory-analytics-period-filter" className="w-[180px]">
               <SelectValue />
             </SelectTrigger>
@@ -149,7 +146,7 @@ function InventoryAnalyticsPageContent() {
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div>
-              <h2 className="mb-2 text-lg font-semibold">Fast Movers</h2>
+              <h4 className="mb-2 text-sm font-semibold">Fast Movers</h4>
               <DataTable
                 columns={fastMoverColumns}
                 data={data?.fast_movers ?? []}
@@ -158,7 +155,7 @@ function InventoryAnalyticsPageContent() {
             </div>
 
             <div>
-              <h2 className="mb-2 text-lg font-semibold">Slow Movers</h2>
+              <h4 className="mb-2 text-sm font-semibold">Slow Movers</h4>
               <DataTable
                 columns={slowMoverColumns}
                 data={data?.slow_movers ?? []}
@@ -167,7 +164,7 @@ function InventoryAnalyticsPageContent() {
             </div>
 
             <div>
-              <h2 className="mb-2 text-lg font-semibold">Waste Trends</h2>
+              <h4 className="mb-2 text-sm font-semibold">Waste Trends</h4>
               <LineChart
                 data={(data?.waste_trends ?? []).map((w) => ({ date: w.date, total_waste_cost: w.total_waste_cost }))}
                 lines={[{ dataKey: 'total_waste_cost', color: '#ef4444', name: 'Waste Cost' }]}
@@ -176,7 +173,7 @@ function InventoryAnalyticsPageContent() {
             </div>
 
             <div>
-              <h2 className="mb-2 text-lg font-semibold">Turnover by Branch</h2>
+              <h4 className="mb-2 text-sm font-semibold">Turnover by Branch</h4>
               <BarChart
                 data={(data?.turnover_by_branch ?? []).map((t) => ({ branch_name: t.branch_name, turnover_rate: t.turnover_rate }))}
                 bars={[{ dataKey: 'turnover_rate', color: '#3b82f6', name: 'Turnover Rate' }]}
@@ -185,7 +182,7 @@ function InventoryAnalyticsPageContent() {
             </div>
 
             <div className="lg:col-span-2">
-              <h2 className="mb-2 text-lg font-semibold">Reorder Recommendations</h2>
+              <h4 className="mb-2 text-sm font-semibold">Reorder Recommendations</h4>
               <DataTable
                 columns={reorderColumns}
                 data={data?.reorder_recommendations ?? []}
@@ -199,10 +196,10 @@ function InventoryAnalyticsPageContent() {
   );
 }
 
-export default function InventoryAnalyticsPage() {
+export function InventoryAnalyticsPanel() {
   return (
     <Suspense fallback={<div>Loading inventory analytics...</div>}>
-      <InventoryAnalyticsPageContent />
+      <InventoryAnalyticsPanelContent />
     </Suspense>
   );
 }

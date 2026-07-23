@@ -15,6 +15,7 @@ import {
   type CashReconciliationReportRow,
   type VoidRefundReportRow,
   type DiscountComplianceReportRow,
+  type PaymentMethodMixReportRow,
   type InventoryMovementReportRow,
   type AttendanceSummaryReportRow,
   type FraudAlertSummaryReportRow,
@@ -26,6 +27,7 @@ import {
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useSocket } from '@/hooks/use-socket';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 interface ApiErrorShape {
   error: { code: string; message?: string } | string | null;
@@ -81,6 +83,16 @@ function useRealtimeReport<T>(reportType: ReportType, filters: ReportQueryFilter
 export function useDailySalesReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled && Boolean(filters.branch_id));
 }
+/**
+ * Same endpoint as useDailySalesReport, without its branch_id requirement —
+ * the Reports tab treats DAILY_SALES as branch-scoped-only by product
+ * decision, but the dashboard's org-wide "All my branches" view needs the
+ * admin-only unscoped variant the backend already supports (branchGuard
+ * allows an admin to omit branch_id).
+ */
+export function useDashboardSalesTrendReport(filters: ReportQueryFilters, enabled = true) {
+  return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled);
+}
 export function useShiftSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<ShiftSummaryReportRow>('SHIFT_SUMMARY', filters, enabled && Boolean(filters.branch_id));
 }
@@ -93,6 +105,10 @@ export function useVoidRefundReport(filters: ReportQueryFilters, enabled = true)
 export function useDiscountComplianceReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<DiscountComplianceReportRow>('DISCOUNT_COMPLIANCE', filters, enabled && Boolean(filters.branch_id));
 }
+/** Same endpoint as useDiscountComplianceReport, without its branch_id requirement — see useDashboardSalesTrendReport for why. */
+export function useDashboardDiscountMixReport(filters: ReportQueryFilters, enabled = true) {
+  return useRealtimeReport<DiscountComplianceReportRow>('DISCOUNT_COMPLIANCE', filters, enabled);
+}
 export function useInventoryMovementReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<InventoryMovementReportRow>('INVENTORY_MOVEMENT', filters, enabled && Boolean(filters.branch_id));
 }
@@ -102,6 +118,25 @@ export function useAttendanceSummaryReport(filters: ReportQueryFilters, enabled 
 /** Admin-only report — no branch_id required, so `enabled` is not gated on it. */
 export function useFraudAlertSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<FraudAlertSummaryReportRow>('FRAUD_ALERT_SUMMARY', filters, enabled);
+}
+
+/**
+ * GET /api/reports/payment-method-mix — not a registered ReportType (no CSV
+ * export/snapshot support), so it's fetched directly rather than through
+ * useRealtimeReport, mirroring useInventoryAnalytics. Org-wide when
+ * filters.branch_id is omitted, so `enabled` is not gated on it.
+ */
+export function usePaymentMethodMixReport(filters: ReportQueryFilters, enabled = true) {
+  return useQuery({
+    queryKey: ['reports', 'PAYMENT_METHOD_MIX', filters],
+    queryFn: async () => {
+      const response = await apiClient<PaymentMethodMixReportRow[]>(`/api/reports/payment-method-mix?${buildReportQueryString(filters)}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load payment method mix report'));
+      return response.data;
+    },
+    enabled,
+    staleTime: 60_000,
+  });
 }
 
 const PRECOMPUTED_ENDPOINTS: Record<string, string> = {
@@ -129,6 +164,16 @@ function usePrecomputedReport<T>(reportType: ReportType, branchId: string | unde
 
 export function useProductPerformanceReport(branchId: string | undefined, enabled = true) {
   return usePrecomputedReport<ProductPerformanceReportRow>('PRODUCT_PERFORMANCE', branchId, enabled && Boolean(branchId));
+}
+/**
+ * Same endpoint as useProductPerformanceReport, without its branch_id
+ * requirement — the backend already supports an admin omitting branch_id
+ * for an org-wide snapshot (precomputedReport(reportType, null, ...), same
+ * mechanism BRANCH_COMPARISON uses), the Reports tab just never exercises
+ * that path. The dashboard's org-wide "All my branches" view does.
+ */
+export function useDashboardProductPerformanceReport(branchId: string | undefined, enabled = true) {
+  return usePrecomputedReport<ProductPerformanceReportRow>('PRODUCT_PERFORMANCE', branchId, enabled);
 }
 export function useFlavorPerformanceReport(branchId: string | undefined, enabled = true) {
   return usePrecomputedReport<FlavorPerformanceReportRow>('FLAVOR_PERFORMANCE', branchId, enabled && Boolean(branchId));
@@ -197,4 +242,24 @@ export function useReportsRealtimeSync(onExportReady?: (payload: ExportReadyPayl
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient, onExportReady]);
+}
+
+/**
+ * Keeps dashboard trend/mix charts fresh off the same transaction events the
+ * "Live Activity" feed already reacts to — thin useRealtimeInvalidate
+ * wrapper, same convention as useTransactionsRealtimeSync et al. Distinct
+ * from useReportsRealtimeSync above, which handles export-ready/failed
+ * toasts, not chart data.
+ */
+export function useReportsTrendsRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.TRANSACTION_COMPLETED, SOCKET_EVENTS.TRANSACTION_REFUNDED, SOCKET_EVENTS.VOID_REQUESTED],
+    [
+      ['reports', 'DAILY_SALES'],
+      ['reports', 'BRANCH_COMPARISON'],
+      ['reports', 'PRODUCT_PERFORMANCE'],
+      ['reports', 'DISCOUNT_COMPLIANCE'],
+      ['reports', 'PAYMENT_METHOD_MIX'],
+    ],
+  );
 }

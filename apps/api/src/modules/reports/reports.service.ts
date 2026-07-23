@@ -174,6 +174,21 @@ export const reportsService = {
   getBranchComparisonReport: (branchId: string | null, actorId: string, actorRole: string) =>
     precomputedReport('BRANCH_COMPARISON', branchId, actorId, actorRole),
 
+  async getPaymentMethodMixReport(filters: ReportFilters, actorId: string, actorRole: string) {
+    const resolved = defaultRealtimeFilters(filters);
+    const data = await reportsRepository.getPaymentMethodMix(resolved);
+    await recordAuditLog({
+      action: 'REPORT_ACCESSED',
+      entityType: 'report',
+      entityId: 'PAYMENT_METHOD_MIX',
+      actorId,
+      actorRole,
+      branchId: resolved.branchId ?? null,
+      afterState: { reportType: 'PAYMENT_METHOD_MIX', filters: toWireFilters(resolved) },
+    });
+    return data;
+  },
+
   async getInventoryAnalyticsReport(params: { branchId?: string; period?: '7d' | '30d' | '90d' | '1yr' }, actorId: string, actorRole: string) {
     const period = params.period ?? '30d';
     const { dateFrom, dateTo, periodDays } = inventoryAnalyticsDateRange(period);

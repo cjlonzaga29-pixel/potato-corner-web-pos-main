@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import * as React from 'react';
-import InventoryAnalyticsPage from './page';
+import { InventoryAnalyticsPanel } from './inventory-analytics-panel';
 import type { InventoryAnalyticsReport } from '@potato-corner/shared';
 import type { BranchListResponse } from '@potato-corner/shared';
 
 const { mockPush, mockUsePathname, mockUseSearchParams, mockUseInventoryAnalytics, mockUseBranches } = vi.hoisted(() => ({
   mockPush: vi.fn(),
-  mockUsePathname: vi.fn(() => '/admin/reports/inventory-analytics'),
+  mockUsePathname: vi.fn(() => '/admin/reports'),
   mockUseSearchParams: vi.fn(() => new URLSearchParams()),
   mockUseInventoryAnalytics: vi.fn(),
   mockUseBranches: vi.fn(),
@@ -86,15 +86,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InventoryAnalyticsPage', () => {
+describe('InventoryAnalyticsPanel', () => {
   it('renders a loading skeleton initially', () => {
     mockUseInventoryAnalytics.mockReturnValue({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() });
-    const { container } = render(<InventoryAnalyticsPage />);
+    const { container } = render(<InventoryAnalyticsPanel />);
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
   });
 
   it('renders 4 summary KPI cards and 5 panels when data is loaded', () => {
-    render(<InventoryAnalyticsPage />);
+    render(<InventoryAnalyticsPanel />);
     expect(screen.getByText('Total Movements')).toBeInTheDocument();
     expect(screen.getByText('Total Waste Cost')).toBeInTheDocument();
     expect(screen.getByText('Total Consumption Cost')).toBeInTheDocument();
@@ -108,21 +108,21 @@ describe('InventoryAnalyticsPage', () => {
   });
 
   it('updates the URL when the branch filter changes', () => {
-    render(<InventoryAnalyticsPage />);
+    render(<InventoryAnalyticsPanel />);
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
-    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('branch_id=branch-1'), expect.anything());
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('inv_branch_id=branch-1'), expect.anything());
   });
 
   it('updates the URL when the period filter changes', () => {
-    render(<InventoryAnalyticsPage />);
+    render(<InventoryAnalyticsPanel />);
     fireEvent.click(screen.getByRole('button', { name: 'Last 90 days' }));
-    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('period=90d'), expect.anything());
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('inv_period=90d'), expect.anything());
   });
 
   it('renders an error state with retry when the query fails', () => {
     const refetch = vi.fn();
     mockUseInventoryAnalytics.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch });
-    render(<InventoryAnalyticsPage />);
+    render(<InventoryAnalyticsPanel />);
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refetch).toHaveBeenCalled();
   });

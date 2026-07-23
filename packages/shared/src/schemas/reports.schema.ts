@@ -215,6 +215,13 @@ export const InventoryValuationReportRowSchema = z.object({
 });
 export type InventoryValuationReportRow = z.infer<typeof InventoryValuationReportRowSchema>;
 
+export const PaymentMethodMixReportRowSchema = z.object({
+  payment_method: z.string(),
+  transaction_count: z.number().int(),
+  total_amount: z.number(),
+});
+export type PaymentMethodMixReportRow = z.infer<typeof PaymentMethodMixReportRowSchema>;
+
 export const BranchComparisonReportRowSchema = z.object({
   branch_id: z.uuid(),
   branch_name: z.string(),

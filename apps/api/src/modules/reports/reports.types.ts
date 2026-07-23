@@ -12,6 +12,7 @@ export type {
   CashReconciliationReportRow,
   VoidRefundReportRow,
   DiscountComplianceReportRow,
+  PaymentMethodMixReportRow,
   InventoryMovementReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,

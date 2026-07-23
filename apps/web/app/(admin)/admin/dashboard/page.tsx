@@ -4,19 +4,22 @@ import { Suspense } from 'react';
 import { useSocketStore } from '@/stores/socket.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
-import { useBranches, useBranchRealtimeSync, useAllBranchStats } from '@/hooks/queries/use-branches';
+import { useBranchRealtimeSync, useAllBranchStats } from '@/hooks/queries/use-branches';
 import { useProductRequests, useProductRequestRealtimeSync } from '@/hooks/queries/use-product-requests';
 import { usePriceOverrides, usePriceOverrideRealtimeSync } from '@/hooks/queries/use-price-overrides';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
-import { DashboardBranchGrid } from '@/components/admin/dashboard-branch-grid';
+import { DashboardTrendsSection } from '@/components/admin/dashboard-trends-section';
 import { DashboardPendingRequests } from '@/components/admin/dashboard-pending-requests';
 import { DashboardPendingOverrides } from '@/components/admin/dashboard-pending-overrides';
 import { DashboardShortcutCards } from '@/components/admin/dashboard-shortcut-cards';
 import { InventoryRollupCard } from '@/components/admin/inventory-rollup-card';
+import { LiveTransactionFeed } from '@/components/monitoring/live-transaction-feed';
+import { ActiveCashiersPanel } from '@/components/monitoring/active-cashiers-panel';
+import { LiveAlertsStream } from '@/components/monitoring/live-alerts-stream';
+import { BranchConnectionPanel } from '@/components/monitoring/branch-connection-panel';
 
-const BRANCH_LIST_LIMIT = 100;
 const SHIFT_LIST_LIMIT = 100;
 const TOTAL_ONLY_LIMIT = 1;
 const PANEL_LIST_LIMIT = 5;
@@ -54,7 +57,6 @@ function AdminDashboardPageContent() {
     branch_id: branchFilter,
     limit: TOTAL_ONLY_LIMIT,
   });
-  const { data: branchesData, isLoading: isLoadingBranches } = useBranches({ limit: BRANCH_LIST_LIMIT });
   const { data: pendingProductRequestsList, isLoading: isLoadingPendingProductRequestsList } = useProductRequests({
     status: 'pending',
     branch_id: branchFilter,
@@ -83,8 +85,6 @@ function AdminDashboardPageContent() {
   const grossSales = branchStats?.reduce((sum, b) => sum + b.todayGrossSales, 0);
   const expenses = branchStats?.reduce((sum, b) => sum + b.todayExpenses, 0);
   const netProfit = branchStats?.reduce((sum, b) => sum + b.todayNetProfit, 0);
-
-  const flaggedBranchIds = new Set((flaggedShiftsData?.shifts ?? []).map((shift) => shift.branch_id));
 
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-yellow-500' : isConnected ? 'bg-green-500' : 'bg-red-500';
@@ -123,11 +123,7 @@ function AdminDashboardPageContent() {
         isLoadingStats={isLoadingBranchStats}
       />
 
-      <DashboardBranchGrid
-        branches={branchesData?.branches}
-        flaggedBranchIds={flaggedBranchIds}
-        isLoading={isLoadingBranches}
-      />
+      <DashboardTrendsSection branchFilter={branchFilter} />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DashboardPendingRequests
@@ -143,6 +139,16 @@ function AdminDashboardPageContent() {
       <InventoryRollupCard />
 
       <DashboardShortcutCards />
+
+      <div className="space-y-4 border-t pt-6">
+        <h2 className="text-lg font-semibold">Live Activity</h2>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <LiveTransactionFeed />
+          <ActiveCashiersPanel />
+          <LiveAlertsStream />
+          <BranchConnectionPanel />
+        </div>
+      </div>
     </div>
   );
 }

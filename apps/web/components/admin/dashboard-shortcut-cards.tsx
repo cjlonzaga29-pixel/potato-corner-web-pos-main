@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 export function DashboardShortcutCards() {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <Link href="/admin/branches">
+      <Link href="/admin/reports?tab=INVENTORY_VALUATION">
         <Card className="transition-colors hover:bg-accent/50">
           <CardHeader className="flex flex-row items-center gap-3 space-y-0">
             <ClipboardList className="h-5 w-5 text-muted-foreground" />

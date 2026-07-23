@@ -54,6 +54,12 @@ const STEP_FIELDS: Record<number, (keyof FormValues)[]> = {
 
 const STEP_LABELS = ['Basic Information', 'Branch Assignment'];
 
+// Module-level constant so the Zustand selector below returns a stable
+// reference when branchIds is undefined — inlining `?? []` would create a
+// new array every render, which useSyncExternalStore treats as a changed
+// snapshot and loops forever ("Maximum update depth exceeded").
+const EMPTY_BRANCH_IDS: string[] = [];
+
 function passwordStrength(password: string): number {
   let score = 0;
   if (password.length >= 8) score += 25;
@@ -72,7 +78,7 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
   const [step, setStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const createEmployee = useCreateEmployee();
-  const supervisorBranchIds = useAuthStore((state) => state.user?.branchIds ?? []);
+  const supervisorBranchIds = useAuthStore((state) => state.user?.branchIds ?? EMPTY_BRANCH_IDS);
   const { data: branchData, isLoading: branchesLoading } = useBranches({ status: 'active', limit: 100 });
   const branches = (branchData?.branches ?? []).filter((branch) => supervisorBranchIds.includes(branch.id));
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });

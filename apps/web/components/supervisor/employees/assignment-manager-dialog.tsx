@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { useAuthStore } from '@/stores/auth.store';
 import { useBranches } from '@/hooks/queries/use-branches';
 import { useUpdateEmployee } from '@/hooks/queries/use-employees';
 
@@ -16,9 +17,18 @@ interface AssignmentManagerDialogProps {
   employee: EmployeeResponse;
 }
 
-export function AssignmentManagerDialog({ open, onOpenChange, employee }: AssignmentManagerDialogProps) {
+// Module-level constant so the Zustand selector below returns a stable
+// reference when branchIds is undefined — inlining `?? []` would create a
+// new array every render, which useSyncExternalStore treats as a changed
+// snapshot and loops forever ("Maximum update depth exceeded").
+const EMPTY_BRANCH_IDS: string[] = [];
+
+/** Branch choices are scoped to the supervisor's own assigned branches — the backend rejects any branch_ids outside that set for supervisor callers (employees.service.ts's createEmployee/updateEmployee). */
+export function SupervisorAssignmentManagerDialog({ open, onOpenChange, employee }: AssignmentManagerDialogProps) {
   const [selected, setSelected] = useState<string[]>([]);
+  const supervisorBranchIds = useAuthStore((state) => state.user?.branchIds ?? EMPTY_BRANCH_IDS);
   const { data: branchData, isLoading } = useBranches({ status: 'active', limit: 100 });
+  const branches = (branchData?.branches ?? []).filter((branch) => supervisorBranchIds.includes(branch.id));
   const updateEmployee = useUpdateEmployee(employee.id);
 
   useEffect(() => {
@@ -41,7 +51,7 @@ export function AssignmentManagerDialog({ open, onOpenChange, employee }: Assign
         <DialogHeader>
           <DialogTitle>Manage Branch Assignments</DialogTitle>
           <DialogDescription>
-            {employee.first_name} {employee.last_name} — select every branch this employee should have access to.
+            {employee.first_name} {employee.last_name} — select which of your branches this employee should access.
           </DialogDescription>
         </DialogHeader>
 
@@ -51,7 +61,7 @@ export function AssignmentManagerDialog({ open, onOpenChange, employee }: Assign
           </div>
         ) : (
           <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border p-3">
-            {(branchData?.branches ?? []).map((branch) => (
+            {branches.map((branch) => (
               <label key={branch.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={selected.includes(branch.id)}

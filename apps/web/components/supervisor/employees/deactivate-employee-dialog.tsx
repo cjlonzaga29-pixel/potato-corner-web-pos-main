@@ -19,7 +19,7 @@ interface DeactivateEmployeeDialogProps {
   employee: EmployeeResponse;
 }
 
-export function DeactivateEmployeeDialog({ open, onOpenChange, employee }: DeactivateEmployeeDialogProps) {
+export function SupervisorDeactivateEmployeeDialog({ open, onOpenChange, employee }: DeactivateEmployeeDialogProps) {
   const [reason, setReason] = useState('');
   const [acknowledge, setAcknowledge] = useState(false);
   const [showActiveShiftWarning, setShowActiveShiftWarning] = useState(false);

@@ -49,29 +49,29 @@ function toSeverityFilter(value: string | null): (typeof SEVERITY_FILTERS)[numbe
   return value && SEVERITY_VALUES.has(value) ? (value as (typeof SEVERITY_FILTERS)[number]['value']) : 'all';
 }
 
-function FraudAlertsPageContent() {
+function FraudAlertManagementPanelContent() {
   useFraudAlertsRealtimeSync();
 
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const status = toStatusFilter(searchParams.get('status'));
-  const severity = toSeverityFilter(searchParams.get('severity'));
-  const branchId = searchParams.get('branch_id') ?? ALL_BRANCHES;
-  const page = Number(searchParams.get('page') ?? '1') || 1;
-  const pageSize = Number(searchParams.get('limit') ?? String(DEFAULT_PAGE_SIZE)) || DEFAULT_PAGE_SIZE;
+  const status = toStatusFilter(searchParams.get('fraud_status'));
+  const severity = toSeverityFilter(searchParams.get('fraud_severity'));
+  const branchId = searchParams.get('fraud_branch_id') ?? ALL_BRANCHES;
+  const page = Number(searchParams.get('fraud_page') ?? '1') || 1;
+  const pageSize = Number(searchParams.get('fraud_limit') ?? String(DEFAULT_PAGE_SIZE)) || DEFAULT_PAGE_SIZE;
 
   const pagination: PaginationState = { pageIndex: Math.max(page - 1, 0), pageSize };
 
-  /** Pushes URL param updates (shallow, no scroll jump) — the URL is the single source of truth for every filter and the pagination state. */
+  /** Pushes URL param updates (shallow, no scroll jump), namespaced with a `fraud_` prefix so this panel's filters don't collide with the parent Reports page's own `tab`/date-range params. */
   function pushParams(updates: Record<string, string | null>, resetPage: boolean) {
     const params = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === 'all') params.delete(key);
       else params.set(key, value);
     }
-    if (resetPage) params.set('page', '1');
+    if (resetPage) params.set('fraud_page', '1');
     const query = params.toString();
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
@@ -123,11 +123,8 @@ function FraudAlertsPageContent() {
   });
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Fraud Alerts</h1>
-        <p className="text-sm text-muted-foreground">Investigate and manage flagged system alerts</p>
-      </div>
+    <div className="space-y-4">
+      <h3 className="text-base font-semibold">Alert Management</h3>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KpiCard title="Open Alerts" value={openCount} isLoading={isLoading} tone={openCount > 0 ? 'danger' : 'default'} />
@@ -143,7 +140,7 @@ function FraudAlertsPageContent() {
       <div className="flex flex-wrap items-end gap-4">
         <div>
           <Label htmlFor="fraud-status-filter">Status</Label>
-          <Select value={status} onValueChange={(value) => pushParams({ status: value }, true)}>
+          <Select value={status} onValueChange={(value) => pushParams({ fraud_status: value }, true)}>
             <SelectTrigger id="fraud-status-filter" className="w-[180px]">
               <SelectValue />
             </SelectTrigger>
@@ -159,7 +156,7 @@ function FraudAlertsPageContent() {
 
         <div>
           <Label htmlFor="fraud-severity-filter">Severity</Label>
-          <Select value={severity} onValueChange={(value) => pushParams({ severity: value }, true)}>
+          <Select value={severity} onValueChange={(value) => pushParams({ fraud_severity: value }, true)}>
             <SelectTrigger id="fraud-severity-filter" className="w-[180px]">
               <SelectValue />
             </SelectTrigger>
@@ -175,7 +172,7 @@ function FraudAlertsPageContent() {
 
         <div>
           <Label htmlFor="fraud-branch-filter">Branch</Label>
-          <Select value={branchId} onValueChange={(value) => pushParams({ branch_id: value }, true)}>
+          <Select value={branchId} onValueChange={(value) => pushParams({ fraud_branch_id: value }, true)}>
             <SelectTrigger id="fraud-branch-filter" className="w-[220px]" disabled={isBranchesLoading}>
               <SelectValue />
             </SelectTrigger>
@@ -199,7 +196,7 @@ function FraudAlertsPageContent() {
         onRetry={() => void refetch()}
         pagination={pagination}
         onPaginationChange={(next) =>
-          pushParams({ page: String(next.pageIndex + 1), limit: String(next.pageSize) }, false)
+          pushParams({ fraud_page: String(next.pageIndex + 1), fraud_limit: String(next.pageSize) }, false)
         }
         rowCount={data?.total ?? 0}
         emptyState={
@@ -255,10 +252,10 @@ function FraudAlertsPageContent() {
   );
 }
 
-export default function FraudAlertsPage() {
+export function FraudAlertManagementPanel() {
   return (
-    <Suspense fallback={<div>Loading fraud alerts...</div>}>
-      <FraudAlertsPageContent />
+    <Suspense fallback={<div>Loading alert management...</div>}>
+      <FraudAlertManagementPanelContent />
     </Suspense>
   );
 }

@@ -17,27 +17,28 @@ const ALL_BRANCHES = 'all';
 const ALL_DISCOUNT_TYPES = 'all';
 const DEFAULT_PAGE_SIZE = 25;
 
-function DiscountAuditPageContent() {
+function DiscountAuditPanelContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const branchId = searchParams.get('branch_id') ?? ALL_BRANCHES;
+  const branchId = searchParams.get('discount_branch_id') ?? ALL_BRANCHES;
   const discountType = searchParams.get('discount_type') ?? ALL_DISCOUNT_TYPES;
-  const dateFrom = searchParams.get('date_from') ?? '';
-  const dateTo = searchParams.get('date_to') ?? '';
-  const page = Number(searchParams.get('page') ?? '1') || 1;
-  const pageSize = Number(searchParams.get('limit') ?? String(DEFAULT_PAGE_SIZE)) || DEFAULT_PAGE_SIZE;
+  const dateFrom = searchParams.get('discount_date_from') ?? '';
+  const dateTo = searchParams.get('discount_date_to') ?? '';
+  const page = Number(searchParams.get('discount_page') ?? '1') || 1;
+  const pageSize = Number(searchParams.get('discount_limit') ?? String(DEFAULT_PAGE_SIZE)) || DEFAULT_PAGE_SIZE;
 
   const pagination: PaginationState = { pageIndex: Math.max(page - 1, 0), pageSize };
 
+  /** Namespaced with a `discount_` prefix so this panel's filters don't collide with the parent Reports page's own params. */
   function pushParams(updates: Record<string, string | null>, resetPage: boolean) {
     const params = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === 'all') params.delete(key);
       else params.set(key, value);
     }
-    if (resetPage) params.set('page', '1');
+    if (resetPage) params.set('discount_page', '1');
     const query = params.toString();
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
@@ -61,7 +62,12 @@ function DiscountAuditPageContent() {
   const hasActiveFilters = branchId !== ALL_BRANCHES || discountType !== ALL_DISCOUNT_TYPES || dateFrom !== '' || dateTo !== '';
 
   function clearFilters() {
-    router.push(pathname, { scroll: false });
+    const params = new URLSearchParams(searchParams.toString());
+    for (const key of ['discount_branch_id', 'discount_type', 'discount_date_from', 'discount_date_to', 'discount_page', 'discount_limit']) {
+      params.delete(key);
+    }
+    const query = params.toString();
+    router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
   function handleExportCsv() {
@@ -89,12 +95,9 @@ function DiscountAuditPageContent() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Discount Audit</h1>
-          <p className="text-sm text-muted-foreground">Cross-branch discount trail with fraud-flag correlation</p>
-        </div>
+        <h3 className="text-base font-semibold">Discount Audit Trail</h3>
         <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={rows.length === 0}>
           <Download className="mr-2 h-4 w-4" />
           Export CSV
@@ -103,7 +106,17 @@ function DiscountAuditPageContent() {
 
       <DiscountAuditFilterBar
         filters={{ branchId, discountType, dateFrom, dateTo }}
-        onChange={(updates) => pushParams(updates, true)}
+        onChange={(updates) =>
+          pushParams(
+            {
+              discount_branch_id: updates.branch_id ?? null,
+              discount_type: updates.discount_type ?? null,
+              discount_date_from: updates.date_from ?? null,
+              discount_date_to: updates.date_to ?? null,
+            },
+            true,
+          )
+        }
       />
 
       <DataTable
@@ -114,7 +127,7 @@ function DiscountAuditPageContent() {
         onRetry={() => void refetch()}
         pagination={pagination}
         onPaginationChange={(next) =>
-          pushParams({ page: String(next.pageIndex + 1), limit: String(next.pageSize) }, false)
+          pushParams({ discount_page: String(next.pageIndex + 1), discount_limit: String(next.pageSize) }, false)
         }
         rowCount={data?.total ?? 0}
         emptyState={
@@ -138,10 +151,10 @@ function DiscountAuditPageContent() {
   );
 }
 
-export default function DiscountAuditPage() {
+export function DiscountAuditPanel() {
   return (
     <Suspense fallback={<div>Loading discount audit...</div>}>
-      <DiscountAuditPageContent />
+      <DiscountAuditPanelContent />
     </Suspense>
   );
 }

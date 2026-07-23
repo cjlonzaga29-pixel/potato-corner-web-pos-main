@@ -61,7 +61,7 @@ test('super admin login + dashboard render', async ({ page }) => {
   await expect(page).toHaveURL(/\/admin\/dashboard/);
   await expect(page.getByRole('heading', { name: 'Super Admin Dashboard' })).toBeVisible();
 
-  for (const label of ['Branches', 'Products', 'Recipes', 'Employees', 'Reports', 'Audit Logs']) {
+  for (const label of ['Branches', 'Products', 'Recipes', 'Employees', 'Reports', 'Settings']) {
     await expect(page.getByRole('link', { name: label })).toBeVisible();
   }
 
@@ -75,7 +75,7 @@ test('super admin navigation smoke', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (err) => pageErrors.push(err.message));
 
-  const navLabels = ['Branches', 'Products', 'Recipes', 'Employees', 'Reports', 'Audit Logs'];
+  const navLabels = ['Branches', 'Products', 'Recipes', 'Employees', 'Reports', 'Settings'];
   for (const label of navLabels) {
     await page.getByRole('link', { name: label }).click();
     await page.waitForLoadState('networkidle');

@@ -8,6 +8,7 @@ import type {
   CashReconciliationReportRow,
   VoidRefundReportRow,
   DiscountComplianceReportRow,
+  PaymentMethodMixReportRow,
   InventoryMovementReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
@@ -200,6 +201,21 @@ export const reportsRepository = {
         total_discount_amount: row._sum.discountAmount?.toNumber() ?? 0,
         total_vat_exempt_amount: row._sum.vatExemptAmount?.toNumber() ?? 0,
       }));
+  },
+
+  async getPaymentMethodMix(filters: ReportFilters): Promise<PaymentMethodMixReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const rows = await prisma.transaction.groupBy({
+      by: ['paymentMethod'],
+      where: { status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+      _count: { _all: true },
+      _sum: { totalAmount: true },
+    });
+    return rows.map((row) => ({
+      payment_method: row.paymentMethod,
+      transaction_count: row._count._all,
+      total_amount: row._sum.totalAmount?.toNumber() ?? 0,
+    }));
   },
 
   async getInventoryMovement(filters: ReportFilters): Promise<InventoryMovementReportRow[]> {

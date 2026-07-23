@@ -21,7 +21,7 @@ function daysAgoDateString(days: number): string {
 
 const columns = createLoginAuditColumns();
 
-export default function LoginAuditPage() {
+export function LoginAuditPanel() {
   const [branchId, setBranchId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
   const [dateTo, setDateTo] = useState(() => todayDateString());
@@ -38,11 +38,8 @@ export default function LoginAuditPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Login Audit</h1>
-        <p className="text-sm text-muted-foreground">Login, logout, and account-unlock events across the system</p>
-      </div>
+    <div className="space-y-4">
+      <h3 className="text-base font-semibold">Login &amp; Session Events</h3>
 
       <ReportFilterBar
         branchId={branchId}

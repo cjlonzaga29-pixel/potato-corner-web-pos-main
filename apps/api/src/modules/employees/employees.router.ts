@@ -13,7 +13,7 @@ import {
 import { employeesService } from './employees.service.js';
 import { EmployeeError } from './employees.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -135,7 +135,7 @@ router.get(
 router.post(
   '/',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(createEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -152,7 +152,7 @@ router.post(
 router.patch(
   '/:employeeId',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -169,7 +169,7 @@ router.patch(
 router.post(
   '/:employeeId/deactivate',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(deactivateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -191,7 +191,7 @@ router.post(
 router.post(
   '/:employeeId/reactivate',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -207,7 +207,7 @@ router.post(
 router.post(
   '/:employeeId/reset-password',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(resetEmployeePasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {

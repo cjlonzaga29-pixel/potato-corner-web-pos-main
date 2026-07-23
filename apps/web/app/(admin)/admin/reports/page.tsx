@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { toast } from 'sonner';
 import type {
@@ -27,6 +28,14 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
+import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
+import { DiscountAuditPanel } from '@/components/reports/discount-audit-panel';
+import { AuditLogsPanel } from '@/components/reports/audit-logs-panel';
+import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
+import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
+import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
+import { ProductRequestsLogPanel } from '@/components/reports/product-requests-log-panel';
+import { PriceOverridesLogPanel } from '@/components/reports/price-overrides-log-panel';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
@@ -184,14 +193,40 @@ const branchComparisonColumns: ColumnDef<BranchComparisonReportRow>[] = [
   { accessorKey: 'low_stock_ingredient_count', header: 'Low Stock Items' },
 ];
 
-export default function AdminReportsPage() {
+const VALID_TABS = new Set([
+  'DAILY_SALES',
+  'SHIFT_SUMMARY',
+  'CASH_RECONCILIATION',
+  'VOID_REFUND',
+  'DISCOUNT_COMPLIANCE',
+  'INVENTORY_MOVEMENT',
+  'ATTENDANCE_SUMMARY',
+  'FRAUD_ALERT_SUMMARY',
+  'PRODUCT_PERFORMANCE',
+  'FLAVOR_PERFORMANCE',
+  'EMPLOYEE_PERFORMANCE',
+  'INVENTORY_VALUATION',
+  'BRANCH_COMPARISON',
+  'AUDIT_LOGS',
+  'LOGIN_AUDIT',
+  'INVENTORY_ANALYTICS',
+  'PRODUCT_REQUESTS_LOG',
+  'PRICE_OVERRIDES_LOG',
+  'SHIFT_LOG',
+]);
+
+function AdminReportsPageContent() {
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSocketConnected = useSocketStore((s) => s.isConnected);
+  const searchParams = useSearchParams();
 
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
   const [dateTo, setDateTo] = useState(() => todayDateString());
-  const [activeTab, setActiveTab] = useState('DAILY_SALES');
+  const [activeTab, setActiveTab] = useState(() => {
+    const tabParam = searchParams.get('tab');
+    return tabParam && VALID_TABS.has(tabParam) ? tabParam : 'DAILY_SALES';
+  });
   const [refreshDisabled, setRefreshDisabled] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
@@ -310,6 +345,12 @@ export default function AdminReportsPage() {
           <TabsTrigger value="EMPLOYEE_PERFORMANCE">Employee Performance</TabsTrigger>
           <TabsTrigger value="INVENTORY_VALUATION">Inventory Valuation</TabsTrigger>
           <TabsTrigger value="BRANCH_COMPARISON">Branch Comparison</TabsTrigger>
+          <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
+          <TabsTrigger value="SHIFT_LOG">Shift Log</TabsTrigger>
+          <TabsTrigger value="PRODUCT_REQUESTS_LOG">Product Requests Log</TabsTrigger>
+          <TabsTrigger value="PRICE_OVERRIDES_LOG">Price Overrides Log</TabsTrigger>
+          <TabsTrigger value="AUDIT_LOGS">Audit Logs</TabsTrigger>
+          <TabsTrigger value="LOGIN_AUDIT">Login Audit</TabsTrigger>
         </TabsList>
 
         <TabsContent value="DAILY_SALES">
@@ -400,6 +441,9 @@ export default function AdminReportsPage() {
             emptyState={<EmptyState title="No discounted transactions in this range" />}
           />
           </>}
+          <div className="mt-6 border-t pt-6">
+            <DiscountAuditPanel />
+          </div>
         </TabsContent>
 
         <TabsContent value="INVENTORY_MOVEMENT">
@@ -465,6 +509,9 @@ export default function AdminReportsPage() {
             isLoading={fraudAlertSummary.isLoading}
             emptyState={<EmptyState title="No fraud alerts in this range" />}
           />
+          <div className="mt-6 border-t pt-6">
+            <FraudAlertManagementPanel />
+          </div>
           </>}
         </TabsContent>
 
@@ -562,7 +609,39 @@ export default function AdminReportsPage() {
           />
           </>}
         </TabsContent>
+
+        <TabsContent value="INVENTORY_ANALYTICS">
+          <InventoryAnalyticsPanel />
+        </TabsContent>
+
+        <TabsContent value="SHIFT_LOG">
+          <ShiftLogPanel />
+        </TabsContent>
+
+        <TabsContent value="PRODUCT_REQUESTS_LOG">
+          <ProductRequestsLogPanel />
+        </TabsContent>
+
+        <TabsContent value="PRICE_OVERRIDES_LOG">
+          <PriceOverridesLogPanel />
+        </TabsContent>
+
+        <TabsContent value="AUDIT_LOGS">
+          <AuditLogsPanel />
+        </TabsContent>
+
+        <TabsContent value="LOGIN_AUDIT">
+          <LoginAuditPanel />
+        </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+export default function AdminReportsPage() {
+  return (
+    <Suspense fallback={<div>Loading reports...</div>}>
+      <AdminReportsPageContent />
+    </Suspense>
   );
 }

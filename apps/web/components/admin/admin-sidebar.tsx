@@ -9,14 +9,11 @@ import {
   ShoppingBag,
   Palette,
   ChefHat,
-  Banknote,
   Package,
   DollarSign,
   Users,
   ClipboardCheck,
   BarChart3,
-  ShieldAlert,
-  FileSearch,
   Receipt,
   Settings,
   ChevronsLeft,
@@ -24,8 +21,6 @@ import {
   LogOut,
   Loader2,
   Wallet,
-  Activity,
-  TrendingUp,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -46,26 +41,19 @@ import { NavLinkIcon } from '@/components/shared/nav-link-icon';
  */
 const NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
-  { label: 'Live Dashboard', href: '/admin/monitoring', icon: Activity },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
-  { label: 'GCash QR', href: '/admin/payments/gcash-qr', icon: Wallet },
+  { label: 'Payment Settings', href: '/admin/payments/gcash-qr', icon: Wallet },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
   { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },
-  { label: 'Shifts', href: '/admin/shifts', icon: Banknote },
   // CR-001 — Approvals section (Super Admin reviews supervisor submissions)
   { label: 'Product Requests', href: '/admin/approvals/product-requests', icon: Package },
   { label: 'Price Overrides', href: '/admin/approvals/price-overrides', icon: DollarSign },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
-  { label: 'Inventory Analytics', href: '/admin/reports/inventory-analytics', icon: TrendingUp },
   { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
-  { label: 'Fraud Alerts', href: '/admin/fraud-alerts', icon: ShieldAlert },
-  { label: 'Discount Audit', href: '/admin/discount-audit', icon: ShieldAlert },
-  { label: 'Audit Logs', href: '/admin/audit-logs', icon: FileSearch },
-  { label: 'Login Audit', href: '/admin/login-audit', icon: FileSearch },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];
 

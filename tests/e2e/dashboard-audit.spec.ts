@@ -3,9 +3,9 @@ import path from 'node:path';
 
 const ADMIN_PAGES = [
   '/admin/dashboard', '/admin/branches', '/admin/products', '/admin/flavors',
-  '/admin/recipes', '/admin/shifts', '/admin/approvals/product-requests',
+  '/admin/recipes', '/admin/approvals/product-requests',
   '/admin/approvals/price-overrides', '/admin/employees', '/admin/reports',
-  '/admin/fraud-alerts', '/admin/audit-logs', '/admin/settings', '/admin/attendance',
+  '/admin/settings', '/admin/attendance',
 ];
 const SUPERVISOR_PAGES = [
   '/supervisor/dashboard', '/supervisor/inventory', '/supervisor/attendance',

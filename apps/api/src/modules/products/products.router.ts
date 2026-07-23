@@ -2,7 +2,6 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer';
 import { z } from 'zod';
 import {
-  createProductSchema,
   updateProductSchema,
   changeProductStatusSchema,
   createVariantSchema,
@@ -11,7 +10,6 @@ import {
   updateVariantFlavorSchema,
   bulkBranchProductAvailabilitySchema,
   PRODUCT_STATUS,
-  ROLES,
   type ProductStatus,
 } from '@potato-corner/shared';
 import { productsService } from './products.service.js';
@@ -120,37 +118,6 @@ router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange
     handleModuleError(error, res, next);
   }
 });
-
-router.post(
-  '/',
-  authenticate,
-  adminOrSupervisor,
-  requirePasswordChange,
-  validate(createProductSchema),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      if (!requireUser(req, res)) return;
-      // CR-001: Super Admin owns master catalog creation. Supervisors submit
-      // a product_requests row instead — this specific error code tells the
-      // client which flow to use rather than a generic 403.
-      if (req.user.role !== ROLES.SUPER_ADMIN) {
-        res.status(403).json({
-          data: null,
-          error: {
-            code: 'USE_PRODUCT_REQUEST',
-            message: 'Supervisors cannot create products directly — submit a product request for Super Admin approval instead.',
-          },
-          meta: null,
-        });
-        return;
-      }
-      const product = await productsService.createProduct(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
-      res.status(201).json({ data: product, error: null, meta: null });
-    } catch (error) {
-      handleModuleError(error, res, next);
-    }
-  },
-);
 
 router.patch('/:productId', authenticate, adminOnly, requirePasswordChange, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {

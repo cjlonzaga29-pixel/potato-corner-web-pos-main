@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
 import * as React from 'react';
 import type { BranchListResponse, BranchResponse, FraudAlertListResponse, FraudAlertResponse } from '@potato-corner/shared';
-import FraudAlertsPage from './page';
+import { FraudAlertManagementPanel } from './fraud-alert-management-panel';
 
 const {
   mockPush,
@@ -16,7 +16,7 @@ const {
   mockUseBranches,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
-  mockUsePathname: vi.fn(() => '/admin/fraud-alerts'),
+  mockUsePathname: vi.fn(() => '/admin/reports'),
   mockUseSearchParams: vi.fn(() => new URLSearchParams()),
   mockUseFraudAlerts: vi.fn(),
   mockUseFraudAlertsRealtimeSync: vi.fn(),
@@ -163,16 +163,16 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('FraudAlertsPage', () => {
+describe('FraudAlertManagementPanel', () => {
   it('calls useFraudAlertsRealtimeSync on mount', () => {
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
     expect(mockUseFraudAlertsRealtimeSync).toHaveBeenCalled();
   });
 
   it('renders loading skeletons when isLoading is true', () => {
     mockUseFraudAlerts.mockReturnValue({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     expect(screen.getAllByText('loading').length).toBe(3);
     expect(screen.getByRole('table')).toBeInTheDocument();
@@ -194,7 +194,7 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     expect(screen.getByText('Open Alerts')).toBeInTheDocument();
     expect(screen.getByText('Under Investigation')).toBeInTheDocument();
@@ -214,13 +214,13 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     expect(screen.getByText('No fraud alerts found')).toBeInTheDocument();
   });
 
   it('renders the "no matches" empty state with a clear-filters action when filters are applied', () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams('status=open'));
+    mockUseSearchParams.mockReturnValue(new URLSearchParams('fraud_status=open'));
     mockUseFraudAlerts.mockReturnValue({
       data: fraudAlertListResponse({ alerts: [], total: 0 }),
       isLoading: false,
@@ -228,11 +228,11 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     expect(screen.getByText('No alerts match the current filters')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
-    expect(mockPush).toHaveBeenCalledWith('/admin/fraud-alerts', { scroll: false });
+    expect(mockPush).toHaveBeenCalledWith('/admin/reports', { scroll: false });
   });
 
   it('renders DataTable rows when alerts exist', () => {
@@ -243,7 +243,7 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     const table = screen.getByRole('table');
     expect(within(table).getByText('Juan Dela Cruz')).toBeInTheDocument();
@@ -260,7 +260,7 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Investigate' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Investigation' }));
@@ -278,7 +278,7 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Escalate' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Escalation' }));
@@ -294,7 +294,7 @@ describe('FraudAlertsPage', () => {
       refetch: vi.fn(),
     });
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 
@@ -303,12 +303,12 @@ describe('FraudAlertsPage', () => {
   });
 
   it('resets page to 1 when the status filter changes', () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams('page=3'));
+    mockUseSearchParams.mockReturnValue(new URLSearchParams('fraud_page=3'));
 
-    render(<FraudAlertsPage />);
+    render(<FraudAlertManagementPanel />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
 
-    expect(mockPush).toHaveBeenCalledWith('/admin/fraud-alerts?page=1&status=open', { scroll: false });
+    expect(mockPush).toHaveBeenCalledWith('/admin/reports?fraud_page=1&fraud_status=open', { scroll: false });
   });
 });

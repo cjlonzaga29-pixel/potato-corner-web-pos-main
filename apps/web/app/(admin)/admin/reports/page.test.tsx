@@ -32,6 +32,12 @@ vi.mock('@/hooks/queries/use-branches', () => ({
   useBranches: vi.fn(() => ({ data: { branches: [{ id: 'branch-1', name: 'Main Branch' }] } })),
 }));
 
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => '/admin/reports',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 // Radix Select has no jsdom-friendly interaction path without user-event (not a
 // project dependency); flatten it to plain buttons, matching attendance/page.test.tsx.
 vi.mock('@/components/ui/select', () => {
@@ -75,12 +81,14 @@ afterEach(() => {
 });
 
 describe('AdminReportsPage', () => {
-  it('renders all 13 report tabs', () => {
+  it('renders all 19 report tabs', () => {
     render(<AdminReportsPage />);
     const tabLabels = [
       'Daily Sales', 'Shift Summary', 'Cash Reconciliation', 'Void/Refund', 'Discount Compliance',
       'Inventory Movement', 'Attendance Summary', 'Fraud Alert Summary', 'Product Performance',
       'Flavor Performance', 'Employee Performance', 'Inventory Valuation', 'Branch Comparison',
+      'Inventory Analytics', 'Shift Log', 'Product Requests Log', 'Price Overrides Log',
+      'Audit Logs', 'Login Audit',
     ];
     for (const label of tabLabels) expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
   });

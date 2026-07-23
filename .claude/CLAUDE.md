@@ -96,3 +96,71 @@ Data from the database → TanStack Query. Data that lives in the browser only (
 - Use raw SQL instead of Prisma
 - Store secrets in code
 - Create API routes in Next.js — all API logic lives in the Express backend (`apps/web/app/api/health` is the sole exception, a liveness probe)
+
+## Task Completion Handoff Protocol
+
+At the end of every completed task (feature, fix, refactor, or verification), generate a **Handoff Command Block** the user can paste into a new Claude Code chat to resume or hand off the work.
+
+### When to generate
+
+- After every successful commit + push + CI green
+- After a task is marked complete via user confirmation ("all done", "verified", "complete")
+- After a session-ending decision ("pause", "end session", "stop here")
+
+### Handoff Command Block format
+
+Output a fenced markdown block titled `## 📋 Next-Chat Handoff Command` containing:
+
+1. **Context summary** (3-5 lines max)
+   - Last commit hash + message
+   - What was just completed
+   - Current git state (clean/dirty, branch, ahead/behind origin)
+
+2. **Ready-to-paste Claude Code command** with a STRICT TOKEN MODE header, containing:
+   - `CRITICAL FIRST STEP: cd potato-corner-web-pos-main` + verify pwd + `git log --oneline -3`
+   - Expected repo state (specific commit hash to verify HEAD matches)
+   - Immediate next action(s) available (verify / test / continue to next feature)
+   - Any pending manual steps (approval at GitHub Actions, env vars to add to Vercel, etc.)
+
+3. **Known blockers or context** the next session needs
+   - Pending CI approvals
+   - Rate limit windows to respect
+   - Tech debt introduced or discovered
+   - Dependencies on external actions
+
+### Example structure
+
+```markdown
+## 📋 Next-Chat Handoff Command
+
+**Last commit:** `abc1234` — feat(x): shipped feature X
+**Status:** Pushed to main, CI awaiting approval
+**Git state:** Clean working tree, on main, 1 commit ahead of origin
+
+Paste this into a new Claude Code session to resume:
+
+​```
+claude "
+STRICT TOKEN MODE
+======================================================================
+- No skills, no subagents
+- Minimize tokens aggressively
+- Do NOT print .env or credential contents
+
+CRITICAL FIRST STEP: cd potato-corner-web-pos-main. Verify pwd + git log --oneline -3 shows abc1234 at top.
+
+CONTEXT: Just shipped [feature X]. Awaiting user approval at GitHub Actions for deployment.
+
+AVAILABLE NEXT ACTIONS:
+1. Verify deployment: gh run watch <id> --exit-status
+2. Run production Playwright suite for regression check
+3. Proceed to next roadmap step: [Step Y]
+
+PENDING MANUAL STEPS:
+- User must approve deployment at github.com/[org]/[repo]/actions
+- [Any env vars to add]
+
+TECH DEBT INTRODUCED (if any):
+- [List]
+"
+​```

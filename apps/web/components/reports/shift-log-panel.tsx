@@ -19,7 +19,7 @@ const STATUS_FILTERS = [
 ] as const;
 
 /** super_admin sees every branch — GET /api/cash skips branchGuard entirely for this role, so no branch_id filter is sent. */
-export default function AdminShiftsPage() {
+export function ShiftLogPanel() {
   useShiftsRealtimeSync();
   const router = useRouter();
   const [status, setStatus] = useState<string>('all');
@@ -62,11 +62,9 @@ export default function AdminShiftsPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Shifts</h1>
-        <p className="text-sm text-muted-foreground">Every shift across every branch. Click a row for the full cash reconciliation detail.</p>
-      </div>
+    <div className="space-y-4">
+      <h3 className="text-base font-semibold">Every Shift, Every Branch</h3>
+      <p className="text-sm text-muted-foreground">Click a row for the full cash reconciliation detail.</p>
 
       <Select
         value={status}

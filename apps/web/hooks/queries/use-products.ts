@@ -6,7 +6,6 @@ import type {
   BranchProductAvailabilityRow,
   BulkBranchProductAvailabilityResponse,
   ChangeProductStatusInput,
-  CreateProductInput,
   CreateVariantInput,
   LinkVariantFlavorInput,
   PosCatalogResponse,
@@ -98,22 +97,6 @@ export function useCatalog(branchId: string | null | undefined) {
     // without a refocus/reconnect event to trigger a refetch would just
     // sit on a stale query indefinitely past the 60s staleTime.
     refetchInterval: PRODUCT_CACHE_REFRESH_MINUTES * 60 * 1000,
-  });
-}
-
-export function useCreateProduct() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: CreateProductInput) => {
-      const response = await apiClient<ProductDetailResponse>('/api/products', { method: 'POST', body: JSON.stringify(input) });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to create product'));
-      return response.data;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['products'] });
-      toast.success('Product created');
-    },
-    onError: (error: Error) => toast.error(error.message),
   });
 }
 

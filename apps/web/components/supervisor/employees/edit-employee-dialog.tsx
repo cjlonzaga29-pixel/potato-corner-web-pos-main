@@ -53,7 +53,7 @@ interface EditEmployeeDialogProps {
 }
 
 /** email and role are deliberately not form fields — both are immutable after creation (locked rule). */
-export function EditEmployeeDialog({ open, onOpenChange, employee }: EditEmployeeDialogProps) {
+export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: EditEmployeeDialogProps) {
   const updateEmployee = useUpdateEmployee(employee.id);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: toFormValues(employee) });
 

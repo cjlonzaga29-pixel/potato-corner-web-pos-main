@@ -12,3 +12,13 @@ export const chartTooltipContentStyle = {
   borderRadius: 'var(--radius)',
   fontSize: 12,
 };
+
+/** Categorical palette for new chart call sites — pulls from the themed --chart-1..6 CSS vars instead of hardcoding hex. */
+export const CHART_PALETTE: string[] = [
+  'hsl(var(--chart-1))',
+  'hsl(var(--chart-2))',
+  'hsl(var(--chart-3))',
+  'hsl(var(--chart-4))',
+  'hsl(var(--chart-5))',
+  'hsl(var(--chart-6))',
+];

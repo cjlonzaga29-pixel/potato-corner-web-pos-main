@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { MoreHorizontal, Plus } from 'lucide-react';
+import { MoreHorizontal } from 'lucide-react';
 import type { ProductResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -17,7 +17,6 @@ import { useProducts, useDeleteProduct } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { BranchExclusiveBadge } from '@/components/admin/products/branch-exclusive-badge';
-import { CreateProductDialog } from '@/components/admin/products/create-product-dialog';
 import { EditProductDialog } from '@/components/admin/products/edit-product-dialog';
 import { ChangeProductStatusDialog } from '@/components/admin/products/change-product-status-dialog';
 import { UploadProductImageDialog } from '@/components/admin/products/upload-product-image-dialog';
@@ -44,7 +43,6 @@ export default function ProductCatalogPage() {
   const [status, setStatus] = useState<string>('all');
   const [seasonal, setSeasonal] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const [createOpen, setCreateOpen] = useState(false);
   const [rowAction, setRowAction] = useState<{ product: ProductResponse; dialog: 'edit' | 'status' | 'image' } | null>(null);
 
   const { data, isLoading, isError, refetch } = useProducts({
@@ -111,20 +109,14 @@ export default function ProductCatalogPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Product Catalog</h1>
-          <p className="text-sm text-muted-foreground">Manage the global product catalog, variants, and flavor pricing.</p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create Product
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Product Catalog</h1>
+        <p className="text-sm text-muted-foreground">Manage the global product catalog, variants, and flavor pricing.</p>
       </div>
 
       <p className="rounded-md border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
-        Creating a product cascades it to every active branch automatically, unless you mark it branch-exclusive. Supervisors can no
-        longer create products directly — they submit a product request for your approval instead.
+        New products come from a supervisor&apos;s product request — review pending requests under Product Requests. From here you can
+        edit, change status, or upload an image for any existing product.
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -194,10 +186,8 @@ export default function ProductCatalogPage() {
         onPaginationChange={setPagination}
         rowCount={data?.total ?? 0}
         onRowClick={(product) => router.push(`/admin/products/${product.id}`)}
-        emptyState={<EmptyState title="No products yet" description="Create your first product to get started." />}
+        emptyState={<EmptyState title="No products yet" description="Products are created by approving a supervisor's product request." />}
       />
-
-      <CreateProductDialog open={createOpen} onOpenChange={setCreateOpen} />
 
       {rowAction && (
         <>

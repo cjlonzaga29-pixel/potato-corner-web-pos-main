@@ -27,16 +27,18 @@ const ALLOWED_ACTIONS = [
  * within this file.
  */
 test.describe('Login audit', () => {
-  test('login audit page: shows login events, and employee activity tab reuses them', async ({ page }) => {
-    await test.step('login audit page loads and shows only login events', async () => {
+  test('login audit panel: shows login events, and employee activity tab reuses them', async ({ page }) => {
+    await test.step('login audit panel loads and shows only login events', async () => {
       await page.goto('/login', { waitUntil: 'networkidle' });
       await page.getByLabel('Email').fill('admin@potatocorner.test');
       await page.getByRole('textbox', { name: 'Password' }).fill('SuperAdmin123');
       await page.getByRole('button', { name: 'Sign in', exact: true }).click();
       await page.waitForURL('**/admin/dashboard', { timeout: NAV_TIMEOUT });
 
-      await page.getByRole('link', { name: 'Login Audit' }).click();
-      await expect(page).toHaveURL(/\/admin\/login-audit$/, { timeout: NAV_TIMEOUT });
+      await page.getByRole('link', { name: 'Reports', exact: true }).click();
+      await expect(page).toHaveURL(/\/admin\/reports$/, { timeout: NAV_TIMEOUT });
+      await page.getByRole('tab', { name: 'Login Audit' }).click();
+      await expect(page.getByText('Login & Session Events')).toBeVisible({ timeout: NAV_TIMEOUT });
 
       const rows = page.locator('table tbody tr');
       await expect(rows.first()).toBeVisible({ timeout: NAV_TIMEOUT });

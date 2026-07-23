@@ -1,18 +1,15 @@
 import type { APIRequestContext } from '@playwright/test';
 import { TEST_USERS } from './test-users';
-
-interface ApiResponse<T> {
-  data: T | null;
-  error: unknown;
-  meta: unknown;
-}
+import { apiLogin, authedGet, createProductViaRequest } from './api-helpers';
 
 /**
  * apps/api/prisma/seed.ts only seeds the branch and the three role
  * accounts — no product catalog. The POS terminal (tests/e2e/pos-workflow
  * spec) needs at least one sellable variant to add to the cart, so this
- * creates one via the real admin API (not direct Prisma access — no schema
- * bypass, matches how the product actually gets created in production).
+ * creates one via the real supervisor product-request + admin-approval
+ * flow (not direct Prisma access, and not a direct POST /api/products —
+ * that endpoint was removed in the Super Admin IA restructure, so this is
+ * now the one true path a product takes in production too).
  *
  * Two variants, both whole-peso prices, chosen so the resulting totals stay
  * whole numbers and are easy to assert against by hand:
@@ -30,85 +27,35 @@ export const CATALOG_FIXTURE = {
   deluxePrice: 112.0,
 };
 
-async function postJson<T>(
-  request: APIRequestContext,
-  path: string,
-  body: unknown,
-  headers: Record<string, string>,
-): Promise<T> {
-  const response = await request.post(path, { data: body, headers });
-  const parsed = (await response.json()) as ApiResponse<T>;
-  if (!response.ok() || !parsed.data) {
-    throw new Error(`POST ${path} failed (${response.status()}): ${JSON.stringify(parsed.error)}`);
-  }
-  return parsed.data;
-}
-
-function readCsrfToken(context: APIRequestContext, baseURL: string): Promise<string> {
-  return context.storageState().then((state) => {
-    const cookie = state.cookies.find((c) => c.name === 'csrf-token' && new URL(baseURL).hostname === c.domain);
-    if (!cookie) throw new Error('csrf-token cookie not found after login — csrf-guard.ts should have issued one');
-    return decodeURIComponent(cookie.value);
-  });
-}
-
 /**
- * Logs in as the seeded super_admin, creates the fixture product + two
- * variants (idempotent-ish: reuses an existing product with the same name
- * rather than erroring on retries), and returns the branch id both seeded
- * non-admin accounts are assigned to. Call once per spec file in
- * `test.beforeAll`, not per-test — this hits real write endpoints.
+ * Logs in as the seeded admin + supervisor, creates the fixture product +
+ * two variants via a product request approved on the spot, and returns the
+ * branch id both seeded non-admin accounts are assigned to. Call once per
+ * spec file in `test.beforeAll`, not per-test — this hits real write
+ * endpoints.
  */
 export async function seedCatalog(request: APIRequestContext, baseURL: string): Promise<{ branchId: string }> {
-  const loginRes = await request.post('/api/auth/login', {
-    data: { email: TEST_USERS.super_admin.email, password: TEST_USERS.super_admin.password, device_id: crypto.randomUUID() },
-  });
-  const loginBody = (await loginRes.json()) as ApiResponse<{ access_token: string; user: { branch_ids: string[] } }>;
-  if (!loginRes.ok() || !loginBody.data) {
-    throw new Error(`Admin login failed (${loginRes.status()}): ${JSON.stringify(loginBody.error)}`);
-  }
-  const accessToken = loginBody.data.access_token;
-  const csrfToken = await readCsrfToken(request, baseURL);
-
-  const authHeaders = {
-    Authorization: `Bearer ${accessToken}`,
-    'X-CSRF-Token': csrfToken,
-    'Content-Type': 'application/json',
-  };
+  const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
+  const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
 
   // Branch is seeded by name/code ("Main Branch" / MAIN01) — fetched by
   // listing branches rather than hardcoding an id that could drift.
-  const branchListRes = await request.get('/api/branches', { headers: authHeaders });
-  const branchListBody = (await branchListRes.json()) as ApiResponse<{ branches: { id: string; code: string }[] }>;
-  const branch = branchListBody.data?.branches.find((b) => b.code === 'MAIN01');
+  const branchList = await authedGet<{ branches: { id: string; code: string }[] }>(request, '/api/branches', admin.accessToken);
+  const branch = branchList.data?.branches.find((b) => b.code === 'MAIN01');
   if (!branch) {
     throw new Error('Seeded "Main Branch" (MAIN01) not found — run apps/api/prisma/seed.ts first');
   }
 
-  const product = await postJson<{ id: string }>(
-    request,
-    '/api/products',
-    {
-      name: CATALOG_FIXTURE.productName,
-      status: 'active',
-      category: 'E2E',
-      branch_exclusive: false, // cascades to all active branches, including MAIN01
-    },
-    authHeaders,
-  );
-
-  await postJson(
-    request,
-    `/api/products/${product.id}/variants`,
-    { name: CATALOG_FIXTURE.classicVariantName, size_label: 'Regular', base_price: CATALOG_FIXTURE.classicPrice },
-    authHeaders,
-  );
-  await postJson(
-    request,
-    `/api/products/${product.id}/variants`,
-    { name: CATALOG_FIXTURE.deluxeVariantName, size_label: 'Large', base_price: CATALOG_FIXTURE.deluxePrice },
-    authHeaders,
-  );
+  await createProductViaRequest(request, baseURL, {
+    branchId: branch.id,
+    supervisorAccessToken: supervisor.accessToken,
+    adminAccessToken: admin.accessToken,
+    proposedName: CATALOG_FIXTURE.productName,
+    variants: [
+      { name: CATALOG_FIXTURE.classicVariantName, size_label: 'Regular', base_price: CATALOG_FIXTURE.classicPrice },
+      { name: CATALOG_FIXTURE.deluxeVariantName, size_label: 'Large', base_price: CATALOG_FIXTURE.deluxePrice },
+    ],
+  });
 
   return { branchId: branch.id };
 }

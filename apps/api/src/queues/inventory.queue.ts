@@ -1,13 +1,9 @@
 import { MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS, SOCKET_EVENTS } from '@potato-corner/shared';
-import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
-import { hashToLockId } from '../lib/pg-lock.js';
-import { sha256Hex } from '../lib/hash.js';
 import { inventoryRepository } from '../modules/inventory/inventory.repository.js';
 import { computeDeduction } from '../modules/recipes/recipes.service.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
 import { enqueueRawNotificationJob } from './notification.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
-import { prisma } from '../lib/prisma.js';
 
 export interface SaleDeductionItem {
   productVariantId: string;
@@ -19,45 +15,6 @@ export interface SaleDeductionJobData {
   transactionId: string;
   branchId: string;
   items: SaleDeductionItem[];
-}
-
-/**
- * Phase 21: BullMQ removed — see lib/job-runner.ts. RETRY_DELAYS_MS below
- * preserves Architecture doc §3.6's 10s/60s/300s backoff. BullMQ's
- * `jobId: transactionId` used to also dedupe concurrent enqueues of the
- * same transaction at the queue level; a Postgres advisory lock keyed by
- * transactionId (see refreshToken's use of the same pattern in
- * auth.service.ts) now serializes concurrent processSaleDeduction calls for
- * the same transaction instead — hasMovementForReference's per-ingredient
- * check below is what actually makes a re-run a no-op, the lock just
- * prevents two concurrent runs from both passing that check before either
- * has written.
- */
-const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
-const MAX_ATTEMPTS = RETRY_DELAYS_MS.length;
-
-/**
- * Enqueues Phase 8's post-sale deduction job. Runs in the background;
- * returns immediately (matching the old queue.add()'s "enqueued, not yet
- * processed" semantics) with retry/backoff preserved via runWithRetry. On
- * final failure, notifies the same way BullMQ's `worker.on('failed', ...)`
- * used to (see the end of this file).
- */
-export function enqueueSaleDeduction(data: SaleDeductionJobData): Promise<void> {
-  runFireAndForget(
-    () => runWithRetry((attempt) => processSaleDeductionWithLock(data, attempt), RETRY_DELAYS_MS),
-    (error) => handleSaleDeductionFailure(data, error, MAX_ATTEMPTS),
-  );
-  return Promise.resolve();
-}
-
-async function processSaleDeductionWithLock(data: SaleDeductionJobData, attempt: number): Promise<void> {
-  const lockId = hashToLockId(sha256Hex(data.transactionId));
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
-    await processSaleDeduction(data);
-  });
-  void attempt;
 }
 
 export async function processSaleDeduction(job: SaleDeductionJobData): Promise<void> {
@@ -165,26 +122,3 @@ export async function processSaleDeduction(job: SaleDeductionJobData): Promise<v
   await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED);
 }
 
-/**
- * After the final retry attempt, mark the transaction's deduction as failed
- * (Architecture doc §3.6: "after 3 failures mark deduction failed, notify
- * supervisor") instead of leaving it stuck at `pending` forever. Mirrors
- * the old inventoryWorker.on('failed', ...) handler.
- */
-function handleSaleDeductionFailure(data: SaleDeductionJobData, error: unknown, attemptsMade: number): void {
-  const { transactionId, branchId } = data;
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Inventory deduction permanently failed for transaction ${transactionId}:`, message);
-
-  void inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.FAILED);
-  void recordAuditLog({
-    action: 'INVENTORY_SALE_DEDUCTION_FAILED',
-    entityType: 'transaction',
-    entityId: transactionId,
-    actorId: null,
-    actorRole: 'system',
-    branchId,
-    afterState: { transaction_id: transactionId, error: message, attempts: attemptsMade },
-  });
-  void enqueueRawNotificationJob('inventory_deduction_failed', { transactionId, branchId, error: message });
-}

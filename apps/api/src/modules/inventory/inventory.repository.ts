@@ -39,8 +39,8 @@ export const inventoryRepository = {
     });
   },
 
-  findIngredientById(id: string) {
-    return prisma.ingredient.findFirst({ where: { id, deletedAt: null } });
+  findIngredientById(id: string, tx?: Prisma.TransactionClient) {
+    return (tx ?? prisma).ingredient.findFirst({ where: { id, deletedAt: null } });
   },
 
   /** Includes soft-deleted ingredients too — used for transfer/audit lookups where a deleted row still needs to resolve by ID. */
@@ -84,8 +84,8 @@ export const inventoryRepository = {
   },
 
   /** Derived current stock for one ingredient — sum of every movement ever recorded against it. */
-  async getCurrentStock(ingredientId: string): Promise<Prisma.Decimal> {
-    const result = await prisma.inventoryMovement.aggregate({
+  async getCurrentStock(ingredientId: string, tx?: Prisma.TransactionClient): Promise<Prisma.Decimal> {
+    const result = await (tx ?? prisma).inventoryMovement.aggregate({
       where: { ingredientId },
       _sum: { quantityChange: true },
     });
@@ -115,16 +115,16 @@ export const inventoryRepository = {
    * snapshot on the row is always consistent with the sum it was derived
    * from at write time.
    */
-  async appendMovement(input: AppendMovementInput) {
-    return prisma.$transaction(async (tx) => {
-      const sumResult = await tx.inventoryMovement.aggregate({
+  async appendMovement(input: AppendMovementInput, tx?: Prisma.TransactionClient) {
+    const run = async (client: Prisma.TransactionClient) => {
+      const sumResult = await client.inventoryMovement.aggregate({
         where: { ingredientId: input.ingredientId },
         _sum: { quantityChange: true },
       });
       const quantityBefore = sumResult._sum.quantityChange ?? new Prisma.Decimal(0);
       const quantityAfter = quantityBefore.plus(input.quantityChange);
 
-      return tx.inventoryMovement.create({
+      return client.inventoryMovement.create({
         data: {
           branchId: input.branchId,
           ingredientId: input.ingredientId,
@@ -141,7 +141,9 @@ export const inventoryRepository = {
         },
         include: movementInclude,
       });
-    });
+    };
+    if (tx) return run(tx);
+    return prisma.$transaction(run);
   },
 
   /**
@@ -212,8 +214,8 @@ export const inventoryRepository = {
    * it's the one write the Phase 8 deduction worker needs against the
    * Transaction row that already carries this status field in the schema.
    */
-  updateTransactionDeductionStatus(transactionId: string, status: InventoryDeductionStatus) {
-    return prisma.transaction.update({ where: { id: transactionId }, data: { inventoryDeductionStatus: status } });
+  updateTransactionDeductionStatus(transactionId: string, status: InventoryDeductionStatus, tx?: Prisma.TransactionClient) {
+    return (tx ?? prisma).transaction.update({ where: { id: transactionId }, data: { inventoryDeductionStatus: status } });
   },
 
   /**
@@ -244,11 +246,11 @@ export const inventoryRepository = {
    * entirely inside one transaction: either the whole cascade commits, or
    * none of it does.
    */
-  async runOutOfStockCascade(branchId: string, ingredientId: string): Promise<OutOfStockCascadeResult> {
-    return prisma.$transaction(async (tx) => {
+  async runOutOfStockCascade(branchId: string, ingredientId: string, tx?: Prisma.TransactionClient): Promise<OutOfStockCascadeResult> {
+    const run = async (client: Prisma.TransactionClient) => {
       const [masterRows, overrideRows] = await Promise.all([
-        tx.recipe.findMany({ where: { ingredientId, deletedAt: null }, select: { productVariantId: true, flavorId: true } }),
-        tx.branchRecipeOverride.findMany({
+        client.recipe.findMany({ where: { ingredientId, deletedAt: null }, select: { productVariantId: true, flavorId: true } }),
+        client.branchRecipeOverride.findMany({
           where: { ingredientId, branchId, deletedAt: null },
           select: { productVariantId: true, flavorId: true },
         }),
@@ -260,7 +262,7 @@ export const inventoryRepository = {
       const directFlavorIds = new Set(rows.filter((r) => r.flavorId !== null).map((r) => r.flavorId as string));
 
       if (baseVariantIds.length > 0) {
-        const expanded = await tx.productVariantFlavor.findMany({
+        const expanded = await client.productVariantFlavor.findMany({
           where: { productVariantId: { in: baseVariantIds } },
           select: { flavorId: true },
         });
@@ -269,7 +271,7 @@ export const inventoryRepository = {
 
       if (directFlavorIds.size === 0) return { affectedFlavors: [], affectedProducts: [] };
 
-      const existingAvailability = await tx.branchFlavorAvailability.findMany({
+      const existingAvailability = await client.branchFlavorAvailability.findMany({
         where: { branchId, flavorId: { in: [...directFlavorIds] } },
         select: { flavorId: true, isAvailable: true },
       });
@@ -278,17 +280,17 @@ export const inventoryRepository = {
 
       if (flavorIdsToDisable.length === 0) return { affectedFlavors: [], affectedProducts: [] };
 
-      const flavors = await tx.flavor.findMany({ where: { id: { in: flavorIdsToDisable } }, select: { id: true, name: true } });
+      const flavors = await client.flavor.findMany({ where: { id: { in: flavorIdsToDisable } }, select: { id: true, name: true } });
 
       for (const flavorId of flavorIdsToDisable) {
-        await tx.branchFlavorAvailability.upsert({
+        await client.branchFlavorAvailability.upsert({
           where: { branchId_flavorId: { branchId, flavorId } },
           create: { branchId, flavorId, isAvailable: false, unavailableReason: 'out_of_stock' },
           update: { isAvailable: false, unavailableReason: 'out_of_stock' },
         });
       }
 
-      const linkedVariantFlavors = await tx.productVariantFlavor.findMany({
+      const linkedVariantFlavors = await client.productVariantFlavor.findMany({
         where: { flavorId: { in: flavorIdsToDisable } },
         select: { productVariant: { select: { productId: true } } },
       });
@@ -296,13 +298,13 @@ export const inventoryRepository = {
 
       const affectedProducts: CascadeAffectedProduct[] = [];
       for (const productId of candidateProductIds) {
-        const productFlavorLinks = await tx.productVariantFlavor.findMany({
+        const productFlavorLinks = await client.productVariantFlavor.findMany({
           where: { productVariant: { productId } },
           select: { flavorId: true },
         });
         const distinctFlavorIds = [...new Set(productFlavorLinks.map((r) => r.flavorId))];
 
-        const unavailableForProduct = await tx.branchFlavorAvailability.findMany({
+        const unavailableForProduct = await client.branchFlavorAvailability.findMany({
           where: { branchId, flavorId: { in: distinctFlavorIds }, isAvailable: false },
           select: { flavorId: true },
         });
@@ -310,18 +312,18 @@ export const inventoryRepository = {
         const anyFlavorStillAvailable = distinctFlavorIds.some((id) => !unavailableSet.has(id));
         if (anyFlavorStillAvailable) continue;
 
-        const existingProductAvailability = await tx.branchProductAvailability.findUnique({
+        const existingProductAvailability = await client.branchProductAvailability.findUnique({
           where: { branchId_productId: { branchId, productId } },
         });
         if (existingProductAvailability?.isAvailable === false) continue;
 
-        await tx.branchProductAvailability.upsert({
+        await client.branchProductAvailability.upsert({
           where: { branchId_productId: { branchId, productId } },
           create: { branchId, productId, isAvailable: false },
           update: { isAvailable: false },
         });
 
-        const product = await tx.product.findUnique({ where: { id: productId }, select: { id: true, name: true } });
+        const product = await client.product.findUnique({ where: { id: productId }, select: { id: true, name: true } });
         if (product) affectedProducts.push({ productId: product.id, productName: product.name });
       }
 
@@ -329,7 +331,9 @@ export const inventoryRepository = {
         affectedFlavors: flavors.map((f) => ({ flavorId: f.id, flavorName: f.name })),
         affectedProducts,
       };
-    });
+    };
+    if (tx) return run(tx);
+    return prisma.$transaction(run);
   },
 
   async findMovements(branchId: string, filters: MovementListFilters) {

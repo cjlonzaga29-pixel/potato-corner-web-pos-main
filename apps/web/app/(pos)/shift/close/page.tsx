@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DenominationTable, denominationEntries, denominationTotal, type DenominationQuantities } from '@/components/pos/denomination-table';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { ErrorState } from '@/components/shared/feedback/error-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useCurrentShift, useCloseShift, useShiftSummary } from '@/hooks/queries/use-shifts';
 import { formatCurrency } from '@/lib/utils';
@@ -22,7 +24,7 @@ export default function CloseShiftPage() {
   const router = useRouter();
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
-  const { data: shift, isLoading } = useCurrentShift(branchId);
+  const { data: shift, isLoading, isError, refetch } = useCurrentShift(branchId);
   const { data: summaryData } = useShiftSummary(shift?.id);
   const summary = summaryData?.summary;
   const [quantities, setQuantities] = useState<DenominationQuantities>({});
@@ -51,7 +53,15 @@ export default function CloseShiftPage() {
   }
 
   if (isLoading) {
-    return <p className="p-6 text-sm text-muted-foreground">Loading shift…</p>;
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return <ErrorState title="Failed to load shift" retry={() => void refetch()} />;
   }
 
   if (!shift) {

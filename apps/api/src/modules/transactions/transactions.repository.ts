@@ -150,9 +150,9 @@ export const transactionsRepository = {
    * Transaction row + its line items are created atomically — a crash
    * partway through must never leave a transaction with zero items.
    */
-  async createTransaction(data: CreateTransactionRow) {
-    return prisma.$transaction(async (tx) => {
-      const transaction = await tx.transaction.create({
+  async createTransaction(data: CreateTransactionRow, tx?: Prisma.TransactionClient) {
+    const run = async (client: Prisma.TransactionClient) => {
+      const transaction = await client.transaction.create({
         data: {
           branchId: data.branchId,
           shiftId: data.shiftId,
@@ -176,7 +176,7 @@ export const transactionsRepository = {
         },
       });
 
-      await tx.transactionItem.createMany({
+      await client.transactionItem.createMany({
         data: data.items.map((item) => ({
           transactionId: transaction.id,
           productId: item.productId,
@@ -191,8 +191,10 @@ export const transactionsRepository = {
         })),
       });
 
-      return tx.transaction.findUniqueOrThrow({ where: { id: transaction.id }, include: transactionInclude });
-    });
+      return client.transaction.findUniqueOrThrow({ where: { id: transaction.id }, include: transactionInclude });
+    };
+    if (tx) return run(tx);
+    return prisma.$transaction(run);
   },
 
   findTransactionById(id: string) {
@@ -214,16 +216,18 @@ export const transactionsRepository = {
     return { transactions, total };
   },
 
-  voidTransaction(id: string, data: { voidedById: string; voidReason: string }) {
-    return prisma.transaction.update({
+  voidTransaction(id: string, data: { voidedById: string; voidReason: string }, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.transaction.update({
       where: { id },
       data: { status: 'voided', voidedAt: new Date(), voidedById: data.voidedById, voidReason: data.voidReason },
       include: transactionInclude,
     });
   },
 
-  refundTransaction(id: string, data: { refundedById: string; refundReason: string }) {
-    return prisma.transaction.update({
+  refundTransaction(id: string, data: { refundedById: string; refundReason: string }, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.transaction.update({
       where: { id },
       data: { status: 'refunded', refundedAt: new Date(), refundedById: data.refundedById, refundReason: data.refundReason },
       include: transactionInclude,

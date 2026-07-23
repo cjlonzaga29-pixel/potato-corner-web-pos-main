@@ -3,6 +3,7 @@ import { priceOverridesRepository } from './price-overrides.repository.js';
 import { PriceOverrideError, type PriceOverrideListFilters } from './price-overrides.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
+import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -107,13 +108,13 @@ export const priceOverridesService = {
     return response;
   },
 
-  async listOverrides(actor: JwtPayload, filters: PriceOverrideListFilters) {
-    const scoped: PriceOverrideListFilters =
-      actor.role === ROLES.SUPERVISOR
-        ? { ...filters, branch_id: filters.branch_id && actor.branch_ids.includes(filters.branch_id) ? filters.branch_id : actor.branch_ids[0] }
-        : filters;
+  async listOverrides(actor: JwtPayload, filters: Omit<PriceOverrideListFilters, 'branchIds'>) {
+    const branchIds = getAccessibleBranchIds(actor);
+    if (filters.branch_id) {
+      assertBranchAccess(actor, filters.branch_id, PriceOverrideError);
+    }
 
-    const { overrides, total } = await priceOverridesRepository.findAll(scoped);
+    const { overrides, total } = await priceOverridesRepository.findAll({ ...filters, branchIds });
     return {
       overrides: (overrides as OverrideRow[]).map(toResponse),
       total,

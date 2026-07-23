@@ -1,9 +1,11 @@
 import sharp from 'sharp';
-import { ROLES, type JwtPayload } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, type JwtPayload } from '@potato-corner/shared';
 import { expensesRepository } from './expenses.repository.js';
 import { ExpenseError, type CreateExpenseData, type ExpenseFilters, type UpdateExpenseData } from './expenses.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
+import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -52,20 +54,6 @@ async function toResponse(row: ExpenseRow) {
   };
 }
 
-/** super_admin sees everything; supervisor/staff are scoped to their JWT branch_ids — never trust a client-supplied branch list. */
-function accessibleBranchIds(actor: JwtPayload): string[] | 'all' {
-  if (actor.role === ROLES.SUPER_ADMIN) return 'all';
-  return actor.branch_ids;
-}
-
-function assertBranchAccess(actor: JwtPayload, branchId: string): void {
-  const accessible = accessibleBranchIds(actor);
-  if (accessible === 'all') return;
-  if (!accessible.includes(branchId)) {
-    throw new ExpenseError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
-  }
-}
-
 interface CreateExpenseInput {
   branch_id: string;
   category: string;
@@ -79,7 +67,7 @@ type UpdateExpenseInput = Partial<CreateExpenseInput>;
 
 export const expensesService = {
   async getExpenses(actor: JwtPayload, filters: Omit<ExpenseFilters, 'branchIds'>) {
-    const branchIds = accessibleBranchIds(actor);
+    const branchIds = getAccessibleBranchIds(actor);
     const { expenses, total, totalAmount } = await expensesRepository.findAll({ ...filters, branchIds });
     return {
       expenses: await Promise.all((expenses as ExpenseRow[]).map(toResponse)),
@@ -93,7 +81,7 @@ export const expensesService = {
   async getExpense(id: string, actor: JwtPayload) {
     const expense = (await expensesRepository.findById(id)) as ExpenseRow | null;
     if (!expense) throw new ExpenseError('EXPENSE_NOT_FOUND', 'Expense not found', 404);
-    assertBranchAccess(actor, expense.branchId);
+    assertBranchAccess(actor, expense.branchId, ExpenseError);
     return expense;
   },
 
@@ -111,7 +99,7 @@ export const expensesService = {
       }
     }
 
-    assertBranchAccess(actor, data.branch_id);
+    assertBranchAccess(actor, data.branch_id, ExpenseError);
 
     const createData: CreateExpenseData = {
       branchId: data.branch_id,
@@ -139,6 +127,9 @@ export const expensesService = {
       afterState: response,
       ipAddress,
     });
+
+    notifyBranch(data.branch_id, SOCKET_EVENTS.EXPENSE_CREATED, response);
+    notifySuperAdmin(SOCKET_EVENTS.EXPENSE_CREATED, response);
 
     return response;
   },
@@ -171,6 +162,9 @@ export const expensesService = {
       ipAddress,
     });
 
+    notifyBranch(existing.branchId, SOCKET_EVENTS.EXPENSE_UPDATED, response);
+    notifySuperAdmin(SOCKET_EVENTS.EXPENSE_UPDATED, response);
+
     return response;
   },
 
@@ -194,6 +188,9 @@ export const expensesService = {
       beforeState: await toResponse(existing),
       ipAddress,
     });
+
+    notifyBranch(existing.branchId, SOCKET_EVENTS.EXPENSE_DELETED, { id });
+    notifySuperAdmin(SOCKET_EVENTS.EXPENSE_DELETED, { id });
   },
 
   async uploadReceipt(id: string, file: { buffer: Buffer; originalname: string }, actor: JwtPayload, ipAddress: string | null) {

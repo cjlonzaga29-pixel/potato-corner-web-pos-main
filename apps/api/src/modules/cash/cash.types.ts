@@ -45,6 +45,8 @@ export interface ShiftListFilters {
 export interface ShiftCloseComputedCounts {
   cashSalesCount: number;
   gcashSalesCount: number;
+  mayaSalesCount: number;
+  otherSalesCount: number;
   voidedCount: number;
   refundedCount: number;
   totalTransactionCount: number;

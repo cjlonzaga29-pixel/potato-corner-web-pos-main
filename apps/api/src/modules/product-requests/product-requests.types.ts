@@ -1,6 +1,7 @@
 export interface ProductRequestListFilters {
   status?: string;
   branch_id?: string;
+  branchIds: 'all' | string[];
   requested_by?: string;
   page: number;
   limit: number;

@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { startOfDay } from 'date-fns';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { DashboardShiftCard } from '@/components/supervisor/dashboard-shift-card';
@@ -20,19 +19,6 @@ import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/querie
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
 const ATTENDANCE_OVERVIEW_LIMIT = 100;
-
-function EmptyKpiCard({ title }: { title: string }) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold text-muted-foreground">—</div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function SupervisorDashboardPage() {
   const router = useRouter();
@@ -75,7 +61,7 @@ export default function SupervisorDashboardPage() {
     );
   }
 
-  const grossSales = shift ? shift.cash_sales_total + shift.gcash_sales_total : 0;
+  const grossSales = shift ? shift.gross_sales_total : 0;
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-yellow-500' : isConnected ? 'bg-green-500' : 'bg-red-500';
 
@@ -111,9 +97,9 @@ export default function SupervisorDashboardPage() {
           </>
         ) : (
           <>
-            <EmptyKpiCard title="Gross Sales" />
-            <EmptyKpiCard title="Transactions" />
-            <EmptyKpiCard title="Discounts Given" />
+            <KpiCard title="Gross Sales" value={0} prefix="₱" />
+            <KpiCard title="Transactions" value={0} />
+            <KpiCard title="Discounts Given" value={0} prefix="₱" />
           </>
         )}
       </div>

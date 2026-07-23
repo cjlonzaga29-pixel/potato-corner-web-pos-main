@@ -2,20 +2,19 @@
 
 import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ChevronDown } from 'lucide-react';
 import type { ProductResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
-import { formatDateTime } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
 import { useProducts, useProduct } from '@/hooks/queries/use-products';
 import { useRecipesList } from '@/hooks/queries/use-recipes';
-import { RecipeLinesDialog } from '@/components/admin/recipes/recipe-lines-dialog';
 
 /**
  * The recipes API has no aggregate "recipe" entity or list-all endpoint —
@@ -68,7 +67,7 @@ function ProductPicker({ onSelect }: { onSelect: (productId: string) => void }) 
             onSelect(row.original.id);
           }}
         >
-          Manage Recipes
+          View Recipes
         </Button>
       ),
     },
@@ -103,7 +102,7 @@ function ProductPicker({ onSelect }: { onSelect: (productId: string) => void }) 
 
 function VariantRecipesView({ productId, onBack }: { productId: string; onBack: () => void }) {
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
-  const [activeVariant, setActiveVariant] = useState<ProductVariantResponse | null>(null);
+  const [expandedVariantId, setExpandedVariantId] = useState<string | null>(null);
 
   if (isLoading) {
     return (
@@ -129,20 +128,31 @@ function VariantRecipesView({ productId, onBack }: { productId: string; onBack: 
       {product.variants.length === 0 ? (
         <EmptyState title="No variants yet" description="Add a variant to this product before defining a recipe." />
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3">
           {product.variants.map((variant) => (
-            <VariantRecipeCard key={variant.id} variant={variant} onManage={() => setActiveVariant(variant)} />
+            <VariantRecipeCard
+              key={variant.id}
+              variant={variant}
+              expanded={expandedVariantId === variant.id}
+              onToggle={() => setExpandedVariantId((prev) => (prev === variant.id ? null : variant.id))}
+            />
           ))}
         </div>
       )}
-
-      {activeVariant && <RecipeLinesDialog open onOpenChange={(open) => !open && setActiveVariant(null)} variant={activeVariant} />}
     </div>
   );
 }
 
-function VariantRecipeCard({ variant, onManage }: { variant: ProductVariantResponse; onManage: () => void }) {
-  const { data: lines, isLoading } = useRecipesList(variant.id);
+function VariantRecipeCard({
+  variant,
+  expanded,
+  onToggle,
+}: {
+  variant: ProductVariantResponse;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { data: lines, isLoading } = useRecipesList(expanded ? variant.id : undefined);
 
   return (
     <Card>
@@ -150,19 +160,43 @@ function VariantRecipeCard({ variant, onManage }: { variant: ProductVariantRespo
         <CardTitle className="text-base">
           {variant.name} — {variant.size_label}
         </CardTitle>
-        {isLoading ? (
-          <LoadingSpinner size="sm" />
-        ) : (
-          <Badge variant="secondary">
-            {lines?.length ?? 0} ingredient{lines?.length === 1 ? '' : 's'}
-          </Badge>
-        )}
-      </CardHeader>
-      <CardContent>
-        <Button variant="outline" size="sm" onClick={onManage}>
-          Manage Recipe
+        <Button variant="ghost" size="sm" onClick={onToggle}>
+          View Recipe
+          <ChevronDown className={cn('ml-2 h-4 w-4 transition-transform', expanded && 'rotate-180')} />
         </Button>
-      </CardContent>
+      </CardHeader>
+      {expanded && (
+        <CardContent>
+          {isLoading ? (
+            <div className="flex justify-center py-6">
+              <LoadingSpinner size="sm" />
+            </div>
+          ) : !lines || lines.length === 0 ? (
+            <EmptyState title="No ingredient lines yet" description="This variant's master recipe has not been defined." />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Ingredient</TableHead>
+                  <TableHead>Applies To</TableHead>
+                  <TableHead>Quantity</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {lines.map((line) => (
+                  <TableRow key={line.id}>
+                    <TableCell>{line.ingredient_name}</TableCell>
+                    <TableCell>{line.flavor_name ?? 'Base (all flavors)'}</TableCell>
+                    <TableCell>
+                      {line.quantity} {line.unit}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      )}
     </Card>
   );
 }

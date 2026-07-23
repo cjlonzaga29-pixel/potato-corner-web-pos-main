@@ -5,6 +5,11 @@ export const SOCKET_EVENTS = {
   INVENTORY_LOW_STOCK: 'inventory:low_stock',
   INVENTORY_OUT_OF_STOCK: 'inventory:out_of_stock',
   INVENTORY_PRODUCT_UNAVAILABLE: 'inventory:product_unavailable',
+  // Phase 7 realtime pass — stock-in/adjust/waste/count/transfer previously
+  // only broadcast when crossing a low-stock threshold; other sessions
+  // viewing the movement ledger for the same branch never learned of a
+  // movement that didn't cross that threshold.
+  INVENTORY_MOVEMENT_RECORDED: 'inventory:movement_recorded',
   CASH_VARIANCE_FLAGGED: 'cash:variance_flagged',
   CASH_VARIANCE_APPROVED: 'cash:variance_approved',
   // Phase 13 — shift lifecycle broadcasts; not in the original architecture
@@ -55,6 +60,11 @@ export const SOCKET_EVENTS = {
   INVENTORY_REQUEST_SUBMITTED: 'inventory_request:submitted',
   INVENTORY_REQUEST_APPROVED: 'inventory_request:approved',
   INVENTORY_REQUEST_REJECTED: 'inventory_request:rejected',
+
+  // Phase 7 realtime pass — expense ledger had no socket coverage at all.
+  EXPENSE_CREATED: 'expense:created',
+  EXPENSE_UPDATED: 'expense:updated',
+  EXPENSE_DELETED: 'expense:deleted',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

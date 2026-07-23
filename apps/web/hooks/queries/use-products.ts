@@ -2,23 +2,25 @@
 
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type {
-  BranchProductAvailabilityRow,
-  BulkBranchProductAvailabilityResponse,
-  ChangeProductStatusInput,
-  CreateVariantInput,
-  LinkVariantFlavorInput,
-  PosCatalogResponse,
-  ProductDetailResponse,
-  ProductListResponse,
-  ProductStatus,
-  ProductVariantResponse,
-  UpdateProductInput,
-  UpdateVariantFlavorInput,
-  UpdateVariantInput,
+import {
+  SOCKET_EVENTS,
+  type BranchProductAvailabilityRow,
+  type BulkBranchProductAvailabilityResponse,
+  type ChangeProductStatusInput,
+  type CreateVariantInput,
+  type LinkVariantFlavorInput,
+  type PosCatalogResponse,
+  type ProductDetailResponse,
+  type ProductListResponse,
+  type ProductStatus,
+  type ProductVariantResponse,
+  type UpdateProductInput,
+  type UpdateVariantFlavorInput,
+  type UpdateVariantInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { PRODUCT_CACHE_REFRESH_MINUTES } from '@/lib/constants';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 export interface ProductFilters {
   status?: ProductStatus;
@@ -98,6 +100,14 @@ export function useCatalog(branchId: string | null | undefined) {
     // sit on a stale query indefinitely past the 60s staleTime.
     refetchInterval: PRODUCT_CACHE_REFRESH_MINUTES * 60 * 1000,
   });
+}
+
+/** Keeps the POS terminal's catalog (item availability/pricing) in sync with stock-driven changes at its own branch, without a manual refresh. */
+export function useCatalogRealtimeSync(branchId: string | null | undefined): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, SOCKET_EVENTS.INVENTORY_LOW_STOCK],
+    [['catalog', branchId]],
+  );
 }
 
 export function useUpdateProduct(productId: string) {

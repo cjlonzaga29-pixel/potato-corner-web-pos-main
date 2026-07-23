@@ -1,5 +1,4 @@
 import {
-  ROLES,
   type JwtPayload,
   type NotificationPreferences,
   type PaymentMethodConfigResponse,
@@ -20,6 +19,7 @@ import { settingsRepository } from './settings.repository.js';
 import { DEFAULT_SECURITY_POLICY, SECURITY_POLICY_KEY, SettingsError } from './settings.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { branchesRepository } from '../branches/branches.repository.js';
+import { assertBranchAccess as sharedAssertBranchAccess } from '../../lib/branch-access.js';
 
 type ActorContext = JwtPayload;
 
@@ -61,9 +61,7 @@ const DEFAULT_PAYMENT_METHOD_CONFIG = { cashEnabled: true, gcashEnabled: true };
 
 /** Throws BRANCH_ACCESS_DENIED unless the actor is a Super Admin or is assigned to this branch. */
 function assertBranchAccess(branchId: string, actor: ActorContext): void {
-  if (actor.role !== ROLES.SUPER_ADMIN && !actor.branch_ids.includes(branchId)) {
-    throw new SettingsError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
-  }
+  sharedAssertBranchAccess(actor, branchId, SettingsError);
 }
 
 export const settingsService = {

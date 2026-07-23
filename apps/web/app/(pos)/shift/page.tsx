@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { ErrorState } from '@/components/shared/feedback/error-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useCurrentShift } from '@/hooks/queries/use-shifts';
 
@@ -37,7 +39,7 @@ export default function ShiftDashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
-  const { data: shift, isLoading } = useCurrentShift(branchId);
+  const { data: shift, isLoading, isError, refetch } = useCurrentShift(branchId);
   const now = useNow();
 
   if (!branchId) {
@@ -45,7 +47,15 @@ export default function ShiftDashboardPage() {
   }
 
   if (isLoading) {
-    return <p className="p-6 text-sm text-muted-foreground">Loading shift…</p>;
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return <ErrorState title="Failed to load shift" retry={() => void refetch()} />;
   }
 
   if (!shift) {

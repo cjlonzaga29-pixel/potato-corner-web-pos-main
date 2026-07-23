@@ -18,9 +18,14 @@ import {
   Settings,
   ChevronsLeft,
   ChevronsRight,
+  ChevronDown,
   LogOut,
   Loader2,
   Wallet,
+  ShieldCheck,
+  ShieldAlert,
+  FileClock,
+  Clock,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -44,19 +49,32 @@ const NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
-  { label: 'Payment Settings', href: '/admin/payments/gcash-qr', icon: Wallet },
+  { label: 'Payment Settings', href: '/admin/payments', icon: Wallet },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
   { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },
-  // CR-001 — Approvals section (Super Admin reviews supervisor submissions)
-  { label: 'Product Requests', href: '/admin/approvals/product-requests', icon: Package },
-  // CR-002
-  { label: 'Flavor Requests', href: '/admin/approvals/flavor-requests', icon: Palette },
-  { label: 'Price Overrides', href: '/admin/approvals/price-overrides', icon: DollarSign },
+  {
+    label: 'Approvals',
+    icon: ShieldCheck,
+    children: [
+      { label: 'Product Requests', href: '/admin/approvals/product-requests', icon: Package },
+      { label: 'Flavor Requests', href: '/admin/approvals/flavor-requests', icon: Palette },
+      { label: 'Price Overrides', href: '/admin/approvals/price-overrides', icon: DollarSign },
+    ],
+  },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
-  { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
-  { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
+  {
+    label: 'Reports',
+    icon: BarChart3,
+    children: [
+      { label: 'Financial', href: '/admin/reports', icon: BarChart3 },
+      { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
+      { label: 'Shifts', href: '/admin/shifts', icon: Clock },
+      { label: 'Fraud Alerts', href: '/admin/reports?tab=FRAUD_ALERT_SUMMARY', icon: ShieldAlert },
+      { label: 'Audit Logs', href: '/admin/reports?tab=AUDIT_LOGS', icon: FileClock },
+    ],
+  },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];
 
@@ -65,6 +83,7 @@ export function AdminSidebar() {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
   async function handleLogout() {
     setIsLoggingOut(true);
@@ -104,6 +123,64 @@ export function AdminSidebar() {
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-2">
         {NAV_ITEMS.map((item) => {
+          if (item.children) {
+            const childActive = item.children.some(
+              (child) => pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`),
+            );
+            const isOpen = openGroups[item.label] ?? childActive;
+            return (
+              <div key={item.label}>
+                <button
+                  type="button"
+                  title={collapsed ? item.label : undefined}
+                  onClick={() => setOpenGroups((prev) => ({ ...prev, [item.label]: !isOpen }))}
+                  className={cn(
+                    'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    childActive
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )}
+                >
+                  <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                  {!collapsed && (
+                    <>
+                      <span className="flex-1 truncate text-left">{item.label}</span>
+                      <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', isOpen && 'rotate-180')} />
+                    </>
+                  )}
+                </button>
+                {isOpen && !collapsed && (
+                  <div className="ml-4 mt-1 space-y-1 border-l pl-2">
+                    {item.children.map((child) => {
+                      const isActive = pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`);
+                      const count = badgeCounts[child.href] ?? 0;
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          className={cn(
+                            'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                            isActive
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                          )}
+                        >
+                          <NavLinkIcon icon={child.icon} className="h-4 w-4 shrink-0" />
+                          <span className="flex-1 truncate">{child.label}</span>
+                          {count > 0 && (
+                            <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
+                              {count}
+                            </Badge>
+                          )}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           const count = badgeCounts[item.href] ?? 0;
           return (

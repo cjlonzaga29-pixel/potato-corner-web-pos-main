@@ -1,6 +1,7 @@
 export interface PriceOverrideListFilters {
   status?: string;
   branch_id?: string;
+  branchIds: 'all' | string[];
   page: number;
   limit: number;
 }

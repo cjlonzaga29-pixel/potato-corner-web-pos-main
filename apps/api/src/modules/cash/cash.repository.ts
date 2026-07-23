@@ -59,7 +59,14 @@ export const cashRepository = {
    * method — voided/refunded transactions never touched the physical
    * drawer, so they're excluded from cash_sales_total on purpose.
    */
-  async sumTransactionsForShift(shiftId: string): Promise<{ cashSalesTotal: Prisma.Decimal; gcashSalesTotal: Prisma.Decimal; transactionCount: number }> {
+  async sumTransactionsForShift(shiftId: string): Promise<{
+    cashSalesTotal: Prisma.Decimal;
+    gcashSalesTotal: Prisma.Decimal;
+    mayaSalesTotal: Prisma.Decimal;
+    otherSalesTotal: Prisma.Decimal;
+    grossSalesTotal: Prisma.Decimal;
+    transactionCount: number;
+  }> {
     const rows = await prisma.transaction.groupBy({
       by: ['paymentMethod'],
       where: { shiftId, status: 'completed' },
@@ -67,12 +74,17 @@ export const cashRepository = {
       _count: { _all: true },
     });
 
-    const cashRow = rows.find((r) => r.paymentMethod === 'cash');
-    const gcashRow = rows.find((r) => r.paymentMethod === 'gcash');
+    const cashSalesTotal = rows.find((r) => r.paymentMethod === 'cash')?._sum.totalAmount ?? new Prisma.Decimal(0);
+    const gcashSalesTotal = rows.find((r) => r.paymentMethod === 'gcash')?._sum.totalAmount ?? new Prisma.Decimal(0);
+    const mayaSalesTotal = rows.find((r) => r.paymentMethod === 'maya')?._sum.totalAmount ?? new Prisma.Decimal(0);
+    const otherSalesTotal = rows.find((r) => r.paymentMethod === 'other')?._sum.totalAmount ?? new Prisma.Decimal(0);
 
     return {
-      cashSalesTotal: cashRow?._sum.totalAmount ?? new Prisma.Decimal(0),
-      gcashSalesTotal: gcashRow?._sum.totalAmount ?? new Prisma.Decimal(0),
+      cashSalesTotal,
+      gcashSalesTotal,
+      mayaSalesTotal,
+      otherSalesTotal,
+      grossSalesTotal: cashSalesTotal.plus(gcashSalesTotal).plus(mayaSalesTotal).plus(otherSalesTotal),
       transactionCount: rows.reduce((sum, r) => sum + r._count._all, 0),
     };
   },
@@ -105,12 +117,16 @@ export const cashRepository = {
 
     const cashSalesCount = statusRows.find((r) => r.paymentMethod === 'cash' && r.status === 'completed')?._count._all ?? 0;
     const gcashSalesCount = statusRows.find((r) => r.paymentMethod === 'gcash' && r.status === 'completed')?._count._all ?? 0;
+    const mayaSalesCount = statusRows.find((r) => r.paymentMethod === 'maya' && r.status === 'completed')?._count._all ?? 0;
+    const otherSalesCount = statusRows.find((r) => r.paymentMethod === 'other' && r.status === 'completed')?._count._all ?? 0;
     const voidedCount = statusRows.filter((r) => r.status === 'voided').reduce((sum, r) => sum + r._count._all, 0);
     const refundedCount = statusRows.filter((r) => r.status === 'refunded').reduce((sum, r) => sum + r._count._all, 0);
 
     return {
       cashSalesCount,
       gcashSalesCount,
+      mayaSalesCount,
+      otherSalesCount,
       voidedCount,
       refundedCount,
       totalTransactionCount: totalCount,
@@ -133,9 +149,14 @@ export const cashRepository = {
       cashVariance: number;
       cashSalesTotal: number;
       gcashSalesTotal: number;
+      mayaSalesTotal: number;
+      otherSalesTotal: number;
+      grossSalesTotal: number;
       transactionCount: number;
       cashSalesCount: number;
       gcashSalesCount: number;
+      mayaSalesCount: number;
+      otherSalesCount: number;
       voidedCount: number;
       refundedCount: number;
       totalTransactionCount: number;
@@ -159,9 +180,14 @@ export const cashRepository = {
           cashVariance: computed.cashVariance,
           cashSalesTotal: computed.cashSalesTotal,
           gcashSalesTotal: computed.gcashSalesTotal,
+          mayaSalesTotal: computed.mayaSalesTotal,
+          otherSalesTotal: computed.otherSalesTotal,
+          grossSalesTotal: computed.grossSalesTotal,
           transactionCount: computed.transactionCount,
           cashSalesCount: computed.cashSalesCount,
           gcashSalesCount: computed.gcashSalesCount,
+          mayaSalesCount: computed.mayaSalesCount,
+          otherSalesCount: computed.otherSalesCount,
           voidedCount: computed.voidedCount,
           refundedCount: computed.refundedCount,
           totalTransactionCount: computed.totalTransactionCount,

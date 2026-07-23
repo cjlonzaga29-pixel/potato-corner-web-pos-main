@@ -8,9 +8,12 @@ const detailInclude = {
   reviewer: { select: { id: true, firstName: true, lastName: true } },
 } satisfies Prisma.ProductRequestInclude;
 
-function buildWhere(filters: Pick<ProductRequestListFilters, 'status' | 'branch_id' | 'requested_by'>): Prisma.ProductRequestWhereInput {
+function buildWhere(
+  filters: Pick<ProductRequestListFilters, 'status' | 'branch_id' | 'branchIds' | 'requested_by'>,
+): Prisma.ProductRequestWhereInput {
   return {
     ...(filters.status && { status: filters.status }),
+    ...(filters.branchIds !== 'all' && { branchId: { in: filters.branchIds } }),
     ...(filters.branch_id && { branchId: filters.branch_id }),
     ...(filters.requested_by && { requestedBy: filters.requested_by }),
   };

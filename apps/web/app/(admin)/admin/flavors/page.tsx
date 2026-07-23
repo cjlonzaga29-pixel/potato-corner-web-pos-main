@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { MoreHorizontal, Plus } from 'lucide-react';
+import { MoreHorizontal } from 'lucide-react';
 import type { FlavorResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -15,7 +15,6 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
 import { useFlavors } from '@/hooks/queries/use-flavors';
 import { FlavorColorSwatch } from '@/components/admin/flavors/flavor-color-swatch';
-import { CreateFlavorDialog } from '@/components/admin/flavors/create-flavor-dialog';
 
 const ACTIVE_FILTERS = [
   { value: 'all', label: 'All Flavors' },
@@ -28,7 +27,6 @@ export default function FlavorManagementPage() {
   const [search, setSearch] = useState('');
   const [active, setActive] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const [createOpen, setCreateOpen] = useState(false);
 
   const { data, isLoading, isError, refetch } = useFlavors({
     isActive: active === 'all' ? undefined : active === 'true',
@@ -74,15 +72,9 @@ export default function FlavorManagementPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Flavor Management</h1>
-          <p className="text-sm text-muted-foreground">Manage flavors, their colors, and branch-level availability.</p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create Flavor
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Flavor Management</h1>
+        <p className="text-sm text-muted-foreground">Manage flavors, their colors, and branch-level availability.</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -125,10 +117,10 @@ export default function FlavorManagementPage() {
         onPaginationChange={setPagination}
         rowCount={data?.total ?? 0}
         onRowClick={(flavor) => router.push(`/admin/flavors/${flavor.id}`)}
-        emptyState={<EmptyState title="No flavors yet" description="Create your first flavor to get started." />}
+        emptyState={
+          <EmptyState title="No flavors yet" description="Flavors are created by supervisors and appear here automatically." />
+        }
       />
-
-      <CreateFlavorDialog open={createOpen} onOpenChange={setCreateOpen} />
     </div>
   );
 }

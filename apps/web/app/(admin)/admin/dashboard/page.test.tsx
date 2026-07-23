@@ -104,6 +104,14 @@ vi.mock('@/components/admin/dashboard-trends-section', () => ({
   DashboardTrendsSection: () => <div>Dashboard Trends Section</div>,
 }));
 
+vi.mock('@/components/admin/dashboard-attendance-overview', () => ({
+  DashboardAttendanceOverview: () => <div>Dashboard Attendance Overview</div>,
+}));
+
+vi.mock('@/components/admin/dashboard-inventory-alerts', () => ({
+  DashboardInventoryAlerts: () => <div>Dashboard Inventory Alerts</div>,
+}));
+
 /**
  * KpiCard's NumberTicker animates via Framer Motion springs driven by
  * requestAnimationFrame, which never ticks synchronously in jsdom — the

@@ -3,28 +3,9 @@ import type { SaleDeductionJobData } from './inventory.queue.js';
 
 /**
  * Phase 21: BullMQ removed — processSaleDeduction now runs directly
- * in-process. enqueueSaleDeduction fires it in the background (via
- * lib/job-runner.ts's runFireAndForget, retried via runWithRetry), wrapped
- * in a Postgres advisory lock keyed by transactionId (prisma.$transaction +
- * pg_advisory_xact_lock — see the design note at the top of
- * inventory.queue.ts) that replaces BullMQ's `jobId: transactionId`
- * concurrent-enqueue dedup. job-runner is mocked as a thin wrapper around
- * the real implementation (via importOriginal) so retry/fire-and-forget
- * behavior stays real while still letting us assert on call arguments.
- * Most tests below call processSaleDeduction directly — deterministic,
- * synchronous — since that's where the deduction/idempotency/cascade logic
- * under test actually lives; only the "enqueueSaleDeduction" describe block
- * exercises the advisory-lock wrapping and retry/failure wiring.
+ * in-process, called synchronously inside the sale's own DB transaction
+ * (transactions.service.ts) rather than via a background job.
  */
-vi.mock('../lib/job-runner.js', async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import('../lib/job-runner.js');
-  return {
-    ...actual,
-    runWithRetry: vi.fn(actual.runWithRetry),
-    runFireAndForget: vi.fn(actual.runFireAndForget),
-  };
-});
-
 vi.mock('../modules/inventory/inventory.repository.js', () => ({
   inventoryRepository: {
     findIngredientById: vi.fn(),
@@ -52,22 +33,11 @@ vi.mock('../lib/notify.js', () => ({
   notifySuperAdmin: vi.fn(),
 }));
 
-vi.mock('../lib/prisma.js', () => ({
-  prisma: {
-    $transaction: vi.fn(async (callback: (tx: { $executeRaw: (...args: unknown[]) => Promise<unknown> }) => Promise<void>) =>
-      callback({ $executeRaw: vi.fn().mockResolvedValue(undefined) }),
-    ),
-  },
-}));
-
-const { runWithRetry } = await import('../lib/job-runner.js');
 const { inventoryRepository } = await import('../modules/inventory/inventory.repository.js');
 const { computeDeduction } = await import('../modules/recipes/recipes.service.js');
 const { enqueueRawNotificationJob } = await import('./notification.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
-const { recordAuditLog } = await import('../middleware/audit-log.js');
-const { prisma } = await import('../lib/prisma.js');
-const { processSaleDeduction, enqueueSaleDeduction } = await import('./inventory.queue.js');
+const { processSaleDeduction } = await import('./inventory.queue.js');
 
 function decimal(value: number): { toNumber(): number } {
   return { toNumber: () => value };
@@ -356,49 +326,5 @@ describe('processSaleDeduction — Out-of-Stock Cascade', () => {
     expect(inventoryRepository.runOutOfStockCascade).not.toHaveBeenCalled();
     // The existing low-stock alert still fires — the cascade is additive, not a replacement.
     expect(enqueueRawNotificationJob).toHaveBeenCalledWith('low_stock_alert', expect.objectContaining({ severity: 'low' }));
-  });
-});
-
-describe('enqueueSaleDeduction', () => {
-  const job: SaleDeductionJobData = {
-    transactionId: 'txn-1',
-    branchId: 'branch-1',
-    items: [{ productVariantId: 'variant-1', flavorId: null, quantity: 1 }],
-  };
-
-  it('serializes the run inside a Postgres advisory lock (pg_advisory_xact_lock) keyed by transactionId, then processes the deduction, under the Decision 7 retry policy', async () => {
-    vi.mocked(computeDeduction).mockResolvedValue([deductionLine({ ingredient_id: 'ing-1', quantity: 2 })] as never);
-
-    await enqueueSaleDeduction(job);
-    await vi.waitFor(() => expect(inventoryRepository.appendMovement).toHaveBeenCalled());
-
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(runWithRetry).toHaveBeenCalledWith(expect.any(Function), [10_000, 60_000, 300_000]);
-    expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalledWith('txn-1', 'completed');
-  });
-
-  it('marks the transaction deduction failed, audit-logs it, and notifies Super Admins only after every retry attempt is exhausted', async () => {
-    vi.useFakeTimers();
-    vi.mocked(computeDeduction).mockRejectedValue(new Error('recipe lookup failed'));
-
-    await enqueueSaleDeduction(job);
-    await vi.advanceTimersByTimeAsync(10_000 + 60_000 + 300_000);
-    await vi.waitFor(() => expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalled());
-
-    expect(computeDeduction).toHaveBeenCalledTimes(3);
-    expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalledWith('txn-1', 'failed');
-    expect(recordAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'INVENTORY_SALE_DEDUCTION_FAILED',
-        entityType: 'transaction',
-        entityId: 'txn-1',
-        branchId: 'branch-1',
-        afterState: expect.objectContaining({ transaction_id: 'txn-1', attempts: 3 }),
-      }),
-    );
-    expect(enqueueRawNotificationJob).toHaveBeenCalledWith(
-      'inventory_deduction_failed',
-      expect.objectContaining({ transactionId: 'txn-1', branchId: 'branch-1' }),
-    );
   });
 });

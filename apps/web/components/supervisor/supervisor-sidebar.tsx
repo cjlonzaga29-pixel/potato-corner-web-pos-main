@@ -13,6 +13,8 @@ import {
   ChefHat,
   Palette,
   Users,
+  Receipt,
+  ClipboardList,
   ChevronsLeft,
   ChevronsRight,
   LogOut,
@@ -37,14 +39,16 @@ const NAV_ITEMS = [
   { label: 'Inventory', href: '/supervisor/inventory', icon: Package },
   { label: 'Attendance', href: '/supervisor/attendance', icon: Clock },
   { label: 'Cash Management', href: '/supervisor/cash', icon: Banknote },
+  { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },
   { label: 'Employees', href: '/supervisor/employees', icon: Users },
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
   // CR-001
   { label: 'Product Requests', href: '/supervisor/product-requests', icon: Package },
   // CR-002
   { label: 'Flavor Requests', href: '/supervisor/flavor-requests', icon: Palette },
+  { label: 'Inventory Requests', href: '/supervisor/inventory-requests', icon: ClipboardList },
   { label: 'Price Overrides', href: '/supervisor/price-overrides', icon: DollarSign },
-  { label: 'Recipe Overrides', href: '/supervisor/recipes', icon: ChefHat },
+  { label: 'Recipes', href: '/supervisor/recipes', icon: ChefHat },
 ];
 
 export function SupervisorSidebar() {

@@ -672,7 +672,20 @@ export const reportsRepository = {
     const range = dateRangeFilter(filters);
     const rows = await prisma.auditLog.findMany({
       where: {
-        action: { in: ['LOGIN_SUCCESS', 'LOGIN_FAILURE', 'LOGOUT', 'LOGOUT_ALL_DEVICES', 'PIN_LOGIN_SUCCESS', 'ACCOUNT_UNLOCKED'] },
+        action: {
+          in: [
+            'LOGIN_SUCCESS',
+            'LOGIN_FAILURE',
+            'LOGOUT',
+            'LOGOUT_ALL_DEVICES',
+            'PIN_LOGIN_SUCCESS',
+            'ACCOUNT_UNLOCKED',
+            'VOID_TRANSACTION',
+            'REFUND_TRANSACTION',
+            'PRICE_OVERRIDE_APPROVED',
+            'PRODUCT_REQUEST_APPROVED',
+          ],
+        },
         ...(filters.branchId ? { branchId: filters.branchId } : {}),
         ...(range ? { createdAt: range } : {}),
       },

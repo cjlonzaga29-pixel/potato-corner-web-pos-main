@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
-import { useCatalog } from '@/hooks/queries/use-products';
+import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
 import { useCurrentShift } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction } from '@/hooks/queries/use-transactions';
 import { cacheBranchPriceOverrides, cacheProductCatalog, getCachedPriceOverrides, getCachedProductCatalog } from '@/lib/offline/cache';
@@ -78,6 +78,7 @@ export default function TerminalPage() {
   const branchId = user?.branchIds[0];
   const { items, addItem, removeItem, updateItemQuantity, clearCart } = useCart();
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
+  useCatalogRealtimeSync(branchId);
   const { data: shift } = useCurrentShift(branchId);
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction();

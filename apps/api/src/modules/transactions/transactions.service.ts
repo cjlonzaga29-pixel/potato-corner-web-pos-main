@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { DISCOUNT_TYPE, SOCKET_EVENTS } from '@potato-corner/shared';
+import { DISCOUNT_TYPE, SOCKET_EVENTS, MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS } from '@potato-corner/shared';
 import { transactionsRepository } from './transactions.repository.js';
 import {
   TransactionError,
@@ -14,11 +14,15 @@ import {
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
+import { inventoryRepository } from '../inventory/inventory.repository.js';
+import { computeDeduction } from '../recipes/recipes.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
-import { enqueueSaleDeduction } from '../../queues/inventory.queue.js';
-import { enqueueNotification } from '../../queues/notification.queue.js';
+import { hashToLockId } from '../../lib/pg-lock.js';
+import { sha256Hex } from '../../lib/hash.js';
+import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
 import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
+import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { prisma } from '../../lib/prisma.js';
 
@@ -325,6 +329,172 @@ async function generateReceiptNumber(branchCode: string, attempt: number): Promi
   return `${prefix}${String(sequence).padStart(6, '0')}`;
 }
 
+/**
+ * Runs inside the same DB transaction as the sale itself (Phase 8's deduction
+ * moved from a fire-and-forget queue job to here) so a stock shortfall rolls
+ * back the whole sale instead of leaving a completed transaction with no
+ * matching deduction. Side effects that aren't part of the atomic write
+ * (audit log, notifications, socket broadcasts) are returned as deferred
+ * callbacks and only run after the transaction commits.
+ */
+async function deductInventoryForSale(
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  transactionId: string,
+  items: { productVariantId: string; flavorId: string | null; quantity: number }[],
+): Promise<Array<() => Promise<void>>> {
+  const totals = new Map<string, { quantity: number; ingredientName: string }>();
+  for (const item of items) {
+    const lines = await computeDeduction({
+      productVariantId: item.productVariantId,
+      flavorId: item.flavorId,
+      quantitySold: item.quantity,
+      branchId,
+    });
+    for (const line of lines) {
+      const existing = totals.get(line.ingredient_id);
+      totals.set(line.ingredient_id, {
+        quantity: (existing?.quantity ?? 0) + line.quantity,
+        ingredientName: line.ingredient_name,
+      });
+    }
+  }
+
+  const effects: Array<() => Promise<void>> = [];
+
+  for (const [ingredientId, total] of totals) {
+    const lockId = hashToLockId(sha256Hex(ingredientId));
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+    const currentStock = (await inventoryRepository.getCurrentStock(ingredientId, tx)).toNumber();
+    if (currentStock < total.quantity) {
+      throw new TransactionError(
+        'INSUFFICIENT_STOCK',
+        `Insufficient stock for ${total.ingredientName}: need ${total.quantity}, have ${currentStock}`,
+        409,
+      );
+    }
+
+    const ingredient = await inventoryRepository.findIngredientById(ingredientId, tx);
+    if (!ingredient) continue;
+
+    const movement = await inventoryRepository.appendMovement(
+      {
+        branchId,
+        ingredientId,
+        movementType: MOVEMENT_TYPE.SALE_DEDUCTION,
+        quantityChange: -total.quantity,
+        referenceId: transactionId,
+        notes: `Sale deduction for transaction ${transactionId}`,
+      },
+      tx,
+    );
+
+    effects.push(() =>
+      recordAuditLog({
+        action: 'INVENTORY_SALE_DEDUCTED',
+        entityType: 'inventory_movement',
+        entityId: movement.id,
+        actorId: null,
+        actorRole: 'system',
+        branchId,
+        afterState: {
+          ingredient_id: ingredientId,
+          quantity_change: movement.quantityChange.toNumber(),
+          quantity_after: movement.quantityAfter.toNumber(),
+          reference_id: transactionId,
+        },
+      }),
+    );
+
+    const stockAfter = movement.quantityAfter.toNumber();
+    const lowThreshold = ingredient.lowStockThreshold.toNumber();
+    const criticalThreshold = ingredient.criticalThreshold.toNumber();
+    if (stockAfter <= lowThreshold) {
+      effects.push(() =>
+        enqueueRawNotificationJob('low_stock_alert', {
+          branchId,
+          ingredientId,
+          ingredientName: total.ingredientName,
+          currentStock: stockAfter,
+          lowStockThreshold: lowThreshold,
+          criticalThreshold,
+          severity: stockAfter <= criticalThreshold ? 'critical' : 'low',
+        }),
+      );
+    }
+
+    if (stockAfter <= 0) {
+      const cascadeResult = await inventoryRepository.runOutOfStockCascade(branchId, ingredientId, tx);
+      if (cascadeResult.affectedFlavors.length > 0 || cascadeResult.affectedProducts.length > 0) {
+        const cascadePayload = {
+          branchId,
+          triggeredByIngredientId: ingredientId,
+          triggeredByIngredientName: total.ingredientName,
+          affectedFlavors: cascadeResult.affectedFlavors.map((f) => ({ flavorId: f.flavorId, name: f.flavorName })),
+          affectedProducts: cascadeResult.affectedProducts.map((p) => ({ productId: p.productId, name: p.productName })),
+        };
+        effects.push(async () => {
+          notifyBranch(branchId, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
+          notifySuperAdmin(SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
+          await enqueueRawNotificationJob('inventory_product_unavailable', cascadePayload);
+        });
+      }
+    }
+  }
+
+  await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx);
+
+  return effects;
+}
+
+/**
+ * Reverses a completed sale's inventory deduction when a transaction is
+ * voided or refunded — same recipe deduction math as deductInventoryForSale,
+ * with quantityChange flipped positive to add stock back. Runs inside the
+ * caller's $transaction so the reversal commits atomically with the status
+ * update. Recorded as movement_type manual_adjustment (no dedicated reversal
+ * type exists on the InventoryMovement enum), referencing the original
+ * transaction ID.
+ */
+async function reverseInventoryForTransaction(
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  transactionId: string,
+  items: { productVariantId: string; flavorId: string | null; quantity: number }[],
+  kind: 'void' | 'refund',
+): Promise<void> {
+  const totals = new Map<string, number>();
+  for (const item of items) {
+    const lines = await computeDeduction({
+      productVariantId: item.productVariantId,
+      flavorId: item.flavorId,
+      quantitySold: item.quantity,
+      branchId,
+    });
+    for (const line of lines) {
+      totals.set(line.ingredient_id, (totals.get(line.ingredient_id) ?? 0) + line.quantity);
+    }
+  }
+
+  for (const [ingredientId, quantity] of totals) {
+    const lockId = hashToLockId(sha256Hex(ingredientId));
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+    await inventoryRepository.appendMovement(
+      {
+        branchId,
+        ingredientId,
+        movementType: MOVEMENT_TYPE.MANUAL_ADJUSTMENT,
+        quantityChange: quantity,
+        referenceId: transactionId,
+        notes: `Inventory reversal (${kind}) for transaction ${transactionId}`,
+      },
+      tx,
+    );
+  }
+}
+
 export const transactionsService = {
   async getDiscountAuditTrail(
     filters: DiscountAuditFilters,
@@ -431,32 +601,53 @@ export const transactionsService = {
     const discountCustomerIdHash = data.discountIdReference ? hashField(data.discountIdReference) : null;
 
     let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>> | undefined;
+    let postCommitEffects: Array<() => Promise<void>> = [];
     let lastError: unknown;
     for (let attempt = 0; attempt < RECEIPT_SEQUENCE_RETRY_LIMIT; attempt++) {
       const receiptNumber = await generateReceiptNumber(branch.code, attempt);
       try {
-        created = await transactionsRepository.createTransaction({
-          branchId: data.branchId,
-          shiftId: data.shiftId,
-          cashierId: data.cashierId,
-          receiptNumber,
-          paymentMethod: data.paymentMethod,
-          subtotal,
-          discountAmount,
-          discountType: data.discountType ?? null,
-          discountCustomerIdEncrypted,
-          discountCustomerIdHash,
-          vatAmount,
-          vatExemptAmount,
-          totalAmount,
-          cashTendered: data.paymentMethod === 'cash' ? (data.cashTendered as number) : null,
-          changeAmount: changeGiven,
-          gcashReference: data.paymentMethod === 'gcash' ? (data.gcashReferenceNumber as string) : null,
-          gcashManuallyVerified: data.paymentMethod === 'gcash' ? true : null,
-          isOfflineTransaction: data.isOfflineTransaction,
-          offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
-          items: resolvedItems,
+        const result = await prisma.$transaction(async (tx) => {
+          const txCreated = await transactionsRepository.createTransaction(
+            {
+              branchId: data.branchId,
+              shiftId: data.shiftId,
+              cashierId: data.cashierId,
+              receiptNumber,
+              paymentMethod: data.paymentMethod,
+              subtotal,
+              discountAmount,
+              discountType: data.discountType ?? null,
+              discountCustomerIdEncrypted,
+              discountCustomerIdHash,
+              vatAmount,
+              vatExemptAmount,
+              totalAmount,
+              cashTendered: data.paymentMethod === 'cash' ? (data.cashTendered as number) : null,
+              changeAmount: changeGiven,
+              gcashReference: data.paymentMethod === 'gcash' ? (data.gcashReferenceNumber as string) : null,
+              gcashManuallyVerified: data.paymentMethod === 'gcash' ? true : null,
+              isOfflineTransaction: data.isOfflineTransaction,
+              offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
+              items: resolvedItems,
+            },
+            tx,
+          );
+
+          const effects = await deductInventoryForSale(
+            tx,
+            data.branchId,
+            txCreated.id,
+            resolvedItems.map((item) => ({
+              productVariantId: item.productVariantId,
+              flavorId: item.flavorId,
+              quantity: item.quantity,
+            })),
+          );
+
+          return { txCreated, effects };
         });
+        created = result.txCreated;
+        postCommitEffects = result.effects;
         break;
       } catch (error) {
         lastError = error;
@@ -475,6 +666,10 @@ export const transactionsService = {
         : new TransactionError('RECEIPT_NUMBER_CONFLICT', 'Could not allocate a unique receipt number', 500);
     }
 
+    for (const effect of postCommitEffects) {
+      await effect();
+    }
+
     const response = toTransactionResponse(created as TransactionRow);
 
     await recordAuditLog({
@@ -490,24 +685,6 @@ export const transactionsService = {
 
     notifyBranch(data.branchId, SOCKET_EVENTS.TRANSACTION_COMPLETED, response);
     notifySuperAdmin(SOCKET_EVENTS.TRANSACTION_COMPLETED, response);
-
-    // Phase 8's inventory deduction queue — dead code until this exact call
-    // activates it. Fire-and-forget: a queue outage must not roll back an
-    // already-committed sale; BullMQ's own retry policy (10s/60s/300s,
-    // see queues/inventory.queue.ts) covers transient failures.
-    try {
-      await enqueueSaleDeduction({
-        transactionId: created.id,
-        branchId: data.branchId,
-        items: resolvedItems.map((item) => ({
-          productVariantId: item.productVariantId,
-          flavorId: item.flavorId,
-          quantity: item.quantity,
-        })),
-      });
-    } catch (error) {
-      console.error(`Failed to enqueue inventory deduction for transaction ${created.id}:`, error);
-    }
 
     // shift.cash_sales_total / gcash_sales_total are never persisted
     // mid-shift — Phase 9's withLiveSalesTotals overlay recomputes them from
@@ -607,15 +784,29 @@ export const transactionsService = {
       throw new TransactionError('SHIFT_CLOSED', 'Cannot void a transaction from a shift that is no longer open', 409);
     }
 
-    const updated = await transactionsRepository.voidTransaction(id, { voidedById: actor.id, voidReason });
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedRow = await transactionsRepository.voidTransaction(id, { voidedById: actor.id, voidReason }, tx);
+      await reverseInventoryForTransaction(
+        tx,
+        transaction.branchId,
+        transaction.id,
+        (transaction.items ?? []).map((item) => ({
+          productVariantId: item.productVariantId,
+          flavorId: item.flavorId,
+          quantity: item.quantity,
+        })),
+        'void',
+      );
+      return updatedRow;
+    });
     const response = toTransactionResponse(updated as TransactionRow);
 
-    // Deliberate: inventory deduction is never reversed and the shift's cash
-    // total is never adjusted (cash stays in the drawer, reconciled at shift
-    // close) — a voided transaction is itself a fraud signal for Phase 17,
-    // not something to be quietly undone.
+    // The shift's cash total is never adjusted for a void (cash stays in the
+    // drawer, reconciled at shift close) — a voided transaction is itself a
+    // fraud signal for Phase 17. Inventory, however, is reversed above so
+    // stock reflects that the sale no longer stands.
     await recordAuditLog({
-      action: 'TRANSACTION_VOIDED',
+      action: 'VOID_TRANSACTION',
       entityType: 'transaction',
       entityId: id,
       actorId: actor.id,
@@ -625,6 +816,7 @@ export const transactionsService = {
       afterState: response,
       ipAddress,
     });
+    triggerFraudScanForBranch(transaction.branchId);
 
     const voidPayload = {
       transactionId: response.id,
@@ -660,11 +852,25 @@ export const transactionsService = {
       throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
     }
 
-    const updated = await transactionsRepository.refundTransaction(id, { refundedById: actor.id, refundReason });
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedRow = await transactionsRepository.refundTransaction(id, { refundedById: actor.id, refundReason }, tx);
+      await reverseInventoryForTransaction(
+        tx,
+        transaction.branchId,
+        transaction.id,
+        (transaction.items ?? []).map((item) => ({
+          productVariantId: item.productVariantId,
+          flavorId: item.flavorId,
+          quantity: item.quantity,
+        })),
+        'refund',
+      );
+      return updatedRow;
+    });
     const response = toTransactionResponse(updated as TransactionRow);
 
     await recordAuditLog({
-      action: 'TRANSACTION_REFUNDED',
+      action: 'REFUND_TRANSACTION',
       entityType: 'transaction',
       entityId: id,
       actorId: actor.id,
@@ -674,6 +880,7 @@ export const transactionsService = {
       afterState: response,
       ipAddress,
     });
+    triggerFraudScanForBranch(transaction.branchId);
 
     const refundPayload = {
       transactionId: response.id,

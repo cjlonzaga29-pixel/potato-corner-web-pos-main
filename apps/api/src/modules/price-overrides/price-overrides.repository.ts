@@ -9,9 +9,12 @@ const detailInclude = {
   reviewer: { select: { id: true, firstName: true, lastName: true } },
 } satisfies Prisma.BranchPriceOverrideInclude;
 
-function buildWhere(filters: Pick<PriceOverrideListFilters, 'status' | 'branch_id'>): Prisma.BranchPriceOverrideWhereInput {
+function buildWhere(
+  filters: Pick<PriceOverrideListFilters, 'status' | 'branch_id' | 'branchIds'>,
+): Prisma.BranchPriceOverrideWhereInput {
   return {
     ...(filters.status && { status: filters.status }),
+    ...(filters.branchIds !== 'all' && { branchId: { in: filters.branchIds } }),
     ...(filters.branch_id && { branchId: filters.branch_id }),
   };
 }

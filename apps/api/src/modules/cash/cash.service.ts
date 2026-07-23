@@ -41,6 +41,9 @@ interface ShiftRow {
   varianceApprovalReason: string | null;
   cashSalesTotal: { toNumber(): number };
   gcashSalesTotal: { toNumber(): number };
+  mayaSalesTotal: { toNumber(): number };
+  otherSalesTotal: { toNumber(): number };
+  grossSalesTotal: { toNumber(): number };
   transactionCount: number;
   shiftNotes: string | null;
   startedAt: Date;
@@ -48,6 +51,8 @@ interface ShiftRow {
   denominations?: DenominationRow[];
   cashSalesCount: number;
   gcashSalesCount: number;
+  mayaSalesCount: number;
+  otherSalesCount: number;
   voidedCount: number;
   refundedCount: number;
   totalTransactionCount: number;
@@ -77,9 +82,14 @@ function toShiftResponse(shift: ShiftRow) {
     variance_approval_reason: shift.varianceApprovalReason,
     cash_sales_total: shift.cashSalesTotal.toNumber(),
     gcash_sales_total: shift.gcashSalesTotal.toNumber(),
+    maya_sales_total: shift.mayaSalesTotal.toNumber(),
+    other_sales_total: shift.otherSalesTotal.toNumber(),
+    gross_sales_total: shift.grossSalesTotal.toNumber(),
     transaction_count: shift.transactionCount,
     cash_sales_count: shift.cashSalesCount,
     gcash_sales_count: shift.gcashSalesCount,
+    maya_sales_count: shift.mayaSalesCount,
+    other_sales_count: shift.otherSalesCount,
     voided_count: shift.voidedCount,
     refunded_count: shift.refundedCount,
     total_transaction_count: shift.totalTransactionCount,
@@ -101,9 +111,14 @@ function toShiftResponse(shift: ShiftRow) {
 interface EodSummary {
   cash_sales_total: number;
   gcash_sales_total: number;
+  maya_sales_total: number;
+  other_sales_total: number;
+  gross_sales_total: number;
   total_sales: number;
   cash_sales_count: number;
   gcash_sales_count: number;
+  maya_sales_count: number;
+  other_sales_count: number;
   total_transaction_count: number;
   voided_count: number;
   refunded_count: number;
@@ -127,15 +142,21 @@ interface EodSummary {
 function buildEodSummary(
   shift: ShiftRow,
   counts: ShiftCloseComputedCounts,
-  sales: { cashSalesTotal: number; gcashSalesTotal: number },
+  sales: { cashSalesTotal: number; gcashSalesTotal: number; mayaSalesTotal: number; otherSalesTotal: number },
 ): EodSummary {
   const isOpen = shift.status === 'active';
+  const grossSalesTotal = sales.cashSalesTotal + sales.gcashSalesTotal + sales.mayaSalesTotal + sales.otherSalesTotal;
   return {
     cash_sales_total: sales.cashSalesTotal,
     gcash_sales_total: sales.gcashSalesTotal,
-    total_sales: sales.cashSalesTotal + sales.gcashSalesTotal,
+    maya_sales_total: sales.mayaSalesTotal,
+    other_sales_total: sales.otherSalesTotal,
+    gross_sales_total: grossSalesTotal,
+    total_sales: grossSalesTotal,
     cash_sales_count: counts.cashSalesCount,
     gcash_sales_count: counts.gcashSalesCount,
+    maya_sales_count: counts.mayaSalesCount,
+    other_sales_count: counts.otherSalesCount,
     total_transaction_count: counts.totalTransactionCount,
     voided_count: counts.voidedCount,
     refunded_count: counts.refundedCount,
@@ -162,6 +183,9 @@ async function withLiveSalesTotals(shift: ShiftRow) {
     ...shift,
     cashSalesTotal: sales.cashSalesTotal,
     gcashSalesTotal: sales.gcashSalesTotal,
+    mayaSalesTotal: sales.mayaSalesTotal,
+    otherSalesTotal: sales.otherSalesTotal,
+    grossSalesTotal: sales.grossSalesTotal,
     transactionCount: sales.transactionCount,
   });
 }
@@ -233,6 +257,8 @@ export const cashService = {
         summary: buildEodSummary(shift, counts, {
           cashSalesTotal: sales.cashSalesTotal.toNumber(),
           gcashSalesTotal: sales.gcashSalesTotal.toNumber(),
+          mayaSalesTotal: sales.mayaSalesTotal.toNumber(),
+          otherSalesTotal: sales.otherSalesTotal.toNumber(),
         }),
       };
     }
@@ -240,6 +266,8 @@ export const cashService = {
     const counts: ShiftCloseComputedCounts = {
       cashSalesCount: shift.cashSalesCount,
       gcashSalesCount: shift.gcashSalesCount,
+      mayaSalesCount: shift.mayaSalesCount,
+      otherSalesCount: shift.otherSalesCount,
       voidedCount: shift.voidedCount,
       refundedCount: shift.refundedCount,
       totalTransactionCount: shift.totalTransactionCount,
@@ -251,6 +279,8 @@ export const cashService = {
       summary: buildEodSummary(shift, counts, {
         cashSalesTotal: shift.cashSalesTotal.toNumber(),
         gcashSalesTotal: shift.gcashSalesTotal.toNumber(),
+        mayaSalesTotal: shift.mayaSalesTotal.toNumber(),
+        otherSalesTotal: shift.otherSalesTotal.toNumber(),
       }),
     };
   },
@@ -282,6 +312,9 @@ export const cashService = {
     ]);
     const cashSalesTotal = sales.cashSalesTotal;
     const gcashSalesTotal = sales.gcashSalesTotal;
+    const mayaSalesTotal = sales.mayaSalesTotal;
+    const otherSalesTotal = sales.otherSalesTotal;
+    const grossSalesTotal = sales.grossSalesTotal;
     const expectedClosingCash = new Prisma.Decimal(shift.openingCashAmount.toNumber()).plus(cashSalesTotal);
     const cashVariance = new Prisma.Decimal(closingCashAmount).minus(expectedClosingCash);
     const varianceCents = toCents(cashVariance.toNumber());
@@ -304,9 +337,14 @@ export const cashService = {
       cashVariance: cashVariance.toNumber(),
       cashSalesTotal: cashSalesTotal.toNumber(),
       gcashSalesTotal: gcashSalesTotal.toNumber(),
+      mayaSalesTotal: mayaSalesTotal.toNumber(),
+      otherSalesTotal: otherSalesTotal.toNumber(),
+      grossSalesTotal: grossSalesTotal.toNumber(),
       transactionCount: sales.transactionCount,
       cashSalesCount: counts.cashSalesCount,
       gcashSalesCount: counts.gcashSalesCount,
+      mayaSalesCount: counts.mayaSalesCount,
+      otherSalesCount: counts.otherSalesCount,
       voidedCount: counts.voidedCount,
       refundedCount: counts.refundedCount,
       totalTransactionCount: counts.totalTransactionCount,
@@ -317,7 +355,12 @@ export const cashService = {
       closedBy: actor.id,
     })) as ShiftRow;
     const response = toShiftResponse(updated);
-    const summary = buildEodSummary(updated, counts, { cashSalesTotal: cashSalesTotal.toNumber(), gcashSalesTotal: gcashSalesTotal.toNumber() });
+    const summary = buildEodSummary(updated, counts, {
+      cashSalesTotal: cashSalesTotal.toNumber(),
+      gcashSalesTotal: gcashSalesTotal.toNumber(),
+      mayaSalesTotal: mayaSalesTotal.toNumber(),
+      otherSalesTotal: otherSalesTotal.toNumber(),
+    });
 
     await recordAuditLog({
       action: status === 'closed' ? 'SHIFT_CLOSED' : 'SHIFT_FLAGGED_FOR_REVIEW',

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { MOVEMENT_TYPE, type MovementType } from '@potato-corner/shared';
+import { MOVEMENT_TYPE, SOCKET_EVENTS, type MovementType } from '@potato-corner/shared';
 import type {
   CreateIngredientInput,
   UpdateIngredientInput,
@@ -13,6 +13,7 @@ import { inventoryRepository } from './inventory.repository.js';
 import { IngredientError, LARGE_ADJUSTMENT_APPROVAL_THRESHOLD_PHP } from './inventory.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
+import { notifyBranch } from '../../lib/notify.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -287,6 +288,8 @@ export const inventoryService = {
       ipAddress,
     });
 
+    notifyBranch(ingredient.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
     await notifyIfLowStock({
       branchId: ingredient.branchId,
       ingredientId,
@@ -330,6 +333,8 @@ export const inventoryService = {
       afterState: response,
       ipAddress,
     });
+
+    notifyBranch(ingredient.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
 
     await notifyIfLowStock({
       branchId: ingredient.branchId,
@@ -396,6 +401,8 @@ export const inventoryService = {
       afterState: response,
       ipAddress,
     });
+
+    notifyBranch(ingredient.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
 
     await notifyIfLowStock({
       branchId: ingredient.branchId,
@@ -475,6 +482,8 @@ export const inventoryService = {
       ipAddress,
     });
 
+    notifyBranch(branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
     return response;
   },
 
@@ -533,6 +542,9 @@ export const inventoryService = {
       afterState: response,
       ipAddress,
     });
+
+    notifyBranch(branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifyBranch(data.to_branch_id, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
 
     await notifyIfLowStock({
       branchId,

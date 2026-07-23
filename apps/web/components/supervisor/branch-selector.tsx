@@ -3,12 +3,13 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
-import type { BranchResponse } from '@potato-corner/shared';
+import { ROLES, type BranchResponse } from '@potato-corner/shared';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useBranch } from '@/hooks/use-branch';
 import { useBranches } from '@/hooks/queries/use-branches';
+import { useAuthStore } from '@/stores/auth.store';
 
 /**
  * GET /api/branches already scopes results to the requesting supervisor's
@@ -20,7 +21,12 @@ export function BranchSelector() {
   const { activeBranchId, activeBranch, setActiveBranch } = useBranch();
   const { data, isLoading } = useBranches({ limit: 100 });
   const queryClient = useQueryClient();
-  const branches = data?.branches ?? [];
+  const user = useAuthStore((state) => state.user);
+  const allBranches = data?.branches ?? [];
+  const branches =
+    user?.role === ROLES.SUPERVISOR
+      ? allBranches.filter((branch) => user.branchIds.includes(branch.id))
+      : allBranches;
 
   useEffect(() => {
     if (!activeBranchId && branches.length > 0) {

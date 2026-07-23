@@ -65,6 +65,23 @@ async function processManualFraudScan(data: ManualScanJobData): Promise<void> {
   console.log(`Manual fraud scan complete: ${JSON.stringify(result)}`);
 }
 
+/**
+ * Phase 9: fires a branch-scoped detection pass right after a void/refund
+ * commits, instead of waiting for the 23:00 nightly scan — void/refund are
+ * the two actions the excessive_voids, end_of_shift_void, and
+ * cash_variance_pattern rules key off of, so same-day signal matters here.
+ * Fire-and-forget like the manual-scan path; no retry, since the nightly
+ * scan already re-evaluates every branch as a backstop.
+ */
+export function triggerFraudScanForBranch(branchId: string): void {
+  runFireAndForget(
+    async () => {
+      await runDetection(new Date(), [branchId]);
+    },
+    (error) => handleFraudJobFailure('transaction_triggered_scan', error, 1),
+  );
+}
+
 /** After the final retry attempt, report to Sentry and notify Super Admins — mirrors the old fraudWorker.on('failed', ...) handler. */
 function handleFraudJobFailure(jobName: string, error: unknown, attemptsMade: number): void {
   const message = error instanceof Error ? error.message : String(error);

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { expenseColumns } from '@/components/admin/expense-columns';
 import { ExpenseFilterBar } from '@/components/admin/expense-filter-bar';
-import { useExpenses, type ExpenseCategory } from '@/hooks/queries/use-expenses';
+import { useExpenses, useExpensesRealtimeSync, type ExpenseCategory } from '@/hooks/queries/use-expenses';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { downloadCsv, formatCurrency } from '@/lib/utils';
 
@@ -24,6 +24,7 @@ function ExpensesPageContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { selectedBranchId } = useSelectedBranch();
+  useExpensesRealtimeSync();
 
   const branchIdParam = searchParams.get('branch_id');
   const branchId = branchIdParam ?? (selectedBranchId !== ALL_BRANCHES ? selectedBranchId : ALL_BRANCHES);

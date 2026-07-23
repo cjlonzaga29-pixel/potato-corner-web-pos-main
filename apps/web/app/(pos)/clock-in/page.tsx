@@ -5,6 +5,7 @@ import { Loader2, MapPin } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { ErrorState } from '@/components/shared/feedback/error-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useAttendanceByEmployee, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 
@@ -56,7 +57,7 @@ export default function ClockInPage() {
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
 
-  const { data: history, isLoading } = useAttendanceByEmployee(user?.id, { limit: 1 });
+  const { data: history, isLoading, isError, refetch } = useAttendanceByEmployee(user?.id, { limit: 1 });
   const clockIn = useClockIn();
   const clockOut = useClockOut();
 
@@ -119,37 +120,43 @@ export default function ClockInPage() {
           <CardTitle className="text-sm">{isClockedIn ? 'Currently clocked in' : 'Not clocked in'}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading status…</p>
-          ) : isClockedIn && latestRecord ? (
-            <div className="space-y-1 text-sm">
-              <p className="text-muted-foreground">
-                Since {new Date(latestRecord.clock_in_server_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-              </p>
-              <p className="font-medium tabular-nums">{formatElapsed(latestRecord.clock_in_server_time, now)}</p>
-            </div>
+          {isError ? (
+            <ErrorState title="Failed to load attendance status" retry={() => void refetch()} />
           ) : (
-            <p className="text-sm text-muted-foreground">Tap Clock In to start tracking your shift attendance.</p>
-          )}
+            <>
+              {isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading status…</p>
+              ) : isClockedIn && latestRecord ? (
+                <div className="space-y-1 text-sm">
+                  <p className="text-muted-foreground">
+                    Since {new Date(latestRecord.clock_in_server_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  </p>
+                  <p className="font-medium tabular-nums">{formatElapsed(latestRecord.clock_in_server_time, now)}</p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Tap Clock In to start tracking your shift attendance.</p>
+              )}
 
-          {gpsError && (
-            <Alert variant="destructive">
-              <MapPin className="h-4 w-4" />
-              <AlertTitle>Location error</AlertTitle>
-              <AlertDescription>{gpsError}</AlertDescription>
-            </Alert>
-          )}
+              {gpsError && (
+                <Alert variant="destructive">
+                  <MapPin className="h-4 w-4" />
+                  <AlertTitle>Location error</AlertTitle>
+                  <AlertDescription>{gpsError}</AlertDescription>
+                </Alert>
+              )}
 
-          {isClockedIn ? (
-            <Button className="w-full touch-target" variant="danger" onClick={handleClockOut} disabled={isBusy}>
-              {isBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Clock Out
-            </Button>
-          ) : (
-            <Button className="w-full touch-target" onClick={handleClockIn} disabled={isBusy}>
-              {isBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Clock In
-            </Button>
+              {isClockedIn ? (
+                <Button className="w-full touch-target" variant="danger" onClick={handleClockOut} disabled={isBusy || isLoading}>
+                  {isBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Clock Out
+                </Button>
+              ) : (
+                <Button className="w-full touch-target" onClick={handleClockIn} disabled={isBusy || isLoading}>
+                  {isBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Clock In
+                </Button>
+              )}
+            </>
           )}
         </CardContent>
       </Card>

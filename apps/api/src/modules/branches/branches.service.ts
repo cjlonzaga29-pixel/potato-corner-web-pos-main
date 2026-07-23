@@ -7,6 +7,7 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO } from '../../socket/socket.server.js';
 import { SUPER_ADMIN_ROOM } from '../../socket/rooms.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -76,20 +77,6 @@ function toAssignmentResponse(assignment: {
   };
 }
 
-/** super_admin sees everything; supervisor/staff are scoped to their JWT branch_ids — never trust a client-supplied branch list. */
-function accessibleBranchIds(requestingUser: JwtPayload): string[] | 'all' {
-  if (requestingUser.role === ROLES.SUPER_ADMIN) return 'all';
-  return requestingUser.branch_ids;
-}
-
-function assertBranchAccess(requestingUser: JwtPayload, branchId: string): void {
-  const accessible = accessibleBranchIds(requestingUser);
-  if (accessible === 'all') return;
-  if (!accessible.includes(branchId)) {
-    throw new BranchError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
-  }
-}
-
 async function uploadGcashQrToStorage(
   branchId: string,
   file: { buffer: Buffer; originalname: string },
@@ -134,12 +121,10 @@ export const branchesService = {
   },
 
   async getAllBranchStats(requestingUser: JwtPayload, branchId?: string) {
-    const accessible = accessibleBranchIds(requestingUser);
+    const accessible = getAccessibleBranchIds(requestingUser);
 
     if (branchId) {
-      if (accessible !== 'all' && !accessible.includes(branchId)) {
-        throw new BranchError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
-      }
+      assertBranchAccess(requestingUser, branchId, BranchError);
       const stats = await branchesRepository.branchStats(branchId);
       return [{ branchId, ...stats }];
     }
@@ -149,7 +134,7 @@ export const branchesService = {
   },
 
   async getAllBranches(requestingUser: JwtPayload, filters: BranchListFilters) {
-    const accessible = accessibleBranchIds(requestingUser);
+    const accessible = getAccessibleBranchIds(requestingUser);
     const effectiveFilters: BranchListFilters = {
       ...filters,
       ...(accessible !== 'all' && { ids: accessible }),
@@ -165,7 +150,7 @@ export const branchesService = {
   },
 
   async getBranchById(branchId: string, requestingUser: JwtPayload) {
-    assertBranchAccess(requestingUser, branchId);
+    assertBranchAccess(requestingUser, branchId, BranchError);
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
     return toBranchResponse(branch);
@@ -386,7 +371,7 @@ export const branchesService = {
   },
 
   async getAssignments(branchId: string, requestingUser: JwtPayload) {
-    assertBranchAccess(requestingUser, branchId);
+    assertBranchAccess(requestingUser, branchId, BranchError);
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 
@@ -395,7 +380,7 @@ export const branchesService = {
   },
 
   async getBranchStats(branchId: string, requestingUser: JwtPayload) {
-    assertBranchAccess(requestingUser, branchId);
+    assertBranchAccess(requestingUser, branchId, BranchError);
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 

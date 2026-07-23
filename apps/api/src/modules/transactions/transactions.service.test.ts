@@ -53,10 +53,6 @@ vi.mock('../../lib/encryption.js', () => ({
   decryptField: vi.fn((value: string) => `decrypted(${value})`),
 }));
 
-vi.mock('../../queues/inventory.queue.js', () => ({
-  enqueueSaleDeduction: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock('../../queues/notification.queue.js', () => ({
   enqueueNotification: vi.fn().mockResolvedValue(undefined),
 }));
@@ -68,7 +64,6 @@ vi.mock('../../queues/hold-order.queue.js', () => ({
 const { transactionsRepository } = await import('./transactions.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { priceOverridesService } = await import('../price-overrides/price-overrides.service.js');
-const { enqueueSaleDeduction } = await import('../../queues/inventory.queue.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
@@ -302,22 +297,6 @@ describe('transactionsService.createTransaction — pricing and snapshots', () =
 });
 
 describe('transactionsService.createTransaction — side effects', () => {
-  it('enqueues the Phase 8 inventory deduction job after the transaction is persisted', async () => {
-    await transactionsService.createTransaction(baseInput, null);
-
-    expect(enqueueSaleDeduction).toHaveBeenCalledWith({
-      transactionId: 'txn-1',
-      branchId: 'branch-1',
-      items: [{ productVariantId: 'variant-1', flavorId: null, quantity: 1 }],
-    });
-  });
-
-  it('does not fail the sale if enqueueing the inventory deduction job throws', async () => {
-    vi.mocked(enqueueSaleDeduction).mockRejectedValueOnce(new Error('redis unavailable'));
-
-    await expect(transactionsService.createTransaction(baseInput, null)).resolves.toMatchObject({ id: 'txn-1' });
-  });
-
   it('broadcasts TRANSACTION_COMPLETED to the branch room and Super Admin with a payload matching transactionResponseSchema', async () => {
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(
       transactionRow({ id: randomUUID(), branchId: randomUUID(), shiftId: randomUUID(), cashierId: randomUUID() }) as never,

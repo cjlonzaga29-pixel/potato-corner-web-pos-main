@@ -2,7 +2,9 @@
 
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 export type ExpenseCategory = 'utilities' | 'supplies' | 'staff_meals' | 'miscellaneous';
 
@@ -94,6 +96,14 @@ export function useExpense(expenseId: string | null | undefined) {
     enabled: Boolean(expenseId),
     staleTime: 30 * 1000,
   });
+}
+
+/** Keeps the expense ledger in sync with entries created/edited/deleted from any other session, without a manual refresh. */
+export function useExpensesRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.EXPENSE_CREATED, SOCKET_EVENTS.EXPENSE_UPDATED, SOCKET_EVENTS.EXPENSE_DELETED],
+    [['expenses']],
+  );
 }
 
 export function useCreateExpense() {

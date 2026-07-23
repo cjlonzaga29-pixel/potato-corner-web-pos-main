@@ -69,9 +69,12 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as CreateTransactionBody;
+      // Staff tokens pin exactly one branch_id — use it, never the client body.
+      // Non-null: jwtPayloadSchema requires staff branch_ids to have length 1.
+      const branchId = req.user.role === ROLES.STAFF ? req.user.branch_ids[0]! : body.branch_id;
       const transaction = await transactionsService.createTransaction(
         {
-          branchId: body.branch_id,
+          branchId,
           shiftId: body.shift_id,
           cashierId: req.user.user_id,
           items: body.items.map((item) => ({

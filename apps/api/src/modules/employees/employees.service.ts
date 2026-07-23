@@ -18,6 +18,7 @@ import { encryptField, decryptField } from '../../lib/encryption.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { authRepository } from '../auth/auth.repository.js';
+import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 
 const BCRYPT_COST_FACTOR = 12;
 
@@ -58,8 +59,9 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
 
 /** super_admin sees everything; supervisor is scoped to their JWT branch_ids — never trust a client-supplied branch list. */
 function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWithAssignments): void {
-  if (requestingUser.role === ROLES.SUPER_ADMIN) return;
-  const hasAccess = employee.branchAssignments.some((assignment) => requestingUser.branch_ids.includes(assignment.branchId));
+  const accessible = getAccessibleBranchIds(requestingUser);
+  if (accessible === 'all') return;
+  const hasAccess = employee.branchAssignments.some((assignment) => accessible.includes(assignment.branchId));
   if (!hasAccess) {
     throw new EmployeeError('EMPLOYEE_ACCESS_DENIED', 'You do not have access to this employee', 403);
   }
@@ -67,17 +69,18 @@ function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWith
 
 export const employeesService = {
   async getAllEmployees(requestingUser: JwtPayload, filters: EmployeeListQuery): Promise<EmployeeListResponse> {
+    const accessible = getAccessibleBranchIds(requestingUser);
     let branchIds: string[] | undefined;
     let excludeRoles: Role[] | undefined;
 
-    if (requestingUser.role === ROLES.SUPER_ADMIN) {
+    if (accessible === 'all') {
       branchIds = filters.branchId ? [filters.branchId] : undefined;
     } else {
       // Router gates this endpoint to adminOrSupervisor, so any non-super_admin caller here is a supervisor.
-      if (filters.branchId && !requestingUser.branch_ids.includes(filters.branchId)) {
+      if (filters.branchId && !accessible.includes(filters.branchId)) {
         throw new EmployeeError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
       }
-      branchIds = filters.branchId ? [filters.branchId] : requestingUser.branch_ids;
+      branchIds = filters.branchId ? [filters.branchId] : accessible;
       excludeRoles = [ROLES.SUPER_ADMIN];
     }
 

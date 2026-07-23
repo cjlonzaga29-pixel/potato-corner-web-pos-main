@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { toast } from 'sonner';
@@ -22,6 +23,7 @@ import type {
   ExportRequestInput,
 } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
@@ -316,6 +318,41 @@ function AdminReportsPageContent() {
         />
       </div>
 
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Link href="/admin/expenses">
+          <Card className="h-full transition-colors hover:bg-accent">
+            <CardHeader>
+              <CardTitle>Expenses</CardTitle>
+              <CardDescription>Branch expense records and approvals</CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+        <button type="button" className="text-left" onClick={() => setActiveTab('SHIFT_SUMMARY')}>
+          <Card className="h-full transition-colors hover:bg-accent">
+            <CardHeader>
+              <CardTitle>Shifts</CardTitle>
+              <CardDescription>Cashier shift summaries and cash handling</CardDescription>
+            </CardHeader>
+          </Card>
+        </button>
+        <button type="button" className="text-left" onClick={() => setActiveTab('FRAUD_ALERT_SUMMARY')}>
+          <Card className="h-full transition-colors hover:bg-accent">
+            <CardHeader>
+              <CardTitle>Fraud Alerts</CardTitle>
+              <CardDescription>Flagged transactions and investigations</CardDescription>
+            </CardHeader>
+          </Card>
+        </button>
+        <button type="button" className="text-left" onClick={() => setActiveTab('AUDIT_LOGS')}>
+          <Card className="h-full transition-colors hover:bg-accent">
+            <CardHeader>
+              <CardTitle>Audit Logs</CardTitle>
+              <CardDescription>System-wide action history</CardDescription>
+            </CardHeader>
+          </Card>
+        </button>
+      </div>
+
       <ReportFilterBar
         branchId={selectedBranchId}
         onBranchChange={setSelectedBranchId}
@@ -333,28 +370,53 @@ function AdminReportsPageContent() {
       />
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="flex-wrap">
-          <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
-          <TabsTrigger value="SHIFT_SUMMARY">Shift Summary</TabsTrigger>
-          <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
-          <TabsTrigger value="VOID_REFUND">Void/Refund</TabsTrigger>
-          <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
-          <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
-          <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
-          <TabsTrigger value="FRAUD_ALERT_SUMMARY">Fraud Alert Summary</TabsTrigger>
-          <TabsTrigger value="PRODUCT_PERFORMANCE">Product Performance</TabsTrigger>
-          <TabsTrigger value="FLAVOR_PERFORMANCE">Flavor Performance</TabsTrigger>
-          <TabsTrigger value="EMPLOYEE_PERFORMANCE">Employee Performance</TabsTrigger>
-          <TabsTrigger value="INVENTORY_VALUATION">Inventory Valuation</TabsTrigger>
-          <TabsTrigger value="BRANCH_COMPARISON">Branch Comparison</TabsTrigger>
-          <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
-          <TabsTrigger value="SHIFT_LOG">Shift Log</TabsTrigger>
-          <TabsTrigger value="PRODUCT_REQUESTS_LOG">Product Requests Log</TabsTrigger>
-          <TabsTrigger value="FLAVOR_REQUESTS_LOG">Flavor Requests Log</TabsTrigger>
-          <TabsTrigger value="PRICE_OVERRIDES_LOG">Price Overrides Log</TabsTrigger>
-          <TabsTrigger value="AUDIT_LOGS">Audit Logs</TabsTrigger>
-          <TabsTrigger value="LOGIN_AUDIT">Login Audit</TabsTrigger>
-        </TabsList>
+        <div className="space-y-3">
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Financial</p>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
+              <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
+              <TabsTrigger value="VOID_REFUND">Void/Refund</TabsTrigger>
+              <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
+            </TabsList>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Operations</p>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="SHIFT_SUMMARY">Shift Summary</TabsTrigger>
+              <TabsTrigger value="SHIFT_LOG">Shift Log</TabsTrigger>
+              <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
+              <TabsTrigger value="PRODUCT_REQUESTS_LOG">Product Requests Log</TabsTrigger>
+              <TabsTrigger value="FLAVOR_REQUESTS_LOG">Flavor Requests Log</TabsTrigger>
+              <TabsTrigger value="PRICE_OVERRIDES_LOG">Price Overrides Log</TabsTrigger>
+            </TabsList>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Inventory</p>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
+              <TabsTrigger value="INVENTORY_VALUATION">Inventory Valuation</TabsTrigger>
+              <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
+            </TabsList>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Performance</p>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="PRODUCT_PERFORMANCE">Product Performance</TabsTrigger>
+              <TabsTrigger value="FLAVOR_PERFORMANCE">Flavor Performance</TabsTrigger>
+              <TabsTrigger value="EMPLOYEE_PERFORMANCE">Employee Performance</TabsTrigger>
+              <TabsTrigger value="BRANCH_COMPARISON">Branch Comparison</TabsTrigger>
+            </TabsList>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Audit &amp; Security</p>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="FRAUD_ALERT_SUMMARY">Fraud Alert Summary</TabsTrigger>
+              <TabsTrigger value="AUDIT_LOGS">Audit Logs</TabsTrigger>
+              <TabsTrigger value="LOGIN_AUDIT">Login Audit</TabsTrigger>
+            </TabsList>
+          </div>
+        </div>
 
         <TabsContent value="DAILY_SALES">
           {!selectedBranchId ? (

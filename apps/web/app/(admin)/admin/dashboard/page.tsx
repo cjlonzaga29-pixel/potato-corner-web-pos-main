@@ -14,6 +14,8 @@ import { DashboardTrendsSection } from '@/components/admin/dashboard-trends-sect
 import { DashboardPendingRequests } from '@/components/admin/dashboard-pending-requests';
 import { DashboardPendingOverrides } from '@/components/admin/dashboard-pending-overrides';
 import { DashboardShortcutCards } from '@/components/admin/dashboard-shortcut-cards';
+import { DashboardAttendanceOverview } from '@/components/admin/dashboard-attendance-overview';
+import { DashboardInventoryAlerts } from '@/components/admin/dashboard-inventory-alerts';
 import { InventoryRollupCard } from '@/components/admin/inventory-rollup-card';
 import { LiveTransactionFeed } from '@/components/monitoring/live-transaction-feed';
 import { ActiveCashiersPanel } from '@/components/monitoring/active-cashiers-panel';
@@ -134,6 +136,11 @@ function AdminDashboardPageContent() {
           overrides={pendingPriceOverridesList?.overrides}
           isLoading={isLoadingPendingPriceOverridesList}
         />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <DashboardAttendanceOverview branchFilter={branchFilter} />
+        <DashboardInventoryAlerts branchFilter={branchFilter} />
       </div>
 
       <InventoryRollupCard />

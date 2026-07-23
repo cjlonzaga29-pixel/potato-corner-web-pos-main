@@ -50,6 +50,8 @@ enum TransactionStatus {
 enum PaymentMethod {
   cash
   gcash
+  maya
+  other
 }
 
 enum InventoryDeductionStatus {
@@ -893,6 +895,11 @@ model Shift {
   varianceApprovalReason String?     @map("variance_approval_reason")
   cashSalesTotal         Decimal     @default(0) @map("cash_sales_total") @db.Decimal(10, 2)
   gcashSalesTotal        Decimal     @default(0) @map("gcash_sales_total") @db.Decimal(10, 2)
+  mayaSalesTotal         Decimal     @default(0) @map("maya_sales_total") @db.Decimal(10, 2)
+  mayaSalesCount         Int         @default(0) @map("maya_sales_count")
+  otherSalesTotal        Decimal     @default(0) @map("other_sales_total") @db.Decimal(10, 2)
+  otherSalesCount        Int         @default(0) @map("other_sales_count")
+  grossSalesTotal        Decimal     @default(0) @map("gross_sales_total") @db.Decimal(10, 2)
   transactionCount       Int         @default(0) @map("transaction_count")
   shiftNotes             String?     @map("shift_notes")
   cashSalesCount         Int         @default(0) @map("cash_sales_count")

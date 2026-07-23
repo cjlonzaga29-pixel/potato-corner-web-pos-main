@@ -48,6 +48,25 @@ export const resetLimiter = rateLimit({
   handler: rateLimitHandler,
 });
 
+/**
+ * 5 attempts per 15 minutes per IP + device_id combination — applied to
+ * POST /api/auth/2fa/verify-login and /2fa/verify-backup-code. Keyed by
+ * device_id (not the not-yet-authenticated user) since that's the only
+ * stable identifier available pre-session on these endpoints.
+ */
+export const totpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const deviceId = (req.body as Record<string, unknown> | undefined)?.device_id;
+    const deviceKey = typeof deviceId === 'string' ? deviceId : 'unknown-device';
+    return `${req.ip ?? 'unknown-ip'}:${deviceKey}`;
+  },
+  handler: rateLimitHandler,
+});
+
 /** 100 requests per minute — applied globally; keyed by authenticated user when available, else IP. */
 export const apiLimiter = rateLimit({
   windowMs: 60 * 1000,

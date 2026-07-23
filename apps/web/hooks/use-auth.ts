@@ -8,17 +8,24 @@ import { getOrCreateDeviceId } from '@/lib/device';
 import { decodeJwtPayload } from '@/lib/jwt';
 import { useAuthStore, type AuthUser } from '@/stores/auth.store';
 
-interface LoginResponseData {
-  access_token: string;
-  user: {
-    id: string;
-    role: AuthUser['role'];
-    email: string;
-    first_name: string;
-    last_name: string;
-    branch_ids: string[];
-  };
+interface LoginUserData {
+  id: string;
+  role: AuthUser['role'];
+  email: string;
+  first_name: string;
+  last_name: string;
+  branch_ids: string[];
 }
+
+/**
+ * Step 11b Phase 2: /api/auth/login now returns either a full session (the
+ * pre-Phase-2 shape) or, for a 2FA-enrolled user, a challenge in its place.
+ * Neither field set is ever present on the same response — hence the union
+ * rather than adding an all-optional flat shape.
+ */
+type LoginResponseData =
+  | { access_token: string; user: LoginUserData; challenge_required?: undefined }
+  | { challenge_required: true; challenge_token: string; expires_in: number };
 
 interface RefreshResponseData {
   access_token: string;
@@ -57,7 +64,7 @@ async function attemptRefresh(): Promise<RestoreAttempt> {
   }
 }
 
-function toAuthUser(user: LoginResponseData['user']): AuthUser {
+function toAuthUser(user: LoginUserData): AuthUser {
   return {
     id: user.id,
     role: user.role,
@@ -189,8 +196,18 @@ export function useAuth() {
       throw new Error(typeof response.error === 'string' ? response.error : response.error?.message ?? 'Login failed');
     }
 
+    if (response.data.challenge_required) {
+      return { challengeRequired: true as const, challengeToken: response.data.challenge_token, expiresIn: response.data.expires_in };
+    }
+
     setAuth(toAuthUser(response.data.user), response.data.access_token);
-    return response.data.user;
+    return { challengeRequired: false as const, user: response.data.user };
+  }
+
+  /** Completes login after a successful 2FA (TOTP or backup code) verification — same session shape as a non-2FA login. */
+  function completeLogin(accessToken: string, user: LoginUserData) {
+    setAuth(toAuthUser(user), accessToken);
+    return user;
   }
 
   async function logout() {
@@ -224,6 +241,7 @@ export function useAuth() {
     isAuthenticated,
     isLoading,
     login,
+    completeLogin,
     logout,
     logoutAll,
     hasRole,

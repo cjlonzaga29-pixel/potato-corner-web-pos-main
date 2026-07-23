@@ -139,3 +139,20 @@ export const disable2FASchema = z.object({
 export const regenerateBackupCodesSchema = z.object({
   token: totpTokenSchema,
 });
+
+/**
+ * Step 11b Phase 2: login challenge verification. challenge_token is an
+ * opaque signed JWT string (see totp.service.ts's issueChallengeToken), not
+ * validated further here — the service verifies its signature/expiry/purpose.
+ */
+export const verify2FALoginSchema = z.object({
+  challenge_token: z.string().min(1),
+  totp_code: z.string().regex(/^\d{6}$/, 'Code must be exactly 6 digits'),
+  device_id: z.uuid(),
+});
+
+export const verify2FABackupCodeSchema = z.object({
+  challenge_token: z.string().min(1),
+  backup_code: z.string().regex(/^[A-Za-z0-9]{10}$/, 'Backup code must be exactly 10 characters'),
+  device_id: z.uuid(),
+});

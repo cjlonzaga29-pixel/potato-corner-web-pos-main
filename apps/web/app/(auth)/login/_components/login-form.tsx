@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -11,7 +11,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/hooks/use-auth';
-import { hasRegisteredDevice } from '@/lib/device';
+import { useVerify2FALogin, useVerify2FABackupCode, ApiRequestError } from '@/hooks/queries/use-2fa';
+import { hasRegisteredDevice, getOrCreateDeviceId } from '@/lib/device';
 import { ROLE_DASHBOARD_PATHS } from '@/lib/constants';
 
 const loginFormSchema = z.object({
@@ -26,10 +27,17 @@ interface LoginErrorState {
   minutesRemaining?: number;
 }
 
+interface ChallengeUser {
+  role: keyof typeof ROLE_DASHBOARD_PATHS;
+}
+
+/** Step 11b Phase 2: which screen the form is showing — 'credentials' is the unchanged pre-2FA flow. */
+type Stage = 'credentials' | 'totp' | 'backup';
+
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { login } = useAuth();
+  const { login, completeLogin } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<LoginErrorState | null>(null);
@@ -43,24 +51,204 @@ export function LoginForm() {
     setDeviceRegistered(hasRegisteredDevice());
   }, []);
 
+  const [stage, setStage] = useState<Stage>('credentials');
+  const [challengeToken, setChallengeToken] = useState('');
+  const [challengeExpiresAt, setChallengeExpiresAt] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const [totpCode, setTotpCode] = useState('');
+  const [backupCode, setBackupCode] = useState('');
+  const [challengeError, setChallengeError] = useState<string | null>(null);
+  const [lowBackupCodesWarning, setLowBackupCodesWarning] = useState(false);
+
+  const verifyLogin = useVerify2FALogin();
+  const verifyBackupCode = useVerify2FABackupCode();
+
   const {
     register,
     handleSubmit,
     formState: { errors },
   } = useForm<LoginFormValues>({ resolver: zodResolver(loginFormSchema) });
 
+  function redirectAfterLogin(user: ChallengeUser) {
+    const returnTo = getSafeReturnTo(searchParams.get('returnTo'));
+    router.push(returnTo ?? ROLE_DASHBOARD_PATHS[user.role] ?? '/');
+  }
+
   async function onSubmit(values: LoginFormValues) {
     setError(null);
     setIsSubmitting(true);
     try {
-      const user = await login(values.email, values.password);
-      const returnTo = getSafeReturnTo(searchParams.get('returnTo'));
-      router.push(returnTo ?? ROLE_DASHBOARD_PATHS[user.role] ?? '/');
+      const result = await login(values.email, values.password);
+      if (result.challengeRequired) {
+        setChallengeToken(result.challengeToken);
+        setChallengeExpiresAt(Date.now() + result.expiresIn * 1000);
+        setChallengeError(null);
+        setStage('totp');
+        return;
+      }
+      redirectAfterLogin(result.user);
     } catch (err) {
       setError(parseLoginError(err));
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  // Countdown timer for the challenge window — on expiry, bounce back to the
+  // credentials form rather than leaving a dead TOTP screen up.
+  useEffect(() => {
+    if (stage === 'credentials' || challengeExpiresAt === null) return;
+
+    function tick() {
+      const remaining = Math.max(0, Math.round(((challengeExpiresAt as number) - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        setStage('credentials');
+        setError({ message: 'Session expired — please log in again' });
+      }
+    }
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [stage, challengeExpiresAt]);
+
+  function handleChallengeError(err: unknown) {
+    if (err instanceof ApiRequestError) {
+      if (err.code === 'CHALLENGE_INVALID') {
+        setStage('credentials');
+        setError({ message: 'Session expired — please log in again' });
+        return;
+      }
+      if (err.code === 'RATE_LIMIT_EXCEEDED') {
+        setChallengeError('Too many attempts. Please try again later.');
+        return;
+      }
+      setChallengeError(err.message);
+      return;
+    }
+    setChallengeError('Something went wrong. Please check your connection and try again.');
+  }
+
+  async function onSubmitTotp(event: FormEvent) {
+    event.preventDefault();
+    setChallengeError(null);
+    try {
+      const data = await verifyLogin.mutateAsync({ challengeToken, totpCode, deviceId: getOrCreateDeviceId() });
+      const user = completeLogin(data.access_token, data.user);
+      redirectAfterLogin(user);
+    } catch (err) {
+      handleChallengeError(err);
+    }
+  }
+
+  async function onSubmitBackupCode(event: FormEvent) {
+    event.preventDefault();
+    setChallengeError(null);
+    try {
+      const data = await verifyBackupCode.mutateAsync({ challengeToken, backupCode, deviceId: getOrCreateDeviceId() });
+      if (data.low_backup_codes_warning) setLowBackupCodesWarning(true);
+      const user = completeLogin(data.access_token, data.user);
+      redirectAfterLogin(user);
+    } catch (err) {
+      handleChallengeError(err);
+    }
+  }
+
+  if (stage !== 'credentials') {
+    const minutes = Math.floor(secondsLeft / 60);
+    const seconds = secondsLeft % 60;
+
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="text-center">
+          <h2 className="text-lg font-semibold">Two-Factor Authentication</h2>
+          <p className="text-sm text-muted-foreground">
+            {stage === 'totp'
+              ? 'Enter the 6-digit code from your authenticator app.'
+              : 'Enter one of your backup codes.'}
+          </p>
+        </div>
+
+        {lowBackupCodesWarning && (
+          <p role="alert" className="rounded-md bg-amber-100 p-3 text-sm text-amber-900">
+            You have 2 or fewer backup codes remaining. Regenerate them from your account settings soon.
+          </p>
+        )}
+
+        {stage === 'totp' ? (
+          <form onSubmit={onSubmitTotp} className="flex flex-col gap-4" noValidate>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="totp-code">Authentication code</Label>
+              <Input
+                id="totp-code"
+                inputMode="numeric"
+                autoFocus
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={totpCode}
+                onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, ''))}
+              />
+            </div>
+
+            {challengeError && <p className="text-sm text-destructive">{challengeError}</p>}
+
+            <p className="text-center text-xs text-muted-foreground">
+              Challenge expires in {minutes}:{seconds.toString().padStart(2, '0')}
+            </p>
+
+            <Button type="submit" disabled={verifyLogin.isPending || totpCode.length !== 6}>
+              {verifyLogin.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Verify'}
+            </Button>
+
+            <button
+              type="button"
+              className="text-center text-sm text-muted-foreground hover:underline"
+              onClick={() => {
+                setStage('backup');
+                setChallengeError(null);
+              }}
+            >
+              Use backup code instead
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={onSubmitBackupCode} className="flex flex-col gap-4" noValidate>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="backup-code">Backup code</Label>
+              <Input
+                id="backup-code"
+                autoFocus
+                maxLength={10}
+                value={backupCode}
+                onChange={(event) => setBackupCode(event.target.value.toUpperCase())}
+              />
+            </div>
+
+            {challengeError && <p className="text-sm text-destructive">{challengeError}</p>}
+
+            <p className="text-center text-xs text-muted-foreground">
+              Challenge expires in {minutes}:{seconds.toString().padStart(2, '0')}
+            </p>
+
+            <Button type="submit" disabled={verifyBackupCode.isPending || backupCode.length !== 10}>
+              {verifyBackupCode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Verify'}
+            </Button>
+
+            <button
+              type="button"
+              className="text-center text-sm text-muted-foreground hover:underline"
+              onClick={() => {
+                setStage('totp');
+                setChallengeError(null);
+              }}
+            >
+              Use authentication code instead
+            </button>
+          </form>
+        )}
+      </div>
+    );
   }
 
   return (

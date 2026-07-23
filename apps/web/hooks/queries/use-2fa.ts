@@ -19,6 +19,23 @@ export interface BackupCodesResponse {
   backupCodes: string[];
 }
 
+export interface Verify2FASessionResponse {
+  access_token: string;
+  user: {
+    id: string;
+    role: 'super_admin' | 'supervisor' | 'staff';
+    email: string;
+    first_name: string;
+    last_name: string;
+    branch_ids: string[];
+  };
+}
+
+export interface Verify2FABackupCodeResponse extends Verify2FASessionResponse {
+  backup_codes_remaining: number;
+  low_backup_codes_warning: boolean;
+}
+
 interface ApiErrorShape {
   error: { code: string; message?: string } | string | null;
 }
@@ -26,6 +43,21 @@ interface ApiErrorShape {
 function errorMessage(response: ApiErrorShape, fallback: string): string {
   if (!response.error) return fallback;
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
+}
+
+/** Error code from the API response, when present — lets callers branch on failure kind (e.g. an expired challenge) without string-matching the display message. */
+function errorCode(response: ApiErrorShape): string | undefined {
+  return typeof response.error === 'object' ? response.error?.code : undefined;
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string | undefined,
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
 }
 
 export function use2FAStatus() {
@@ -101,5 +133,44 @@ export function useRegenerateBackupCodes() {
       return response.data;
     },
     onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+// -- Step 11b Phase 2: 2FA login verification --------------------------------
+// No onError toast here — the login page renders inline error state itself
+// (matching the existing password-login error handling in login-form.tsx),
+// since a toast plus an inline message would duplicate the same failure.
+
+export function useVerify2FALogin() {
+  return useMutation({
+    mutationFn: async (payload: { challengeToken: string; totpCode: string; deviceId: string }) => {
+      const response = await apiClient<Verify2FASessionResponse>('/api/auth/2fa/verify-login', {
+        method: 'POST',
+        body: JSON.stringify({
+          challenge_token: payload.challengeToken,
+          totp_code: payload.totpCode,
+          device_id: payload.deviceId,
+        }),
+      });
+      if (!response.data) throw new ApiRequestError(errorMessage(response, 'Invalid authentication code'), errorCode(response));
+      return response.data;
+    },
+  });
+}
+
+export function useVerify2FABackupCode() {
+  return useMutation({
+    mutationFn: async (payload: { challengeToken: string; backupCode: string; deviceId: string }) => {
+      const response = await apiClient<Verify2FABackupCodeResponse>('/api/auth/2fa/verify-backup-code', {
+        method: 'POST',
+        body: JSON.stringify({
+          challenge_token: payload.challengeToken,
+          backup_code: payload.backupCode,
+          device_id: payload.deviceId,
+        }),
+      });
+      if (!response.data) throw new ApiRequestError(errorMessage(response, 'Invalid backup code'), errorCode(response));
+      return response.data;
+    },
   });
 }

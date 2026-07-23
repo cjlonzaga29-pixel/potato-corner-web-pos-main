@@ -33,6 +33,13 @@ export interface RefreshResponse {
   access_token: string;
 }
 
+/** Step 11b Phase 2: returned from login() in place of a session when the user has 2FA enabled. */
+export interface ChallengeResponse {
+  challenge_required: true;
+  challenge_token: string;
+  expires_in: number;
+}
+
 export interface TokenBlacklistEntry {
   tokenHash: string;
   expiresAt: Date;

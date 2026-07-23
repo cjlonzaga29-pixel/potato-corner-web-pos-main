@@ -11,13 +11,15 @@ import {
   confirm2FASchema,
   disable2FASchema,
   regenerateBackupCodesSchema,
+  verify2FALoginSchema,
+  verify2FABackupCodeSchema,
 } from '@potato-corner/shared';
 import { authService } from './auth.service.js';
 import { AuthError } from './auth.types.js';
 import { validate } from '../../middleware/validate.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly } from '../../middleware/authorize.js';
-import { loginLimiter, resetLimiter } from '../../middleware/rate-limiter.js';
+import { loginLimiter, resetLimiter, totpVerifyLimiter } from '../../middleware/rate-limiter.js';
 import { config } from '../../config/index.js';
 import { parseDurationMs } from '../../lib/duration.js';
 
@@ -88,6 +90,12 @@ router.post('/login', loginLimiter, validate(loginSchema), async (req: Request, 
   try {
     const { email, password, device_id } = req.body as { email: string; password: string; device_id: string };
     const result = await authService.login(email, password, device_id, req.ip ?? null);
+
+    if ('challenge_required' in result) {
+      res.status(200).json({ data: result, error: null, meta: null });
+      return;
+    }
+
     setRefreshCookie(res, result.refreshToken);
     setAccessHintCookie(res, result.access_token);
     res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
@@ -368,6 +376,59 @@ router.post(
       const { token } = req.body as { token: string };
       const result = await authService.regenerateBackupCodes(req.user.user_id, token);
       res.status(200).json({ data: { backupCodes: result.backupCodes }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+// -- Step 11b Phase 2: 2FA login verification -------------------------------
+
+router.post(
+  '/2fa/verify-login',
+  totpVerifyLimiter,
+  validate(verify2FALoginSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { challenge_token, totp_code, device_id } = req.body as {
+        challenge_token: string;
+        totp_code: string;
+        device_id: string;
+      };
+      const result = await authService.verifyLogin2FA(challenge_token, totp_code, device_id, req.ip ?? null);
+      setRefreshCookie(res, result.refreshToken);
+      setAccessHintCookie(res, result.access_token);
+      res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/2fa/verify-backup-code',
+  totpVerifyLimiter,
+  validate(verify2FABackupCodeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { challenge_token, backup_code, device_id } = req.body as {
+        challenge_token: string;
+        backup_code: string;
+        device_id: string;
+      };
+      const result = await authService.verifyBackupCode2FA(challenge_token, backup_code, device_id, req.ip ?? null);
+      setRefreshCookie(res, result.refreshToken);
+      setAccessHintCookie(res, result.access_token);
+      res.status(200).json({
+        data: {
+          access_token: result.access_token,
+          user: result.user,
+          backup_codes_remaining: result.backupCodesRemaining,
+          low_backup_codes_warning: result.backupCodesRemaining <= 2,
+        },
+        error: null,
+        meta: null,
+      });
     } catch (error) {
       handleAuthError(error, res, next);
     }

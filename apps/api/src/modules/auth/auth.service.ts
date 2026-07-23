@@ -3,7 +3,13 @@ import jwt from 'jsonwebtoken';
 import { ROLES, type Role } from '@potato-corner/shared';
 import { authRepository } from './auth.repository.js';
 import { totpService } from './totp.service.js';
-import { AuthError, type AuthenticatedUserSummary, type LoginResponse, type RefreshResponse } from './auth.types.js';
+import {
+  AuthError,
+  type AuthenticatedUserSummary,
+  type ChallengeResponse,
+  type LoginResponse,
+  type RefreshResponse,
+} from './auth.types.js';
 import { config } from '../../config/index.js';
 import { hashToLockId } from '../../lib/pg-lock.js';
 import { sha256Hex, randomOpaqueToken } from '../../lib/hash.js';
@@ -107,7 +113,12 @@ export const authService = {
   generateRefreshToken,
   blacklistToken,
 
-  async login(email: string, password: string, deviceId: string, ipAddress: string | null): Promise<LoginResponse & { refreshToken: string }> {
+  async login(
+    email: string,
+    password: string,
+    deviceId: string,
+    ipAddress: string | null,
+  ): Promise<(LoginResponse & { refreshToken: string }) | ChallengeResponse> {
     const user = await authRepository.findUserByEmail(email);
 
     if (!user) {
@@ -146,6 +157,25 @@ export const authService = {
         afterState: { reason: 'invalid_password' },
       });
       throw new AuthError('INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
+
+    // Step 11b Phase 2: password is correct, but a 2FA-enrolled user doesn't
+    // get a session yet — only a short-lived challenge. Users without 2FA
+    // fall straight through to the unchanged flow below.
+    if (user.totpEnabled) {
+      const challengeToken = totpService.issueChallengeToken(user.id, deviceId);
+      await Promise.all([
+        authRepository.resetLoginAttempts(user.id),
+        recordAuditLog({
+          action: 'LOGIN_2FA_CHALLENGE_ISSUED',
+          entityType: 'user',
+          entityId: user.id,
+          actorId: user.id,
+          actorRole: user.role,
+          ipAddress,
+        }),
+      ]);
+      return { challenge_required: true, challenge_token: challengeToken, expires_in: totpService.CHALLENGE_TOKEN_TTL_SECONDS };
     }
 
     const branchIds = user.branchAssignments.map((assignment) => assignment.branchId);
@@ -567,5 +597,127 @@ export const authService = {
     });
 
     return { backupCodes };
+  },
+
+  // -- Step 11b Phase 2: 2FA login verification -----------------------------
+
+  /** Resolves a challenge token to the session-issuance inputs shared by both verify endpoints, or throws CHALLENGE_INVALID. */
+  async _resolveChallenge(challengeToken: string, deviceId: string) {
+    const challenge = totpService.verifyChallengeToken(challengeToken);
+    if (!challenge) {
+      throw new AuthError('CHALLENGE_INVALID', 'Session expired — please log in again', 401);
+    }
+    if (challenge.deviceId !== deviceId) {
+      throw new AuthError('CHALLENGE_INVALID', 'Session expired — please log in again', 401);
+    }
+
+    const [user, totpUser] = await Promise.all([
+      authRepository.findUserById(challenge.userId),
+      authRepository.findTotpFieldsById(challenge.userId),
+    ]);
+    if (!user || !user.isActive || !totpUser?.totpEnabled || !totpUser.totpSecret) {
+      throw new AuthError('CHALLENGE_INVALID', 'Session expired — please log in again', 401);
+    }
+
+    return { user, totpUser };
+  },
+
+  /** Issues the full session once a challenge token has passed either TOTP or backup-code verification. */
+  async _issueSessionForUser(
+    user: NonNullable<Awaited<ReturnType<typeof authRepository.findUserById>>>,
+    deviceId: string,
+  ): Promise<LoginResponse & { refreshToken: string }> {
+    const branchIds = user.branchAssignments.map((assignment) => assignment.branchId);
+    const accessToken = generateAccessToken({
+      id: user.id,
+      role: user.role,
+      email: user.email,
+      branchIds,
+      mustChangePassword: user.mustChangePassword,
+    });
+    const refreshToken = generateRefreshToken();
+    const refreshExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
+
+    await Promise.all([
+      authRepository.resetLoginAttempts(user.id),
+      authRepository.updateLastLogin(user.id),
+      authRepository.storeRefreshToken(user.id, refreshToken, deviceId, refreshExpiresAt),
+    ]);
+
+    return { access_token: accessToken, refreshToken, user: toUserSummary(user, branchIds) };
+  },
+
+  async verifyLogin2FA(
+    challengeToken: string,
+    totpCode: string,
+    deviceId: string,
+    ipAddress: string | null,
+  ): Promise<LoginResponse & { refreshToken: string }> {
+    const { user, totpUser } = await this._resolveChallenge(challengeToken, deviceId);
+
+    const secret = decryptField(totpUser.totpSecret as string);
+    if (!totpService.verifyToken(totpCode, secret)) {
+      await authRepository.incrementLoginAttempts(user.id);
+      await recordAuditLog({
+        action: 'LOGIN_2FA_FAILED',
+        entityType: 'user',
+        entityId: user.id,
+        actorId: user.id,
+        actorRole: user.role,
+        ipAddress,
+      });
+      throw new AuthError('INVALID_2FA_CODE', 'Invalid authentication code', 401);
+    }
+
+    totpService.markChallengeUsed(challengeToken);
+    const result = await this._issueSessionForUser(user, deviceId);
+
+    await recordAuditLog({
+      action: 'LOGIN_2FA_VERIFIED',
+      entityType: 'user',
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
+      ipAddress,
+    });
+
+    return result;
+  },
+
+  async verifyBackupCode2FA(
+    challengeToken: string,
+    backupCode: string,
+    deviceId: string,
+    ipAddress: string | null,
+  ): Promise<LoginResponse & { refreshToken: string; backupCodesRemaining: number }> {
+    const { user, totpUser } = await this._resolveChallenge(challengeToken, deviceId);
+
+    const backupResult = await totpService.verifyBackupCode(backupCode.toUpperCase(), totpUser.totpBackupCodes);
+    if (!backupResult.matched) {
+      await recordAuditLog({
+        action: 'LOGIN_2FA_BACKUP_CODE_FAILED',
+        entityType: 'user',
+        entityId: user.id,
+        actorId: user.id,
+        actorRole: user.role,
+        ipAddress,
+      });
+      throw new AuthError('INVALID_BACKUP_CODE', 'Invalid backup code', 401);
+    }
+
+    await authRepository.setBackupCodes(user.id, backupResult.remainingCodes);
+    totpService.markChallengeUsed(challengeToken);
+    const result = await this._issueSessionForUser(user, deviceId);
+
+    await recordAuditLog({
+      action: 'LOGIN_2FA_BACKUP_CODE_USED',
+      entityType: 'user',
+      entityId: user.id,
+      actorId: user.id,
+      actorRole: user.role,
+      ipAddress,
+    });
+
+    return { ...result, backupCodesRemaining: backupResult.remainingCodes.length };
   },
 };

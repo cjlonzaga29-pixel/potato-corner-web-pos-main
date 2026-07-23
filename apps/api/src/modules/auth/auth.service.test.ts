@@ -48,6 +48,21 @@ vi.mock('./auth.repository.js', () => ({
   },
 }));
 
+vi.mock('./totp.service.js', () => ({
+  totpService: {
+    generateSecret: vi.fn(() => 'MOCKSECRET'),
+    generateQrCodeDataUrl: vi.fn().mockResolvedValue('data:image/png;base64,mock'),
+    verifyToken: vi.fn(),
+    generateBackupCodes: vi.fn(() => ['CODE0000A', 'CODE0000B']),
+    hashBackupCode: vi.fn((code: string) => Promise.resolve(`hashed:${code}`)),
+    verifyBackupCode: vi.fn(),
+    issueChallengeToken: vi.fn(() => 'mock-challenge-token'),
+    verifyChallengeToken: vi.fn(),
+    markChallengeUsed: vi.fn(),
+    CHALLENGE_TOKEN_TTL_SECONDS: 300,
+  },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -62,17 +77,6 @@ vi.mock('../../lib/email.js', () => ({
 vi.mock('../../lib/encryption.js', () => ({
   encryptField: vi.fn((plaintext: string) => `enc:${plaintext}`),
   decryptField: vi.fn((encoded: string) => encoded.replace(/^enc:/, '')),
-}));
-
-vi.mock('./totp.service.js', () => ({
-  totpService: {
-    generateSecret: vi.fn(() => 'MOCKSECRET'),
-    generateQrCodeDataUrl: vi.fn().mockResolvedValue('data:image/png;base64,mock'),
-    verifyToken: vi.fn(),
-    generateBackupCodes: vi.fn(() => ['CODE0000A', 'CODE0000B']),
-    hashBackupCode: vi.fn((code: string) => Promise.resolve(`hashed:${code}`)),
-    verifyBackupCode: vi.fn(),
-  },
 }));
 
 const { authRepository } = await import('./auth.repository.js');
@@ -104,12 +108,15 @@ beforeEach(() => {
   vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue(null);
 });
 
+/** Every test in this describe block logs in a user with totpEnabled falsy (buildUser's default), so login() always resolves to a full session, never a challenge. */
+type SessionResult = { access_token: string; refreshToken: string };
+
 describe('authService.login', () => {
   it('returns an access token and refresh token for correct credentials', async () => {
     const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
     vi.mocked(authRepository.findUserByEmail).mockResolvedValue(buildUser({ passwordHash }) as never);
 
-    const result = await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', '127.0.0.1');
+    const result = (await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', '127.0.0.1')) as SessionResult;
 
     expect(result.access_token).toEqual(expect.any(String));
     expect(result.refreshToken).toEqual(expect.any(String));
@@ -157,10 +164,174 @@ describe('authService.login', () => {
       buildUser({ passwordHash, loginAttempts: 5, lockedUntil }) as never,
     );
 
-    const result = await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null);
+    const result = (await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null)) as SessionResult;
 
     expect(authRepository.resetLoginAttempts).toHaveBeenCalledWith('user-1');
     expect(result.access_token).toEqual(expect.any(String));
+  });
+});
+
+// Step 11b Phase 2 CRITICAL VERIFICATION: a user without 2FA enrolled must
+// see byte-for-byte the same response shape login() returned before this
+// phase existed — buildUser() defaults totpEnabled to undefined/falsy, same
+// as every pre-Phase-2 row in the database.
+describe('authService.login backward compatibility (no 2FA)', () => {
+  it('returns the exact same response shape as before this change — no challenge_required field', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(buildUser({ passwordHash }) as never);
+
+    const result = await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null);
+
+    expect(result).not.toHaveProperty('challenge_required');
+    expect(Object.keys(result).sort()).toEqual(['access_token', 'refreshToken', 'user'].sort());
+    expect(result).toMatchObject({
+      access_token: expect.any(String),
+      refreshToken: expect.any(String),
+      user: expect.objectContaining({ id: 'user-1' }),
+    });
+    expect(authRepository.storeRefreshToken).toHaveBeenCalled();
+  });
+});
+
+describe('authService.login with 2FA enabled', () => {
+  it('returns a challenge instead of a session', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(buildUser({ passwordHash, totpEnabled: true }) as never);
+
+    const result = await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null);
+
+    expect(result).toEqual({ challenge_required: true, challenge_token: 'mock-challenge-token', expires_in: 300 });
+    expect(totpService.issueChallengeToken).toHaveBeenCalledWith('user-1', 'device-1');
+    expect(authRepository.storeRefreshToken).not.toHaveBeenCalled();
+    expect(authRepository.updateLastLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe('authService.verifyLogin2FA', () => {
+  const totpUserFields = {
+    id: 'user-1',
+    email: 'staff@potatocorner.test',
+    role: ROLES.STAFF,
+    totpSecret: 'enc:MOCKSECRET',
+    totpEnabled: true,
+    totpEnrolledAt: new Date(),
+    totpBackupCodes: ['hashed:CODE0000A'],
+  };
+
+  it('returns a full session with two_factor verified via a valid TOTP code', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue({ userId: 'user-1', deviceId: 'device-1' });
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser() as never);
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue(totpUserFields as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(true);
+
+    const result = await authService.verifyLogin2FA('challenge-token', '123456', 'device-1', null);
+
+    expect(result.access_token).toEqual(expect.any(String));
+    expect(totpService.markChallengeUsed).toHaveBeenCalledWith('challenge-token');
+    expect(authRepository.storeRefreshToken).toHaveBeenCalledWith('user-1', result.refreshToken, 'device-1', expect.any(Date));
+  });
+
+  it('rejects an invalid TOTP code with 401 and allows retry (challenge stays valid)', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue({ userId: 'user-1', deviceId: 'device-1' });
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser() as never);
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue(totpUserFields as never);
+    vi.mocked(totpService.verifyToken).mockReturnValue(false);
+
+    await expect(authService.verifyLogin2FA('challenge-token', '000000', 'device-1', null)).rejects.toMatchObject({
+      code: 'INVALID_2FA_CODE',
+      statusCode: 401,
+    });
+
+    expect(totpService.markChallengeUsed).not.toHaveBeenCalled();
+    expect(authRepository.incrementLoginAttempts).toHaveBeenCalledWith('user-1');
+  });
+
+  it('rejects a challenge token bound to a different device', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue({ userId: 'user-1', deviceId: 'device-1' });
+
+    await expect(authService.verifyLogin2FA('challenge-token', '123456', 'device-2', null)).rejects.toMatchObject({
+      code: 'CHALLENGE_INVALID',
+    });
+    expect(authRepository.findUserById).not.toHaveBeenCalled();
+  });
+
+  it('rejects an already-used challenge token', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue(null);
+
+    await expect(authService.verifyLogin2FA('reused-token', '123456', 'device-1', null)).rejects.toMatchObject({
+      code: 'CHALLENGE_INVALID',
+    });
+  });
+
+  it('rejects an expired challenge token', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue(null);
+
+    await expect(authService.verifyLogin2FA('expired-token', '123456', 'device-1', null)).rejects.toMatchObject({
+      code: 'CHALLENGE_INVALID',
+    });
+  });
+});
+
+describe('authService.verifyBackupCode2FA', () => {
+  it('consumes the used backup code and returns a full session', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue({ userId: 'user-1', deviceId: 'device-1' });
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser() as never);
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: ['hashed:CODE0000A', 'hashed:CODE0000B'],
+    } as never);
+    vi.mocked(totpService.verifyBackupCode).mockResolvedValue({ matched: true, remainingCodes: ['hashed:CODE0000B'] });
+
+    const result = await authService.verifyBackupCode2FA('challenge-token', 'CODE0000A', 'device-1', null);
+
+    expect(result.access_token).toEqual(expect.any(String));
+    expect(result.backupCodesRemaining).toBe(1);
+    expect(authRepository.setBackupCodes).toHaveBeenCalledWith('user-1', ['hashed:CODE0000B']);
+    expect(totpService.markChallengeUsed).toHaveBeenCalledWith('challenge-token');
+  });
+
+  it('rejects an invalid backup code with 401', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue({ userId: 'user-1', deviceId: 'device-1' });
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser() as never);
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: ['hashed:CODE0000A'],
+    } as never);
+    vi.mocked(totpService.verifyBackupCode).mockResolvedValue({ matched: false, remainingCodes: ['hashed:CODE0000A'] });
+
+    await expect(authService.verifyBackupCode2FA('challenge-token', 'WRONGCODE1', 'device-1', null)).rejects.toMatchObject({
+      code: 'INVALID_BACKUP_CODE',
+    });
+    expect(authRepository.setBackupCodes).not.toHaveBeenCalled();
+  });
+
+  it('flags a low-backup-codes warning when 2 or fewer codes remain', async () => {
+    vi.mocked(totpService.verifyChallengeToken).mockReturnValue({ userId: 'user-1', deviceId: 'device-1' });
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser() as never);
+    vi.mocked(authRepository.findTotpFieldsById).mockResolvedValue({
+      id: 'user-1',
+      email: 'staff@potatocorner.test',
+      role: ROLES.STAFF,
+      totpSecret: 'enc:MOCKSECRET',
+      totpEnabled: true,
+      totpEnrolledAt: new Date(),
+      totpBackupCodes: ['hashed:CODE0000A', 'hashed:CODE0000B'],
+    } as never);
+    vi.mocked(totpService.verifyBackupCode).mockResolvedValue({ matched: true, remainingCodes: ['hashed:CODE0000B'] });
+
+    const result = await authService.verifyBackupCode2FA('challenge-token', 'CODE0000A', 'device-1', null);
+
+    expect(result.backupCodesRemaining).toBeLessThanOrEqual(2);
   });
 });
 

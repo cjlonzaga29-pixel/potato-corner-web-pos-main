@@ -171,7 +171,7 @@ export function LoginForm() {
         </div>
 
         {lowBackupCodesWarning && (
-          <p role="alert" className="rounded-md bg-amber-100 p-3 text-sm text-amber-900">
+          <p role="alert" className="rounded-lg bg-amber-100 p-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-300">
             You have 2 or fewer backup codes remaining. Regenerate them from your account settings soon.
           </p>
         )}
@@ -283,7 +283,7 @@ export function LoginForm() {
         </div>
 
         {error && (
-          <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+          <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
             {error.message}
             {typeof error.minutesRemaining === 'number' ? ` (${error.minutesRemaining} min remaining)` : null}
           </p>

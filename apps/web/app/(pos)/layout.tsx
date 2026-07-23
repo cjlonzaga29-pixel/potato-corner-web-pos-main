@@ -55,7 +55,7 @@ export default function PosLayout({ children }: { children: ReactNode }) {
     <div className="flex h-screen flex-col overflow-hidden">
       <SocketInitializer />
       <PosHeader />
-      <nav className="flex shrink-0 items-center gap-1 border-b bg-card px-4 py-2">
+      <nav className="glass-panel flex shrink-0 items-center gap-1 border-b px-4 py-2">
         {POS_NAV_ITEMS.map((item) => {
           const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           return (
@@ -63,10 +63,10 @@ export default function PosLayout({ children }: { children: ReactNode }) {
               key={item.href}
               href={item.href}
               className={cn(
-                'touch-target flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                'touch-target flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-150',
                 isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  ? 'bg-primary text-primary-foreground shadow-glow'
+                  : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
               )}
             >
               <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />

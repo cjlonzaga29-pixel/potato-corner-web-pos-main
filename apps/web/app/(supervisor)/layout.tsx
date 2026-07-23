@@ -11,10 +11,10 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  */
 export default function SupervisorLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-background">
       <SocketInitializer />
       <SupervisorSidebar />
-      <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      <main className="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
     </div>
   );
 }

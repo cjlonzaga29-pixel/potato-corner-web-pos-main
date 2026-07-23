@@ -76,26 +76,37 @@ export function SupervisorSidebar() {
   };
 
   return (
-    <aside className={cn('flex h-screen flex-col border-r bg-card transition-all duration-200', collapsed ? 'w-16' : 'w-64')}>
-      <div className="flex h-14 items-center justify-between border-b px-3">
+    <aside
+      className={cn(
+        'glass-panel flex h-screen flex-col border-r transition-all duration-200',
+        collapsed ? 'w-16' : 'w-64',
+      )}
+    >
+      <div className="flex h-16 items-center justify-between border-b border-border/60 px-3">
         {!collapsed && (
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-700 text-sm font-bold text-primary-foreground shadow-glow">
               PC
             </div>
-            <span className="text-sm font-semibold">Potato Corner</span>
+            <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
           <NotificationBellConnected />
-          <Button variant="ghost" size="icon" onClick={() => setCollapsed((prev) => !prev)} aria-label="Toggle sidebar">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-lg"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-label="Toggle sidebar"
+          >
             {collapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
           </Button>
         </div>
       </div>
 
       {!collapsed && (
-        <div className="border-b p-3">
+        <div className="border-b border-border/60 p-3">
           <BranchSelector />
         </div>
       )}
@@ -111,10 +122,10 @@ export function SupervisorSidebar() {
               href={item.href}
               title={collapsed ? item.label : undefined}
               className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                 isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  ? 'bg-primary text-primary-foreground shadow-glow'
+                  : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
               )}
             >
               <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
@@ -129,11 +140,11 @@ export function SupervisorSidebar() {
         })}
       </nav>
 
-      <div className="border-t p-3">
-        <div className={cn('flex items-center gap-3', collapsed && 'justify-center')}>
+      <div className="border-t border-border/60 p-3">
+        <div className={cn('flex items-center gap-3 rounded-lg p-1.5 transition-colors hover:bg-accent/50', collapsed && 'justify-center')}>
           <Link href="/supervisor/profile" className="flex min-w-0 flex-1 items-center gap-3">
-            <Avatar className="h-8 w-8">
-              <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+            <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+              <AvatarFallback className="bg-gradient-to-br from-primary to-blue-700 text-xs font-semibold text-primary-foreground">
                 {user ? generateInitials(user.firstName || 'S', user.lastName || 'V') : 'SV'}
               </AvatarFallback>
             </Avatar>

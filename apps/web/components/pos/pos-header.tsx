@@ -48,9 +48,9 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
   const branchLabel = !branchId ? 'No branch' : isBranchLoading ? 'Loading…' : (branch?.name ?? 'Branch unavailable');
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between border-b bg-card px-4">
+    <header className="glass-panel flex h-16 shrink-0 items-center justify-between border-b px-4">
       <div className="flex items-center gap-4">
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-700 text-sm font-bold text-primary-foreground shadow-glow">
           PC
         </div>
         <div>

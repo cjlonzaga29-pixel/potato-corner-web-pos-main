@@ -101,19 +101,30 @@ export function AdminSidebar() {
   };
 
   return (
-    <aside className={cn('flex h-screen flex-col border-r bg-card transition-all duration-200', collapsed ? 'w-16' : 'w-64')}>
-      <div className="flex h-14 items-center justify-between border-b px-3">
+    <aside
+      className={cn(
+        'glass-panel flex h-screen flex-col border-r transition-all duration-200',
+        collapsed ? 'w-16' : 'w-64',
+      )}
+    >
+      <div className="flex h-16 items-center justify-between border-b border-border/60 px-3">
         {!collapsed && (
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-700 text-sm font-bold text-primary-foreground shadow-glow">
               PC
             </div>
-            <span className="text-sm font-semibold">Potato Corner</span>
+            <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
           <NotificationBellConnected />
-          <Button variant="ghost" size="icon" onClick={() => setCollapsed((prev) => !prev)} aria-label="Toggle sidebar">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-lg"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-label="Toggle sidebar"
+          >
             {collapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
           </Button>
         </div>
@@ -133,10 +144,10 @@ export function AdminSidebar() {
                   title={collapsed ? item.label : undefined}
                   onClick={() => setOpenGroups((prev) => ({ ...prev, [item.label]: !isOpen }))}
                   className={cn(
-                    'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                     childActive
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                      ? 'bg-primary/12 text-primary shadow-[inset_2px_0_0_0_hsl(var(--primary))]'
+                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
                   )}
                 >
                   <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
@@ -148,7 +159,7 @@ export function AdminSidebar() {
                   )}
                 </button>
                 {isOpen && !collapsed && (
-                  <div className="ml-4 mt-1 space-y-1 border-l pl-2">
+                  <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-2">
                     {item.children.map((child) => {
                       const isActive = pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`);
                       const count = badgeCounts[child.href] ?? 0;
@@ -157,10 +168,10 @@ export function AdminSidebar() {
                           key={child.href}
                           href={child.href}
                           className={cn(
-                            'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                            'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                             isActive
-                              ? 'bg-primary text-primary-foreground'
-                              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                              ? 'bg-primary text-primary-foreground shadow-glow'
+                              : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
                           )}
                         >
                           <NavLinkIcon icon={child.icon} className="h-4 w-4 shrink-0" />
@@ -187,10 +198,10 @@ export function AdminSidebar() {
               href={item.href}
               title={collapsed ? item.label : undefined}
               className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                 isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  ? 'bg-primary text-primary-foreground shadow-glow'
+                  : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
               )}
             >
               <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
@@ -205,11 +216,11 @@ export function AdminSidebar() {
         })}
       </nav>
 
-      <div className="border-t p-3">
-        <div className={cn('flex items-center gap-3', collapsed && 'justify-center')}>
+      <div className="border-t border-border/60 p-3">
+        <div className={cn('flex items-center gap-3 rounded-lg p-1.5 transition-colors hover:bg-accent/50', collapsed && 'justify-center')}>
           <Link href="/admin/profile" className="flex min-w-0 flex-1 items-center gap-3">
-            <Avatar className="h-8 w-8">
-              <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+            <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+              <AvatarFallback className="bg-gradient-to-br from-primary to-blue-700 text-xs font-semibold text-primary-foreground">
                 {user ? generateInitials(user.firstName || 'A', user.lastName || 'D') : 'AD'}
               </AvatarFallback>
             </Avatar>

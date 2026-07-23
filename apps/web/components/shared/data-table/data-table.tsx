@@ -117,9 +117,9 @@ export function DataTable<TData, TValue>({
   return (
     <div className="space-y-4">
       {toolbar}
-      <div className="relative rounded-md border">
+      <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-card shadow-panel">
         {isLoading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-sm">
             <LoadingSpinner size="lg" />
           </div>
         )}

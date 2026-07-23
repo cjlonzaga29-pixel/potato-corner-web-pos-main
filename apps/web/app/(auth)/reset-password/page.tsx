@@ -141,7 +141,7 @@ function ResetPasswordContent() {
   const token = searchParams.get('token');
 
   return (
-    <Card className="w-full max-w-sm">
+    <Card className="glass-panel relative w-full max-w-sm">
       <CardHeader>
         <CardTitle className="text-xl">{token ? 'Reset your password' : 'Forgot password'}</CardTitle>
         <CardDescription>
@@ -155,7 +155,11 @@ function ResetPasswordContent() {
 
 export default function ResetPasswordPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+    <main className="bg-grid-fade relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
+      <div
+        className="pointer-events-none absolute left-1/2 top-1/3 h-[32rem] w-[32rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/20 blur-3xl"
+        aria-hidden="true"
+      />
       <Suspense fallback={null}>
         <ResetPasswordContent />
       </Suspense>

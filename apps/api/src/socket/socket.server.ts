@@ -29,6 +29,20 @@ export function getIO(): Server | null {
   return ioInstance;
 }
 
+/**
+ * Forces any of a user's already-connected sockets into/out of a branch
+ * room the moment an assignment changes, instead of waiting for their next
+ * reconnect (joinRoomsForUser only runs at connection time, off JWT claims
+ * that are themselves stale until the next token refresh).
+ */
+export function joinUserToBranchRoom(userId: string, branchId: string): void {
+  void ioInstance?.in(userRoom(userId)).socketsJoin(branchRoom(branchId));
+}
+
+export function leaveUserFromBranchRoom(userId: string, branchId: string): void {
+  void ioInstance?.in(userRoom(userId)).socketsLeave(branchRoom(branchId));
+}
+
 const ERROR_MESSAGES: Record<AccessTokenErrorCode, string> = {
   TOKEN_MALFORMED: 'Invalid token format',
   TOKEN_INVALID_SIGNATURE: 'Invalid token signature',

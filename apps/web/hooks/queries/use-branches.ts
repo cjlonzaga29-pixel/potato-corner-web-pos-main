@@ -158,7 +158,12 @@ export function useBranchStats(branchId: string | null | undefined) {
 /** Keeps branch lists/dashboards in sync with status changes and supervisor (re)assignments recorded from any other session, without a manual refresh. */
 export function useBranchRealtimeSync(): void {
   useRealtimeInvalidate(
-    [SOCKET_EVENTS.BRANCH_STATUS_CHANGED, SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED, SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED],
+    [
+      SOCKET_EVENTS.BRANCH_CREATED,
+      SOCKET_EVENTS.BRANCH_STATUS_CHANGED,
+      SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED,
+      SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED,
+    ],
     [['branches'], ['branch']],
   );
 }

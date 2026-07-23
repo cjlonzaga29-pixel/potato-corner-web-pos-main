@@ -64,6 +64,35 @@ async function attemptRefresh(): Promise<RestoreAttempt> {
   }
 }
 
+/**
+ * Forces an immediate token refresh outside the mount-time restore / 401-retry
+ * paths — used when a push event (branch assignment/removal) means the
+ * JWT's branch_ids is stale before the token's natural expiry. Preserves the
+ * existing first/last name instead of blanking them (unlike restoreSession's
+ * blank-on-reload case, there's a valid prior value here worth keeping).
+ */
+export async function refreshAuthSession(): Promise<boolean> {
+  const attempt = await attemptRefresh();
+  if (!attempt.accessToken) return false;
+
+  const payload = decodeJwtPayload(attempt.accessToken);
+  if (!payload) return false;
+
+  const current = useAuthStore.getState().user;
+  useAuthStore.getState().setAuth(
+    {
+      id: payload.user_id,
+      role: payload.role,
+      email: payload.email,
+      firstName: current?.firstName ?? '',
+      lastName: current?.lastName ?? '',
+      branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
+    },
+    attempt.accessToken,
+  );
+  return true;
+}
+
 function toAuthUser(user: LoginUserData): AuthUser {
   return {
     id: user.id,

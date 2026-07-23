@@ -35,6 +35,8 @@ vi.mock('../../middleware/audit-log.js', () => ({
 
 vi.mock('../../socket/socket.server.js', () => ({
   getIO: vi.fn().mockReturnValue(null),
+  joinUserToBranchRoom: vi.fn(),
+  leaveUserFromBranchRoom: vi.fn(),
 }));
 
 vi.mock('../../lib/supabase.js', () => ({

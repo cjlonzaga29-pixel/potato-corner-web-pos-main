@@ -4,8 +4,8 @@ import { ROLES, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potat
 import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { getIO } from '../../socket/socket.server.js';
-import { SUPER_ADMIN_ROOM } from '../../socket/rooms.js';
+import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../socket/socket.server.js';
+import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 
@@ -184,7 +184,12 @@ export const branchesService = {
       ipAddress,
     });
 
-    return toBranchResponse(branch);
+    const response = toBranchResponse(branch);
+    // No supervisor is assigned yet at creation time, so a branch room has
+    // no members to notify — Super Admin is the only audience for this event.
+    getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_CREATED, response);
+
+    return response;
   },
 
   async updateBranch(
@@ -343,7 +348,8 @@ export const branchesService = {
       ipAddress,
     });
 
-    getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED, { userId, branchId });
+    joinUserToBranchRoom(userId, branchId);
+    getIO()?.to([SUPER_ADMIN_ROOM, userRoom(userId)]).emit(SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED, { userId, branchId });
 
     return assignment;
   },
@@ -367,7 +373,8 @@ export const branchesService = {
       ipAddress,
     });
 
-    getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED, { userId, branchId });
+    leaveUserFromBranchRoom(userId, branchId);
+    getIO()?.to([SUPER_ADMIN_ROOM, userRoom(userId)]).emit(SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED, { userId, branchId });
   },
 
   async getAssignments(branchId: string, requestingUser: JwtPayload) {

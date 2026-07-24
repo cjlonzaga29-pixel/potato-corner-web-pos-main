@@ -287,6 +287,109 @@ Mitigations:
 - Product Builder split into small shadcn/ui components
 - Multiple users can hold super_admin role
 
+## Implementation status
+
+### Phase 1 — Schema foundations
+
+Shipped in 24aa312 (amended after Phase 2 review — see Fix 2 below).
+Adds IngredientCategory, VariantLifecycleStatus, ProductFlavorSlot,
+ProductChangeLog, plus additive columns on Ingredient, Flavor,
+ProductVariant, Recipe, TransactionItem.
+
+**Fix 2:** 26f04b5 — Original Phase 1 used Flavor.ingredientId as a
+single FK, which would either pin flavors to one branch (breaking
+universality) or reintroduce CR-004 branch-leakage. Replaced with
+Flavor.ingredientName + Flavor.ingredientUnit (name+unit identity,
+matches CR-004 resolver pattern used for Recipe rows).
+
+### Phase 2 — Flavor backfill and NOT NULL enforcement
+
+Shipped in b822622. Backfilled ingredientName/ingredientUnit for
+existing flavors, provisioned per-branch FLAVOR Ingredient rows,
+enforced NOT NULL on both new columns. Idempotency key aligned to
+CR-004's actual unique index (branchId, name).
+
+### Phase 3 — Provisioning hooks and lifecycle machinery
+Shipped in 6 commits:
+
+- **3a (b5ebdac):** Flavor create/reactivate provisions per-branch
+  Ingredient rows via new provisionIdentityAcrossBranches. Ingredient
+  identity fields immutable after creation.
+- **3b.1 (387e897):** Branch create unions recipe-derived +
+  flavor-derived identities before provisioning. FLAVOR wins category
+  on name/unit collision.
+- **3b.2 (279eb58):** Wrapped createBranch in prisma.$transaction for
+  atomic branch + provisioning. Post-commit audit + socket emit stay
+  outside the transaction. Closes a pre-existing atomicity gap.
+- **3c (bb90376):** ProductVariant lifecycle (submit/approve/reject/
+  editActive/archive) with strict RBAC, VARIANT_TRANSITIONS matrix,
+  mandatory reason enforcement on reject + editActive, version bumps
+  only on editActive, ProductChangeLog written on editActive + archive
+  only. Two approval gates: Phase 4 gate (blocks approval if any
+  recipe row has flavorSlotIndex OR any ProductFlavorSlot row exists)
+  and Guarantee 6 gate (blocks approval if any recipe ingredient is
+  unresolvable in every branch).
+- **3d (e0636b8):** ProductFlavorSlot CRUD (add/update/remove/reorder/
+  list) with shared performSlotEditWithActiveGovernance helper.
+  Contiguous slotIndex enforcement, maxFlavors cap, atomic ACTIVE-state
+  mutations with version bump + ChangeLog. 2-phase reorder pattern
+  to avoid unique constraint violation.
+- **3f (f3ffd1f):** Recipe write path accepts flavor_slot_index with
+  mutual exclusivity vs flavor_id, range validation. Extended 3d's
+  removeFlavorSlot with SLOT_HAS_DEPENDENT_RECIPES guard, extended
+  3d's reorder to cascade Recipe.flavorSlotIndex for semantic
+  preservation across reorders. 2-phase temp-offset pattern for Recipe
+  cascade to handle swap cases (0↔1).
+
+### Phase 4 — POS deduction integration (pending)
+
+Not yet started. Phase 4 will:
+
+- Remove the Phase 4 gate from approveVariant (3c)
+- Extend computeDeduction to resolve flavor_slot_index at sale time
+  against TransactionItem.selectedFlavors payload
+- Wire the CR-004 branch-scoped resolver to consume slot-based recipes
+- No UI changes (Phase 5/6)
+
+### Phase 5 & 6 (pending)
+
+Admin Builder UI and POS runtime UI + final end-to-end tests. Not yet
+started.
+
+## Lessons learned (Phase 1-3)
+
+- **Runbook restriction "no service/repository code touches" was too
+  rigid for schema-change phases.** Adding NOT NULL constraints on new
+  required columns necessarily requires companion write-path fixes.
+  Phase 2 hit this with flavors.repository.create. Future phases scope
+  service touches per-need.
+
+- **Socket event naming must respect existing contract tests.** Repo
+  enforces ^[a-z_]+:[a-z_]+$; sub-phases 3c and 3d discovered this via
+  failing tests when specs used hyphens or extra colons. Underscore-
+  single-colon convention is canonical.
+
+- **Field name convention is snake_case in DTOs** (matches existing
+  flavor_id, product_variant_id pattern), even where the Prisma model
+  uses camelCase. Sub-phase 3f caught this.
+
+- **Two-phase temp-offset pattern needed for any bulk index rewrite,
+  unique-constrained or not.** Sub-phase 3f's Recipe cascade would
+  have subtly failed on swap cases (0↔1) with single-phase updates
+  because the WHERE clause of a later UPDATE would match rows the
+  earlier UPDATE just rewrote. Two-phase is the safe default.
+
+- **Pre-existing atomicity gaps deserve companion fixes when a new
+  sub-phase widens their blast radius.** Sub-phase 3b.2 wrapped
+  createBranch in a transaction because 3b.1 added a second identity
+  source; a partial failure would have left more incomplete state
+  than before.
+
+- **The Phase 4 gate is a governance-clean way to ship partial
+  features safely.** New capability (flavor slots) is fully authored
+  and validated in Phase 3, but activation is blocked until the
+  runtime resolver ships in Phase 4. No half-broken production risk.
+
 ## References
 
 - CR-003 (shipped, no ADR file yet — see DEBT.md)

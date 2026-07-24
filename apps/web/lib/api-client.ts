@@ -120,26 +120,29 @@ export async function apiClient<T>(
     console.warn('[apiClient] 401, triggering refresh', path);
     const newToken = await refreshAccessToken();
     if (newToken) {
-      // Rebuild from the new token's own claims rather than reusing the
-      // stale cached user object — a role change server-side (e.g. a
-      // promotion to super_admin) must take effect the moment the refreshed
-      // token carries it, not stay pinned to whatever role was cached at
-      // login. First/last name aren't in the JWT, so they're carried over
-      // from the prior cached user (login-only fields).
-      const payload = decodeJwtPayload(newToken);
       const previousUser = useAuthStore.getState().user;
-      if (payload && previousUser) {
-        useAuthStore.getState().setAuth(
-          {
-            id: payload.user_id,
-            role: payload.role,
-            email: payload.email,
-            firstName: previousUser.firstName,
-            lastName: previousUser.lastName,
-            branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
-          },
-          newToken,
-        );
+      if (previousUser) {
+        // Rebuild from the new token's own claims rather than reusing the
+        // stale cached user object — a role change server-side (e.g. a
+        // promotion to super_admin) must take effect the moment the refreshed
+        // token carries it, not stay pinned to whatever role was cached at
+        // login. First/last name aren't in the JWT, so they're carried over
+        // from the prior cached user (login-only fields). This is best-effort:
+        // if the token doesn't decode, fall back to the previous user as-is
+        // rather than treating a successful refresh as a failure — the retry
+        // below must still happen either way.
+        const payload = decodeJwtPayload(newToken);
+        const updatedUser = payload
+          ? {
+              id: payload.user_id,
+              role: payload.role,
+              email: payload.email,
+              firstName: previousUser.firstName,
+              lastName: previousUser.lastName,
+              branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
+            }
+          : previousUser;
+        useAuthStore.getState().setAuth(updatedUser, newToken);
         return apiClient<T>(path, init, true);
       }
     }

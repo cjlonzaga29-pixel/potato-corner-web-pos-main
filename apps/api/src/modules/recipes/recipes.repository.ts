@@ -132,8 +132,9 @@ export const recipesRepository = {
    * needs a zero-stock Ingredient row for (branchesService.createBranch ->
    * inventoryService.provisionBranchIngredients).
    */
-  async findDistinctIngredientIdentities(): Promise<{ name: string; unit: string }[]> {
-    const rows = await prisma.recipe.findMany({
+  async findDistinctIngredientIdentities(tx?: Prisma.TransactionClient): Promise<{ name: string; unit: string }[]> {
+    const client = tx ?? prisma;
+    const rows = await client.recipe.findMany({
       where: { deletedAt: null },
       select: { ingredient: { select: { name: true, unit: true } } },
       distinct: ['ingredientId'],

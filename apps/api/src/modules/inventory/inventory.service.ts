@@ -595,15 +595,23 @@ export const inventoryService = {
    * originally created against (see recipes.service.ts computeDeduction).
    * Idempotent — safe to re-run for a branch that already has some of these
    * ingredients. category is optional so pre-3b callers passing bare
-   * {name, unit} identities are unaffected.
+   * {name, unit} identities are unaffected. tx is optional too (CR-005
+   * Sub-phase 3b) — branchesService.createBranch passes its transaction
+   * client through so provisioning commits atomically with the branch row;
+   * omitted, this runs against the default prisma client as before.
    */
   async provisionBranchIngredients(
     branchId: string,
     identities: { name: string; unit: string; category?: IngredientCategory }[],
+    tx?: Prisma.TransactionClient,
   ): Promise<void> {
     for (const identity of identities) {
-      if (identity.category) {
+      if (identity.category && tx) {
+        await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit, identity.category, tx);
+      } else if (identity.category) {
         await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit, identity.category);
+      } else if (tx) {
+        await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit, undefined, tx);
       } else {
         await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit);
       }

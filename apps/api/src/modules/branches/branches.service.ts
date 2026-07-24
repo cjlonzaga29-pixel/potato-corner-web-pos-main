@@ -11,6 +11,7 @@ import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../sock
 import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
+import { prisma } from '../../lib/prisma.js';
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -177,36 +178,48 @@ export const branchesService = {
       code = await branchesRepository.generateBranchCode(data.city);
     }
 
-    const branch = await branchesRepository.create({ ...data, code });
+    // Branch creation, identity resolution, and provisioning all commit
+    // atomically — a failure partway through (e.g. provisioning throws)
+    // must never leave an orphan branch row with an incomplete ingredient
+    // set. findByCode/generateBranchCode above are pre-flight validation,
+    // not part of the atomicity requirement, so they stay outside.
+    const branch = await prisma.$transaction(async (tx) => {
+      const created = await branchesRepository.create({ ...data, code }, tx);
 
-    // CR-004 idempotent branch provisioning — every ingredient identity an
-    // active master Recipe references gets a zero-stock row here, so a
-    // master-recipe sale at this branch resolves to its own stock instead of
-    // leaking against whichever branch's Ingredient the recipe was created
-    // against (see recipes.service.ts computeDeduction).
-    //
-    // CR-005 Sub-phase 3b — unioned with every distinct flavor-derived
-    // identity (CR-005 Sub-phase 3a) so a new branch is provisioned for both
-    // sources in one pass, closing the inverse of the gap 3a opened: a
-    // branch created *after* a flavor existed used to never get that
-    // flavor's Ingredient row. Deduped by (name, unit); FLAVOR wins the
-    // category on a collision since it's the more specific classification.
-    const recipeIdentities = await recipesRepository.findDistinctIngredientIdentities();
-    const flavorIdentities = await flavorsRepository.findDistinctFlavorIngredientIdentities();
+      // CR-004 idempotent branch provisioning — every ingredient identity an
+      // active master Recipe references gets a zero-stock row here, so a
+      // master-recipe sale at this branch resolves to its own stock instead
+      // of leaking against whichever branch's Ingredient the recipe was
+      // created against (see recipes.service.ts computeDeduction).
+      //
+      // CR-005 Sub-phase 3b — unioned with every distinct flavor-derived
+      // identity (CR-005 Sub-phase 3a) so a new branch is provisioned for
+      // both sources in one pass, closing the inverse of the gap 3a opened:
+      // a branch created *after* a flavor existed used to never get that
+      // flavor's Ingredient row. Deduped by (name, unit); FLAVOR wins the
+      // category on a collision since it's the more specific classification.
+      const recipeIdentities = await recipesRepository.findDistinctIngredientIdentities(tx);
+      const flavorIdentities = await flavorsRepository.findDistinctFlavorIngredientIdentities(tx);
 
-    const identityMap = new Map<string, { name: string; unit: string; category: IngredientCategory }>();
-    for (const identity of recipeIdentities) {
-      identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.OTHER });
-    }
-    for (const identity of flavorIdentities) {
-      identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.FLAVOR });
-    }
-    const mergedIdentities = Array.from(identityMap.values());
+      const identityMap = new Map<string, { name: string; unit: string; category: IngredientCategory }>();
+      for (const identity of recipeIdentities) {
+        identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.OTHER });
+      }
+      for (const identity of flavorIdentities) {
+        identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.FLAVOR });
+      }
+      const mergedIdentities = Array.from(identityMap.values());
 
-    if (mergedIdentities.length > 0) {
-      await inventoryService.provisionBranchIngredients(branch.id, mergedIdentities);
-    }
+      if (mergedIdentities.length > 0) {
+        await inventoryService.provisionBranchIngredients(created.id, mergedIdentities, tx);
+      }
 
+      return created;
+    });
+
+    // Post-commit side effects — audit log FK errors are already swallowed
+    // by recordAuditLog, and a socket emit is a network side-effect that
+    // must never run inside an open DB transaction, so both stay outside it.
     await recordAuditLog({
       action: 'BRANCH_CREATED',
       entityType: 'branch',

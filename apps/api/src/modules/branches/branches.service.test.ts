@@ -29,6 +29,17 @@ vi.mock('../../lib/id-counter.js', () => ({
   nextCounterValue: vi.fn(),
 }));
 
+// createBranch wraps branch-create + identity resolution + provisioning in
+// prisma.$transaction (CR-005 Sub-phase 3b companion fix); the repositories
+// invoked inside that callback are all mocked separately below, so the tx
+// client itself is never actually touched — a stand-in object is enough,
+// and $transaction just runs the callback immediately with it. Declared via
+// vi.hoisted so it's safe to reference from the (hoisted) vi.mock factory.
+const { txMock } = vi.hoisted(() => ({ txMock: {} }));
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txMock)) },
+}));
+
 vi.mock('../recipes/recipes.repository.js', () => ({
   recipesRepository: { findDistinctIngredientIdentities: vi.fn().mockResolvedValue([]) },
 }));
@@ -79,6 +90,7 @@ const { supabaseAdmin } = await import('../../lib/supabase.js');
 const { recipesRepository } = await import('../recipes/recipes.repository.js');
 const { flavorsRepository } = await import('../flavors/flavors.repository.js');
 const { inventoryService } = await import('../inventory/inventory.service.js');
+const { prisma } = await import('../../lib/prisma.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
 
@@ -130,6 +142,7 @@ describe('branchesService.createBranch', () => {
     expect(branchesRepository.generateBranchCode).toHaveBeenCalledWith('Quezon City');
     expect(branchesRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({ code: 'PC-QZN-001' }),
+      txMock,
     );
   });
 
@@ -199,10 +212,14 @@ describe('branchesService.createBranch', () => {
       null,
     );
 
-    expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-3', [
-      { name: 'Potato', unit: 'g', category: 'OTHER' },
-      { name: 'Cooking Oil', unit: 'ml', category: 'OTHER' },
-    ]);
+    expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith(
+      'branch-3',
+      [
+        { name: 'Potato', unit: 'g', category: 'OTHER' },
+        { name: 'Cooking Oil', unit: 'ml', category: 'OTHER' },
+      ],
+      txMock,
+    );
   });
 
   it('CR-004: skips provisioning entirely when no master recipe ingredients exist yet', async () => {
@@ -256,9 +273,11 @@ describe('branchesService.createBranch', () => {
         null,
       );
 
-      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-6', [
-        { name: 'Cheese Powder', unit: 'g', category: 'FLAVOR' },
-      ]);
+      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith(
+        'branch-6',
+        [{ name: 'Cheese Powder', unit: 'g', category: 'FLAVOR' }],
+        txMock,
+      );
     });
 
     it('with only recipe identities behaves like pre-3b (all category OTHER)', async () => {
@@ -273,9 +292,11 @@ describe('branchesService.createBranch', () => {
         null,
       );
 
-      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-7', [
-        { name: 'Potato', unit: 'g', category: 'OTHER' },
-      ]);
+      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith(
+        'branch-7',
+        [{ name: 'Potato', unit: 'g', category: 'OTHER' }],
+        txMock,
+      );
     });
 
     it('with only flavor identities provisions all of them as category FLAVOR', async () => {
@@ -293,10 +314,14 @@ describe('branchesService.createBranch', () => {
         null,
       );
 
-      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-8', [
-        { name: 'Sour Cream', unit: 'g', category: 'FLAVOR' },
-        { name: 'BBQ', unit: 'g', category: 'FLAVOR' },
-      ]);
+      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith(
+        'branch-8',
+        [
+          { name: 'Sour Cream', unit: 'g', category: 'FLAVOR' },
+          { name: 'BBQ', unit: 'g', category: 'FLAVOR' },
+        ],
+        txMock,
+      );
     });
 
     it('with zero recipe and zero flavor identities never calls provisionBranchIngredients', async () => {
@@ -336,6 +361,93 @@ describe('branchesService.createBranch', () => {
           { name: 'Cheese Powder', unit: 'g', category: 'FLAVOR' },
         ]),
       );
+    });
+  });
+
+  describe('CR-005 Sub-phase 3b companion: prisma.$transaction wrap', () => {
+    it('runs branch create + identity resolution + provisioning inside a single prisma.$transaction call', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-011');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-11', code: 'PC-MNL-011' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 11', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
+      expect(branchesRepository.create).toHaveBeenCalledWith(expect.objectContaining({ code: 'PC-MNL-011' }), txMock);
+      expect(recipesRepository.findDistinctIngredientIdentities).toHaveBeenCalledWith(txMock);
+      expect(flavorsRepository.findDistinctFlavorIngredientIdentities).toHaveBeenCalledWith(txMock);
+    });
+
+    it('a failure inside the transaction (e.g. provisioning throws) rejects createBranch, and no post-commit side effects run', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-012');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-12', code: 'PC-MNL-012' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(inventoryService.provisionBranchIngredients).mockRejectedValueOnce(new Error('provisioning failed'));
+
+      await expect(
+        branchesService.createBranch(
+          { name: 'Branch 12', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+          ACTOR,
+          null,
+        ),
+      ).rejects.toThrow('provisioning failed');
+
+      // Real prisma.$transaction rolls back on a thrown/rejected callback —
+      // this mock doesn't persist anything to roll back, but the audit log
+      // and socket emit (both post-commit) must never fire when the
+      // transaction itself rejected. DB-level rollback is verified for real
+      // against Postgres by the integration suite below.
+      expect(recordAuditLog).not.toHaveBeenCalled();
+    });
+
+    it('records the BRANCH_CREATED audit log only after the transaction resolves', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-013');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-13', code: 'PC-MNL-013' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 13', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      const txCallOrder = vi.mocked(prisma.$transaction).mock.invocationCallOrder.at(0);
+      const auditCallOrder = vi.mocked(recordAuditLog).mock.invocationCallOrder.at(0);
+      expect(txCallOrder).toBeDefined();
+      expect(auditCallOrder).toBeDefined();
+      expect(txCallOrder as number).toBeLessThan(auditCallOrder as number);
+    });
+
+    it('emits BRANCH_CREATED over the socket only after the transaction resolves', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-014');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-14', code: 'PC-MNL-014' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+
+      const emit = vi.fn();
+      const io = { to: vi.fn().mockReturnValue({ emit }) };
+      const { getIO } = await import('../../socket/socket.server.js');
+      vi.mocked(getIO).mockReturnValueOnce(io as never);
+
+      await branchesService.createBranch(
+        { name: 'Branch 14', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      const txCallOrder = vi.mocked(prisma.$transaction).mock.invocationCallOrder.at(0);
+      const emitCallOrder = emit.mock.invocationCallOrder.at(0);
+      expect(txCallOrder).toBeDefined();
+      expect(emitCallOrder).toBeDefined();
+      expect(txCallOrder as number).toBeLessThan(emitCallOrder as number);
     });
   });
 });

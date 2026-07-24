@@ -93,8 +93,8 @@ export const branchesRepository = {
     return branches.map((b) => b.id);
   },
 
-  create(data: CreateBranchData) {
-    return prisma.branch.create({
+  create(data: CreateBranchData, tx?: Prisma.TransactionClient) {
+    return (tx ?? prisma).branch.create({
       data: {
         name: data.name,
         code: data.code as string,

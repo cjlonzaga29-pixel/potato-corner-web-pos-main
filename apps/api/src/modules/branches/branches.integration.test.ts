@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -292,5 +292,104 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-ph
     for (const row of flavorRows) {
       expect(row.category).toBe('FLAVOR');
     }
+  });
+});
+
+/**
+ * CR-005 Sub-phase 3b companion fix — branch create + identity resolution +
+ * provisioning now run inside a single prisma.$transaction (see
+ * branchesService.createBranch). Proves atomicity for real against
+ * Postgres: a provisioning failure partway through must leave neither an
+ * orphan branch row nor any ingredient rows behind, and a successful run
+ * must commit both together before the post-commit audit log fires.
+ */
+describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-phase 3b companion: transactional createBranch', () => {
+  let adminId: string;
+  let templateBranchId: string;
+  let productId: string;
+  let variantId: string;
+  const txRecipeIngredientName = `CR005TX-Potato-${randomUUID().slice(0, 8)}`;
+  const createdBranchIds: string[] = [];
+
+  beforeAll(async () => {
+    const admin = await prisma.user.create({
+      data: {
+        email: `cr005tx-admin-${randomUUID()}@potatocorner.test`,
+        passwordHash: 'unused-in-this-suite',
+        role: 'super_admin',
+        firstName: 'CR-005TX',
+        lastName: 'Test Admin',
+        employmentType: 'regular',
+        mustChangePassword: false,
+      },
+    });
+    adminId = admin.id;
+
+    const templateBranch = await prisma.branch.create({
+      data: { name: 'CR-005TX Template Branch', code: `CR005TXT-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+    });
+    templateBranchId = templateBranch.id;
+    const templatePotato = await prisma.ingredient.create({
+      data: { branchId: templateBranchId, name: txRecipeIngredientName, unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    });
+
+    const product = await prisma.product.create({ data: { name: 'CR-005TX Fries', status: 'active' } });
+    productId = product.id;
+    const variant = await prisma.productVariant.create({
+      data: { productId, name: 'Regular', sizeLabel: 'Regular', basePrice: 100, isActive: true },
+    });
+    variantId = variant.id;
+    await prisma.recipe.create({ data: { productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantity: 200, unit: 'g' } });
+  });
+
+  afterAll(async () => {
+    await prisma.recipe.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productVariant.deleteMany({ where: { productId } });
+    await prisma.product.deleteMany({ where: { id: productId } });
+    await prisma.ingredient.deleteMany({ where: { name: txRecipeIngredientName } });
+    await prisma.branch.deleteMany({ where: { id: { in: [templateBranchId, ...createdBranchIds] } } });
+    await prisma.user.deleteMany({ where: { id: adminId } });
+    await prisma.$disconnect();
+  });
+
+  it('rolls back the branch row and every ingredient row when provisioning fails mid-transaction', async () => {
+    const spy = vi.spyOn(inventoryService, 'provisionBranchIngredients').mockRejectedValueOnce(new Error('forced provisioning failure'));
+    const attemptedCode = `CR005TX-ROLLBACK-${randomUUID().slice(0, 8)}`;
+
+    await expect(
+      branchesService.createBranch(
+        { name: 'CR-005TX Rollback Attempt', code: attemptedCode, address: '2 Test St', city: 'Testville', gpsRadiusMeters: 100, status: 'active' },
+        { id: adminId, role: 'super_admin' },
+        null,
+      ),
+    ).rejects.toThrow('forced provisioning failure');
+
+    const branch = await prisma.branch.findUnique({ where: { code: attemptedCode } });
+    expect(branch).toBeNull();
+
+    const orphanIngredients = await prisma.ingredient.findMany({ where: { name: txRecipeIngredientName, branch: { code: attemptedCode } } });
+    expect(orphanIngredients).toHaveLength(0);
+
+    spy.mockRestore();
+  });
+
+  it('a successful createBranch commits the branch and its provisioned ingredients together, then records the audit log', async () => {
+    const branch = await branchesService.createBranch(
+      { name: 'CR-005TX Commit Success', address: '3 Test St', city: 'Testville', gpsRadiusMeters: 100, status: 'active' },
+      { id: adminId, role: 'super_admin' },
+      null,
+    );
+    createdBranchIds.push(branch.id);
+
+    const persistedBranch = await prisma.branch.findUnique({ where: { id: branch.id } });
+    expect(persistedBranch).not.toBeNull();
+
+    const provisioned = await prisma.ingredient.findFirst({ where: { branchId: branch.id, name: txRecipeIngredientName, deletedAt: null } });
+    expect(provisioned).not.toBeNull();
+
+    // Audit log is a post-commit side effect (outside the transaction) —
+    // its presence here proves it ran after, not during, the transaction.
+    const auditLog = await prisma.auditLog.findFirst({ where: { action: 'BRANCH_CREATED', entityId: branch.id } });
+    expect(auditLog).not.toBeNull();
   });
 });

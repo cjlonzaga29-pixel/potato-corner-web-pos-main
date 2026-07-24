@@ -34,7 +34,7 @@ Building blocks:
   - Flavor slots (0 to N per product variant)
   - Individual flavors mapped one-to-one to Ingredient rows
 
-Product lifecycle:
+ProductVariant lifecycle (via lifecycleStatus):
   DRAFT -> PENDING_APPROVAL -> ACTIVE -> ARCHIVED
 
 At POS, the CR-004 deduction engine reads the active product's recipe,
@@ -53,6 +53,19 @@ and immutability guards continue to apply unchanged.
 - Q5 Seed data: **none** — catalog built through UI
 - Q6 Flavor slot filtering: **universal** — any flavor may fill any slot
 
+## Naming decisions
+
+- The new lifecycle enum is named VariantLifecycleStatus
+  (not ProductStatus, which is already taken by the existing
+  Product-level catalog status enum with values
+  draft/active/temporarily_unavailable/discontinued/archived).
+- The lifecycle attaches to ProductVariant (the sellable unit
+  that carries basePrice, Recipe, and appears on TransactionItem),
+  not to Product (the catalog grouping).
+- Product.status remains unchanged and out of scope.
+- The new column on ProductVariant is named lifecycleStatus
+  (not status) to avoid future confusion with Product.status.
+
 ## Schema changes
 
 Ingredient:
@@ -64,10 +77,12 @@ Flavor:
   + ingredientId: FK to Ingredient
   + nullable initially, backfilled via migration, then required
 
-Product / ProductVariant:
-  + status: enum ProductStatus
+ProductVariant:
+  + lifecycleStatus: enum VariantLifecycleStatus
     (DRAFT, PENDING_APPROVAL, ACTIVE, ARCHIVED)
   + defaults to ACTIVE for existing rows (grandfather)
+  + Product.status remains unchanged; this enum is a separate,
+    variant-level approval-workflow gate
   + createdBy: FK to User
   + approvedBy: FK to User (nullable)
   + approvedAt: DateTime (nullable)
@@ -104,11 +119,13 @@ TransactionItem:
 
 ## Guarantees
 
-1. Only super_admin can transition a product to ACTIVE.
-2. Supervisor can create and edit DRAFT and PENDING_APPROVAL products.
-3. Supervisor cannot edit ACTIVE products.
-4. Only ACTIVE products appear on POS terminals.
-5. Editing an ACTIVE product requires:
+1. Only super_admin can transition a variant's lifecycleStatus to ACTIVE.
+2. Supervisor can create and edit variants with lifecycleStatus DRAFT or
+   PENDING_APPROVAL.
+3. Supervisor cannot edit variants with lifecycleStatus ACTIVE.
+4. A variant's lifecycleStatus must be ACTIVE for it to appear on POS
+   terminals — one of four independent sellability gates (see POS flow).
+5. Editing a variant with lifecycleStatus ACTIVE requires:
    - Non-empty change reason
    - Version increment
    - Snapshot logged to ProductChangeLog
@@ -154,6 +171,14 @@ Edit ACTIVE:
 
 ## POS flow
 
+A ProductVariant is sellable at POS when ALL of:
+  1. Product.status == 'active'         (existing global gate)
+  2. ProductVariant.isActive == true    (existing per-variant switch)
+  3. ProductVariant.lifecycleStatus == 'ACTIVE'  (CR-005 approval gate)
+  4. ProductVariant has at least one Recipe row (CR-004 guarantee)
+
+Any of these being false hides the variant from POS terminals.
+
 1. Customer selects ACTIVE product
 2. POS reads ProductFlavorSlot definitions
 3. Customer fills all required slots by picking flavors
@@ -170,27 +195,38 @@ Edit ACTIVE:
 
 ## Acceptance tests
 
-- DRAFT cannot be sold at POS
-- PENDING_APPROVAL cannot be sold at POS
-- ACTIVE with unfilled required slot -> sale rejected (FLAVOR_SLOT_UNFILLED)
-- ACTIVE with all slots filled -> sale succeeds, correct deduction
-- Editing ACTIVE without change reason -> rejected
-- Editing ACTIVE increments version; historical sales use old version
+- A variant with lifecycleStatus=DRAFT cannot be sold at POS
+- A variant with lifecycleStatus=PENDING_APPROVAL cannot be sold at POS
+- A variant with lifecycleStatus=ACTIVE and an unfilled required slot ->
+  sale rejected (FLAVOR_SLOT_UNFILLED)
+- A variant with lifecycleStatus=ACTIVE and all slots filled -> sale
+  succeeds, correct deduction
+- Editing a variant with lifecycleStatus=ACTIVE without change reason ->
+  rejected
+- Editing a variant with lifecycleStatus=ACTIVE increments version;
+  historical sales use old version
 - Supervisor cannot approve (403)
-- Supervisor cannot edit ACTIVE (403)
+- Supervisor cannot edit a variant with lifecycleStatus=ACTIVE (403)
 - Approval blocked if any recipe row unresolvable in any branch
 - Per-flavor deduction verified end-to-end (BBQ selection deducts
   BBQ Powder, Cheese deducts Cheese Powder)
 - Cross-branch isolation still holds (CR-004 guarantee)
 - InventoryMovement still immutable (CR-004 guarantee)
 - All actions logged to AuditLog and ProductChangeLog
+- A variant with lifecycleStatus=ACTIVE is still hidden from POS
+  if its Product.status is not 'active'
+- A variant with lifecycleStatus=ACTIVE is still hidden from POS
+  if isActive=false
+- Setting Product.status to 'archived' does not change any
+  variant's lifecycleStatus (independent gates)
 
 ## Migration plan
 
 - All schema additions are additive
 - Ingredient.category defaults to OTHER for existing rows
-- Product.status defaults to ACTIVE for existing rows
-- Product.version defaults to 1
+- ProductVariant.lifecycleStatus defaults to ACTIVE for existing rows
+  (grandfather). Product.status is untouched.
+- ProductVariant.version defaults to 1
 - ProductFlavorSlot table created empty
 - ProductChangeLog table created empty
 - Recipe.flavorSlotIndex nullable, defaults to null

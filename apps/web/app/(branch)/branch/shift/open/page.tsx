@@ -46,7 +46,7 @@ export default function OpenShiftPage() {
       starting_cash: total,
       denominations: entries,
     });
-    router.push('/shift');
+    router.push('/branch/shift');
   }
 
   if (!branchId) {

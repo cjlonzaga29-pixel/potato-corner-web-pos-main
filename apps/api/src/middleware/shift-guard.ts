@@ -6,8 +6,9 @@ import { extractBranchId } from '../lib/request.js';
 /**
  * Active-shift gate for POS transaction endpoints (Architecture doc §3.4).
  * Must run after `authenticate` and `branchGuard`. super_admin and
- * supervisor are exempt — only staff must be clocked into an active shift
- * to transact.
+ * supervisor are exempt (CR-003: supervisor is regional oversight and does
+ * not run a physical register). `branch` and `staff` both operate the POS
+ * Terminal directly and must be clocked into an active shift to transact.
  */
 export async function shiftGuard(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!req.user) {

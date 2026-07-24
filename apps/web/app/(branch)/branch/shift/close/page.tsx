@@ -49,7 +49,7 @@ export default function CloseShiftPage() {
       notes: notes || undefined,
       variance_explanation: outsideTolerance ? varianceExplanation : undefined,
     });
-    router.push('/shift');
+    router.push('/branch/shift');
   }
 
   if (isLoading) {

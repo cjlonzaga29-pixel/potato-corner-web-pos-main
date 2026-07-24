@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import { ROLES, type Role } from '../constants/roles.js';
-import { EMPLOYMENT_TYPE, type EmploymentType } from '../constants/status.js';
+import { EMPLOYMENT_TYPE, type EmploymentType, EMPLOYEE_STATUS, type EmployeeStatus } from '../constants/status.js';
 import { strongPasswordSchema } from './auth.schema.js';
 
 const roleValues = Object.values(ROLES) as [Role, ...Role[]];
 const employmentTypeValues = Object.values(EMPLOYMENT_TYPE) as [EmploymentType, ...EmploymentType[]];
+const employeeStatusValues = Object.values(EMPLOYEE_STATUS) as [EmployeeStatus, ...EmployeeStatus[]];
 
 /** PC-EMP-[6 digit number], e.g. PC-EMP-000001 — auto-generated, see employees.repository.ts's generateEmployeeId. */
 export const employeeIdSchema = z.string().regex(/^PC-EMP-\d{6}$/, 'Employee ID must match PC-EMP-XXXXXX');
@@ -55,6 +56,17 @@ export const deactivateEmployeeSchema = z.object({
   acknowledge_active_shift: z.boolean(),
 });
 
+/** CR-003 (Branch Operating System) — full 5-state lifecycle transition, replacing the deactivate/reactivate pair for new callers. reason is required for every non-active target status. */
+export const setEmployeeStatusSchema = z
+  .object({
+    status: z.enum(employeeStatusValues),
+    reason: z.string().min(10).optional(),
+  })
+  .refine((data) => data.status === 'active' || Boolean(data.reason), {
+    message: 'A reason is required when setting a non-active status',
+    path: ['reason'],
+  });
+
 /**
  * Named to avoid colliding with auth.schema.ts's resetPasswordSchema (the
  * self-service "I forgot my password" flow) — this is the distinct
@@ -83,6 +95,7 @@ export const employeeResponseSchema = z.object({
   employment_type: z.enum(employmentTypeValues),
   employee_id: employeeIdSchema,
   is_active: z.boolean(),
+  status: z.enum(employeeStatusValues),
   must_change_password: z.boolean(),
   branch_assignments: z.array(employeeBranchAssignmentSchema),
   last_login_at: z.iso.datetime().nullable(),

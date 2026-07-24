@@ -33,8 +33,23 @@ export function authorize(...allowedRoles: Role[]) {
   };
 }
 
-/** Convenience exports for the common role combinations used across route definitions. */
+/**
+ * Convenience exports for the common role combinations used across route
+ * definitions.
+ *
+ * CR-003 (Branch Operating System) split what used to be a single
+ * branch-scoped operational role in two:
+ *   - branch: the Branch Account — runs one physical branch's day-to-day
+ *     operations (POS, inventory, cash, attendance, employees, expenses).
+ *     Takes over the operational scope `supervisor` used to have.
+ *   - supervisor: regional oversight — multiple branch_ids, reviews/approves
+ *     what a branch submits (product/flavor/price/recipe-override/inventory
+ *     requests), alongside super_admin rather than instead of it.
+ */
 export const adminOnly = authorize(ROLES.SUPER_ADMIN);
 export const adminOrSupervisor = authorize(ROLES.SUPER_ADMIN, ROLES.SUPERVISOR);
 export const supervisorOnly = authorize(ROLES.SUPERVISOR);
-export const allRoles = authorize(ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.STAFF);
+export const branchOnly = authorize(ROLES.BRANCH);
+export const adminOrBranch = authorize(ROLES.SUPER_ADMIN, ROLES.BRANCH);
+export const adminSupervisorOrBranch = authorize(ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH);
+export const allRoles = authorize(ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH, ROLES.STAFF);

@@ -4,10 +4,10 @@ import { ROLE_DASHBOARDS } from '@potato-corner/shared';
 const ROLE_PATH_OWNERSHIP: Array<{ prefix: string; roles: string[] }> = [
   { prefix: '/admin', roles: ['super_admin'] },
   { prefix: '/supervisor', roles: ['supervisor'] },
-  { prefix: '/terminal', roles: ['staff'] },
-  { prefix: '/clock-in', roles: ['staff'] },
-  { prefix: '/shift', roles: ['staff'] },
-  { prefix: '/receipts', roles: ['staff'] },
+  // CR-003: (pos) was folded into (branch) — both the `branch` role (full
+  // branch operations) and `staff` (cashiers, narrowed by BranchSidebar's
+  // own role filtering) share this one prefix now.
+  { prefix: '/branch', roles: ['branch', 'staff'] },
 ];
 
 // '/login' is handled separately above (it redirects an already-authenticated user instead of just passing through).
@@ -176,7 +176,7 @@ function loginRedirectUrl(request: NextRequest): URL {
 }
 
 /**
- * Protects every route under (admin), (supervisor), and (pos), redirects
+ * Protects every route under (admin), (supervisor), and (branch), redirects
  * an already-authenticated user away from /login, and redirects a
  * wrong-role user from a route it doesn't own to its own dashboard. The
  * client-side useAuth hook performs its own silent refresh on mount to

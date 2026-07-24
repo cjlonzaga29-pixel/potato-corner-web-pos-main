@@ -106,16 +106,17 @@ describe('cash routes — authentication', () => {
 });
 
 describe('POST /open — role guard', () => {
-  it('staff cannot open a shift — 403', async () => {
+  it('staff can open a shift — 201 (CR-003: widened from adminOrSupervisor to allRoles)', async () => {
     const handlers = getRouteHandlers(cashRouter, 'post', '/open');
     const token = generateStaffToken(BRANCH_1);
     const req = mockReq({ ...authHeader(token), body: { branch_id: BRANCH_1, cashier_id: randomUUID(), starting_cash: 1000, denominations: [{ denomination: 1000, quantity: 1 }] } });
     const res = mockRes();
+    vi.mocked(cashService.openShift).mockResolvedValue({ id: SHIFT_1, branch_id: BRANCH_1, status: 'active' } as never);
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(cashService.openShift).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(cashService.openShift).toHaveBeenCalled();
   });
 
   it('rejects a body missing denominations with 422 before reaching the service', async () => {
@@ -145,16 +146,17 @@ describe('POST /open — role guard', () => {
 });
 
 describe('POST /:shiftId/approve-variance — role guard', () => {
-  it('supervisor cannot approve a variance — 403 (super_admin only)', async () => {
+  it('supervisor can approve a variance — 200 (CR-003: adminOrSupervisor)', async () => {
     const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/approve-variance');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 }, body: { approved: true, notes: 'x'.repeat(50) } });
     const res = mockRes();
+    vi.mocked(cashService.approveVariance).mockResolvedValue({ id: SHIFT_1, status: 'closed' } as never);
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(cashService.approveVariance).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(cashService.approveVariance).toHaveBeenCalled();
   });
 
   it('rejects a notes field under 50 characters with 422', async () => {

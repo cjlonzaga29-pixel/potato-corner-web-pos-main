@@ -3,7 +3,7 @@ import { SubmitInventoryRequestSchema, ApproveInventoryRequestSchema, RejectInve
 import { inventoryRequestsService } from './inventory-requests.service.js';
 import { InventoryRequestError } from './inventory-requests.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOrSupervisor, adminSupervisorOrBranch, branchOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -28,7 +28,10 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
 router.post(
   '/',
   authenticate,
-  adminOrSupervisor,
+  // CR-003: submission is a branch-operational action, matching the
+  // submit endpoints in price-overrides/product-requests/flavor-requests
+  // routers — was adminOrSupervisor, branch now submits instead.
+  branchOnly,
   requirePasswordChange,
   validate(SubmitInventoryRequestSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -42,7 +45,7 @@ router.post(
   },
 );
 
-router.get('/pending', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/pending', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await inventoryRequestsService.listPending(req.user);

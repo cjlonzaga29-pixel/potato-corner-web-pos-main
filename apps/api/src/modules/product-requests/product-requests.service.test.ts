@@ -57,6 +57,14 @@ const SUPERVISOR_JWT = {
   iat: 0,
   exp: 0,
 };
+const BRANCH_JWT = {
+  user_id: 'branch-1',
+  role: ROLES.BRANCH as typeof ROLES.BRANCH,
+  email: 'branch@test.com',
+  branch_ids: ['branch-a'],
+  iat: 0,
+  exp: 0,
+};
 
 function buildRequestRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -111,7 +119,7 @@ describe('createProductRequestSchema (schema-level)', () => {
 });
 
 describe('productRequestsService.submitRequest', () => {
-  it('supervisor can submit a product request for their own branch', async () => {
+  it('branch account can submit a product request for their own branch', async () => {
     vi.mocked(productRequestsRepository.create).mockResolvedValue(buildRequestRow() as never);
 
     const result = await productRequestsService.submitRequest(
@@ -123,7 +131,7 @@ describe('productRequestsService.submitRequest', () => {
         proposed_recipes: [],
         request_reason: 'Customers at our branch keep asking for curly fries specifically.',
       },
-      SUPERVISOR_JWT,
+      BRANCH_JWT,
       null,
     );
 
@@ -133,7 +141,7 @@ describe('productRequestsService.submitRequest', () => {
     expect(notifySuperAdmin).toHaveBeenCalled();
   });
 
-  it('rejects a supervisor submitting for a branch they are not assigned to', async () => {
+  it('rejects a branch account submitting for a branch they are not assigned to', async () => {
     await expect(
       productRequestsService.submitRequest(
         {
@@ -144,7 +152,7 @@ describe('productRequestsService.submitRequest', () => {
           proposed_recipes: [],
           request_reason: 'Customers at our branch keep asking for curly fries specifically.',
         },
-        SUPERVISOR_JWT,
+        BRANCH_JWT,
         null,
       ),
     ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED' });

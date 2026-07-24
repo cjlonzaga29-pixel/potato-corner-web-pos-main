@@ -4,7 +4,7 @@ import { reportsService } from './reports.service.js';
 import { ReportError } from './reports.types.js';
 import type { ReportFilters } from './reports.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -60,7 +60,7 @@ function parseFilters(query: unknown): { ok: true; filters: ReportFilters } | { 
 // ---------- Real-time reports (7): both roles, branchGuard applied ----------
 
 function realtimeRoute(path: string, handler: (filters: ReportFilters, actorId: string, actorRole: string) => Promise<unknown>): void {
-  router.get(path, authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+  router.get(path, authenticate, adminSupervisorOrBranch, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
       const result = parseFilters(req.query);
@@ -122,7 +122,7 @@ router.get('/audit-log', authenticate, adminOnly, requirePasswordChange, async (
 // ---------- Pre-computed reports (4): both roles, branchGuard applied ----------
 
 function precomputedRoute(path: string, handler: (branchId: string | null, actorId: string, actorRole: string) => Promise<unknown>): void {
-  router.get(path, authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+  router.get(path, authenticate, adminSupervisorOrBranch, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
       const branchId = typeof req.query.branch_id === 'string' ? req.query.branch_id : null;
@@ -154,7 +154,7 @@ router.get('/branch-comparison', authenticate, adminOnly, requirePasswordChange,
 
 // ---------- Inventory Analytics (Step 10, real-time, both roles, branchGuard applied) ----------
 
-router.get('/inventory-analytics', authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/inventory-analytics', authenticate, adminSupervisorOrBranch, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = InventoryAnalyticsQuerySchema.safeParse(req.query);
@@ -180,7 +180,7 @@ router.get('/inventory-analytics', authenticate, adminOrSupervisor, requirePassw
 // branch_id under `filters`. The same allow/deny rule is applied inline
 // instead, reading `body.filters.branch_id` — mirroring the existing
 // precedent in inventory.router.ts for routes branchGuard can't cover.
-router.post('/export', authenticate, adminOrSupervisor, requirePasswordChange, validate(ExportRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(ExportRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const body = req.body as ExportRequestInput;

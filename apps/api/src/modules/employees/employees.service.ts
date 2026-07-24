@@ -45,6 +45,7 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
     employment_type: employee.employmentType,
     employee_id: employee.employeeId ?? '',
     is_active: employee.isActive,
+    status: employee.status,
     must_change_password: employee.mustChangePassword,
     branch_assignments: employee.branchAssignments.map((assignment) => ({
       branch_id: assignment.branchId,
@@ -312,6 +313,66 @@ export const employeesService = {
       actorRole: reactivatedBy.role,
       beforeState: { isActive: false },
       afterState: { isActive: true },
+      ipAddress,
+    });
+
+    return toEmployeeResponse(employee);
+  },
+
+  /**
+   * CR-003 (Branch Operating System) — full 5-state lifecycle transition.
+   * Any non-active target immediately revokes every outstanding refresh
+   * token (forces re-login on next refresh attempt) and, per the spec,
+   * blocks POS/attendance access — both already enforced by the existing
+   * isActive-gated checks in auth.service.ts, cash.service.ts and
+   * attendance.service.ts, since setStatus keeps isActive in sync.
+   */
+  async setEmployeeStatus(
+    employeeId: string,
+    status: 'active' | 'inactive' | 'suspended' | 'resigned' | 'terminated',
+    reason: string | null,
+    changedBy: ActorContext,
+    ipAddress: string | null,
+  ): Promise<EmployeeResponse> {
+    const before = await employeesRepository.findById(employeeId);
+    if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertEmployeeAccess(changedBy, before);
+    if (before.status === status) {
+      throw new EmployeeError('EMPLOYEE_STATUS_UNCHANGED', `This employee is already ${status}`, 409);
+    }
+
+    if (status !== 'active') {
+      const hasActiveShift = await employeesRepository.hasActiveShift(employeeId);
+      if (hasActiveShift) {
+        throw new EmployeeError(
+          'ACTIVE_SHIFT_ACKNOWLEDGMENT_REQUIRED',
+          'This employee has an active shift — close it before changing status',
+          409,
+          { hasActiveShift: true },
+        );
+      }
+    }
+
+    await employeesRepository.setStatus(employeeId, status, changedBy.user_id, reason);
+
+    if (status !== 'active') {
+      // Force logout: refresh revocation blocks re-auth immediately; the
+      // employee's current (short-lived) access token expires on its own.
+      await authRepository.revokeAllUserTokens(employeeId);
+      await employeesRepository.updateBranchAssignments(employeeId, [], changedBy.user_id);
+    }
+
+    const employee = await employeesRepository.findById(employeeId);
+    if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+
+    await recordAuditLog({
+      action: 'EMPLOYEE_STATUS_CHANGED',
+      entityType: 'user',
+      entityId: employeeId,
+      actorId: changedBy.user_id,
+      actorRole: changedBy.role,
+      beforeState: { status: before.status },
+      afterState: { status, reason },
       ipAddress,
     });
 

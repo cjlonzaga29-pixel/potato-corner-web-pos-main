@@ -9,7 +9,7 @@ import {
 import { settingsService } from './settings.service.js';
 import { SettingsError } from './settings.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -95,7 +95,7 @@ router.put(
 branchReceiptConfigRouter.get(
   '/:branchId/receipt-config',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -116,7 +116,7 @@ branchReceiptConfigRouter.get(
 branchReceiptConfigRouter.put(
   '/:branchId/receipt-config',
   authenticate,
-  adminOnly,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(updateReceiptConfigSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -138,7 +138,7 @@ branchReceiptConfigRouter.put(
 branchReceiptConfigRouter.get(
   '/:branchId/payment-methods',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -154,7 +154,7 @@ branchReceiptConfigRouter.get(
 branchReceiptConfigRouter.put(
   '/:branchId/payment-methods',
   authenticate,
-  adminOnly,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(updatePaymentMethodConfigSchema),
   async (req: Request, res: Response, next: NextFunction) => {

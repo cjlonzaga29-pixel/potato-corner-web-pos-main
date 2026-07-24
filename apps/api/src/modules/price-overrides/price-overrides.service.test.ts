@@ -35,6 +35,15 @@ const SUPERVISOR_JWT = {
   exp: 0,
 };
 
+const BRANCH_JWT = {
+  user_id: 'branch-1',
+  role: ROLES.BRANCH as typeof ROLES.BRANCH,
+  email: 'branch@test.com',
+  branch_ids: ['branch-a'],
+  iat: 0,
+  exp: 0,
+};
+
 function buildOverrideRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'override-1',
@@ -85,7 +94,7 @@ describe('createPriceOverrideSchema (schema-level)', () => {
 });
 
 describe('priceOverridesService.submitOverrideRequest', () => {
-  it('supervisor can submit a valid price override request', async () => {
+  it('branch account can submit a valid price override request', async () => {
     vi.mocked(priceOverridesRepository.findPendingForVariant).mockResolvedValue(null);
     vi.mocked(priceOverridesRepository.create).mockResolvedValue(buildOverrideRow() as never);
 
@@ -96,7 +105,7 @@ describe('priceOverridesService.submitOverrideRequest', () => {
         requested_price: 75,
         request_reason: 'Higher ingredient costs at this branch justify the price increase.',
       },
-      SUPERVISOR_JWT,
+      BRANCH_JWT,
       null,
     );
 
@@ -115,7 +124,7 @@ describe('priceOverridesService.submitOverrideRequest', () => {
           requested_price: 80,
           request_reason: 'Another reason for the same variant at this branch.',
         },
-        SUPERVISOR_JWT,
+        BRANCH_JWT,
         null,
       ),
     ).rejects.toMatchObject({ code: 'PRICE_OVERRIDE_ALREADY_PENDING', statusCode: 409 });
@@ -123,7 +132,7 @@ describe('priceOverridesService.submitOverrideRequest', () => {
     expect(priceOverridesRepository.create).not.toHaveBeenCalled();
   });
 
-  it('rejects a supervisor submitting for a branch they are not assigned to', async () => {
+  it('rejects a branch account submitting for a branch they are not assigned to', async () => {
     await expect(
       priceOverridesService.submitOverrideRequest(
         {
@@ -132,7 +141,7 @@ describe('priceOverridesService.submitOverrideRequest', () => {
           requested_price: 75,
           request_reason: 'Higher ingredient costs at this branch justify the price increase.',
         },
-        SUPERVISOR_JWT,
+        BRANCH_JWT,
         null,
       ),
     ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED' });

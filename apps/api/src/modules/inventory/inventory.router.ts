@@ -15,7 +15,7 @@ import {
 import { inventoryService } from './inventory.service.js';
 import { IngredientError } from './inventory.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -48,7 +48,7 @@ const inventoryRouter: Router = Router();
 inventoryRouter.get(
   '/ingredients',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -66,7 +66,7 @@ inventoryRouter.get(
 inventoryRouter.get(
   '/ingredients/:id',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -119,7 +119,10 @@ inventoryRouter.post(
 inventoryRouter.patch(
   '/ingredients/:id',
   authenticate,
-  adminOrSupervisor,
+  // Ingredient field updates (reorder point, unit, etc.) are day-to-day
+  // inventory ops, unlike create/delete which stay HQ-only master-data
+  // control — grouped with list/stock-in/adjust/waste below.
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(updateIngredientSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -170,7 +173,7 @@ inventoryRouter.delete(
 inventoryRouter.post(
   '/ingredients/:id/stock-in',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(stockInSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -192,7 +195,7 @@ inventoryRouter.post(
 inventoryRouter.post(
   '/ingredients/:id/adjust',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(adjustIngredientSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -214,7 +217,7 @@ inventoryRouter.post(
 inventoryRouter.post(
   '/ingredients/:id/waste',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(wasteIngredientSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -254,7 +257,7 @@ const movementsQuerySchema = z.object({
 inventoryBranchRouter.get(
   '/:branchId/inventory',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -271,7 +274,7 @@ inventoryBranchRouter.get(
 inventoryBranchRouter.get(
   '/:branchId/inventory/alerts',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -288,7 +291,7 @@ inventoryBranchRouter.get(
 inventoryBranchRouter.get(
   '/:branchId/inventory/movements',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -321,7 +324,7 @@ inventoryBranchRouter.get(
 inventoryBranchRouter.post(
   '/:branchId/inventory/count',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   validate(physicalCountSubmissionSchema),
@@ -350,7 +353,7 @@ inventoryBranchRouter.post(
 inventoryBranchRouter.post(
   '/:branchId/inventory/transfer',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   validate(transferIngredientSchema),

@@ -5,6 +5,7 @@ import { InventoryRequestError, type InventoryRequestKind } from './inventory-re
 import { employeesRepository } from '../employees/employees.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
+import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 
 interface RequestRow {
   id: string;
@@ -61,11 +62,13 @@ async function resolveActorName(userId: string): Promise<string> {
 }
 
 export const inventoryRequestsService = {
-  /** Router gates the role (super_admin or supervisor); supervisors are further scoped to their own assigned branches. */
+  /**
+   * CR-003: submission is a branch-operational action (router gates this to
+   * branchOnly) — branch is always scoped to its own assigned branch(es),
+   * same pattern as employees.service.ts / price-overrides.service.ts.
+   */
   async submitRequest(data: CreateInventoryRequestInput, actor: JwtPayload, ipAddress: string | null) {
-    if (actor.role === ROLES.SUPERVISOR && !actor.branch_ids.includes(data.branchId)) {
-      throw new InventoryRequestError('BRANCH_ACCESS_DENIED', 'You may only submit requests for your own assigned branches', 403);
-    }
+    assertBranchAccess(actor, data.branchId, InventoryRequestError);
 
     const requestedByName = await resolveActorName(actor.user_id);
 
@@ -97,9 +100,10 @@ export const inventoryRequestsService = {
     return response;
   },
 
-  /** super_admin sees pending requests for every branch; supervisor is scoped to their own branch_ids. */
+  /** super_admin sees pending requests for every branch; supervisor/branch are scoped to their own branch_ids. */
   async listPending(actor: JwtPayload) {
-    const branchIds = actor.role === ROLES.SUPERVISOR ? actor.branch_ids : undefined;
+    const accessible = getAccessibleBranchIds(actor);
+    const branchIds = accessible === 'all' ? undefined : accessible;
     const rows = (await inventoryRequestsRepository.findPending(branchIds)) as RequestRow[];
     return { requests: rows.map(toResponse) };
   },

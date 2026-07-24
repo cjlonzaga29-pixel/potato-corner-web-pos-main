@@ -80,7 +80,7 @@ export function PosHeader({ onEndShift }: PosHeaderProps) {
         <NotificationBellConnected />
 
         <Button variant="outline" className="touch-target" asChild>
-          <Link href="/clock-in">
+          <Link href="/branch/clock-in">
             <Clock className="mr-2 h-4 w-4" />
             Clock In/Out
           </Link>

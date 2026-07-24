@@ -5,6 +5,7 @@ import {
   updateEmployeeSchema,
   deactivateEmployeeSchema,
   resetEmployeePasswordSchema,
+  setEmployeeStatusSchema,
   ROLES,
   EMPLOYMENT_TYPE,
   type EmploymentType,
@@ -13,7 +14,7 @@ import {
 import { employeesService } from './employees.service.js';
 import { EmployeeError } from './employees.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch, adminOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -57,7 +58,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -87,7 +88,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
 router.get(
   '/:employeeId',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -119,7 +120,7 @@ router.get(
 router.get(
   '/:employeeId/activity',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -135,7 +136,7 @@ router.get(
 router.post(
   '/',
   authenticate,
-  supervisorOnly,
+  adminOrBranch,
   requirePasswordChange,
   validate(createEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -152,7 +153,7 @@ router.post(
 router.patch(
   '/:employeeId',
   authenticate,
-  supervisorOnly,
+  adminOrBranch,
   requirePasswordChange,
   validate(updateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -169,7 +170,7 @@ router.patch(
 router.post(
   '/:employeeId/deactivate',
   authenticate,
-  supervisorOnly,
+  adminOrBranch,
   requirePasswordChange,
   validate(deactivateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -191,7 +192,7 @@ router.post(
 router.post(
   '/:employeeId/reactivate',
   authenticate,
-  supervisorOnly,
+  adminOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -207,7 +208,7 @@ router.post(
 router.post(
   '/:employeeId/reset-password',
   authenticate,
-  supervisorOnly,
+  adminOrBranch,
   requirePasswordChange,
   validate(resetEmployeePasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -216,6 +217,30 @@ router.post(
       const { new_password } = req.body as { new_password: string };
       await employeesService.resetEmployeePassword(req.params.employeeId as string, new_password, req.user, req.ip ?? null);
       res.status(200).json({ data: { success: true }, error: null, meta: null });
+    } catch (error) {
+      handleEmployeeError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/:employeeId/status',
+  authenticate,
+  adminOrBranch,
+  requirePasswordChange,
+  validate(setEmployeeStatusSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { status, reason } = req.body as { status: string; reason?: string };
+      const employee = await employeesService.setEmployeeStatus(
+        req.params.employeeId as string,
+        status as Parameters<typeof employeesService.setEmployeeStatus>[1],
+        reason ?? null,
+        req.user,
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: employee, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);
     }

@@ -72,10 +72,10 @@ interface ReviewFlavorRequestInput {
 }
 
 export const flavorRequestsService = {
-  /** Supervisor-only. branch_id must be one of the actor's own assigned branches. */
+  /** CR-003: branch-only (submission is a branch-operational action). branch_id must be one of the actor's own assigned branches. */
   async submitRequest(data: CreateFlavorRequestInput, actor: JwtPayload, ipAddress: string | null) {
-    if (actor.role !== ROLES.SUPERVISOR) {
-      throw new FlavorRequestError('INSUFFICIENT_PERMISSIONS', 'Only supervisors may submit flavor requests', 403);
+    if (actor.role !== ROLES.BRANCH) {
+      throw new FlavorRequestError('INSUFFICIENT_PERMISSIONS', 'Only branch accounts may submit flavor requests', 403);
     }
     if (!actor.branch_ids.includes(data.branch_id)) {
       throw new FlavorRequestError('BRANCH_ACCESS_DENIED', 'You may only submit requests for your own branch', 403);
@@ -110,10 +110,18 @@ export const flavorRequestsService = {
     return response;
   },
 
-  /** super_admin sees everything; supervisor is scoped to their own branch_ids regardless of query filters. */
+  /**
+   * super_admin sees everything; supervisor/branch are scoped to their own
+   * branch_ids regardless of query filters. CR-003: this used to check
+   * `=== ROLES.SUPERVISOR` specifically — now that the router also admits
+   * branch (adminSupervisorOrBranch), that check must cover any non-admin
+   * caller, or a branch account's unfiltered request would leak every
+   * other branch's flavor requests (this module has no repository-level
+   * branchIds guard the way product-requests.repository.ts does).
+   */
   async listRequests(actor: JwtPayload, filters: FlavorRequestListFilters) {
     const scoped: FlavorRequestListFilters =
-      actor.role === ROLES.SUPERVISOR
+      actor.role !== ROLES.SUPER_ADMIN
         ? { ...filters, branch_id: filters.branch_id && actor.branch_ids.includes(filters.branch_id) ? filters.branch_id : actor.branch_ids[0] }
         : filters;
 
@@ -129,7 +137,9 @@ export const flavorRequestsService = {
   async getRequestById(id: string, actor: JwtPayload) {
     const request = (await flavorRequestsRepository.findById(id)) as RequestRow | null;
     if (!request) throw new FlavorRequestError('FLAVOR_REQUEST_NOT_FOUND', 'Flavor request not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && !actor.branch_ids.includes(request.branchId)) {
+    // CR-003: GET is now adminSupervisorOrBranch — scope any non-admin caller
+    // (supervisor or branch) to their own assigned branch(es), not just supervisor.
+    if (actor.role !== ROLES.SUPER_ADMIN && !actor.branch_ids.includes(request.branchId)) {
       throw new FlavorRequestError('BRANCH_ACCESS_DENIED', 'You may only view requests for your own branch', 403);
     }
     return toResponse(request);

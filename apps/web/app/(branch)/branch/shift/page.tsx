@@ -63,7 +63,7 @@ export default function ShiftDashboardPage() {
       <div className="mx-auto max-w-md space-y-4 p-6 text-center">
         <h1 className="text-xl font-bold">No active shift</h1>
         <p className="text-sm text-muted-foreground">Open a shift to start taking orders.</p>
-        <Button onClick={() => router.push('/shift/open')}>Open Shift</Button>
+        <Button onClick={() => router.push('/branch/shift/open')}>Open Shift</Button>
       </div>
     );
   }
@@ -75,7 +75,7 @@ export default function ShiftDashboardPage() {
     <div className="mx-auto max-w-2xl space-y-6 overflow-y-auto p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Current Shift</h1>
-        <Button variant="danger" onClick={() => router.push('/shift/close')}>
+        <Button variant="danger" onClick={() => router.push('/branch/shift/close')}>
           Close Shift
         </Button>
       </div>

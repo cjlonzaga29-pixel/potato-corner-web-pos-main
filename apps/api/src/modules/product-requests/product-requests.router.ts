@@ -4,7 +4,7 @@ import { createProductRequestSchema, reviewProductRequestSchema } from '@potato-
 import { productRequestsService } from './product-requests.service.js';
 import { ProductRequestError } from './product-requests.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
+import { adminOrSupervisor, adminSupervisorOrBranch, branchOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -34,7 +34,7 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -49,7 +49,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
   }
 });
 
-router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, branchOnly, requirePasswordChange, validate(createProductRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const request = await productRequestsService.submitRequest(req.body, req.user, req.ip ?? null);
@@ -59,7 +59,7 @@ router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(c
   }
 });
 
-router.get('/:id', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const request = await productRequestsService.getRequestById(req.params.id as string, req.user);
@@ -72,7 +72,7 @@ router.get('/:id', authenticate, adminOrSupervisor, requirePasswordChange, async
 router.post(
   '/:id/review',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(reviewProductRequestSchema),
   async (req: Request, res: Response, next: NextFunction) => {

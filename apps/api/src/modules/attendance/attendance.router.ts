@@ -3,7 +3,7 @@ import { clockInSchema, clockOutSchema, manualOverrideSchema, attendanceQuerySch
 import { attendanceService } from './attendance.service.js';
 import { AttendanceError } from './attendance.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor, allRoles, supervisorOnly } from '../../middleware/authorize.js';
+import { adminSupervisorOrBranch, allRoles, branchOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -108,7 +108,7 @@ router.post(
 router.get(
   '/branch/:branchId',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -126,7 +126,7 @@ router.get(
 router.get(
   '/employee/:employeeId',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
@@ -143,7 +143,11 @@ router.get(
 router.post(
   '/override',
   authenticate,
-  supervisorOnly,
+  // CR-003: attendance correction is an operational (not approval) action —
+  // was supervisorOnly when supervisor was the branch-operational role,
+  // now branch-operational scope takes it over, same as
+  // recipes.router.ts's override create/update/delete.
+  branchOnly,
   validate(manualOverrideSchema),
   // branchGuard can't run here — the branch is only known once the original
   // record has been fetched by id, same reasoning as cash.router.ts's

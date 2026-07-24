@@ -98,6 +98,7 @@ function employee(overrides: Partial<EmployeeResponse> = {}): EmployeeResponse {
     employment_type: 'regular',
     employee_id: 'PC-EMP-000001',
     is_active: true,
+    status: 'active',
     must_change_password: false,
     branch_assignments: [],
     last_login_at: null,

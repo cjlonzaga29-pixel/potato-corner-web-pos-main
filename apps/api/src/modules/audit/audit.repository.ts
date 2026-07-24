@@ -13,7 +13,10 @@ function buildWhere(filters: AuditLogFilters): Prisma.AuditLogWhereInput {
     ...(filters.entityType && { entityType: filters.entityType }),
     ...(filters.entityId && { entityId: filters.entityId }),
     ...(filters.actorId && { actorId: filters.actorId }),
-    ...(filters.branchId && { branchId: filters.branchId }),
+    // CR-003: branchIds is the server-computed, security-relevant scope
+    // (see audit.service.ts's listLogs / audit.types.ts's AuditLogFilters);
+    // it always wins over the raw client-supplied branchId when present.
+    ...(filters.branchIds ? { branchId: { in: filters.branchIds } } : filters.branchId && { branchId: filters.branchId }),
     ...((filters.dateFrom || filters.dateTo) && {
       createdAt: {
         ...(filters.dateFrom && { gte: new Date(`${filters.dateFrom}T00:00:00.000Z`) }),

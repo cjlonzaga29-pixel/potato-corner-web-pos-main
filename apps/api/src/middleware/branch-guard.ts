@@ -7,8 +7,9 @@ import { extractBranchId } from '../lib/request.js';
  * `authenticate`. Extracts branch_id from request params, query, or body
  * (in that order):
  * - super_admin: skip the check entirely, access to all branches.
- * - supervisor: requested branch_id must be in the user's branch_ids array.
- * - staff: requested branch_id must equal the user's single assigned branch.
+ * - supervisor: requested branch_id must be in the user's branch_ids array
+ *   (CR-003: regional oversight, may span multiple branches).
+ * - branch / staff: requested branch_id must equal the user's single assigned branch.
  * (An active-shift check for POS endpoints is a separate, route-specific
  * middleware — not duplicated here.)
  */

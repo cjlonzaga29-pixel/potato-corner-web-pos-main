@@ -436,14 +436,18 @@ export const productsService = {
       return toProductDetailResponse(updated as DetailRow);
     }
 
-    if (actor.role === ROLES.SUPERVISOR) {
+    if (actor.role === ROLES.SUPERVISOR || actor.role === ROLES.BRANCH) {
+      // CR-003: branch is now the operational role that flips its own
+      // availability day to day; supervisor keeps the same branch-scoped
+      // authority for oversight. branchGuard (router-level) already checked
+      // data.branch_id is one this actor may act on.
       if (!data.branch_id) {
         throw new ProductError('BRANCH_ID_REQUIRED', 'branch_id is required for a branch-scoped status change', 422);
       }
       if (data.status !== 'active' && data.status !== 'temporarily_unavailable') {
         throw new ProductError(
           'INSUFFICIENT_PERMISSIONS',
-          'Supervisors may only set branch availability to active or temporarily_unavailable',
+          'Supervisor and branch accounts may only set branch availability to active or temporarily_unavailable',
           403,
         );
       }
@@ -472,7 +476,7 @@ export const productsService = {
       return toBranchAvailabilityRow(row);
     }
 
-    throw new ProductError('INSUFFICIENT_PERMISSIONS', 'Only super_admin or supervisor may change product status', 403);
+    throw new ProductError('INSUFFICIENT_PERMISSIONS', 'Only super_admin, supervisor, or branch may change product status', 403);
   },
 
   async createVariant(productId: string, data: CreateVariantInput, actor: ActorContext, ipAddress: string | null) {

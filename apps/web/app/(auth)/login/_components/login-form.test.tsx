@@ -55,7 +55,7 @@ describe('LoginForm post-login redirect', () => {
 
     await fillAndSubmit();
 
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/terminal'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/terminal'));
   });
 
   it('redirects to a valid same-origin returnTo instead of the role dashboard', async () => {
@@ -81,7 +81,7 @@ describe('LoginForm post-login redirect', () => {
 
     await fillAndSubmit();
 
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/terminal'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/terminal'));
   });
 });
 
@@ -112,7 +112,7 @@ describe('LoginForm 2FA challenge', () => {
         expect.objectContaining({ challengeToken: 'chal-1', totpCode: '123456' }),
       ),
     );
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/terminal'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/terminal'));
   });
 
   it('shows an error message when the TOTP code is invalid', async () => {

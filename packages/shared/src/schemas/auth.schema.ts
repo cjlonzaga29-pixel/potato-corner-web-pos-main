@@ -108,6 +108,15 @@ export const jwtPayloadSchema = z.discriminatedUnion('role', [
   }),
   z.object({
     user_id: z.uuid(),
+    role: z.literal(ROLES.BRANCH),
+    email: z.email(),
+    branch_ids: z.array(z.uuid()).length(1),
+    must_change_password: z.boolean().optional(),
+    iat: z.number(),
+    exp: z.number(),
+  }),
+  z.object({
+    user_id: z.uuid(),
     role: z.literal(ROLES.STAFF),
     email: z.email(),
     branch_ids: z.array(z.uuid()).length(1),

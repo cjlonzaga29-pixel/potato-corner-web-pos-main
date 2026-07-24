@@ -26,7 +26,7 @@ vi.mock('../../lib/prisma.js', () => ({
 const { prisma } = await import('../../lib/prisma.js');
 const { attendanceService } = await import('./attendance.service.js');
 const { attendanceRouter } = await import('./attendance.router.js');
-const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
+const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken, generateBranchToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
 
@@ -229,9 +229,9 @@ describe('GET /employee/:employeeId', () => {
 });
 
 describe('POST /override', () => {
-  it('supervisor happy path returns 201', async () => {
+  it('branch happy path returns 201 (CR-003: branchOnly, was supervisorOnly)', async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
-    const token = generateSupervisorToken([BRANCH_1]);
+    const token = generateBranchToken(BRANCH_1);
     const req = mockReq({
       ...authHeader(token),
       body: { original_record_id: RECORD_1, correction_reason: 'Employee forgot to clock out' },
@@ -243,6 +243,21 @@ describe('POST /override', () => {
 
     expect(res.status).toHaveBeenCalledWith(201);
     expect(attendanceService.manualOverride).toHaveBeenCalled();
+  });
+
+  it('supervisor is rejected — 403 (CR-003: branchOnly excludes supervisor)', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      body: { original_record_id: RECORD_1, correction_reason: 'Employee forgot to clock out' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(attendanceService.manualOverride).not.toHaveBeenCalled();
   });
 
   it('staff role is rejected — 403', async () => {
@@ -260,7 +275,7 @@ describe('POST /override', () => {
     expect(attendanceService.manualOverride).not.toHaveBeenCalled();
   });
 
-  it('super_admin is rejected — supervisorOnly excludes super_admin too', async () => {
+  it('super_admin is rejected — branchOnly excludes super_admin too', async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
     const token = generateSuperAdminToken();
     const req = mockReq({
@@ -277,7 +292,7 @@ describe('POST /override', () => {
 
   it('rejects a correction_reason under 10 characters with 422', async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
-    const token = generateSupervisorToken([BRANCH_1]);
+    const token = generateBranchToken(BRANCH_1);
     const req = mockReq({ ...authHeader(token), body: { original_record_id: RECORD_1, correction_reason: 'short' } });
     const res = mockRes();
 

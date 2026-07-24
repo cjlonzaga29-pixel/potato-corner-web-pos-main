@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import type { Prisma, EmployeeStatus as PrismaEmployeeStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import type { CreateEmployeeData, EmployeeActivityData, EmployeeListFilters, UpdateEmployeeData } from './employees.types.js';
@@ -19,6 +19,7 @@ const employeeSelect = {
   employmentType: true,
   employeeId: true,
   isActive: true,
+  status: true,
   mustChangePassword: true,
   lastLoginAt: true,
   createdAt: true,
@@ -164,7 +165,39 @@ export const employeesRepository = {
   deactivate(id: string, deactivatedBy: string, reason: string) {
     return prisma.user.update({
       where: { id },
-      data: { isActive: false, deactivatedAt: new Date(), deactivatedBy, deactivationReason: reason },
+      data: { isActive: false, status: 'inactive', deactivatedAt: new Date(), deactivatedBy, deactivationReason: reason },
+      select: employeeSelect,
+    });
+  },
+
+  /**
+   * Sets the full 5-state lifecycle status (Branch Operating System / CR-003).
+   * isActive stays in sync (true only for 'active') so every existing
+   * isActive-based check (auth.service.ts login gate, cashier eligibility,
+   * dashboard queries) keeps working unmodified. deactivatedAt/By/Reason are
+   * populated for any non-active status, mirroring the existing deactivate()
+   * behavior, and cleared only when the status returns to 'active'.
+   */
+  setStatus(id: string, status: PrismaEmployeeStatus, changedBy: string, reason: string | null) {
+    const isActive = status === 'active';
+    return prisma.user.update({
+      where: { id },
+      data: isActive
+        ? {
+            isActive: true,
+            status,
+            deactivatedAt: null,
+            deactivatedBy: null,
+            deactivationReason: null,
+            mustChangePassword: true,
+          }
+        : {
+            isActive: false,
+            status,
+            deactivatedAt: new Date(),
+            deactivatedBy: changedBy,
+            deactivationReason: reason,
+          },
       select: employeeSelect,
     });
   },

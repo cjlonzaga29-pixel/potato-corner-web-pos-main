@@ -65,8 +65,10 @@ interface ReviewPriceOverrideInput {
 
 export const priceOverridesService = {
   async submitOverrideRequest(data: CreatePriceOverrideInput, actor: JwtPayload, ipAddress: string | null) {
-    if (actor.role !== ROLES.SUPERVISOR) {
-      throw new PriceOverrideError('INSUFFICIENT_PERMISSIONS', 'Only supervisors may submit price override requests', 403);
+    // CR-003: submission is a branch-operational action (router gates this
+    // to branchOnly) — was supervisor-only pre-CR-003.
+    if (actor.role !== ROLES.BRANCH) {
+      throw new PriceOverrideError('INSUFFICIENT_PERMISSIONS', 'Only branch accounts may submit price override requests', 403);
     }
     if (!actor.branch_ids.includes(data.branch_id)) {
       throw new PriceOverrideError('BRANCH_ACCESS_DENIED', 'You may only submit overrides for your own branch', 403);

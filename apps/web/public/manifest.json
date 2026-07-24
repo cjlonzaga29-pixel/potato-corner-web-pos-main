@@ -2,7 +2,7 @@
   "name": "Potato Corner POS",
   "short_name": "PC POS",
   "description": "Potato Corner Enterprise Web POS and Branch Management Platform",
-  "start_url": "/terminal",
+  "start_url": "/branch/terminal",
   "display": "fullscreen",
   "orientation": "landscape",
   "background_color": "#ffffff",

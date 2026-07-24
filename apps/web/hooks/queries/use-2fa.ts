@@ -23,7 +23,7 @@ export interface Verify2FASessionResponse {
   access_token: string;
   user: {
     id: string;
-    role: 'super_admin' | 'supervisor' | 'staff';
+    role: 'super_admin' | 'supervisor' | 'branch' | 'staff';
     email: string;
     first_name: string;
     last_name: string;

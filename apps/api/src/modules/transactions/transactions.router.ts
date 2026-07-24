@@ -14,7 +14,7 @@ import {
 import { transactionsService } from './transactions.service.js';
 import { TransactionError } from './transactions.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { shiftGuard } from '../../middleware/shift-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
@@ -327,7 +327,8 @@ router.get('/:transactionId', authenticate, allRoles, requirePasswordChange, asy
 router.post(
   '/:transactionId/void',
   authenticate,
-  adminOrSupervisor,
+  // CR-003: a branch account may approve its own branch's void requests.
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(voidTransactionRequestSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -355,7 +356,10 @@ router.post(
 router.post(
   '/:transactionId/refund',
   authenticate,
-  adminOrSupervisor,
+  // CR-003: same reasoning as void above — structurally identical
+  // branch-scoped exception-approval action, not explicitly named by the
+  // task but following the same pattern (judgment call, see report).
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(refundTransactionRequestSchema),
   async (req: Request, res: Response, next: NextFunction) => {

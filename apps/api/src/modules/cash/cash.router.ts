@@ -4,7 +4,7 @@ import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSche
 import { cashService } from './cash.service.js';
 import { CashError } from './cash.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -37,7 +37,11 @@ const listQuerySchema = z.object({
 router.post(
   '/open',
   authenticate,
-  adminOrSupervisor,
+  // CR-003: staff and branch both run POS shifts day to day — was
+  // adminOrSupervisor pre-CR-003 (opening a shift on a cashier's behalf),
+  // widened to allRoles to match GET /current and GET /:shiftId which are
+  // already self-service for every role.
+  allRoles,
   requirePasswordChange,
   branchGuard,
   validate(openShiftSchema),
@@ -77,7 +81,7 @@ router.get('/current', authenticate, allRoles, requirePasswordChange, branchGuar
   }
 });
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -119,7 +123,7 @@ router.get('/:shiftId', authenticate, allRoles, requirePasswordChange, async (re
   }
 });
 
-router.get('/:shiftId/summary', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:shiftId/summary', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await cashService.getShiftSummary(req.params.shiftId as string);
@@ -138,7 +142,8 @@ router.get('/:shiftId/summary', authenticate, adminOrSupervisor, requirePassword
 router.post(
   '/:shiftId/close',
   authenticate,
-  adminOrSupervisor,
+  // See /open above — same allRoles rationale.
+  allRoles,
   requirePasswordChange,
   validate(closeShiftSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -161,7 +166,10 @@ router.post(
 router.post(
   '/:shiftId/approve-variance',
   authenticate,
-  adminOnly,
+  // CR-003: variance approval is an oversight/approval action — supervisor
+  // gains it alongside super_admin, not branch (branch is the operational
+  // role being reviewed, not the reviewer).
+  adminOrSupervisor,
   requirePasswordChange,
   validate(approveVarianceSchema),
   async (req: Request, res: Response, next: NextFunction) => {

@@ -5,7 +5,7 @@ import { flavorsService } from './flavors.service.js';
 import { FlavorError } from './flavors.types.js';
 import { ProductError } from '../products/products.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -45,7 +45,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -64,7 +64,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
   }
 });
 
-router.get('/:flavorId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:flavorId', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const flavor = await flavorsService.getFlavorById(req.params.flavorId as string, req.user);
@@ -102,7 +102,7 @@ router.patch('/:flavorId', authenticate, adminOnly, requirePasswordChange, valid
 router.get(
   '/:flavorId/branch-availability',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -121,7 +121,7 @@ router.get(
 router.patch(
   '/:flavorId/branch-availability/:branchId',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),

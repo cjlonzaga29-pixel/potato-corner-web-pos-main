@@ -82,16 +82,17 @@ describe('GET /api/audit — authentication', () => {
 });
 
 describe('GET /api/audit — role guard', () => {
-  it('returns 403 for supervisor', async () => {
+  it('returns 200 for supervisor (CR-003: scoping delegated to service)', async () => {
     const handlers = getRouteHandlers(auditRouter, 'get', '/');
     const token = generateSupervisorToken([randomUUID()]);
     const req = mockReq(authHeader(token));
     const res = mockRes();
+    vi.mocked(auditService.listLogs).mockResolvedValue({ logs: [], total: 0, page: 1, limit: 25 });
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(auditService.listLogs).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(auditService.listLogs).toHaveBeenCalled();
   });
 
   it('returns 403 for staff', async () => {
@@ -189,17 +190,20 @@ describe('GET /api/audit — filters and response', () => {
 
     await runHandlers(handlers, req, res);
 
-    expect(auditService.listLogs).toHaveBeenCalledWith({
-      action: 'FRAUD_ALERT_DISMISSED',
-      entityType: 'fraud_alert',
-      entityId: 'alert-1',
-      actorId,
-      branchId,
-      dateFrom: '2026-07-01',
-      dateTo: '2026-07-14',
-      page: 2,
-      limit: 10,
-    });
+    expect(auditService.listLogs).toHaveBeenCalledWith(
+      {
+        action: 'FRAUD_ALERT_DISMISSED',
+        entityType: 'fraud_alert',
+        entityId: 'alert-1',
+        actorId,
+        branchId,
+        dateFrom: '2026-07-01',
+        dateTo: '2026-07-14',
+        page: 2,
+        limit: 10,
+      },
+      expect.objectContaining({ role: 'super_admin' }),
+    );
     expect(res.status).toHaveBeenCalledWith(200);
     expect((res as Response & { jsonBody?: unknown }).jsonBody).toEqual({
       data: { logs: [logRow], total: 1, page: 2, limit: 10 },
@@ -219,6 +223,7 @@ describe('GET /api/audit — filters and response', () => {
 
     expect(auditService.listLogs).toHaveBeenCalledWith(
       expect.objectContaining({ page: 1, limit: 25 }),
+      expect.objectContaining({ role: 'super_admin' }),
     );
   });
 });

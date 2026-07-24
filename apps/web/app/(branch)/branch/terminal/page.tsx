@@ -425,7 +425,7 @@ export default function TerminalPage() {
             <div className="space-y-1.5">
               <p className="text-xs text-destructive">No active shift — open a shift before charging.</p>
               <Button variant="outline" size="sm" className="w-full" asChild>
-                <Link href="/shift/open">Open Shift</Link>
+                <Link href="/branch/shift/open">Open Shift</Link>
               </Button>
             </div>
           )}

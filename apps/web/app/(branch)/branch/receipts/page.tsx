@@ -16,7 +16,7 @@ function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
-/** Staff-facing receipt lookup/reprint — the (pos) nav's "Receipts" tab. Scoped to the cashier's own branch, most recent first. */
+/** Branch/staff-facing receipt lookup/reprint — the (branch) nav's "Receipts" item. Scoped to the cashier's own branch, most recent first. */
 export default function ReceiptsPage() {
   const { user } = useAuth();
   const branchId = user?.branchIds[0];

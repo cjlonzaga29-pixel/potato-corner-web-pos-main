@@ -8,9 +8,30 @@ export interface AuditLogFilters {
   entityType?: string;
   entityId?: string;
   actorId?: string;
+  /** Client-supplied single-branch filter (query param `branch_id`). */
   branchId?: string;
+  /**
+   * CR-003: server-computed branch scope — undefined means "no restriction"
+   * (super_admin with no explicit branch_id filter); otherwise the query is
+   * restricted to exactly this set. Always set by auditService.listLogs
+   * before reaching the repository; never trust a client-supplied value here.
+   */
+  branchIds?: string[];
   dateFrom?: string;
   dateTo?: string;
   page: number;
   limit: number;
+}
+
+/** Mirrors employees.types.ts's EmployeeError — every module maps its own domain errors to HTTP status via its router's error handler. */
+export class AuditError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly statusCode: number = 400,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = 'AuditError';
+  }
 }

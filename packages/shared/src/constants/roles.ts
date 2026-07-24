@@ -2,6 +2,7 @@
 export const ROLES = {
   SUPER_ADMIN: 'super_admin',
   SUPERVISOR: 'supervisor',
+  BRANCH: 'branch',
   STAFF: 'staff',
 } as const;
 
@@ -10,6 +11,7 @@ export type Role = (typeof ROLES)[keyof typeof ROLES];
 export const ROLE_LABELS: Record<Role, string> = {
   super_admin: 'Super Admin',
   supervisor: 'Supervisor',
+  branch: 'Branch Account',
   staff: 'Staff',
 };
 
@@ -17,5 +19,6 @@ export const ROLE_LABELS: Record<Role, string> = {
 export const ROLE_DASHBOARDS: Record<Role, string> = {
   super_admin: '/admin/dashboard',
   supervisor: '/supervisor/dashboard',
-  staff: '/terminal',
+  branch: '/branch/dashboard',
+  staff: '/branch/terminal',
 };

@@ -47,11 +47,29 @@ export type EmploymentType = (typeof EMPLOYMENT_TYPE)[keyof typeof EMPLOYMENT_TY
 /** Alias matching Phase 5's task naming (EMPLOYMENT_TYPES) — same values as EMPLOYMENT_TYPE, kept as one source of truth. */
 export const EMPLOYMENT_TYPES = EMPLOYMENT_TYPE;
 
+/** Employee lifecycle status (Branch Operating System / CR-003). Only 'active' may authenticate — see BLOCKED_EMPLOYEE_STATUSES. */
 export const EMPLOYEE_STATUS = {
   ACTIVE: 'active',
   INACTIVE: 'inactive',
+  SUSPENDED: 'suspended',
+  RESIGNED: 'resigned',
+  TERMINATED: 'terminated',
 } as const;
 export type EmployeeStatus = (typeof EMPLOYEE_STATUS)[keyof typeof EMPLOYEE_STATUS];
+
+/** Alias matching the employees module's naming (EMPLOYEE_STATUSES) — same values as EMPLOYEE_STATUS, kept as one source of truth. */
+export const EMPLOYEE_STATUSES = EMPLOYEE_STATUS;
+
+export const EMPLOYEE_STATUS_LABELS: Record<EmployeeStatus, string> = {
+  active: 'Active',
+  inactive: 'Inactive',
+  suspended: 'Suspended',
+  resigned: 'Resigned',
+  terminated: 'Terminated',
+};
+
+/** Statuses that immediately block login, force logout, and revoke POS/attendance access. */
+export const BLOCKED_EMPLOYEE_STATUSES: readonly EmployeeStatus[] = ['inactive', 'suspended', 'resigned', 'terminated'];
 
 export const TRANSACTION_STATUS = {
   COMPLETED: 'completed',

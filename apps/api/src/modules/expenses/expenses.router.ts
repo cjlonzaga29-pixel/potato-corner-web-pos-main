@@ -4,7 +4,7 @@ import { createExpenseSchema, updateExpenseSchema, expenseListQuerySchema } from
 import { expensesService } from './expenses.service.js';
 import { ExpenseError } from './expenses.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -38,7 +38,7 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
   next(error);
 }
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = expenseListQuerySchema.safeParse(req.query);
@@ -57,7 +57,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
   }
 });
 
-router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validate(createExpenseSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(createExpenseSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
@@ -68,7 +68,7 @@ router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validat
   }
 });
 
-router.get('/:expenseId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:expenseId', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const expense = await expensesService.getExpenseResponse(req.params.expenseId as string, req.user);
@@ -78,7 +78,7 @@ router.get('/:expenseId', authenticate, adminOrSupervisor, requirePasswordChange
   }
 });
 
-router.patch('/:expenseId', authenticate, adminOrSupervisor, requirePasswordChange, validate(updateExpenseSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:expenseId', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(updateExpenseSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const expense = await expensesService.updateExpense(req.params.expenseId as string, req.body, req.user, req.ip ?? null);
@@ -101,7 +101,7 @@ router.delete('/:expenseId', authenticate, adminOnly, requirePasswordChange, asy
 router.post(
   '/:expenseId/receipt',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   (req: Request, res: Response, next: NextFunction) => {
     receiptUpload.single('receipt')(req, res, (error: unknown) => {
@@ -138,7 +138,7 @@ router.post(
   },
 );
 
-router.delete('/:expenseId/receipt', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:expenseId/receipt', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await expensesService.deleteReceipt(req.params.expenseId as string, req.user, req.ip ?? null);

@@ -23,6 +23,18 @@ const SEED_USERS = [
     firstName: 'Marco',
     lastName: 'Reyes',
     employeeId: 'SV001',
+    // CR-003: supervisor is now regional oversight (multiple branch_ids in
+    // practice) rather than the single-branch operational role — still
+    // assigned to the one seeded branch here since there's only one.
+    assignBranch: true,
+  },
+  {
+    email: 'branch@potatocorner.test',
+    password: 'BranchAccount123',
+    role: 'branch' as const,
+    firstName: 'Liza',
+    lastName: 'Mendoza',
+    employeeId: 'BR001',
     assignBranch: true,
   },
   {
@@ -58,6 +70,7 @@ async function main() {
         passwordHash,
         role: seedUser.role,
         isActive: true,
+        status: 'active',
         loginAttempts: 0,
         lockedUntil: null,
         mustChangePassword: false,

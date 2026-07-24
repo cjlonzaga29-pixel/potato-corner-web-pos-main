@@ -17,7 +17,7 @@ import { ProductError } from './products.types.js';
 import { FlavorError } from '../flavors/flavors.types.js';
 import { flavorsService } from '../flavors/flavors.service.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -73,7 +73,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -109,7 +109,7 @@ router.get('/catalog', authenticate, allRoles, requirePasswordChange, branchGuar
   }
 });
 
-router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:productId', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.getProductById(req.params.productId as string, req.user);
@@ -147,7 +147,12 @@ router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, asy
 router.patch(
   '/:productId/status',
   authenticate,
-  adminOrSupervisor,
+  // changeProductStatusSchema's branch_id is optional — this can be a
+  // branch-scoped status flip (e.g. TEMPORARILY_UNAVAILABLE at one branch,
+  // branchGuard-checked below) as well as a global lifecycle change, so
+  // branch needs write access here the same as the branch-availability
+  // toggles below.
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(changeProductStatusSchema),
   branchGuard,
@@ -224,7 +229,7 @@ router.delete('/:productId/image', authenticate, adminOnly, requirePasswordChang
 router.get(
   '/:productId/branch-availability',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -243,7 +248,7 @@ router.get(
 router.patch(
   '/:productId/branch-availability/bulk',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   validate(bulkBranchProductAvailabilitySchema),
@@ -267,7 +272,7 @@ router.patch(
 router.patch(
   '/:productId/branch-availability/:branchId',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),

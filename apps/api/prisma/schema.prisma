@@ -18,7 +18,21 @@ generator client {
 enum Role {
   super_admin
   supervisor
+  branch
   staff
+}
+
+// Branch Operating System (CR-003): lifecycle status for User rows tied to
+// an employee record (branch + staff roles). Distinct from the older
+// isActive boolean, which stays in sync (isActive = status == active) for
+// existing consumers — status is the authoritative field for login gating
+// and forced session invalidation.
+enum EmployeeStatus {
+  active
+  inactive
+  suspended
+  resigned
+  terminated
 }
 
 enum EmploymentType {
@@ -165,8 +179,9 @@ model User {
   totpEnrolledAt  DateTime? @map("totp_enrolled_at")
   totpBackupCodes String[]  @default([]) @map("totp_backup_codes")
 
-  isActive    Boolean   @default(true) @map("is_active")
-  lastLoginAt DateTime? @map("last_login_at")
+  isActive    Boolean        @default(true) @map("is_active")
+  status      EmployeeStatus @default(active)
+  lastLoginAt DateTime?      @map("last_login_at")
 
   // Account lockout (Architecture doc §5.3): locked after 5 consecutive
   // failed attempts, auto-unlocks after 30 minutes, or manual Super Admin

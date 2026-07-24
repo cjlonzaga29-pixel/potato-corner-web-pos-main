@@ -143,6 +143,12 @@ export const settingsService = {
     updatedBy: ActorContext,
     ipAddress: string | null,
   ): Promise<ReceiptConfigResponse> {
+    // CR-003: router now admits supervisor/branch alongside super_admin
+    // (adminSupervisorOrBranch) — this had no branch-ownership check at all
+    // pre-CR-003 because only super_admin could ever reach it. Same guard
+    // as updatePaymentMethodConfig below.
+    assertBranchAccess(branchId, updatedBy);
+
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 

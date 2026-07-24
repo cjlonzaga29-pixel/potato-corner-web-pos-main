@@ -59,3 +59,8 @@ export function generateSupervisorToken(branchIds: string[], options: TestTokenO
 export function generateStaffToken(branchId: string, options: TestTokenOptions = {}): string {
   return generateTestToken(ROLES.STAFF, { ...options, branchIds: [branchId] });
 }
+
+/** branch: the CR-003 Branch Account role — single-branch scoped, like staff. */
+export function generateBranchToken(branchId: string, options: TestTokenOptions = {}): string {
+  return generateTestToken(ROLES.BRANCH, { ...options, branchIds: [branchId] });
+}

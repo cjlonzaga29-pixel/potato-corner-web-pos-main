@@ -11,7 +11,7 @@ import {
 import { recipesService } from './recipes.service.js';
 import { RecipeError } from './recipes.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch, branchOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -38,7 +38,7 @@ const listQuerySchema = z.object({ product_variant_id: z.uuid() });
 
 // --- Master recipes (Super Admin owns; Phase 7 foundation) ---
 
-router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -85,11 +85,13 @@ router.delete('/:id', authenticate, adminOnly, requirePasswordChange, async (req
 
 // --- CR-001 deduction simulation ---
 
-router.post('/simulate', authenticate, adminOrSupervisor, requirePasswordChange, validate(simulateDeductionSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/simulate', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(simulateDeductionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const body = req.body as { branch_id?: string };
-    if (req.user.role === ROLES.SUPERVISOR && body.branch_id && !req.user.branch_ids.includes(body.branch_id)) {
+    // CR-003: was `=== ROLES.SUPERVISOR` — now that the router also admits
+    // branch, this must scope any non-admin caller, not just supervisor.
+    if (req.user.role !== ROLES.SUPER_ADMIN && body.branch_id && !req.user.branch_ids.includes(body.branch_id)) {
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }
@@ -105,7 +107,7 @@ router.post('/simulate', authenticate, adminOrSupervisor, requirePasswordChange,
 router.get(
   '/:variantId/overrides',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -127,7 +129,7 @@ router.get(
 router.post(
   '/:variantId/overrides',
   authenticate,
-  supervisorOnly,
+  branchOnly,
   requirePasswordChange,
   branchGuard,
   validate(createRecipeOverrideSchema),
@@ -150,7 +152,7 @@ router.post(
 router.patch(
   '/overrides/:overrideId',
   authenticate,
-  supervisorOnly,
+  branchOnly,
   requirePasswordChange,
   branchGuard,
   validate(updateRecipeOverrideSchema),
@@ -179,7 +181,7 @@ router.patch(
 router.delete(
   '/overrides/:overrideId',
   authenticate,
-  supervisorOnly,
+  branchOnly,
   requirePasswordChange,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {

@@ -66,6 +66,33 @@ const SUPERVISOR_USER = {
   exp: 9999999999,
 };
 
+const BRANCH_USER = {
+  user_id: 'branch-1',
+  role: ROLES.BRANCH,
+  email: 'branch@test.com',
+  branch_ids: ['branch-a'] as string[],
+  iat: 0,
+  exp: 9999999999,
+};
+
+const OTHER_BRANCH_USER = {
+  user_id: 'branch-2',
+  role: ROLES.BRANCH,
+  email: 'branch2@test.com',
+  branch_ids: ['branch-c'] as string[],
+  iat: 0,
+  exp: 9999999999,
+};
+
+const UNASSIGNED_SUPERVISOR_USER = {
+  user_id: 'sup-2',
+  role: ROLES.SUPERVISOR,
+  email: 'sup2@test.com',
+  branch_ids: ['branch-x'] as string[],
+  iat: 0,
+  exp: 9999999999,
+};
+
 function buildEmployee(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'emp-1',
@@ -239,6 +266,192 @@ describe('employeesService.createEmployee', () => {
     expect(JSON.stringify(auditCall)).not.toContain('01-2345678-9');
     expect(JSON.stringify(auditCall)).not.toContain('Password1!');
   });
+
+  it('allows a branch actor to create a staff account in their own branch', async () => {
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
+    vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee() as never);
+
+    await expect(
+      employeesService.createEmployee(
+        {
+          email: 'juan@potatocorner.test',
+          first_name: 'Juan',
+          last_name: 'Dela Cruz',
+          role: ROLES.STAFF,
+          employment_type: 'regular',
+          branch_ids: ['branch-a'],
+          initial_password: 'Password1!',
+        } as never,
+        BRANCH_USER,
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('rejects a branch actor creating an employee assigned to a branch they do not own', async () => {
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+
+    await expect(
+      employeesService.createEmployee(
+        {
+          email: 'juan@potatocorner.test',
+          first_name: 'Juan',
+          last_name: 'Dela Cruz',
+          role: ROLES.STAFF,
+          employment_type: 'regular',
+          branch_ids: ['branch-c'],
+          initial_password: 'Password1!',
+        } as never,
+        BRANCH_USER,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 400 });
+
+    expect(employeesRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a branch actor creating a non-staff account', async () => {
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+
+    await expect(
+      employeesService.createEmployee(
+        {
+          email: 'juan@potatocorner.test',
+          first_name: 'Juan',
+          last_name: 'Dela Cruz',
+          role: ROLES.SUPERVISOR,
+          employment_type: 'regular',
+          branch_ids: ['branch-a'],
+          initial_password: 'Password1!',
+        } as never,
+        BRANCH_USER,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_PERMISSIONS', statusCode: 403 });
+
+    expect(employeesRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('allows super_admin to create an employee with any role in any branch', async () => {
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
+    vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee({ role: ROLES.SUPERVISOR }) as never);
+
+    await expect(
+      employeesService.createEmployee(
+        {
+          email: 'juan@potatocorner.test',
+          first_name: 'Juan',
+          last_name: 'Dela Cruz',
+          role: ROLES.SUPERVISOR,
+          employment_type: 'regular',
+          branch_ids: ['branch-z'],
+          initial_password: 'Password1!',
+        } as never,
+        SUPER_ADMIN_USER,
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe('employeesService.updateEmployee branch ownership', () => {
+  it('allows a branch actor to update an employee in their own branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.update).mockResolvedValue(buildEmployee({ firstName: 'Updated' }) as never);
+
+    const result = await employeesService.updateEmployee('emp-1', { first_name: 'Updated' } as never, BRANCH_USER, null);
+    expect(result.first_name).toBe('Updated');
+  });
+
+  it('rejects a branch actor updating an employee in another branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(
+      employeesService.updateEmployee('emp-1', { first_name: 'Updated' } as never, OTHER_BRANCH_USER, null),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+
+    expect(employeesRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor to update an employee in one of their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.update).mockResolvedValue(buildEmployee({ firstName: 'Updated' }) as never);
+
+    const result = await employeesService.updateEmployee('emp-1', { first_name: 'Updated' } as never, SUPERVISOR_USER, null);
+    expect(result.first_name).toBe('Updated');
+  });
+
+  it('rejects a supervisor updating an employee outside their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(
+      employeesService.updateEmployee('emp-1', { first_name: 'Updated' } as never, UNASSIGNED_SUPERVISOR_USER, null),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+
+    expect(employeesRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('allows super_admin to update any employee regardless of branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.update).mockResolvedValue(buildEmployee({ firstName: 'Updated' }) as never);
+
+    const result = await employeesService.updateEmployee('emp-1', { first_name: 'Updated' } as never, SUPER_ADMIN_USER, null);
+    expect(result.first_name).toBe('Updated');
+  });
+
+  it('rejects a branch actor reassigning an employee to a branch outside their own', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(
+      employeesService.updateEmployee('emp-1', { branch_ids: ['branch-c'] } as never, BRANCH_USER, null),
+    ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 400 });
+
+    expect(employeesRepository.updateBranchAssignments).not.toHaveBeenCalled();
+  });
+});
+
+describe('employeesService.resetEmployeePassword', () => {
+  it('allows a branch actor to reset the password of an employee in their own branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', BRANCH_USER, null)).resolves.toBeUndefined();
+
+    expect(authRepository.updatePasswordHash).toHaveBeenCalledWith('emp-1', expect.any(String));
+  });
+
+  it('rejects a branch actor resetting the password of an employee in another branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(
+      employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', OTHER_BRANCH_USER, null),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor to reset the password of an employee in one of their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPERVISOR_USER, null)).resolves.toBeUndefined();
+  });
+
+  it('rejects a supervisor resetting the password of an employee outside their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(
+      employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', UNASSIGNED_SUPERVISOR_USER, null),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+  });
+
+  it('allows super_admin to reset the password of any employee regardless of branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null)).resolves.toBeUndefined();
+  });
 });
 
 describe('employeesService.getEmployeePayrollData', () => {
@@ -363,6 +576,68 @@ describe('employeesService.deactivateEmployee', () => {
       employeesService.deactivateEmployee('emp-1', { reason: 'Duplicate request test', acknowledge_active_shift: false }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'EMPLOYEE_ALREADY_INACTIVE', statusCode: 409 });
   });
+
+  it('allows a branch actor to deactivate an employee in their own branch', async () => {
+    vi.mocked(employeesRepository.findById)
+      .mockResolvedValueOnce(buildEmployee({ isActive: true }) as never)
+      .mockResolvedValueOnce(buildEmployee({ isActive: false, branchAssignments: [] }) as never);
+    vi.mocked(employeesRepository.hasActiveShift).mockResolvedValue(false);
+    vi.mocked(employeesRepository.deactivate).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+    vi.mocked(employeesRepository.updateBranchAssignments).mockResolvedValue([]);
+
+    const result = await employeesService.deactivateEmployee(
+      'emp-1',
+      { reason: 'No longer employed here', acknowledge_active_shift: false },
+      BRANCH_USER,
+      null,
+    );
+    expect(result.is_active).toBe(false);
+  });
+
+  it('rejects a branch actor deactivating an employee in another branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: true }) as never);
+
+    await expect(
+      employeesService.deactivateEmployee(
+        'emp-1',
+        { reason: 'Policy violation reported', acknowledge_active_shift: false },
+        OTHER_BRANCH_USER,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+
+    expect(employeesRepository.deactivate).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor to deactivate an employee in one of their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById)
+      .mockResolvedValueOnce(buildEmployee({ isActive: true }) as never)
+      .mockResolvedValueOnce(buildEmployee({ isActive: false, branchAssignments: [] }) as never);
+    vi.mocked(employeesRepository.hasActiveShift).mockResolvedValue(false);
+    vi.mocked(employeesRepository.deactivate).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+    vi.mocked(employeesRepository.updateBranchAssignments).mockResolvedValue([]);
+
+    const result = await employeesService.deactivateEmployee(
+      'emp-1',
+      { reason: 'No longer employed here', acknowledge_active_shift: false },
+      SUPERVISOR_USER,
+      null,
+    );
+    expect(result.is_active).toBe(false);
+  });
+
+  it('rejects a supervisor deactivating an employee outside their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: true }) as never);
+
+    await expect(
+      employeesService.deactivateEmployee(
+        'emp-1',
+        { reason: 'Policy violation reported', acknowledge_active_shift: false },
+        UNASSIGNED_SUPERVISOR_USER,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+  });
 });
 
 describe('employeesService.reactivateEmployee', () => {
@@ -384,6 +659,42 @@ describe('employeesService.reactivateEmployee', () => {
     await expect(employeesService.reactivateEmployee('emp-1', ACTOR, null)).rejects.toMatchObject({
       code: 'EMPLOYEE_ALREADY_ACTIVE',
       statusCode: 409,
+    });
+  });
+
+  it('allows a branch actor to reactivate an employee in their own branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+    vi.mocked(employeesRepository.reactivate).mockResolvedValue(buildEmployee({ isActive: true }) as never);
+
+    const result = await employeesService.reactivateEmployee('emp-1', BRANCH_USER, null);
+    expect(result.is_active).toBe(true);
+  });
+
+  it('rejects a branch actor reactivating an employee in another branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+
+    await expect(employeesService.reactivateEmployee('emp-1', OTHER_BRANCH_USER, null)).rejects.toMatchObject({
+      code: 'EMPLOYEE_ACCESS_DENIED',
+      statusCode: 403,
+    });
+
+    expect(employeesRepository.reactivate).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor to reactivate an employee in one of their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+    vi.mocked(employeesRepository.reactivate).mockResolvedValue(buildEmployee({ isActive: true }) as never);
+
+    const result = await employeesService.reactivateEmployee('emp-1', SUPERVISOR_USER, null);
+    expect(result.is_active).toBe(true);
+  });
+
+  it('rejects a supervisor reactivating an employee outside their assigned branches', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+
+    await expect(employeesService.reactivateEmployee('emp-1', UNASSIGNED_SUPERVISOR_USER, null)).rejects.toMatchObject({
+      code: 'EMPLOYEE_ACCESS_DENIED',
+      statusCode: 403,
     });
   });
 });

@@ -159,9 +159,12 @@ export const employeesService = {
       throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
     }
 
-    if (createdBy.role === ROLES.SUPERVISOR) {
+    // Router permits both supervisor and branch actors here (adminOrBranch /
+    // adminSupervisorOrBranch) — only super_admin may create a non-staff
+    // account or assign branches outside the actor's own branch_ids.
+    if (createdBy.role === ROLES.SUPERVISOR || createdBy.role === ROLES.BRANCH) {
       if (data.role !== ROLES.STAFF) {
-        throw new EmployeeError('SUPERVISOR_ROLE_FORBIDDEN', 'Supervisors may only create staff accounts', 403);
+        throw new EmployeeError('INSUFFICIENT_PERMISSIONS', 'Only Super Admin may create a non-staff account', 403);
       }
       const outOfScope = data.branch_ids.some((id) => !createdBy.branch_ids.includes(id));
       if (outOfScope) {
@@ -227,8 +230,16 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertEmployeeAccess(updatedBy, before);
 
     if (data.branch_ids) {
+      const accessible = getAccessibleBranchIds(updatedBy);
+      if (accessible !== 'all') {
+        const outOfScope = data.branch_ids.some((id) => !accessible.includes(id));
+        if (outOfScope) {
+          throw new EmployeeError('BRANCH_ACCESS_DENIED', 'You do not have access to one or more of the requested branches', 400);
+        }
+      }
       await employeesRepository.updateBranchAssignments(employeeId, data.branch_ids, updatedBy.user_id);
     }
 
@@ -265,6 +276,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertEmployeeAccess(deactivatedBy, before);
     if (!before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_INACTIVE', 'This employee is already deactivated', 409);
 
     const hasActiveShift = await employeesRepository.hasActiveShift(employeeId);
@@ -301,6 +313,7 @@ export const employeesService = {
   async reactivateEmployee(employeeId: string, reactivatedBy: ActorContext, ipAddress: string | null): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertEmployeeAccess(reactivatedBy, before);
     if (before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_ACTIVE', 'This employee is already active', 409);
 
     const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.user_id);
@@ -387,6 +400,7 @@ export const employeesService = {
   ): Promise<void> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertEmployeeAccess(resetBy, employee);
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);
     await authRepository.updatePasswordHash(employeeId, passwordHash);

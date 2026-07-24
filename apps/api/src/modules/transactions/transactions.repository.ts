@@ -59,6 +59,7 @@ interface CreateTransactionRow {
     unitPrice: number;
     quantity: number;
     lineTotal: number;
+    recipeVersion: number;
   }[];
 }
 
@@ -188,6 +189,7 @@ export const transactionsRepository = {
           unitPriceSnapshot: item.unitPrice,
           quantity: item.quantity,
           lineTotal: item.lineTotal,
+          recipeVersion: item.recipeVersion,
         })),
       });
 

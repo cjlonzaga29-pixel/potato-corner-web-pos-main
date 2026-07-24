@@ -1,6 +1,7 @@
 import { recipesRepository } from './recipes.repository.js';
 import { RecipeError, type DeductionLine } from './recipes.types.js';
 import { productsRepository } from '../products/products.repository.js';
+import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 type ActorContext = { id: string; role: string };
@@ -12,8 +13,13 @@ interface RecipeRow {
   flavorId: string | null;
   quantity: { toNumber(): number };
   unit: string;
-  ingredient: { name: string };
+  ingredient: { name: string; branchId: string };
   flavor: { name: string } | null;
+}
+
+/** Master Recipe rows carry `version` (CR-004); BranchRecipeOverride rows don't. */
+interface MasterRecipeRow extends RecipeRow {
+  version: number;
 }
 
 interface OverrideRow extends RecipeRow {
@@ -35,6 +41,11 @@ function toRecipeResponse(row: RecipeRow) {
     quantity: row.quantity.toNumber(),
     unit: row.unit,
   };
+}
+
+/** CR-004: master recipe responses carry `version`; BranchRecipeOverride responses (toOverrideResponse below) don't. */
+function toMasterRecipeResponse(row: MasterRecipeRow) {
+  return { ...toRecipeResponse(row), version: row.version };
 }
 
 function toOverrideResponse(row: OverrideRow) {
@@ -84,6 +95,32 @@ interface ComputeDeductionInput {
 }
 
 /**
+ * CR-004: a master Recipe row's ingredientId points at one specific branch's
+ * Ingredient (Ingredient has no branch-neutral identity — see
+ * docs/decisions/CR-004-pos-deduction-integrity.md). A sale at any *other*
+ * branch must resolve that row to its own equivalent Ingredient (matched by
+ * name — the same match findIngredientByBranchAndName and idempotent branch
+ * provisioning both use), never deduct against the pinned branch's stock.
+ * A no-op (zero extra queries) when the row's own ingredient already belongs
+ * to the selling branch, which covers every single-branch deployment and
+ * every recipe an admin happened to create against that branch's ingredient.
+ */
+async function resolveIngredientForBranch(branchId: string, row: RecipeRow): Promise<{ id: string; name: string }> {
+  if (row.ingredient.branchId === branchId) {
+    return { id: row.ingredientId, name: row.ingredient.name };
+  }
+  const resolved = await inventoryRepository.findIngredientByBranchAndName(branchId, row.ingredient.name);
+  if (!resolved) {
+    throw new RecipeError(
+      'INGREDIENT_NOT_PROVISIONED',
+      `Ingredient "${row.ingredient.name}" has not been provisioned at this branch yet — add it under branch inventory before selling this item here`,
+      409,
+    );
+  }
+  return { id: resolved.id, name: resolved.name };
+}
+
+/**
  * CR-001 Phase 7.5 deduction algorithm. Preserves the original master-only
  * behavior (architecture doc §7.1 steps 1-4) exactly when branchId is
  * omitted or the branch has no overrides — branch overrides are layered on
@@ -96,6 +133,11 @@ interface ComputeDeductionInput {
  *   2. master flavor     (flavor_id = selected) — overrides same-ingredient master base
  *   3. branch base        — overrides same-ingredient result so far
  *   4. branch flavor       — overrides same-ingredient result so far
+ *
+ * When branchId is given, master rows are resolved to that branch's own
+ * Ingredient first (CR-004, resolveIngredientForBranch) — branch override
+ * rows are exempt since a branch account can only ever create an override
+ * against its own branch's ingredients in the first place.
  */
 export async function computeDeduction(input: ComputeDeductionInput): Promise<DeductionLine[]> {
   const masterRows = (await recipesRepository.findMasterRows(input.productVariantId, input.flavorId)) as RecipeRow[];
@@ -104,18 +146,20 @@ export async function computeDeduction(input: ComputeDeductionInput): Promise<De
 
   const map = new Map<string, DeductionLine>();
   for (const row of masterBase) {
-    map.set(row.ingredientId, {
-      ingredient_id: row.ingredientId,
-      ingredient_name: row.ingredient.name,
+    const ingredient = input.branchId ? await resolveIngredientForBranch(input.branchId, row) : { id: row.ingredientId, name: row.ingredient.name };
+    map.set(ingredient.id, {
+      ingredient_id: ingredient.id,
+      ingredient_name: ingredient.name,
       quantity: row.quantity.toNumber(),
       unit: row.unit,
       source: 'master_base',
     });
   }
   for (const row of masterFlavor) {
-    map.set(row.ingredientId, {
-      ingredient_id: row.ingredientId,
-      ingredient_name: row.ingredient.name,
+    const ingredient = input.branchId ? await resolveIngredientForBranch(input.branchId, row) : { id: row.ingredientId, name: row.ingredient.name };
+    map.set(ingredient.id, {
+      ingredient_id: ingredient.id,
+      ingredient_name: ingredient.name,
       quantity: row.quantity.toNumber(),
       unit: row.unit,
       source: 'master_flavor',
@@ -154,10 +198,38 @@ export async function computeDeduction(input: ComputeDeductionInput): Promise<De
   return Array.from(map.values()).map((line) => ({ ...line, quantity: line.quantity * input.quantitySold }));
 }
 
+/**
+ * CR-004: transactions.service.ts calls this before pricing a cart line —
+ * a sale must never be recorded for a variant with zero master recipe rows,
+ * since computeDeduction would silently return an empty deduction list
+ * (i.e. "sell it for free, deduct nothing") rather than signal that no one
+ * has configured the recipe yet.
+ */
+export async function assertRecipeExists(productVariantId: string): Promise<void> {
+  const exists = await recipesRepository.hasActiveRecipeForVariant(productVariantId);
+  if (!exists) {
+    throw new RecipeError(
+      'RECIPE_MISSING',
+      'This product variant has no recipe configured — a sale cannot be recorded until Super Admin adds one',
+      422,
+    );
+  }
+}
+
+/** CR-004: the master recipe version snapshotted onto TransactionItem.recipeVersion at sale time. */
+export function getRecipeVersion(productVariantId: string, flavorId: string | null): Promise<number> {
+  return recipesRepository.getMaxVersionForSelection(productVariantId, flavorId);
+}
+
+/** CR-004: the ingredient identities branchesService.createBranch provisions a new branch with. */
+export function listDistinctIngredientIdentities(): Promise<{ name: string; unit: string }[]> {
+  return recipesRepository.findDistinctIngredientIdentities();
+}
+
 export const recipesService = {
   async listRecipes(productVariantId: string) {
-    const rows = (await recipesRepository.findByVariant(productVariantId)) as RecipeRow[];
-    return rows.map(toRecipeResponse);
+    const rows = (await recipesRepository.findByVariant(productVariantId)) as MasterRecipeRow[];
+    return rows.map(toMasterRecipeResponse);
   },
 
   async createRecipe(data: CreateRecipeInput, actor: ActorContext, ipAddress: string | null) {
@@ -170,8 +242,8 @@ export const recipesService = {
       flavorId: data.flavor_id ?? null,
       quantity: data.quantity,
       unit: data.unit,
-    })) as RecipeRow;
-    const response = toRecipeResponse(created);
+    })) as MasterRecipeRow;
+    const response = toMasterRecipeResponse(created);
 
     await recordAuditLog({
       action: 'RECIPE_CREATED',
@@ -187,11 +259,11 @@ export const recipesService = {
   },
 
   async updateRecipe(recipeId: string, data: UpdateRecipeInput, actor: ActorContext, ipAddress: string | null) {
-    const existing = (await recipesRepository.findRecipeById(recipeId)) as RecipeRow | null;
+    const existing = (await recipesRepository.findRecipeById(recipeId)) as MasterRecipeRow | null;
     if (!existing) throw new RecipeError('RECIPE_NOT_FOUND', 'Recipe not found', 404);
 
-    const updated = (await recipesRepository.updateRecipe(recipeId, data)) as RecipeRow;
-    const response = toRecipeResponse(updated);
+    const updated = (await recipesRepository.updateRecipe(recipeId, data)) as MasterRecipeRow;
+    const response = toMasterRecipeResponse(updated);
 
     await recordAuditLog({
       action: 'RECIPE_UPDATED',
@@ -199,7 +271,7 @@ export const recipesService = {
       entityId: recipeId,
       actorId: actor.id,
       actorRole: actor.role,
-      beforeState: toRecipeResponse(existing),
+      beforeState: toMasterRecipeResponse(existing),
       afterState: response,
       ipAddress,
     });
@@ -208,7 +280,7 @@ export const recipesService = {
   },
 
   async deleteRecipe(recipeId: string, actor: ActorContext, ipAddress: string | null) {
-    const existing = (await recipesRepository.findRecipeById(recipeId)) as RecipeRow | null;
+    const existing = (await recipesRepository.findRecipeById(recipeId)) as MasterRecipeRow | null;
     if (!existing) throw new RecipeError('RECIPE_NOT_FOUND', 'Recipe not found', 404);
 
     await recipesRepository.deleteRecipe(recipeId);
@@ -219,7 +291,7 @@ export const recipesService = {
       entityId: recipeId,
       actorId: actor.id,
       actorRole: actor.role,
-      beforeState: toRecipeResponse(existing),
+      beforeState: toMasterRecipeResponse(existing),
       ipAddress,
     });
   },
@@ -260,6 +332,15 @@ export const recipesService = {
   ) {
     const variant = await productsRepository.findVariantById(productVariantId);
     if (!variant) throw new RecipeError('VARIANT_NOT_FOUND', 'Product variant not found', 404);
+
+    // CR-004: a branch override must reference an Ingredient owned by that
+    // same branch — otherwise it would silently deduct another branch's
+    // stock the same way an unresolved master recipe used to (see
+    // computeDeduction/resolveIngredientForBranch above).
+    const ingredient = await inventoryRepository.findIngredientById(data.ingredient_id);
+    if (!ingredient || ingredient.branchId !== data.branch_id) {
+      throw new RecipeError('INGREDIENT_NOT_IN_BRANCH', 'ingredient_id must belong to the same branch as branch_id', 422);
+    }
 
     const created = (await recipesRepository.createOverride({
       branchId: data.branch_id,

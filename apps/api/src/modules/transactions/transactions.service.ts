@@ -15,7 +15,8 @@ import {
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
-import { computeDeduction } from '../recipes/recipes.service.js';
+import { computeDeduction, assertRecipeExists, getRecipeVersion } from '../recipes/recipes.service.js';
+import { RecipeError } from '../recipes/recipes.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
 import { hashToLockId } from '../../lib/pg-lock.js';
@@ -58,6 +59,7 @@ interface TransactionItemRow {
   unitPriceSnapshot: { toNumber(): number };
   quantity: number;
   lineTotal: { toNumber(): number };
+  recipeVersion: number;
 }
 
 interface TransactionRow {
@@ -138,6 +140,7 @@ function toTransactionResponse(row: TransactionRow) {
       unit_price: item.unitPriceSnapshot.toNumber(),
       quantity: item.quantity,
       line_total: item.lineTotal.toNumber(),
+      recipe_version: item.recipeVersion,
     })),
   };
 }
@@ -203,6 +206,7 @@ interface ResolvedItem {
   quantity: number;
   lineTotal: number;
   vatableCapAmount: number | null;
+  recipeVersion: number;
 }
 
 /**
@@ -241,6 +245,17 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       throw new TransactionError('PRODUCT_UNAVAILABLE', `${variant.product.name} is not available at this branch`, 422);
     }
 
+    // CR-004: reject the whole sale rather than silently deduct nothing for
+    // a variant no one has configured a recipe for yet.
+    try {
+      await assertRecipeExists(variant.id);
+    } catch (error) {
+      if (error instanceof RecipeError) {
+        throw new TransactionError('RECIPE_MISSING', error.message, error.statusCode);
+      }
+      throw error;
+    }
+
     let flavorName: string | null = null;
     let pricePremium = 0;
     if (item.flavorId) {
@@ -258,6 +273,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     const basePrice = await priceOverridesService.getActivePriceForBranch(branchId, variant.id, variant.basePrice.toNumber());
     const unitPrice = round2(basePrice + pricePremium);
     const lineTotal = round2(unitPrice * item.quantity);
+    const recipeVersion = await getRecipeVersion(variant.id, item.flavorId ?? null);
 
     resolved.push({
       productId: variant.productId,
@@ -270,6 +286,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       quantity: item.quantity,
       lineTotal,
       vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
+      recipeVersion,
     });
   }
   return resolved;

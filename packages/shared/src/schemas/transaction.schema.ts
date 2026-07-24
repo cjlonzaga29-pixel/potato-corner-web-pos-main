@@ -95,6 +95,9 @@ export const transactionItemResponseSchema = z.object({
   unit_price: z.number(),
   quantity: z.number().int(),
   line_total: z.number(),
+  // CR-004: the master Recipe.version(s) in effect for this line's
+  // deduction at sale time — frozen, same as the snapshot fields above.
+  recipe_version: z.number().int(),
 });
 
 export const transactionResponseSchema = z.object({

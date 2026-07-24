@@ -65,6 +65,13 @@ and immutability guards continue to apply unchanged.
 - Product.status remains unchanged and out of scope.
 - The new column on ProductVariant is named lifecycleStatus
   (not status) to avoid future confusion with Product.status.
+- Flavor→ingredient linkage uses name+unit strings, not a single
+  FK. This matches CR-004's resolver pattern for Recipe rows and
+  preserves flavor universality across branches. Considered and
+  rejected: a single Flavor.ingredientId FK (would either pin the
+  flavor to one branch or reintroduce CR-004 branch-leakage). A
+  future CR may introduce a first-class IngredientIdentity table to
+  replace name+unit resolution across the entire schema.
 
 ## Schema changes
 
@@ -74,8 +81,15 @@ Ingredient:
   + defaults to OTHER for existing rows
 
 Flavor:
-  + ingredientId: FK to Ingredient
-  + nullable initially, backfilled via migration, then required
+  + ingredientName: String, nullable initially, NOT NULL after
+    Phase 2 backfill
+  + ingredientUnit: String, nullable initially, NOT NULL after
+    Phase 2 backfill
+  + FK to Ingredient was considered and rejected: Ingredient is
+    per-branch (Ingredient.branchId required), so a single FK would
+    either pin the flavor to one branch (breaking universality) or
+    reintroduce the CR-004 branch-leakage bug. Name+unit matches
+    the CR-004 resolver pattern used for Recipe rows.
 
 ProductVariant:
   + lifecycleStatus: enum VariantLifecycleStatus
@@ -132,8 +146,12 @@ TransactionItem:
    - Historical TransactionItems retain original recipeVersion (CR-004)
 6. Approval blocked if any recipe row references an ingredient that
    cannot be resolved in at least one active branch.
-7. Each flavor is a first-class Ingredient row, auto-provisioned per
-   branch via CR-004 idempotent provisioning.
+7. Each flavor's name+unit identity is auto-provisioned as an
+   Ingredient row per branch via CR-004 idempotent provisioning.
+   At sale time, POS resolves flavor.ingredientName +
+   flavor.ingredientUnit against the selling branch's Ingredient
+   row using the CR-004 resolver. Fail-closed with
+   INGREDIENT_NOT_PROVISIONED if missing.
 8. Flavor slots are universal — any flavor may fill any slot.
 9. Sale rejected with FLAVOR_SLOT_UNFILLED if any required slot empty.
 10. Sale rejected with INGREDIENT_NOT_PROVISIONED (CR-004) if any
@@ -188,7 +206,9 @@ Any of these being false hides the variant from POS terminals.
 7. For each recipe row:
    - flavorSlotIndex null -> deduct fixed ingredientId
    - flavorSlotIndex set -> resolve to selectedFlavors[slotIndex]
-     -> resolve flavor.ingredientId -> deduct that ingredient
+     -> use CR-004 resolver on flavor.ingredientName +
+     flavor.ingredientUnit against selling branch -> deduct
+     that ingredient row
 8. Apply CR-004 cross-branch resolver per resolved ingredient
 9. Atomic transaction: sale + inventory movements committed together
 10. Any failure -> full rollback -> clear error to POS
@@ -230,14 +250,17 @@ Any of these being false hides the variant from POS terminals.
 - ProductFlavorSlot table created empty
 - ProductChangeLog table created empty
 - Recipe.flavorSlotIndex nullable, defaults to null
-- Flavor.ingredientId nullable initially
+- Flavor.ingredientName and Flavor.ingredientUnit nullable
+  initially, both become NOT NULL after Phase 2 backfill
+  (separate migration step)
 - Backfill migration (separate step):
-  * For each existing Flavor without ingredientId:
-    - Create corresponding Ingredient row (category=FLAVOR)
-    - Provision across all branches at zero stock
-      (CR-004 idempotent provisioning)
-    - Link Flavor.ingredientId
-  * Follow-up migration makes Flavor.ingredientId NOT NULL
+  * For each existing Flavor without ingredientName, populate
+    ingredientName from Flavor.name and ingredientUnit from a
+    schema default (e.g. 'grams'). Then, for each branch,
+    provision a per-branch Ingredient row (branchId, name, unit,
+    category=FLAVOR) via CR-004 idempotent provisioning.
+  * Follow-up migration makes Flavor.ingredientName and
+    Flavor.ingredientUnit NOT NULL
 - No breaking changes
 - No data loss
 - Fully reversible until backfill is committed

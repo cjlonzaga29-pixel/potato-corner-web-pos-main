@@ -238,8 +238,12 @@ export async function processNotification(jobName: string, data: unknown): Promi
       ),
     );
     await Promise.all(
+      // Recipients are always supervisor/super_admin rows (never `staff`), which always have an email.
       recipients.map((recipient) =>
-        sendEmailBestEffort(() => sendLargeAdjustmentApprovalEmail(recipient.email, payload), `large adjustment approval email to ${recipient.email}`),
+        sendEmailBestEffort(
+          () => sendLargeAdjustmentApprovalEmail(recipient.email as string, payload),
+          `large adjustment approval email to ${recipient.email}`,
+        ),
       ),
     );
     return;
@@ -256,8 +260,9 @@ export async function processNotification(jobName: string, data: unknown): Promi
       ),
     );
     await Promise.all(
+      // Recipients are always super_admin rows (never `staff`), which always have an email.
       recipients.map((recipient) =>
-        sendEmailBestEffort(() => sendFraudAlertEmail(recipient.email, payload), `fraud alert email to ${recipient.email}`),
+        sendEmailBestEffort(() => sendFraudAlertEmail(recipient.email as string, payload), `fraud alert email to ${recipient.email}`),
       ),
     );
     return;
@@ -310,7 +315,10 @@ export async function processNotification(jobName: string, data: unknown): Promi
       ),
     );
     await Promise.all(
-      recipients.map((recipient) => sendEmailBestEffort(() => sendEodSummaryEmail(recipient.email, payload), `EOD summary email to ${recipient.email}`)),
+      // Recipients are always super_admin rows (never `staff`), which always have an email.
+      recipients.map((recipient) =>
+        sendEmailBestEffort(() => sendEodSummaryEmail(recipient.email as string, payload), `EOD summary email to ${recipient.email}`),
+      ),
     );
     return;
   }

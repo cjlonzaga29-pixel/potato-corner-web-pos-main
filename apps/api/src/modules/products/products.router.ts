@@ -19,6 +19,7 @@ import { flavorsService } from '../flavors/flavors.service.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -94,7 +95,7 @@ router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, as
 
 // Registered before /:productId — Express matches routes in order and
 // "catalog" would otherwise be captured as a productId param.
-router.get('/catalog', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/catalog', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const branchId = (req.query.branch_id as string | undefined) ?? (req.query.branchId as string | undefined);

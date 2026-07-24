@@ -96,15 +96,20 @@ const UNASSIGNED_SUPERVISOR_USER = {
 function buildEmployee(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'emp-1',
-    email: 'juan@potatocorner.test',
+    // `staff` (Employees) never have credentials (Branch Employee
+    // Authorization) — null email/mustChangePassword:false is the staff
+    // default; non-staff-role test cases override both explicitly.
+    email: null,
     firstName: 'Juan',
     lastName: 'Dela Cruz',
     phone: null,
     role: ROLES.STAFF,
     employmentType: 'regular',
     employeeId: 'PC-EMP-000001',
+    position: 'Cashier',
+    notes: null,
     isActive: true,
-    mustChangePassword: true,
+    mustChangePassword: false,
     lastLoginAt: null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     branchAssignments: [
@@ -120,19 +125,17 @@ beforeEach(() => {
 
 describe('employeesService.createEmployee', () => {
   it('generates the employee ID via the repository and reflects the PC-EMP-XXXXXX format in the response', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000042');
     vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee({ employeeId: 'PC-EMP-000042' }) as never);
 
     const result = await employeesService.createEmployee(
       {
-        email: 'juan@potatocorner.test',
         first_name: 'Juan',
         last_name: 'Dela Cruz',
         role: ROLES.STAFF,
         employment_type: 'regular',
         branch_ids: ['branch-a'],
-        initial_password: 'Password1!',
+        position: 'Cashier',
       } as never,
       ACTOR,
       null,
@@ -140,24 +143,51 @@ describe('employeesService.createEmployee', () => {
 
     expect(employeesRepository.generateEmployeeId).toHaveBeenCalled();
     expect(result.employee_id).toMatch(/^PC-EMP-\d{6}$/);
+    expect(employeesRepository.findByEmail).not.toHaveBeenCalled();
   });
 
-  it('hashes the initial password with bcrypt before storage', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+  it('creates a staff employee with no email and no password hash — Employees have no login credentials', async () => {
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
     vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee() as never);
+
+    const result = await employeesService.createEmployee(
+      {
+        first_name: 'Juan',
+        last_name: 'Dela Cruz',
+        role: ROLES.STAFF,
+        employment_type: 'regular',
+        branch_ids: ['branch-a'],
+        position: 'Cashier',
+      } as never,
+      ACTOR,
+      null,
+    );
+
+    const createCall = vi.mocked(employeesRepository.create).mock.calls[0]?.[0];
+    expect(createCall?.email).toBeUndefined();
+    expect(createCall?.passwordHash).toBeUndefined();
+    expect(result.must_change_password).toBe(false);
+  });
+
+  it('hashes the initial password with bcrypt when creating a non-staff account', async () => {
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
+    vi.mocked(employeesRepository.create).mockResolvedValue(
+      buildEmployee({ role: ROLES.SUPERVISOR, email: 'juan@potatocorner.test', mustChangePassword: true }) as never,
+    );
 
     await employeesService.createEmployee(
       {
         email: 'juan@potatocorner.test',
         first_name: 'Juan',
         last_name: 'Dela Cruz',
-        role: ROLES.STAFF,
+        role: ROLES.SUPERVISOR,
         employment_type: 'regular',
         branch_ids: ['branch-a'],
+        position: 'Regional Supervisor',
         initial_password: 'Password1!',
       } as never,
-      ACTOR,
+      SUPER_ADMIN_USER,
       null,
     );
 
@@ -167,19 +197,17 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('encrypts every provided government ID field before storage', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
     vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee() as never);
 
     await employeesService.createEmployee(
       {
-        email: 'juan@potatocorner.test',
         first_name: 'Juan',
         last_name: 'Dela Cruz',
         role: ROLES.STAFF,
         employment_type: 'regular',
         branch_ids: ['branch-a'],
-        initial_password: 'Password1!',
+        position: 'Cashier',
         sss_number: '01-2345678-9',
         philhealth_number: 'PH-1',
         tin_number: 'TIN-1',
@@ -198,30 +226,8 @@ describe('employeesService.createEmployee', () => {
     expect(createCall?.sssNumberEncrypted).toBe('encrypted(01-2345678-9)');
   });
 
-  it("sets must_change_password to true in the created employee's response", async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
-    vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
-    vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee({ mustChangePassword: true }) as never);
-
-    const result = await employeesService.createEmployee(
-      {
-        email: 'juan@potatocorner.test',
-        first_name: 'Juan',
-        last_name: 'Dela Cruz',
-        role: ROLES.STAFF,
-        employment_type: 'regular',
-        branch_ids: ['branch-a'],
-        initial_password: 'Password1!',
-      } as never,
-      ACTOR,
-      null,
-    );
-
-    expect(result.must_change_password).toBe(true);
-  });
-
-  it('rejects a duplicate email without calling create', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(buildEmployee() as never);
+  it('rejects a duplicate email without calling create when creating a non-staff account', async () => {
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(buildEmployee({ role: ROLES.SUPERVISOR }) as never);
 
     await expect(
       employeesService.createEmployee(
@@ -229,12 +235,13 @@ describe('employeesService.createEmployee', () => {
           email: 'juan@potatocorner.test',
           first_name: 'Juan',
           last_name: 'Dela Cruz',
-          role: ROLES.STAFF,
+          role: ROLES.SUPERVISOR,
           employment_type: 'regular',
           branch_ids: ['branch-a'],
+          position: 'Regional Supervisor',
           initial_password: 'Password1!',
         } as never,
-        ACTOR,
+        SUPER_ADMIN_USER,
         null,
       ),
     ).rejects.toMatchObject({ code: 'EMAIL_ALREADY_EXISTS', statusCode: 409 });
@@ -243,19 +250,17 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('never leaks government ID values into the audit log entry', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
     vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee() as never);
 
     await employeesService.createEmployee(
       {
-        email: 'juan@potatocorner.test',
         first_name: 'Juan',
         last_name: 'Dela Cruz',
         role: ROLES.STAFF,
         employment_type: 'regular',
         branch_ids: ['branch-a'],
-        initial_password: 'Password1!',
+        position: 'Cashier',
         sss_number: '01-2345678-9',
       } as never,
       ACTOR,
@@ -264,24 +269,21 @@ describe('employeesService.createEmployee', () => {
 
     const auditCall = vi.mocked(recordAuditLog).mock.calls[0]?.[0];
     expect(JSON.stringify(auditCall)).not.toContain('01-2345678-9');
-    expect(JSON.stringify(auditCall)).not.toContain('Password1!');
   });
 
   it('allows a branch actor to create a staff account in their own branch', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
     vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee() as never);
 
     await expect(
       employeesService.createEmployee(
         {
-          email: 'juan@potatocorner.test',
           first_name: 'Juan',
           last_name: 'Dela Cruz',
           role: ROLES.STAFF,
           employment_type: 'regular',
           branch_ids: ['branch-a'],
-          initial_password: 'Password1!',
+          position: 'Cashier',
         } as never,
         BRANCH_USER,
         null,
@@ -290,18 +292,15 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('rejects a branch actor creating an employee assigned to a branch they do not own', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
-
     await expect(
       employeesService.createEmployee(
         {
-          email: 'juan@potatocorner.test',
           first_name: 'Juan',
           last_name: 'Dela Cruz',
           role: ROLES.STAFF,
           employment_type: 'regular',
           branch_ids: ['branch-c'],
-          initial_password: 'Password1!',
+          position: 'Cashier',
         } as never,
         BRANCH_USER,
         null,
@@ -323,6 +322,7 @@ describe('employeesService.createEmployee', () => {
           role: ROLES.SUPERVISOR,
           employment_type: 'regular',
           branch_ids: ['branch-a'],
+          position: 'Regional Supervisor',
           initial_password: 'Password1!',
         } as never,
         BRANCH_USER,
@@ -347,6 +347,7 @@ describe('employeesService.createEmployee', () => {
           role: ROLES.SUPERVISOR,
           employment_type: 'regular',
           branch_ids: ['branch-z'],
+          position: 'Regional Supervisor',
           initial_password: 'Password1!',
         } as never,
         SUPER_ADMIN_USER,
@@ -413,8 +414,16 @@ describe('employeesService.updateEmployee branch ownership', () => {
 });
 
 describe('employeesService.resetEmployeePassword', () => {
+  // Branch Employee Authorization: `staff` rows have no password to reset
+  // (employees.service.ts now rejects EMPLOYEE_HAS_NO_CREDENTIALS for
+  // them) — this endpoint's remaining real callers are branch/supervisor/
+  // super_admin accounts, which still authenticate by password. Target a
+  // `branch`-role employee so these cases keep testing what they're
+  // actually named for: the branch-scoping authorization logic.
+  const targetEmployee = buildEmployee({ role: ROLES.BRANCH, email: 'branch@example.com', mustChangePassword: false });
+
   it('allows a branch actor to reset the password of an employee in their own branch', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', BRANCH_USER, null)).resolves.toBeUndefined();
 
@@ -422,7 +431,7 @@ describe('employeesService.resetEmployeePassword', () => {
   });
 
   it('rejects a branch actor resetting the password of an employee in another branch', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', OTHER_BRANCH_USER, null),
@@ -432,13 +441,13 @@ describe('employeesService.resetEmployeePassword', () => {
   });
 
   it('allows a supervisor to reset the password of an employee in one of their assigned branches', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPERVISOR_USER, null)).resolves.toBeUndefined();
   });
 
   it('rejects a supervisor resetting the password of an employee outside their assigned branches', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', UNASSIGNED_SUPERVISOR_USER, null),
@@ -448,9 +457,19 @@ describe('employeesService.resetEmployeePassword', () => {
   });
 
   it('allows super_admin to reset the password of any employee regardless of branch', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null)).resolves.toBeUndefined();
+  });
+
+  it('rejects resetting the password of a staff employee, who has no credentials to reset', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ role: ROLES.STAFF }) as never);
+
+    await expect(
+      employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_HAS_NO_CREDENTIALS', statusCode: 400 });
+
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
   });
 });
 

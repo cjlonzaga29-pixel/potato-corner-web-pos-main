@@ -118,13 +118,27 @@ export const jwtPayloadSchema = z.discriminatedUnion('role', [
   z.object({
     user_id: z.uuid(),
     role: z.literal(ROLES.STAFF),
-    email: z.email(),
+    // Nullable — Branch Employee Authorization: staff rows are Employees
+    // selected inside an authenticated Branch Account session, never a
+    // separate email/password login, so they may have no email on file.
+    email: z.email().nullable(),
     branch_ids: z.array(z.uuid()).length(1),
     must_change_password: z.boolean().optional(),
     iat: z.number(),
     exp: z.number(),
   }),
 ]);
+
+/**
+ * Branch Employee Authorization: mints a staff session from inside an
+ * already-authenticated `branch` session — the employee never presents a
+ * password. device_id is required for the same reason /login's is: the
+ * minted refresh token is bound to this device.
+ */
+export const selectEmployeeSchema = z.object({
+  employee_id: z.uuid(),
+  device_id: z.uuid(),
+});
 
 export const roleSchema = z.enum(roleValues);
 

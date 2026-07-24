@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { BranchSidebar, BRANCH_NAV_ITEMS } from '@/components/branch/branch-sidebar';
 import { BranchContextSync } from '@/components/branch/branch-context-sync';
+import { BranchSessionGuard } from '@/components/branch/branch-session-guard';
 import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
 
@@ -31,6 +32,7 @@ export default function BranchLayout({ children }: { children: ReactNode }) {
     <div className="flex h-screen overflow-hidden bg-background">
       <SocketInitializer />
       <BranchContextSync />
+      <BranchSessionGuard />
       <BranchSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <DashboardHeader

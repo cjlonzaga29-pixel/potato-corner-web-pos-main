@@ -18,6 +18,8 @@ const employeeSelect = {
   role: true,
   employmentType: true,
   employeeId: true,
+  position: true,
+  notes: true,
   isActive: true,
   status: true,
   mustChangePassword: true,
@@ -96,6 +98,11 @@ export const employeesRepository = {
     return prisma.user.findUnique({ where: { id }, select: employeeSelect });
   },
 
+  /** Minimal projection for requireActiveEmployee's per-request status re-check — avoids the full employeeSelect (branch assignments, etc.) on every hot-path POS/attendance request. */
+  findStatusById(id: string) {
+    return prisma.user.findUnique({ where: { id }, select: { status: true, isActive: true } });
+  },
+
   /** Used only in auth context (includes passwordHash) — never for populating an API response. */
   findByEmail(email: string) {
     return prisma.user.findUnique({ where: { email } });
@@ -142,11 +149,15 @@ export const employeesRepository = {
           phone: data.phone,
           employeeId: data.employeeId,
           employmentType: data.employmentType,
+          position: data.position,
+          notes: data.notes,
           sssNumberEncrypted: data.sssNumberEncrypted,
           philhealthNumberEncrypted: data.philhealthNumberEncrypted,
           tinNumberEncrypted: data.tinNumberEncrypted,
           pagibigNumberEncrypted: data.pagibigNumberEncrypted,
-          mustChangePassword: true,
+          // `staff` (Employees) never have credentials, so there is no
+          // password to force a change on — only true when one was actually set.
+          mustChangePassword: Boolean(data.passwordHash),
         },
       });
 

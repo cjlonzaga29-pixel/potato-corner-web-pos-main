@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
@@ -25,6 +26,8 @@ const formSchema = z.object({
   last_name: z.string().min(2, 'Minimum 2 characters').max(50),
   phone: phoneField,
   employment_type: z.enum([EMPLOYMENT_TYPE.REGULAR, EMPLOYMENT_TYPE.CONTRACTUAL, EMPLOYMENT_TYPE.PART_TIME]),
+  position: z.string().min(2, 'Minimum 2 characters').max(100),
+  notes: z.string().max(1000).optional(),
   sss_number: z.string().optional(),
   philhealth_number: z.string().optional(),
   tin_number: z.string().optional(),
@@ -39,6 +42,8 @@ function toFormValues(employee: EmployeeResponse): FormValues {
     last_name: employee.last_name,
     phone: employee.phone ?? '',
     employment_type: employee.employment_type,
+    position: employee.position ?? '',
+    notes: employee.notes ?? '',
     sss_number: '',
     philhealth_number: '',
     tin_number: '',
@@ -52,7 +57,11 @@ interface EditEmployeeDialogProps {
   employee: EmployeeResponse;
 }
 
-/** email and role are deliberately not form fields — both are immutable after creation (locked rule). */
+/**
+ * role and employee_id are deliberately not form fields — both are
+ * immutable after creation (locked rule). Employees have no email (Branch
+ * Employee Authorization) — Employee ID is shown in its place.
+ */
 export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: EditEmployeeDialogProps) {
   const updateEmployee = useUpdateEmployee(employee.id);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: toFormValues(employee) });
@@ -69,6 +78,8 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
       last_name: parsed.last_name,
       phone: parsed.phone,
       employment_type: parsed.employment_type,
+      position: parsed.position,
+      notes: parsed.notes || undefined,
       sss_number: parsed.sss_number || undefined,
       philhealth_number: parsed.philhealth_number || undefined,
       tin_number: parsed.tin_number || undefined,
@@ -82,18 +93,12 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Edit Employee</DialogTitle>
-          <DialogDescription>Email and role cannot be changed after creation.</DialogDescription>
+          <DialogDescription>Employee ID and role cannot be changed after creation.</DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <Label>Email</Label>
-            <Input value={employee.email} disabled readOnly />
-          </div>
-          <div className="space-y-2">
-            <Label>Employee ID</Label>
-            <Input value={employee.employee_id} disabled readOnly className="font-mono" />
-          </div>
+        <div className="space-y-2">
+          <Label>Employee ID</Label>
+          <Input value={employee.employee_id} disabled readOnly className="font-mono" />
         </div>
 
         <Form {...form}>
@@ -107,8 +112,16 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
               </FormFieldWrapper>
             </div>
 
-            <FormFieldWrapper<FormValues> name="phone" label="Phone" description="Optional — +63XXXXXXXXXX format">
+            <FormFieldWrapper<FormValues> name="phone" label="Contact Number" description="Optional — +63XXXXXXXXXX format">
               <Input placeholder="+639171234567" />
+            </FormFieldWrapper>
+
+            <FormFieldWrapper<FormValues> name="position" label="Position" required>
+              <Input placeholder="Cashier" />
+            </FormFieldWrapper>
+
+            <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
+              <Textarea placeholder="Internal notes about this employee" />
             </FormFieldWrapper>
 
             <FormField

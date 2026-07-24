@@ -15,6 +15,9 @@ const STATUS_MAPS: Record<StatusType, Record<string, BadgeVariant>> = {
   employee: {
     active: 'active',
     inactive: 'inactive',
+    suspended: 'warning',
+    resigned: 'inactive',
+    terminated: 'critical',
   },
   shift: {
     active: 'active',

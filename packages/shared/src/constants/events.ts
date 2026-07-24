@@ -49,6 +49,13 @@ export const SOCKET_EVENTS = {
   BRANCH_OFFLINE: 'branch:offline',
   BRANCH_ONLINE: 'branch:online',
 
+  // CR-003 — Branch Employee Authorization: fired the moment an Employee's
+  // status leaves 'active', so an already-issued access token's remaining
+  // TTL can't be used to keep operating (see requireActiveEmployee, the
+  // server-side re-check backing this up regardless of whether the client
+  // is connected to receive this event).
+  EMPLOYEE_SESSION_REVOKED: 'employee:session_revoked',
+
   // CR-001 — approval workflow notifications
   PRODUCT_REQUEST_SUBMITTED: 'product_request:submitted',
   PRODUCT_REQUEST_REVIEWED: 'product_request:reviewed',

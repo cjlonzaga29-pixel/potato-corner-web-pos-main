@@ -17,7 +17,8 @@ export type { JwtPayload };
 export interface AuthenticatedUserSummary {
   id: string;
   role: Role;
-  email: string;
+  /** Nullable — `staff` (Employees) have no email (Branch Employee Authorization). */
+  email: string | null;
   first_name: string;
   last_name: string;
   branch_ids: string[];

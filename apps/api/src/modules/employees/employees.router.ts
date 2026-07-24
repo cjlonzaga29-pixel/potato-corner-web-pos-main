@@ -1,4 +1,4 @@
-import { Router, type NextFunction, type Request, type Response } from 'express';
+﻿import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
   createEmployeeSchema,
@@ -14,7 +14,7 @@ import {
 import { employeesService } from './employees.service.js';
 import { EmployeeError } from './employees.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminSupervisorOrBranch, adminOrBranch } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -23,7 +23,7 @@ const router: Router = Router();
 const roleValues = Object.values(ROLES) as [Role, ...Role[]];
 const employmentTypeValues = Object.values(EMPLOYMENT_TYPE) as [EmploymentType, ...EmploymentType[]];
 
-/** "true"/"false" only — z.coerce.boolean() would treat the literal string "false" as truthy. */
+/** "true"/"false" only â€” z.coerce.boolean() would treat the literal string "false" as truthy. */
 const booleanQueryParam = z
   .enum(['true', 'false'])
   .transform((value) => value === 'true')
@@ -136,7 +136,7 @@ router.get(
 router.post(
   '/',
   authenticate,
-  adminOrBranch,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(createEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -153,7 +153,7 @@ router.post(
 router.patch(
   '/:employeeId',
   authenticate,
-  adminOrBranch,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(updateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -170,7 +170,7 @@ router.patch(
 router.post(
   '/:employeeId/deactivate',
   authenticate,
-  adminOrBranch,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(deactivateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -192,7 +192,7 @@ router.post(
 router.post(
   '/:employeeId/reactivate',
   authenticate,
-  adminOrBranch,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -208,7 +208,7 @@ router.post(
 router.post(
   '/:employeeId/reset-password',
   authenticate,
-  adminOrBranch,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(resetEmployeePasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -226,19 +226,24 @@ router.post(
 router.patch(
   '/:employeeId/status',
   authenticate,
-  adminOrBranch,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   validate(setEmployeeStatusSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const { status, reason } = req.body as { status: string; reason?: string };
+      const { status, reason, acknowledge_active_shift } = req.body as {
+        status: string;
+        reason?: string;
+        acknowledge_active_shift?: boolean;
+      };
       const employee = await employeesService.setEmployeeStatus(
         req.params.employeeId as string,
         status as Parameters<typeof employeesService.setEmployeeStatus>[1],
         reason ?? null,
         req.user,
         req.ip ?? null,
+        acknowledge_active_shift ?? false,
       );
       res.status(200).json({ data: employee, error: null, meta: null });
     } catch (error) {

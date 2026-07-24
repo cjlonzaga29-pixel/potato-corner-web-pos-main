@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import {
   ROLES,
+  SOCKET_EVENTS,
   type CreateEmployeeInput,
   type DeactivateEmployeeInput,
   type EmployeeActivityResponse,
@@ -19,6 +20,24 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { authRepository } from '../auth/auth.repository.js';
 import { getAccessibleBranchIds } from '../../lib/branch-access.js';
+import { getIO } from '../../socket/socket.server.js';
+import { userRoom } from '../../socket/rooms.js';
+
+/**
+ * SESSION CONTROL (CR-003): the moment an Employee stops being ACTIVE,
+ * refresh-token revocation (below) blocks re-auth but the already-issued
+ * access token stays cryptographically valid for its own short TTL —
+ * requireActiveEmployee re-checks live status server-side to close that
+ * window, and this closes the client-visible half of it: push an immediate
+ * forced-logout signal and drop any live socket connection, instead of
+ * leaving the employee looking "still signed in" until they notice.
+ */
+function revokeEmployeeSession(employeeId: string, status: string): void {
+  const io = getIO();
+  if (!io) return;
+  io.to(userRoom(employeeId)).emit(SOCKET_EVENTS.EMPLOYEE_SESSION_REVOKED, { employeeId, status });
+  void io.in(userRoom(employeeId)).disconnectSockets(true);
+}
 
 const BCRYPT_COST_FACTOR = 12;
 
@@ -44,6 +63,8 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
     role: employee.role,
     employment_type: employee.employmentType,
     employee_id: employee.employeeId ?? '',
+    position: employee.position,
+    notes: employee.notes,
     is_active: employee.isActive,
     status: employee.status,
     must_change_password: employee.mustChangePassword,
@@ -154,16 +175,23 @@ export const employeesService = {
   },
 
   async createEmployee(data: CreateEmployeeInput, createdBy: ActorContext, ipAddress: string | null): Promise<EmployeeResponse> {
-    const existing = await employeesRepository.findByEmail(data.email);
-    if (existing) {
-      throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
+    // Branch Employee Authorization: `staff` rows are Employees, never a
+    // separate login — no email, so nothing to deduplicate or hash. Every
+    // other role still authenticates normally and requires both.
+    const isStaff = data.role === ROLES.STAFF;
+
+    if (!isStaff) {
+      const existing = await employeesRepository.findByEmail(data.email as string);
+      if (existing) {
+        throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
+      }
     }
 
     // Router permits both supervisor and branch actors here (adminOrBranch /
     // adminSupervisorOrBranch) — only super_admin may create a non-staff
     // account or assign branches outside the actor's own branch_ids.
     if (createdBy.role === ROLES.SUPERVISOR || createdBy.role === ROLES.BRANCH) {
-      if (data.role !== ROLES.STAFF) {
+      if (!isStaff) {
         throw new EmployeeError('INSUFFICIENT_PERMISSIONS', 'Only Super Admin may create a non-staff account', 403);
       }
       const outOfScope = data.branch_ids.some((id) => !createdBy.branch_ids.includes(id));
@@ -173,10 +201,10 @@ export const employeesService = {
     }
 
     const employeeId = await employeesRepository.generateEmployeeId();
-    const passwordHash = await bcrypt.hash(data.initial_password, BCRYPT_COST_FACTOR);
+    const passwordHash = isStaff ? undefined : await bcrypt.hash(data.initial_password as string, BCRYPT_COST_FACTOR);
 
     const employee = await employeesRepository.create({
-      email: data.email,
+      email: isStaff ? undefined : data.email,
       firstName: data.first_name,
       lastName: data.last_name,
       phone: data.phone,
@@ -184,6 +212,8 @@ export const employeesService = {
       employmentType: data.employment_type,
       branchIds: data.branch_ids,
       employeeId,
+      position: data.position,
+      notes: data.notes,
       passwordHash,
       sssNumberEncrypted: data.sss_number ? encryptField(data.sss_number) : undefined,
       philhealthNumberEncrypted: data.philhealth_number ? encryptField(data.philhealth_number) : undefined,
@@ -207,17 +237,19 @@ export const employeesService = {
       ipAddress,
     });
 
-    // Best-effort — a failed welcome email must never fail employee creation itself.
-    // Phase 21: runs in-process now (no queue), so the temporary password only
-    // lives as long as this call's in-memory closure, not a persisted job record.
-    await enqueueRawNotificationJob('employee_welcome', {
-      toEmail: employee.email,
-      firstName: employee.firstName,
-      employeeId: employee.employeeId,
-      tempPassword: data.initial_password,
-    }).catch((error: unknown) => {
-      console.error('Failed to enqueue welcome email:', error);
-    });
+    if (!isStaff) {
+      // Best-effort — a failed welcome email must never fail employee creation itself.
+      // Phase 21: runs in-process now (no queue), so the temporary password only
+      // lives as long as this call's in-memory closure, not a persisted job record.
+      await enqueueRawNotificationJob('employee_welcome', {
+        toEmail: employee.email as string,
+        firstName: employee.firstName,
+        employeeId: employee.employeeId,
+        tempPassword: data.initial_password as string,
+      }).catch((error: unknown) => {
+        console.error('Failed to enqueue welcome email:', error);
+      });
+    }
 
     return toEmployeeResponse(employee);
   },
@@ -233,6 +265,13 @@ export const employeesService = {
     assertEmployeeAccess(updatedBy, before);
 
     if (data.branch_ids) {
+      // Branch Employee Authorization: an Employee belongs to exactly one
+      // Branch — createEmployeeSchema enforces this at creation, but
+      // updateEmployeeSchema can't (it has no `role` field to key off, since
+      // role is immutable after creation), so it's enforced here instead.
+      if (before.role === ROLES.STAFF && data.branch_ids.length !== 1) {
+        throw new EmployeeError('INVALID_BRANCH_ASSIGNMENT', 'An employee must be assigned to exactly one branch', 400);
+      }
       const accessible = getAccessibleBranchIds(updatedBy);
       if (accessible !== 'all') {
         const outOfScope = data.branch_ids.some((id) => !accessible.includes(id));
@@ -248,6 +287,8 @@ export const employeesService = {
       lastName: data.last_name,
       phone: data.phone,
       employmentType: data.employment_type,
+      position: data.position,
+      notes: data.notes,
       sssNumberEncrypted: data.sss_number ? encryptField(data.sss_number) : undefined,
       philhealthNumberEncrypted: data.philhealth_number ? encryptField(data.philhealth_number) : undefined,
       tinNumberEncrypted: data.tin_number ? encryptField(data.tin_number) : undefined,
@@ -292,6 +333,7 @@ export const employeesService = {
     await employeesRepository.deactivate(employeeId, deactivatedBy.user_id, data.reason);
     await authRepository.revokeAllUserTokens(employeeId);
     await employeesRepository.updateBranchAssignments(employeeId, [], deactivatedBy.user_id);
+    revokeEmployeeSession(employeeId, 'inactive');
 
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
@@ -346,6 +388,7 @@ export const employeesService = {
     reason: string | null,
     changedBy: ActorContext,
     ipAddress: string | null,
+    acknowledgeActiveShift = false,
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
@@ -354,7 +397,7 @@ export const employeesService = {
       throw new EmployeeError('EMPLOYEE_STATUS_UNCHANGED', `This employee is already ${status}`, 409);
     }
 
-    if (status !== 'active') {
+    if (status !== 'active' && !acknowledgeActiveShift) {
       const hasActiveShift = await employeesRepository.hasActiveShift(employeeId);
       if (hasActiveShift) {
         throw new EmployeeError(
@@ -369,10 +412,13 @@ export const employeesService = {
     await employeesRepository.setStatus(employeeId, status, changedBy.user_id, reason);
 
     if (status !== 'active') {
-      // Force logout: refresh revocation blocks re-auth immediately; the
-      // employee's current (short-lived) access token expires on its own.
+      // Force logout: refresh revocation blocks re-auth, the socket push +
+      // disconnect ends any live session immediately, and
+      // requireActiveEmployee blocks any further use of the still-valid
+      // access token server-side even if the client never receives the push.
       await authRepository.revokeAllUserTokens(employeeId);
       await employeesRepository.updateBranchAssignments(employeeId, [], changedBy.user_id);
+      revokeEmployeeSession(employeeId, status);
     }
 
     const employee = await employeesRepository.findById(employeeId);
@@ -400,6 +446,14 @@ export const employeesService = {
   ): Promise<void> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    // Branch Employee Authorization: `staff` rows have no login credentials
+    // at all — this legacy endpoint (kept for the branch/supervisor/
+    // super_admin accounts that still authenticate by password) no longer
+    // applies to them. Use setEmployeeStatus (e.g. suspend/reactivate) to
+    // revoke or restore an Employee's access instead.
+    if (employee.role === ROLES.STAFF) {
+      throw new EmployeeError('EMPLOYEE_HAS_NO_CREDENTIALS', 'Employees have no password to reset — change their status instead', 400);
+    }
     assertEmployeeAccess(resetBy, employee);
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);

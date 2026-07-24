@@ -7,6 +7,7 @@ import {
   resetPasswordSchema,
   pinSetSchema,
   pinLoginSchema,
+  selectEmployeeSchema,
   unlockAccountSchema,
   confirm2FASchema,
   disable2FASchema,
@@ -18,7 +19,7 @@ import { authService } from './auth.service.js';
 import { AuthError } from './auth.types.js';
 import { validate } from '../../middleware/validate.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly } from '../../middleware/authorize.js';
+import { adminOnly, branchOnly } from '../../middleware/authorize.js';
 import { loginLimiter, resetLimiter, totpVerifyLimiter } from '../../middleware/rate-limiter.js';
 import { config } from '../../config/index.js';
 import { parseDurationMs } from '../../lib/duration.js';
@@ -236,6 +237,33 @@ router.post('/pin/login', loginLimiter, validate(pinLoginSchema), async (req: Re
   }
 });
 
+/**
+ * Branch Employee Authorization: only a `branch` (Branch Account) session
+ * may select an Employee to operate as — Employees never log in directly.
+ */
+router.post(
+  '/select-employee',
+  authenticate,
+  branchOnly,
+  loginLimiter,
+  validate(selectEmployeeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      const { employee_id, device_id } = req.body as { employee_id: string; device_id: string };
+      const result = await authService.selectEmployee(req.user, employee_id, device_id, req.ip ?? null);
+      setRefreshCookie(res, result.refreshToken);
+      setAccessHintCookie(res, result.access_token);
+      res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function getDeviceIdHeader(req: Request): string | null {
@@ -316,6 +344,11 @@ router.post('/2fa/enroll', authenticate, async (req: Request, res: Response, nex
   try {
     if (!req.user) {
       res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+      return;
+    }
+    // Employees (`staff`) have no email — 2FA enrollment requires one to send the QR/setup to.
+    if (!req.user.email) {
+      res.status(400).json({ data: null, error: { code: 'EMAIL_REQUIRED' }, meta: null });
       return;
     }
     const result = await authService.initiate2FAEnrollment(req.user.user_id, req.user.email);

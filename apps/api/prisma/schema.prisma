@@ -154,15 +154,23 @@ enum ExpenseCategory {
 // ---------------------------------------------------------------------------
 
 model User {
-  id             String         @id @default(uuid())
-  email          String         @unique
-  passwordHash   String         @map("password_hash")
+  id           String  @id @default(uuid())
+  // Branch Employee Authorization (CR-003 follow-up): nullable — `staff`
+  // rows are Employees, authorized only inside an already-authenticated
+  // `branch` session, and never have their own login credentials.
+  // branch/supervisor/super_admin rows always have both.
+  email        String? @unique
+  passwordHash String? @map("password_hash")
+
   role           Role
   firstName      String         @map("first_name")
   lastName       String         @map("last_name")
   phone          String?
   employeeId     String?        @unique @map("employee_id")
   employmentType EmploymentType @map("employment_type")
+  // Job title (e.g. "Cashier", "Shift Lead") — free text, not an enum.
+  position       String?
+  notes          String?
 
   // Application-layer AES-256-GCM ciphertext — see src/lib/encryption.ts.
   // Never returned in standard API responses.

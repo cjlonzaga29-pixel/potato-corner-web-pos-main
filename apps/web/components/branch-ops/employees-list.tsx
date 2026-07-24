@@ -4,8 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { MoreHorizontal, Plus } from 'lucide-react';
-import { ROLE_LABELS, type EmployeeResponse } from '@potato-corner/shared';
-import { Badge } from '@/components/ui/badge';
+import type { EmployeeResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -17,34 +16,11 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatDateTime } from '@/lib/utils';
-import { useEmployees, useReactivateEmployee } from '@/hooks/queries/use-employees';
+import { useEmployees } from '@/hooks/queries/use-employees';
 import { SupervisorCreateEmployeeDialog } from '@/components/supervisor/employees/create-employee-dialog';
 import { SupervisorEditEmployeeDialog } from '@/components/supervisor/employees/edit-employee-dialog';
-import { SupervisorDeactivateEmployeeDialog } from '@/components/supervisor/employees/deactivate-employee-dialog';
-import { SupervisorResetPasswordDialog } from '@/components/supervisor/employees/reset-password-dialog';
-
-function ReactivateAction({ employeeId }: { employeeId: string }) {
-  const [confirming, setConfirming] = useState(false);
-  const reactivate = useReactivateEmployee(employeeId);
-
-  return (
-    <>
-      <DropdownMenuItem onClick={() => setConfirming(true)}>Reactivate</DropdownMenuItem>
-      <ConfirmDialog
-        open={confirming}
-        onOpenChange={setConfirming}
-        title="Reactivate this employee?"
-        description="They will be required to set a new password on next login."
-        confirmLabel="Reactivate"
-        onConfirm={async () => {
-          await reactivate.mutateAsync();
-        }}
-      />
-    </>
-  );
-}
+import { SetEmployeeStatusDialog } from '@/components/supervisor/employees/set-employee-status-dialog';
 
 /**
  * Shared body behind both `/supervisor/employees` and `/branch/employees` —
@@ -58,8 +34,7 @@ export function EmployeesList({ basePath }: { basePath: string }) {
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<EmployeeResponse | null>(null);
-  const [deactivatingEmployee, setDeactivatingEmployee] = useState<EmployeeResponse | null>(null);
-  const [resettingEmployee, setResettingEmployee] = useState<EmployeeResponse | null>(null);
+  const [statusEmployee, setStatusEmployee] = useState<EmployeeResponse | null>(null);
 
   const { data, isLoading, isError, refetch } = useEmployees({ search: search || undefined, limit: 100 });
 
@@ -70,9 +45,9 @@ export function EmployeesList({ basePath }: { basePath: string }) {
       cell: ({ row }) => `${row.original.first_name} ${row.original.last_name}`,
     },
     {
-      accessorKey: 'role',
-      header: 'Role',
-      cell: ({ row }) => <Badge variant="secondary">{ROLE_LABELS[row.original.role]}</Badge>,
+      accessorKey: 'position',
+      header: 'Position',
+      cell: ({ row }) => row.original.position ?? '—',
     },
     {
       accessorKey: 'employment_type',
@@ -80,9 +55,9 @@ export function EmployeesList({ basePath }: { basePath: string }) {
       cell: ({ row }) => <span className="capitalize">{row.original.employment_type.replace('_', ' ')}</span>,
     },
     {
-      accessorKey: 'is_active',
+      accessorKey: 'status',
       header: 'Status',
-      cell: ({ row }) => <StatusBadge status={row.original.is_active ? 'active' : 'inactive'} type="employee" />,
+      cell: ({ row }) => <StatusBadge status={row.original.status} type="employee" />,
     },
     {
       id: 'last_login',
@@ -109,14 +84,7 @@ export function EmployeesList({ basePath }: { basePath: string }) {
             <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
               <DropdownMenuItem onClick={() => router.push(`${basePath}/employees/${employee.id}`)}>View</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setEditingEmployee(employee)}>Edit</DropdownMenuItem>
-              {employee.is_active ? (
-                <DropdownMenuItem onClick={() => setDeactivatingEmployee(employee)} className="text-destructive">
-                  Deactivate
-                </DropdownMenuItem>
-              ) : (
-                <ReactivateAction employeeId={employee.id} />
-              )}
-              <DropdownMenuItem onClick={() => setResettingEmployee(employee)}>Reset Password</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setStatusEmployee(employee)}>Change Status</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         );
@@ -153,15 +121,8 @@ export function EmployeesList({ basePath }: { basePath: string }) {
       {editingEmployee && (
         <SupervisorEditEmployeeDialog open onOpenChange={(open) => !open && setEditingEmployee(null)} employee={editingEmployee} />
       )}
-      {deactivatingEmployee && (
-        <SupervisorDeactivateEmployeeDialog
-          open
-          onOpenChange={(open) => !open && setDeactivatingEmployee(null)}
-          employee={deactivatingEmployee}
-        />
-      )}
-      {resettingEmployee && (
-        <SupervisorResetPasswordDialog open onOpenChange={(open) => !open && setResettingEmployee(null)} employee={resettingEmployee} />
+      {statusEmployee && (
+        <SetEmployeeStatusDialog open onOpenChange={(open) => !open && setStatusEmployee(null)} employee={statusEmployee} />
       )}
     </div>
   );

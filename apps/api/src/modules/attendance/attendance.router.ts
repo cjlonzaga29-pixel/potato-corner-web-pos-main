@@ -5,6 +5,7 @@ import { AttendanceError } from './attendance.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminSupervisorOrBranch, allRoles, branchOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -48,6 +49,7 @@ router.post(
   '/clock-in',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   branchGuard,
   validate(clockInSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -75,6 +77,7 @@ router.post(
   '/clock-out',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   branchGuard,
   validate(clockOutSchema),
   async (req: Request, res: Response, next: NextFunction) => {

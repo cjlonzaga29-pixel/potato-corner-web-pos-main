@@ -6,6 +6,7 @@ import { CashError } from './cash.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -42,6 +43,7 @@ router.post(
   // widened to allRoles to match GET /current and GET /:shiftId which are
   // already self-service for every role.
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   branchGuard,
   validate(openShiftSchema),
@@ -66,7 +68,7 @@ router.post(
   },
 );
 
-router.get('/current', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/current', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const branchId = (req.query.branch_id as string | undefined) ?? (req.query.branchId as string | undefined);
@@ -105,7 +107,7 @@ router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, br
   }
 });
 
-router.get('/:shiftId', authenticate, allRoles, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:shiftId', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const shift = await cashService.getShiftById(req.params.shiftId as string);
@@ -144,6 +146,7 @@ router.post(
   authenticate,
   // See /open above — same allRoles rationale.
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   validate(closeShiftSchema),
   async (req: Request, res: Response, next: NextFunction) => {

@@ -16,6 +16,8 @@ import type {
   PhysicalCountResultResponse,
   PhysicalCountSubmission,
   StockInInput,
+  TransferIngredientInput,
+  TransferIngredientResponse,
   UpdateIngredientInput,
   WasteIngredientInput,
 } from '@potato-corner/shared';
@@ -219,6 +221,26 @@ export function useWasteIngredient(branchId: string | null | undefined, ingredie
     onSuccess: () => {
       invalidateInventory(queryClient, branchId);
       toast.success('Waste recorded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Branch-to-branch transfer (Phase 7) — posts both the source's transfer_out and the destination's transfer_in in one call. */
+export function useTransferStock(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: TransferIngredientInput) => {
+      const response = await apiClient<TransferIngredientResponse>(`/api/branches/${branchId}/inventory/transfer`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to transfer stock'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventory(queryClient, branchId);
+      toast.success('Stock transferred');
     },
     onError: (error: Error) => toast.error(error.message),
   });

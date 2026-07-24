@@ -24,6 +24,7 @@ import {
   type EmployeePerformanceReportRow,
   type InventoryValuationReportRow,
   type BranchComparisonReportRow,
+  type InventoryAnalyticsReport,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useSocket } from '@/hooks/use-socket';
@@ -132,6 +133,27 @@ export function usePaymentMethodMixReport(filters: ReportQueryFilters, enabled =
     queryFn: async () => {
       const response = await apiClient<PaymentMethodMixReportRow[]>(`/api/reports/payment-method-mix?${buildReportQueryString(filters)}`);
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load payment method mix report'));
+      return response.data;
+    },
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * GET /api/reports/inventory-analytics — not a registered ReportType (no
+ * CSV export/snapshot support), so it's fetched directly rather than
+ * through useRealtimeReport, same as usePaymentMethodMixReport. Branch-
+ * scoped when branchId is given; org-wide (super_admin only) when omitted.
+ */
+export function useInventoryAnalytics(branchId: string | undefined, period: '7d' | '30d' | '90d' | '1yr' = '30d', enabled = true) {
+  return useQuery({
+    queryKey: ['reports', 'INVENTORY_ANALYTICS', branchId ?? null, period],
+    queryFn: async () => {
+      const params = new URLSearchParams({ period });
+      if (branchId) params.set('branch_id', branchId);
+      const response = await apiClient<InventoryAnalyticsReport>(`/api/reports/inventory-analytics?${params.toString()}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load inventory analytics'));
       return response.data;
     },
     enabled,

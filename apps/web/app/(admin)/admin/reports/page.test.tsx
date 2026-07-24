@@ -12,6 +12,9 @@ vi.mock('@/hooks/queries/use-reports', () => {
     useCashReconciliationReport: vi.fn(() => empty),
     useVoidRefundReport: vi.fn(() => empty),
     useFraudAlertSummaryReport: vi.fn(() => empty),
+    useDiscountComplianceReport: vi.fn(() => empty),
+    useInventoryMovementReport: vi.fn(() => empty),
+    useAttendanceSummaryReport: vi.fn(() => empty),
     useRequestExport: vi.fn(() => mockUseRequestExport),
     useReportsRealtimeSync: vi.fn((cb: (payload: unknown) => void) => {
       realtimeSyncCallback = cb;
@@ -90,9 +93,20 @@ afterEach(() => {
 });
 
 describe('AdminReportsPage', () => {
-  it('renders the 6 report tabs', () => {
+  it('renders the 10 report tabs', () => {
     render(<AdminReportsPage />);
-    const tabLabels = ['Daily Sales', 'Cash Reconciliation', 'Expenses', 'Voided / Refund', 'Shift Reports', 'Alerts'];
+    const tabLabels = [
+      'Daily Sales',
+      'Cash Reconciliation',
+      'Expenses',
+      'Voided / Refund',
+      'Shift Reports',
+      'Alerts',
+      'Discount Compliance',
+      'Inventory Movement',
+      'Attendance Summary',
+      'Audit Log',
+    ];
     for (const label of tabLabels) expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
   });
 

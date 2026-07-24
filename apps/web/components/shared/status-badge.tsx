@@ -2,7 +2,7 @@ import { Badge, type badgeVariants } from '@/components/ui/badge';
 import type { VariantProps } from 'class-variance-authority';
 
 type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>;
-type StatusType = 'product' | 'employee' | 'shift' | 'inventory' | 'fraud' | 'attendance' | 'gps' | 'branch' | 'general';
+type StatusType = 'product' | 'employee' | 'shift' | 'inventory' | 'fraud' | 'attendance' | 'gps' | 'branch' | 'transaction' | 'general';
 
 const STATUS_MAPS: Record<StatusType, Record<string, BadgeVariant>> = {
   product: {
@@ -46,6 +46,11 @@ const STATUS_MAPS: Record<StatusType, Record<string, BadgeVariant>> = {
     active: 'active',
     inactive: 'inactive',
     closed: 'critical',
+  },
+  transaction: {
+    completed: 'active',
+    voided: 'critical',
+    refunded: 'pending',
   },
   general: {
     active: 'active',

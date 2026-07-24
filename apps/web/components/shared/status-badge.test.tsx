@@ -27,4 +27,9 @@ describe('StatusBadge', () => {
     render(<StatusBadge status="ACTIVE" type="employee" />);
     expect(screen.getByText('Active')).toBeInTheDocument();
   });
+
+  it('maps a voided transaction status to the critical variant class', () => {
+    render(<StatusBadge status="voided" type="transaction" />);
+    expect(screen.getByText('Voided').className).toContain('bg-destructive/15');
+  });
 });

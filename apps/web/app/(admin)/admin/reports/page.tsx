@@ -8,6 +8,9 @@ import type {
   DailySalesReportRow,
   CashReconciliationReportRow,
   VoidRefundReportRow,
+  DiscountComplianceReportRow,
+  InventoryMovementReportRow,
+  AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ExportReadyPayload,
   ExportRequestInput,
@@ -23,6 +26,7 @@ import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
 import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
+import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
 import { expenseColumns } from '@/components/admin/expense-columns';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
@@ -32,6 +36,9 @@ import {
   useDailySalesReport,
   useCashReconciliationReport,
   useVoidRefundReport,
+  useDiscountComplianceReport,
+  useInventoryMovementReport,
+  useAttendanceSummaryReport,
   useFraudAlertSummaryReport,
   useRequestExport,
   useReportsRealtimeSync,
@@ -141,7 +148,70 @@ const fraudAlertSummaryColumns: ColumnDef<FraudAlertSummaryReportRow>[] = [
   { accessorKey: 'created_at', header: 'Created', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-const VALID_TABS = new Set(['DAILY_SALES', 'CASH_RECONCILIATION', 'EXPENSES', 'VOID_REFUND', 'SHIFT_SUMMARY', 'FRAUD_ALERT_SUMMARY']);
+const discountComplianceColumns: ColumnDef<DiscountComplianceReportRow>[] = [
+  { accessorKey: 'branch_name', header: 'Branch' },
+  { id: 'discount_type', header: 'Discount Type', cell: ({ row }) => humanize(row.original.discount_type) },
+  { accessorKey: 'transaction_count', header: 'Transactions' },
+  {
+    accessorKey: 'total_discount_amount',
+    header: 'Discount Amount',
+    cell: ({ row }) => formatCurrency(row.original.total_discount_amount),
+  },
+  {
+    accessorKey: 'total_vat_exempt_amount',
+    header: 'VAT Exempt Amount',
+    cell: ({ row }) => formatCurrency(row.original.total_vat_exempt_amount),
+  },
+];
+
+const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
+  { accessorKey: 'branch_name', header: 'Branch' },
+  { accessorKey: 'ingredient_name', header: 'Ingredient' },
+  { id: 'movement_type', header: 'Type', cell: ({ row }) => humanize(row.original.movement_type) },
+  {
+    id: 'quantity_change',
+    header: 'Change',
+    cell: ({ row }) => `${row.original.quantity_change > 0 ? '+' : ''}${row.original.quantity_change} ${row.original.unit}`,
+  },
+  {
+    id: 'quantity_after',
+    header: 'Balance After',
+    cell: ({ row }) => `${row.original.quantity_after} ${row.original.unit}`,
+  },
+  { accessorKey: 'recorded_by_name', header: 'Recorded By', cell: ({ row }) => row.original.recorded_by_name ?? '—' },
+  { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
+];
+
+const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
+  { accessorKey: 'employee_name', header: 'Employee' },
+  { accessorKey: 'branch_name', header: 'Branch' },
+  { id: 'clock_in', header: 'Clock In', cell: ({ row }) => formatDateTime(row.original.clock_in) },
+  {
+    id: 'clock_out',
+    header: 'Clock Out',
+    cell: ({ row }) => (row.original.clock_out ? formatDateTime(row.original.clock_out) : 'Still clocked in'),
+  },
+  {
+    accessorKey: 'actual_work_minutes',
+    header: 'Worked (min)',
+    cell: ({ row }) => (row.original.actual_work_minutes === null ? '—' : row.original.actual_work_minutes),
+  },
+  { accessorKey: 'overtime_minutes', header: 'Overtime (min)' },
+  { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="attendance" /> },
+];
+
+const VALID_TABS = new Set([
+  'DAILY_SALES',
+  'CASH_RECONCILIATION',
+  'EXPENSES',
+  'VOID_REFUND',
+  'SHIFT_SUMMARY',
+  'FRAUD_ALERT_SUMMARY',
+  'DISCOUNT_COMPLIANCE',
+  'INVENTORY_MOVEMENT',
+  'ATTENDANCE_SUMMARY',
+  'AUDIT_LOG',
+]);
 
 function AdminReportsPageContent() {
   const currentUserId = useAuthStore((s) => s.user?.id);
@@ -188,6 +258,9 @@ function AdminReportsPageContent() {
   const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeTab === 'CASH_RECONCILIATION');
   const voidRefund = useVoidRefundReport(realtimeFilters, activeTab === 'VOID_REFUND');
   const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeTab === 'FRAUD_ALERT_SUMMARY');
+  const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeTab === 'DISCOUNT_COMPLIANCE');
+  const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeTab === 'INVENTORY_MOVEMENT');
+  const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeTab === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
     branch_id: selectedBranchId ?? undefined,
     date_from: dateFrom,
@@ -201,6 +274,9 @@ function AdminReportsPageContent() {
     CASH_RECONCILIATION: cashReconciliation,
     VOID_REFUND: voidRefund,
     FRAUD_ALERT_SUMMARY: fraudAlertSummary,
+    DISCOUNT_COMPLIANCE: discountCompliance,
+    INVENTORY_MOVEMENT: inventoryMovement,
+    ATTENDANCE_SUMMARY: attendanceSummary,
     EXPENSES: expenses,
   };
 
@@ -261,6 +337,10 @@ function AdminReportsPageContent() {
           <TabsTrigger value="VOID_REFUND">Voided / Refund</TabsTrigger>
           <TabsTrigger value="SHIFT_SUMMARY">Shift Reports</TabsTrigger>
           <TabsTrigger value="FRAUD_ALERT_SUMMARY">Alerts</TabsTrigger>
+          <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
+          <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
+          <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
+          <TabsTrigger value="AUDIT_LOG">Audit Log</TabsTrigger>
         </TabsList>
 
         <TabsContent value="DAILY_SALES">
@@ -367,6 +447,93 @@ function AdminReportsPageContent() {
             <FraudAlertManagementPanel />
           </div>
           </>}
+        </TabsContent>
+
+        <TabsContent value="DISCOUNT_COMPLIANCE">
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
+          <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
+          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <KpiCard
+              title="Discounted Transactions"
+              value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)}
+              isLoading={discountCompliance.isLoading}
+            />
+            <KpiCard
+              title="Total Discount Amount"
+              value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_discount_amount, 0)}
+              isLoading={discountCompliance.isLoading}
+              tone="warning"
+            />
+            <KpiCard
+              title="Total VAT Exempt Amount"
+              value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_vat_exempt_amount, 0)}
+              isLoading={discountCompliance.isLoading}
+            />
+          </div>
+          <DataTable
+            columns={discountComplianceColumns}
+            data={discountCompliance.data?.data ?? []}
+            isLoading={discountCompliance.isLoading}
+            emptyState={<EmptyState title="No discounted transactions in this range" />}
+          />
+          </>}
+        </TabsContent>
+
+        <TabsContent value="INVENTORY_MOVEMENT">
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
+          <ReportLastUpdated timestamp={inventoryMovement.data?.generated_at} isLoading={inventoryMovement.isLoading} />
+          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <KpiCard title="Total Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
+            <KpiCard
+              title="Stock In"
+              value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'stock_in').length}
+              isLoading={inventoryMovement.isLoading}
+            />
+            <KpiCard
+              title="Waste"
+              value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'waste').length}
+              isLoading={inventoryMovement.isLoading}
+              tone="warning"
+            />
+          </div>
+          <DataTable
+            columns={inventoryMovementColumns}
+            data={inventoryMovement.data?.data ?? []}
+            isLoading={inventoryMovement.isLoading}
+            emptyState={<EmptyState title="No inventory movements in this range" />}
+          />
+          </>}
+        </TabsContent>
+
+        <TabsContent value="ATTENDANCE_SUMMARY">
+          {!selectedBranchId ? (
+            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+          ) : attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
+          <ReportLastUpdated timestamp={attendanceSummary.data?.generated_at} isLoading={attendanceSummary.isLoading} />
+          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <KpiCard title="Attendance Records" value={(attendanceSummary.data?.data ?? []).length} isLoading={attendanceSummary.isLoading} />
+            <KpiCard
+              title="Corrected"
+              value={(attendanceSummary.data?.data ?? []).filter((r) => r.status === 'corrected').length}
+              isLoading={attendanceSummary.isLoading}
+              tone="warning"
+            />
+          </div>
+          <DataTable
+            columns={attendanceSummaryColumns}
+            data={attendanceSummary.data?.data ?? []}
+            isLoading={attendanceSummary.isLoading}
+            emptyState={<EmptyState title="No attendance records in this range" />}
+          />
+          </>}
+        </TabsContent>
+
+        <TabsContent value="AUDIT_LOG">
+          <LoginAuditPanel />
         </TabsContent>
       </Tabs>
     </div>

@@ -800,11 +800,11 @@ model Transaction {
   subtotal                    Decimal                  @db.Decimal(10, 2)
   discountAmount              Decimal                  @default(0) @map("discount_amount") @db.Decimal(10, 2)
   vatAmount                   Decimal                  @map("vat_amount") @db.Decimal(10, 2)
-  // Portion of the sale exempt from VAT. No current business rule zeroes out
-  // VAT for PWD/Senior Citizen (architecture doc §Discounts explicitly still
-  // charges VAT on the discounted base) — this stays 0 for every discount
-  // type today and exists so a future true VAT-exempt scenario doesn't need
-  // another migration.
+  // Portion of the subtotal that was never vatable to begin with (line items
+  // with a per-unit vatableCapAmount, once the cap is exceeded) — see
+  // transactions.service.ts computeAmounts(). Independent of discount type:
+  // PWD/Senior Citizen sales zero out vatAmount entirely instead (RA 9994 /
+  // RA 10754 true VAT-exempt rule, locked in .claude/CLAUDE.md).
   vatExemptAmount             Decimal                  @default(0) @map("vat_exempt_amount") @db.Decimal(10, 2)
   totalAmount                 Decimal                  @map("total_amount") @db.Decimal(10, 2)
   amountTendered              Decimal?                 @map("amount_tendered") @db.Decimal(10, 2)

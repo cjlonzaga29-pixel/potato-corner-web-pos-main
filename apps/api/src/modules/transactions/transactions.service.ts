@@ -524,7 +524,10 @@ export const transactionsService = {
         decrypted = true;
       }
 
-      return { ...row, discountCustomerId, fraudFlagged };
+      // Every other money field returned by this module goes through
+      // .toNumber() (see toTransactionResponse above) — this one was missed,
+      // leaving a raw Prisma Decimal in the JSON response instead of a number.
+      return { ...row, discountAmount: row.discountAmount.toNumber(), discountCustomerId, fraudFlagged };
     });
 
     if (decrypted) {

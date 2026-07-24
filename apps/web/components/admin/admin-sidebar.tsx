@@ -25,6 +25,10 @@ import {
   ShieldCheck,
   ShieldAlert,
   Clock,
+  Percent,
+  Boxes,
+  CalendarCheck,
+  FileSearch,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -72,6 +76,10 @@ export const ADMIN_NAV_ITEMS = [
       { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
       { label: 'Shifts', href: '/admin/reports?tab=SHIFT_SUMMARY', icon: Clock },
       { label: 'Fraud Alerts', href: '/admin/reports?tab=FRAUD_ALERT_SUMMARY', icon: ShieldAlert },
+      { label: 'Discount Compliance', href: '/admin/reports?tab=DISCOUNT_COMPLIANCE', icon: Percent },
+      { label: 'Inventory Movement', href: '/admin/reports?tab=INVENTORY_MOVEMENT', icon: Boxes },
+      { label: 'Attendance Summary', href: '/admin/reports?tab=ATTENDANCE_SUMMARY', icon: CalendarCheck },
+      { label: 'Audit Log', href: '/admin/reports?tab=AUDIT_LOG', icon: FileSearch },
     ],
   },
   { label: 'Settings', href: '/admin/settings', icon: Settings },

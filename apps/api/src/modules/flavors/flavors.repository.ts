@@ -154,4 +154,22 @@ export const flavorsRepository = {
       orderBy: { name: 'asc' },
     });
   },
+
+  /**
+   * Every distinct (name, unit) ingredient identity referenced by an active
+   * flavor — the flavor-side counterpart to
+   * recipesRepository.findDistinctIngredientIdentities, unioned with it by
+   * branchesService.createBranch so a newly created branch is provisioned
+   * for both sources at once (CR-005 Sub-phase 3b).
+   */
+  async findDistinctFlavorIngredientIdentities(tx?: Prisma.TransactionClient): Promise<{ name: string; unit: string }[]> {
+    const client = tx ?? prisma;
+    const rows = await client.flavor.findMany({
+      where: { isActive: true },
+      select: { ingredientName: true, ingredientUnit: true },
+      distinct: ['ingredientName', 'ingredientUnit'],
+      orderBy: [{ ingredientName: 'asc' }, { ingredientUnit: 'asc' }],
+    });
+    return rows.map((row) => ({ name: row.ingredientName, unit: row.ingredientUnit }));
+  },
 };

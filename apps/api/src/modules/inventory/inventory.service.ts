@@ -587,16 +587,26 @@ export const inventoryService = {
   /**
    * CR-004 idempotent branch provisioning — called once at branch creation
    * (branchesService.createBranch) with every distinct ingredient identity
-   * referenced by an active master Recipe row. Ensures the new branch's own
-   * inventory ledger has a zero-stock row for each one, so master-recipe
-   * deductions can resolve to *this* branch's own Ingredient instead of
-   * leaking against whichever branch's Ingredient the recipe was originally
-   * created against (see recipes.service.ts computeDeduction). Idempotent —
-   * safe to re-run for a branch that already has some of these ingredients.
+   * referenced by an active master Recipe row, unioned since CR-005
+   * Sub-phase 3b with every distinct flavor-derived identity. Ensures the
+   * new branch's own inventory ledger has a zero-stock row for each one, so
+   * master-recipe deductions can resolve to *this* branch's own Ingredient
+   * instead of leaking against whichever branch's Ingredient the recipe was
+   * originally created against (see recipes.service.ts computeDeduction).
+   * Idempotent — safe to re-run for a branch that already has some of these
+   * ingredients. category is optional so pre-3b callers passing bare
+   * {name, unit} identities are unaffected.
    */
-  async provisionBranchIngredients(branchId: string, identities: { name: string; unit: string }[]): Promise<void> {
+  async provisionBranchIngredients(
+    branchId: string,
+    identities: { name: string; unit: string; category?: IngredientCategory }[],
+  ): Promise<void> {
     for (const identity of identities) {
-      await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit);
+      if (identity.category) {
+        await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit, identity.category);
+      } else {
+        await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit);
+      }
     }
   },
 

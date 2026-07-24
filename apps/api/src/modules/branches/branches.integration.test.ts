@@ -82,13 +82,13 @@ describe.skipIf(!canRunIntegrationTests)('branches integration', () => {
 
 /**
  * CR-004 idempotent branch provisioning — exercises the real service layer
- * (branchesService.createBranch -> recipes.service.js
- * listDistinctIngredientIdentities -> inventoryService.provisionBranchIngredients)
- * against a real Postgres database, proving a brand-new branch is born with
- * a zero-stock Ingredient row for every ingredient identity an active
- * master Recipe references — the prerequisite for
- * transactions.integration.test.ts's cross-branch isolation guarantee to
- * hold for a branch created after the recipe already existed.
+ * (branchesService.createBranch -> recipesRepository.findDistinctIngredientIdentities
+ * -> inventoryService.provisionBranchIngredients) against a real Postgres
+ * database, proving a brand-new branch is born with a zero-stock Ingredient
+ * row for every ingredient identity an active master Recipe references —
+ * the prerequisite for transactions.integration.test.ts's cross-branch
+ * isolation guarantee to hold for a branch created after the recipe already
+ * existed.
  */
 describe.skipIf(!canRunIntegrationTests)('branches integration — CR-004 idempotent provisioning', () => {
   let adminId: string;
@@ -175,5 +175,122 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-004 idempo
 
     const count = await prisma.ingredient.count({ where: { branchId: branch.id, name: 'CR004-Potato', deletedAt: null } });
     expect(count).toBe(1);
+  });
+});
+
+/**
+ * CR-005 Sub-phase 3b — the flavor-side counterpart to the CR-004 suite
+ * above: proves branchesService.createBranch unions recipe-derived and
+ * flavor-derived identities, so a branch created after an active flavor
+ * already existed gets that flavor's Ingredient row too (the inverse of the
+ * gap Sub-phase 3a's provisionFlavorIngredientAcrossBranches closes).
+ */
+describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-phase 3b flavor identity union', () => {
+  let adminId: string;
+  let productId: string;
+  let variantId: string;
+  let flavorId: string;
+  const recipeIngredientName = `CR005B-Potato-${randomUUID().slice(0, 8)}`;
+  const flavorIngredientName = `CR005B-Flavor-${randomUUID().slice(0, 8)}`;
+  const createdBranchIds: string[] = [];
+
+  beforeAll(async () => {
+    const admin = await prisma.user.create({
+      data: {
+        email: `cr005b-admin-${randomUUID()}@potatocorner.test`,
+        passwordHash: 'unused-in-this-suite',
+        role: 'super_admin',
+        firstName: 'CR-005B',
+        lastName: 'Test Admin',
+        employmentType: 'regular',
+        mustChangePassword: false,
+      },
+    });
+    adminId = admin.id;
+
+    const templateBranch = await prisma.branch.create({
+      data: { name: 'CR-005B Template Branch', code: `CR005BT-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+    });
+    const templatePotato = await prisma.ingredient.create({
+      data: { branchId: templateBranch.id, name: recipeIngredientName, unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    });
+
+    const product = await prisma.product.create({ data: { name: 'CR-005B Fries', status: 'active' } });
+    productId = product.id;
+    const variant = await prisma.productVariant.create({
+      data: { productId, name: 'Regular', sizeLabel: 'Regular', basePrice: 100, isActive: true },
+    });
+    variantId = variant.id;
+    await prisma.recipe.create({ data: { productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantity: 200, unit: 'g' } });
+
+    const flavor = await prisma.flavor.create({
+      data: { name: `CR-005B Flavor ${randomUUID().slice(0, 8)}`, isActive: true, ingredientName: flavorIngredientName, ingredientUnit: 'g' },
+    });
+    flavorId = flavor.id;
+
+    createdBranchIds.push(templateBranch.id);
+  });
+
+  afterAll(async () => {
+    await prisma.recipe.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productVariant.deleteMany({ where: { productId } });
+    await prisma.product.deleteMany({ where: { id: productId } });
+    await prisma.flavor.deleteMany({ where: { id: flavorId } });
+    await prisma.ingredient.deleteMany({ where: { name: { in: [recipeIngredientName, flavorIngredientName] } } });
+    await prisma.branch.deleteMany({ where: { id: { in: createdBranchIds } } });
+    await prisma.user.deleteMany({ where: { id: adminId } });
+    await prisma.$disconnect();
+  });
+
+  it('creating a new branch provisions the distinct union of recipe-derived and flavor-derived identities', async () => {
+    const branch = await branchesService.createBranch(
+      { name: 'CR-005B New Branch', address: '2 Test St', city: 'Testville', gpsRadiusMeters: 100, status: 'active' },
+      { id: adminId, role: 'super_admin' },
+      null,
+    );
+    createdBranchIds.push(branch.id);
+
+    const recipeRow = await prisma.ingredient.findFirst({ where: { branchId: branch.id, name: recipeIngredientName, deletedAt: null } });
+    const flavorRow = await prisma.ingredient.findFirst({ where: { branchId: branch.id, name: flavorIngredientName, deletedAt: null } });
+    expect(recipeRow).not.toBeNull();
+    expect(flavorRow).not.toBeNull();
+    expect(flavorRow?.category).toBe('FLAVOR');
+  });
+
+  it('two consecutive createBranch calls each get their own full set of rows, with no cross-bleed', async () => {
+    const branchA = await branchesService.createBranch(
+      { name: 'CR-005B Branch A', address: '4 Test St', city: 'Testville', gpsRadiusMeters: 100, status: 'active' },
+      { id: adminId, role: 'super_admin' },
+      null,
+    );
+    createdBranchIds.push(branchA.id);
+    const branchB = await branchesService.createBranch(
+      { name: 'CR-005B Branch B', address: '5 Test St', city: 'Testville', gpsRadiusMeters: 100, status: 'active' },
+      { id: adminId, role: 'super_admin' },
+      null,
+    );
+    createdBranchIds.push(branchB.id);
+
+    for (const branch of [branchA, branchB]) {
+      const recipeCount = await prisma.ingredient.count({ where: { branchId: branch.id, name: recipeIngredientName, deletedAt: null } });
+      const flavorCount = await prisma.ingredient.count({ where: { branchId: branch.id, name: flavorIngredientName, deletedAt: null } });
+      expect(recipeCount).toBe(1);
+      expect(flavorCount).toBe(1);
+    }
+  });
+
+  it('every flavor-derived ingredient row is provisioned with category FLAVOR', async () => {
+    const branch = await branchesService.createBranch(
+      { name: 'CR-005B Branch C', address: '6 Test St', city: 'Testville', gpsRadiusMeters: 100, status: 'active' },
+      { id: adminId, role: 'super_admin' },
+      null,
+    );
+    createdBranchIds.push(branch.id);
+
+    const flavorRows = await prisma.ingredient.findMany({ where: { branchId: branch.id, name: flavorIngredientName, deletedAt: null } });
+    expect(flavorRows.length).toBeGreaterThan(0);
+    for (const row of flavorRows) {
+      expect(row.category).toBe('FLAVOR');
+    }
   });
 });

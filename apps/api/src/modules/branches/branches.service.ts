@@ -1,9 +1,10 @@
-import type { Prisma } from '@prisma/client';
+import { IngredientCategory, type Prisma } from '@prisma/client';
 import sharp from 'sharp';
 import { ROLES, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
-import { listDistinctIngredientIdentities } from '../recipes/recipes.service.js';
+import { recipesRepository } from '../recipes/recipes.repository.js';
+import { flavorsRepository } from '../flavors/flavors.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../socket/socket.server.js';
@@ -183,9 +184,27 @@ export const branchesService = {
     // master-recipe sale at this branch resolves to its own stock instead of
     // leaking against whichever branch's Ingredient the recipe was created
     // against (see recipes.service.ts computeDeduction).
-    const ingredientIdentities = await listDistinctIngredientIdentities();
-    if (ingredientIdentities.length > 0) {
-      await inventoryService.provisionBranchIngredients(branch.id, ingredientIdentities);
+    //
+    // CR-005 Sub-phase 3b — unioned with every distinct flavor-derived
+    // identity (CR-005 Sub-phase 3a) so a new branch is provisioned for both
+    // sources in one pass, closing the inverse of the gap 3a opened: a
+    // branch created *after* a flavor existed used to never get that
+    // flavor's Ingredient row. Deduped by (name, unit); FLAVOR wins the
+    // category on a collision since it's the more specific classification.
+    const recipeIdentities = await recipesRepository.findDistinctIngredientIdentities();
+    const flavorIdentities = await flavorsRepository.findDistinctFlavorIngredientIdentities();
+
+    const identityMap = new Map<string, { name: string; unit: string; category: IngredientCategory }>();
+    for (const identity of recipeIdentities) {
+      identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.OTHER });
+    }
+    for (const identity of flavorIdentities) {
+      identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.FLAVOR });
+    }
+    const mergedIdentities = Array.from(identityMap.values());
+
+    if (mergedIdentities.length > 0) {
+      await inventoryService.provisionBranchIngredients(branch.id, mergedIdentities);
     }
 
     await recordAuditLog({

@@ -29,8 +29,12 @@ vi.mock('../../lib/id-counter.js', () => ({
   nextCounterValue: vi.fn(),
 }));
 
-vi.mock('../recipes/recipes.service.js', () => ({
-  listDistinctIngredientIdentities: vi.fn().mockResolvedValue([]),
+vi.mock('../recipes/recipes.repository.js', () => ({
+  recipesRepository: { findDistinctIngredientIdentities: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock('../flavors/flavors.repository.js', () => ({
+  flavorsRepository: { findDistinctFlavorIngredientIdentities: vi.fn().mockResolvedValue([]) },
 }));
 
 vi.mock('../inventory/inventory.service.js', () => ({
@@ -72,7 +76,8 @@ const { branchesRepository } = await import('./branches.repository.js');
 const { branchesService } = await import('./branches.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { supabaseAdmin } = await import('../../lib/supabase.js');
-const { listDistinctIngredientIdentities } = await import('../recipes/recipes.service.js');
+const { recipesRepository } = await import('../recipes/recipes.repository.js');
+const { flavorsRepository } = await import('../flavors/flavors.repository.js');
 const { inventoryService } = await import('../inventory/inventory.service.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
@@ -182,10 +187,11 @@ describe('branchesService.createBranch', () => {
   it('CR-004: provisions the new branch with a zero-stock ingredient for every distinct master-recipe ingredient identity', async () => {
     vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-003');
     vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-3', code: 'PC-MNL-003' }) as never);
-    vi.mocked(listDistinctIngredientIdentities).mockResolvedValue([
+    vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([
       { name: 'Potato', unit: 'g' },
       { name: 'Cooking Oil', unit: 'ml' },
     ]);
+    vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
     await branchesService.createBranch(
       { name: 'Branch 3', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
@@ -194,15 +200,16 @@ describe('branchesService.createBranch', () => {
     );
 
     expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-3', [
-      { name: 'Potato', unit: 'g' },
-      { name: 'Cooking Oil', unit: 'ml' },
+      { name: 'Potato', unit: 'g', category: 'OTHER' },
+      { name: 'Cooking Oil', unit: 'ml', category: 'OTHER' },
     ]);
   });
 
   it('CR-004: skips provisioning entirely when no master recipe ingredients exist yet', async () => {
     vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-004');
     vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-4', code: 'PC-MNL-004' }) as never);
-    vi.mocked(listDistinctIngredientIdentities).mockResolvedValue([]);
+    vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+    vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
     await branchesService.createBranch(
       { name: 'Branch 4', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
@@ -211,6 +218,125 @@ describe('branchesService.createBranch', () => {
     );
 
     expect(inventoryService.provisionBranchIngredients).not.toHaveBeenCalled();
+  });
+
+  describe('CR-005 Sub-phase 3b: recipe + flavor identity union', () => {
+    it('unions recipe and flavor identities, deduped by (name, unit)', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-005');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-5', code: 'PC-MNL-005' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 5', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      const call = vi.mocked(inventoryService.provisionBranchIngredients).mock.calls[0];
+      const identities = call?.[1];
+      expect(identities).toHaveLength(2);
+      expect(identities).toEqual(
+        expect.arrayContaining([
+          { name: 'Potato', unit: 'g', category: 'OTHER' },
+          { name: 'Cheese Powder', unit: 'g', category: 'FLAVOR' },
+        ]),
+      );
+    });
+
+    it('FLAVOR wins the category on a (name, unit) collision with a recipe identity', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-006');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-6', code: 'PC-MNL-006' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 6', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-6', [
+        { name: 'Cheese Powder', unit: 'g', category: 'FLAVOR' },
+      ]);
+    });
+
+    it('with only recipe identities behaves like pre-3b (all category OTHER)', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-007');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-7', code: 'PC-MNL-007' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 7', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-7', [
+        { name: 'Potato', unit: 'g', category: 'OTHER' },
+      ]);
+    });
+
+    it('with only flavor identities provisions all of them as category FLAVOR', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-008');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-8', code: 'PC-MNL-008' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([
+        { name: 'Sour Cream', unit: 'g' },
+        { name: 'BBQ', unit: 'g' },
+      ]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 8', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-8', [
+        { name: 'Sour Cream', unit: 'g', category: 'FLAVOR' },
+        { name: 'BBQ', unit: 'g', category: 'FLAVOR' },
+      ]);
+    });
+
+    it('with zero recipe and zero flavor identities never calls provisionBranchIngredients', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-009');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-9', code: 'PC-MNL-009' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 9', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      expect(inventoryService.provisionBranchIngredients).not.toHaveBeenCalled();
+    });
+
+    it('passes the final merged list, not the raw recipe/flavor arrays, to provisionBranchIngredients', async () => {
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-010');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-10', code: 'PC-MNL-010' }) as never);
+      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
+
+      await branchesService.createBranch(
+        { name: 'Branch 10', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      const call = vi.mocked(inventoryService.provisionBranchIngredients).mock.calls[0];
+      expect(call?.[0]).toBe('branch-10');
+      expect(call?.[1]).not.toEqual([{ name: 'Potato', unit: 'g' }]);
+      expect(call?.[1]).not.toEqual([{ name: 'Cheese Powder', unit: 'g' }]);
+      expect(call?.[1]).toEqual(
+        expect.arrayContaining([
+          { name: 'Potato', unit: 'g', category: 'OTHER' },
+          { name: 'Cheese Powder', unit: 'g', category: 'FLAVOR' },
+        ]),
+      );
+    });
   });
 });
 

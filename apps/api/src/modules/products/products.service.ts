@@ -1,12 +1,15 @@
 import sharp from 'sharp';
-import { Prisma } from '@prisma/client';
-import { ROLES, type JwtPayload, type ProductStatus } from '@potato-corner/shared';
+import { Prisma, type VariantLifecycleStatus } from '@prisma/client';
+import { ROLES, SOCKET_EVENTS, type JwtPayload, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
 import { ProductError, type ProductListFilters } from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
+import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
+import { recipesRepository } from '../recipes/recipes.repository.js';
+import { inventoryRepository } from '../inventory/inventory.repository.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -30,6 +33,73 @@ const GLOBAL_TRANSITIONS: Record<ProductStatus, ProductStatus[]> = {
   discontinued: ['active', 'archived'],
   archived: [],
 };
+
+/**
+ * CR-005 Sub-phase 3c — ProductVariant.lifecycleStatus transition matrix,
+ * distinct from GLOBAL_TRANSITIONS (Product.status) above. ARCHIVED has no
+ * outgoing transitions — terminal, same convention as the product matrix.
+ */
+const VARIANT_TRANSITIONS: Record<VariantLifecycleStatus, VariantLifecycleStatus[]> = {
+  DRAFT: ['PENDING_APPROVAL', 'ARCHIVED'],
+  PENDING_APPROVAL: ['ACTIVE', 'DRAFT', 'ARCHIVED'],
+  ACTIVE: ['ARCHIVED'],
+  ARCHIVED: [],
+};
+
+const VALID_LIFECYCLE_STATUSES = new Set<VariantLifecycleStatus>(['DRAFT', 'PENDING_APPROVAL', 'ACTIVE', 'ARCHIVED']);
+
+function assertVariantTransition(current: VariantLifecycleStatus, next: VariantLifecycleStatus): void {
+  const allowed = VARIANT_TRANSITIONS[current];
+  if (!allowed.includes(next)) {
+    throw new ProductError('VARIANT_INVALID_TRANSITION', `Cannot transition variant from ${current} to ${next}`, 409);
+  }
+}
+
+/** Every branch this product currently has a branch_product_availability row for — the "branch rooms" a variant lifecycle event is broadcast to. */
+async function notifyVariantBranches(productId: string, event: string, payload: unknown): Promise<void> {
+  const rows = await productsRepository.findBranchProductAvailability(productId);
+  for (const row of rows) {
+    notifyBranch(row.branchId, event, payload);
+  }
+}
+
+/**
+ * CR-005 Guarantee 6 gate for approveVariant: every master Recipe row on the
+ * variant must resolve to a real Ingredient in at least one active branch —
+ * either the row's own pinned Ingredient already belongs to that branch, or
+ * an Ingredient of the same name has been provisioned there (mirrors
+ * recipes.service.ts's resolveIngredientForBranch, minus the throw-per-sale
+ * behavior, since here we're checking existence across every branch, not
+ * resolving for one specific sale).
+ */
+async function assertRecipesResolvableSomewhere(productVariantId: string): Promise<void> {
+  const recipes = await recipesRepository.findByVariant(productVariantId);
+  if (recipes.length === 0) return;
+
+  const branches = await productsRepository.allActiveBranches();
+
+  for (const recipe of recipes) {
+    let resolvable = false;
+    for (const branch of branches) {
+      if (recipe.ingredient.branchId === branch.id) {
+        resolvable = true;
+        break;
+      }
+      const found = await inventoryRepository.findIngredientByBranchAndName(branch.id, recipe.ingredient.name);
+      if (found) {
+        resolvable = true;
+        break;
+      }
+    }
+    if (!resolvable) {
+      throw new ProductError(
+        'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
+        `Ingredient "${recipe.ingredient.name}" cannot be resolved in any active branch — approval blocked until it is provisioned somewhere`,
+        409,
+      );
+    }
+  }
+}
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -71,6 +141,14 @@ function toVariantResponse(variant: {
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
+  // CR-005 Sub-phase 3c — optional so pre-existing call sites that build a
+  // partial variant shape (e.g. tests) don't need updating.
+  lifecycleStatus?: VariantLifecycleStatus;
+  version?: number;
+  lastChangeReason?: string | null;
+  createdById?: string | null;
+  approvedById?: string | null;
+  approvedAt?: Date | null;
   variantFlavors?: {
     flavorId: string;
     pricePremium: { toNumber(): number };
@@ -86,6 +164,12 @@ function toVariantResponse(variant: {
     base_price: variant.basePrice.toNumber(),
     display_order: variant.displayOrder,
     is_active: variant.isActive,
+    lifecycle_status: variant.lifecycleStatus ?? null,
+    version: variant.version ?? null,
+    last_change_reason: variant.lastChangeReason ?? null,
+    created_by_id: variant.createdById ?? null,
+    approved_by_id: variant.approvedById ?? null,
+    approved_at: variant.approvedAt ? variant.approvedAt.toISOString() : null,
     flavors: (variant.variantFlavors ?? []).map((vf) => ({
       flavor_id: vf.flavorId,
       name: vf.flavor.name,
@@ -240,6 +324,9 @@ interface CreateVariantInput {
   base_price: number;
   display_order?: number;
   is_active: boolean;
+  // CR-005 Sub-phase 3c — optional, defaults to ACTIVE (schema default,
+  // preserves existing behavior for every pre-existing caller).
+  lifecycle_status?: VariantLifecycleStatus;
 }
 
 interface UpdateVariantInput {
@@ -248,6 +335,17 @@ interface UpdateVariantInput {
   base_price?: number;
   display_order?: number;
   is_active?: boolean;
+}
+
+/** CR-005 Sub-phase 3c — editActiveVariant. lifecycleStatus/version/createdById/approvedById/approvedAt/is_active are system-managed and intentionally excluded. */
+interface EditActiveVariantInput {
+  name?: string;
+  size_label?: string;
+  base_price?: number;
+  vatable_cap_amount?: number | null;
+  display_order?: number;
+  kcal?: number | null;
+  max_flavors?: number;
 }
 
 export const productsService = {
@@ -486,12 +584,18 @@ export const productsService = {
       throw new ProductError('PRODUCT_ARCHIVED', 'Archived products cannot receive new variants', 409);
     }
 
+    if (data.lifecycle_status !== undefined && !VALID_LIFECYCLE_STATUSES.has(data.lifecycle_status)) {
+      throw new ProductError('INVALID_LIFECYCLE_STATUS', `Invalid lifecycle_status: ${data.lifecycle_status}`, 422);
+    }
+
     const variant = await productsRepository.createVariant(productId, {
       name: data.name,
       sizeLabel: data.size_label,
       basePrice: data.base_price,
       displayOrder: data.display_order,
       isActive: data.is_active,
+      lifecycleStatus: data.lifecycle_status,
+      createdById: actor.id,
     });
     const response = toVariantResponse({ ...variant, variantFlavors: [] });
 
@@ -502,6 +606,286 @@ export const productsService = {
       actorId: actor.id,
       actorRole: actor.role,
       afterState: response,
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  // --- CR-005 Sub-phase 3c — variant lifecycle ---
+
+  async submitVariantForApproval(variantId: string, actor: ActorContext, ipAddress: string | null) {
+    if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.SUPERVISOR) {
+      throw new ProductError('VARIANT_SUBMIT_FORBIDDEN', 'Only super_admin or supervisor may submit a variant for approval', 403);
+    }
+
+    const existing = await productsRepository.findVariantById(variantId);
+    if (!existing) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+
+    assertVariantTransition(existing.lifecycleStatus, 'PENDING_APPROVAL');
+
+    const updated = await productsRepository.updateVariantLifecycle(variantId, { lifecycleStatus: 'PENDING_APPROVAL' });
+    const response = toVariantResponse({ ...updated, variantFlavors: existing.variantFlavors });
+
+    notifySuperAdmin(SOCKET_EVENTS.VARIANT_SUBMITTED_FOR_APPROVAL, response);
+
+    await recordAuditLog({
+      action: 'VARIANT_SUBMITTED_FOR_APPROVAL',
+      entityType: 'product_variant',
+      entityId: variantId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: { lifecycleStatus: existing.lifecycleStatus },
+      afterState: { lifecycleStatus: updated.lifecycleStatus },
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async approveVariant(variantId: string, reason: string | undefined, actor: ActorContext, ipAddress: string | null) {
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw new ProductError('VARIANT_APPROVE_FORBIDDEN', 'Only super_admin may approve a variant', 403);
+    }
+
+    const existing = await productsRepository.findVariantById(variantId);
+    if (!existing) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+
+    assertVariantTransition(existing.lifecycleStatus, 'ACTIVE');
+
+    const [flavorSlotRecipeCount, flavorSlotCount] = await Promise.all([
+      productsRepository.countRecipesWithFlavorSlot(variantId),
+      productsRepository.countFlavorSlots(variantId),
+    ]);
+    if (flavorSlotRecipeCount > 0 || flavorSlotCount > 0) {
+      throw new ProductError(
+        'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
+        'Variant contains flavor-slot recipe rows or ProductFlavorSlot definitions that require Phase 4 runtime resolver. Approval blocked until Phase 4 lands.',
+        409,
+      );
+    }
+
+    await assertRecipesResolvableSomewhere(variantId);
+
+    const updated = await productsRepository.updateVariantLifecycle(variantId, {
+      lifecycleStatus: 'ACTIVE',
+      approvedById: actor.id,
+      approvedAt: new Date(),
+      lastChangeReason: reason ?? null,
+    });
+    const response = toVariantResponse({ ...updated, variantFlavors: existing.variantFlavors });
+
+    notifySuperAdmin(SOCKET_EVENTS.VARIANT_APPROVED, response);
+    await notifyVariantBranches(existing.productId, SOCKET_EVENTS.VARIANT_APPROVED, response);
+
+    await recordAuditLog({
+      action: 'VARIANT_APPROVED',
+      entityType: 'product_variant',
+      entityId: variantId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      afterState: { reason: reason ?? null, gate_passed: true },
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async rejectVariant(variantId: string, reason: string, actor: ActorContext, ipAddress: string | null) {
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw new ProductError('VARIANT_REJECT_FORBIDDEN', 'Only super_admin may reject a variant', 403);
+    }
+    if (!reason || !reason.trim()) {
+      throw new ProductError('VARIANT_REJECT_REASON_REQUIRED', 'A reason is required to reject a variant', 400);
+    }
+
+    const existing = await productsRepository.findVariantById(variantId);
+    if (!existing) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+
+    assertVariantTransition(existing.lifecycleStatus, 'DRAFT');
+
+    const updated = await productsRepository.updateVariantLifecycle(variantId, {
+      lifecycleStatus: 'DRAFT',
+      lastChangeReason: reason,
+    });
+    const response = toVariantResponse({ ...updated, variantFlavors: existing.variantFlavors });
+
+    notifySuperAdmin(SOCKET_EVENTS.VARIANT_REJECTED, response);
+    await notifyVariantBranches(existing.productId, SOCKET_EVENTS.VARIANT_REJECTED, response);
+
+    await recordAuditLog({
+      action: 'VARIANT_REJECTED',
+      entityType: 'product_variant',
+      entityId: variantId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      afterState: { reason },
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async editActiveVariant(
+    variantId: string,
+    data: EditActiveVariantInput,
+    reason: string,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ) {
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw new ProductError('VARIANT_EDIT_ACTIVE_FORBIDDEN', 'Only super_admin may edit an active variant', 403);
+    }
+    if (!reason || !reason.trim()) {
+      throw new ProductError('VARIANT_EDIT_REASON_REQUIRED', 'A reason is required to edit an active variant', 400);
+    }
+
+    const existing = await productsRepository.findVariantById(variantId);
+    if (!existing) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    if (existing.lifecycleStatus !== 'ACTIVE') {
+      throw new ProductError('VARIANT_NOT_ACTIVE', 'Only an ACTIVE variant can be edited this way', 409);
+    }
+
+    const currentValues = {
+      name: existing.name,
+      sizeLabel: existing.sizeLabel,
+      basePrice: existing.basePrice.toNumber(),
+      vatableCapAmount: existing.vatableCapAmount ? existing.vatableCapAmount.toNumber() : null,
+      displayOrder: existing.displayOrder,
+      kcal: existing.kcal,
+      maxFlavors: existing.maxFlavors,
+    };
+
+    const isMutation =
+      (data.name !== undefined && data.name !== currentValues.name) ||
+      (data.size_label !== undefined && data.size_label !== currentValues.sizeLabel) ||
+      (data.base_price !== undefined && data.base_price !== currentValues.basePrice) ||
+      (data.vatable_cap_amount !== undefined && data.vatable_cap_amount !== currentValues.vatableCapAmount) ||
+      (data.display_order !== undefined && data.display_order !== currentValues.displayOrder) ||
+      (data.kcal !== undefined && data.kcal !== currentValues.kcal) ||
+      (data.max_flavors !== undefined && data.max_flavors !== currentValues.maxFlavors);
+
+    if (!isMutation) {
+      throw new ProductError('VARIANT_EDIT_NO_CHANGES', "No fields differ from the variant's current values", 400);
+    }
+
+    const newVersion = existing.version + 1;
+    const snapshot = {
+      variantId,
+      version_before: existing.version,
+      fields_before: currentValues,
+      reason,
+      changed_by: actor.id,
+      changed_at: new Date().toISOString(),
+    };
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const variant = await productsRepository.updateVariantLifecycle(
+        variantId,
+        {
+          name: data.name,
+          sizeLabel: data.size_label,
+          basePrice: data.base_price,
+          vatableCapAmount: data.vatable_cap_amount,
+          displayOrder: data.display_order,
+          kcal: data.kcal,
+          maxFlavors: data.max_flavors,
+          version: newVersion,
+          lastChangeReason: reason,
+        },
+        tx,
+      );
+      await productsRepository.insertVariantChangeLog(
+        {
+          productVariantId: variantId,
+          version: newVersion,
+          changedById: actor.id,
+          reason,
+          snapshotJson: snapshot as Prisma.InputJsonValue,
+        },
+        tx,
+      );
+      return variant;
+    });
+
+    const response = toVariantResponse({ ...updated, variantFlavors: existing.variantFlavors });
+
+    notifySuperAdmin(SOCKET_EVENTS.VARIANT_EDITED, response);
+    await notifyVariantBranches(existing.productId, SOCKET_EVENTS.VARIANT_EDITED, response);
+
+    await recordAuditLog({
+      action: 'VARIANT_EDITED',
+      entityType: 'product_variant',
+      entityId: variantId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      afterState: { version: newVersion, reason, fields_changed: Object.keys(data) },
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async archiveVariant(variantId: string, reason: string | undefined, actor: ActorContext, ipAddress: string | null) {
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw new ProductError('VARIANT_ARCHIVE_FORBIDDEN', 'Only super_admin may archive a variant', 403);
+    }
+
+    const existing = await productsRepository.findVariantById(variantId);
+    if (!existing) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+
+    assertVariantTransition(existing.lifecycleStatus, 'ARCHIVED');
+
+    const snapshot = {
+      variantId,
+      version_at_archive: existing.version,
+      lifecycle_status_before: existing.lifecycleStatus,
+      fields_before: {
+        name: existing.name,
+        sizeLabel: existing.sizeLabel,
+        basePrice: existing.basePrice.toNumber(),
+        vatableCapAmount: existing.vatableCapAmount ? existing.vatableCapAmount.toNumber() : null,
+        displayOrder: existing.displayOrder,
+        kcal: existing.kcal,
+        maxFlavors: existing.maxFlavors,
+        isActive: existing.isActive,
+      },
+      reason: reason ?? null,
+      archived_by: actor.id,
+      archived_at: new Date().toISOString(),
+    };
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const variant = await productsRepository.updateVariantLifecycle(
+        variantId,
+        { lifecycleStatus: 'ARCHIVED', lastChangeReason: reason ?? null },
+        tx,
+      );
+      await productsRepository.insertVariantChangeLog(
+        {
+          productVariantId: variantId,
+          version: existing.version,
+          changedById: actor.id,
+          reason: reason ?? 'archived',
+          snapshotJson: snapshot as Prisma.InputJsonValue,
+        },
+        tx,
+      );
+      return variant;
+    });
+
+    const response = toVariantResponse({ ...updated, variantFlavors: existing.variantFlavors });
+
+    notifySuperAdmin(SOCKET_EVENTS.VARIANT_ARCHIVED, response);
+    await notifyVariantBranches(existing.productId, SOCKET_EVENTS.VARIANT_ARCHIVED, response);
+
+    await recordAuditLog({
+      action: 'VARIANT_ARCHIVED',
+      entityType: 'product_variant',
+      entityId: variantId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      afterState: { reason: reason ?? null },
       ipAddress,
     });
 

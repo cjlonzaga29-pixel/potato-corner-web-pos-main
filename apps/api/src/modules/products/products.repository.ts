@@ -1,6 +1,14 @@
 import type { Prisma, ProductStatus as PrismaProductStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { CreateProductData, CreateVariantData, ProductListFilters, UpdateProductData, UpdateVariantData } from './products.types.js';
+import type {
+  CreateProductData,
+  CreateVariantData,
+  InsertVariantChangeLogData,
+  ProductListFilters,
+  UpdateProductData,
+  UpdateVariantData,
+  UpdateVariantLifecycleData,
+} from './products.types.js';
 
 const creatorInclude = {
   creator: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -179,6 +187,8 @@ export const productsRepository = {
         basePrice: data.basePrice,
         displayOrder: data.displayOrder,
         isActive: data.isActive,
+        lifecycleStatus: data.lifecycleStatus,
+        createdById: data.createdById,
       },
     });
   },
@@ -301,5 +311,43 @@ export const productsRepository = {
       select: { flavorId: true },
     });
     return rows.map((r) => r.flavorId);
+  },
+
+  // --- CR-005 Sub-phase 3c — variant lifecycle ---
+
+  updateVariantLifecycle(
+    variantId: string,
+    updates: UpdateVariantLifecycleData,
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ) {
+    return tx.productVariant.update({
+      where: { id: variantId },
+      data: {
+        lifecycleStatus: updates.lifecycleStatus,
+        version: updates.version,
+        lastChangeReason: updates.lastChangeReason,
+        approvedById: updates.approvedById,
+        approvedAt: updates.approvedAt,
+        name: updates.name,
+        sizeLabel: updates.sizeLabel,
+        basePrice: updates.basePrice,
+        vatableCapAmount: updates.vatableCapAmount,
+        displayOrder: updates.displayOrder,
+        kcal: updates.kcal,
+        maxFlavors: updates.maxFlavors,
+      },
+    });
+  },
+
+  insertVariantChangeLog(data: InsertVariantChangeLogData, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productChangeLog.create({ data });
+  },
+
+  countRecipesWithFlavorSlot(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.recipe.count({ where: { productVariantId, deletedAt: null, flavorSlotIndex: { not: null } } });
+  },
+
+  countFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlot.count({ where: { productVariantId } });
   },
 };

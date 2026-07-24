@@ -78,6 +78,13 @@ export const SOCKET_EVENTS = {
   EXPENSE_CREATED: 'expense:created',
   EXPENSE_UPDATED: 'expense:updated',
   EXPENSE_DELETED: 'expense:deleted',
+
+  // CR-005 Sub-phase 3c — variant lifecycle approval workflow notifications
+  VARIANT_SUBMITTED_FOR_APPROVAL: 'variant:submitted_for_approval',
+  VARIANT_APPROVED: 'variant:approved',
+  VARIANT_REJECTED: 'variant:rejected',
+  VARIANT_EDITED: 'variant:edited',
+  VARIANT_ARCHIVED: 'variant:archived',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

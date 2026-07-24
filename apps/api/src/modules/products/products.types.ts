@@ -1,3 +1,4 @@
+import type { Prisma, VariantLifecycleStatus } from '@prisma/client';
 import type { ProductStatus } from '@potato-corner/shared';
 
 export interface ProductListFilters {
@@ -42,6 +43,9 @@ export interface CreateVariantData {
   basePrice: number;
   displayOrder?: number;
   isActive: boolean;
+  // CR-005 Sub-phase 3c
+  lifecycleStatus?: VariantLifecycleStatus;
+  createdById?: string;
 }
 
 export interface UpdateVariantData {
@@ -50,6 +54,31 @@ export interface UpdateVariantData {
   basePrice?: number;
   displayOrder?: number;
   isActive?: boolean;
+}
+
+// CR-005 Sub-phase 3c — variant lifecycle
+
+export interface UpdateVariantLifecycleData {
+  lifecycleStatus?: VariantLifecycleStatus;
+  version?: number;
+  lastChangeReason?: string | null;
+  approvedById?: string | null;
+  approvedAt?: Date | null;
+  name?: string;
+  sizeLabel?: string;
+  basePrice?: number;
+  vatableCapAmount?: number | null;
+  displayOrder?: number;
+  kcal?: number | null;
+  maxFlavors?: number;
+}
+
+export interface InsertVariantChangeLogData {
+  productVariantId: string;
+  version: number;
+  changedById: string;
+  reason: string;
+  snapshotJson: Prisma.InputJsonValue;
 }
 
 /** Mirrors auth.types.ts's AuthError — every module maps its own domain errors to HTTP status via its router's error handler. */

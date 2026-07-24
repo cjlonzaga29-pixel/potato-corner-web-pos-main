@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Prisma } from '@prisma/client';
-import { ROLES } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
 
 vi.mock('./products.repository.js', () => ({
   productsRepository: {
@@ -17,14 +17,49 @@ vi.mock('./products.repository.js', () => ({
     updateVariant: vi.fn(),
     findVariantById: vi.fn(),
     upsertBranchProductAvailability: vi.fn(),
-    findBranchProductAvailability: vi.fn(),
+    // Default empty — notifyVariantBranches (CR-005 Sub-phase 3c) iterates
+    // this on every lifecycle transition; only tests asserting branch-room
+    // broadcasts need to override it.
+    findBranchProductAvailability: vi.fn().mockResolvedValue([]),
     cascadeBranchAvailabilityOff: vi.fn(),
     getProductsByGlobalStatus: vi.fn(),
     allActiveBranches: vi.fn(),
     findActiveBranch: vi.fn(),
     deleteProductCascade: vi.fn(),
     deleteVariantCascade: vi.fn(),
+    // CR-005 Sub-phase 3c
+    updateVariantLifecycle: vi.fn(),
+    insertVariantChangeLog: vi.fn(),
+    countRecipesWithFlavorSlot: vi.fn(),
+    countFlavorSlots: vi.fn(),
   },
+}));
+
+vi.mock('../recipes/recipes.repository.js', () => ({
+  recipesRepository: {
+    findByVariant: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock('../inventory/inventory.repository.js', () => ({
+  inventoryRepository: {
+    findIngredientByBranchAndName: vi.fn(),
+  },
+}));
+
+vi.mock('../../lib/notify.js', () => ({
+  notifySuperAdmin: vi.fn(),
+  notifyBranch: vi.fn(),
+}));
+
+// editActiveVariant/archiveVariant wrap variant-update + change-log-insert in
+// prisma.$transaction; the repository calls inside that callback are mocked
+// separately above, so the tx client itself is never touched — a stand-in
+// object is enough, and $transaction just runs the callback immediately with
+// it. Same pattern as branches.service.test.ts's CR-005 3b companion fix.
+const { txMock } = vi.hoisted(() => ({ txMock: {} }));
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txMock)) },
 }));
 
 vi.mock('../../middleware/audit-log.js', () => ({
@@ -55,6 +90,10 @@ const { productsRepository } = await import('./products.repository.js');
 const { productsService } = await import('./products.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { supabaseAdmin } = await import('../../lib/supabase.js');
+const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
+const { recipesRepository } = await import('../recipes/recipes.repository.js');
+const { inventoryRepository } = await import('../inventory/inventory.repository.js');
+const { prisma } = await import('../../lib/prisma.js');
 
 function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -63,8 +102,17 @@ function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
     name: 'Regular',
     sizeLabel: 'Regular',
     basePrice: { toNumber: () => 65 },
+    vatableCapAmount: null,
     displayOrder: null,
     isActive: true,
+    kcal: null,
+    maxFlavors: 1,
+    lifecycleStatus: 'ACTIVE',
+    version: 1,
+    lastChangeReason: null,
+    createdById: null,
+    approvedById: null,
+    approvedAt: null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     variantFlavors: [],
@@ -74,6 +122,7 @@ function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
 
 const SUPER_ADMIN = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
 const SUPERVISOR = { id: 'sup-1', role: ROLES.SUPERVISOR };
+const BRANCH_ACTOR = { id: 'branch-acct-1', role: ROLES.BRANCH };
 
 function buildProduct(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -525,5 +574,361 @@ describe('productsService.deleteProductImage', () => {
 
     expect(result.image_url).toBeNull();
     expect(productsRepository.clearImage).toHaveBeenCalledWith('prod-1');
+  });
+});
+
+// --- CR-005 Sub-phase 3c — variant lifecycle ---
+
+describe('productsService — VARIANT_TRANSITIONS matrix', () => {
+  beforeEach(() => {
+    vi.mocked(productsRepository.countRecipesWithFlavorSlot).mockResolvedValue(0);
+    vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(0);
+    vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([]);
+  });
+
+  it('DRAFT allows PENDING_APPROVAL and ARCHIVED, rejects ACTIVE', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    await expect(productsService.submitVariantForApproval('variant-1', SUPER_ADMIN, null)).resolves.toBeDefined();
+
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+  });
+
+  it('PENDING_APPROVAL allows ACTIVE, DRAFT, and ARCHIVED, rejects re-submission', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();
+
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    await expect(productsService.rejectVariant('variant-1', 'needs fixes', SUPER_ADMIN, null)).resolves.toBeDefined();
+
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    await expect(productsService.archiveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();
+
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    await expect(productsService.submitVariantForApproval('variant-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+  });
+
+  it('ACTIVE allows only ARCHIVED', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ARCHIVED' }) as never);
+    await expect(productsService.archiveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();
+
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+    await expect(productsService.submitVariantForApproval('variant-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+  });
+
+  it('ARCHIVED is terminal — every transition is rejected', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ARCHIVED' }) as never);
+
+    await expect(productsService.archiveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+    await expect(productsService.rejectVariant('variant-1', 'reason', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+    await expect(productsService.submitVariantForApproval('variant-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+  });
+});
+
+describe('productsService.submitVariantForApproval', () => {
+  beforeEach(() => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+  });
+
+  it('supervisor can submit a DRAFT variant for approval', async () => {
+    const result = await productsService.submitVariantForApproval('variant-1', SUPERVISOR, null);
+
+    expect(result.lifecycle_status).toBe('PENDING_APPROVAL');
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith('variant-1', { lifecycleStatus: 'PENDING_APPROVAL' });
+    expect(notifySuperAdmin).toHaveBeenCalledWith(SOCKET_EVENTS.VARIANT_SUBMITTED_FOR_APPROVAL, expect.anything());
+  });
+
+  it('super_admin can submit a DRAFT variant for approval', async () => {
+    const result = await productsService.submitVariantForApproval('variant-1', SUPER_ADMIN, null);
+    expect(result.lifecycle_status).toBe('PENDING_APPROVAL');
+  });
+
+  it('staff/branch role gets 403', async () => {
+    await expect(productsService.submitVariantForApproval('variant-1', BRANCH_ACTOR, null)).rejects.toMatchObject({
+      code: 'VARIANT_SUBMIT_FORBIDDEN',
+      statusCode: 403,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.approveVariant', () => {
+  beforeEach(() => {
+    vi.mocked(productsRepository.countRecipesWithFlavorSlot).mockResolvedValue(0);
+    vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(0);
+    vi.mocked(recipesRepository.findByVariant).mockResolvedValue([]);
+    vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([
+      { id: 'branch-a', code: 'PC-A-001', name: 'Branch A', city: 'Manila' },
+    ] as never);
+  });
+
+  it('super_admin approves a PENDING_APPROVAL variant with no gate blockers', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(
+      buildVariant({ lifecycleStatus: 'ACTIVE', approvedById: SUPER_ADMIN.id }) as never,
+    );
+
+    vi.mocked(productsRepository.findBranchProductAvailability).mockResolvedValue([
+      { branchId: 'branch-a', isAvailable: true, updatedAt: new Date(), branch: { code: 'PC-A-001', name: 'Branch A', city: 'Manila' } },
+    ] as never);
+
+    const result = await productsService.approveVariant('variant-1', 'looks good', SUPER_ADMIN, null);
+
+    expect(result.lifecycle_status).toBe('ACTIVE');
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith(
+      'variant-1',
+      expect.objectContaining({ lifecycleStatus: 'ACTIVE', approvedById: SUPER_ADMIN.id, lastChangeReason: 'looks good' }),
+    );
+    expect(notifyBranch).toHaveBeenCalledWith('branch-a', SOCKET_EVENTS.VARIANT_APPROVED, expect.anything());
+    expect(notifySuperAdmin).toHaveBeenCalledWith(SOCKET_EVENTS.VARIANT_APPROVED, expect.anything());
+  });
+
+  it('supervisor gets 403', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'VARIANT_APPROVE_FORBIDDEN',
+      statusCode: 403,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('reason is optional — approval succeeds without one', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith('variant-1', expect.objectContaining({ lastChangeReason: null }));
+  });
+
+  it('Phase 4 gate blocks approval when a recipe row has a flavor slot index', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.countRecipesWithFlavorSlot).mockResolvedValue(1);
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
+      statusCode: 409,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('Phase 4 gate blocks approval when a ProductFlavorSlot row exists', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(1);
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
+      statusCode: 409,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('Guarantee 6 gate blocks approval when a recipe ingredient is unresolvable in every branch', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(recipesRepository.findByVariant).mockResolvedValue([
+      { id: 'recipe-1', ingredient: { id: 'ing-1', name: 'Ghost Potato', branchId: 'branch-z' } },
+    ] as never);
+    vi.mocked(inventoryRepository.findIngredientByBranchAndName).mockResolvedValue(null);
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
+      statusCode: 409,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.rejectVariant', () => {
+  it('super_admin rejects a PENDING_APPROVAL variant back to DRAFT with a reason', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(
+      buildVariant({ lifecycleStatus: 'DRAFT', lastChangeReason: 'missing recipe' }) as never,
+    );
+
+    const result = await productsService.rejectVariant('variant-1', 'missing recipe', SUPER_ADMIN, null);
+
+    expect(result.lifecycle_status).toBe('DRAFT');
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith('variant-1', {
+      lifecycleStatus: 'DRAFT',
+      lastChangeReason: 'missing recipe',
+    });
+  });
+
+  it('supervisor gets 403', async () => {
+    await expect(productsService.rejectVariant('variant-1', 'missing recipe', SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'VARIANT_REJECT_FORBIDDEN',
+      statusCode: 403,
+    });
+    expect(productsRepository.findVariantById).not.toHaveBeenCalled();
+  });
+
+  it('empty reason is rejected', async () => {
+    await expect(productsService.rejectVariant('variant-1', '   ', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_REJECT_REASON_REQUIRED',
+      statusCode: 400,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('non-PENDING_APPROVAL state is rejected', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+
+    await expect(productsService.rejectVariant('variant-1', 'reason', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+  });
+});
+
+describe('productsService.editActiveVariant', () => {
+  it('super_admin edits an ACTIVE variant with a reason and real changes: bumps version, sets reason, inserts change log', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({ lifecycleStatus: 'ACTIVE', version: 1, basePrice: { toNumber: () => 65 } }) as never,
+    );
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(
+      buildVariant({ lifecycleStatus: 'ACTIVE', version: 2, basePrice: { toNumber: () => 75 }, lastChangeReason: 'price adjustment' }) as never,
+    );
+
+    const result = await productsService.editActiveVariant('variant-1', { base_price: 75 }, 'price adjustment', SUPER_ADMIN, null);
+
+    expect(result.version).toBe(2);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith(
+      'variant-1',
+      expect.objectContaining({ basePrice: 75, version: 2, lastChangeReason: 'price adjustment' }),
+      txMock,
+    );
+    expect(productsRepository.insertVariantChangeLog).toHaveBeenCalledWith(
+      expect.objectContaining({ productVariantId: 'variant-1', version: 2, changedById: SUPER_ADMIN.id, reason: 'price adjustment' }),
+      txMock,
+    );
+  });
+
+  it('supervisor gets 403', async () => {
+    await expect(productsService.editActiveVariant('variant-1', { base_price: 75 }, 'reason', SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'VARIANT_EDIT_ACTIVE_FORBIDDEN',
+      statusCode: 403,
+    });
+  });
+
+  it('empty reason is rejected', async () => {
+    await expect(productsService.editActiveVariant('variant-1', { base_price: 75 }, '  ', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_EDIT_REASON_REQUIRED',
+      statusCode: 400,
+    });
+  });
+
+  it('no actual data changes is rejected', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({ lifecycleStatus: 'ACTIVE', name: 'Regular', basePrice: { toNumber: () => 65 } }) as never,
+    );
+
+    await expect(productsService.editActiveVariant('variant-1', { name: 'Regular' }, 'reason', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_EDIT_NO_CHANGES',
+      statusCode: 400,
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('non-ACTIVE state is rejected', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+
+    await expect(productsService.editActiveVariant('variant-1', { base_price: 75 }, 'reason', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_NOT_ACTIVE',
+      statusCode: 409,
+    });
+  });
+});
+
+describe('productsService.archiveVariant', () => {
+  it('super_admin archives an ACTIVE variant: lifecycleStatus ARCHIVED, change log inserted, version not bumped', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({ lifecycleStatus: 'ACTIVE', version: 3, basePrice: { toNumber: () => 65 } }) as never,
+    );
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ARCHIVED', version: 3 }) as never);
+
+    const result = await productsService.archiveVariant('variant-1', 'end of season', SUPER_ADMIN, null);
+
+    expect(result.lifecycle_status).toBe('ARCHIVED');
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith(
+      'variant-1',
+      { lifecycleStatus: 'ARCHIVED', lastChangeReason: 'end of season' },
+      txMock,
+    );
+    expect(productsRepository.insertVariantChangeLog).toHaveBeenCalledWith(
+      expect.objectContaining({ productVariantId: 'variant-1', version: 3, reason: 'end of season' }),
+      txMock,
+    );
+  });
+
+  it('cannot archive an already-ARCHIVED variant', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ARCHIVED' }) as never);
+
+    await expect(productsService.archiveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_INVALID_TRANSITION',
+      statusCode: 409,
+    });
+  });
+
+  it('supervisor gets 403', async () => {
+    await expect(productsService.archiveVariant('variant-1', undefined, SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'VARIANT_ARCHIVE_FORBIDDEN',
+      statusCode: 403,
+    });
+  });
+});
+
+describe('productsService.createVariant — lifecycle_status extension', () => {
+  it('existing callers without lifecycle_status still default to ACTIVE (schema default) and record createdById', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.createVariant).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+
+    await productsService.createVariant('prod-1', { name: 'Large', size_label: 'Large', base_price: 85, is_active: true }, SUPER_ADMIN, null);
+
+    expect(productsRepository.createVariant).toHaveBeenCalledWith(
+      'prod-1',
+      expect.objectContaining({ lifecycleStatus: undefined, createdById: SUPER_ADMIN.id }),
+    );
+  });
+
+  it('a new caller passing lifecycle_status DRAFT gets a DRAFT variant', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.createVariant).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+
+    const result = await productsService.createVariant(
+      'prod-1',
+      { name: 'Large', size_label: 'Large', base_price: 85, is_active: true, lifecycle_status: 'DRAFT' },
+      SUPER_ADMIN,
+      null,
+    );
+
+    expect(productsRepository.createVariant).toHaveBeenCalledWith('prod-1', expect.objectContaining({ lifecycleStatus: 'DRAFT' }));
+    expect(result.lifecycle_status).toBe('DRAFT');
   });
 });

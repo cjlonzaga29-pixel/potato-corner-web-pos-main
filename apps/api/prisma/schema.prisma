@@ -730,6 +730,11 @@ model Recipe {
   flavorId         String?   @map("flavor_id")
   quantity         Decimal   @db.Decimal(10, 4)
   unit             String
+  // CR-004: bumped on every quantity/unit update (recipesRepository.updateRecipe).
+  // Snapshotted onto TransactionItem.recipeVersion at sale time so a completed
+  // sale's line item stays traceable to the exact recipe revision that priced
+  // its deduction, even after the master recipe changes later.
+  version          Int       @default(1)
   deletedAt        DateTime? @map("deleted_at")
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
@@ -887,6 +892,11 @@ model TransactionItem {
   unitPriceSnapshot   Decimal @map("unit_price_snapshot") @db.Decimal(10, 2)
   quantity            Int
   lineTotal           Decimal @map("line_total") @db.Decimal(10, 2)
+  // CR-004: the master Recipe.version(s) in effect for this line's deduction
+  // at sale time — a frozen snapshot, same reasoning as the name/price
+  // snapshot fields above. Defaults to 1 for historical rows predating this
+  // column.
+  recipeVersion       Int     @default(1) @map("recipe_version")
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id])
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)

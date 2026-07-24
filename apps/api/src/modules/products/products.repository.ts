@@ -350,4 +350,85 @@ export const productsRepository = {
   countFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
     return tx.productFlavorSlot.count({ where: { productVariantId } });
   },
+
+  // --- CR-005 Sub-phase 3d — flavor slot CRUD ---
+
+  listVariantFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlot.findMany({ where: { productVariantId }, orderBy: { slotIndex: 'asc' } });
+  },
+
+  findFlavorSlotById(slotId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlot.findUnique({ where: { id: slotId } });
+  },
+
+  insertFlavorSlot(
+    data: {
+      productVariantId: string;
+      slotIndex: number;
+      label: string;
+      flavorQty: Prisma.Decimal;
+      unit: string;
+      required: boolean;
+    },
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ) {
+    return tx.productFlavorSlot.create({ data });
+  },
+
+  updateFlavorSlot(
+    slotId: string,
+    data: {
+      label?: string;
+      flavorQty?: Prisma.Decimal;
+      unit?: string;
+      required?: boolean;
+    },
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ) {
+    return tx.productFlavorSlot.update({ where: { id: slotId }, data });
+  },
+
+  deleteFlavorSlot(slotId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlot.delete({ where: { id: slotId } });
+  },
+
+  /** Removal shifts every higher slotIndex down by 1 to keep 0..N-1 contiguity (Decision M). Two-phase (+10000 offset, then final) avoids tripping the (productVariantId, slotIndex) unique constraint mid-loop. */
+  async shiftFlavorSlotIndicesDown(
+    productVariantId: string,
+    startingFromIndex: number,
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ): Promise<void> {
+    const affected = await tx.productFlavorSlot.findMany({
+      where: { productVariantId, slotIndex: { gt: startingFromIndex } },
+      orderBy: { slotIndex: 'asc' },
+    });
+    if (affected.length === 0) return;
+
+    const TEMP_OFFSET = 10000;
+    for (const slot of affected) {
+      await tx.productFlavorSlot.update({ where: { id: slot.id }, data: { slotIndex: slot.slotIndex + TEMP_OFFSET } });
+    }
+    for (const slot of affected) {
+      await tx.productFlavorSlot.update({ where: { id: slot.id }, data: { slotIndex: slot.slotIndex - 1 } });
+    }
+  },
+
+  /** Rewrites every slot's slotIndex to match its position in orderedSlotIds (Decision L). Same two-phase temp-offset pattern as shiftFlavorSlotIndicesDown. Every update is scoped to productVariantId as a defense-in-depth guard against cross-variant contamination. */
+  async rewriteFlavorSlotOrder(
+    productVariantId: string,
+    orderedSlotIds: string[],
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ): Promise<void> {
+    const TEMP_OFFSET = 10000;
+    for (const [i, slotId] of orderedSlotIds.entries()) {
+      await tx.productFlavorSlot.updateMany({ where: { id: slotId, productVariantId }, data: { slotIndex: i + TEMP_OFFSET } });
+    }
+    for (const [i, slotId] of orderedSlotIds.entries()) {
+      await tx.productFlavorSlot.updateMany({ where: { id: slotId, productVariantId }, data: { slotIndex: i } });
+    }
+  },
+
+  countVariantFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlot.count({ where: { productVariantId } });
+  },
 };

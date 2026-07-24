@@ -85,6 +85,9 @@ export const SOCKET_EVENTS = {
   VARIANT_REJECTED: 'variant:rejected',
   VARIANT_EDITED: 'variant:edited',
   VARIANT_ARCHIVED: 'variant:archived',
+
+  // CR-005 Sub-phase 3d — flavor slot CRUD
+  VARIANT_FLAVOR_SLOTS_CHANGED: 'variant:flavor_slots_changed',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

@@ -1,8 +1,14 @@
 import sharp from 'sharp';
-import { Prisma, type VariantLifecycleStatus } from '@prisma/client';
+import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS, type JwtPayload, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
-import { ProductError, type ProductListFilters } from './products.types.js';
+import {
+  ProductError,
+  type AddFlavorSlotInput,
+  type ProductListFilters,
+  type ReorderFlavorSlotsInput,
+  type UpdateFlavorSlotInput,
+} from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
@@ -346,6 +352,114 @@ interface EditActiveVariantInput {
   display_order?: number;
   kcal?: number | null;
   max_flavors?: number;
+}
+
+// --- CR-005 Sub-phase 3d — flavor slot CRUD ---
+
+type SlotOperation = 'ADD_SLOT' | 'UPDATE_SLOT' | 'REMOVE_SLOT' | 'REORDER_SLOTS';
+
+type VariantWithRelations = NonNullable<Awaited<ReturnType<typeof productsRepository.findVariantById>>>;
+
+function toFlavorSlotSnapshot(slot: { id: string; slotIndex: number; label: string; flavorQty: { toNumber(): number }; unit: string; required: boolean }) {
+  return {
+    id: slot.id,
+    slot_index: slot.slotIndex,
+    label: slot.label,
+    flavor_qty: slot.flavorQty.toNumber(),
+    unit: slot.unit,
+    required: slot.required,
+  };
+}
+
+/**
+ * CR-005 Sub-phase 3d — shared slot-mutation governance, mirroring
+ * editActiveVariant's RBAC + version-bump + ChangeLog machinery (Decisions
+ * J/K): DRAFT/PENDING_APPROVAL allow supervisor + super_admin with no
+ * version bump; ACTIVE requires super_admin + a mandatory reason and wraps
+ * the mutation in a transaction that bumps version and writes a ChangeLog
+ * snapshot; ARCHIVED rejects every slot change. mutation receives the
+ * already-loaded variant so callers (e.g. addFlavorSlot's maxFlavors check)
+ * never need a second round trip.
+ */
+async function performSlotEditWithActiveGovernance<T>(
+  variantId: string,
+  reason: string | undefined,
+  actor: ActorContext,
+  ipAddress: string | null,
+  operation: SlotOperation,
+  mutation: (tx: Prisma.TransactionClient | typeof prisma, variant: VariantWithRelations) => Promise<T>,
+): Promise<T> {
+  const variant = await productsRepository.findVariantById(variantId);
+  if (!variant) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+
+  if (variant.lifecycleStatus === 'ARCHIVED') {
+    throw new ProductError('VARIANT_ARCHIVED_NO_SLOT_CHANGES', 'Archived variants cannot have their flavor slots changed', 409);
+  }
+
+  let result: T;
+
+  if (variant.lifecycleStatus === 'ACTIVE') {
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw new ProductError('VARIANT_SLOT_EDIT_FORBIDDEN', 'Only super_admin may edit flavor slots on an ACTIVE variant', 403);
+    }
+    if (!reason || !reason.trim()) {
+      throw new ProductError('VARIANT_SLOT_EDIT_REASON_REQUIRED', 'A reason is required to edit flavor slots on an ACTIVE variant', 400);
+    }
+
+    result = await prisma.$transaction(async (tx) => {
+      const slotsBefore = await productsRepository.listVariantFlavorSlots(variantId, tx);
+      const mutationResult = await mutation(tx, variant);
+      const slotsAfter = await productsRepository.listVariantFlavorSlots(variantId, tx);
+
+      const beforeSnapshot = slotsBefore.map(toFlavorSlotSnapshot);
+      const afterSnapshot = slotsAfter.map(toFlavorSlotSnapshot);
+      if (JSON.stringify(beforeSnapshot) === JSON.stringify(afterSnapshot)) {
+        throw new ProductError('VARIANT_SLOT_EDIT_NO_CHANGES', 'No slot changes were made', 400);
+      }
+
+      const versionAfter = variant.version + 1;
+      await productsRepository.updateVariantLifecycle(variantId, { version: versionAfter, lastChangeReason: reason }, tx);
+      await productsRepository.insertVariantChangeLog(
+        {
+          productVariantId: variantId,
+          version: versionAfter,
+          changedById: actor.id,
+          reason,
+          snapshotJson: {
+            operation,
+            slots_before: beforeSnapshot,
+            slots_after: afterSnapshot,
+            version_before: variant.version,
+            version_after: versionAfter,
+            changed_at: new Date().toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+        tx,
+      );
+
+      return mutationResult;
+    });
+  } else {
+    if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.SUPERVISOR) {
+      throw new ProductError('VARIANT_SLOT_EDIT_FORBIDDEN', 'Only super_admin or supervisor may edit flavor slots', 403);
+    }
+    result = await mutation(prisma, variant);
+  }
+
+  notifySuperAdmin(SOCKET_EVENTS.VARIANT_FLAVOR_SLOTS_CHANGED, { variant_id: variantId, operation });
+  await notifyVariantBranches(variant.productId, SOCKET_EVENTS.VARIANT_FLAVOR_SLOTS_CHANGED, { variant_id: variantId, operation });
+
+  await recordAuditLog({
+    action: `VARIANT_FLAVOR_SLOTS_${operation}`,
+    entityType: 'product_flavor_slot',
+    entityId: variantId,
+    actorId: actor.id,
+    actorRole: actor.role,
+    afterState: { operation, reason: reason ?? null },
+    ipAddress,
+  });
+
+  return result;
 }
 
 export const productsService = {
@@ -1210,5 +1324,140 @@ export const productsService = {
     });
 
     return { image_url: null };
+  },
+
+  // --- CR-005 Sub-phase 3d — flavor slot CRUD ---
+
+  async addFlavorSlot(
+    variantId: string,
+    data: AddFlavorSlotInput,
+    reason: string | undefined,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<ProductFlavorSlot> {
+    return performSlotEditWithActiveGovernance(variantId, reason, actor, ipAddress, 'ADD_SLOT', async (tx, variant) => {
+      if (variant.maxFlavors === 0) {
+        throw new ProductError('VARIANT_DOES_NOT_ACCEPT_FLAVORS', 'This variant does not accept flavor slots (maxFlavors is 0)', 400);
+      }
+
+      const currentCount = await productsRepository.countVariantFlavorSlots(variantId, tx);
+      if (currentCount >= variant.maxFlavors) {
+        throw new ProductError(
+          'VARIANT_MAX_FLAVORS_EXCEEDED',
+          `Variant allows maximum ${variant.maxFlavors} flavor slots; use editActiveVariant to raise maxFlavors first.`,
+          409,
+        );
+      }
+
+      if (!(data.flavorQty > 0)) {
+        throw new ProductError('VARIANT_SLOT_INVALID_QUANTITY', 'flavorQty must be greater than 0', 400);
+      }
+      if (!data.unit || !data.unit.trim()) {
+        throw new ProductError('VARIANT_SLOT_INVALID_UNIT', 'unit must be a non-empty string', 400);
+      }
+
+      return productsRepository.insertFlavorSlot(
+        {
+          productVariantId: variantId,
+          slotIndex: currentCount,
+          label: data.label,
+          flavorQty: new Prisma.Decimal(data.flavorQty),
+          unit: data.unit,
+          required: data.required ?? true,
+        },
+        tx,
+      );
+    });
+  },
+
+  async updateFlavorSlot(
+    slotId: string,
+    data: UpdateFlavorSlotInput,
+    reason: string | undefined,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<ProductFlavorSlot> {
+    const slot = await productsRepository.findFlavorSlotById(slotId);
+    if (!slot) throw new ProductError('VARIANT_SLOT_NOT_FOUND', 'Flavor slot not found', 404);
+
+    return performSlotEditWithActiveGovernance(slot.productVariantId, reason, actor, ipAddress, 'UPDATE_SLOT', async (tx) => {
+      const current = await productsRepository.findFlavorSlotById(slotId, tx);
+      if (!current) throw new ProductError('VARIANT_SLOT_NOT_FOUND', 'Flavor slot not found', 404);
+
+      const isMutation =
+        (data.label !== undefined && data.label !== current.label) ||
+        (data.flavorQty !== undefined && data.flavorQty !== current.flavorQty.toNumber()) ||
+        (data.unit !== undefined && data.unit !== current.unit) ||
+        (data.required !== undefined && data.required !== current.required);
+
+      if (!isMutation) {
+        throw new ProductError('VARIANT_SLOT_EDIT_NO_CHANGES', "No fields differ from the slot's current values", 400);
+      }
+      if (data.flavorQty !== undefined && !(data.flavorQty > 0)) {
+        throw new ProductError('VARIANT_SLOT_INVALID_QUANTITY', 'flavorQty must be greater than 0', 400);
+      }
+      if (data.unit !== undefined && !data.unit.trim()) {
+        throw new ProductError('VARIANT_SLOT_INVALID_UNIT', 'unit must be a non-empty string', 400);
+      }
+
+      return productsRepository.updateFlavorSlot(
+        slotId,
+        {
+          label: data.label,
+          flavorQty: data.flavorQty !== undefined ? new Prisma.Decimal(data.flavorQty) : undefined,
+          unit: data.unit,
+          required: data.required,
+        },
+        tx,
+      );
+    });
+  },
+
+  async removeFlavorSlot(slotId: string, reason: string | undefined, actor: ActorContext, ipAddress: string | null): Promise<void> {
+    const slot = await productsRepository.findFlavorSlotById(slotId);
+    if (!slot) throw new ProductError('VARIANT_SLOT_NOT_FOUND', 'Flavor slot not found', 404);
+
+    await performSlotEditWithActiveGovernance(slot.productVariantId, reason, actor, ipAddress, 'REMOVE_SLOT', async (tx) => {
+      await productsRepository.deleteFlavorSlot(slotId, tx);
+      await productsRepository.shiftFlavorSlotIndicesDown(slot.productVariantId, slot.slotIndex, tx);
+    });
+  },
+
+  async reorderFlavorSlots(
+    variantId: string,
+    data: ReorderFlavorSlotsInput,
+    reason: string | undefined,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<ProductFlavorSlot[]> {
+    return performSlotEditWithActiveGovernance(variantId, reason, actor, ipAddress, 'REORDER_SLOTS', async (tx) => {
+      const currentSlots = await productsRepository.listVariantFlavorSlots(variantId, tx);
+
+      if (data.slotIds.length !== currentSlots.length) {
+        throw new ProductError('VARIANT_SLOT_REORDER_LENGTH_MISMATCH', 'slotIds must include every current slot exactly once', 400);
+      }
+
+      const currentIds = new Set(currentSlots.map((s) => s.id));
+      const seen = new Set<string>();
+      for (const id of data.slotIds) {
+        if (!currentIds.has(id)) {
+          throw new ProductError('VARIANT_SLOT_REORDER_INVALID_ID', `Slot ${id} does not belong to this variant`, 400);
+        }
+        if (seen.has(id)) {
+          throw new ProductError('VARIANT_SLOT_REORDER_DUPLICATE_ID', `Slot ${id} appears more than once in slotIds`, 400);
+        }
+        seen.add(id);
+      }
+
+      await productsRepository.rewriteFlavorSlotOrder(variantId, data.slotIds, tx);
+      return productsRepository.listVariantFlavorSlots(variantId, tx);
+    });
+  },
+
+  async listFlavorSlots(variantId: string, _actor: ActorContext): Promise<ProductFlavorSlot[]> {
+    const variant = await productsRepository.findVariantById(variantId);
+    if (!variant) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+
+    return productsRepository.listVariantFlavorSlots(variantId);
   },
 };

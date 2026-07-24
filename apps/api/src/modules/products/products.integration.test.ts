@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -18,6 +18,7 @@ const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL && process.
 // inside describe.skipIf below do.
 const { prisma } = await import('../../lib/prisma.js');
 const { productsService } = await import('./products.service.js');
+const { productsRepository } = await import('./products.repository.js');
 
 describe.skipIf(!canRunIntegrationTests)('products integration', () => {
   beforeAll(async () => {
@@ -323,5 +324,212 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
 
     const movements = await prisma.inventoryMovement.count({ where: { ingredientId: branchBIngredient.id } });
     expect(movements).toBe(0);
+  });
+});
+
+/**
+ * CR-005 Sub-phase 3d — flavor slot CRUD (add/update/remove/reorder/list),
+ * exercised against the real service + repository layers and a real
+ * Postgres database. Follows the same fixture convention as the 3c suite
+ * above.
+ */
+describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-phase 3d flavor slot CRUD', () => {
+  let superAdminId: string;
+  let supervisorId: string;
+  let productId: string;
+  const createdProductIds: string[] = [];
+
+  const SUPER_ADMIN = () => ({ id: superAdminId, role: 'super_admin' });
+  const SUPERVISOR = () => ({ id: supervisorId, role: 'supervisor' });
+
+  beforeAll(async () => {
+    const admin = await prisma.user.create({
+      data: {
+        email: `cr005d-admin-${randomUUID()}@potatocorner.test`,
+        passwordHash: 'unused-in-this-suite',
+        role: 'super_admin',
+        firstName: 'CR-005D',
+        lastName: 'Test Admin',
+        employmentType: 'regular',
+        mustChangePassword: false,
+      },
+    });
+    superAdminId = admin.id;
+
+    const supervisor = await prisma.user.create({
+      data: {
+        email: `cr005d-sup-${randomUUID()}@potatocorner.test`,
+        passwordHash: 'unused-in-this-suite',
+        role: 'supervisor',
+        firstName: 'CR-005D',
+        lastName: 'Test Supervisor',
+        employmentType: 'regular',
+        mustChangePassword: false,
+      },
+    });
+    supervisorId = supervisor.id;
+
+    const product = await prisma.product.create({ data: { name: 'CR-005D Slot Fries', status: 'active' } });
+    productId = product.id;
+    createdProductIds.push(productId);
+  });
+
+  afterAll(async () => {
+    await prisma.productFlavorSlot.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
+    await prisma.productChangeLog.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
+    await prisma.productVariant.deleteMany({ where: { productId: { in: createdProductIds } } });
+    await prisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: [superAdminId, supervisorId] } } });
+    await prisma.$disconnect();
+  });
+
+  async function createDraftVariant(namePrefix: string, maxFlavors = 5) {
+    return prisma.productVariant.create({
+      data: {
+        productId,
+        name: `${namePrefix}-${randomUUID().slice(0, 8)}`,
+        sizeLabel: 'Regular',
+        basePrice: 65,
+        isActive: true,
+        lifecycleStatus: 'DRAFT',
+        createdById: superAdminId,
+        maxFlavors,
+      },
+    });
+  }
+
+  it('walks the full slot lifecycle: add 3 -> update -> reorder -> remove -> contiguous final state', async () => {
+    const variant = await createDraftVariant('full-slot-lifecycle');
+
+    const s0 = await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const s1 = await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const s2 = await productsService.addFlavorSlot(variant.id, { label: 'C', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    expect([s0.slotIndex, s1.slotIndex, s2.slotIndex]).toEqual([0, 1, 2]);
+
+    await productsService.updateFlavorSlot(s1.id, { label: 'B-renamed' }, undefined, SUPERVISOR(), null);
+
+    const reordered = await productsService.reorderFlavorSlots(variant.id, { slotIds: [s2.id, s0.id, s1.id] }, undefined, SUPERVISOR(), null);
+    expect(reordered.map((s) => s.id)).toEqual([s2.id, s0.id, s1.id]);
+    expect(reordered.map((s) => s.slotIndex)).toEqual([0, 1, 2]);
+
+    // Order asserted above as [s2, s0, s1] — s0 now sits at index 1. Remove it.
+    await productsService.removeFlavorSlot(s0.id, undefined, SUPERVISOR(), null);
+
+    const final = await productsService.listFlavorSlots(variant.id, SUPERVISOR());
+    expect(final).toHaveLength(2);
+    expect(final.map((s) => s.slotIndex)).toEqual([0, 1]);
+    expect(final.map((s) => s.id)).toEqual([s2.id, s1.id]);
+    expect(final.find((s) => s.id === s1.id)?.label).toBe('B-renamed');
+  });
+
+  it('ACTIVE variant slot changes create a ChangeLog entry with the operation and before/after slots in snapshotJson', async () => {
+    const variant = await createDraftVariant('active-changelog');
+    await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
+
+    const slot = await productsService.addFlavorSlot(
+      variant.id,
+      { label: 'Cheese', flavorQty: 5, unit: 'grams' },
+      'launching cheese flavor',
+      SUPER_ADMIN(),
+      null,
+    );
+
+    const log = await prisma.productChangeLog.findFirstOrThrow({ where: { productVariantId: variant.id } });
+    const snapshot = log.snapshotJson as {
+      operation: string;
+      slots_before: unknown[];
+      slots_after: { id: string; label: string }[];
+      version_before: number;
+      version_after: number;
+    };
+    expect(snapshot.operation).toBe('ADD_SLOT');
+    expect(snapshot.slots_before).toEqual([]);
+    expect(snapshot.slots_after).toEqual([expect.objectContaining({ id: slot.id, label: 'Cheese' })]);
+    expect(snapshot.version_before).toBe(1);
+    expect(snapshot.version_after).toBe(2);
+    expect(log.version).toBe(2);
+    expect(log.reason).toBe('launching cheese flavor');
+
+    const updated = await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } });
+    expect(updated.version).toBe(2);
+  });
+
+  it('rolls back on a mid-operation failure — no orphan slots, no partial index shift persisted', async () => {
+    const variant = await createDraftVariant('shift-rollback');
+    const s0 = await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const s1 = await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const s2 = await productsService.addFlavorSlot(variant.id, { label: 'C', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+
+    // Promote to ACTIVE so the mutation runs inside performSlotEditWithActiveGovernance's
+    // prisma.$transaction — the real test of whether a mid-op failure rolls back atomically.
+    await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
+
+    const shiftSpy = vi
+      .spyOn(productsRepository, 'shiftFlavorSlotIndicesDown')
+      .mockRejectedValueOnce(new Error('simulated mid-operation failure'));
+
+    await expect(
+      productsService.removeFlavorSlot(s1.id, 'remove middle', SUPER_ADMIN(), null),
+    ).rejects.toThrow('simulated mid-operation failure');
+
+    shiftSpy.mockRestore();
+
+    const remaining = await prisma.productFlavorSlot.findMany({ where: { productVariantId: variant.id }, orderBy: { slotIndex: 'asc' } });
+    // The delete inside the same transaction must have rolled back alongside the failed shift.
+    expect(remaining.map((s) => s.id)).toEqual([s0.id, s1.id, s2.id]);
+    expect(remaining.map((s) => s.slotIndex)).toEqual([0, 1, 2]);
+
+    const logs = await prisma.productChangeLog.count({ where: { productVariantId: variant.id } });
+    expect(logs).toBe(0);
+  });
+
+  it('reorder maintains referential integrity — every slot still belongs to its own variant, no cross-variant contamination', async () => {
+    const variantA = await createDraftVariant('reorder-integrity-a');
+    const variantB = await createDraftVariant('reorder-integrity-b');
+
+    const a0 = await productsService.addFlavorSlot(variantA.id, { label: 'A0', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const a1 = await productsService.addFlavorSlot(variantA.id, { label: 'A1', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const b0 = await productsService.addFlavorSlot(variantB.id, { label: 'B0', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+
+    await productsService.reorderFlavorSlots(variantA.id, { slotIds: [a1.id, a0.id] }, undefined, SUPERVISOR(), null);
+
+    const slotsA = await prisma.productFlavorSlot.findMany({ where: { productVariantId: variantA.id } });
+    const slotsB = await prisma.productFlavorSlot.findMany({ where: { productVariantId: variantB.id } });
+    expect(slotsA.map((s) => s.id).sort()).toEqual([a0.id, a1.id].sort());
+    expect(slotsB.map((s) => s.id)).toEqual([b0.id]);
+    expect(slotsB.map((s) => s.slotIndex)).toEqual([0]);
+  });
+
+  it('enforces maxFlavors end to end: a third add is rejected when maxFlavors is 2', async () => {
+    const variant = await createDraftVariant('max-flavors-e2e', 2);
+
+    await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+
+    await expect(
+      productsService.addFlavorSlot(variant.id, { label: 'C', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null),
+    ).rejects.toMatchObject({ code: 'VARIANT_MAX_FLAVORS_EXCEEDED', statusCode: 409 });
+
+    const count = await prisma.productFlavorSlot.count({ where: { productVariantId: variant.id } });
+    expect(count).toBe(2);
+  });
+
+  it('cross-variant isolation: adding a slot to variant A does not affect variant B\'s slot count', async () => {
+    const variantA = await createDraftVariant('cross-isolation-a');
+    const variantB = await createDraftVariant('cross-isolation-b');
+
+    await productsService.addFlavorSlot(variantB.id, { label: 'B0', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    const beforeCountA = await prisma.productFlavorSlot.count({ where: { productVariantId: variantA.id } });
+
+    await productsService.addFlavorSlot(variantA.id, { label: 'A0', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    await productsService.addFlavorSlot(variantA.id, { label: 'A1', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+
+    const afterCountA = await prisma.productFlavorSlot.count({ where: { productVariantId: variantA.id } });
+    const countB = await prisma.productFlavorSlot.count({ where: { productVariantId: variantB.id } });
+    expect(beforeCountA).toBe(0);
+    expect(afterCountA).toBe(2);
+    expect(countB).toBe(1);
   });
 });

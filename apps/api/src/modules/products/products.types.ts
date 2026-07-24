@@ -81,6 +81,30 @@ export interface InsertVariantChangeLogData {
   snapshotJson: Prisma.InputJsonValue;
 }
 
+// CR-005 Sub-phase 3d — flavor slot CRUD
+
+export interface AddFlavorSlotInput {
+  label: string;
+  flavorQty: number;
+  unit: string;
+  required?: boolean;
+}
+
+export interface UpdateFlavorSlotInput {
+  label?: string;
+  flavorQty?: number;
+  unit?: string;
+  required?: boolean;
+}
+
+export interface ReorderFlavorSlotsInput {
+  slotIds: string[];
+}
+
+export interface FlavorSlotEditContext {
+  reason?: string;
+}
+
 /** Mirrors auth.types.ts's AuthError — every module maps its own domain errors to HTTP status via its router's error handler. */
 export class ProductError extends Error {
   constructor(

@@ -1,6 +1,6 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { ROLES, type Role } from '@potato-corner/shared';
+import { ROLES, type JwtPayload, type Role } from '@potato-corner/shared';
 import { authRepository } from './auth.repository.js';
 import { totpService } from './totp.service.js';
 import {
@@ -18,6 +18,7 @@ import { sendPasswordResetEmail } from '../../lib/email.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
 import { revokedTokenHash } from '../../middleware/authenticate.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { employeesRepository } from '../employees/employees.repository.js';
 
 const BCRYPT_COST_FACTOR = 12;
 const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
@@ -25,7 +26,8 @@ const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
 interface AccessTokenUser {
   id: string;
   role: Role;
-  email: string;
+  /** Nullable — `staff` (Employees) never have their own email (Branch Employee Authorization). */
+  email: string | null;
   branchIds: string[];
   /** Optional so existing call sites/tests that predate Phase 5 keep compiling — defaults to false (real login/refresh/pin-login paths always pass the real DB value explicitly). */
   mustChangePassword?: boolean;
@@ -92,7 +94,7 @@ function decodeExpiry(accessToken: string): Date {
 function toUserSummary(user: {
   id: string;
   role: Role;
-  email: string;
+  email: string | null;
   firstName: string;
   lastName: string;
   mustChangePassword: boolean;
@@ -142,6 +144,14 @@ export const authService = {
 
     if (!user.isActive) {
       throw new AuthError('ACCOUNT_INACTIVE', 'This account has been deactivated', 403);
+    }
+
+    // `staff` (Employees) never have a passwordHash (Branch Employee
+    // Authorization) — they also never have an email, so findUserByEmail
+    // above wouldn't have matched one anyway; this guard exists purely so
+    // the type stays a non-null string for bcrypt.compare below.
+    if (!user.passwordHash) {
+      throw new AuthError('INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
 
     const passwordValid = await bcrypt.compare(password, user.passwordHash);
@@ -302,6 +312,9 @@ export const authService = {
     if (!user) {
       throw new AuthError('USER_NOT_FOUND', 'User not found', 404);
     }
+    if (!user.passwordHash) {
+      throw new AuthError('NO_PASSWORD_SET', 'This account has no password to change', 400);
+    }
 
     const valid = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!valid) {
@@ -356,7 +369,8 @@ export const authService = {
     const token = randomOpaqueToken();
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000);
     await authRepository.storePasswordResetToken(sha256Hex(token), user.id, expiresAt);
-    await sendPasswordResetEmail(user.email, token).catch((error: unknown) => {
+    // user was looked up BY this exact email, so it's guaranteed non-null here.
+    await sendPasswordResetEmail(email, token).catch((error: unknown) => {
       console.error('Failed to send password reset email:', error);
     });
 
@@ -389,6 +403,73 @@ export const authService = {
       actorId: userId,
       actorRole: 'unknown',
     });
+  },
+
+  /**
+   * Branch Employee Authorization: mints a `staff` session for an Employee
+   * from inside an already-authenticated `branch` session — no password
+   * involved. Verifies (in order) that the employee is actually a `staff`
+   * row, belongs to the calling Branch Account's own branch, and is
+   * currently ACTIVE, per the locked authorization flow. The minted
+   * refresh token is stored under the employee's own user id, so the
+   * existing setEmployeeStatus revocation path (authRepository.
+   * revokeAllUserTokens) already tears this session down the moment status
+   * leaves 'active' — no new revocation mechanism needed.
+   */
+  async selectEmployee(
+    branchActor: JwtPayload,
+    employeeId: string,
+    deviceId: string,
+    ipAddress: string | null,
+  ): Promise<LoginResponse & { refreshToken: string }> {
+    if (!('branch_ids' in branchActor) || branchActor.branch_ids.length === 0) {
+      throw new AuthError('EMPLOYEE_ACCESS_DENIED', 'No branch assigned to this session', 403);
+    }
+    const branchId = branchActor.branch_ids[0] as string;
+
+    const employee = await employeesRepository.findById(employeeId);
+    if (!employee || employee.role !== ROLES.STAFF) {
+      throw new AuthError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    }
+
+    const belongsToBranch = employee.branchAssignments.some((assignment) => assignment.branchId === branchId);
+    if (!belongsToBranch) {
+      throw new AuthError('EMPLOYEE_ACCESS_DENIED', 'This employee is not assigned to your branch', 403);
+    }
+
+    if (employee.status !== 'active' || !employee.isActive) {
+      throw new AuthError('EMPLOYEE_INACTIVE', 'This employee is not active', 403);
+    }
+
+    const accessToken = generateAccessToken({
+      id: employee.id,
+      role: employee.role,
+      email: employee.email,
+      branchIds: [branchId],
+      mustChangePassword: false,
+    });
+    const refreshToken = generateRefreshToken();
+    const refreshExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
+
+    await Promise.all([
+      authRepository.updateLastLogin(employee.id),
+      authRepository.storeRefreshToken(employee.id, refreshToken, deviceId, refreshExpiresAt),
+      recordAuditLog({
+        action: 'EMPLOYEE_SESSION_STARTED',
+        entityType: 'user',
+        entityId: employee.id,
+        actorId: branchActor.user_id,
+        actorRole: branchActor.role,
+        branchId,
+        ipAddress,
+      }),
+    ]);
+
+    return {
+      access_token: accessToken,
+      refreshToken,
+      user: toUserSummary({ ...employee, mustChangePassword: false }, [branchId]),
+    };
   },
 
   async validatePin(userId: string, deviceId: string, pin: string): Promise<LoginResponse> {
@@ -545,7 +626,7 @@ export const authService = {
       authRepository.findUserWithPasswordById(userId),
       authRepository.findTotpFieldsById(userId),
     ]);
-    if (!user || !totpUser?.totpEnabled || !totpUser.totpSecret) {
+    if (!user || !user.passwordHash || !totpUser?.totpEnabled || !totpUser.totpSecret) {
       throw new AuthError('TOTP_NOT_ENABLED', '2FA is not enabled for this account', 400);
     }
 

@@ -18,6 +18,8 @@ const employeeSelect = {
   role: true,
   employmentType: true,
   employeeId: true,
+  position: true,
+  notes: true,
   isActive: true,
   status: true,
   mustChangePassword: true,
@@ -142,11 +144,15 @@ export const employeesRepository = {
           phone: data.phone,
           employeeId: data.employeeId,
           employmentType: data.employmentType,
+          position: data.position,
+          notes: data.notes,
           sssNumberEncrypted: data.sssNumberEncrypted,
           philhealthNumberEncrypted: data.philhealthNumberEncrypted,
           tinNumberEncrypted: data.tinNumberEncrypted,
           pagibigNumberEncrypted: data.pagibigNumberEncrypted,
-          mustChangePassword: true,
+          // `staff` (Employees) never have credentials, so there is no
+          // password to force a change on — only true when one was actually set.
+          mustChangePassword: Boolean(data.passwordHash),
         },
       });
 

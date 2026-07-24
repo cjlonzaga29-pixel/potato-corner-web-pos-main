@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import { ROLE_LABELS } from '@potato-corner/shared';
+import { EMPLOYEE_STATUS_LABELS, ROLE_LABELS } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -14,8 +14,7 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { formatDate, formatDateTime } from '@/lib/utils';
 import { useEmployee } from '@/hooks/queries/use-employees';
 import { SupervisorEditEmployeeDialog } from '@/components/supervisor/employees/edit-employee-dialog';
-import { SupervisorDeactivateEmployeeDialog } from '@/components/supervisor/employees/deactivate-employee-dialog';
-import { SupervisorResetPasswordDialog } from '@/components/supervisor/employees/reset-password-dialog';
+import { SetEmployeeStatusDialog } from '@/components/supervisor/employees/set-employee-status-dialog';
 import { SupervisorAssignmentManagerDialog } from '@/components/supervisor/employees/assignment-manager-dialog';
 
 /** Shared body behind both `/supervisor/employees/:employeeId` and `/branch/employees/:employeeId`. */
@@ -23,8 +22,7 @@ export function EmployeeDetailView({ employeeId, basePath }: { employeeId: strin
   const { data: employee, isLoading, isError, refetch } = useEmployee(employeeId);
 
   const [editOpen, setEditOpen] = useState(false);
-  const [deactivateOpen, setDeactivateOpen] = useState(false);
-  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [assignmentsOpen, setAssignmentsOpen] = useState(false);
 
   if (isLoading) {
@@ -53,7 +51,7 @@ export function EmployeeDetailView({ employeeId, basePath }: { employeeId: strin
           {employee.first_name} {employee.last_name}
         </h1>
         <Badge variant="secondary">{ROLE_LABELS[employee.role]}</Badge>
-        <StatusBadge status={employee.is_active ? 'active' : 'inactive'} type="employee" />
+        <StatusBadge status={employee.status} type="employee" />
       </div>
 
       <Tabs defaultValue="profile">
@@ -76,21 +74,31 @@ export function EmployeeDetailView({ employeeId, basePath }: { employeeId: strin
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 text-sm">
               <div>
-                <p className="text-muted-foreground">Email</p>
-                <p className="font-medium">{employee.email}</p>
+                <p className="text-muted-foreground">Employee ID</p>
+                <p className="font-mono font-medium">{employee.employee_id}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Position</p>
+                <p className="font-medium">{employee.position ?? '—'}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">Employment Type</p>
                 <p className="font-medium capitalize">{employee.employment_type.replace('_', ' ')}</p>
               </div>
               <div>
-                <p className="text-muted-foreground">Last Login</p>
+                <p className="text-muted-foreground">Last Active</p>
                 <p className="font-medium">{employee.last_login_at ? formatDateTime(employee.last_login_at) : 'Never'}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">Employee Since</p>
                 <p className="font-medium">{formatDate(employee.created_at)}</p>
               </div>
+              {employee.notes && (
+                <div className="col-span-2">
+                  <p className="text-muted-foreground">Notes</p>
+                  <p className="font-medium whitespace-pre-wrap">{employee.notes}</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -127,35 +135,22 @@ export function EmployeeDetailView({ employeeId, basePath }: { employeeId: strin
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Account Status</CardTitle>
-              <CardDescription>Current status: {employee.is_active ? 'Active' : 'Inactive'}</CardDescription>
+              <CardDescription>
+                Current status: {EMPLOYEE_STATUS_LABELS[employee.status]}. Employees have no login credentials of their
+                own — they operate inside an authenticated Branch Account session.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="flex items-center justify-between rounded-md border p-3 text-sm">
-                <span>Must change password on next login</span>
-                <Badge variant={employee.must_change_password ? 'warning' : 'active'}>
-                  {employee.must_change_password ? 'Yes' : 'No'}
-                </Badge>
-              </div>
-              <Button variant="outline" onClick={() => setResetPasswordOpen(true)}>
-                Reset Password
+              <Button variant="outline" onClick={() => setStatusOpen(true)}>
+                Change Status
               </Button>
-              {employee.is_active ? (
-                <Button variant="danger" onClick={() => setDeactivateOpen(true)}>
-                  Deactivate Employee
-                </Button>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  This employee is deactivated. Reactivate from the employee list.
-                </p>
-              )}
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
 
       <SupervisorEditEmployeeDialog open={editOpen} onOpenChange={setEditOpen} employee={employee} />
-      <SupervisorDeactivateEmployeeDialog open={deactivateOpen} onOpenChange={setDeactivateOpen} employee={employee} />
-      <SupervisorResetPasswordDialog open={resetPasswordOpen} onOpenChange={setResetPasswordOpen} employee={employee} />
+      <SetEmployeeStatusDialog open={statusOpen} onOpenChange={setStatusOpen} employee={employee} />
       <SupervisorAssignmentManagerDialog open={assignmentsOpen} onOpenChange={setAssignmentsOpen} employee={employee} />
     </div>
   );

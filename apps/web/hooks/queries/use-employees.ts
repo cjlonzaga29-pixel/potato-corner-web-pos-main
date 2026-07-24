@@ -4,11 +4,11 @@ import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tansta
 import { toast } from 'sonner';
 import type {
   CreateEmployeeInput,
-  DeactivateEmployeeInput,
   EmployeeActivityResponse,
   EmployeeListResponse,
   EmployeePayrollResponse,
   EmployeeResponse,
+  EmployeeStatus,
   EmploymentType,
   Role,
   UpdateEmployeeInput,
@@ -36,7 +36,7 @@ function errorMessage(response: ApiErrorShape, fallback: string): string {
 
 /**
  * Carries the API's machine-readable error code alongside the human
- * message — deactivate-employee-dialog.tsx needs to distinguish
+ * message — set-employee-status-dialog.tsx needs to distinguish
  * ACTIVE_SHIFT_ACKNOWLEDGMENT_REQUIRED from any other failure, which a
  * plain Error's message string can't reliably do.
  */
@@ -168,55 +168,36 @@ export function useUpdateEmployee(employeeId: string) {
   });
 }
 
-export function useDeactivateEmployee(employeeId: string) {
+export interface SetEmployeeStatusInput {
+  status: EmployeeStatus;
+  reason?: string;
+  acknowledge_active_shift?: boolean;
+}
+
+/**
+ * CR-003 (Branch Operating System) full 5-state lifecycle transition.
+ * Moving away from 'active' immediately revokes the employee's sessions and
+ * blocks future access (enforced server-side in employees.service.ts) —
+ * never deletes attendance/transaction/audit history.
+ */
+export function useSetEmployeeStatus(employeeId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: DeactivateEmployeeInput) => {
-      const response = await apiClient<EmployeeResponse>(`/api/employees/${employeeId}/deactivate`, {
-        method: 'POST',
+    mutationFn: async (input: SetEmployeeStatusInput) => {
+      const response = await apiClient<EmployeeResponse>(`/api/employees/${employeeId}/status`, {
+        method: 'PATCH',
         body: JSON.stringify(input),
       });
-      if (!response.data) throwEmployeeApiError(response, 'Failed to deactivate employee');
+      if (!response.data) throwEmployeeApiError(response, 'Failed to change employee status');
       return response.data;
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['employee', employeeId] });
       void queryClient.invalidateQueries({ queryKey: ['employees'] });
-      toast.success('Employee deactivated');
+      toast.success('Employee status updated');
     },
     // Deliberately no onError toast here — ACTIVE_SHIFT_ACKNOWLEDGMENT_REQUIRED is an
     // expected first-attempt outcome the dialog handles inline, not a failure to surface as a toast.
   });
 }
 
-export function useReactivateEmployee(employeeId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      const response = await apiClient<EmployeeResponse>(`/api/employees/${employeeId}/reactivate`, { method: 'POST' });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to reactivate employee'));
-      return response.data;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['employee', employeeId] });
-      void queryClient.invalidateQueries({ queryKey: ['employees'] });
-      toast.success('Employee reactivated');
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-}
-
-export function useResetEmployeePassword(employeeId: string) {
-  return useMutation({
-    mutationFn: async (newPassword: string) => {
-      const response = await apiClient<{ success: boolean }>(`/api/employees/${employeeId}/reset-password`, {
-        method: 'POST',
-        body: JSON.stringify({ new_password: newPassword }),
-      });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to reset password'));
-      return response.data;
-    },
-    onSuccess: () => toast.success('Password reset — the employee must set a new password on next login'),
-    onError: (error: Error) => toast.error(error.message),
-  });
-}

@@ -63,7 +63,7 @@ function toAssignmentResponse(assignment: {
   userId: string;
   branchId: string;
   assignedAt: Date;
-  user: { id: string; firstName: string; lastName: string; email: string; role: string };
+  user: { id: string; firstName: string; lastName: string; email: string | null; role: string };
 }) {
   return {
     id: assignment.id,
@@ -71,7 +71,10 @@ function toAssignmentResponse(assignment: {
     branchId: assignment.branchId,
     firstName: assignment.user.firstName,
     lastName: assignment.user.lastName,
-    email: assignment.user.email,
+    // Branch assignments are only ever held by supervisor/branch/super_admin
+    // accounts (`staff` — Employees — are never directly assigned to a
+    // branch this way), and those roles always have an email.
+    email: assignment.user.email as string,
     role: assignment.user.role,
     assignedAt: assignment.assignedAt.toISOString(),
   };

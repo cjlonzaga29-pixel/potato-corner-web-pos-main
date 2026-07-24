@@ -4,7 +4,8 @@ import { ROLES, type Role } from '@potato-corner/shared';
 export interface AuthUser {
   id: string;
   role: Role;
-  email: string;
+  /** Nullable — `staff` (Employees) have no email (Branch Employee Authorization). */
+  email: string | null;
   firstName: string;
   lastName: string;
   branchIds: string[];

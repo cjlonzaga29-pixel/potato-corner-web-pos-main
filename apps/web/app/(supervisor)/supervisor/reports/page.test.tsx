@@ -226,6 +226,8 @@ function employee(overrides: Partial<EmployeeResponse> = {}): EmployeeResponse {
     role: 'staff',
     employment_type: 'regular',
     employee_id: 'PC-EMP-000001',
+    position: 'Cashier',
+    notes: null,
     is_active: true,
     status: 'active',
     must_change_password: false,

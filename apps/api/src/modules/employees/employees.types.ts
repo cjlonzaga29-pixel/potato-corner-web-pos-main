@@ -14,7 +14,8 @@ export interface EmployeeListFilters {
 }
 
 export interface CreateEmployeeData {
-  email: string;
+  /** Absent for `staff` (Employees never have login credentials) — required for every other role. */
+  email?: string;
   firstName: string;
   lastName: string;
   phone?: string;
@@ -22,8 +23,11 @@ export interface CreateEmployeeData {
   employmentType: EmploymentType;
   branchIds: string[];
   employeeId: string;
-  /** Pre-hashed (bcrypt) — the service layer never passes a plaintext password to the repository. */
-  passwordHash: string;
+  /** Required for `staff` at the schema layer (createEmployeeSchema's refinement) — absent for other roles. */
+  position?: string;
+  notes?: string;
+  /** Pre-hashed (bcrypt); absent for `staff`. The service layer never passes a plaintext password to the repository. */
+  passwordHash?: string;
   /** Pre-encrypted (AES-256-GCM via lib/encryption.ts) — the repository never sees plaintext government IDs. */
   sssNumberEncrypted?: string;
   philhealthNumberEncrypted?: string;
@@ -36,6 +40,8 @@ export interface UpdateEmployeeData {
   lastName?: string;
   phone?: string;
   employmentType?: EmploymentType;
+  position?: string;
+  notes?: string;
   sssNumberEncrypted?: string;
   philhealthNumberEncrypted?: string;
   tinNumberEncrypted?: string;

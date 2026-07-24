@@ -11,10 +11,15 @@ import { useAuthStore, type AuthUser } from '@/stores/auth.store';
 interface LoginUserData {
   id: string;
   role: AuthUser['role'];
-  email: string;
+  email: string | null;
   first_name: string;
   last_name: string;
   branch_ids: string[];
+}
+
+interface SelectEmployeeResponseData {
+  access_token: string;
+  user: LoginUserData;
 }
 
 /**
@@ -239,6 +244,27 @@ export function useAuth() {
     return user;
   }
 
+  /**
+   * Branch Employee Authorization: swaps the current `branch` session for a
+   * `staff` session bound to the selected Employee — no password involved,
+   * the Branch Account is already authenticated. Same response shape as
+   * login(), so the same setAuth path applies.
+   */
+  async function selectEmployee(employeeId: string) {
+    const deviceId = getOrCreateDeviceId();
+    const response = await apiClient<SelectEmployeeResponseData>('/api/auth/select-employee', {
+      method: 'POST',
+      body: JSON.stringify({ employee_id: employeeId, device_id: deviceId }),
+    });
+
+    if (!response.data) {
+      throw new Error(typeof response.error === 'string' ? response.error : response.error?.message ?? 'Could not start employee session');
+    }
+
+    setAuth(toAuthUser(response.data.user), response.data.access_token);
+    return response.data.user;
+  }
+
   async function logout() {
     // Defensive logout: clear client state and redirect even if the
     // network call fails — the user asked to log out, and a dead network
@@ -271,6 +297,7 @@ export function useAuth() {
     isLoading,
     login,
     completeLogin,
+    selectEmployee,
     logout,
     logoutAll,
     hasRole,

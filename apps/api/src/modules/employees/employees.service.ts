@@ -44,6 +44,8 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
     role: employee.role,
     employment_type: employee.employmentType,
     employee_id: employee.employeeId ?? '',
+    position: employee.position,
+    notes: employee.notes,
     is_active: employee.isActive,
     status: employee.status,
     must_change_password: employee.mustChangePassword,
@@ -154,16 +156,23 @@ export const employeesService = {
   },
 
   async createEmployee(data: CreateEmployeeInput, createdBy: ActorContext, ipAddress: string | null): Promise<EmployeeResponse> {
-    const existing = await employeesRepository.findByEmail(data.email);
-    if (existing) {
-      throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
+    // Branch Employee Authorization: `staff` rows are Employees, never a
+    // separate login — no email, so nothing to deduplicate or hash. Every
+    // other role still authenticates normally and requires both.
+    const isStaff = data.role === ROLES.STAFF;
+
+    if (!isStaff) {
+      const existing = await employeesRepository.findByEmail(data.email as string);
+      if (existing) {
+        throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
+      }
     }
 
     // Router permits both supervisor and branch actors here (adminOrBranch /
     // adminSupervisorOrBranch) — only super_admin may create a non-staff
     // account or assign branches outside the actor's own branch_ids.
     if (createdBy.role === ROLES.SUPERVISOR || createdBy.role === ROLES.BRANCH) {
-      if (data.role !== ROLES.STAFF) {
+      if (!isStaff) {
         throw new EmployeeError('INSUFFICIENT_PERMISSIONS', 'Only Super Admin may create a non-staff account', 403);
       }
       const outOfScope = data.branch_ids.some((id) => !createdBy.branch_ids.includes(id));
@@ -173,10 +182,10 @@ export const employeesService = {
     }
 
     const employeeId = await employeesRepository.generateEmployeeId();
-    const passwordHash = await bcrypt.hash(data.initial_password, BCRYPT_COST_FACTOR);
+    const passwordHash = isStaff ? undefined : await bcrypt.hash(data.initial_password as string, BCRYPT_COST_FACTOR);
 
     const employee = await employeesRepository.create({
-      email: data.email,
+      email: isStaff ? undefined : data.email,
       firstName: data.first_name,
       lastName: data.last_name,
       phone: data.phone,
@@ -184,6 +193,8 @@ export const employeesService = {
       employmentType: data.employment_type,
       branchIds: data.branch_ids,
       employeeId,
+      position: data.position,
+      notes: data.notes,
       passwordHash,
       sssNumberEncrypted: data.sss_number ? encryptField(data.sss_number) : undefined,
       philhealthNumberEncrypted: data.philhealth_number ? encryptField(data.philhealth_number) : undefined,
@@ -207,17 +218,19 @@ export const employeesService = {
       ipAddress,
     });
 
-    // Best-effort — a failed welcome email must never fail employee creation itself.
-    // Phase 21: runs in-process now (no queue), so the temporary password only
-    // lives as long as this call's in-memory closure, not a persisted job record.
-    await enqueueRawNotificationJob('employee_welcome', {
-      toEmail: employee.email,
-      firstName: employee.firstName,
-      employeeId: employee.employeeId,
-      tempPassword: data.initial_password,
-    }).catch((error: unknown) => {
-      console.error('Failed to enqueue welcome email:', error);
-    });
+    if (!isStaff) {
+      // Best-effort — a failed welcome email must never fail employee creation itself.
+      // Phase 21: runs in-process now (no queue), so the temporary password only
+      // lives as long as this call's in-memory closure, not a persisted job record.
+      await enqueueRawNotificationJob('employee_welcome', {
+        toEmail: employee.email as string,
+        firstName: employee.firstName,
+        employeeId: employee.employeeId,
+        tempPassword: data.initial_password as string,
+      }).catch((error: unknown) => {
+        console.error('Failed to enqueue welcome email:', error);
+      });
+    }
 
     return toEmployeeResponse(employee);
   },
@@ -248,6 +261,8 @@ export const employeesService = {
       lastName: data.last_name,
       phone: data.phone,
       employmentType: data.employment_type,
+      position: data.position,
+      notes: data.notes,
       sssNumberEncrypted: data.sss_number ? encryptField(data.sss_number) : undefined,
       philhealthNumberEncrypted: data.philhealth_number ? encryptField(data.philhealth_number) : undefined,
       tinNumberEncrypted: data.tin_number ? encryptField(data.tin_number) : undefined,
@@ -346,6 +361,7 @@ export const employeesService = {
     reason: string | null,
     changedBy: ActorContext,
     ipAddress: string | null,
+    acknowledgeActiveShift = false,
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
@@ -354,7 +370,7 @@ export const employeesService = {
       throw new EmployeeError('EMPLOYEE_STATUS_UNCHANGED', `This employee is already ${status}`, 409);
     }
 
-    if (status !== 'active') {
+    if (status !== 'active' && !acknowledgeActiveShift) {
       const hasActiveShift = await employeesRepository.hasActiveShift(employeeId);
       if (hasActiveShift) {
         throw new EmployeeError(

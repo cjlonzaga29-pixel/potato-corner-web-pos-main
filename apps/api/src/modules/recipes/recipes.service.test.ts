@@ -14,6 +14,9 @@ vi.mock('./recipes.repository.js', () => ({
     createOverride: vi.fn(),
     updateOverride: vi.fn(),
     deleteOverride: vi.fn(),
+    hasActiveRecipeForVariant: vi.fn(),
+    getMaxVersionForSelection: vi.fn(),
+    findDistinctIngredientIdentities: vi.fn(),
   },
 }));
 
@@ -21,14 +24,37 @@ vi.mock('../products/products.repository.js', () => ({
   productsRepository: { findVariantById: vi.fn() },
 }));
 
+vi.mock('../inventory/inventory.repository.js', () => ({
+  inventoryRepository: {
+    findIngredientById: vi.fn(),
+    findIngredientByBranchAndName: vi.fn(),
+  },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { recipesRepository } = await import('./recipes.repository.js');
-const { computeDeduction } = await import('./recipes.service.js');
+const { inventoryRepository } = await import('../inventory/inventory.repository.js');
+const { computeDeduction, assertRecipeExists, getRecipeVersion } = await import('./recipes.service.js');
 
-function ingredientRow(ingredientId: string, ingredientName: string, quantity: number, unit: string, flavorId: string | null) {
+/**
+ * `ingredientBranchId` defaults to 'branch-a' — the branchId every existing
+ * test in this file passes to computeDeduction — so that by default a
+ * master row's own ingredient already belongs to the selling branch and
+ * CR-004's resolveIngredientForBranch takes its zero-extra-query fast path
+ * (no need to mock inventoryRepository per test). Tests that specifically
+ * cover cross-branch resolution pass a different branchId explicitly.
+ */
+function ingredientRow(
+  ingredientId: string,
+  ingredientName: string,
+  quantity: number,
+  unit: string,
+  flavorId: string | null,
+  ingredientBranchId = 'branch-a',
+) {
   return {
     id: `row-${ingredientId}-${flavorId ?? 'base'}`,
     productVariantId: 'variant-1',
@@ -36,7 +62,7 @@ function ingredientRow(ingredientId: string, ingredientName: string, quantity: n
     flavorId,
     quantity: { toNumber: () => quantity },
     unit,
-    ingredient: { name: ingredientName },
+    ingredient: { name: ingredientName, branchId: ingredientBranchId },
     flavor: flavorId ? { name: 'Sour Cream' } : null,
   };
 }
@@ -138,5 +164,79 @@ describe('computeDeduction — CR-001 layered algorithm', () => {
     expect(branchLines.find((l) => l.ingredient_id === 'oil')).toMatchObject({ quantity: 90, source: 'master_base' }); // 30 * 3, untouched
     expect(branchLines.find((l) => l.ingredient_id === 'sour_cream')).toMatchObject({ quantity: 75, source: 'branch_flavor' }); // 25 * 3
     expect(branchLines.find((l) => l.ingredient_id === 'seasoning')).toMatchObject({ quantity: 15, source: 'branch_base' }); // 5 * 3
+  });
+});
+
+describe('computeDeduction — CR-004 cross-branch ingredient resolution', () => {
+  it('resolves a master row pinned to a different branch\'s Ingredient to the selling branch\'s own equivalent by name', async () => {
+    // Master recipe's ingredientId was created against branch-a's Ingredient
+    // row, but this sale happens at branch-b.
+    vi.mocked(recipesRepository.findMasterRows).mockResolvedValue([
+      ingredientRow('potato-branch-a', 'Potato', 200, 'g', null, 'branch-a'),
+    ] as never);
+    vi.mocked(recipesRepository.findOverrideRows).mockResolvedValue([] as never);
+    vi.mocked(inventoryRepository.findIngredientByBranchAndName).mockResolvedValue({
+      id: 'potato-branch-b',
+      name: 'Potato',
+    } as never);
+
+    const lines = await computeDeduction({ productVariantId: 'variant-1', flavorId: null, quantitySold: 2, branchId: 'branch-b' });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ ingredient_id: 'potato-branch-b', quantity: 400, source: 'master_base' });
+    expect(inventoryRepository.findIngredientByBranchAndName).toHaveBeenCalledWith('branch-b', 'Potato');
+  });
+
+  it('does not resolve (or query inventoryRepository) when the master row already belongs to the selling branch', async () => {
+    vi.mocked(recipesRepository.findMasterRows).mockResolvedValue([ingredientRow('potato-branch-a', 'Potato', 200, 'g', null, 'branch-a')] as never);
+    vi.mocked(recipesRepository.findOverrideRows).mockResolvedValue([] as never);
+
+    const lines = await computeDeduction({ productVariantId: 'variant-1', flavorId: null, quantitySold: 1, branchId: 'branch-a' });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ ingredient_id: 'potato-branch-a' });
+    expect(inventoryRepository.findIngredientByBranchAndName).not.toHaveBeenCalled();
+  });
+
+  it('rejects the deduction when the selling branch has not been provisioned with the master ingredient (fails closed, never silently deducts the wrong branch)', async () => {
+    vi.mocked(recipesRepository.findMasterRows).mockResolvedValue([ingredientRow('potato-branch-a', 'Potato', 200, 'g', null, 'branch-a')] as never);
+    vi.mocked(inventoryRepository.findIngredientByBranchAndName).mockResolvedValue(null);
+
+    await expect(
+      computeDeduction({ productVariantId: 'variant-1', flavorId: null, quantitySold: 1, branchId: 'branch-b' }),
+    ).rejects.toMatchObject({ code: 'INGREDIENT_NOT_PROVISIONED' });
+  });
+
+  it('never resolves branch override rows against another branch — they already belong to the requesting branch', async () => {
+    vi.mocked(recipesRepository.findMasterRows).mockResolvedValue([]);
+    vi.mocked(recipesRepository.findOverrideRows).mockResolvedValue([ingredientRow('seasoning-branch-b', 'Seasoning', 5, 'g', null, 'branch-b')] as never);
+
+    const lines = await computeDeduction({ productVariantId: 'variant-1', flavorId: null, quantitySold: 1, branchId: 'branch-b' });
+
+    expect(lines[0]).toMatchObject({ ingredient_id: 'seasoning-branch-b' });
+    expect(inventoryRepository.findIngredientByBranchAndName).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertRecipeExists — CR-004', () => {
+  it('resolves silently when the variant has at least one active master recipe row', async () => {
+    vi.mocked(recipesRepository.hasActiveRecipeForVariant).mockResolvedValue(true);
+
+    await expect(assertRecipeExists('variant-1')).resolves.toBeUndefined();
+  });
+
+  it('throws RECIPE_MISSING when the variant has no master recipe rows — a sale must never silently deduct nothing', async () => {
+    vi.mocked(recipesRepository.hasActiveRecipeForVariant).mockResolvedValue(false);
+
+    await expect(assertRecipeExists('variant-1')).rejects.toMatchObject({ code: 'RECIPE_MISSING' });
+  });
+});
+
+describe('getRecipeVersion — CR-004', () => {
+  it('delegates to the repository\'s max-version lookup for the variant+flavor selection', async () => {
+    vi.mocked(recipesRepository.getMaxVersionForSelection).mockResolvedValue(3);
+
+    await expect(getRecipeVersion('variant-1', 'flavor-1')).resolves.toBe(3);
+    expect(recipesRepository.getMaxVersionForSelection).toHaveBeenCalledWith('variant-1', 'flavor-1');
   });
 });

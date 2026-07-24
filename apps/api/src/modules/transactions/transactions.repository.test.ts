@@ -124,6 +124,7 @@ describe('transactionsRepository.createTransaction', () => {
           unitPrice: 100,
           quantity: 1,
           lineTotal: 100,
+          recipeVersion: 1,
         },
       ],
     });

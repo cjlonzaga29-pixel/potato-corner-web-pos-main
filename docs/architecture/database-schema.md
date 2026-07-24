@@ -35,6 +35,14 @@ CR-001 added branch-level exceptions to the master catalog/recipe without touchi
 - **`ReportSnapshot`** — cached materialized report output (`reportType`, optional `branchId`), avoids recomputing expensive aggregate reports on every request.
 - **`Notification`** — in-app notification record (`type`, `payload` JSON) surfaced to users via Socket.io.
 
+## CR-004 schema additions (POS deduction integrity & branch provisioning)
+
+See [`docs/decisions/CR-004-pos-deduction-integrity.md`](../decisions/CR-004-pos-deduction-integrity.md) for full context — this fixed a cross-branch stock-leak gap (`Recipe.ingredientId` pinned to one branch's `Ingredient`, since `Ingredient` has no branch-neutral identity) discovered during a POS-deduction-integrity audit, plus the CR's originally-requested patches.
+
+- **`Recipe.version`** (`Int @default(1)`) — bumped on every `recipesRepository.updateRecipe` call.
+- **`TransactionItem.recipeVersion`** (`Int @default(1)`) — frozen recipe-version snapshot at sale time, same immutability convention as the existing name/price snapshot fields.
+- No new tables — the cross-branch fix is resolution logic in `recipes.service.ts` (`computeDeduction`), not a schema change; idempotent branch provisioning reuses the existing `Ingredient` table via a find-or-create keyed on `(branchId, name)`.
+
 ## Table list
 
 `User`, `Branch`, `UserBranchAssignment`, `RefreshToken`, `RevokedToken`, `RefreshTokenRotationCache`, `IdCounter`, `PasswordResetToken`, `PinCredential`, `Product`, `ProductVariant`, `Flavor`, `ProductVariantFlavor`, `BranchProductAvailability`, `BranchFlavorAvailability`, `BranchPriceOverride` (CR-001), `ProductRequest` (CR-001), `Ingredient`, `Recipe`, `BranchRecipeOverride` (CR-001), `InventoryMovement`, `Transaction`, `TransactionItem`, `Shift`, `ShiftCashDenomination`, `HoldOrder`, `HoldOrderItem`, `AttendanceRecord`, `AuditLog`, `FraudAlert`, `ReportSnapshot`, `Notification`.

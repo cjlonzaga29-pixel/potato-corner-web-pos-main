@@ -43,6 +43,13 @@ vi.mock('../../lib/prisma.js', () => {
 // so prisma.$transaction's callback doesn't need real recipe/ingredient rows.
 vi.mock('../recipes/recipes.service.js', () => ({
   computeDeduction: vi.fn().mockResolvedValue([]),
+  // CR-004: resolveCartItems now checks recipe existence and stamps a
+  // version per cart line — default to "recipe exists, version 1" so the
+  // pricing/VAT/sync tests in this file (which aren't about recipes) don't
+  // need their own recipe fixtures. Tests that specifically cover the
+  // RECIPE_MISSING rejection override assertRecipeExists per-test.
+  assertRecipeExists: vi.fn().mockResolvedValue(undefined),
+  getRecipeVersion: vi.fn().mockResolvedValue(1),
 }));
 
 vi.mock('../cash/cash.repository.js', () => ({
@@ -72,6 +79,8 @@ vi.mock('../../queues/hold-order.queue.js', () => ({
 }));
 
 const { transactionsRepository } = await import('./transactions.repository.js');
+const { assertRecipeExists, getRecipeVersion } = await import('../recipes/recipes.service.js');
+const { RecipeError } = await import('../recipes/recipes.types.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { priceOverridesService } = await import('../price-overrides/price-overrides.service.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
@@ -793,5 +802,59 @@ describe('transactionsService.getDiscountAuditTrail', () => {
     expect(transactionsRepository.findDiscountAuditTrail).toHaveBeenCalledWith(
       expect.objectContaining({ branchIds: ['branch-1', 'branch-2'] }),
     );
+  });
+});
+
+describe('transactionsService.createTransaction — CR-004 recipe integrity', () => {
+  it('rejects the whole sale with RECIPE_MISSING when the variant has no recipe configured — no transaction row is created', async () => {
+    vi.mocked(assertRecipeExists).mockRejectedValueOnce(
+      new RecipeError('RECIPE_MISSING', 'This product variant has no recipe configured', 422),
+    );
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
+      code: 'RECIPE_MISSING',
+      statusCode: 422,
+    });
+
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('stamps each resolved cart line with the recipe version resolved for its variant+flavor', async () => {
+    vi.mocked(getRecipeVersion).mockResolvedValueOnce(4);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [expect.objectContaining({ productVariantId: 'variant-1', recipeVersion: 4 })],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('includes recipe_version in the created transaction\'s item response', async () => {
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValueOnce(
+      transactionRow({
+        items: [
+          {
+            id: 'item-1',
+            productId: 'product-1',
+            productVariantId: 'variant-1',
+            flavorId: null,
+            productNameSnapshot: 'Original',
+            variantNameSnapshot: 'Regular',
+            flavorNameSnapshot: null,
+            unitPriceSnapshot: decimal(100),
+            quantity: 1,
+            lineTotal: decimal(100),
+            recipeVersion: 2,
+          },
+        ],
+      }) as never,
+    );
+
+    const result = await transactionsService.createTransaction(baseInput, null);
+
+    expect(result.items?.[0]).toMatchObject({ recipe_version: 2 });
   });
 });

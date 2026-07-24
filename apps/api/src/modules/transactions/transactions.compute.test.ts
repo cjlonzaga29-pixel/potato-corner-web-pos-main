@@ -24,6 +24,7 @@ function line(lineTotal: number, quantity: number, vatableCapAmount: number | nu
     quantity,
     lineTotal,
     vatableCapAmount,
+    recipeVersion: 1,
   };
 }
 

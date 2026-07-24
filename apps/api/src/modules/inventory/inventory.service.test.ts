@@ -14,6 +14,7 @@ vi.mock('./inventory.repository.js', () => ({
     appendMovement: vi.fn(),
     transferStock: vi.fn(),
     findMovements: vi.fn(),
+    provisionIngredient: vi.fn(),
   },
 }));
 
@@ -449,5 +450,23 @@ describe('inventoryService.getBranchAlerts', () => {
     const result = await inventoryService.getBranchAlerts('branch-1');
 
     expect(result.alerts[0]).toMatchObject({ current_stock: 0, severity: 'critical' });
+  });
+});
+
+describe('inventoryService.provisionBranchIngredients — CR-004', () => {
+  it('provisions one zero-stock ingredient per identity, in order', async () => {
+    await inventoryService.provisionBranchIngredients('branch-1', [
+      { name: 'Potato', unit: 'g' },
+      { name: 'Cooking Oil', unit: 'ml' },
+    ]);
+
+    expect(inventoryRepository.provisionIngredient).toHaveBeenNthCalledWith(1, 'branch-1', 'Potato', 'g');
+    expect(inventoryRepository.provisionIngredient).toHaveBeenNthCalledWith(2, 'branch-1', 'Cooking Oil', 'ml');
+  });
+
+  it('is a no-op for an empty identity list', async () => {
+    await inventoryService.provisionBranchIngredients('branch-1', []);
+
+    expect(inventoryRepository.provisionIngredient).not.toHaveBeenCalled();
   });
 });

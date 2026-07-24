@@ -29,6 +29,14 @@ vi.mock('../../lib/id-counter.js', () => ({
   nextCounterValue: vi.fn(),
 }));
 
+vi.mock('../recipes/recipes.service.js', () => ({
+  listDistinctIngredientIdentities: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../inventory/inventory.service.js', () => ({
+  inventoryService: { provisionBranchIngredients: vi.fn().mockResolvedValue(undefined) },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -64,6 +72,8 @@ const { branchesRepository } = await import('./branches.repository.js');
 const { branchesService } = await import('./branches.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { supabaseAdmin } = await import('../../lib/supabase.js');
+const { listDistinctIngredientIdentities } = await import('../recipes/recipes.service.js');
+const { inventoryService } = await import('../inventory/inventory.service.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
 
@@ -167,6 +177,40 @@ describe('branchesService.createBranch', () => {
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'BRANCH_CREATED', actorId: ACTOR.id }),
     );
+  });
+
+  it('CR-004: provisions the new branch with a zero-stock ingredient for every distinct master-recipe ingredient identity', async () => {
+    vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-003');
+    vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-3', code: 'PC-MNL-003' }) as never);
+    vi.mocked(listDistinctIngredientIdentities).mockResolvedValue([
+      { name: 'Potato', unit: 'g' },
+      { name: 'Cooking Oil', unit: 'ml' },
+    ]);
+
+    await branchesService.createBranch(
+      { name: 'Branch 3', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+      ACTOR,
+      null,
+    );
+
+    expect(inventoryService.provisionBranchIngredients).toHaveBeenCalledWith('branch-3', [
+      { name: 'Potato', unit: 'g' },
+      { name: 'Cooking Oil', unit: 'ml' },
+    ]);
+  });
+
+  it('CR-004: skips provisioning entirely when no master recipe ingredients exist yet', async () => {
+    vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-004');
+    vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-4', code: 'PC-MNL-004' }) as never);
+    vi.mocked(listDistinctIngredientIdentities).mockResolvedValue([]);
+
+    await branchesService.createBranch(
+      { name: 'Branch 4', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+      ACTOR,
+      null,
+    );
+
+    expect(inventoryService.provisionBranchIngredients).not.toHaveBeenCalled();
   });
 });
 

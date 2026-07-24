@@ -391,3 +391,29 @@ describe('inventoryRepository.findMovements', () => {
     );
   });
 });
+
+describe('inventoryRepository.provisionIngredient — CR-004', () => {
+  it('returns the existing row and never calls create when one already exists for that branch/name', async () => {
+    const existing = { id: 'ing-1', branchId: 'branch-1', name: 'Potato' };
+    vi.mocked(prisma.ingredient.findFirst).mockResolvedValue(existing as never);
+
+    const result = await inventoryRepository.provisionIngredient('branch-1', 'Potato', 'g');
+
+    expect(result).toBe(existing);
+    expect(prisma.ingredient.findFirst).toHaveBeenCalledWith({ where: { branchId: 'branch-1', name: 'Potato', deletedAt: null } });
+    expect(prisma.ingredient.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a zero-stock ingredient when none exists yet for that branch/name', async () => {
+    vi.mocked(prisma.ingredient.findFirst).mockResolvedValue(null);
+    const created = { id: 'ing-2', branchId: 'branch-1', name: 'Cooking Oil' };
+    vi.mocked(prisma.ingredient.create).mockResolvedValue(created as never);
+
+    const result = await inventoryRepository.provisionIngredient('branch-1', 'Cooking Oil', 'ml');
+
+    expect(prisma.ingredient.create).toHaveBeenCalledWith({
+      data: { branchId: 'branch-1', name: 'Cooking Oil', unit: 'ml', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    });
+    expect(result).toBe(created);
+  });
+});

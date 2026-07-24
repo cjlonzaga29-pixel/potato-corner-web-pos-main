@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type IngredientCategory } from '@prisma/client';
 import { MOVEMENT_TYPE, SOCKET_EVENTS, type MovementType } from '@potato-corner/shared';
 import type {
   CreateIngredientInput,
@@ -597,6 +597,26 @@ export const inventoryService = {
   async provisionBranchIngredients(branchId: string, identities: { name: string; unit: string }[]): Promise<void> {
     for (const identity of identities) {
       await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit);
+    }
+  },
+
+  /**
+   * CR-005 Sub-phase 3a — the inverse fan-out of provisionBranchIngredients:
+   * one ingredient identity provisioned across every given branch, instead
+   * of every identity provisioned into one new branch. Used by
+   * flavorsService so a newly created (or reactivated) flavor gets a
+   * category=FLAVOR Ingredient row in every existing branch immediately,
+   * instead of only on the branches that happen to already carry it via
+   * CR-004 backfill. Idempotent per provisionIngredient's (branchId, name)
+   * find-or-create; not transactional; not batched with $transaction, since
+   * a partial failure leaves rows a retry can complete without side effects.
+   */
+  async provisionIdentityAcrossBranches(
+    identity: { name: string; unit: string; category?: IngredientCategory },
+    branchIds: string[],
+  ): Promise<void> {
+    for (const branchId of branchIds) {
+      await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit, identity.category);
     }
   },
 };

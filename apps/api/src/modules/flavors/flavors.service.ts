@@ -1,8 +1,11 @@
+import { IngredientCategory } from '@prisma/client';
 import type { JwtPayload } from '@potato-corner/shared';
 import { flavorsRepository } from './flavors.repository.js';
 import { FlavorError, type FlavorListFilters } from './flavors.types.js';
 import { productsRepository } from '../products/products.repository.js';
 import { ProductError } from '../products/products.types.js';
+import { branchesRepository } from '../branches/branches.repository.js';
+import { inventoryService } from '../inventory/inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 type ActorContext = { id: string; role: string };
@@ -82,6 +85,13 @@ interface UpdateFlavorInput {
   color_hex?: string;
   display_order?: number;
   is_active?: boolean;
+  // Not in updateFlavorSchema (Zod already strips them at the HTTP boundary) and
+  // not a real update field — present only so an internal caller that bypasses
+  // the schema still gets an explicit FLAVOR_IDENTITY_IMMUTABLE rejection instead
+  // of a silently ignored write. Flavor.ingredientName/ingredientUnit are fixed
+  // at creation (CR-005 Sub-phase 3a, Decision A Option 1).
+  ingredient_name?: unknown;
+  ingredient_unit?: unknown;
 }
 
 interface LinkVariantFlavorInput {
@@ -93,6 +103,31 @@ interface LinkVariantFlavorInput {
 interface UpdateVariantFlavorInput {
   price_premium?: number;
   is_available?: boolean;
+}
+
+/**
+ * CR-005 Sub-phase 3a — Hook A. Provisions a category=FLAVOR Ingredient row
+ * for this flavor's (ingredientName, ingredientUnit) identity in every
+ * existing branch, so POS recipe resolution never hits a branch that's
+ * missing the row the first time this flavor appears in a recipe. Shared by
+ * createFlavor and updateFlavor's reactivation path. Not transactional with
+ * the caller's flavor create/update — provisionIdentityAcrossBranches is
+ * per-branch idempotent, so a failure partway through is safe to leave as
+ * is; it's swallowed here (logged only) because a provisioning gap must
+ * never fail the flavor create/update itself.
+ */
+async function provisionFlavorIngredientAcrossBranches(flavor: { ingredientName: string; ingredientUnit: string }): Promise<void> {
+  const branchIds = await branchesRepository.listAllBranchIds();
+  if (branchIds.length === 0) return;
+
+  try {
+    await inventoryService.provisionIdentityAcrossBranches(
+      { name: flavor.ingredientName, unit: flavor.ingredientUnit, category: IngredientCategory.FLAVOR },
+      branchIds,
+    );
+  } catch (error) {
+    console.warn(`Failed to provision ingredient "${flavor.ingredientName}" across one or more branches:`, error);
+  }
 }
 
 export const flavorsService = {
@@ -130,6 +165,9 @@ export const flavorsService = {
       displayOrder: data.display_order,
       isActive: data.is_active,
     });
+
+    await provisionFlavorIngredientAcrossBranches(flavor);
+
     const response = toFlavorResponse(flavor);
 
     await recordAuditLog({
@@ -146,6 +184,10 @@ export const flavorsService = {
   },
 
   async updateFlavor(flavorId: string, data: UpdateFlavorInput, actor: ActorContext, ipAddress: string | null) {
+    if (data.ingredient_name !== undefined || data.ingredient_unit !== undefined) {
+      throw new FlavorError('FLAVOR_IDENTITY_IMMUTABLE', 'ingredient_name and ingredient_unit cannot be changed after a flavor is created', 400);
+    }
+
     const before = await flavorsRepository.findById(flavorId);
     if (!before) throw new FlavorError('FLAVOR_NOT_FOUND', 'Flavor not found', 404);
 
@@ -156,6 +198,11 @@ export const flavorsService = {
       displayOrder: data.display_order,
       isActive: data.is_active,
     });
+
+    if (before.isActive === false && flavor.isActive === true) {
+      await provisionFlavorIngredientAcrossBranches(flavor);
+    }
+
     const response = toFlavorResponse(flavor);
 
     await recordAuditLog({

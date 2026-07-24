@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Integration tests exercise the real Prisma + Redis stack end to end,
@@ -10,6 +11,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
  * Set TEST_DATABASE_URL and TEST_REDIS_URL to enable this suite.
  */
 const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL && process.env.TEST_REDIS_URL);
+
+// Imported unconditionally — see the identical note in
+// branches.integration.test.ts. Constructing PrismaClient doesn't touch the
+// network; only the queries inside describe.skipIf below do.
+const { prisma } = await import('../../lib/prisma.js');
+const { flavorsService } = await import('./flavors.service.js');
 
 describe.skipIf(!canRunIntegrationTests)('flavors integration', () => {
   beforeAll(async () => {
@@ -64,5 +71,99 @@ describe.skipIf(!canRunIntegrationTests)('flavors integration', () => {
     // a branch not in the supervisor's branch_ids; assert 403
     // BRANCH_ACCESS_DENIED.
     expect(true).toBe(true);
+  });
+});
+
+/**
+ * CR-005 Sub-phase 3a — Hook A. Exercises the real service layer
+ * (flavorsService.createFlavor/updateFlavor -> branchesRepository.listAllBranchIds
+ * -> inventoryService.provisionIdentityAcrossBranches) against a real Postgres
+ * database, proving a brand-new (or reactivated) flavor is provisioned with a
+ * category=FLAVOR Ingredient row in every existing branch — the fan-out
+ * inverse of branches.integration.test.ts's CR-004 provisioning suite.
+ */
+describe.skipIf(!canRunIntegrationTests)('flavors integration — CR-005 Sub-phase 3a Hook A provisioning', () => {
+  let adminId: string;
+  const branchIds: string[] = [];
+  const createdFlavorNames: string[] = [];
+
+  beforeAll(async () => {
+    const admin = await prisma.user.create({
+      data: {
+        email: `cr005-3a-admin-${randomUUID()}@potatocorner.test`,
+        passwordHash: 'unused-in-this-suite',
+        role: 'super_admin',
+        firstName: 'CR-005',
+        lastName: 'Test Admin',
+        employmentType: 'regular',
+        mustChangePassword: false,
+      },
+    });
+    adminId = admin.id;
+
+    for (let i = 0; i < 3; i++) {
+      const branch = await prisma.branch.create({
+        data: { name: `CR-005 3a Branch ${i}`, code: `CR0053A-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+      });
+      branchIds.push(branch.id);
+    }
+  });
+
+  afterAll(async () => {
+    await prisma.ingredient.deleteMany({ where: { name: { in: createdFlavorNames } } });
+    await prisma.flavor.deleteMany({ where: { name: { in: createdFlavorNames } } });
+    await prisma.branch.deleteMany({ where: { id: { in: branchIds } } });
+    await prisma.user.deleteMany({ where: { id: adminId } });
+    await prisma.$disconnect();
+  });
+
+  it('createFlavor provisions one category=FLAVOR ingredient row per existing branch', async () => {
+    const name = `CR005-3a-Truffle-${randomUUID().slice(0, 8)}`;
+    createdFlavorNames.push(name);
+
+    await flavorsService.createFlavor({ name, color_hex: '#000000', is_active: true }, { id: adminId, role: 'super_admin' }, null);
+
+    const provisioned = await prisma.ingredient.findMany({ where: { name, deletedAt: null } });
+    expect(provisioned).toHaveLength(branchIds.length);
+    expect(provisioned.every((row) => row.category === 'FLAVOR')).toBe(true);
+    expect(new Set(provisioned.map((row) => row.branchId))).toEqual(new Set(branchIds));
+  });
+
+  it('a second createFlavor call for a differently-named flavor does not duplicate existing ingredient rows', async () => {
+    const nameA = `CR005-3a-Idem-A-${randomUUID().slice(0, 8)}`;
+    createdFlavorNames.push(nameA);
+    await flavorsService.createFlavor({ name: nameA, color_hex: '#000000', is_active: true }, { id: adminId, role: 'super_admin' }, null);
+
+    // Re-provisioning the same identity directly (the idempotent primitive
+    // createFlavor relies on) must not create a duplicate row per branch.
+    const { branchesRepository } = await import('../branches/branches.repository.js');
+    const { inventoryService } = await import('../inventory/inventory.service.js');
+    const allBranchIds = await branchesRepository.listAllBranchIds();
+    await inventoryService.provisionIdentityAcrossBranches({ name: nameA, unit: 'grams' }, allBranchIds);
+
+    const count = await prisma.ingredient.count({ where: { name: nameA, deletedAt: null } });
+    expect(count).toBe(branchIds.length);
+  });
+
+  it('updateFlavor reactivation (false→true) provisions any missing ingredient rows', async () => {
+    const name = `CR005-3a-Reactivate-${randomUUID().slice(0, 8)}`;
+    createdFlavorNames.push(name);
+
+    const created = await flavorsService.createFlavor(
+      { name, color_hex: '#000000', is_active: false },
+      { id: adminId, role: 'super_admin' },
+      null,
+    );
+
+    // is_active: false at creation still provisions (Hook A fires
+    // unconditionally on create) — delete one branch's row to simulate a
+    // gap left by a partial failure, then prove reactivation re-fills it.
+    await prisma.ingredient.deleteMany({ where: { name, branchId: branchIds[0] } });
+    expect(await prisma.ingredient.count({ where: { name, deletedAt: null } })).toBe(branchIds.length - 1);
+
+    await flavorsService.updateFlavor(created.id, { is_active: true }, { id: adminId, role: 'super_admin' }, null);
+
+    const provisioned = await prisma.ingredient.findMany({ where: { name, deletedAt: null } });
+    expect(provisioned).toHaveLength(branchIds.length);
   });
 });

@@ -25,12 +25,26 @@ vi.mock('../products/products.repository.js', () => ({
   },
 }));
 
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    listAllBranchIds: vi.fn(),
+  },
+}));
+
+vi.mock('../inventory/inventory.service.js', () => ({
+  inventoryService: {
+    provisionIdentityAcrossBranches: vi.fn(),
+  },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { flavorsRepository } = await import('./flavors.repository.js');
 const { productsRepository } = await import('../products/products.repository.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
+const { inventoryService } = await import('../inventory/inventory.service.js');
 const { flavorsService } = await import('./flavors.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 
@@ -48,6 +62,8 @@ function buildFlavor(overrides: Partial<Record<string, unknown>> = {}) {
     colorHex: '#FFD700',
     displayOrder: 1,
     isActive: true,
+    ingredientName: 'Sour Cream',
+    ingredientUnit: 'grams',
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     variantFlavors: [],
@@ -58,6 +74,7 @@ function buildFlavor(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue([]);
 });
 
 describe('createFlavorSchema color validation', () => {
@@ -88,6 +105,67 @@ describe('flavorsService.createFlavor', () => {
   });
 });
 
+describe('flavorsService.createFlavor — CR-005 Sub-phase 3a Hook A', () => {
+  it('provisions the ingredient identity in every existing branch', async () => {
+    vi.mocked(flavorsRepository.findByName).mockResolvedValue(null);
+    vi.mocked(flavorsRepository.create).mockResolvedValue(buildFlavor() as never);
+    vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue(['branch-1', 'branch-2', 'branch-3']);
+
+    await flavorsService.createFlavor({ name: 'Sour Cream', color_hex: '#FFD700', is_active: true }, ACTOR, null);
+
+    expect(inventoryService.provisionIdentityAcrossBranches).toHaveBeenCalledWith(
+      { name: 'Sour Cream', unit: 'grams', category: 'FLAVOR' },
+      ['branch-1', 'branch-2', 'branch-3'],
+    );
+  });
+
+  it('skips provisioning when no branches exist', async () => {
+    vi.mocked(flavorsRepository.findByName).mockResolvedValue(null);
+    vi.mocked(flavorsRepository.create).mockResolvedValue(buildFlavor() as never);
+    vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue([]);
+
+    await flavorsService.createFlavor({ name: 'Sour Cream', color_hex: '#FFD700', is_active: true }, ACTOR, null);
+
+    expect(inventoryService.provisionIdentityAcrossBranches).not.toHaveBeenCalled();
+  });
+
+  it('provisions with category FLAVOR', async () => {
+    vi.mocked(flavorsRepository.findByName).mockResolvedValue(null);
+    vi.mocked(flavorsRepository.create).mockResolvedValue(buildFlavor() as never);
+    vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue(['branch-1']);
+
+    await flavorsService.createFlavor({ name: 'Sour Cream', color_hex: '#FFD700', is_active: true }, ACTOR, null);
+
+    const identity = vi.mocked(inventoryService.provisionIdentityAcrossBranches).mock.calls[0]?.[0];
+    expect(identity?.category).toBe('FLAVOR');
+  });
+
+  it('passes the created flavor\'s ingredientName/ingredientUnit as the identity (Phase 2 backfill defaults)', async () => {
+    vi.mocked(flavorsRepository.findByName).mockResolvedValue(null);
+    vi.mocked(flavorsRepository.create).mockResolvedValue(
+      buildFlavor({ name: 'Truffle', ingredientName: 'Truffle', ingredientUnit: 'grams' }) as never,
+    );
+    vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue(['branch-1']);
+
+    await flavorsService.createFlavor({ name: 'Truffle', color_hex: '#FFD700', is_active: true }, ACTOR, null);
+
+    const identity = vi.mocked(inventoryService.provisionIdentityAcrossBranches).mock.calls[0]?.[0];
+    expect(identity).toMatchObject({ name: 'Truffle', unit: 'grams' });
+  });
+
+  it('creates the flavor first, then provisions — not inside a shared transaction', async () => {
+    vi.mocked(flavorsRepository.findByName).mockResolvedValue(null);
+    vi.mocked(flavorsRepository.create).mockResolvedValue(buildFlavor() as never);
+    vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue(['branch-1']);
+
+    await flavorsService.createFlavor({ name: 'Sour Cream', color_hex: '#FFD700', is_active: true }, ACTOR, null);
+
+    const createOrder = vi.mocked(flavorsRepository.create).mock.invocationCallOrder[0] as number;
+    const provisionOrder = vi.mocked(inventoryService.provisionIdentityAcrossBranches).mock.invocationCallOrder[0] as number;
+    expect(createOrder).toBeLessThan(provisionOrder);
+  });
+});
+
 describe('flavorsService.updateFlavor', () => {
   it('updates color and display order', async () => {
     vi.mocked(flavorsRepository.findById).mockResolvedValue(buildFlavor() as never);
@@ -103,6 +181,66 @@ describe('flavorsService.updateFlavor', () => {
     );
     expect(result.color_hex).toBe('#00FF00');
     expect(result.display_order).toBe(5);
+  });
+});
+
+describe('flavorsService.updateFlavor — CR-005 Sub-phase 3a Hook A reactivation', () => {
+  it('provisions the ingredient identity on false→true is_active transition', async () => {
+    vi.mocked(flavorsRepository.findById).mockResolvedValue(buildFlavor({ isActive: false }) as never);
+    vi.mocked(flavorsRepository.update).mockResolvedValue(buildFlavor({ isActive: true }) as never);
+    vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue(['branch-1', 'branch-2']);
+
+    await flavorsService.updateFlavor('flavor-1', { is_active: true }, ACTOR, null);
+
+    expect(inventoryService.provisionIdentityAcrossBranches).toHaveBeenCalledWith(
+      { name: 'Sour Cream', unit: 'grams', category: 'FLAVOR' },
+      ['branch-1', 'branch-2'],
+    );
+  });
+
+  it('does not provision on true→false (deactivation)', async () => {
+    vi.mocked(flavorsRepository.findById).mockResolvedValue(buildFlavor({ isActive: true }) as never);
+    vi.mocked(flavorsRepository.update).mockResolvedValue(buildFlavor({ isActive: false }) as never);
+
+    await flavorsService.updateFlavor('flavor-1', { is_active: false }, ACTOR, null);
+
+    expect(inventoryService.provisionIdentityAcrossBranches).not.toHaveBeenCalled();
+  });
+
+  it('does not provision on a same-state update (true→true)', async () => {
+    vi.mocked(flavorsRepository.findById).mockResolvedValue(buildFlavor({ isActive: true }) as never);
+    vi.mocked(flavorsRepository.update).mockResolvedValue(buildFlavor({ isActive: true, displayOrder: 9 }) as never);
+
+    await flavorsService.updateFlavor('flavor-1', { display_order: 9 }, ACTOR, null);
+
+    expect(inventoryService.provisionIdentityAcrossBranches).not.toHaveBeenCalled();
+  });
+
+  it('does not provision on a same-state update (false→false)', async () => {
+    vi.mocked(flavorsRepository.findById).mockResolvedValue(buildFlavor({ isActive: false }) as never);
+    vi.mocked(flavorsRepository.update).mockResolvedValue(buildFlavor({ isActive: false, displayOrder: 9 }) as never);
+
+    await flavorsService.updateFlavor('flavor-1', { display_order: 9 }, ACTOR, null);
+
+    expect(inventoryService.provisionIdentityAcrossBranches).not.toHaveBeenCalled();
+  });
+
+  it('rejects an attempted update of ingredient_name with FLAVOR_IDENTITY_IMMUTABLE', async () => {
+    await expect(
+      flavorsService.updateFlavor('flavor-1', { ingredient_name: 'Something Else' } as never, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'FLAVOR_IDENTITY_IMMUTABLE', statusCode: 400 });
+
+    expect(flavorsRepository.findById).not.toHaveBeenCalled();
+    expect(flavorsRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects an attempted update of ingredient_unit with FLAVOR_IDENTITY_IMMUTABLE', async () => {
+    await expect(
+      flavorsService.updateFlavor('flavor-1', { ingredient_unit: 'kg' } as never, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'FLAVOR_IDENTITY_IMMUTABLE', statusCode: 400 });
+
+    expect(flavorsRepository.findById).not.toHaveBeenCalled();
+    expect(flavorsRepository.update).not.toHaveBeenCalled();
   });
 });
 

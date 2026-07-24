@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type IngredientCategory } from '@prisma/client';
 import type { InventoryDeductionStatus, MovementType } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import type { AppendMovementInput, CreateIngredientData, MovementListFilters, UpdateIngredientData } from './inventory.types.js';
@@ -60,12 +60,26 @@ export const inventoryRepository = {
    * same branch/identity without creating duplicates, so callers don't need
    * to pre-check existence themselves.
    */
-  async provisionIngredient(branchId: string, name: string, unit: string, tx?: Prisma.TransactionClient) {
+  async provisionIngredient(
+    branchId: string,
+    name: string,
+    unit: string,
+    category?: IngredientCategory,
+    tx?: Prisma.TransactionClient,
+  ) {
     const client = tx ?? prisma;
     const existing = await client.ingredient.findFirst({ where: { branchId, name, deletedAt: null } });
     if (existing) return existing;
     return client.ingredient.create({
-      data: { branchId, name, unit, currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+      data: {
+        branchId,
+        name,
+        unit,
+        currentStock: 0,
+        lowStockThreshold: 0,
+        criticalThreshold: 0,
+        ...(category && { category }),
+      },
     });
   },
 

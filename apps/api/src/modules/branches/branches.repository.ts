@@ -76,6 +76,23 @@ export const branchesRepository = {
     return prisma.branch.findUnique({ where: { code } });
   },
 
+  /**
+   * CR-005 Sub-phase 3a — every branch's id, for flavor-ingredient fan-out
+   * provisioning (flavorsService createFlavor/updateFlavor). Branch has no
+   * soft-delete column (deletedAt) — only a status field — so "every
+   * existing branch" here is every row, unfiltered by status: an inactive
+   * branch should still have the Ingredient identity ready for when it
+   * reactivates, same reasoning as CR-004's provisionBranchIngredients
+   * firing on branch creation regardless of status.
+   */
+  async listAllBranchIds(): Promise<string[]> {
+    const branches = await prisma.branch.findMany({
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return branches.map((b) => b.id);
+  },
+
   create(data: CreateBranchData) {
     return prisma.branch.create({
       data: {

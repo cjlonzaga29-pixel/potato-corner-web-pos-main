@@ -98,6 +98,11 @@ export const employeesRepository = {
     return prisma.user.findUnique({ where: { id }, select: employeeSelect });
   },
 
+  /** Minimal projection for requireActiveEmployee's per-request status re-check — avoids the full employeeSelect (branch assignments, etc.) on every hot-path POS/attendance request. */
+  findStatusById(id: string) {
+    return prisma.user.findUnique({ where: { id }, select: { status: true, isActive: true } });
+  },
+
   /** Used only in auth context (includes passwordHash) — never for populating an API response. */
   findByEmail(email: string) {
     return prisma.user.findUnique({ where: { email } });

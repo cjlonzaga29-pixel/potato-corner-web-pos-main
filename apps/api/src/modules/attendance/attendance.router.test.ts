@@ -20,7 +20,11 @@ vi.mock('./attendance.service.js', () => ({
 }));
 
 vi.mock('../../lib/prisma.js', () => ({
-  prisma: { revokedToken: { findFirst: vi.fn() } },
+  prisma: {
+    revokedToken: { findFirst: vi.fn() },
+    // requireActiveEmployee's per-request status re-check (employees.repository.ts's findStatusById).
+    user: { findUnique: vi.fn().mockResolvedValue({ status: 'active', isActive: true }) },
+  },
 }));
 
 const { prisma } = await import('../../lib/prisma.js');

@@ -23,7 +23,11 @@ vi.mock('./cash.service.js', () => ({
 }));
 
 vi.mock('../../lib/prisma.js', () => ({
-  prisma: { revokedToken: { findFirst: vi.fn() } },
+  prisma: {
+    revokedToken: { findFirst: vi.fn() },
+    // requireActiveEmployee's per-request status re-check (employees.repository.ts's findStatusById).
+    user: { findUnique: vi.fn().mockResolvedValue({ status: 'active', isActive: true }) },
+  },
 }));
 
 const { prisma } = await import('../../lib/prisma.js');
@@ -117,6 +121,20 @@ describe('POST /open — role guard', () => {
 
     expect(res.status).toHaveBeenCalledWith(201);
     expect(cashService.openShift).toHaveBeenCalled();
+  });
+
+  it('a suspended staff member is blocked by requireActiveEmployee — 403 EMPLOYEE_INACTIVE, even with a still-valid access token', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValueOnce({ status: 'suspended', isActive: false } as never);
+    const handlers = getRouteHandlers(cashRouter, 'post', '/open');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: { branch_id: BRANCH_1, cashier_id: randomUUID(), starting_cash: 1000, denominations: [{ denomination: 1000, quantity: 1 }] } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'EMPLOYEE_INACTIVE' }) }));
+    expect(cashService.openShift).not.toHaveBeenCalled();
   });
 
   it('rejects a body missing denominations with 422 before reaching the service', async () => {

@@ -414,8 +414,16 @@ describe('employeesService.updateEmployee branch ownership', () => {
 });
 
 describe('employeesService.resetEmployeePassword', () => {
+  // Branch Employee Authorization: `staff` rows have no password to reset
+  // (employees.service.ts now rejects EMPLOYEE_HAS_NO_CREDENTIALS for
+  // them) — this endpoint's remaining real callers are branch/supervisor/
+  // super_admin accounts, which still authenticate by password. Target a
+  // `branch`-role employee so these cases keep testing what they're
+  // actually named for: the branch-scoping authorization logic.
+  const targetEmployee = buildEmployee({ role: ROLES.BRANCH, email: 'branch@example.com', mustChangePassword: false });
+
   it('allows a branch actor to reset the password of an employee in their own branch', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', BRANCH_USER, null)).resolves.toBeUndefined();
 
@@ -423,7 +431,7 @@ describe('employeesService.resetEmployeePassword', () => {
   });
 
   it('rejects a branch actor resetting the password of an employee in another branch', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', OTHER_BRANCH_USER, null),
@@ -433,13 +441,13 @@ describe('employeesService.resetEmployeePassword', () => {
   });
 
   it('allows a supervisor to reset the password of an employee in one of their assigned branches', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPERVISOR_USER, null)).resolves.toBeUndefined();
   });
 
   it('rejects a supervisor resetting the password of an employee outside their assigned branches', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', UNASSIGNED_SUPERVISOR_USER, null),
@@ -449,9 +457,19 @@ describe('employeesService.resetEmployeePassword', () => {
   });
 
   it('allows super_admin to reset the password of any employee regardless of branch', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null)).resolves.toBeUndefined();
+  });
+
+  it('rejects resetting the password of a staff employee, who has no credentials to reset', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ role: ROLES.STAFF }) as never);
+
+    await expect(
+      employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null),
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_HAS_NO_CREDENTIALS', statusCode: 400 });
+
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
   });
 });
 

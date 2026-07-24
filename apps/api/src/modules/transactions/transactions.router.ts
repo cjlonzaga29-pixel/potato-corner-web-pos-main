@@ -17,6 +17,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { shiftGuard } from '../../middleware/shift-guard.js';
+import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -61,6 +62,7 @@ router.post(
   '/',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   branchGuard,
   shiftGuard,
@@ -127,6 +129,7 @@ router.post(
   '/sync-offline',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   branchGuard,
   shiftGuard,
@@ -180,6 +183,7 @@ router.post(
   '/hold',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   branchGuard,
   shiftGuard,
@@ -209,7 +213,7 @@ router.post(
   },
 );
 
-router.get('/hold', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/hold', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const shiftId = req.query.shift_id as string | undefined;
@@ -228,6 +232,7 @@ router.post(
   '/hold/:holdOrderId/release',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -244,7 +249,7 @@ router.post(
   },
 );
 
-router.get('/', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = transactionListQuerySchema.safeParse(req.query);
@@ -307,7 +312,7 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
   }
 });
 
-router.get('/:transactionId', authenticate, allRoles, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:transactionId', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
@@ -388,6 +393,7 @@ router.post(
   '/:transactionId/receipt-printed',
   authenticate,
   allRoles,
+  requireActiveEmployee,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

@@ -60,6 +60,13 @@ export const createEmployeeSchema = z
   .refine((data) => data.role !== ROLES.STAFF || Boolean(data.position), {
     message: 'Position is required for a staff employee',
     path: ['position'],
+  })
+  // Branch Employee Authorization: an Employee belongs to exactly one
+  // Branch — the multi-branch array shape is kept for branch/supervisor/
+  // super_admin accounts, which still span multiple branches.
+  .refine((data) => data.role !== ROLES.STAFF || data.branch_ids.length === 1, {
+    message: 'An employee must be assigned to exactly one branch',
+    path: ['branch_ids'],
   });
 
 /** role and email are deliberately absent — both are immutable after creation (locked rule). */

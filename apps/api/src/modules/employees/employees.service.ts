@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import {
   ROLES,
+  SOCKET_EVENTS,
   type CreateEmployeeInput,
   type DeactivateEmployeeInput,
   type EmployeeActivityResponse,
@@ -19,6 +20,24 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { authRepository } from '../auth/auth.repository.js';
 import { getAccessibleBranchIds } from '../../lib/branch-access.js';
+import { getIO } from '../../socket/socket.server.js';
+import { userRoom } from '../../socket/rooms.js';
+
+/**
+ * SESSION CONTROL (CR-003): the moment an Employee stops being ACTIVE,
+ * refresh-token revocation (below) blocks re-auth but the already-issued
+ * access token stays cryptographically valid for its own short TTL —
+ * requireActiveEmployee re-checks live status server-side to close that
+ * window, and this closes the client-visible half of it: push an immediate
+ * forced-logout signal and drop any live socket connection, instead of
+ * leaving the employee looking "still signed in" until they notice.
+ */
+function revokeEmployeeSession(employeeId: string, status: string): void {
+  const io = getIO();
+  if (!io) return;
+  io.to(userRoom(employeeId)).emit(SOCKET_EVENTS.EMPLOYEE_SESSION_REVOKED, { employeeId, status });
+  void io.in(userRoom(employeeId)).disconnectSockets(true);
+}
 
 const BCRYPT_COST_FACTOR = 12;
 
@@ -246,6 +265,13 @@ export const employeesService = {
     assertEmployeeAccess(updatedBy, before);
 
     if (data.branch_ids) {
+      // Branch Employee Authorization: an Employee belongs to exactly one
+      // Branch — createEmployeeSchema enforces this at creation, but
+      // updateEmployeeSchema can't (it has no `role` field to key off, since
+      // role is immutable after creation), so it's enforced here instead.
+      if (before.role === ROLES.STAFF && data.branch_ids.length !== 1) {
+        throw new EmployeeError('INVALID_BRANCH_ASSIGNMENT', 'An employee must be assigned to exactly one branch', 400);
+      }
       const accessible = getAccessibleBranchIds(updatedBy);
       if (accessible !== 'all') {
         const outOfScope = data.branch_ids.some((id) => !accessible.includes(id));
@@ -307,6 +333,7 @@ export const employeesService = {
     await employeesRepository.deactivate(employeeId, deactivatedBy.user_id, data.reason);
     await authRepository.revokeAllUserTokens(employeeId);
     await employeesRepository.updateBranchAssignments(employeeId, [], deactivatedBy.user_id);
+    revokeEmployeeSession(employeeId, 'inactive');
 
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
@@ -385,10 +412,13 @@ export const employeesService = {
     await employeesRepository.setStatus(employeeId, status, changedBy.user_id, reason);
 
     if (status !== 'active') {
-      // Force logout: refresh revocation blocks re-auth immediately; the
-      // employee's current (short-lived) access token expires on its own.
+      // Force logout: refresh revocation blocks re-auth, the socket push +
+      // disconnect ends any live session immediately, and
+      // requireActiveEmployee blocks any further use of the still-valid
+      // access token server-side even if the client never receives the push.
       await authRepository.revokeAllUserTokens(employeeId);
       await employeesRepository.updateBranchAssignments(employeeId, [], changedBy.user_id);
+      revokeEmployeeSession(employeeId, status);
     }
 
     const employee = await employeesRepository.findById(employeeId);
@@ -416,6 +446,14 @@ export const employeesService = {
   ): Promise<void> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    // Branch Employee Authorization: `staff` rows have no login credentials
+    // at all — this legacy endpoint (kept for the branch/supervisor/
+    // super_admin accounts that still authenticate by password) no longer
+    // applies to them. Use setEmployeeStatus (e.g. suspend/reactivate) to
+    // revoke or restore an Employee's access instead.
+    if (employee.role === ROLES.STAFF) {
+      throw new EmployeeError('EMPLOYEE_HAS_NO_CREDENTIALS', 'Employees have no password to reset — change their status instead', 400);
+    }
     assertEmployeeAccess(resetBy, employee);
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);

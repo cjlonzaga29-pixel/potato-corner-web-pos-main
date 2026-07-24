@@ -76,6 +76,11 @@ export const flavorsRepository = {
         colorHex: data.colorHex,
         displayOrder: data.displayOrder,
         isActive: data.isActive,
+        // Mirrors the CR-005 Phase 2 backfill: ingredient identity defaults
+        // to the flavor name, weighed in grams, until Product Builder
+        // exposes per-flavor ingredient overrides.
+        ingredientName: data.name,
+        ingredientUnit: 'grams',
       },
     });
   },

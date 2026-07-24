@@ -554,8 +554,8 @@ model Flavor {
   // CR-005 Phase 1 (Fix 2): flavor->ingredient linkage by name+unit, resolved
   // against the selling branch's Ingredient row via the CR-004 resolver.
   // Nullable — backfilled in a later phase.
-  ingredientName String? @map("ingredient_name")
-  ingredientUnit String? @map("ingredient_unit")
+  ingredientName String @map("ingredient_name")
+  ingredientUnit String @map("ingredient_unit")
 
   variantFlavors     ProductVariantFlavor[]
   branchAvailability BranchFlavorAvailability[]

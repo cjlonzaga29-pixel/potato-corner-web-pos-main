@@ -26,6 +26,10 @@ vi.mock('./transactions.repository.js', () => ({
     listActiveHoldOrdersForShift: vi.fn(),
     releaseHoldOrder: vi.fn(),
     findDiscountAuditTrail: vi.fn(),
+    findClosedShiftTransactionSummaries: vi.fn().mockResolvedValue([]),
+    countGcashTransactionsForBranchWindow: vi.fn().mockResolvedValue(0),
+    findGcashCountsByCashierForDate: vi.fn().mockResolvedValue([]),
+    findStatutoryDiscountsInWindow: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -53,7 +57,11 @@ vi.mock('../recipes/recipes.service.js', () => ({
 }));
 
 vi.mock('../cash/cash.repository.js', () => ({
-  cashRepository: { findShiftById: vi.fn() },
+  cashRepository: {
+    findShiftById: vi.fn(),
+    findCashiersWithClosedShifts: vi.fn().mockResolvedValue([]),
+    findLastNClosedShiftsForCashier: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 vi.mock('../price-overrides/price-overrides.service.js', () => ({

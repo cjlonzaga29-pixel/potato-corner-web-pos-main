@@ -14,6 +14,8 @@ jobs:
     environment: production
     env:
       REDIS_URL: redis://localhost:6379
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/potato_corner_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/potato_corner_test
     services:
       redis:
         image: redis:7-alpine
@@ -21,6 +23,19 @@ jobs:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: potato_corner_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -46,6 +61,13 @@ jobs:
 
       - name: Generate Prisma client
         run: pnpm --filter @potato-corner/api exec prisma generate
+
+      - name: Run database migrations (test DB)
+        # Same job-level Postgres service ci.yml uses for the test suite —
+        # separate from the "Run database migrations (production)" step
+        # below, which targets the real production DB via a different URL.
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
 
       - name: Full CI validation
         run: |

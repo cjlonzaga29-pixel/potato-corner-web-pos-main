@@ -174,6 +174,8 @@ export const createRecipeSchema = z.object({
   product_variant_id: z.uuid(),
   ingredient_id: z.uuid(),
   flavor_id: z.uuid().nullable().optional(),
+  // CR-005 3f — mutually exclusive with flavor_id; targets a ProductFlavorSlot position instead of a fixed Flavor.
+  flavor_slot_index: z.number().int().nonnegative().nullable().optional(),
   quantity: z.number().positive(),
   unit: z.string().min(1).max(20),
 });
@@ -181,6 +183,7 @@ export const createRecipeSchema = z.object({
 export const updateRecipeSchema = z.object({
   quantity: z.number().positive().optional(),
   unit: z.string().min(1).max(20).optional(),
+  flavor_slot_index: z.number().int().nonnegative().nullable().optional(),
 });
 
 export const recipeResponseSchema = z.object({
@@ -190,6 +193,8 @@ export const recipeResponseSchema = z.object({
   ingredient_name: z.string(),
   flavor_id: z.uuid().nullable(),
   flavor_name: z.string().nullable(),
+  // Only present on master recipe responses — BranchRecipeOverride has no flavorSlotIndex column.
+  flavor_slot_index: z.number().nullable().optional(),
   quantity: z.number(),
   unit: z.string(),
 });

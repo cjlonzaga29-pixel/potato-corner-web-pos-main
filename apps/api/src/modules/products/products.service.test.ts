@@ -47,6 +47,10 @@ vi.mock('./products.repository.js', () => ({
 vi.mock('../recipes/recipes.repository.js', () => ({
   recipesRepository: {
     findByVariant: vi.fn().mockResolvedValue([]),
+    // CR-005 3f — slot-recipe coupling guards
+    countRecipesReferencingSlot: vi.fn().mockResolvedValue(0),
+    shiftRecipesFlavorSlotIndicesDown: vi.fn(),
+    cascadeRecipeSlotReindex: vi.fn(),
   },
 }));
 
@@ -1143,7 +1147,26 @@ describe('productsService.removeFlavorSlot', () => {
 
     expect(productsRepository.deleteFlavorSlot).toHaveBeenCalledWith('slot-2', prisma);
     expect(productsRepository.shiftFlavorSlotIndicesDown).toHaveBeenCalledWith('variant-1', 1, prisma);
+    expect(recipesRepository.shiftRecipesFlavorSlotIndicesDown).toHaveBeenCalledWith('variant-1', 1, prisma);
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('CR-005 3f — rejects removal when a recipe still references the slot (SLOT_HAS_DEPENDENT_RECIPES), no changes persisted', async () => {
+    vi.mocked(productsRepository.findFlavorSlotById).mockResolvedValue(
+      buildFlavorSlot({ id: 'slot-2', productVariantId: 'variant-1', slotIndex: 1 }) as never,
+    );
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+    vi.mocked(recipesRepository.countRecipesReferencingSlot).mockResolvedValueOnce(2);
+
+    await expect(productsService.removeFlavorSlot('slot-2', undefined, SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'SLOT_HAS_DEPENDENT_RECIPES',
+      statusCode: 409,
+    });
+
+    expect(recipesRepository.countRecipesReferencingSlot).toHaveBeenCalledWith('variant-1', 1, prisma);
+    expect(productsRepository.deleteFlavorSlot).not.toHaveBeenCalled();
+    expect(productsRepository.shiftFlavorSlotIndicesDown).not.toHaveBeenCalled();
+    expect(recipesRepository.shiftRecipesFlavorSlotIndicesDown).not.toHaveBeenCalled();
   });
 
   it('removing on an ACTIVE variant bumps version and writes ChangeLog', async () => {
@@ -1189,6 +1212,29 @@ describe('productsService.reorderFlavorSlots', () => {
 
     expect(productsRepository.rewriteFlavorSlotOrder).toHaveBeenCalledWith('variant-1', ['s2', 's0', 's1'], prisma);
     expect((result as { id: string }[]).map((s) => s.id)).toEqual(['s2', 's0', 's1']);
+  });
+
+  it('CR-005 3f — cascades the reorder onto Recipe.flavorSlotIndex: [A,B,C] -> [C,A,B] maps old index 0 (A) to new index 1', async () => {
+    const s0 = buildFlavorSlot({ id: 's0', slotIndex: 0, label: 'A' });
+    const s1 = buildFlavorSlot({ id: 's1', slotIndex: 1, label: 'B' });
+    const s2 = buildFlavorSlot({ id: 's2', slotIndex: 2, label: 'C' });
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'DRAFT' }) as never);
+    vi.mocked(productsRepository.listVariantFlavorSlots)
+      .mockResolvedValueOnce([s0, s1, s2] as never)
+      .mockResolvedValueOnce([
+        { ...s2, slotIndex: 0 },
+        { ...s0, slotIndex: 1 },
+        { ...s1, slotIndex: 2 },
+      ] as never);
+
+    await productsService.reorderFlavorSlots('variant-1', { slotIds: ['s2', 's0', 's1'] }, undefined, SUPERVISOR, null);
+
+    const expectedMap = new Map([
+      [2, 0], // C: old 2 -> new 0
+      [0, 1], // A: old 0 -> new 1
+      [1, 2], // B: old 1 -> new 2
+    ]);
+    expect(recipesRepository.cascadeRecipeSlotReindex).toHaveBeenCalledWith('variant-1', expectedMap, prisma);
   });
 
   it('length mismatch is rejected', async () => {

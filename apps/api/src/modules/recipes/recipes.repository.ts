@@ -37,12 +37,20 @@ export const recipesRepository = {
     return prisma.recipe.findFirst({ where: { id, deletedAt: null }, include: recipeInclude });
   },
 
-  createRecipe(data: { productVariantId: string; ingredientId: string; flavorId: string | null; quantity: number; unit: string }) {
+  createRecipe(data: {
+    productVariantId: string;
+    ingredientId: string;
+    flavorId: string | null;
+    flavorSlotIndex?: number | null;
+    quantity: number;
+    unit: string;
+  }) {
     return prisma.recipe.create({
       data: {
         productVariantId: data.productVariantId,
         ingredientId: data.ingredientId,
         flavorId: data.flavorId,
+        flavorSlotIndex: data.flavorSlotIndex ?? null,
         quantity: data.quantity,
         unit: data.unit,
       },
@@ -51,7 +59,7 @@ export const recipesRepository = {
   },
 
   /** CR-004: every update bumps `version` — the field TransactionItem.recipeVersion snapshots at sale time. */
-  updateRecipe(id: string, data: { quantity?: number; unit?: string }) {
+  updateRecipe(id: string, data: { quantity?: number; unit?: string; flavorSlotIndex?: number | null }) {
     return prisma.recipe.update({ where: { id }, data: { ...data, version: { increment: 1 } }, include: recipeInclude });
   },
 
@@ -144,5 +152,63 @@ export const recipesRepository = {
       if (!byName.has(row.ingredient.name)) byName.set(row.ingredient.name, row.ingredient);
     }
     return [...byName.values()];
+  },
+
+  // --- CR-005 Sub-phase 3f — slot-recipe coupling (productsService flavor slot CRUD guards) ---
+
+  /** Used by productsService.removeFlavorSlot's guard — a slot with any recipe still pointing at it cannot be removed. */
+  countRecipesReferencingSlot(productVariantId: string, slotIndex: number, tx: Prisma.TransactionClient | typeof prisma = prisma): Promise<number> {
+    return tx.recipe.count({ where: { productVariantId, flavorSlotIndex: slotIndex, deletedAt: null } });
+  },
+
+  /**
+   * After a flavor slot is removed, every ProductFlavorSlot at a higher
+   * index shifts down by one (productsRepository.shiftFlavorSlotIndicesDown)
+   * to keep 0..N-1 contiguity — this mirrors that shift onto Recipe rows so
+   * a recipe's flavorSlotIndex keeps pointing at the same logical slot. A
+   * single UPDATE is safe here (unlike cascadeRecipeSlotReindex below):
+   * Postgres evaluates each row's SET expression against that row's own
+   * pre-update value within one statement, so there's no cross-row ordering
+   * hazard for a uniform decrement.
+   */
+  shiftRecipesFlavorSlotIndicesDown(
+    productVariantId: string,
+    startingFromIndex: number,
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ): Promise<Prisma.BatchPayload> {
+    return tx.recipe.updateMany({
+      where: { productVariantId, flavorSlotIndex: { gt: startingFromIndex }, deletedAt: null },
+      data: { flavorSlotIndex: { decrement: 1 } },
+    });
+  },
+
+  /**
+   * After productsRepository.rewriteFlavorSlotOrder reorders ProductFlavorSlot
+   * rows, remaps every Recipe.flavorSlotIndex from its old slot position to
+   * the new one so recipe->slot linkage survives a purely cosmetic reorder.
+   * Two-phase temp-offset, same shape as rewriteFlavorSlotOrder: applying the
+   * (oldIndex -> newIndex) pairs as direct sequential UPDATEs would let an
+   * earlier pair's write satisfy a later pair's WHERE clause (e.g. swapping
+   * indices 0 and 1 would send both matching rows to whichever index is
+   * written last), corrupting the mapping.
+   */
+  async cascadeRecipeSlotReindex(
+    productVariantId: string,
+    slotIndexMap: Map<number, number>,
+    tx: Prisma.TransactionClient | typeof prisma = prisma,
+  ): Promise<void> {
+    const TEMP_OFFSET = 10000;
+    for (const [oldIndex, newIndex] of slotIndexMap) {
+      await tx.recipe.updateMany({
+        where: { productVariantId, flavorSlotIndex: oldIndex, deletedAt: null },
+        data: { flavorSlotIndex: newIndex + TEMP_OFFSET },
+      });
+    }
+    for (const newIndex of slotIndexMap.values()) {
+      await tx.recipe.updateMany({
+        where: { productVariantId, flavorSlotIndex: newIndex + TEMP_OFFSET, deletedAt: null },
+        data: { flavorSlotIndex: newIndex },
+      });
+    }
   },
 };

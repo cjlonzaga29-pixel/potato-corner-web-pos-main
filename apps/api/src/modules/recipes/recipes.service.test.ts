@@ -21,7 +21,7 @@ vi.mock('./recipes.repository.js', () => ({
 }));
 
 vi.mock('../products/products.repository.js', () => ({
-  productsRepository: { findVariantById: vi.fn() },
+  productsRepository: { findVariantById: vi.fn(), countVariantFlavorSlots: vi.fn() },
 }));
 
 vi.mock('../inventory/inventory.repository.js', () => ({
@@ -35,9 +35,14 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../lib/notify.js', () => ({
+  notifySuperAdmin: vi.fn(),
+}));
+
 const { recipesRepository } = await import('./recipes.repository.js');
+const { productsRepository } = await import('../products/products.repository.js');
 const { inventoryRepository } = await import('../inventory/inventory.repository.js');
-const { computeDeduction, assertRecipeExists, getRecipeVersion } = await import('./recipes.service.js');
+const { computeDeduction, assertRecipeExists, getRecipeVersion, recipesService } = await import('./recipes.service.js');
 
 /**
  * `ingredientBranchId` defaults to 'branch-a' — the branchId every existing
@@ -238,5 +243,140 @@ describe('getRecipeVersion — CR-004', () => {
 
     await expect(getRecipeVersion('variant-1', 'flavor-1')).resolves.toBe(3);
     expect(recipesRepository.getMaxVersionForSelection).toHaveBeenCalledWith('variant-1', 'flavor-1');
+  });
+});
+
+function buildMasterRecipeRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'recipe-1',
+    productVariantId: 'variant-1',
+    ingredientId: 'ingredient-1',
+    flavorId: null,
+    flavorSlotIndex: null,
+    quantity: { toNumber: () => 10 },
+    unit: 'grams',
+    version: 1,
+    ingredient: { name: 'Cheese Powder', branchId: 'branch-a' },
+    flavor: null,
+    ...overrides,
+  };
+}
+
+const CREATE_INPUT_BASE = { product_variant_id: 'variant-1', ingredient_id: 'ingredient-1', quantity: 10, unit: 'grams' };
+const ACTOR = { id: 'admin-1', role: 'super_admin' };
+
+describe('recipesService.createRecipe — CR-005 3f flavorSlotIndex', () => {
+  beforeEach(() => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
+  });
+
+  it('rejects when both flavor_id and flavor_slot_index are set (RECIPE_FLAVOR_AMBIGUOUS)', async () => {
+    await expect(
+      recipesService.createRecipe({ ...CREATE_INPUT_BASE, flavor_id: 'flavor-1', flavor_slot_index: 0 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'RECIPE_FLAVOR_AMBIGUOUS', statusCode: 400 });
+    expect(recipesRepository.createRecipe).not.toHaveBeenCalled();
+  });
+
+  it('creates successfully with flavor_id only (existing behavior, no slot lookup needed)', async () => {
+    vi.mocked(recipesRepository.createRecipe).mockResolvedValue(buildMasterRecipeRow({ flavorId: 'flavor-1' }) as never);
+
+    await recipesService.createRecipe({ ...CREATE_INPUT_BASE, flavor_id: 'flavor-1' }, ACTOR, null);
+
+    expect(productsRepository.countVariantFlavorSlots).not.toHaveBeenCalled();
+    expect(recipesRepository.createRecipe).toHaveBeenCalledWith(expect.objectContaining({ flavorId: 'flavor-1', flavorSlotIndex: null }));
+  });
+
+  it('creates successfully with flavor_slot_index only, within range', async () => {
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(3);
+    vi.mocked(recipesRepository.createRecipe).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: 1 }) as never);
+
+    await recipesService.createRecipe({ ...CREATE_INPUT_BASE, flavor_slot_index: 1 }, ACTOR, null);
+
+    expect(recipesRepository.createRecipe).toHaveBeenCalledWith(expect.objectContaining({ flavorId: null, flavorSlotIndex: 1 }));
+  });
+
+  it('rejects flavor_slot_index on a variant with zero flavor slots (RECIPE_SLOT_INDEX_ON_SLOTLESS_VARIANT)', async () => {
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(0);
+
+    await expect(
+      recipesService.createRecipe({ ...CREATE_INPUT_BASE, flavor_slot_index: 0 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'RECIPE_SLOT_INDEX_ON_SLOTLESS_VARIANT', statusCode: 400 });
+    expect(recipesRepository.createRecipe).not.toHaveBeenCalled();
+  });
+
+  it('rejects a negative flavor_slot_index (RECIPE_SLOT_INDEX_OUT_OF_RANGE)', async () => {
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(3);
+
+    await expect(
+      recipesService.createRecipe({ ...CREATE_INPUT_BASE, flavor_slot_index: -1 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'RECIPE_SLOT_INDEX_OUT_OF_RANGE', statusCode: 400 });
+    expect(recipesRepository.createRecipe).not.toHaveBeenCalled();
+  });
+
+  it('rejects a flavor_slot_index >= the variant\'s slot count (RECIPE_SLOT_INDEX_OUT_OF_RANGE)', async () => {
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(3);
+
+    await expect(
+      recipesService.createRecipe({ ...CREATE_INPUT_BASE, flavor_slot_index: 3 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'RECIPE_SLOT_INDEX_OUT_OF_RANGE', statusCode: 400 });
+    expect(recipesRepository.createRecipe).not.toHaveBeenCalled();
+  });
+});
+
+describe('recipesService.updateRecipe — CR-005 3f flavorSlotIndex', () => {
+  it('updates flavor_slot_index within range, persists it, and bumps version', async () => {
+    vi.mocked(recipesRepository.findRecipeById).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: null, version: 1 }) as never);
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(2);
+    vi.mocked(recipesRepository.updateRecipe).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: 1, version: 2 }) as never);
+
+    const result = await recipesService.updateRecipe('recipe-1', { flavor_slot_index: 1 }, ACTOR, null);
+
+    expect(recipesRepository.updateRecipe).toHaveBeenCalledWith('recipe-1', expect.objectContaining({ flavorSlotIndex: 1 }));
+    expect(result).toMatchObject({ flavor_slot_index: 1, version: 2 });
+  });
+
+  it('clears flavor_slot_index when explicitly set to null', async () => {
+    vi.mocked(recipesRepository.findRecipeById).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: 0 }) as never);
+    vi.mocked(recipesRepository.updateRecipe).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: null }) as never);
+
+    await recipesService.updateRecipe('recipe-1', { flavor_slot_index: null }, ACTOR, null);
+
+    // null clears without re-validating range (assertRecipeFlavorTargetingValid short-circuits on null).
+    expect(productsRepository.countVariantFlavorSlots).not.toHaveBeenCalled();
+    expect(recipesRepository.updateRecipe).toHaveBeenCalledWith('recipe-1', expect.objectContaining({ flavorSlotIndex: null }));
+  });
+
+  it('omitting flavor_slot_index leaves the existing value unchanged (validated, not overwritten)', async () => {
+    vi.mocked(recipesRepository.findRecipeById).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: 1 }) as never);
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(2);
+    vi.mocked(recipesRepository.updateRecipe).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: 1, quantity: { toNumber: () => 20 } }) as never);
+
+    await recipesService.updateRecipe('recipe-1', { quantity: 20 }, ACTOR, null);
+
+    expect(productsRepository.countVariantFlavorSlots).toHaveBeenCalledWith('variant-1');
+    expect(recipesRepository.updateRecipe).toHaveBeenCalledWith('recipe-1', expect.objectContaining({ flavorSlotIndex: undefined }));
+  });
+
+  it('rejects an out-of-range flavor_slot_index against the variant\'s current slot count', async () => {
+    vi.mocked(recipesRepository.findRecipeById).mockResolvedValue(buildMasterRecipeRow({ flavorSlotIndex: null }) as never);
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(2);
+
+    await expect(
+      recipesService.updateRecipe('recipe-1', { flavor_slot_index: 5 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'RECIPE_SLOT_INDEX_OUT_OF_RANGE', statusCode: 400 });
+    expect(recipesRepository.updateRecipe).not.toHaveBeenCalled();
+  });
+
+  it('emits a RECIPE_UPDATED socket notification after a successful update', async () => {
+    const { notifySuperAdmin } = await import('../../lib/notify.js');
+    vi.mocked(recipesRepository.findRecipeById).mockResolvedValue(buildMasterRecipeRow() as never);
+    vi.mocked(recipesRepository.updateRecipe).mockResolvedValue(buildMasterRecipeRow({ version: 2 }) as never);
+
+    await recipesService.updateRecipe('recipe-1', { quantity: 15 }, ACTOR, null);
+
+    expect(notifySuperAdmin).toHaveBeenCalledWith(
+      'recipe:updated',
+      expect.objectContaining({ recipe_id: 'recipe-1', product_variant_id: 'variant-1', version: 2 }),
+    );
   });
 });

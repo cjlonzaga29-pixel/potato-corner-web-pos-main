@@ -1,8 +1,10 @@
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { recipesRepository } from './recipes.repository.js';
 import { RecipeError, type DeductionLine } from './recipes.types.js';
 import { productsRepository } from '../products/products.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { notifySuperAdmin } from '../../lib/notify.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -17,9 +19,13 @@ interface RecipeRow {
   flavor: { name: string } | null;
 }
 
-/** Master Recipe rows carry `version` (CR-004); BranchRecipeOverride rows don't. */
+/**
+ * Master Recipe rows carry `version` (CR-004) and `flavorSlotIndex` (CR-005
+ * 3f); BranchRecipeOverride rows have neither column.
+ */
 interface MasterRecipeRow extends RecipeRow {
   version: number;
+  flavorSlotIndex: number | null;
 }
 
 interface OverrideRow extends RecipeRow {
@@ -43,9 +49,9 @@ function toRecipeResponse(row: RecipeRow) {
   };
 }
 
-/** CR-004: master recipe responses carry `version`; BranchRecipeOverride responses (toOverrideResponse below) don't. */
+/** CR-004/CR-005 3f: master recipe responses carry `version` and `flavor_slot_index`; BranchRecipeOverride responses (toOverrideResponse below) carry neither. */
 function toMasterRecipeResponse(row: MasterRecipeRow) {
-  return { ...toRecipeResponse(row), version: row.version };
+  return { ...toRecipeResponse(row), version: row.version, flavor_slot_index: row.flavorSlotIndex };
 }
 
 function toOverrideResponse(row: OverrideRow) {
@@ -63,6 +69,7 @@ interface CreateRecipeInput {
   product_variant_id: string;
   ingredient_id: string;
   flavor_id?: string | null;
+  flavor_slot_index?: number | null;
   quantity: number;
   unit: string;
 }
@@ -70,6 +77,10 @@ interface CreateRecipeInput {
 interface UpdateRecipeInput {
   quantity?: number;
   unit?: string;
+  flavor_slot_index?: number | null;
+  // flavor_id is intentionally not editable here — flavor targeting is set
+  // at create time only. To switch a recipe from flavor-specific to
+  // slot-based, delete and recreate it.
 }
 
 interface CreateOverrideInput {
@@ -118,6 +129,40 @@ async function resolveIngredientForBranch(branchId: string, row: RecipeRow): Pro
     );
   }
   return { id: resolved.id, name: resolved.name };
+}
+
+/**
+ * CR-005 3f — a Recipe row targets a flavor exactly one of two ways: a fixed
+ * Flavor (flavorId) or a position in the variant's ProductFlavorSlot list
+ * (flavorSlotIndex). Shared by createRecipe and updateRecipe so both enforce
+ * the same mutual-exclusivity and range rules.
+ */
+async function assertRecipeFlavorTargetingValid(
+  productVariantId: string,
+  flavorId: string | null | undefined,
+  flavorSlotIndex: number | null | undefined,
+): Promise<void> {
+  if (flavorId != null && flavorSlotIndex != null) {
+    throw new RecipeError('RECIPE_FLAVOR_AMBIGUOUS', 'Recipe cannot specify both flavorId and flavorSlotIndex.', 400);
+  }
+
+  if (flavorSlotIndex != null) {
+    const slotCount = await productsRepository.countVariantFlavorSlots(productVariantId);
+    if (slotCount === 0) {
+      throw new RecipeError(
+        'RECIPE_SLOT_INDEX_ON_SLOTLESS_VARIANT',
+        'Cannot set flavorSlotIndex on a variant with zero flavor slots.',
+        400,
+      );
+    }
+    if (flavorSlotIndex < 0 || flavorSlotIndex >= slotCount) {
+      throw new RecipeError(
+        'RECIPE_SLOT_INDEX_OUT_OF_RANGE',
+        `flavorSlotIndex ${flavorSlotIndex} out of range [0, ${slotCount - 1}] for variant ${productVariantId}.`,
+        400,
+      );
+    }
+  }
 }
 
 /**
@@ -236,10 +281,13 @@ export const recipesService = {
     const variant = await productsRepository.findVariantById(data.product_variant_id);
     if (!variant) throw new RecipeError('VARIANT_NOT_FOUND', 'Product variant not found', 404);
 
+    await assertRecipeFlavorTargetingValid(data.product_variant_id, data.flavor_id ?? null, data.flavor_slot_index ?? null);
+
     const created = (await recipesRepository.createRecipe({
       productVariantId: data.product_variant_id,
       ingredientId: data.ingredient_id,
       flavorId: data.flavor_id ?? null,
+      flavorSlotIndex: data.flavor_slot_index ?? null,
       quantity: data.quantity,
       unit: data.unit,
     })) as MasterRecipeRow;
@@ -262,7 +310,15 @@ export const recipesService = {
     const existing = (await recipesRepository.findRecipeById(recipeId)) as MasterRecipeRow | null;
     if (!existing) throw new RecipeError('RECIPE_NOT_FOUND', 'Recipe not found', 404);
 
-    const updated = (await recipesRepository.updateRecipe(recipeId, data)) as MasterRecipeRow;
+    // undefined = no change; explicit null = clear.
+    const nextFlavorSlotIndex = data.flavor_slot_index !== undefined ? data.flavor_slot_index : existing.flavorSlotIndex;
+    await assertRecipeFlavorTargetingValid(existing.productVariantId, existing.flavorId, nextFlavorSlotIndex);
+
+    const updated = (await recipesRepository.updateRecipe(recipeId, {
+      quantity: data.quantity,
+      unit: data.unit,
+      flavorSlotIndex: data.flavor_slot_index,
+    })) as MasterRecipeRow;
     const response = toMasterRecipeResponse(updated);
 
     await recordAuditLog({
@@ -274,6 +330,14 @@ export const recipesService = {
       beforeState: toMasterRecipeResponse(existing),
       afterState: response,
       ipAddress,
+    });
+
+    // CR-005 3f — lets a Phase 4 POS listener invalidate any cached recipe
+    // for this variant once flavorSlotIndex rows are resolved at sale time.
+    notifySuperAdmin(SOCKET_EVENTS.RECIPE_UPDATED, {
+      recipe_id: recipeId,
+      product_variant_id: updated.productVariantId,
+      version: updated.version,
     });
 
     return response;

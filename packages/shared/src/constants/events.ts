@@ -88,6 +88,9 @@ export const SOCKET_EVENTS = {
 
   // CR-005 Sub-phase 3d — flavor slot CRUD
   VARIANT_FLAVOR_SLOTS_CHANGED: 'variant:flavor_slots_changed',
+
+  // CR-005 Sub-phase 3f — recipe flavorSlotIndex write path
+  RECIPE_UPDATED: 'recipe:updated',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

@@ -7,6 +7,8 @@ vi.mock('../../lib/prisma.js', () => {
       findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      count: vi.fn(),
+      updateMany: vi.fn(),
     },
     branchRecipeOverride: {
       findMany: vi.fn(),
@@ -81,5 +83,59 @@ describe('recipesRepository.deleteOverride', () => {
       expect.objectContaining({ where: { id: 'override-1' }, data: { deletedAt: expect.any(Date) } }),
     );
     expect(prisma.branchRecipeOverride.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('recipesRepository.countRecipesReferencingSlot — CR-005 3f', () => {
+  it('counts only non-deleted recipes at the given variant + slot index', async () => {
+    vi.mocked(prisma.recipe.count).mockResolvedValue(2);
+
+    const result = await recipesRepository.countRecipesReferencingSlot('variant-1', 1);
+
+    expect(prisma.recipe.count).toHaveBeenCalledWith({
+      where: { productVariantId: 'variant-1', flavorSlotIndex: 1, deletedAt: null },
+    });
+    expect(result).toBe(2);
+  });
+});
+
+describe('recipesRepository.shiftRecipesFlavorSlotIndicesDown — CR-005 3f', () => {
+  it('decrements flavorSlotIndex by 1 for every non-deleted recipe above the removed index', async () => {
+    vi.mocked(prisma.recipe.updateMany).mockResolvedValue({ count: 3 } as never);
+
+    await recipesRepository.shiftRecipesFlavorSlotIndicesDown('variant-1', 1);
+
+    expect(prisma.recipe.updateMany).toHaveBeenCalledWith({
+      where: { productVariantId: 'variant-1', flavorSlotIndex: { gt: 1 }, deletedAt: null },
+      data: { flavorSlotIndex: { decrement: 1 } },
+    });
+  });
+});
+
+describe('recipesRepository.cascadeRecipeSlotReindex — CR-005 3f', () => {
+  it('remaps every (oldIndex -> newIndex) pair via a two-phase temp-offset update', async () => {
+    vi.mocked(prisma.recipe.updateMany).mockResolvedValue({ count: 1 } as never);
+
+    await recipesRepository.cascadeRecipeSlotReindex('variant-1', new Map([[0, 1], [1, 0]]));
+
+    // Phase 1: both old indices move to their new index + TEMP_OFFSET.
+    expect(prisma.recipe.updateMany).toHaveBeenNthCalledWith(1, {
+      where: { productVariantId: 'variant-1', flavorSlotIndex: 0, deletedAt: null },
+      data: { flavorSlotIndex: 10001 },
+    });
+    expect(prisma.recipe.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { productVariantId: 'variant-1', flavorSlotIndex: 1, deletedAt: null },
+      data: { flavorSlotIndex: 10000 },
+    });
+    // Phase 2: settle from the temp offset to the final index.
+    expect(prisma.recipe.updateMany).toHaveBeenNthCalledWith(3, {
+      where: { productVariantId: 'variant-1', flavorSlotIndex: 10001, deletedAt: null },
+      data: { flavorSlotIndex: 1 },
+    });
+    expect(prisma.recipe.updateMany).toHaveBeenNthCalledWith(4, {
+      where: { productVariantId: 'variant-1', flavorSlotIndex: 10000, deletedAt: null },
+      data: { flavorSlotIndex: 0 },
+    });
+    expect(prisma.recipe.updateMany).toHaveBeenCalledTimes(4);
   });
 });

@@ -149,6 +149,23 @@ enum ExpenseCategory {
   miscellaneous
 }
 
+// CR-005 Phase 1 — Product Builder & Recipe Composition Engine foundations.
+enum IngredientCategory {
+  RAW
+  FLAVOR
+  CUP
+  BAG
+  PACKAGING
+  OTHER
+}
+
+enum VariantLifecycleStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  ARCHIVED
+}
+
 // ---------------------------------------------------------------------------
 // Core tables
 // ---------------------------------------------------------------------------
@@ -242,6 +259,11 @@ model User {
   notificationPreference            NotificationPreference?
   branchReceiptConfigsUpdated       BranchReceiptConfig[]       @relation("BranchReceiptConfigUpdater")
   branchPaymentMethodConfigsUpdated BranchPaymentMethodConfig[] @relation("BranchPaymentMethodConfigUpdater")
+
+  // CR-005
+  createdProductVariants  ProductVariant[]   @relation("ProductVariantCreatedBy")
+  approvedProductVariants ProductVariant[]   @relation("ProductVariantApprovedBy")
+  productChangeLogs       ProductChangeLog[] @relation("ProductChangeLogChangedBy")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -476,11 +498,26 @@ model ProductVariant {
   kcal       Int? @map("kcal")
   maxFlavors Int  @default(1) @map("max_flavors")
 
+  // CR-005 Phase 1: variant-level approval lifecycle, distinct from the
+  // existing Product.status (ProductStatus) — grandfathered rows default to
+  // ACTIVE. version/lastChangeReason back the change-log audit trail;
+  // createdBy/approvedBy record the Product Builder approval workflow.
+  lifecycleStatus  VariantLifecycleStatus @default(ACTIVE) @map("lifecycle_status")
+  version          Int                    @default(1)
+  lastChangeReason String?                @map("last_change_reason")
+  createdById      String?                @map("created_by_id")
+  approvedById     String?                @map("approved_by_id")
+  approvedAt       DateTime?              @map("approved_at")
+
   product          Product                @relation(fields: [productId], references: [id])
+  createdBy        User?                  @relation("ProductVariantCreatedBy", fields: [createdById], references: [id])
+  approvedBy       User?                  @relation("ProductVariantApprovedBy", fields: [approvedById], references: [id])
   variantFlavors   ProductVariantFlavor[]
   recipes          Recipe[]
   transactionItems TransactionItem[]
   holdOrderItems   HoldOrderItem[]
+  flavorSlots      ProductFlavorSlot[]
+  changeLogs       ProductChangeLog[]
 
   // CR-001
   priceOverrides  BranchPriceOverride[]
@@ -490,6 +527,9 @@ model ProductVariant {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([productId])
+  @@index([lifecycleStatus])
+  @@index([createdById])
+  @@index([approvedById])
   @@map("product_variants")
 }
 
@@ -510,6 +550,12 @@ model Flavor {
   isPremium  Boolean @default(false) @map("is_premium")
   addOnPrice Decimal @default(0) @map("add_on_price") @db.Decimal(10, 2)
   kcalOffset Int     @default(0) @map("kcal_offset")
+
+  // CR-005 Phase 1 (Fix 2): flavor->ingredient linkage by name+unit, resolved
+  // against the selling branch's Ingredient row via the CR-004 resolver.
+  // Nullable — backfilled in a later phase.
+  ingredientName String? @map("ingredient_name")
+  ingredientUnit String? @map("ingredient_unit")
 
   variantFlavors     ProductVariantFlavor[]
   branchAvailability BranchFlavorAvailability[]
@@ -691,15 +737,17 @@ model FlavorRequest {
 /// the schema rather than dropped to avoid an unrelated destructive column
 /// migration in the same step that introduces the derivation.
 model Ingredient {
-  id                String    @id @default(uuid())
+  id                String             @id @default(uuid())
   name              String
   unit              String
-  currentStock      Decimal   @default(0) @map("current_stock") @db.Decimal(10, 3)
-  lowStockThreshold Decimal   @map("low_stock_threshold") @db.Decimal(10, 3)
-  criticalThreshold Decimal   @map("critical_threshold") @db.Decimal(10, 3)
-  unitCost          Decimal?  @map("unit_cost") @db.Decimal(10, 4)
-  branchId          String    @map("branch_id")
-  deletedAt         DateTime? @map("deleted_at")
+  currentStock      Decimal            @default(0) @map("current_stock") @db.Decimal(10, 3)
+  lowStockThreshold Decimal            @map("low_stock_threshold") @db.Decimal(10, 3)
+  criticalThreshold Decimal            @map("critical_threshold") @db.Decimal(10, 3)
+  unitCost          Decimal?           @map("unit_cost") @db.Decimal(10, 4)
+  branchId          String             @map("branch_id")
+  deletedAt         DateTime?          @map("deleted_at")
+  // CR-005 Phase 1
+  category          IngredientCategory @default(OTHER)
 
   branch            Branch                 @relation(fields: [branchId], references: [id])
   recipes           Recipe[]
@@ -736,6 +784,8 @@ model Recipe {
   // its deduction, even after the master recipe changes later.
   version          Int       @default(1)
   deletedAt        DateTime? @map("deleted_at")
+  // CR-005 Phase 1: fixed row (NULL) vs. flavor-slot placeholder row.
+  flavorSlotIndex  Int?      @map("flavor_slot_index")
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
@@ -784,6 +834,48 @@ model BranchRecipeOverride {
   // soft-deleted override doesn't permanently block recreating the same
   // combination. Added by raw SQL in the migration (see Ingredient's note).
   @@map("branch_recipe_overrides")
+}
+
+/// CR-005 Phase 1 — Product Builder flavor-slot definition for a variant
+/// (e.g. "Flavor 1", "Flavor 2" on a Mega/Giga size). Distinct from the
+/// existing ProductVariantFlavor (which flavors are assignable/priced for a
+/// variant) — this defines the slot structure itself that flavor picks fill.
+model ProductFlavorSlot {
+  id               String   @id @default(cuid())
+  productVariantId String   @map("product_variant_id")
+  slotIndex        Int      @map("slot_index")
+  label            String
+  flavorQty        Decimal  @map("flavor_qty") @db.Decimal(10, 3)
+  unit             String
+  required         Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+
+  @@unique([productVariantId, slotIndex])
+  @@index([productVariantId])
+  @@map("product_flavor_slots")
+}
+
+/// CR-005 Phase 1 — append-only audit trail of ProductVariant changes.
+/// snapshotJson freezes the full variant state at the time of the change,
+/// same snapshot rationale as TransactionItem's name/price fields.
+model ProductChangeLog {
+  id               String   @id @default(cuid())
+  productVariantId String   @map("product_variant_id")
+  version          Int
+  changedById      String   @map("changed_by_id")
+  reason           String
+  snapshotJson     Json     @map("snapshot_json")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  changedBy      User           @relation("ProductChangeLogChangedBy", fields: [changedById], references: [id])
+
+  @@index([productVariantId, version])
+  @@index([createdAt])
+  @@map("product_change_logs")
 }
 
 /// Append-only. No row is ever updated or deleted — the full history of
@@ -897,6 +989,9 @@ model TransactionItem {
   // snapshot fields above. Defaults to 1 for historical rows predating this
   // column.
   recipeVersion       Int     @default(1) @map("recipe_version")
+  // CR-005 Phase 1: multi-slot flavor selections (Product Builder). Snapshot
+  // JSON, same freezing rationale as the name/price snapshot fields above.
+  selectedFlavors     Json?   @map("selected_flavors")
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id])
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)

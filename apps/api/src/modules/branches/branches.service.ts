@@ -3,6 +3,8 @@ import sharp from 'sharp';
 import { ROLES, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
+import { listDistinctIngredientIdentities } from '../recipes/recipes.service.js';
+import { inventoryService } from '../inventory/inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../socket/socket.server.js';
 import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
@@ -175,6 +177,16 @@ export const branchesService = {
     }
 
     const branch = await branchesRepository.create({ ...data, code });
+
+    // CR-004 idempotent branch provisioning — every ingredient identity an
+    // active master Recipe references gets a zero-stock row here, so a
+    // master-recipe sale at this branch resolves to its own stock instead of
+    // leaking against whichever branch's Ingredient the recipe was created
+    // against (see recipes.service.ts computeDeduction).
+    const ingredientIdentities = await listDistinctIngredientIdentities();
+    if (ingredientIdentities.length > 0) {
+      await inventoryService.provisionBranchIngredients(branch.id, ingredientIdentities);
+    }
 
     await recordAuditLog({
       action: 'BRANCH_CREATED',

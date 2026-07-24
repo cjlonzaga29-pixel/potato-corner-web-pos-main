@@ -52,6 +52,23 @@ export const inventoryRepository = {
     return prisma.ingredient.findFirst({ where: { branchId, name, deletedAt: null } });
   },
 
+  /**
+   * CR-004 idempotent branch provisioning. Creates a zero-stock Ingredient
+   * row for a (name, unit) identity at a branch only if one doesn't already
+   * exist there (matched the same way findIngredientByBranchAndName does —
+   * exact name match, active rows only). Safe to call repeatedly for the
+   * same branch/identity without creating duplicates, so callers don't need
+   * to pre-check existence themselves.
+   */
+  async provisionIngredient(branchId: string, name: string, unit: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    const existing = await client.ingredient.findFirst({ where: { branchId, name, deletedAt: null } });
+    if (existing) return existing;
+    return client.ingredient.create({
+      data: { branchId, name, unit, currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    });
+  },
+
   createIngredient(data: CreateIngredientData) {
     return prisma.ingredient.create({
       data: {

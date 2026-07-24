@@ -583,4 +583,20 @@ export const inventoryService = {
       limit: filters.limit,
     };
   },
+
+  /**
+   * CR-004 idempotent branch provisioning — called once at branch creation
+   * (branchesService.createBranch) with every distinct ingredient identity
+   * referenced by an active master Recipe row. Ensures the new branch's own
+   * inventory ledger has a zero-stock row for each one, so master-recipe
+   * deductions can resolve to *this* branch's own Ingredient instead of
+   * leaking against whichever branch's Ingredient the recipe was originally
+   * created against (see recipes.service.ts computeDeduction). Idempotent —
+   * safe to re-run for a branch that already has some of these ingredients.
+   */
+  async provisionBranchIngredients(branchId: string, identities: { name: string; unit: string }[]): Promise<void> {
+    for (const identity of identities) {
+      await inventoryRepository.provisionIngredient(branchId, identity.name, identity.unit);
+    }
+  },
 };

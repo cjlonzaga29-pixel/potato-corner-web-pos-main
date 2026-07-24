@@ -26,14 +26,6 @@ const { priceOverridesService } = await import('./price-overrides.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 
 const SUPER_ADMIN = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
-const SUPERVISOR_JWT = {
-  user_id: 'sup-1',
-  role: ROLES.SUPERVISOR as typeof ROLES.SUPERVISOR,
-  email: 'sup@test.com',
-  branch_ids: ['branch-a'],
-  iat: 0,
-  exp: 0,
-};
 
 const BRANCH_JWT = {
   user_id: 'branch-1',

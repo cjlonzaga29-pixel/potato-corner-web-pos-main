@@ -11,6 +11,7 @@ vi.mock('./branches.repository.js', () => ({
     findByCode: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     getActiveAssignments: vi.fn(),
     findActiveAssignment: vi.fn(),
     assignUser: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock('./branches.repository.js', () => ({
     getUserActiveBranches: vi.fn(),
     findUserById: vi.fn(),
     countActiveShifts: vi.fn(),
+    countPendingInventoryRequests: vi.fn(),
     branchStats: vi.fn(),
     generateBranchCode: vi.fn(),
     findAllAccounts: vi.fn(),
@@ -540,6 +542,72 @@ describe('branchesService.changeBranchStatus', () => {
     expect(result.status).toBe('closed');
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'BRANCH_STATUS_CHANGED' }),
+    );
+  });
+});
+
+describe('branchesService.deleteBranch', () => {
+  it('with active shifts throws BRANCH_HAS_ACTIVE_SHIFTS and never deletes', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch() as never);
+    vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(1);
+
+    await expect(
+      branchesService.deleteBranch('branch-1', ACTOR, null),
+    ).rejects.toMatchObject({
+      code: 'BRANCH_HAS_ACTIVE_SHIFTS',
+      statusCode: 409,
+    });
+
+    expect(branchesRepository.delete).not.toHaveBeenCalled();
+  });
+
+  it('with pending inventory requests throws BRANCH_HAS_PENDING_INVENTORY_REQUESTS and never deletes', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch() as never);
+    vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(0);
+    vi.mocked(branchesRepository.countPendingInventoryRequests).mockResolvedValue(2);
+
+    await expect(
+      branchesService.deleteBranch('branch-1', ACTOR, null),
+    ).rejects.toMatchObject({
+      code: 'BRANCH_HAS_PENDING_INVENTORY_REQUESTS',
+      statusCode: 409,
+    });
+
+    expect(branchesRepository.delete).not.toHaveBeenCalled();
+  });
+
+  it('with no branch found throws BRANCH_NOT_FOUND', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(null);
+
+    await expect(
+      branchesService.deleteBranch('branch-missing', ACTOR, null),
+    ).rejects.toMatchObject({
+      code: 'BRANCH_NOT_FOUND',
+      statusCode: 404,
+    });
+  });
+
+  it('with no active shifts and no pending inventory requests deletes and records a BRANCH_DELETED audit entry', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(
+      buildBranch({ id: 'branch-9', name: 'Old Branch', code: 'PC-MNL-009' }) as never,
+    );
+    vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(0);
+    vi.mocked(branchesRepository.countPendingInventoryRequests).mockResolvedValue(0);
+    vi.mocked(branchesRepository.delete).mockResolvedValue(undefined as never);
+
+    await branchesService.deleteBranch('branch-9', ACTOR, '127.0.0.1');
+
+    expect(branchesRepository.delete).toHaveBeenCalledWith('branch-9');
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'BRANCH_DELETED',
+        entityType: 'branch',
+        entityId: 'branch-9',
+        actorId: ACTOR.id,
+        branchId: 'branch-9',
+        beforeState: expect.objectContaining({ name: 'Old Branch', code: 'PC-MNL-009' }),
+        ipAddress: '127.0.0.1',
+      }),
     );
   });
 });

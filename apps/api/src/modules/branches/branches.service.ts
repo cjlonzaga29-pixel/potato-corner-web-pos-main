@@ -363,6 +363,44 @@ export const branchesService = {
     return toBranchResponse(branch);
   },
 
+  async deleteBranch(branchId: string, deletedBy: { id: string; role: string }, ipAddress: string | null) {
+    const before = await branchesRepository.findById(branchId);
+    if (!before) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+
+    const activeShifts = await branchesRepository.countActiveShifts(branchId);
+    if (activeShifts > 0) {
+      throw new BranchError(
+        'BRANCH_HAS_ACTIVE_SHIFTS',
+        'Cannot permanently delete a branch with active shifts — close all shifts first',
+        409,
+      );
+    }
+
+    const pendingInventoryRequests = await branchesRepository.countPendingInventoryRequests(branchId);
+    if (pendingInventoryRequests > 0) {
+      throw new BranchError(
+        'BRANCH_HAS_PENDING_INVENTORY_REQUESTS',
+        'Cannot permanently delete a branch with pending inventory requests — resolve them first',
+        409,
+      );
+    }
+
+    await recordAuditLog({
+      action: 'BRANCH_DELETED',
+      entityType: 'branch',
+      entityId: before.id,
+      actorId: deletedBy.id,
+      actorRole: deletedBy.role,
+      branchId: before.id,
+      beforeState: { name: before.name, code: before.code, city: before.city, status: before.status },
+      ipAddress,
+    });
+
+    await branchesRepository.delete(branchId);
+
+    getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_DELETED, { branchId });
+  },
+
   async assignSupervisor(userId: string, branchId: string, assignedBy: { id: string; role: string }, ipAddress: string | null) {
     const user = await branchesRepository.findUserById(userId);
     if (!user) throw new BranchError('USER_NOT_FOUND', 'User not found', 404);

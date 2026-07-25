@@ -56,3 +56,12 @@ pnpm-debug.log*
 
 # temp test files (never commit)
 test-*.env
+
+# CR-005 validation-only, never committed
+apps/api/prisma/seeds/cr005-validation.ts
+apps/api/prisma/seeds/cr005-validation.js
+apps/api/.env.backup-*
+apps/api/prisma/seeds/cr005-fixture-catalog.ts
+
+# Supabase CLI local link state (machine-specific, never committed)
+supabase/.temp/

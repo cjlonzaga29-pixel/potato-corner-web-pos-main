@@ -327,7 +327,7 @@ model UserBranchAssignment {
   removedAt  DateTime? @map("removed_at")
 
   user   User   @relation(fields: [userId], references: [id])
-  branch Branch @relation(fields: [branchId], references: [id])
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([branchId])
@@ -595,7 +595,7 @@ model BranchProductAvailability {
   isAvailable Boolean @default(true) @map("is_available")
   updatedBy   String? @map("updated_by")
 
-  branch  Branch  @relation(fields: [branchId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
 
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -611,7 +611,7 @@ model BranchFlavorAvailability {
   isAvailable       Boolean @default(true) @map("is_available")
   unavailableReason String? @map("unavailable_reason")
 
-  branch Branch @relation(fields: [branchId], references: [id])
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
   flavor Flavor @relation(fields: [flavorId], references: [id])
 
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -644,7 +644,7 @@ model BranchPriceOverride {
   reviewNotes      String?   @map("review_notes")
   effectiveFrom    DateTime? @map("effective_from")
 
-  branch         Branch         @relation(fields: [branchId], references: [id])
+  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   requester      User           @relation("PriceOverrideRequester", fields: [requestedBy], references: [id])
   reviewer       User?          @relation("PriceOverrideReviewer", fields: [reviewedBy], references: [id])
@@ -681,7 +681,7 @@ model ProductRequest {
   reviewNotes         String?   @map("review_notes")
   createdProductId    String?   @map("created_product_id")
 
-  branch         Branch   @relation(fields: [branchId], references: [id])
+  branch         Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
   requester      User     @relation("ProductRequestRequester", fields: [requestedBy], references: [id])
   reviewer       User?    @relation("ProductRequestReviewer", fields: [reviewedBy], references: [id])
   createdProduct Product? @relation(fields: [createdProductId], references: [id])
@@ -714,7 +714,7 @@ model FlavorRequest {
   reviewNotes          String?   @map("review_notes")
   createdFlavorId      String?   @map("created_flavor_id")
 
-  branch        Branch  @relation(fields: [branchId], references: [id])
+  branch        Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
   requester     User    @relation("FlavorRequestRequester", fields: [requestedBy], references: [id])
   reviewer      User?   @relation("FlavorRequestReviewer", fields: [reviewedBy], references: [id])
   createdFlavor Flavor? @relation(fields: [createdFlavorId], references: [id])
@@ -750,7 +750,7 @@ model Ingredient {
   // CR-005 Phase 1
   category          IngredientCategory @default(OTHER)
 
-  branch            Branch                 @relation(fields: [branchId], references: [id])
+  branch            Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   recipes           Recipe[]
   movements         InventoryMovement[]
   recipeOverrides   BranchRecipeOverride[]
@@ -789,7 +789,7 @@ model Recipe {
   flavorSlotIndex  Int?      @map("flavor_slot_index")
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
-  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
+  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
 
   @@index([productVariantId])
@@ -820,7 +820,7 @@ model BranchRecipeOverride {
   createdBy        String    @map("created_by")
   deletedAt        DateTime? @map("deleted_at")
 
-  branch         Branch         @relation(fields: [branchId], references: [id])
+  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
@@ -896,7 +896,7 @@ model InventoryMovement {
   approvedBy     String?         @map("approved_by")
   recordedBy     String?         @map("recorded_by")
 
-  branch     Branch     @relation(fields: [branchId], references: [id])
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
   ingredient Ingredient @relation(fields: [ingredientId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -965,7 +965,7 @@ model Transaction {
   refundedById                String?                  @map("refunded_by_id")
   refundReason                String?                  @map("refund_reason")
 
-  branch     Branch            @relation(fields: [branchId], references: [id])
+  branch     Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
   shift      Shift?            @relation(fields: [shiftId], references: [id])
   cashier    User              @relation(fields: [cashierId], references: [id])
   voidedBy   User?             @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
@@ -1007,7 +1007,7 @@ model TransactionItem {
   // JSON, same freezing rationale as the name/price snapshot fields above.
   selectedFlavors     Json?   @map("selected_flavors")
 
-  transaction    Transaction    @relation(fields: [transactionId], references: [id])
+  transaction    Transaction    @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
@@ -1052,7 +1052,7 @@ model Shift {
   totalDiscountAmount    Decimal     @default(0) @map("total_discount_amount") @db.Decimal(10, 2)
   pwdScTransactionCount  Int         @default(0) @map("pwd_sc_transaction_count")
 
-  branch  Branch @relation(fields: [branchId], references: [id])
+  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
   cashier User   @relation("ShiftCashier", fields: [cashierId], references: [id])
   opener  User   @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
 
@@ -1085,7 +1085,7 @@ model HoldOrder {
   releasedAt DateTime?       @map("released_at")
   expiredAt  DateTime?       @map("expired_at")
 
-  branch  Branch          @relation(fields: [branchId], references: [id])
+  branch  Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
   shift   Shift           @relation(fields: [shiftId], references: [id])
   cashier User            @relation(fields: [cashierId], references: [id])
   items   HoldOrderItem[]
@@ -1113,7 +1113,7 @@ model HoldOrderItem {
   unitPriceSnapshot   Decimal @map("unit_price_snapshot") @db.Decimal(10, 2)
   quantity            Int
 
-  holdOrder      HoldOrder      @relation(fields: [holdOrderId], references: [id])
+  holdOrder      HoldOrder      @relation(fields: [holdOrderId], references: [id], onDelete: Cascade)
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
@@ -1130,7 +1130,7 @@ model ShiftCashDenomination {
   totalValue   Decimal               @map("total_value") @db.Decimal(10, 2)
   countType    DenominationCountType @map("count_type")
 
-  shift Shift @relation(fields: [shiftId], references: [id])
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
 
   @@index([shiftId, countType])
   @@map("shift_cash_denominations")
@@ -1168,7 +1168,7 @@ model AttendanceRecord {
   deletedAt          DateTime?           @map("deleted_at")
 
   employee       User               @relation("AttendanceEmployee", fields: [employeeId], references: [id])
-  branch         Branch             @relation(fields: [branchId], references: [id])
+  branch         Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
   corrector      User?              @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
   originalRecord AttendanceRecord?  @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
   corrections    AttendanceRecord[] @relation("AttendanceCorrection")
@@ -1303,8 +1303,8 @@ model InventoryRequest {
   createdAt       DateTime               @default(now())
   approvedAt      DateTime?
 
-  branch      Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  ingredient  Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+  branch      Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  ingredient  Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
   requestedBy User       @relation("RequestedInventoryRequests", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedBy  User?      @relation("ApprovedInventoryRequests", fields: [approvedById], references: [id], onDelete: Restrict)
 
@@ -1328,7 +1328,7 @@ model Expense {
   updatedAt   DateTime        @updatedAt @map("updated_at")
   deletedAt   DateTime?       @map("deleted_at")
 
-  branch  Branch @relation(fields: [branchId], references: [id])
+  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
   creator User   @relation(fields: [createdBy], references: [id])
 
   @@index([branchId, incurredAt])

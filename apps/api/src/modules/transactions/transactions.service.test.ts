@@ -86,6 +86,23 @@ vi.mock('../../queues/hold-order.queue.js', () => ({
   enqueueHoldOrderExpiry: vi.fn().mockResolvedValue(undefined),
 }));
 
+const storageMock = {
+  upload: vi.fn().mockResolvedValue({ error: null }),
+  createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: 'https://example.com/proof.webp' }, error: null }),
+};
+
+vi.mock('../../lib/supabase.js', () => ({
+  supabaseAdmin: { storage: { from: vi.fn(() => storageMock) } },
+}));
+
+vi.mock('sharp', () => ({
+  default: vi.fn(() => ({
+    resize: vi.fn().mockReturnThis(),
+    webp: vi.fn().mockReturnThis(),
+    toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake-image')),
+  })),
+}));
+
 const { transactionsRepository } = await import('./transactions.repository.js');
 const { assertRecipeExists, getRecipeVersion } = await import('../recipes/recipes.service.js');
 const { RecipeError } = await import('../recipes/recipes.types.js');
@@ -135,6 +152,9 @@ function transactionRow(overrides: Record<string, unknown> = {}) {
     changeAmount: decimal(0),
     gcashReference: null,
     gcashManuallyVerified: null,
+    paymentProofKey: null,
+    paymentProofType: null,
+    paymentProofUploadedAt: null,
     receiptPrinted: false,
     inventoryDeductionStatus: 'pending',
     isOfflineTransaction: false,
@@ -261,6 +281,121 @@ describe('transactionsService.createTransaction — payment validation', () => {
     await expect(
       transactionsService.createTransaction({ ...baseInput, discountType: 'manager_override' }, null),
     ).rejects.toMatchObject({ code: 'DISCOUNT_TYPE_NOT_SUPPORTED' });
+  });
+
+  it('rejects a GCash payment with no payment proof key/type attached — mandatory, server-side', async () => {
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          paymentMethod: 'gcash',
+          gcashReferenceNumber: '1234567890',
+          gcashManuallyVerified: true,
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PAYMENT_PROOF_REQUIRED' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts a GCash payment once a payment proof key/type are attached', async () => {
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        paymentMethod: 'gcash',
+        gcashReferenceNumber: '1234567890',
+        gcashManuallyVerified: true,
+        paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
+        paymentProofType: 'live_capture',
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
+        paymentProofType: 'live_capture',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('never requires a payment proof for cash', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentProofKey: null, paymentProofType: null, paymentProofUploadedAt: null }),
+      expect.anything(),
+    );
+  });
+});
+
+describe('transactionsService.uploadPaymentProof', () => {
+  it('compresses the image and uploads it to the payment-proofs bucket, returning the storage key and type', async () => {
+    const result = await transactionsService.uploadPaymentProof(
+      { branchId: 'branch-1', shiftId: 'shift-1', type: 'live_capture' },
+      { buffer: Buffer.from('img'), originalname: 'proof.jpg' },
+      { id: 'user-1', role: 'staff' },
+    );
+
+    expect(storageMock.upload).toHaveBeenCalledWith(
+      expect.stringMatching(/^branch-1\/shift-1\/user-1-\d+-proof\.jpg\.webp$/),
+      Buffer.from('fake-image'),
+      { contentType: 'image/webp', upsert: true },
+    );
+    expect(result).toEqual({
+      payment_proof_key: expect.stringMatching(/^branch-1\/shift-1\/user-1-\d+-proof\.jpg\.webp$/),
+      payment_proof_type: 'live_capture',
+    });
+  });
+
+  it('throws PAYMENT_PROOF_UPLOAD_FAILED when Storage returns an error', async () => {
+    storageMock.upload.mockResolvedValueOnce({ error: new Error('bucket unreachable') });
+
+    await expect(
+      transactionsService.uploadPaymentProof(
+        { branchId: 'branch-1', shiftId: 'shift-1', type: 'gallery_upload' },
+        { buffer: Buffer.from('img'), originalname: 'proof.jpg' },
+        { id: 'user-1', role: 'staff' },
+      ),
+    ).rejects.toMatchObject({ code: 'PAYMENT_PROOF_UPLOAD_FAILED' });
+  });
+});
+
+describe('transactionsService.getPaymentProofUrl', () => {
+  it('throws TRANSACTION_NOT_FOUND for an unknown transaction', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(null);
+
+    await expect(transactionsService.getPaymentProofUrl('missing-txn')).rejects.toMatchObject({
+      code: 'TRANSACTION_NOT_FOUND',
+    });
+  });
+
+  it('returns nulls rather than throwing for a transaction with no proof attached', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ paymentProofKey: null }) as never);
+
+    const result = await transactionsService.getPaymentProofUrl('txn-1');
+
+    expect(result).toEqual({ payment_proof_url: null, payment_proof_type: null, uploaded_at: null });
+  });
+
+  it('returns a freshly-signed URL for a transaction with proof attached', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({
+        paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
+        paymentProofType: 'live_capture',
+        paymentProofUploadedAt: new Date('2026-07-25T10:00:00.000Z'),
+      }) as never,
+    );
+
+    const result = await transactionsService.getPaymentProofUrl('txn-1');
+
+    expect(storageMock.createSignedUrl).toHaveBeenCalledWith('branch-1/shift-1/user-1-123.webp', 60 * 60);
+    expect(result).toEqual({
+      payment_proof_url: 'https://example.com/proof.webp',
+      payment_proof_type: 'live_capture',
+      uploaded_at: '2026-07-25T10:00:00.000Z',
+    });
   });
 });
 

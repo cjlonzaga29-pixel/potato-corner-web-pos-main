@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   CreateTransactionInput,
+  PaymentProofResponse,
+  PaymentProofUploadResponse,
   RefundTransactionRequest,
   TransactionListQuery,
   TransactionListResponse,
@@ -85,6 +87,46 @@ export function useCreateTransaction() {
       }
     },
     onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+interface UploadPaymentProofInput {
+  branchId: string;
+  shiftId: string;
+  type: 'live_capture' | 'gallery_upload';
+  file: File;
+}
+
+/** Uploads a proof photo ahead of checkout — the returned key/type are held in terminal component state and included in the transaction-create payload, not persisted here. */
+export function useUploadPaymentProof() {
+  return useMutation({
+    mutationFn: async ({ branchId, shiftId, type, file }: UploadPaymentProofInput) => {
+      const formData = new FormData();
+      formData.set('branch_id', branchId);
+      formData.set('shift_id', shiftId);
+      formData.set('type', type);
+      formData.set('proof', file);
+      const response = await apiClient<PaymentProofUploadResponse>('/api/transactions/payment-proof', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload payment proof'));
+      return response.data;
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Fetches a freshly-signed proof-photo URL — only enabled while the admin viewer dialog is open, never eagerly on the transaction list. */
+export function usePaymentProof(transactionId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['transaction-payment-proof', transactionId],
+    queryFn: async () => {
+      const response = await apiClient<PaymentProofResponse>(`/api/transactions/${transactionId}/payment-proof`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load payment proof'));
+      return response.data;
+    },
+    enabled: Boolean(transactionId) && enabled,
   });
 }
 

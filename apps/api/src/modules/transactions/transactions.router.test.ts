@@ -19,6 +19,8 @@ vi.mock('./transactions.service.js', () => ({
     refundTransaction: vi.fn(),
     markReceiptPrinted: vi.fn(),
     syncOfflineTransactions: vi.fn(),
+    uploadPaymentProof: vi.fn(),
+    getPaymentProofUrl: vi.fn(),
   },
 }));
 
@@ -114,6 +116,8 @@ describe('transactions routes — authentication', () => {
     { method: 'post', path: '/:transactionId/void' },
     { method: 'post', path: '/:transactionId/refund' },
     { method: 'post', path: '/:transactionId/receipt-printed' },
+    { method: 'post', path: '/payment-proof' },
+    { method: 'get', path: '/:transactionId/payment-proof' },
   ];
 
   it.each(protectedRoutes)('$method $path returns 401 with no Authorization header', async ({ method, path }) => {
@@ -209,6 +213,49 @@ describe('POST / — validate middleware', () => {
     expect(res.status).toHaveBeenCalledWith(422);
     expect(transactionsService.createTransaction).not.toHaveBeenCalled();
   });
+
+  it('a GCash payment missing payment_proof_key/payment_proof_type gets 422 before reaching the service', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      body: validCreateBody({
+        payment_method: 'gcash',
+        cash_tendered: undefined,
+        gcash_reference_number: '1234567890',
+        gcash_manually_verified: true,
+      }),
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(transactionsService.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('an offline GCash payment gets 422 — non-cash sales cannot be queued offline (no proof-capture blob queue exists)', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      body: validCreateBody({
+        payment_method: 'gcash',
+        cash_tendered: undefined,
+        gcash_reference_number: '1234567890',
+        gcash_manually_verified: true,
+        payment_proof_key: 'branch-1/shift-1/user-1-123.webp',
+        payment_proof_type: 'live_capture',
+        is_offline_transaction: true,
+      }),
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(transactionsService.createTransaction).not.toHaveBeenCalled();
+  });
 });
 
 function validSyncOfflineBody(overrides: Record<string, unknown> = {}) {
@@ -286,6 +333,126 @@ describe('POST /sync-offline', () => {
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(transactionsService.syncOfflineTransactions).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * multer's own middleware needs a real Node.js request stream to parse
+ * multipart bytes, which this codebase's mockReq/mockRes harness (no
+ * supertest/HTTP layer) can't provide — same limitation the rest of this
+ * file's harness comment documents. These tests instead skip past the multer
+ * handler (index 4 in the registered chain) and preset req.file/req.body the
+ * way multer would have already populated them by that point, so validate/
+ * branchGuard/shiftGuard/the handler itself are exercised for real.
+ */
+function skipMulter(handlers: Middleware[]): Middleware[] {
+  return [...handlers.slice(0, 4), ...handlers.slice(5)];
+}
+
+describe('POST /payment-proof', () => {
+  it('rejects an invalid capture type before reaching the service — 422', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/payment-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'not_a_real_type' },
+    } as never);
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(transactionsService.uploadPaymentProof).not.toHaveBeenCalled();
+  });
+
+  it('returns 422 IMAGE_REQUIRED when no file was attached', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/payment-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'live_capture' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'IMAGE_REQUIRED', message: expect.any(String) } }));
+    expect(transactionsService.uploadPaymentProof).not.toHaveBeenCalled();
+  });
+
+  it('a staff member uploading for a branch they are not assigned to gets 403 from branchGuard', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/payment-proof'));
+    const token = generateStaffToken(BRANCH_2);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(transactionsService.uploadPaymentProof).not.toHaveBeenCalled();
+  });
+
+  it('a valid request reaches the service and returns 200 with the storage key', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/payment-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+    vi.mocked(transactionsService.uploadPaymentProof).mockResolvedValue({
+      payment_proof_key: 'branch-1/shift-1/user-1-123.webp',
+      payment_proof_type: 'live_capture',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.uploadPaymentProof).toHaveBeenCalledWith(
+      { branchId: BRANCH_1, shiftId: SHIFT_1, type: 'live_capture' },
+      expect.objectContaining({ originalname: 'proof.jpg' }),
+      expect.objectContaining({ role: expect.any(String) }),
+    );
+  });
+});
+
+describe('GET /:transactionId/payment-proof — branch protection', () => {
+  it("blocks a supervisor from another branch's transaction — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'get', '/:transactionId/payment-proof');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { transactionId: TXN_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.getTransactionById).mockResolvedValue({ id: TXN_1, branch_id: BRANCH_2 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(transactionsService.getPaymentProofUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns the signed URL for a transaction in the caller branch', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'get', '/:transactionId/payment-proof');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { transactionId: TXN_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.getTransactionById).mockResolvedValue({ id: TXN_1, branch_id: BRANCH_1 } as never);
+    vi.mocked(transactionsService.getPaymentProofUrl).mockResolvedValue({
+      payment_proof_url: 'https://signed.example/proof.webp',
+      payment_proof_type: 'live_capture',
+      uploaded_at: '2026-07-25T10:00:00.000Z',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.getPaymentProofUrl).toHaveBeenCalledWith(TXN_1);
   });
 });
 

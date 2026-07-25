@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import type { ImageProofType } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import type { TransactionListFilters } from './transactions.types.js';
 import type { DiscountAuditFilters } from './transactions.types.js';
@@ -47,6 +48,9 @@ interface CreateTransactionRow {
   changeAmount: number | null;
   gcashReference: string | null;
   gcashManuallyVerified: boolean | null;
+  paymentProofKey: string | null;
+  paymentProofType: ImageProofType | null;
+  paymentProofUploadedAt: Date | null;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber: string | null;
   items: {
@@ -172,6 +176,9 @@ export const transactionsRepository = {
           changeAmount: data.changeAmount,
           gcashReference: data.gcashReference,
           gcashManuallyVerified: data.gcashManuallyVerified,
+          paymentProofKey: data.paymentProofKey,
+          paymentProofType: data.paymentProofType,
+          paymentProofUploadedAt: data.paymentProofUploadedAt,
           isOfflineTransaction: data.isOfflineTransaction,
           offlineProvisionalNumber: data.offlineProvisionalNumber,
         },

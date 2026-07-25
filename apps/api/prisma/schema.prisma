@@ -233,6 +233,7 @@ model User {
   cashierTransactions        Transaction[]
   voidedTransactions         Transaction[]          @relation("TransactionVoidedBy")
   refundedTransactions       Transaction[]          @relation("TransactionRefundedBy")
+  paymentProofVerifiedTransactions Transaction[]    @relation("TransactionPaymentProofVerifiedBy")
   refreshTokens              RefreshToken[]
   pinCredentials             PinCredential[]
   holdOrders                 HoldOrder[]
@@ -931,6 +932,18 @@ model Transaction {
   changeAmount                Decimal?                 @map("change_amount") @db.Decimal(10, 2)
   gcashReference              String?                  @map("gcash_reference")
   gcashManuallyVerified       Boolean?                 @map("gcash_manually_verified")
+  // Non-cash payment-proof capture (GCash/Maya/other) — mandatory for any
+  // paymentMethod != cash, enforced server-side in transactions.service.ts.
+  // Null for cash sales (not required) and for legacy rows predating this
+  // feature. Storage KEY only, never a public/signed URL — mirrors
+  // Expense.receiptKey, resolved to a fresh signed URL only on read.
+  paymentProofKey              String?                 @map("payment_proof_key")
+  paymentProofType             ImageProofType?         @map("payment_proof_type")
+  paymentProofUploadedAt       DateTime?               @map("payment_proof_uploaded_at")
+  // Reserved for a future admin "Mark Verified" action — not built in this
+  // change, but the columns ship now to avoid a second migration later.
+  paymentProofVerifiedAt       DateTime?               @map("payment_proof_verified_at")
+  paymentProofVerifiedById     String?                 @map("payment_proof_verified_by_id")
   discountType                String?                  @map("discount_type")
   discountCustomerIdEncrypted String?                  @map("discount_customer_id_encrypted")
   // Deterministic HMAC-SHA256 of the same plaintext ID stored above —
@@ -957,6 +970,7 @@ model Transaction {
   cashier    User              @relation(fields: [cashierId], references: [id])
   voidedBy   User?             @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
   refundedBy User?             @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
+  paymentProofVerifiedBy User? @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
   items      TransactionItem[]
 
   createdAt DateTime @default(now()) @map("created_at")

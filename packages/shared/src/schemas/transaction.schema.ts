@@ -6,6 +6,8 @@ import {
   type DiscountType,
   TRANSACTION_STATUS,
   type TransactionStatus,
+  IMAGE_PROOF_TYPE,
+  type ImageProofType,
 } from '../constants/status.js';
 
 const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
@@ -14,6 +16,7 @@ const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [
   TransactionStatus,
   ...TransactionStatus[],
 ];
+const imageProofTypeValues = Object.values(IMAGE_PROOF_TYPE) as [ImageProofType, ...ImageProofType[]];
 
 /** flavor_id is optional — not every product variant has flavors to choose from. */
 export const cartItemSchema = z.object({
@@ -40,6 +43,10 @@ export const createTransactionSchema = z
       .regex(/^\d{10,20}$/)
       .optional(),
     gcash_manually_verified: z.boolean().optional(),
+    // Storage key + capture mode returned by POST /api/transactions/payment-proof
+    // — required together for any non-cash payment method (see superRefine below).
+    payment_proof_key: z.string().min(1).optional(),
+    payment_proof_type: z.enum(imageProofTypeValues).optional(),
     is_offline_transaction: z.boolean().default(false),
     offline_provisional_number: z.string().optional(),
   })
@@ -52,6 +59,23 @@ export const createTransactionSchema = z
         code: 'custom',
         path: ['gcash_reference_number'],
         message: 'gcash_reference_number is required for a GCash payment',
+      });
+    }
+    if (data.payment_method !== PAYMENT_METHOD.CASH && (!data.payment_proof_key || !data.payment_proof_type)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['payment_proof_key'],
+        message: 'payment_proof_key and payment_proof_type are required for a non-cash payment',
+      });
+    }
+    // Proof capture requires a live, confirmed upload before the sale is
+    // created — there's no offline blob queue for it, so non-cash sales
+    // can't be queued while offline (see terminal/page.tsx's offline guard).
+    if (data.is_offline_transaction && data.payment_method !== PAYMENT_METHOD.CASH) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['payment_method'],
+        message: 'Offline sales must be paid in cash — non-cash payment proof cannot be captured while offline',
       });
     }
   });
@@ -118,6 +142,12 @@ export const transactionResponseSchema = z.object({
   change_given: z.number().nullable(),
   gcash_reference_number: z.string().nullable(),
   gcash_manually_verified: z.boolean().nullable(),
+  // Existence flag only — never the raw key or a signed URL, so list
+  // responses stay cheap. The actual signed URL is fetched lazily via
+  // GET /:transactionId/payment-proof only when a viewer opens the dialog.
+  has_payment_proof: z.boolean(),
+  payment_proof_type: z.enum(imageProofTypeValues).nullable(),
+  payment_proof_uploaded_at: z.iso.datetime().nullable(),
   receipt_printed: z.boolean(),
   inventory_deduction_status: z.enum(['pending', 'completed', 'failed']),
   is_offline_transaction: z.boolean(),
@@ -178,6 +208,16 @@ export const offlineTransactionItemSchema = z
         message: 'gcash_reference_number is required for a GCash payment',
       });
     }
+    // Every item in this schema is inherently offline-originated (see
+    // createTransactionSchema's parallel rule) — payment proof can't have
+    // been captured for a sale that was never online to upload it.
+    if (data.payment_method !== PAYMENT_METHOD.CASH) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['payment_method'],
+        message: 'Offline-queued sales must be paid in cash',
+      });
+    }
   });
 
 export const syncOfflineTransactionsSchema = z.object({
@@ -231,4 +271,27 @@ export const holdOrderResponseSchema = z.object({
 
 export const holdOrderListResponseSchema = z.object({
   hold_orders: z.array(holdOrderResponseSchema),
+});
+
+/**
+ * POST /api/transactions/payment-proof multipart fields (the `proof` file
+ * itself is parsed by multer, not Zod) — uploaded and confirmed before the
+ * sale is created, since a Storage upload must not happen inside the atomic
+ * transaction-create write.
+ */
+export const paymentProofUploadRequestSchema = z.object({
+  branch_id: z.uuid(),
+  shift_id: z.uuid(),
+  type: z.enum(imageProofTypeValues),
+});
+
+export const paymentProofUploadResponseSchema = z.object({
+  payment_proof_key: z.string(),
+  payment_proof_type: z.enum(imageProofTypeValues),
+});
+
+export const paymentProofResponseSchema = z.object({
+  payment_proof_url: z.url().nullable(),
+  payment_proof_type: z.enum(imageProofTypeValues).nullable(),
+  uploaded_at: z.iso.datetime().nullable(),
 });

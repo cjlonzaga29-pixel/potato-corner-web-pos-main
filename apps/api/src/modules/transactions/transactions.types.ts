@@ -1,3 +1,5 @@
+import type { ImageProofType } from '@potato-corner/shared';
+
 /** Mirrors CashError/IngredientError — every module maps its own domain errors to HTTP status via its router's error handler. */
 export class TransactionError extends Error {
   constructor(
@@ -30,8 +32,16 @@ export interface CreateTransactionData {
   cashTendered?: number;
   gcashReferenceNumber?: string;
   gcashManuallyVerified?: boolean;
+  paymentProofKey?: string;
+  paymentProofType?: ImageProofType;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber?: string;
+}
+
+export interface UploadPaymentProofData {
+  branchId: string;
+  shiftId: string;
+  type: ImageProofType;
 }
 
 export interface TransactionListFilters {

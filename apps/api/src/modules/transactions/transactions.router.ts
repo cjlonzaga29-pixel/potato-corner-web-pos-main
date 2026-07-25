@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import multer from 'multer';
 import {
   createTransactionSchema,
   voidTransactionRequestSchema,
@@ -7,9 +8,11 @@ import {
   discountAuditQuerySchema,
   createHoldOrderSchema,
   syncOfflineTransactionsSchema,
+  paymentProofUploadRequestSchema,
   ROLES,
   type CartItem,
   type OfflineTransactionItem,
+  type ImageProofType,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
 import { TransactionError } from './transactions.types.js';
@@ -22,6 +25,18 @@ import { requirePasswordChange } from '../../middleware/require-password-change.
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
+
+const paymentProofUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      callback(new TransactionError('INVALID_IMAGE_TYPE', 'Image must be JPEG, PNG, or WebP', 422));
+      return;
+    }
+    callback(null, true);
+  },
+});
 
 function requireUser(req: Request, res: Response): req is Request & { user: NonNullable<Request['user']> } {
   if (!req.user) {
@@ -50,6 +65,8 @@ interface CreateTransactionBody {
   cash_tendered?: number;
   gcash_reference_number?: string;
   gcash_manually_verified?: boolean;
+  payment_proof_key?: string;
+  payment_proof_type?: ImageProofType;
   is_offline_transaction: boolean;
   offline_provisional_number?: string;
 }
@@ -103,6 +120,8 @@ router.post(
           cashTendered: body.cash_tendered,
           gcashReferenceNumber: body.gcash_reference_number,
           gcashManuallyVerified: body.gcash_manually_verified,
+          paymentProofKey: body.payment_proof_key,
+          paymentProofType: body.payment_proof_type,
           isOfflineTransaction: body.is_offline_transaction,
           offlineProvisionalNumber: body.offline_provisional_number,
         },
@@ -162,6 +181,56 @@ router.post(
           })),
         },
         req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// Registered before /:transactionId — same reasoning as /hold below. Multer
+// must run before branchGuard/shiftGuard here (unlike the JSON routes above):
+// those two middlewares read branch_id/shift_id off req.body via
+// extractBranchId, which is only populated once multer finishes parsing the
+// multipart payload. validate() runs immediately after multer so the guards
+// see the parsed/coerced body, not raw multipart strings.
+router.post(
+  '/payment-proof',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  (req: Request, res: Response, next: NextFunction) => {
+    paymentProofUpload.single('proof')(req, res, (error: unknown) => {
+      if (error) {
+        handleModuleError(
+          error instanceof multer.MulterError
+            ? new TransactionError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422)
+            : error,
+          res,
+          next,
+        );
+        return;
+      }
+      next();
+    });
+  },
+  validate(paymentProofUploadRequestSchema),
+  branchGuard,
+  shiftGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A payment proof image file is required' }, meta: null });
+        return;
+      }
+      const body = req.body as { branch_id: string; shift_id: string; type: ImageProofType };
+      const result = await transactionsService.uploadPaymentProof(
+        { branchId: body.branch_id, shiftId: body.shift_id, type: body.type },
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        { id: req.user.user_id, role: req.user.role },
       );
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
@@ -324,6 +393,23 @@ router.get('/:transactionId', authenticate, allRoles, requireActiveEmployee, req
       return;
     }
     res.status(200).json({ data: transaction, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.get('/:transactionId/payment-proof', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
+    // Same inline branch-scope check as GET /:transactionId — branchGuard
+    // can't run here, there's only a transaction id in the URL.
+    if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(transaction.branch_id)) {
+      res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+      return;
+    }
+    const result = await transactionsService.getPaymentProofUrl(req.params.transactionId as string);
+    res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
   }

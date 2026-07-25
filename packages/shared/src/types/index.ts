@@ -127,6 +127,9 @@ export type OfflineTransactionItem = z.infer<typeof schemas.offlineTransactionIt
 export type SyncOfflineTransactionsInput = z.infer<typeof schemas.syncOfflineTransactionsSchema>;
 export type SyncOfflineTransactionResult = z.infer<typeof schemas.syncOfflineTransactionResultSchema>;
 export type SyncOfflineTransactionsResponse = z.infer<typeof schemas.syncOfflineTransactionsResponseSchema>;
+export type PaymentProofUploadRequest = z.infer<typeof schemas.paymentProofUploadRequestSchema>;
+export type PaymentProofUploadResponse = z.infer<typeof schemas.paymentProofUploadResponseSchema>;
+export type PaymentProofResponse = z.infer<typeof schemas.paymentProofResponseSchema>;
 
 export type OpenShiftInput = z.infer<typeof schemas.openShiftSchema>;
 export type CloseShiftInput = z.infer<typeof schemas.closeShiftSchema>;

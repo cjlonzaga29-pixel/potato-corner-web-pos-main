@@ -1,5 +1,13 @@
 import { Prisma } from '@prisma/client';
-import { DISCOUNT_TYPE, SOCKET_EVENTS, MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS } from '@potato-corner/shared';
+import sharp from 'sharp';
+import {
+  DISCOUNT_TYPE,
+  SOCKET_EVENTS,
+  MOVEMENT_TYPE,
+  INVENTORY_DEDUCTION_STATUS,
+  PAYMENT_METHOD,
+  type ImageProofType,
+} from '@potato-corner/shared';
 import { transactionsRepository } from './transactions.repository.js';
 import {
   TransactionError,
@@ -11,6 +19,7 @@ import {
   type TransactionListFilters,
   type SyncOfflineTransactionsData,
   type DiscountAuditFilters,
+  type UploadPaymentProofData,
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
@@ -26,6 +35,7 @@ import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
 import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { prisma } from '../../lib/prisma.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -35,6 +45,23 @@ const STATUTORY_DISCOUNT_RATE = 0.2;
 const EMPLOYEE_DISCOUNT_RATE = 0.2;
 /** How many bumped-sequence attempts before giving up on a receipt number collision (P2002 on the daily per-branch sequence). */
 const RECEIPT_SEQUENCE_RETRY_LIMIT = 5;
+
+const PAYMENT_PROOF_BUCKET = 'payment-proofs';
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
+
+/**
+ * Fresh 60-minute signed URL, generated on demand — mirrors
+ * expenses.service.ts getSignedReceiptUrl. Never cached/stored; the DB only
+ * ever holds the storage key.
+ */
+async function getSignedPaymentProofUrl(key: string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(key, 60 * 60);
+  if (error || !data) throw new TransactionError('PAYMENT_PROOF_URL_FAILED', 'Could not generate payment proof URL', 500);
+  return data.signedUrl;
+}
 
 function toCents(amount: number): number {
   return Math.round(amount * 100);
@@ -80,6 +107,9 @@ interface TransactionRow {
   changeAmount: { toNumber(): number } | null;
   gcashReference: string | null;
   gcashManuallyVerified: boolean | null;
+  paymentProofKey: string | null;
+  paymentProofType: string | null;
+  paymentProofUploadedAt: Date | null;
   receiptPrinted: boolean;
   inventoryDeductionStatus: string;
   isOfflineTransaction: boolean;
@@ -116,6 +146,9 @@ function toTransactionResponse(row: TransactionRow) {
     change_given: row.changeAmount?.toNumber() ?? null,
     gcash_reference_number: row.gcashReference,
     gcash_manually_verified: row.gcashManuallyVerified,
+    has_payment_proof: row.paymentProofKey !== null,
+    payment_proof_type: row.paymentProofType,
+    payment_proof_uploaded_at: row.paymentProofUploadedAt?.toISOString() ?? null,
     receipt_printed: row.receiptPrinted,
     inventory_deduction_status: row.inventoryDeductionStatus,
     is_offline_transaction: row.isOfflineTransaction,
@@ -560,6 +593,52 @@ export const transactionsService = {
     return { data, total, page: filters.page, limit: filters.limit };
   },
 
+  /**
+   * Uploads a payment-proof photo to Storage ahead of transaction creation
+   * (see the module comment on why this can't happen inside the atomic
+   * $transaction in createTransaction). No Prisma write here at all — the
+   * returned key is only persisted once the caller submits it as part of
+   * POST /api/transactions. An uploaded-but-never-submitted object (e.g. the
+   * cashier abandons the sale) is accepted v1 debt — no sweep job exists for
+   * this bucket, matching every other proof-photo bucket in this codebase.
+   */
+  async uploadPaymentProof(data: UploadPaymentProofData, file: { buffer: Buffer; originalname: string }, actor: ActorContext) {
+    const compressed = await sharp(file.buffer)
+      .resize({ width: 1200, withoutEnlargement: true })
+      .webp({ quality: 85 })
+      .toBuffer();
+
+    const path = `${data.branchId}/${data.shiftId}/${actor.id}-${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
+    const { error } = await supabaseAdmin.storage
+      .from(PAYMENT_PROOF_BUCKET)
+      .upload(path, compressed, { contentType: 'image/webp', upsert: true });
+    if (error) {
+      throw new TransactionError('PAYMENT_PROOF_UPLOAD_FAILED', 'Failed to upload the payment proof image', 502);
+    }
+
+    return { payment_proof_key: path, payment_proof_type: data.type };
+  },
+
+  /**
+   * Freshly-signed URL for an already-attached proof, generated on demand
+   * (never cached). Returns nulls rather than throwing when a transaction
+   * has no proof (cash sales, or legacy rows predating this feature) — the
+   * admin viewer only ever calls this for a row with has_payment_proof true,
+   * but staying tolerant here avoids a spurious error for a stale UI state.
+   */
+  async getPaymentProofUrl(transactionId: string) {
+    const transaction = (await transactionsRepository.findTransactionById(transactionId)) as TransactionRow | null;
+    if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
+    if (!transaction.paymentProofKey) {
+      return { payment_proof_url: null, payment_proof_type: null, uploaded_at: null };
+    }
+    return {
+      payment_proof_url: await getSignedPaymentProofUrl(transaction.paymentProofKey),
+      payment_proof_type: transaction.paymentProofType,
+      uploaded_at: transaction.paymentProofUploadedAt?.toISOString() ?? null,
+    };
+  },
+
   async createTransaction(data: CreateTransactionData, ipAddress: string | null) {
     const branch = await transactionsRepository.findBranch(data.branchId);
     if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
@@ -579,6 +658,17 @@ export const transactionsService = {
       throw new TransactionError(
         'GCASH_NOT_VERIFIED',
         'GCash payments must be manually verified before the transaction can be recorded',
+        422,
+      );
+    }
+
+    // Belt: createTransactionSchema's superRefine already rejects a missing
+    // key/type client-side; this is the server-side gate that actually makes
+    // "mandatory" hold regardless of what the client sends.
+    if (data.paymentMethod !== PAYMENT_METHOD.CASH && (!data.paymentProofKey || !data.paymentProofType)) {
+      throw new TransactionError(
+        'PAYMENT_PROOF_REQUIRED',
+        'A payment proof photo must be captured before a non-cash sale can be recorded',
         422,
       );
     }
@@ -646,6 +736,9 @@ export const transactionsService = {
               changeAmount: changeGiven,
               gcashReference: data.paymentMethod === 'gcash' ? (data.gcashReferenceNumber as string) : null,
               gcashManuallyVerified: data.paymentMethod === 'gcash' ? true : null,
+              paymentProofKey: data.paymentMethod !== PAYMENT_METHOD.CASH ? (data.paymentProofKey as string) : null,
+              paymentProofType: data.paymentMethod !== PAYMENT_METHOD.CASH ? (data.paymentProofType as ImageProofType) : null,
+              paymentProofUploadedAt: data.paymentMethod !== PAYMENT_METHOD.CASH ? new Date() : null,
               isOfflineTransaction: data.isOfflineTransaction,
               offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
               items: resolvedItems,

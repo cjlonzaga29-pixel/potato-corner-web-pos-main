@@ -10,12 +10,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
 import { useCurrentShift } from '@/hooks/queries/use-shifts';
-import { useCreateTransaction } from '@/hooks/queries/use-transactions';
+import { useCreateTransaction, useUploadPaymentProof } from '@/hooks/queries/use-transactions';
 import { cacheBranchPriceOverrides, cacheProductCatalog, getCachedPriceOverrides, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
@@ -82,6 +83,7 @@ export default function TerminalPage() {
   const { data: shift } = useCurrentShift(branchId);
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction();
+  const uploadPaymentProof = useUploadPaymentProof();
 
   const [cachedProducts, setCachedProducts] = useState<PosCatalogProduct[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -93,9 +95,21 @@ export default function TerminalPage() {
   const [cashTendered, setCashTendered] = useState('');
   const [gcashReferenceNumber, setGcashReferenceNumber] = useState('');
   const [gcashManuallyVerified, setGcashManuallyVerified] = useState(false);
+  const [paymentProofKey, setPaymentProofKey] = useState<string | null>(null);
+  const [paymentProofType, setPaymentProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
   const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
+
+  // Proof capture requires a live, confirmed upload before the sale exists —
+  // there's no offline blob queue for it (see lib/offline/db.ts), so a
+  // cashier can't start or continue a GCash sale while offline. Revert to
+  // cash immediately if the connection drops mid-selection.
+  useEffect(() => {
+    if (!isOnline && paymentMethod !== 'cash') {
+      setPaymentMethod('cash');
+    }
+  }, [isOnline, paymentMethod]);
 
   // Refresh the offline cache whenever the live catalog loads — Architecture
   // doc §10.1: refreshed on connect and at least every 30 minutes.
@@ -183,7 +197,9 @@ export default function TerminalPage() {
     Boolean(shift) &&
     cartLines.length > 0 &&
     (discountType !== 'pwd' && discountType !== 'senior_citizen' ? true : discountIdReference.trim().length > 0) &&
-    (paymentMethod === 'cash' ? cashTendered !== '' && tenderedNumber >= totalAmount : gcashReferenceNumber.trim().length > 0 && gcashManuallyVerified);
+    (paymentMethod === 'cash'
+      ? cashTendered !== '' && tenderedNumber >= totalAmount
+      : gcashReferenceNumber.trim().length > 0 && gcashManuallyVerified && paymentProofKey !== null);
 
   function resetPaymentFields() {
     setDiscountType('none');
@@ -192,6 +208,8 @@ export default function TerminalPage() {
     setCashTendered('');
     setGcashReferenceNumber('');
     setGcashManuallyVerified(false);
+    setPaymentProofKey(null);
+    setPaymentProofType(null);
   }
 
   async function handleCharge() {
@@ -209,6 +227,8 @@ export default function TerminalPage() {
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       gcash_reference_number: paymentMethod === 'gcash' ? gcashReferenceNumber.trim() : undefined,
       gcash_manually_verified: paymentMethod === 'gcash' ? gcashManuallyVerified : undefined,
+      payment_proof_key: paymentMethod !== 'cash' ? (paymentProofKey ?? undefined) : undefined,
+      payment_proof_type: paymentMethod !== 'cash' ? (paymentProofType ?? undefined) : undefined,
       is_offline_transaction: !isOnline,
     };
 
@@ -395,11 +415,12 @@ export default function TerminalPage() {
               <TabsTrigger value="cash" className="flex-1">
                 Cash
               </TabsTrigger>
-              <TabsTrigger value="gcash" className="flex-1">
+              <TabsTrigger value="gcash" className="flex-1" disabled={!isOnline}>
                 GCash
               </TabsTrigger>
             </TabsList>
           </Tabs>
+          {!isOnline && <p className="text-xs text-muted-foreground">GCash is unavailable offline — payment proof can only be captured while connected.</p>}
 
           {paymentMethod === 'cash' ? (
             <div className="space-y-1">
@@ -417,6 +438,37 @@ export default function TerminalPage() {
                 <Checkbox checked={gcashManuallyVerified} onCheckedChange={(v) => setGcashManuallyVerified(v === true)} />
                 I manually verified this GCash payment
               </label>
+              {paymentProofKey ? (
+                <div className="flex items-center justify-between rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
+                  <span>Payment proof captured</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-auto p-0 text-xs underline"
+                    onClick={() => {
+                      setPaymentProofKey(null);
+                      setPaymentProofType(null);
+                    }}
+                  >
+                    Retake
+                  </Button>
+                </div>
+              ) : (
+                <ImageUpload
+                  label="Payment Proof"
+                  required
+                  onImageSelected={(file, type) => {
+                    if (!branchId || !shift) return;
+                    void uploadPaymentProof
+                      .mutateAsync({ branchId, shiftId: shift.id, type, file })
+                      .then((result) => {
+                        setPaymentProofKey(result.payment_proof_key);
+                        setPaymentProofType(result.payment_proof_type);
+                      });
+                  }}
+                />
+              )}
             </div>
           )}
 

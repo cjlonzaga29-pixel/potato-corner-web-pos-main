@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useParams } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
+import { Camera } from 'lucide-react';
 import type { TransactionResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,6 +15,7 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { ShiftStatusBadge } from '@/components/admin/shifts/shift-status-badge';
 import { ShiftDenominationTable } from '@/components/admin/shifts/shift-denomination-table';
 import { ReviewVarianceDialog } from '@/components/admin/shifts/review-variance-dialog';
+import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import { useShift, useShiftSummary, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
@@ -40,6 +42,7 @@ export function ShiftDetailView() {
   const { user } = useAuth();
   const [reviewing, setReviewing] = useState(false);
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  const [viewingProofFor, setViewingProofFor] = useState<string | null>(null);
 
   const { data: shift, isLoading: shiftLoading, isError: shiftError, refetch: refetchShift } = useShift(shiftId);
   const { data: summaryData } = useShiftSummary(shiftId);
@@ -63,6 +66,18 @@ export function ShiftDetailView() {
     { id: 'payment_method', header: 'Payment', cell: ({ row }) => row.original.payment_method.toUpperCase() },
     { id: 'discount_type', header: 'Discount', cell: ({ row }) => row.original.discount_type ?? '—' },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
+    {
+      id: 'payment_proof',
+      header: 'Payment Proof',
+      cell: ({ row }) =>
+        row.original.has_payment_proof ? (
+          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setViewingProofFor(row.original.id)}>
+            <Camera className="h-4 w-4" />
+          </Button>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
     {
       id: 'status',
       header: 'Status',
@@ -173,6 +188,7 @@ export function ShiftDetailView() {
       </div>
 
       {canReview && <ReviewVarianceDialog open={reviewing} onOpenChange={setReviewing} shift={shift} />}
+      <ViewPaymentProofDialog transactionId={viewingProofFor} onOpenChange={(open) => !open && setViewingProofFor(null)} />
     </div>
   );
 }

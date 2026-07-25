@@ -111,6 +111,9 @@ describe('transactionsRepository.createTransaction', () => {
       changeAmount: 0,
       gcashReference: null,
       gcashManuallyVerified: null,
+      paymentProofKey: null,
+      paymentProofType: null,
+      paymentProofUploadedAt: null,
       isOfflineTransaction: false,
       offlineProvisionalNumber: null,
       items: [
@@ -154,6 +157,59 @@ describe('transactionsRepository.createTransaction', () => {
     expect(prisma.transaction.findUniqueOrThrow).toHaveBeenCalledWith({
       where: { id: 'txn-1' },
       include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+    });
+  });
+
+  it('round-trips payment proof key/type/uploadedAt for a non-cash sale', async () => {
+    vi.mocked(prisma.transaction.create).mockResolvedValue({ id: 'txn-2' } as never);
+    vi.mocked(prisma.transaction.findUniqueOrThrow).mockResolvedValue({ id: 'txn-2' } as never);
+    const uploadedAt = new Date('2026-07-25T10:00:00.000Z');
+
+    await transactionsRepository.createTransaction({
+      branchId: 'branch-1',
+      shiftId: 'shift-1',
+      cashierId: 'user-1',
+      receiptNumber: 'MNL001-20260714-000002',
+      paymentMethod: 'gcash',
+      subtotal: 100,
+      discountAmount: 0,
+      discountType: null,
+      discountCustomerIdEncrypted: null,
+      discountCustomerIdHash: null,
+      vatAmount: 10.71,
+      vatExemptAmount: 0,
+      totalAmount: 100,
+      cashTendered: null,
+      changeAmount: null,
+      gcashReference: '1234567890',
+      gcashManuallyVerified: true,
+      paymentProofKey: 'branch-1/shift-1/user-1-123-proof.webp',
+      paymentProofType: 'live_capture',
+      paymentProofUploadedAt: uploadedAt,
+      isOfflineTransaction: false,
+      offlineProvisionalNumber: null,
+      items: [
+        {
+          productId: 'product-1',
+          productVariantId: 'variant-1',
+          flavorId: null,
+          productName: 'Original',
+          variantName: 'Regular',
+          flavorName: null,
+          unitPrice: 100,
+          quantity: 1,
+          lineTotal: 100,
+          recipeVersion: 1,
+        },
+      ],
+    });
+
+    expect(prisma.transaction.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        paymentProofKey: 'branch-1/shift-1/user-1-123-proof.webp',
+        paymentProofType: 'live_capture',
+        paymentProofUploadedAt: uploadedAt,
+      }),
     });
   });
 });

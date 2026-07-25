@@ -57,7 +57,24 @@ jobs:
       - name: Set up test environment
         # See ci.yml's identical step — vitest.setup.ts loads apps/api/.env
         # via dotenv/config at test-file-import time, and .env is gitignored.
-        run: cp .env.example apps/api/.env
+        #
+        # @prisma/client's own bundled env-loader ALSO reads apps/api/.env
+        # the moment any test file constructs a PrismaClient — and unlike
+        # plain dotenv.config(), it unconditionally overwrites any
+        # already-set process.env value for every key it finds (its
+        # dotenv-expand step does `for (k in parsed) process.env[k] =
+        # parsed[k]` with no "already set" check). Root .env.example's
+        # DATABASE_URL/DIRECT_URL point at the local full-stack dev DB
+        # (wrong password and DB name for this job's Postgres service), so
+        # copying them in was silently clobbering this job's real
+        # DATABASE_URL/DIRECT_URL right after "Run database migrations
+        # (test DB)" set them correctly — every DB-touching integration
+        # test then failed with "Authentication failed ... for `postgres`",
+        # even though the connection itself was fine. Strip both lines so
+        # only the job-level values survive.
+        run: |
+          cp .env.example apps/api/.env
+          sed -i '/^DATABASE_URL=/d; /^DIRECT_URL=/d' apps/api/.env
 
       - name: Generate Prisma client
         run: pnpm --filter @potato-corner/api exec prisma generate

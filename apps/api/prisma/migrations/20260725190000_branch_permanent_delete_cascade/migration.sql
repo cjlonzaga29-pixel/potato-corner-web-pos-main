@@ -62,6 +62,17 @@ ALTER TABLE "hold_order_items" ADD CONSTRAINT "hold_order_items_hold_order_id_fk
 ALTER TABLE "shift_cash_denominations" DROP CONSTRAINT "shift_cash_denominations_shift_id_fkey";
 ALTER TABLE "shift_cash_denominations" ADD CONSTRAINT "shift_cash_denominations_shift_id_fkey" FOREIGN KEY ("shift_id") REFERENCES "shifts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
+-- Additional transitive-cascade gaps found in final review: RESTRICT is non-deferrable in Postgres,
+-- so a row's OWN direct branchId cascade does not protect a SEPARATE RESTRICT FK on that same row.
+ALTER TABLE "inventory_movements" DROP CONSTRAINT "inventory_movements_ingredient_id_fkey";
+ALTER TABLE "inventory_movements" ADD CONSTRAINT "inventory_movements_ingredient_id_fkey" FOREIGN KEY ("ingredient_id") REFERENCES "ingredients"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "branch_recipe_overrides" DROP CONSTRAINT "branch_recipe_overrides_ingredient_id_fkey";
+ALTER TABLE "branch_recipe_overrides" ADD CONSTRAINT "branch_recipe_overrides_ingredient_id_fkey" FOREIGN KEY ("ingredient_id") REFERENCES "ingredients"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "hold_orders" DROP CONSTRAINT "hold_orders_shift_id_fkey";
+ALTER TABLE "hold_orders" ADD CONSTRAINT "hold_orders_shift_id_fkey" FOREIGN KEY ("shift_id") REFERENCES "shifts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
 -- Master Recipe pinning — accepted-risk cascade (see design doc "Recipe pinning" section):
 -- deleting a branch that's the pinned identity source for a recipe deletes that master
 -- Recipe row too, breaking deduction for that product at every branch. Deliberate.

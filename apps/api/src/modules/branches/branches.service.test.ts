@@ -598,17 +598,31 @@ describe('branchesService.deleteBranch', () => {
     await branchesService.deleteBranch('branch-9', ACTOR, '127.0.0.1');
 
     expect(branchesRepository.delete).toHaveBeenCalledWith('branch-9');
+    // The audit entry is written AFTER the delete (not before): a failed
+    // delete must never leave a phantom BRANCH_DELETED entry for a branch
+    // that still exists. branchId is intentionally absent — by the time this
+    // fires, the branch row is already gone, and AuditLog.branchId is a real
+    // FK, so referencing the now-deleted id would violate the constraint.
+    // entityId (not FK-checked) still identifies which branch was deleted.
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'BRANCH_DELETED',
         entityType: 'branch',
         entityId: 'branch-9',
         actorId: ACTOR.id,
-        branchId: 'branch-9',
         beforeState: expect.objectContaining({ name: 'Old Branch', code: 'PC-MNL-009' }),
         ipAddress: '127.0.0.1',
       }),
     );
+    expect(recordAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ branchId: expect.anything() }),
+    );
+
+    const [deleteOrder] = vi.mocked(branchesRepository.delete).mock.invocationCallOrder;
+    const [auditOrder] = vi.mocked(recordAuditLog).mock.invocationCallOrder;
+    expect(deleteOrder).toBeDefined();
+    expect(auditOrder).toBeDefined();
+    expect(deleteOrder as number).toBeLessThan(auditOrder as number);
   });
 });
 

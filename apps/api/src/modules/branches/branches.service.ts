@@ -385,18 +385,24 @@ export const branchesService = {
       );
     }
 
+    await branchesRepository.delete(branchId);
+
+    // branchId is intentionally omitted (not before.id): the branch row is
+    // already gone by this point, and AuditLog.branchId is a real FK — an
+    // insert referencing a now-deleted branch id would violate that
+    // constraint and be silently swallowed by recordAuditLog's try/catch,
+    // meaning no audit entry would ever be written for a successful delete.
+    // entityId (not a FK, just an indexed string) still identifies the
+    // deleted branch for lookups.
     await recordAuditLog({
       action: 'BRANCH_DELETED',
       entityType: 'branch',
       entityId: before.id,
       actorId: deletedBy.id,
       actorRole: deletedBy.role,
-      branchId: before.id,
       beforeState: { name: before.name, code: before.code, city: before.city, status: before.status },
       ipAddress,
     });
-
-    await branchesRepository.delete(branchId);
 
     getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_DELETED, { branchId });
   },

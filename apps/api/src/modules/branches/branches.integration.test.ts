@@ -393,3 +393,187 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-ph
     expect(auditLog).not.toBeNull();
   });
 });
+
+/**
+ * Final cross-task review Finding 3 — every other test for permanent branch
+ * delete either mocks Prisma entirely (branches.service.test.ts) or deletes
+ * a brand-new, empty branch (the e2e smoke path), so nothing has ever
+ * exercised a cascade against real dependent rows. This is exactly why the
+ * three RESTRICT gaps in Finding 1 (inventory_movements.ingredient_id,
+ * branch_recipe_overrides.ingredient_id, hold_orders.shift_id) went
+ * undetected through 9 individually-approved task reviews: RESTRICT is
+ * non-deferrable in Postgres, so those bugs only surface with real rows
+ * present during the cascade, never with mocks or an empty branch.
+ *
+ * This suite seeds one of every cascaded row type — including the specific
+ * transitive paths Finding 1 fixed — and proves a single deleteBranch call
+ * removes all of them without a raw FK violation.
+ */
+describe.skipIf(!canRunIntegrationTests)('branches integration — permanent delete cascade', () => {
+  let adminId: string;
+  let branchId: string;
+  let productId: string;
+  let variantId: string;
+  let ingredientId: string;
+  let shiftId: string;
+  let holdOrderId: string;
+  let inventoryMovementId: string;
+  let branchRecipeOverrideId: string;
+  let transactionId: string;
+
+  beforeAll(async () => {
+    const admin = await prisma.user.create({
+      data: {
+        email: `delete-cascade-admin-${randomUUID()}@potatocorner.test`,
+        passwordHash: 'unused-in-this-suite',
+        role: 'super_admin',
+        firstName: 'Delete-Cascade',
+        lastName: 'Test Admin',
+        employmentType: 'regular',
+        mustChangePassword: false,
+      },
+    });
+    adminId = admin.id;
+
+    const branch = await prisma.branch.create({
+      data: { name: 'Delete Cascade Branch', code: `DELCASC-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+    });
+    branchId = branch.id;
+
+    const ingredient = await prisma.ingredient.create({
+      data: { branchId, name: 'Delete-Cascade-Potato', unit: 'g', currentStock: 10, lowStockThreshold: 1, criticalThreshold: 0 },
+    });
+    ingredientId = ingredient.id;
+
+    // status 'closed' (not 'active') — must not trip deleteBranch's
+    // BRANCH_HAS_ACTIVE_SHIFTS guard.
+    const shift = await prisma.shift.create({
+      data: {
+        branchId,
+        cashierId: adminId,
+        openedBy: adminId,
+        closedBy: adminId,
+        status: 'closed',
+        openingCashAmount: 1000,
+        closingCashAmount: 1000,
+        startedAt: new Date(),
+        closedAt: new Date(),
+      },
+    });
+    shiftId = shift.id;
+
+    // Exercises the hold_orders.shift_id RESTRICT->CASCADE fix (Finding 1,
+    // item 3): HoldOrder's own branchId cascade doesn't protect this
+    // separate shiftId path into the also-cascading Shift row.
+    const holdOrder = await prisma.holdOrder.create({
+      data: {
+        branchId,
+        shiftId,
+        cashierId: adminId,
+        status: 'held',
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+    holdOrderId = holdOrder.id;
+
+    // Exercises the inventory_movements.ingredient_id RESTRICT->CASCADE fix
+    // (Finding 1, item 1).
+    const movement = await prisma.inventoryMovement.create({
+      data: {
+        branchId,
+        ingredientId,
+        movementType: 'stock_in',
+        quantityChange: 10,
+        quantityBefore: 0,
+        quantityAfter: 10,
+      },
+    });
+    inventoryMovementId = movement.id;
+
+    const product = await prisma.product.create({ data: { name: 'Delete Cascade Fries', status: 'active' } });
+    productId = product.id;
+    const variant = await prisma.productVariant.create({
+      data: { productId, name: 'Regular', sizeLabel: 'Regular', basePrice: 100, isActive: true },
+    });
+    variantId = variant.id;
+
+    // Exercises the branch_recipe_overrides.ingredient_id RESTRICT->CASCADE
+    // fix (Finding 1, item 2).
+    const override = await prisma.branchRecipeOverride.create({
+      data: {
+        branchId,
+        productVariantId: variantId,
+        ingredientId,
+        flavorId: null,
+        quantity: 50,
+        unit: 'g',
+        reason: 'Delete cascade integration test override',
+        createdBy: adminId,
+      },
+    });
+    branchRecipeOverrideId = override.id;
+
+    const transaction = await prisma.transaction.create({
+      data: {
+        transactionNumber: `DELCASC-${randomUUID().slice(0, 8)}`,
+        branchId,
+        shiftId,
+        cashierId: adminId,
+        status: 'completed',
+        paymentMethod: 'cash',
+        subtotal: 100,
+        vatAmount: 12,
+        totalAmount: 100,
+      },
+    });
+    transactionId = transaction.id;
+  });
+
+  afterAll(async () => {
+    // Defensive cleanup in case the test failed partway through and the
+    // cascade never actually ran — on the happy path every row below is
+    // already gone, so each deleteMany here is a no-op. Order matches
+    // dependency direction (children before parents) so a partial-failure
+    // cleanup doesn't itself hit a FK violation.
+    await prisma.transaction.deleteMany({ where: { id: transactionId } });
+    await prisma.branchRecipeOverride.deleteMany({ where: { id: branchRecipeOverrideId } });
+    await prisma.inventoryMovement.deleteMany({ where: { id: inventoryMovementId } });
+    await prisma.holdOrder.deleteMany({ where: { id: holdOrderId } });
+    await prisma.shift.deleteMany({ where: { id: shiftId } });
+    await prisma.ingredient.deleteMany({ where: { id: ingredientId } });
+    await prisma.productVariant.deleteMany({ where: { productId } });
+    await prisma.product.deleteMany({ where: { id: productId } });
+    await prisma.branch.deleteMany({ where: { id: branchId } });
+    await prisma.user.deleteMany({ where: { id: adminId } });
+    await prisma.$disconnect();
+  });
+
+  it('deleteBranch cascades every dependent row and records a BRANCH_DELETED audit entry', async () => {
+    await branchesService.deleteBranch(branchId, { id: adminId, role: 'super_admin' }, null);
+
+    const [branch, ingredient, shift, holdOrder, movement, override, transaction, auditLog] = await Promise.all([
+      prisma.branch.findUnique({ where: { id: branchId } }),
+      prisma.ingredient.findFirst({ where: { id: ingredientId } }),
+      prisma.shift.findFirst({ where: { id: shiftId } }),
+      prisma.holdOrder.findFirst({ where: { id: holdOrderId } }),
+      prisma.inventoryMovement.findFirst({ where: { id: inventoryMovementId } }),
+      prisma.branchRecipeOverride.findFirst({ where: { id: branchRecipeOverrideId } }),
+      prisma.transaction.findFirst({ where: { id: transactionId } }),
+      // The row's branchId is null after the delete — the audit entry is
+      // written after branchesRepository.delete() now (Finding 2), and
+      // AuditLog.branchId is a real FK, so it's never set to a now-deleted
+      // branch id. Look this row up by entityId, not branchId.
+      prisma.auditLog.findFirst({ where: { action: 'BRANCH_DELETED', entityId: branchId } }),
+    ]);
+
+    expect(branch).toBeNull();
+    expect(ingredient).toBeNull();
+    expect(shift).toBeNull();
+    expect(holdOrder).toBeNull();
+    expect(movement).toBeNull();
+    expect(override).toBeNull();
+    expect(transaction).toBeNull();
+    expect(auditLog).not.toBeNull();
+    expect(auditLog?.branchId).toBeNull();
+  });
+});

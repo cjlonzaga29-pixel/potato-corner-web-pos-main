@@ -163,6 +163,7 @@ export function useBranchRealtimeSync(): void {
       SOCKET_EVENTS.BRANCH_STATUS_CHANGED,
       SOCKET_EVENTS.BRANCH_SUPERVISOR_ASSIGNED,
       SOCKET_EVENTS.BRANCH_SUPERVISOR_REMOVED,
+      SOCKET_EVENTS.BRANCH_DELETED,
     ],
     [['branches'], ['branch']],
   );
@@ -263,6 +264,23 @@ export function useChangeBranchStatus(branchId: string) {
       void queryClient.invalidateQueries({ queryKey: ['branches'] });
       void queryClient.invalidateQueries({ queryKey: ['branch', branchId] });
       toast.success('Branch status updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** DELETE /api/branches/:branchId — permanent, cascading hard delete. */
+export function useDeleteBranch(branchId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient<null>(`/api/branches/${branchId}`, { method: 'DELETE' });
+      if (response.error) throw new Error(errorMessage(response, 'Failed to delete branch'));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['branches'] });
+      queryClient.removeQueries({ queryKey: ['branch', branchId] });
+      toast.success('Branch permanently deleted');
     },
     onError: (error: Error) => toast.error(error.message),
   });

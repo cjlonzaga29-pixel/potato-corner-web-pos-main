@@ -41,6 +41,7 @@ export const SOCKET_EVENTS = {
   FRAUD_SCAN_FAILED: 'fraud:scan_failed',
   BRANCH_CREATED: 'branch:created',
   BRANCH_STATUS_CHANGED: 'branch:status_changed',
+  BRANCH_DELETED: 'branch:deleted',
   BRANCH_SUPERVISOR_ASSIGNED: 'branch:supervisor_assigned',
   BRANCH_SUPERVISOR_REMOVED: 'branch:supervisor_removed',
   // Realtime-sync pass — connection-presence based (no staff socket

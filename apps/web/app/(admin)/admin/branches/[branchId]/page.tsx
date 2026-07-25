@@ -27,6 +27,7 @@ import {
 import { EditBranchDialog } from '@/components/admin/branches/edit-branch-dialog';
 import { ChangeStatusDialog } from '@/components/admin/branches/change-status-dialog';
 import { AssignSupervisorDialog } from '@/components/admin/branches/assign-supervisor-dialog';
+import { DeleteBranchDialog } from '@/components/admin/branches/delete-branch-dialog';
 
 interface BranchDetailPageProps {
   params: Promise<{ branchId: string }>;
@@ -39,6 +40,7 @@ export default function BranchDetailPage({ params }: BranchDetailPageProps) {
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -97,13 +99,19 @@ export default function BranchDetailPage({ params }: BranchDetailPageProps) {
         </TabsContent>
 
         <TabsContent value="settings" className="space-y-4">
-          <SettingsTab branch={branch} onEdit={() => setEditOpen(true)} onChangeStatus={() => setStatusOpen(true)} />
+          <SettingsTab
+            branch={branch}
+            onEdit={() => setEditOpen(true)}
+            onChangeStatus={() => setStatusOpen(true)}
+            onDelete={() => setDeleteOpen(true)}
+          />
         </TabsContent>
       </Tabs>
 
       <EditBranchDialog open={editOpen} onOpenChange={setEditOpen} branch={branch} />
       <ChangeStatusDialog open={statusOpen} onOpenChange={setStatusOpen} branch={branch} />
       <AssignSupervisorDialog open={assignOpen} onOpenChange={setAssignOpen} branchId={branchId} />
+      <DeleteBranchDialog open={deleteOpen} onOpenChange={setDeleteOpen} branch={branch} />
     </div>
   );
 }
@@ -272,10 +280,12 @@ function SettingsTab({
   branch,
   onEdit,
   onChangeStatus,
+  onDelete,
 }: {
   branch: { id: string; name: string; status: string; gcashQrUrl: string | null };
   onEdit: () => void;
   onChangeStatus: () => void;
+  onDelete: () => void;
 }) {
   const changeStatus = useChangeBranchStatus(branch.id);
   const updateBranch = useUpdateBranch(branch.id);
@@ -379,6 +389,16 @@ function SettingsTab({
           >
             {branch.status === 'closed' ? 'Branch is closed' : 'Close Branch'}
           </Button>
+
+          <div className="border-t pt-3">
+            <p className="mb-2 text-sm text-muted-foreground">
+              Permanently delete this branch and all of its data — transactions, shifts, inventory, expenses,
+              and attendance records. This cannot be undone.
+            </p>
+            <Button variant="danger" onClick={onDelete}>
+              Permanently Delete Branch
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

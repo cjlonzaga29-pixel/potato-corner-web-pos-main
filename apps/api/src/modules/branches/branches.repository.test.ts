@@ -3,12 +3,13 @@ import { Prisma } from '@prisma/client';
 
 vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
-    branch: { findMany: vi.fn() },
+    branch: { findMany: vi.fn(), delete: vi.fn() },
     shift: { groupBy: vi.fn(), count: vi.fn() },
     userBranchAssignment: { groupBy: vi.fn(), count: vi.fn() },
     transaction: { groupBy: vi.fn(), aggregate: vi.fn() },
     expense: { groupBy: vi.fn(), aggregate: vi.fn() },
     ingredient: { findMany: vi.fn() },
+    inventoryRequest: { count: vi.fn() },
   };
   return { prisma: prismaMock };
 });
@@ -216,5 +217,28 @@ describe('branchesRepository.branchStats', () => {
     expect(stats.todayGrossSales).toBe(1120);
     expect(stats.todayVat).toBe(120);
     expect(stats.todayNetProfit).toBe(700);
+  });
+});
+
+describe('branchesRepository.countPendingInventoryRequests', () => {
+  it('counts only pending inventory requests for the branch', async () => {
+    vi.mocked(prisma.inventoryRequest.count).mockResolvedValue(3);
+
+    const count = await branchesRepository.countPendingInventoryRequests('branch-1');
+
+    expect(count).toBe(3);
+    expect(prisma.inventoryRequest.count).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', status: 'pending' },
+    });
+  });
+});
+
+describe('branchesRepository.delete', () => {
+  it('deletes the branch by id', async () => {
+    vi.mocked(prisma.branch.delete).mockResolvedValue({ id: 'branch-1' } as never);
+
+    await branchesRepository.delete('branch-1');
+
+    expect(prisma.branch.delete).toHaveBeenCalledWith({ where: { id: 'branch-1' } });
   });
 });

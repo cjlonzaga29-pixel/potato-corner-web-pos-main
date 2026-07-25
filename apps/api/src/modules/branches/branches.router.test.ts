@@ -17,6 +17,7 @@ vi.mock('./branches.service.js', () => ({
     bulkAssignGcashQr: vi.fn(),
     getBranchById: vi.fn(),
     updateBranch: vi.fn(),
+    deleteBranch: vi.fn(),
     uploadGcashQr: vi.fn(),
     changeBranchStatus: vi.fn(),
     getAssignments: vi.fn(),
@@ -411,6 +412,95 @@ describe('PATCH /api/branches/:branchId — success', () => {
       }),
       res,
     );
+
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+});
+
+describe('DELETE /api/branches/:branchId — role guard', () => {
+  const ROUTE = '/:branchId';
+
+  it('returns 401 with no Authorization header', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const res = mockRes();
+    await runHandlers(handlers, mockReq({ params: { branchId: randomUUID() } }), res);
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('returns 403 for supervisor', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const branchId = randomUUID();
+    const token = generateSupervisorToken([branchId]);
+    const res = mockRes();
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(branchesService.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for staff', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const branchId = randomUUID();
+    const token = generateStaffToken(branchId);
+    const res = mockRes();
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(branchesService.deleteBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/branches/:branchId — success', () => {
+  const ROUTE = '/:branchId';
+
+  it('returns 204 and calls the service with branchId, actor, and ip', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const branchId = randomUUID();
+    const token = generateSuperAdminToken();
+    const res = mockRes();
+    vi.mocked(branchesService.deleteBranch).mockResolvedValue(undefined);
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+
+    expect(branchesService.deleteBranch).toHaveBeenCalledWith(
+      branchId,
+      expect.objectContaining({ role: 'super_admin' }),
+      null,
+    );
+    expect(res.status).toHaveBeenCalledWith(204);
+    expect(res.send).toHaveBeenCalled();
+  });
+
+  it('returns 409 when the branch has active shifts', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const branchId = randomUUID();
+    const token = generateSuperAdminToken();
+    const res = mockRes();
+    vi.mocked(branchesService.deleteBranch).mockRejectedValue(
+      new BranchError(
+        'BRANCH_HAS_ACTIVE_SHIFTS',
+        'Cannot permanently delete a branch with active shifts — close all shifts first',
+        409,
+      ),
+    );
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+  });
+
+  it('returns 404 when the branch does not exist', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const branchId = randomUUID();
+    const token = generateSuperAdminToken();
+    const res = mockRes();
+    vi.mocked(branchesService.deleteBranch).mockRejectedValue(
+      new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404),
+    );
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
 
     expect(res.status).toHaveBeenCalledWith(404);
   });

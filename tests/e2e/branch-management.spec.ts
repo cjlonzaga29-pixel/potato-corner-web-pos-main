@@ -256,3 +256,77 @@ test.describe('Branch status change guarded by active shifts (admin UI)', () => 
     });
   });
 });
+
+test.describe('Permanent branch delete (admin UI)', () => {
+  test('delete button stays disabled until both confirmation fields match, then deletes and redirects to the branch list', async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    const url = baseURL ?? 'http://localhost:3000';
+    const branchName = uniqueBranchName('DELETE');
+    let branchId = '';
+
+    await test.step('seed a throwaway branch via the real API', async () => {
+      const admin = await apiLogin(
+        request,
+        TEST_USERS.super_admin.email,
+        TEST_USERS.super_admin.password,
+      );
+      const created = await authedPost<{ id: string }>(
+        request,
+        url,
+        '/api/branches',
+        admin.accessToken,
+        { name: branchName, address: '1 Session Road', city: 'Baguio', status: 'active' },
+      );
+      if (!created.data?.id)
+        throw new Error(`Failed to seed branch: ${JSON.stringify(created.error)}`);
+      branchId = created.data.id;
+    });
+
+    await test.step('login as super_admin and open the seeded branch settings', async () => {
+      await page.goto('/login', { waitUntil: 'networkidle' });
+      await page.getByLabel('Email').fill(TEST_USERS.super_admin.email);
+      await page.getByRole('textbox', { name: 'Password' }).fill(TEST_USERS.super_admin.password);
+      await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await page.waitForURL('**/admin/dashboard', { timeout: NAV_TIMEOUT });
+
+      await page.goto(`/admin/branches/${branchId}`, { waitUntil: 'networkidle' });
+      await page.getByRole('tab', { name: 'Settings' }).click();
+    });
+
+    await test.step('the delete button is disabled until both fields are typed exactly right', async () => {
+      await page.getByRole('button', { name: 'Permanently Delete Branch' }).click();
+
+      const dialog = page.getByRole('dialog', { name: 'Permanently delete this branch?' });
+      const deleteButton = dialog.getByRole('button', { name: 'Permanently Delete' });
+      await expect(deleteButton).toBeDisabled();
+
+      await dialog.getByLabel(new RegExp(`Type ${branchName} to confirm`)).fill(branchName);
+      await expect(deleteButton).toBeDisabled();
+
+      await dialog.getByLabel('Type DELETE to confirm').fill('not delete');
+      await expect(deleteButton).toBeDisabled();
+
+      await dialog.getByLabel('Type DELETE to confirm').fill('');
+      await dialog.getByLabel('Type DELETE to confirm').fill('DELETE');
+      await expect(deleteButton).toBeEnabled();
+    });
+
+    await test.step('confirming deletes the branch and redirects to the branch list', async () => {
+      const dialog = page.getByRole('dialog', { name: 'Permanently delete this branch?' });
+      await dialog.getByRole('button', { name: 'Permanently Delete' }).click();
+
+      await page.waitForURL('**/admin/branches', { timeout: NAV_TIMEOUT });
+
+      const getResponse = await authedGet(
+        request,
+        `/api/branches/${branchId}`,
+        (await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password))
+          .accessToken,
+      );
+      expect(getResponse.status).toBe(404);
+    });
+  });
+});

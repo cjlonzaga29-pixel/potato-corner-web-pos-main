@@ -532,12 +532,18 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — permanent del
   afterAll(async () => {
     // Defensive cleanup in case the test failed partway through and the
     // cascade never actually ran — on the happy path every row below is
-    // already gone, so each deleteMany here is a no-op. Order matches
+    // already gone, so each delete here is a no-op. Order matches
     // dependency direction (children before parents) so a partial-failure
     // cleanup doesn't itself hit a FK violation.
-    await prisma.transaction.deleteMany({ where: { id: transactionId } });
+    //
+    // Transaction and InventoryMovement are guarded by
+    // lib/prisma-immutability.ts, which unconditionally blocks
+    // delete/deleteMany through the Prisma Client's model API (CR-004) even
+    // when zero rows match — same reasoning and same raw-SQL escape hatch as
+    // transactions.integration.test.ts's own teardown.
+    await prisma.$executeRaw`DELETE FROM "transactions" WHERE "id" = ${transactionId}`;
     await prisma.branchRecipeOverride.deleteMany({ where: { id: branchRecipeOverrideId } });
-    await prisma.inventoryMovement.deleteMany({ where: { id: inventoryMovementId } });
+    await prisma.$executeRaw`DELETE FROM "inventory_movements" WHERE "id" = ${inventoryMovementId}`;
     await prisma.holdOrder.deleteMany({ where: { id: holdOrderId } });
     await prisma.shift.deleteMany({ where: { id: shiftId } });
     await prisma.ingredient.deleteMany({ where: { id: ingredientId } });

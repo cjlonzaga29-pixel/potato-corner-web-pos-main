@@ -5,7 +5,6 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats } from '@/hooks/queries/use-branches';
-import { useProductRequests, useProductRequestsRealtimeSync } from '@/hooks/queries/use-product-requests';
 import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
 import { useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
 import { useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
@@ -15,7 +14,6 @@ import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
 import { DashboardTrendsSection } from '@/components/admin/dashboard-trends-section';
-import { DashboardPendingRequests } from '@/components/admin/dashboard-pending-requests';
 import { DashboardPendingOverrides } from '@/components/admin/dashboard-pending-overrides';
 import { DashboardShortcutCards } from '@/components/admin/dashboard-shortcut-cards';
 import { DashboardAttendanceOverview } from '@/components/admin/dashboard-attendance-overview';
@@ -38,7 +36,6 @@ function AdminDashboardPageContent() {
 
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
-  useProductRequestsRealtimeSync();
   usePriceOverridesRealtimeSync();
   useBranchRealtimeSync();
   useExpensesRealtimeSync();
@@ -56,20 +53,10 @@ function AdminDashboardPageContent() {
     branch_id: branchFilter,
     limit: SHIFT_LIST_LIMIT,
   });
-  const { data: pendingProductRequestsTotal, isLoading: isLoadingPendingProductRequestsTotal } = useProductRequests({
-    status: 'pending',
-    branch_id: branchFilter,
-    limit: TOTAL_ONLY_LIMIT,
-  });
   const { data: pendingPriceOverridesTotal, isLoading: isLoadingPendingPriceOverridesTotal } = usePriceOverrides({
     status: 'pending',
     branch_id: branchFilter,
     limit: TOTAL_ONLY_LIMIT,
-  });
-  const { data: pendingProductRequestsList, isLoading: isLoadingPendingProductRequestsList } = useProductRequests({
-    status: 'pending',
-    branch_id: branchFilter,
-    limit: PANEL_LIST_LIMIT,
   });
   const { data: pendingPriceOverridesList, isLoading: isLoadingPendingPriceOverridesList } = usePriceOverrides({
     status: 'pending',
@@ -82,11 +69,8 @@ function AdminDashboardPageContent() {
     (sum, shift) => sum + shift.cash_sales_total + shift.gcash_sales_total,
     0,
   );
-  const pendingApprovalsCount =
-    pendingProductRequestsTotal !== undefined && pendingPriceOverridesTotal !== undefined
-      ? pendingProductRequestsTotal.total + pendingPriceOverridesTotal.total
-      : undefined;
-  const isLoadingApprovals = isLoadingPendingProductRequestsTotal || isLoadingPendingPriceOverridesTotal;
+  const pendingApprovalsCount = pendingPriceOverridesTotal !== undefined ? pendingPriceOverridesTotal.total : undefined;
+  const isLoadingApprovals = isLoadingPendingPriceOverridesTotal;
 
   const transactionsCount = branchStats?.reduce((sum, b) => sum + b.todayTransactionCount, 0);
   const activeCashiersCount = branchStats?.reduce((sum, b) => sum + b.activeStaffCount, 0);
@@ -137,11 +121,7 @@ function AdminDashboardPageContent() {
 
       <div className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight">Approvals</h2>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <DashboardPendingRequests
-            requests={pendingProductRequestsList?.requests}
-            isLoading={isLoadingPendingProductRequestsList}
-          />
+        <div className="grid grid-cols-1 gap-4 md:max-w-md">
           <DashboardPendingOverrides
             overrides={pendingPriceOverridesList?.overrides}
             isLoading={isLoadingPendingPriceOverridesList}

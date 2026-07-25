@@ -14,7 +14,6 @@ import { productsRouter } from './modules/products/products.router.js';
 import { flavorsRouter } from './modules/flavors/flavors.router.js';
 import { recipesRouter } from './modules/recipes/recipes.router.js';
 import { inventoryRouter, inventoryBranchRouter } from './modules/inventory/inventory.router.js';
-import { productRequestsRouter } from './modules/product-requests/product-requests.router.js';
 import { flavorRequestsRouter } from './modules/flavor-requests/flavor-requests.router.js';
 import { inventoryRequestsRouter } from './modules/inventory-requests/inventory-requests.router.js';
 import { priceOverridesRouter } from './modules/price-overrides/price-overrides.router.js';
@@ -30,6 +29,7 @@ import { auditRouter } from './modules/audit/audit.router.js';
 import { fraudRouter } from './modules/fraud/fraud.router.js';
 import { expensesRouter } from './modules/expenses/expenses.router.js';
 import { settingsRouter, branchReceiptConfigRouter } from './modules/settings/settings.router.js';
+import { productInventoryRouter } from './modules/product-inventory/product-inventory.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
 
 export const app: Express = express();
@@ -70,7 +70,6 @@ app.use('/api/products', productsRouter);
 app.use('/api/flavors', flavorsRouter);
 app.use('/api/recipes', recipesRouter);
 app.use('/api/inventory', inventoryRouter);
-app.use('/api/product-requests', productRequestsRouter);
 app.use('/api/flavor-requests', flavorRequestsRouter);
 app.use('/api/inventory-requests', inventoryRequestsRouter);
 app.use('/api/price-overrides', priceOverridesRouter);
@@ -89,6 +88,7 @@ app.use('/api/settings', settingsRouter);
 // Same prefix as branchesRouter — no path collision (branchesRouter owns
 // /:branchId; this owns /:branchId/receipt-config).
 app.use('/api/branches', branchReceiptConfigRouter);
+app.use('/api/product-inventory', productInventoryRouter);
 
 // Express 5 catch-all syntax (path-to-regexp v8) — '*' alone is no longer valid.
 app.use('/{*splat}', (_req: Request, res: Response) => {

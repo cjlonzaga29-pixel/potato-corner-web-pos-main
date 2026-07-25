@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer';
 import { z } from 'zod';
 import {
+  createProductSchema,
   updateProductSchema,
   changeProductStatusSchema,
   createVariantSchema,
@@ -115,6 +116,16 @@ router.get('/:productId', authenticate, adminSupervisorOrBranch, requirePassword
     if (!requireUser(req, res)) return;
     const product = await productsService.getProductById(req.params.productId as string, req.user);
     res.status(200).json({ data: product, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const product = await productsService.createProduct(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    res.status(201).json({ data: product, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
   }

@@ -84,46 +84,44 @@ export async function authedGet<T>(
 }
 
 /**
- * Direct product creation (POST /api/products) was removed in the Super
- * Admin IA restructure — a Product now only comes from a supervisor's
- * product request approved by an admin. Fixtures that need a real product
- * to test against (POS cart, void, offline sync) go through that same real
- * flow rather than a test-only shortcut.
+ * Product Request workflow was removed — Product Management (POST
+ * /api/products, adminOnly) is the sole path to a new product. Creates the
+ * product branch-exclusive to branchId, then adds each variant.
  */
-export async function createProductViaRequest(
+export async function createProduct(
   request: APIRequestContext,
   baseURL: string,
   params: {
     branchId: string;
-    supervisorAccessToken: string;
     adminAccessToken: string;
     proposedName: string;
     variants: { name: string; size_label: string; base_price: number }[];
-    requestReason?: string;
   },
 ): Promise<{ productId: string }> {
-  const submitted = await authedPost<{ id: string }>(request, baseURL, '/api/product-requests', params.supervisorAccessToken, {
-    branch_id: params.branchId,
-    proposed_name: params.proposedName,
-    proposed_category: 'E2E',
-    proposed_variants: params.variants,
-    request_reason:
-      params.requestReason ?? 'E2E fixture seed — creates a test product via the real supervisor request + admin approval flow.',
+  const created = await authedPost<{ id: string }>(request, baseURL, '/api/products', params.adminAccessToken, {
+    name: params.proposedName,
+    category: 'E2E',
+    status: 'active',
+    is_seasonal: false,
+    branch_exclusive: true,
+    exclusive_branch_id: params.branchId,
   });
-  if (!submitted.data?.id) {
-    throw new Error(`Failed to submit product request for "${params.proposedName}": ${JSON.stringify(submitted.error)}`);
+  if (!created.data?.id) {
+    throw new Error(`Failed to create product "${params.proposedName}": ${JSON.stringify(created.error)}`);
   }
 
-  const reviewed = await authedPost<{ created_product_id: string | null }>(
-    request,
-    baseURL,
-    `/api/product-requests/${submitted.data.id}/review`,
-    params.adminAccessToken,
-    { action: 'approve' },
-  );
-  if (!reviewed.data?.created_product_id) {
-    throw new Error(`Failed to approve product request for "${params.proposedName}": ${JSON.stringify(reviewed.error)}`);
+  for (const variant of params.variants) {
+    const createdVariant = await authedPost<{ id: string }>(
+      request,
+      baseURL,
+      `/api/products/${created.data.id}/variants`,
+      params.adminAccessToken,
+      { name: variant.name, size_label: variant.size_label, base_price: variant.base_price, is_active: true },
+    );
+    if (!createdVariant.data?.id) {
+      throw new Error(`Failed to create variant "${variant.name}" for "${params.proposedName}": ${JSON.stringify(createdVariant.error)}`);
+    }
   }
 
-  return { productId: reviewed.data.created_product_id };
+  return { productId: created.data.id };
 }

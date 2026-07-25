@@ -3,14 +3,14 @@ import path from 'node:path';
 
 const ADMIN_PAGES = [
   '/admin/dashboard', '/admin/branches', '/admin/products', '/admin/flavors',
-  '/admin/recipes', '/admin/approvals/product-requests',
+  '/admin/recipes',
   '/admin/approvals/price-overrides', '/admin/employees', '/admin/reports',
   '/admin/settings', '/admin/attendance',
 ];
 const SUPERVISOR_PAGES = [
   '/supervisor/dashboard', '/supervisor/inventory', '/supervisor/attendance',
   '/supervisor/cash', '/supervisor/employees', '/supervisor/reports',
-  '/supervisor/product-requests', '/supervisor/price-overrides', '/supervisor/recipes',
+  '/supervisor/price-overrides', '/supervisor/recipes',
 ];
 const STAFF_PAGES = ['/terminal', '/shift', '/receipts'];
 

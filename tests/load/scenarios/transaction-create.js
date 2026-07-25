@@ -54,33 +54,30 @@ export function setup() {
   const branch = branchesRes.json('data.branches').find((b) => b.code === 'MAIN01');
   if (!branch) throw new Error('Seeded "Main Branch" (MAIN01) not found — run apps/api/prisma/seed.ts against this environment first');
 
-  // Direct POST /api/products was removed in the Super Admin IA restructure
-  // — a product now only comes from a supervisor's product request approved
-  // by an admin, so setup goes through that same real flow.
-  const requestRes = http.post(
-    `${BASE_URL}/api/product-requests`,
+  // Product Management (POST /api/products, adminOnly) is the sole path to
+  // a new product now that the Product Request workflow has been removed.
+  const productRes = http.post(
+    `${BASE_URL}/api/products`,
     JSON.stringify({
-      branch_id: branch.id,
-      proposed_name: 'k6 Load Test Item',
-      proposed_category: 'Load Test',
-      proposed_variants: [{ name: 'Standard', size_label: 'Regular', base_price: PRODUCT_PRICE }],
-      request_reason: 'k6 load-test setup — seeds the product this scenario adds to every transaction.',
+      name: 'k6 Load Test Item',
+      category: 'Load Test',
+      status: 'active',
+      is_seasonal: false,
+      branch_exclusive: true,
+      exclusive_branch_id: branch.id,
     }),
-    { headers: authedHeaders(supervisor) },
-  );
-  const requestId = requestRes.json('data.id');
-  if (!requestId) throw new Error(`Failed to submit k6 product request: ${requestRes.status} ${requestRes.body}`);
-
-  const reviewRes = http.post(
-    `${BASE_URL}/api/product-requests/${requestId}/review`,
-    JSON.stringify({ action: 'approve' }),
     { headers: authedHeaders(admin) },
   );
-  const productId = reviewRes.json('data.created_product_id');
-  if (!productId) throw new Error(`Failed to approve k6 product request: ${reviewRes.status} ${reviewRes.body}`);
+  const productId = productRes.json('data.id');
+  if (!productId) throw new Error(`Failed to create k6 product: ${productRes.status} ${productRes.body}`);
 
-  const productDetailRes = http.get(`${BASE_URL}/api/products/${productId}`, { headers: authedHeaders(admin) });
-  const variantId = productDetailRes.json('data.variants').find((v) => v.name === 'Standard').id;
+  const variantRes = http.post(
+    `${BASE_URL}/api/products/${productId}/variants`,
+    JSON.stringify({ name: 'Standard', size_label: 'Regular', base_price: PRODUCT_PRICE, is_active: true }),
+    { headers: authedHeaders(admin) },
+  );
+  const variantId = variantRes.json('data.id');
+  if (!variantId) throw new Error(`Failed to create k6 variant: ${variantRes.status} ${variantRes.body}`);
 
   // One throwaway staff account per VU — see file header for why this
   // isn't optional. 409 (already exists) is tolerated for idempotent re-runs.

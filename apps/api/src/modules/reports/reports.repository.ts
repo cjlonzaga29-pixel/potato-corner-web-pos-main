@@ -683,7 +683,6 @@ export const reportsRepository = {
             'VOID_TRANSACTION',
             'REFUND_TRANSACTION',
             'PRICE_OVERRIDE_APPROVED',
-            'PRODUCT_REQUEST_APPROVED',
           ],
         },
         ...(filters.branchId ? { branchId: filters.branchId } : {}),

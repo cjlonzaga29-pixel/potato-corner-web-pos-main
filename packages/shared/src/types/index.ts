@@ -73,6 +73,9 @@ export type IngredientListResponse = z.infer<typeof schemas.ingredientListRespon
 export type CreateRecipeInput = z.infer<typeof schemas.createRecipeSchema>;
 export type UpdateRecipeInput = z.infer<typeof schemas.updateRecipeSchema>;
 export type RecipeResponse = z.infer<typeof schemas.recipeResponseSchema>;
+export type CreateProductInventoryInput = z.infer<typeof schemas.createProductInventorySchema>;
+export type UpdateProductInventoryInput = z.infer<typeof schemas.updateProductInventorySchema>;
+export type ProductInventoryResponse = z.infer<typeof schemas.productInventoryResponseSchema>;
 export type CreateInventoryMovementInput = z.infer<typeof schemas.createInventoryMovementSchema>;
 export type PhysicalCountSubmission = z.infer<typeof schemas.physicalCountSubmissionSchema>;
 
@@ -96,14 +99,6 @@ export type RecipeOverrideResponse = z.infer<typeof schemas.recipeOverrideRespon
 export type SimulateDeductionInput = z.infer<typeof schemas.simulateDeductionSchema>;
 export type DeductionLine = z.infer<typeof schemas.deductionLineSchema>;
 export type SimulateDeductionResponse = z.infer<typeof schemas.simulateDeductionResponseSchema>;
-
-export type CreateProductRequestInput = z.infer<typeof schemas.createProductRequestSchema>;
-export type ReviewProductRequestInput = z.infer<typeof schemas.reviewProductRequestSchema>;
-export type ProposedVariant = z.infer<typeof schemas.proposedVariantSchema>;
-export type ProposedFlavor = z.infer<typeof schemas.proposedFlavorSchema>;
-export type ProposedRecipe = z.infer<typeof schemas.proposedRecipeSchema>;
-export type ProductRequestResponse = z.infer<typeof schemas.productRequestResponseSchema>;
-export type ProductRequestListResponse = z.infer<typeof schemas.productRequestListResponseSchema>;
 
 export type CreateFlavorRequestInput = z.infer<typeof schemas.createFlavorRequestSchema>;
 export type ReviewFlavorRequestInput = z.infer<typeof schemas.reviewFlavorRequestSchema>;

@@ -58,8 +58,6 @@ export const SOCKET_EVENTS = {
   EMPLOYEE_SESSION_REVOKED: 'employee:session_revoked',
 
   // CR-001 — approval workflow notifications
-  PRODUCT_REQUEST_SUBMITTED: 'product_request:submitted',
-  PRODUCT_REQUEST_REVIEWED: 'product_request:reviewed',
   PRICE_OVERRIDE_SUBMITTED: 'price_override:submitted',
   PRICE_OVERRIDE_REVIEWED: 'price_override:reviewed',
 

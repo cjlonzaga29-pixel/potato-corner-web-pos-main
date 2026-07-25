@@ -7,6 +7,7 @@ import {
   type BranchProductAvailabilityRow,
   type BulkBranchProductAvailabilityResponse,
   type ChangeProductStatusInput,
+  type CreateProductInput,
   type CreateVariantInput,
   type LinkVariantFlavorInput,
   type PosCatalogResponse,
@@ -108,6 +109,25 @@ export function useCatalogRealtimeSync(branchId: string | null | undefined): voi
     [SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, SOCKET_EVENTS.INVENTORY_LOW_STOCK],
     [['catalog', branchId]],
   );
+}
+
+export function useCreateProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateProductInput) => {
+      const response = await apiClient<ProductDetailResponse>('/api/products', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to create product'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Product created');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 }
 
 export function useUpdateProduct(productId: string) {

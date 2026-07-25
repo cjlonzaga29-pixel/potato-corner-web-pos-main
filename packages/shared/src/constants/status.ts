@@ -15,7 +15,7 @@ export type ProductStatus = (typeof PRODUCT_STATUS)[keyof typeof PRODUCT_STATUS]
 /** Alias matching Phase 6's task naming (PRODUCT_STATUSES) — same values as PRODUCT_STATUS, kept as one source of truth. */
 export const PRODUCT_STATUSES = PRODUCT_STATUS;
 
-/** Shared by branch_price_overrides, product_requests — every CR-001 approval workflow uses this same three-state shape. */
+/** Shared by branch_price_overrides and flavor_requests — every CR-001/CR-002 approval workflow uses this same three-state shape. */
 export const REQUEST_STATUS = {
   PENDING: 'pending',
   APPROVED: 'approved',

@@ -223,27 +223,25 @@ model User {
   deactivatedBy      String?   @map("deactivated_by")
   deactivationReason String?   @map("deactivation_reason")
 
-  branchAssignments          UserBranchAssignment[]
-  shiftsAsCashier            Shift[]                @relation("ShiftCashier")
-  shiftsOpenedBy             Shift[]                @relation("ShiftOpenedBy")
-  attendanceRecords          AttendanceRecord[]     @relation("AttendanceEmployee")
-  correctedAttendanceRecords AttendanceRecord[]     @relation("AttendanceCorrector")
-  auditLogs                  AuditLog[]
-  createdProducts            Product[]
-  cashierTransactions        Transaction[]
-  voidedTransactions         Transaction[]          @relation("TransactionVoidedBy")
-  refundedTransactions       Transaction[]          @relation("TransactionRefundedBy")
-  paymentProofVerifiedTransactions Transaction[]    @relation("TransactionPaymentProofVerifiedBy")
-  refreshTokens              RefreshToken[]
-  pinCredentials             PinCredential[]
-  holdOrders                 HoldOrder[]
-  passwordResetTokens        PasswordResetToken[]
+  branchAssignments                UserBranchAssignment[]
+  shiftsAsCashier                  Shift[]                @relation("ShiftCashier")
+  shiftsOpenedBy                   Shift[]                @relation("ShiftOpenedBy")
+  attendanceRecords                AttendanceRecord[]     @relation("AttendanceEmployee")
+  correctedAttendanceRecords       AttendanceRecord[]     @relation("AttendanceCorrector")
+  auditLogs                        AuditLog[]
+  createdProducts                  Product[]
+  cashierTransactions              Transaction[]
+  voidedTransactions               Transaction[]          @relation("TransactionVoidedBy")
+  refundedTransactions             Transaction[]          @relation("TransactionRefundedBy")
+  paymentProofVerifiedTransactions Transaction[]          @relation("TransactionPaymentProofVerifiedBy")
+  refreshTokens                    RefreshToken[]
+  pinCredentials                   PinCredential[]
+  holdOrders                       HoldOrder[]
+  passwordResetTokens              PasswordResetToken[]
 
   // CR-001
   priceOverrideRequests   BranchPriceOverride[]  @relation("PriceOverrideRequester")
   priceOverrideReviews    BranchPriceOverride[]  @relation("PriceOverrideReviewer")
-  productRequestsFiled    ProductRequest[]       @relation("ProductRequestRequester")
-  productRequestsReviewed ProductRequest[]       @relation("ProductRequestReviewer")
   recipeOverridesCreated  BranchRecipeOverride[]
 
   // CR-002 — flavor requests (supervisor submits, Super Admin approves)
@@ -300,7 +298,6 @@ model Branch {
   // CR-001
   exclusiveProducts Product[]              @relation("ProductExclusiveBranch")
   priceOverrides    BranchPriceOverride[]
-  productRequests   ProductRequest[]
   recipeOverrides   BranchRecipeOverride[]
 
   // CR-002
@@ -470,7 +467,6 @@ model Product {
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
   variants           ProductVariant[]
   branchAvailability BranchProductAvailability[]
-  productRequests    ProductRequest[]
   transactionItems   TransactionItem[]
   holdOrderItems     HoldOrderItem[]
 
@@ -519,6 +515,7 @@ model ProductVariant {
   holdOrderItems   HoldOrderItem[]
   flavorSlots      ProductFlavorSlot[]
   changeLogs       ProductChangeLog[]
+  productInventory ProductInventory[]
 
   // CR-001
   priceOverrides  BranchPriceOverride[]
@@ -658,45 +655,9 @@ model BranchPriceOverride {
   @@map("branch_price_overrides")
 }
 
-/// Supervisor-submitted request to add a brand-new product to the master
-/// catalog. proposed_variants/flavors/recipes are freeform JSON snapshots of
-/// the supervisor's proposal — validated against proposedVariantSchema etc.
-/// at the API boundary, not by the DB — because nothing here is committed to
-/// real Product/ProductVariant/Recipe rows unless and until a Super Admin
-/// approves it (reviewRequest creates those rows from this JSON at that point).
-model ProductRequest {
-  id                  String    @id @default(uuid())
-  branchId            String    @map("branch_id")
-  requestedBy         String    @map("requested_by")
-  proposedName        String    @map("proposed_name")
-  proposedDescription String?   @map("proposed_description")
-  proposedCategory    String?   @map("proposed_category")
-  proposedVariants    Json      @map("proposed_variants")
-  proposedFlavors     Json      @map("proposed_flavors")
-  proposedRecipes     Json      @map("proposed_recipes")
-  requestReason       String    @map("request_reason")
-  status              String    @default("pending")
-  reviewedBy          String?   @map("reviewed_by")
-  reviewedAt          DateTime? @map("reviewed_at")
-  reviewNotes         String?   @map("review_notes")
-  createdProductId    String?   @map("created_product_id")
-
-  branch         Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  requester      User     @relation("ProductRequestRequester", fields: [requestedBy], references: [id])
-  reviewer       User?    @relation("ProductRequestReviewer", fields: [reviewedBy], references: [id])
-  createdProduct Product? @relation(fields: [createdProductId], references: [id])
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  @@index([branchId])
-  @@index([status])
-  @@map("product_requests")
-}
-
 /// CR-002 — supervisor-submitted request to add a brand-new flavor to the
-/// catalog. Mirrors ProductRequest's shape/conventions: status is a plain
-/// String checked against REQUEST_STATUS in application code, and approval
+/// catalog: status is a plain String checked against REQUEST_STATUS in
+/// application code, and approval
 /// creates the real Flavor row (via flavorsRepository.create) only once a
 /// Super Admin approves — nothing here is a committed catalog row until then.
 model FlavorRequest {
@@ -755,6 +716,7 @@ model Ingredient {
   movements         InventoryMovement[]
   recipeOverrides   BranchRecipeOverride[]
   inventoryRequests InventoryRequest[]
+  productInventory  ProductInventory[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -800,6 +762,29 @@ model Recipe {
   // a soft-deleted recipe row doesn't permanently block recreating the same
   // combination. Added by raw SQL in the migration (see Ingredient's note).
   @@map("recipes")
+}
+
+/// ProductInventory foundation — generic, branch-agnostic mapping of which
+/// Ingredient rows (and how much of each) a ProductVariant requires, keyed
+/// only by variant + ingredient (no flavorId dimension, unlike Recipe).
+/// Additive alongside Recipe/BranchRecipeOverride; does not replace them.
+model ProductInventory {
+  id               String  @id @default(uuid())
+  productVariantId String  @map("product_variant_id")
+  ingredientId     String  @map("ingredient_id")
+  quantityRequired Decimal @map("quantity_required") @db.Decimal(10, 4)
+  unit             String
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([productVariantId, ingredientId])
+  @@index([productVariantId])
+  @@index([ingredientId])
+  @@map("product_inventory")
 }
 
 /// CR-001 Phase 7.5 — branch-scoped recipe row that replaces (same
@@ -937,13 +922,13 @@ model Transaction {
   // Null for cash sales (not required) and for legacy rows predating this
   // feature. Storage KEY only, never a public/signed URL — mirrors
   // Expense.receiptKey, resolved to a fresh signed URL only on read.
-  paymentProofKey              String?                 @map("payment_proof_key")
-  paymentProofType             ImageProofType?         @map("payment_proof_type")
-  paymentProofUploadedAt       DateTime?               @map("payment_proof_uploaded_at")
+  paymentProofKey             String?                  @map("payment_proof_key")
+  paymentProofType            ImageProofType?          @map("payment_proof_type")
+  paymentProofUploadedAt      DateTime?                @map("payment_proof_uploaded_at")
   // Reserved for a future admin "Mark Verified" action — not built in this
   // change, but the columns ship now to avoid a second migration later.
-  paymentProofVerifiedAt       DateTime?               @map("payment_proof_verified_at")
-  paymentProofVerifiedById     String?                 @map("payment_proof_verified_by_id")
+  paymentProofVerifiedAt      DateTime?                @map("payment_proof_verified_at")
+  paymentProofVerifiedById    String?                  @map("payment_proof_verified_by_id")
   discountType                String?                  @map("discount_type")
   discountCustomerIdEncrypted String?                  @map("discount_customer_id_encrypted")
   // Deterministic HMAC-SHA256 of the same plaintext ID stored above —
@@ -965,13 +950,13 @@ model Transaction {
   refundedById                String?                  @map("refunded_by_id")
   refundReason                String?                  @map("refund_reason")
 
-  branch     Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  shift      Shift?            @relation(fields: [shiftId], references: [id])
-  cashier    User              @relation(fields: [cashierId], references: [id])
-  voidedBy   User?             @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
-  refundedBy User?             @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
-  paymentProofVerifiedBy User? @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
-  items      TransactionItem[]
+  branch                 Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift                  Shift?            @relation(fields: [shiftId], references: [id])
+  cashier                User              @relation(fields: [cashierId], references: [id])
+  voidedBy               User?             @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
+  refundedBy             User?             @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
+  paymentProofVerifiedBy User?             @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
+  items                  TransactionItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

@@ -33,11 +33,6 @@ export const PERMISSIONS = {
   FLAVOR_UPDATE: 'adminOnly',
   FLAVOR_BRANCH_AVAILABILITY: 'adminOrSupervisor',
 
-  // CR-001 — product requests (supervisor submits, Super Admin approves)
-  PRODUCT_REQUEST_SUBMIT: 'supervisorOnly',
-  PRODUCT_REQUEST_LIST: 'adminOrSupervisor + role-scoped',
-  PRODUCT_REQUEST_REVIEW: 'adminOnly',
-
   // CR-002 — flavor requests (supervisor submits, Super Admin approves)
   FLAVOR_REQUEST_SUBMIT: 'supervisorOnly',
   FLAVOR_REQUEST_LIST: 'adminOrSupervisor + role-scoped',

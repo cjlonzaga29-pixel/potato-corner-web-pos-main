@@ -21,7 +21,6 @@ import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shif
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchInventoryAlerts, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
-import { useProductRequests, useProductRequestsRealtimeSync } from '@/hooks/queries/use-product-requests';
 import { useFlavorRequests, useFlavorRequestsRealtimeSync } from '@/hooks/queries/use-flavor-requests';
 import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
 
@@ -54,7 +53,6 @@ export default function BranchDashboardPage() {
   useTransactionsRealtimeSync();
   useInventoryRealtimeSync(branchId);
   useAttendanceRealtimeSync();
-  useProductRequestsRealtimeSync();
   useFlavorRequestsRealtimeSync();
   usePriceOverridesRealtimeSync();
 
@@ -78,11 +76,6 @@ export default function BranchDashboardPage() {
     from,
     to,
     limit: ATTENDANCE_OVERVIEW_LIMIT,
-  });
-  const { data: pendingProductRequests, isLoading: isLoadingProductRequests } = useProductRequests({
-    status: 'pending',
-    branch_id: branchId,
-    limit: TOTAL_ONLY_LIMIT,
   });
   const { data: pendingFlavorRequests, isLoading: isLoadingFlavorRequests } = useFlavorRequests({
     status: 'pending',
@@ -135,13 +128,7 @@ export default function BranchDashboardPage() {
 
       <div className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight">Pending Approvals</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <KpiCard
-            title="Pending Product Requests"
-            value={pendingProductRequests?.total ?? 0}
-            isLoading={isLoadingProductRequests}
-            tone={pendingProductRequests?.total ? 'warning' : 'default'}
-          />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <KpiCard
             title="Pending Flavor Requests"
             value={pendingFlavorRequests?.total ?? 0}

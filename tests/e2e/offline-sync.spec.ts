@@ -24,7 +24,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { TEST_USERS } from './fixtures/test-users';
-import { apiLogin, authedGet, authedPost, createProductViaRequest } from './fixtures/api-helpers';
+import { apiLogin, authedGet, authedPost, createProduct } from './fixtures/api-helpers';
 
 const OFFLINE_PRODUCT = { name: 'E2E Offline Item', variantName: 'Standard', price: 40.0 };
 
@@ -41,12 +41,8 @@ test.beforeAll(async ({ request, baseURL }) => {
   if (!branch) throw new Error('Seeded "Main Branch" (MAIN01) not found — run apps/api/prisma/seed.ts first');
   branchId = branch.id;
 
-  // Direct POST /api/products was removed in the Super Admin IA restructure
-  // — products are seeded via the real supervisor request + admin approval
-  // flow now, same as production.
-  await createProductViaRequest(request, url, {
+  await createProduct(request, url, {
     branchId,
-    supervisorAccessToken: supervisor.accessToken,
     adminAccessToken: admin.accessToken,
     proposedName: OFFLINE_PRODUCT.name,
     variants: [{ name: OFFLINE_PRODUCT.variantName, size_label: 'Regular', base_price: OFFLINE_PRODUCT.price }],

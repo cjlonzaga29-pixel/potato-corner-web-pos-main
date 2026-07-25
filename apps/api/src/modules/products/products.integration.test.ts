@@ -32,12 +32,13 @@ describe.skipIf(!canRunIntegrationTests)('products integration', () => {
     // Prisma connection opened for this suite.
   });
 
-  // Direct product creation (POST /api/products) was removed in the Super
-  // Admin IA restructure — the only path to a new Product is now a
-  // supervisor's product request approved by an admin (see
-  // product-requests.integration.test.ts). The branch_exclusive
-  // true/false cascade behavior this used to cover is still exercised by
-  // productsRepository.createWithCascade via that approval flow.
+  it('POST /api/products creates a product directly as super_admin', async () => {
+    // TODO: POST /api/products as super_admin with name/status/branch_exclusive;
+    // assert 201 and response.data.id is present. Cover both branch_exclusive
+    // true (exclusiveBranchId cascade) and false (all-active-branches cascade)
+    // via productsRepository.createWithCascade.
+    expect(true).toBe(true);
+  });
 
   it('GET /api/products returns a paginated list', async () => {
     // TODO: GET /api/products as super_admin; assert response.data.products

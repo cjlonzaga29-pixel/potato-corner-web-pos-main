@@ -24,7 +24,6 @@ import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import { useBranchStore } from '@/stores/branch.store';
-import { useProductRequests } from '@/hooks/queries/use-product-requests';
 import { useFlavorRequests } from '@/hooks/queries/use-flavor-requests';
 import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -43,8 +42,6 @@ export const SUPERVISOR_NAV_ITEMS = [
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },
   { label: 'Employees', href: '/supervisor/employees', icon: Users },
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
-  // CR-001
-  { label: 'Product Requests', href: '/supervisor/product-requests', icon: Package },
   // CR-002
   { label: 'Flavor Requests', href: '/supervisor/flavor-requests', icon: Palette },
   { label: 'Inventory Requests', href: '/supervisor/inventory-requests', icon: ClipboardList },
@@ -67,11 +64,9 @@ export function SupervisorSidebar() {
     }
   }
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: myProductRequests } = useProductRequests({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
   const { data: myFlavorRequests } = useFlavorRequests({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
   const { data: myPriceOverrides } = usePriceOverrides({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
   const badgeCounts: Record<string, number> = {
-    '/supervisor/product-requests': myProductRequests?.total ?? 0,
     '/supervisor/flavor-requests': myFlavorRequests?.total ?? 0,
     '/supervisor/price-overrides': myPriceOverrides?.total ?? 0,
   };

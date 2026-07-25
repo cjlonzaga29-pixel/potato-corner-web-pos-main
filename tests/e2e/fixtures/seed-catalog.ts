@@ -1,15 +1,14 @@
 import type { APIRequestContext } from '@playwright/test';
 import { TEST_USERS } from './test-users';
-import { apiLogin, authedGet, createProductViaRequest } from './api-helpers';
+import { apiLogin, authedGet, createProduct } from './api-helpers';
 
 /**
  * apps/api/prisma/seed.ts only seeds the branch and the three role
  * accounts — no product catalog. The POS terminal (tests/e2e/pos-workflow
  * spec) needs at least one sellable variant to add to the cart, so this
- * creates one via the real supervisor product-request + admin-approval
- * flow (not direct Prisma access, and not a direct POST /api/products —
- * that endpoint was removed in the Super Admin IA restructure, so this is
- * now the one true path a product takes in production too).
+ * creates one via the real admin Product Management endpoints (POST
+ * /api/products + POST /api/products/:id/variants) — the same path a
+ * product takes in production.
  *
  * Two variants, both whole-peso prices, chosen so the resulting totals stay
  * whole numbers and are easy to assert against by hand:
@@ -28,15 +27,13 @@ export const CATALOG_FIXTURE = {
 };
 
 /**
- * Logs in as the seeded admin + supervisor, creates the fixture product +
- * two variants via a product request approved on the spot, and returns the
- * branch id both seeded non-admin accounts are assigned to. Call once per
- * spec file in `test.beforeAll`, not per-test — this hits real write
- * endpoints.
+ * Logs in as the seeded admin, creates the fixture product + two variants
+ * directly through Product Management, and returns the branch id both
+ * seeded non-admin accounts are assigned to. Call once per spec file in
+ * `test.beforeAll`, not per-test — this hits real write endpoints.
  */
 export async function seedCatalog(request: APIRequestContext, baseURL: string): Promise<{ branchId: string }> {
   const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
-  const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
 
   // Branch is seeded by name/code ("Main Branch" / MAIN01) — fetched by
   // listing branches rather than hardcoding an id that could drift.
@@ -46,9 +43,8 @@ export async function seedCatalog(request: APIRequestContext, baseURL: string): 
     throw new Error('Seeded "Main Branch" (MAIN01) not found — run apps/api/prisma/seed.ts first');
   }
 
-  await createProductViaRequest(request, baseURL, {
+  await createProduct(request, baseURL, {
     branchId: branch.id,
-    supervisorAccessToken: supervisor.accessToken,
     adminAccessToken: admin.accessToken,
     proposedName: CATALOG_FIXTURE.productName,
     variants: [

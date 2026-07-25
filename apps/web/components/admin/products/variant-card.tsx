@@ -1,8 +1,16 @@
-import type { ProductVariantResponse } from '@potato-corner/shared';
+'use client';
+
+import { useState } from 'react';
+import { Plus } from 'lucide-react';
+import type { ProductInventoryResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { FlavorColorSwatch } from '@/components/admin/flavors/flavor-color-swatch';
+import { InventoryMappingFormDialog } from '@/components/admin/products/inventory-mapping-form-dialog';
+import { useAuth } from '@/hooks/use-auth';
+import { useProductInventoryList, useDeleteProductInventory } from '@/hooks/queries/use-product-inventory';
 import { formatCurrency } from '@/lib/utils';
 
 interface VariantCardProps {
@@ -38,7 +46,7 @@ export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavor
           </Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
         {variant.flavors.length === 0 ? (
           <p className="text-sm text-muted-foreground">No flavors linked yet.</p>
         ) : (
@@ -58,7 +66,95 @@ export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavor
             ))}
           </div>
         )}
+
+        <InventoryItemsSection variant={variant} />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Business-neutral stock-item mappings for one variant (Phase 6). Additive to
+ * Recipe, which remains the sole POS deduction engine — this section only
+ * manages ProductInventory rows and never references recipes or flavors.
+ */
+function InventoryItemsSection({ variant }: { variant: ProductVariantResponse }) {
+  const { isSupervisor: getIsSupervisor } = useAuth();
+  const isSupervisor = getIsSupervisor();
+  const { data: mappings, isLoading } = useProductInventoryList(variant.id);
+  const deleteMapping = useDeleteProductInventory(variant.id);
+
+  const [mappingDialog, setMappingDialog] = useState<{ open: boolean; mapping?: ProductInventoryResponse }>({ open: false });
+  const [deletingMapping, setDeletingMapping] = useState<ProductInventoryResponse | null>(null);
+
+  return (
+    <div className="space-y-2 border-t pt-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">Inventory Items</p>
+        {isSupervisor && (
+          <Button size="sm" variant="outline" onClick={() => setMappingDialog({ open: true })}>
+            <Plus className="mr-1 h-3 w-3" />
+            Add Inventory Item
+          </Button>
+        )}
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading inventory items…</p>
+      ) : !mappings || mappings.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No inventory items linked yet.</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {mappings.map((mapping) => (
+            <div key={mapping.id} className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs">
+              <span>{mapping.ingredient_name}</span>
+              <span className="text-muted-foreground">
+                {mapping.quantity_required} {mapping.unit}
+              </span>
+              {isSupervisor && (
+                <>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => setMappingDialog({ open: true, mapping })}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="text-destructive hover:text-destructive/80"
+                    onClick={() => setDeletingMapping(mapping)}
+                  >
+                    Remove
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <InventoryMappingFormDialog
+        open={mappingDialog.open}
+        onOpenChange={(open) => setMappingDialog((prev) => ({ ...prev, open }))}
+        variant={variant}
+        existingMappings={mappings ?? []}
+        editingMapping={mappingDialog.mapping}
+      />
+
+      {deletingMapping && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => !open && setDeletingMapping(null)}
+          title={`Remove ${deletingMapping.ingredient_name}?`}
+          description="This only removes the informational stock mapping — it does not affect POS deduction, which is driven by Recipe."
+          confirmLabel="Remove"
+          variant="danger"
+          onConfirm={async () => {
+            await deleteMapping.mutateAsync(deletingMapping.id);
+          }}
+        />
+      )}
+    </div>
   );
 }

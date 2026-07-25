@@ -9,7 +9,6 @@ import {
   ShoppingBag,
   Palette,
   ChefHat,
-  Package,
   DollarSign,
   Users,
   ClipboardCheck,
@@ -33,7 +32,6 @@ import {
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
-import { useProductRequests } from '@/hooks/queries/use-product-requests';
 import { useFlavorRequests } from '@/hooks/queries/use-flavor-requests';
 import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -61,7 +59,6 @@ export const ADMIN_NAV_ITEMS = [
     label: 'Approvals',
     icon: ShieldCheck,
     children: [
-      { label: 'Product Requests', href: '/admin/approvals/product-requests', icon: Package },
       { label: 'Flavor Requests', href: '/admin/approvals/flavor-requests', icon: Palette },
       { label: 'Price Overrides', href: '/admin/approvals/price-overrides', icon: DollarSign },
     ],
@@ -108,11 +105,9 @@ export function AdminSidebar() {
       setIsLoggingOut(false);
     }
   }
-  const { data: pendingProductRequests } = useProductRequests({ status: 'pending', limit: 1 });
   const { data: pendingFlavorRequests } = useFlavorRequests({ status: 'pending', limit: 1 });
   const { data: pendingPriceOverrides } = usePriceOverrides({ status: 'pending', limit: 1 });
   const badgeCounts: Record<string, number> = {
-    '/admin/approvals/product-requests': pendingProductRequests?.total ?? 0,
     '/admin/approvals/flavor-requests': pendingFlavorRequests?.total ?? 0,
     '/admin/approvals/price-overrides': pendingPriceOverrides?.total ?? 0,
   };

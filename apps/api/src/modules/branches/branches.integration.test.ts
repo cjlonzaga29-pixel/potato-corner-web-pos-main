@@ -82,13 +82,13 @@ describe.skipIf(!canRunIntegrationTests)('branches integration', () => {
 
 /**
  * CR-004 idempotent branch provisioning — exercises the real service layer
- * (branchesService.createBranch -> recipesRepository.findDistinctIngredientIdentities
+ * (branchesService.createBranch -> productInventoryRepository.findDistinctIngredientIdentities
  * -> inventoryService.provisionBranchIngredients) against a real Postgres
  * database, proving a brand-new branch is born with a zero-stock Ingredient
- * row for every ingredient identity an active master Recipe references —
- * the prerequisite for transactions.integration.test.ts's cross-branch
- * isolation guarantee to hold for a branch created after the recipe already
- * existed.
+ * row for every ingredient identity an active ProductInventory mapping
+ * references — the prerequisite for transactions.integration.test.ts's
+ * cross-branch isolation guarantee to hold for a branch created after the
+ * mapping already existed.
  */
 describe.skipIf(!canRunIntegrationTests)('branches integration — CR-004 idempotent provisioning', () => {
   let adminId: string;
@@ -127,11 +127,13 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-004 idempo
     });
     variantId = variant.id;
 
-    await prisma.recipe.create({ data: { productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantity: 200, unit: 'g' } });
+    await prisma.productInventory.create({
+      data: { branchId: templateBranchId, productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantityRequired: 200, unit: 'g' },
+    });
   });
 
   afterAll(async () => {
-    await prisma.recipe.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productInventory.deleteMany({ where: { productVariantId: variantId } });
     await prisma.productVariant.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.ingredient.deleteMany({ where: { name: 'CR004-Potato' } });
@@ -221,7 +223,9 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-ph
       data: { productId, name: 'Regular', sizeLabel: 'Regular', basePrice: 100, isActive: true },
     });
     variantId = variant.id;
-    await prisma.recipe.create({ data: { productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantity: 200, unit: 'g' } });
+    await prisma.productInventory.create({
+      data: { branchId: templateBranch.id, productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantityRequired: 200, unit: 'g' },
+    });
 
     const flavor = await prisma.flavor.create({
       data: { name: `CR-005B Flavor ${randomUUID().slice(0, 8)}`, isActive: true, ingredientName: flavorIngredientName, ingredientUnit: 'g' },
@@ -232,7 +236,7 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-ph
   });
 
   afterAll(async () => {
-    await prisma.recipe.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productInventory.deleteMany({ where: { productVariantId: variantId } });
     await prisma.productVariant.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.flavor.deleteMany({ where: { id: flavorId } });
@@ -339,11 +343,13 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-ph
       data: { productId, name: 'Regular', sizeLabel: 'Regular', basePrice: 100, isActive: true },
     });
     variantId = variant.id;
-    await prisma.recipe.create({ data: { productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantity: 200, unit: 'g' } });
+    await prisma.productInventory.create({
+      data: { branchId: templateBranchId, productVariantId: variantId, ingredientId: templatePotato.id, flavorId: null, quantityRequired: 200, unit: 'g' },
+    });
   });
 
   afterAll(async () => {
-    await prisma.recipe.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productInventory.deleteMany({ where: { productVariantId: variantId } });
     await prisma.productVariant.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.ingredient.deleteMany({ where: { name: txRecipeIngredientName } });

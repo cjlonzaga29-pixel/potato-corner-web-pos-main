@@ -168,7 +168,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
 
   afterAll(async () => {
     await prisma.productChangeLog.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
-    await prisma.recipe.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
+    await prisma.productInventory.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
     await prisma.branchProductAvailability.deleteMany({ where: { productId: { in: createdProductIds } } });
     await prisma.productVariant.deleteMany({ where: { productId: { in: createdProductIds } } });
     await prisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
@@ -192,6 +192,19 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     });
   }
 
+  // approveVariant now requires at least one active ProductInventory
+  // mapping to exist (CR-005 Guarantee 6 — replaces the old vacuous-pass
+  // Recipe-resolvability check). Scoped to branchAId so tests proving
+  // branchB isolation stay meaningful.
+  async function provisionInventoryMapping(variantId: string) {
+    const ingredient = await prisma.ingredient.create({
+      data: { branchId: branchAId, name: `CR005C-Mapping-${randomUUID().slice(0, 8)}`, unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    });
+    await prisma.productInventory.create({
+      data: { branchId: branchAId, productVariantId: variantId, ingredientId: ingredient.id, flavorId: null, quantityRequired: 10, unit: 'g' },
+    });
+  }
+
   it('walks the full lifecycle: create DRAFT -> submit -> approve -> edit -> archive', async () => {
     const variant = await createDraftVariant('full-lifecycle');
     expect(variant.lifecycleStatus).toBe('DRAFT');
@@ -200,6 +213,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     const submitted = await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
     expect(submitted.lifecycle_status).toBe('PENDING_APPROVAL');
 
+    await provisionInventoryMapping(variant.id);
     const approved = await productsService.approveVariant(variant.id, 'looks good', SUPER_ADMIN(), null);
     expect(approved.lifecycle_status).toBe('ACTIVE');
     expect(approved.approved_by_id).toBe(superAdminId);
@@ -216,14 +230,12 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     expect(logs.map((l) => l.reason)).toEqual(['price adjustment', 'end of test']);
   });
 
-  it('Phase 4 gate blocks approval of a variant with a flavor-slot recipe row, leaving it PENDING_APPROVAL', async () => {
+  it('Phase 4 gate blocks approval of a variant with a ProductFlavorSlot definition, leaving it PENDING_APPROVAL', async () => {
     const variant = await createDraftVariant('phase4-gate');
-    const ingredient = await prisma.ingredient.create({
-      data: { branchId: branchAId, name: `CR005C-Potato-${randomUUID().slice(0, 8)}`, unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
-    });
-    await prisma.recipe.create({
-      data: { productVariantId: variant.id, ingredientId: ingredient.id, flavorId: null, quantity: 1, unit: 'g', flavorSlotIndex: 0 },
-    });
+    // approveVariant's PENDING_PHASE_4 gate checks countFlavorSlots (real
+    // ProductFlavorSlot rows only, since this migration removed the old
+    // Recipe.flavorSlotIndex half of that check — see products.service.ts).
+    await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
 
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
 
@@ -239,6 +251,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   it('rolls back editActiveVariant when the change log insert fails — version and fields stay untouched, no log row leaks', async () => {
     const variant = await createDraftVariant('edit-rollback');
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     const before = await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } });
@@ -262,6 +275,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   it('rolls back archiveVariant when the change log insert fails — variant stays in its prior state', async () => {
     const variant = await createDraftVariant('archive-rollback');
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     const before = await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } });
@@ -280,6 +294,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   it('ProductChangeLog snapshotJson matches the variant state at the moment of the edit', async () => {
     const variant = await createDraftVariant('snapshot-content');
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     await productsService.editActiveVariant(variant.id, { base_price: 88, name: 'Renamed' }, 'snapshot check', SUPER_ADMIN(), null);
@@ -302,6 +317,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   it('bumps version monotonically across three consecutive edits: 2, 3, 4', async () => {
     const variant = await createDraftVariant('version-monotonic');
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     const first = await productsService.editActiveVariant(variant.id, { base_price: 70 }, 'edit 1', SUPER_ADMIN(), null);
@@ -318,6 +334,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     });
 
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     const untouched = await prisma.ingredient.findUniqueOrThrow({ where: { id: branchBIngredient.id } });
@@ -337,6 +354,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
 describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-phase 3d flavor slot CRUD', () => {
   let superAdminId: string;
   let supervisorId: string;
+  let branchId: string;
   let productId: string;
   const createdProductIds: string[] = [];
 
@@ -370,6 +388,11 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     });
     supervisorId = supervisor.id;
 
+    const branch = await prisma.branch.create({
+      data: { name: 'CR-005D Branch', code: `CR005D-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+    });
+    branchId = branch.id;
+
     const product = await prisma.product.create({ data: { name: 'CR-005D Slot Fries', status: 'active' } });
     productId = product.id;
     createdProductIds.push(productId);
@@ -378,8 +401,11 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   afterAll(async () => {
     await prisma.productFlavorSlot.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
     await prisma.productChangeLog.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
+    await prisma.productInventory.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
     await prisma.productVariant.deleteMany({ where: { productId: { in: createdProductIds } } });
     await prisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
+    await prisma.ingredient.deleteMany({ where: { branchId } });
+    await prisma.branch.deleteMany({ where: { id: branchId } });
     await prisma.user.deleteMany({ where: { id: { in: [superAdminId, supervisorId] } } });
     await prisma.$disconnect();
   });
@@ -396,6 +422,18 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
         createdById: superAdminId,
         maxFlavors,
       },
+    });
+  }
+
+  // approveVariant now requires at least one active ProductInventory
+  // mapping to exist (CR-005 Guarantee 6 — replaces the old vacuous-pass
+  // Recipe-resolvability check). Scoped to this suite's own branchId.
+  async function provisionInventoryMapping(variantId: string) {
+    const ingredient = await prisma.ingredient.create({
+      data: { branchId, name: `CR005D-Mapping-${randomUUID().slice(0, 8)}`, unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    });
+    await prisma.productInventory.create({
+      data: { branchId, productVariantId: variantId, ingredientId: ingredient.id, flavorId: null, quantityRequired: 10, unit: 'g' },
     });
   }
 
@@ -426,6 +464,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   it('ACTIVE variant slot changes create a ChangeLog entry with the operation and before/after slots in snapshotJson', async () => {
     const variant = await createDraftVariant('active-changelog');
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     const slot = await productsService.addFlavorSlot(
@@ -465,6 +504,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     // Promote to ACTIVE so the mutation runs inside performSlotEditWithActiveGovernance's
     // prisma.$transaction — the real test of whether a mid-op failure rolls back atomically.
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
 
     const shiftSpy = vi

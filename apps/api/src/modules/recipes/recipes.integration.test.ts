@@ -303,7 +303,10 @@ describe.skipIf(!canRunIntegrationTests)('recipes integration — CR-005 Sub-pha
     const recipeAfter = await prisma.recipe.findUniqueOrThrow({ where: { id: recipe.id } });
     expect(recipeAfter.flavorSlotIndex).toBe(0);
 
+    // 2 — one per successful addFlavorSlot above (each is a governed
+    // ACTIVE-variant edit that logs a ChangeLog row); the failed reorder must
+    // not have added a 3rd.
     const logs = await prisma.productChangeLog.count({ where: { productVariantId: variant.id } });
-    expect(logs).toBe(0);
+    expect(logs).toBe(2);
   });
 });

@@ -527,8 +527,11 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     expect(remaining.map((s) => s.id)).toEqual([s0.id, s1.id, s2.id]);
     expect(remaining.map((s) => s.slotIndex)).toEqual([0, 1, 2]);
 
+    // 3 — one per successful addFlavorSlot above (each is a governed
+    // ACTIVE-variant edit that logs a ChangeLog row); the failed remove must
+    // not have added a 4th.
     const logs = await prisma.productChangeLog.count({ where: { productVariantId: variant.id } });
-    expect(logs).toBe(0);
+    expect(logs).toBe(3);
   });
 
   it('reorder maintains referential integrity — every slot still belongs to its own variant, no cross-variant contamination', async () => {

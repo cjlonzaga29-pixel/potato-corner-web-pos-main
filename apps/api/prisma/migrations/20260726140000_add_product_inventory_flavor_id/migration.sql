@@ -5,7 +5,7 @@ ALTER TABLE "product_inventory" ADD COLUMN "flavor_id" TEXT;
 DROP INDEX "product_inventory_product_variant_id_ingredient_id_key";
 
 -- CreateIndex
-CREATE UNIQUE INDEX "product_inventory_product_variant_id_ingredient_id_flavor_id_key" ON "product_inventory"("product_variant_id", "ingredient_id", "flavor_id");
+CREATE UNIQUE INDEX "product_inventory_product_variant_id_ingredient_id_flavor_i_key" ON "product_inventory"("product_variant_id", "ingredient_id", "flavor_id");
 
 -- CreateIndex
 CREATE INDEX "product_inventory_flavor_id_idx" ON "product_inventory"("flavor_id");

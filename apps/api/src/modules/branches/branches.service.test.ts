@@ -492,6 +492,23 @@ describe('branchesService.getAllBranches', () => {
     );
   });
 
+  it('for a supervisor with no assigned branches, scopes to zero results instead of leaking every branch', async () => {
+    vi.mocked(branchesRepository.findAll).mockResolvedValue({ branches: [], total: 0 });
+
+    const supervisor = {
+      user_id: 'sup-2',
+      role: ROLES.SUPERVISOR,
+      email: 'sup2@test.com',
+      branch_ids: [] as string[],
+      iat: 0,
+      exp: 9999999999,
+    };
+
+    await branchesService.getAllBranches(supervisor, { page: 1, limit: 25 });
+
+    expect(branchesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ ids: [] }));
+  });
+
   it('for a super_admin returns all branches (no ids restriction)', async () => {
     vi.mocked(branchesRepository.findAll).mockResolvedValue({ branches: [], total: 0 });
 

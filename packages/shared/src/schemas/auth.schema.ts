@@ -78,7 +78,7 @@ export const unlockAccountSchema = z.object({
 });
 
 /**
- * JWT payload shape. branch_ids is required for supervisor/staff, absent
+ * JWT payload shape. branch_ids is present for supervisor/staff, absent
  * for super_admin. must_change_password is a Phase 5 addition to the
  * locked structure — added under Phase 5's explicit instruction (the
  * must-change-password gate needs it available on every authenticated
@@ -87,6 +87,17 @@ export const unlockAccountSchema = z.object({
  * payloads that predate this field still validate — every token this
  * codebase actually issues (auth.service.ts's buildJwtPayload) sets it
  * explicitly to a real boolean regardless.
+ *
+ * Supervisor's branch_ids may legitimately be empty — a supervisor whose
+ * only assignment(s) were removed keeps their account and must still be
+ * able to authenticate and see the "no accessible branch" empty state,
+ * rather than every request failing TOKEN_INVALID_PAYLOAD. branch/staff
+ * stay `.length(1)`: those roles are always minted with exactly one
+ * branch_id (see auth.service.ts's selectEmployee), so a length mismatch
+ * there really is a malformed token, not a valid empty-assignment state.
+ * Access to any given branch is still enforced entirely by
+ * getAccessibleBranchIds/assertBranchAccess against this array's contents
+ * — relaxing the minimum here does not grant any branch access.
  */
 export const jwtPayloadSchema = z.discriminatedUnion('role', [
   z.object({
@@ -101,7 +112,7 @@ export const jwtPayloadSchema = z.discriminatedUnion('role', [
     user_id: z.uuid(),
     role: z.literal(ROLES.SUPERVISOR),
     email: z.email(),
-    branch_ids: z.array(z.uuid()).min(1),
+    branch_ids: z.array(z.uuid()),
     must_change_password: z.boolean().optional(),
     iat: z.number(),
     exp: z.number(),

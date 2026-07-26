@@ -3,37 +3,45 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
-import { ROLES, type BranchResponse } from '@potato-corner/shared';
+import type { BranchResponse } from '@potato-corner/shared';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useBranch } from '@/hooks/use-branch';
 import { useBranches } from '@/hooks/queries/use-branches';
-import { useAuthStore } from '@/stores/auth.store';
 
 /**
- * GET /api/branches already scopes results to the requesting supervisor's
- * branch_ids server-side (branches.service.ts's getAllBranches) — no
- * client-side filtering against the auth store is needed here, the API
- * response IS the supervisor's assigned-branch list.
+ * GET /api/branches?status=active already scopes results to the requesting
+ * supervisor's branch_ids server-side (branches.service.ts's
+ * getAllBranches, driven by lib/branch-access.ts's getAccessibleBranchIds)
+ * — the API response IS the supervisor's assigned-branch list, so no
+ * client-side re-filtering against the auth store's cached branchIds
+ * happens here. That cached copy can legitimately lag the server (it's only
+ * refreshed on login/token-refresh/a realtime assignment push), and
+ * re-filtering against it would silently hide a branch the API already
+ * confirmed the supervisor can access — e.g. one just assigned by Super
+ * Admin whose realtime refresh hasn't landed yet.
  */
 export function BranchSelector() {
   const { activeBranchId, activeBranch, setActiveBranch } = useBranch();
-  const { data, isLoading } = useBranches({ limit: 100 });
+  const { data, isLoading } = useBranches({ status: 'active', limit: 100 });
   const queryClient = useQueryClient();
-  const user = useAuthStore((state) => state.user);
-  const allBranches = data?.branches ?? [];
-  const branches =
-    user?.role === ROLES.SUPERVISOR
-      ? allBranches.filter((branch) => user.branchIds.includes(branch.id))
-      : allBranches;
+  const branches = data?.branches ?? [];
 
   useEffect(() => {
-    if (!activeBranchId && branches.length > 0) {
+    if (isLoading) return;
+    if (branches.length === 0) return;
+    // Covers both "nothing selected yet" and "the previously selected
+    // branch is no longer in this accessible/active list" (removed
+    // assignment, closed branch, or a stale id left over from a prior
+    // session) — either way, fall back to the first accessible branch and
+    // persist that as the new active branch via the existing store.
+    const activeIdStillValid = branches.some((branch) => branch.id === activeBranchId);
+    if (!activeIdStillValid) {
       setActiveBranch(branches[0] as BranchResponse);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBranchId, branches.length]);
+  }, [activeBranchId, branches, isLoading]);
 
   if (isLoading) {
     return <LoadingSpinner size="sm" />;

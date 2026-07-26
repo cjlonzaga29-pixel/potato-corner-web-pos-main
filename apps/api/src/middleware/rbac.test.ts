@@ -124,6 +124,21 @@ describe('authenticate middleware', () => {
     expect(next).toHaveBeenCalledOnce();
     expect(req.user).toMatchObject({ user_id: staffUserId, role: ROLES.STAFF, branch_ids: [BRANCH_1] });
   });
+
+  // A supervisor's last branch assignment can be removed (removeSupervisor)
+  // without their account being deactivated — jwtPayloadSchema must accept
+  // an empty branch_ids array for this role so that supervisor still
+  // authenticates and reaches the "no accessible branch" empty state,
+  // instead of every request 401ing with TOKEN_INVALID_PAYLOAD.
+  it('accepts a supervisor token with an empty branch_ids array', async () => {
+    const token = generateSupervisorToken([]);
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+    const next = vi.fn();
+    await authenticate(req, res, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ role: ROLES.SUPERVISOR, branch_ids: [] });
+  });
 });
 
 describe('authorize middleware', () => {

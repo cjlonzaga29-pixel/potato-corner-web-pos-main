@@ -497,15 +497,20 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
 
   it('rolls back on a mid-operation failure — no orphan slots, no partial index shift persisted', async () => {
     const variant = await createDraftVariant('shift-rollback');
-    const s0 = await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
-    const s1 = await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
-    const s2 = await productsService.addFlavorSlot(variant.id, { label: 'C', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
 
-    // Promote to ACTIVE so the mutation runs inside performSlotEditWithActiveGovernance's
-    // prisma.$transaction — the real test of whether a mid-op failure rolls back atomically.
+    // Promote to ACTIVE first, with zero flavor slots — approveVariant's
+    // Phase-4 gate blocks approval outright once any ProductFlavorSlot row
+    // exists, so the slots must be added afterward, through the governed
+    // ACTIVE-variant path (super_admin + reason), for the mutation to run
+    // inside performSlotEditWithActiveGovernance's prisma.$transaction — the
+    // real test of whether a mid-op failure rolls back atomically.
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
     await provisionInventoryMapping(variant.id);
     await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
+
+    const s0 = await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, 'add A', SUPER_ADMIN(), null);
+    const s1 = await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, 'add B', SUPER_ADMIN(), null);
+    const s2 = await productsService.addFlavorSlot(variant.id, { label: 'C', flavorQty: 10, unit: 'grams' }, 'add C', SUPER_ADMIN(), null);
 
     const shiftSpy = vi
       .spyOn(productsRepository, 'shiftFlavorSlotIndicesDown')

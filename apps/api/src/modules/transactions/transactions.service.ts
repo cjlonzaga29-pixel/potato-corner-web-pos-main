@@ -25,7 +25,7 @@ import {
 import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { computeDeduction, assertProductInventoryExists } from '../recipes/recipes.service.js';
-import { RecipeError } from '../recipes/recipes.types.js';
+import { RecipeError, type DeductionLine } from '../recipes/recipes.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
@@ -230,8 +230,8 @@ function toHoldOrderResponse(row: HoldOrderRow) {
 }
 
 interface ResolvedItem {
-  // Pre-generated here (not left to the DB default) so deductInventoryForSale
-  // can write the deduction snapshot back onto this exact row by id.
+  // Pre-generated here (not left to the DB default) so it can be threaded
+  // through to the TransactionItem create payload below.
   id: string;
   productId: string;
   productVariantId: string;
@@ -242,6 +242,11 @@ interface ResolvedItem {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  // Computed once here (read-only, outside the write transaction) and
+  // written directly into the TransactionItem's create payload —
+  // TransactionItem rows are immutable after creation (CR-004), so this can
+  // never be patched in afterward.
+  deductionLines: DeductionLine[];
   vatableCapAmount: number | null;
   recipeVersion: number;
 }
@@ -311,6 +316,12 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     const unitPrice = round2(basePrice + pricePremium);
     const lineTotal = round2(unitPrice * item.quantity);
     const recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id, item.flavorId ?? undefined);
+    const deductionLines = await computeDeduction({
+      productVariantId: variant.id,
+      flavorId: item.flavorId ?? null,
+      quantitySold: item.quantity,
+      branchId,
+    });
 
     resolved.push({
       id: randomUUID(),
@@ -325,6 +336,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       lineTotal,
       vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
       recipeVersion,
+      deductionLines,
     });
   }
   return resolved;
@@ -396,32 +408,11 @@ async function deductInventoryForSale(
   tx: Prisma.TransactionClient,
   branchId: string,
   transactionId: string,
-  items: { transactionItemId: string; productVariantId: string; flavorId: string | null; quantity: number }[],
+  items: { lines: DeductionLine[] }[],
 ): Promise<Array<() => Promise<void>>> {
   const totals = new Map<string, { quantity: number; ingredientName: string }>();
   for (const item of items) {
-    const lines = await computeDeduction({
-      productVariantId: item.productVariantId,
-      flavorId: item.flavorId,
-      quantitySold: item.quantity,
-      branchId,
-    });
-
-    // Deduction snapshot: exactly what computeDeduction produced for this
-    // line, captured before the loop below deducts any stock.
-    await tx.transactionItem.update({
-      where: { id: item.transactionItemId },
-      data: {
-        deductionSnapshot: lines.map((line) => ({
-          ingredientId: line.ingredient_id,
-          ingredientName: line.ingredient_name,
-          quantity: line.quantity,
-          unit: line.unit,
-        })),
-      },
-    });
-
-    for (const line of lines) {
+    for (const line of item.lines) {
       const existing = totals.get(line.ingredient_id);
       totals.set(line.ingredient_id, {
         quantity: (existing?.quantity ?? 0) + line.quantity,
@@ -783,7 +774,27 @@ export const transactionsService = {
               paymentProofUploadedAt: data.paymentMethod !== PAYMENT_METHOD.CASH ? new Date() : null,
               isOfflineTransaction: data.isOfflineTransaction,
               offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
-              items: resolvedItems,
+              items: resolvedItems.map((item) => ({
+                id: item.id,
+                productId: item.productId,
+                productVariantId: item.productVariantId,
+                flavorId: item.flavorId,
+                productName: item.productName,
+                variantName: item.variantName,
+                flavorName: item.flavorName,
+                unitPrice: item.unitPrice,
+                quantity: item.quantity,
+                lineTotal: item.lineTotal,
+                recipeVersion: item.recipeVersion,
+                // Written at creation, not patched in afterward —
+                // TransactionItem rows are immutable after creation (CR-004).
+                deductionSnapshot: item.deductionLines.map((line) => ({
+                  ingredientId: line.ingredient_id,
+                  ingredientName: line.ingredient_name,
+                  quantity: line.quantity,
+                  unit: line.unit,
+                })),
+              })),
             },
             tx,
           );
@@ -792,12 +803,7 @@ export const transactionsService = {
             tx,
             data.branchId,
             txCreated.id,
-            resolvedItems.map((item) => ({
-              transactionItemId: item.id,
-              productVariantId: item.productVariantId,
-              flavorId: item.flavorId,
-              quantity: item.quantity,
-            })),
+            resolvedItems.map((item) => ({ lines: item.deductionLines })),
           );
 
           return { txCreated, effects };

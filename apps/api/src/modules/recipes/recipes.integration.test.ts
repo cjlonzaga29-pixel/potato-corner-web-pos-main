@@ -260,18 +260,24 @@ describe.skipIf(!canRunIntegrationTests)('recipes integration — CR-005 Sub-pha
     const { productsService: ps } = await import('../products/products.service.js');
 
     const variant = await createDraftVariant('cascade-rollback');
-    const s0 = await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
-    const s1 = await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
 
-    // Promote to ACTIVE so the mutation runs inside performSlotEditWithActiveGovernance's prisma.$transaction.
-    // approveVariant now requires at least one active ProductInventory mapping
-    // (CR-005 Guarantee 6 — replaces the old vacuous-pass Recipe-resolvability
-    // check), so provision one against this suite's own ingredient first.
+    // Promote to ACTIVE first, with zero flavor slots — approveVariant's
+    // Phase-4 gate blocks approval outright once any ProductFlavorSlot row
+    // exists, so the slots must be added afterward, through the governed
+    // ACTIVE-variant path (super_admin + reason), for the mutation to run
+    // inside performSlotEditWithActiveGovernance's prisma.$transaction.
+    // approveVariant also now requires at least one active ProductInventory
+    // mapping (CR-005 Guarantee 6 — replaces the old vacuous-pass
+    // Recipe-resolvability check), so provision one against this suite's own
+    // ingredient first.
     await ps.submitVariantForApproval(variant.id, SUPERVISOR(), null);
     await prisma.productInventory.create({
       data: { branchId, productVariantId: variant.id, ingredientId, flavorId: null, quantityRequired: 5, unit: 'g' },
     });
     await ps.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
+
+    const s0 = await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, 'add A', SUPER_ADMIN(), null);
+    const s1 = await productsService.addFlavorSlot(variant.id, { label: 'B', flavorQty: 10, unit: 'grams' }, 'add B', SUPER_ADMIN(), null);
 
     const recipe = await recipesService.createRecipe(
       { product_variant_id: variant.id, ingredient_id: ingredientId, flavor_slot_index: 0, quantity: 5, unit: 'grams' },

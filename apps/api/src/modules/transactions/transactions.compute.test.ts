@@ -26,6 +26,7 @@ function line(lineTotal: number, quantity: number, vatableCapAmount: number | nu
     lineTotal,
     vatableCapAmount,
     recipeVersion: 1,
+    deductionLines: [],
   };
 }
 

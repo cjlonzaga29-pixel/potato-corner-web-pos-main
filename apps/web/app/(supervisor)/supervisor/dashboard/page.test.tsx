@@ -15,6 +15,7 @@ const {
   mockUseAttendanceRealtimeSync,
   mockUseBranchStore,
   mockUseSocketStore,
+  mockUseBranches,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseCurrentShift: vi.fn(),
@@ -27,6 +28,7 @@ const {
   mockUseAttendanceRealtimeSync: vi.fn(),
   mockUseBranchStore: vi.fn(),
   mockUseSocketStore: vi.fn(),
+  mockUseBranches: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -39,6 +41,10 @@ vi.mock('@/stores/branch.store', () => ({
 
 vi.mock('@/stores/socket.store', () => ({
   useSocketStore: mockUseSocketStore,
+}));
+
+vi.mock('@/hooks/queries/use-branches', () => ({
+  useBranches: mockUseBranches,
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
@@ -222,6 +228,7 @@ beforeEach(() => {
   mockUseTransactions.mockReturnValue({ data: undefined, isLoading: false });
   mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: false });
   mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: false });
+  mockUseBranches.mockReturnValue({ data: { branches: [{ id: 'branch-1' }], total: 1 }, isLoading: false, isError: false });
 });
 
 afterEach(() => {
@@ -230,13 +237,43 @@ afterEach(() => {
 });
 
 describe('SupervisorDashboardPage', () => {
-  it('renders a branch-not-configured empty state when no branch is selected', () => {
+  it('renders a branch-not-configured empty state when no branch is selected but active branches exist', () => {
     mockBranchState({ activeBranchId: null, activeBranch: null });
 
     render(<SupervisorDashboardPage />);
 
     expect(screen.getByText('No branch configured')).toBeInTheDocument();
     expect(screen.queryByText('No active shift')).not.toBeInTheDocument();
+  });
+
+  it('shows a loading spinner, not the no-branch message, while the active-branch list is still loading', () => {
+    mockBranchState({ activeBranchId: null, activeBranch: null });
+    mockUseBranches.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+
+    render(<SupervisorDashboardPage />);
+
+    expect(screen.queryByText('No branch configured')).not.toBeInTheDocument();
+    expect(screen.queryByText('No active branches available')).not.toBeInTheDocument();
+  });
+
+  it('shows an error state, not the no-branch message, when fetching active branches fails', () => {
+    mockBranchState({ activeBranchId: null, activeBranch: null });
+    mockUseBranches.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+
+    render(<SupervisorDashboardPage />);
+
+    expect(screen.getByText("Couldn't load your branches")).toBeInTheDocument();
+    expect(screen.queryByText('No branch configured')).not.toBeInTheDocument();
+  });
+
+  it('shows the zero-active-branches empty state only when the API genuinely returns none', () => {
+    mockBranchState({ activeBranchId: null, activeBranch: null });
+    mockUseBranches.mockReturnValue({ data: { branches: [], total: 0 }, isLoading: false, isError: false });
+
+    render(<SupervisorDashboardPage />);
+
+    expect(screen.getByText('No active branches available')).toBeInTheDocument();
+    expect(screen.queryByText('No branch configured')).not.toBeInTheDocument();
   });
 
   it('renders loading skeletons for all panels when every query is loading', () => {

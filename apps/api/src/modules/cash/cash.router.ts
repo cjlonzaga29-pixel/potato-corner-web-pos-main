@@ -1,11 +1,12 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSchema, ROLES } from '@potato-corner/shared';
+import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSchema } from '@potato-corner/shared';
 import { cashService } from './cash.service.js';
 import { CashError } from './cash.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -115,7 +116,7 @@ router.get('/:shiftId', authenticate, allRoles, requireActiveEmployee, requirePa
     // and this route only has a shift id in the URL. The branch to check is
     // only known once the shift has been fetched, so the same allow/deny
     // rule is applied inline instead (same pattern as GET /ingredients/:id).
-    if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(shift.branch_id)) {
+    if (!(await hasBranchAccess(req.user, shift.branch_id))) {
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }
@@ -131,7 +132,7 @@ router.get('/:shiftId/summary', authenticate, adminSupervisorOrBranch, requirePa
     const result = await cashService.getShiftSummary(req.params.shiftId as string);
     // Same inline branch-check pattern as GET /:shiftId — the branch is only
     // known once the shift has been fetched.
-    if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(result.shift.branch_id)) {
+    if (!(await hasBranchAccess(req.user, result.shift.branch_id))) {
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }

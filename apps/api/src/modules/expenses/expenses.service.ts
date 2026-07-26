@@ -67,7 +67,7 @@ type UpdateExpenseInput = Partial<CreateExpenseInput>;
 
 export const expensesService = {
   async getExpenses(actor: JwtPayload, filters: Omit<ExpenseFilters, 'branchIds'>) {
-    const branchIds = getAccessibleBranchIds(actor);
+    const branchIds = await getAccessibleBranchIds(actor);
     const { expenses, total, totalAmount } = await expensesRepository.findAll({ ...filters, branchIds });
     return {
       expenses: await Promise.all((expenses as ExpenseRow[]).map(toResponse)),
@@ -81,7 +81,7 @@ export const expensesService = {
   async getExpense(id: string, actor: JwtPayload) {
     const expense = (await expensesRepository.findById(id)) as ExpenseRow | null;
     if (!expense) throw new ExpenseError('EXPENSE_NOT_FOUND', 'Expense not found', 404);
-    assertBranchAccess(actor, expense.branchId, ExpenseError);
+    await assertBranchAccess(actor, expense.branchId, ExpenseError);
     return expense;
   },
 
@@ -99,7 +99,7 @@ export const expensesService = {
       }
     }
 
-    assertBranchAccess(actor, data.branch_id, ExpenseError);
+    await assertBranchAccess(actor, data.branch_id, ExpenseError);
 
     const createData: CreateExpenseData = {
       branchId: data.branch_id,

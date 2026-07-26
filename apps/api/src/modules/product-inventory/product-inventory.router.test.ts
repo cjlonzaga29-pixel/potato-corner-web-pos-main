@@ -22,9 +22,19 @@ vi.mock('../../lib/prisma.js', () => ({
   prisma: { revokedToken: { findFirst: vi.fn() } },
 }));
 
+// getAccessibleBranchIds (branch-access.ts) resolves Supervisor scope from
+// the database, never the JWT's branch_ids — mocked here so these router
+// tests can control exactly which branches get forwarded to the service.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { prisma } = await import('../../lib/prisma.js');
 const { productInventoryService } = await import('./product-inventory.service.js');
 const { productInventoryRouter } = await import('./product-inventory.router.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { generateSupervisorToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
@@ -84,6 +94,9 @@ const VALID_BODY = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
+  // Default: only BRANCH_1 is active — matches the single-branch supervisor
+  // tests below; the multi-branch tests override this explicitly.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
 });
 
 describe('GET / — list query requires branch_id', () => {
@@ -144,7 +157,7 @@ describe('POST / — validate middleware requires branch_id', () => {
     expect(productInventoryService.createMapping).not.toHaveBeenCalled();
   });
 
-  it('accepts a valid branch_id, passes validation, and forwards branch_id plus the caller\'s allowed branch_ids (from the JWT) to productInventoryService.createMapping', async () => {
+  it('accepts a valid branch_id, passes validation, and forwards branch_id plus the caller\'s allowed branch_ids (from the database) to productInventoryService.createMapping', async () => {
     const handlers = getRouteHandlers(productInventoryRouter, 'post', '/');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), body: VALID_BODY });
@@ -168,8 +181,9 @@ describe('POST / — validate middleware requires branch_id', () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
-  it('passes every allowed branch_id for a supervisor with multiple branches', async () => {
+  it('passes every allowed (active) branch_id for a supervisor with multiple accessible branches', async () => {
     const BRANCH_2 = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1, BRANCH_2]);
     const handlers = getRouteHandlers(productInventoryRouter, 'post', '/');
     const token = generateSupervisorToken([BRANCH_1, BRANCH_2]);
     const req = mockReq({ ...authHeader(token), body: VALID_BODY });
@@ -204,7 +218,7 @@ describe('POST / — validate middleware requires branch_id', () => {
 });
 
 describe('PATCH /:id — branch-scoped update', () => {
-  it('forwards the caller\'s allowed branch_ids (from the JWT, not the body) to productInventoryService.updateMapping, preserving the existing update payload fields', async () => {
+  it('forwards the caller\'s allowed branch_ids (from the database, not the JWT or the body) to productInventoryService.updateMapping, preserving the existing update payload fields', async () => {
     const handlers = getRouteHandlers(productInventoryRouter, 'patch', '/:id');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: 'row-1' }, body: { quantity_required: 3, unit: 'kg' } });
@@ -224,8 +238,9 @@ describe('PATCH /:id — branch-scoped update', () => {
     expect(res.json).toHaveBeenCalledWith({ data: { id: 'row-1', unit: 'kg' }, error: null, meta: null });
   });
 
-  it('passes every allowed branch_id for a supervisor with multiple branches', async () => {
+  it('passes every allowed (active) branch_id for a supervisor with multiple accessible branches', async () => {
     const BRANCH_2 = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1, BRANCH_2]);
     const handlers = getRouteHandlers(productInventoryRouter, 'patch', '/:id');
     const token = generateSupervisorToken([BRANCH_1, BRANCH_2]);
     const req = mockReq({ ...authHeader(token), params: { id: 'row-1' }, body: { unit: 'kg' } });
@@ -261,7 +276,7 @@ describe('PATCH /:id — branch-scoped update', () => {
 });
 
 describe('DELETE /:id — branch-scoped delete', () => {
-  it('forwards the caller\'s allowed branch_ids (from the JWT) to productInventoryService.deleteMapping, preserving the existing request shape and 204 response', async () => {
+  it('forwards the caller\'s allowed branch_ids (from the database) to productInventoryService.deleteMapping, preserving the existing request shape and 204 response', async () => {
     const handlers = getRouteHandlers(productInventoryRouter, 'delete', '/:id');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: 'row-1' } });
@@ -280,8 +295,9 @@ describe('DELETE /:id — branch-scoped delete', () => {
     expect(res.send).toHaveBeenCalled();
   });
 
-  it('passes every allowed branch_id for a supervisor with multiple branches', async () => {
+  it('passes every allowed (active) branch_id for a supervisor with multiple accessible branches', async () => {
     const BRANCH_2 = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1, BRANCH_2]);
     const handlers = getRouteHandlers(productInventoryRouter, 'delete', '/:id');
     const token = generateSupervisorToken([BRANCH_1, BRANCH_2]);
     const req = mockReq({ ...authHeader(token), params: { id: 'row-1' } });

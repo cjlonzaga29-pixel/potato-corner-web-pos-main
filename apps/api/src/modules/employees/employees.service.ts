@@ -79,9 +79,9 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
   };
 }
 
-/** super_admin sees everything; supervisor is scoped to their JWT branch_ids — never trust a client-supplied branch list. */
-function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWithAssignments): void {
-  const accessible = getAccessibleBranchIds(requestingUser);
+/** super_admin sees everything; supervisor is scoped to every active branch (database-sourced) — never trust a client-supplied branch list. */
+async function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWithAssignments): Promise<void> {
+  const accessible = await getAccessibleBranchIds(requestingUser);
   if (accessible === 'all') return;
   const hasAccess = employee.branchAssignments.some((assignment) => accessible.includes(assignment.branchId));
   if (!hasAccess) {
@@ -91,7 +91,7 @@ function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWith
 
 export const employeesService = {
   async getAllEmployees(requestingUser: JwtPayload, filters: EmployeeListQuery): Promise<EmployeeListResponse> {
-    const accessible = getAccessibleBranchIds(requestingUser);
+    const accessible = await getAccessibleBranchIds(requestingUser);
     let branchIds: string[] | undefined;
     let excludeRoles: Role[] | undefined;
 
@@ -129,7 +129,7 @@ export const employeesService = {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
 
-    assertEmployeeAccess(requestingUser, employee);
+    await assertEmployeeAccess(requestingUser, employee);
     return toEmployeeResponse(employee);
   },
 
@@ -189,12 +189,15 @@ export const employeesService = {
 
     // Router permits both supervisor and branch actors here (adminOrBranch /
     // adminSupervisorOrBranch) — only super_admin may create a non-staff
-    // account or assign branches outside the actor's own branch_ids.
+    // account or assign branches outside the actor's accessible scope.
+    // Supervisor's scope is every active branch (database-sourced, not the
+    // JWT's branch_ids); branch stays JWT-scoped, unchanged.
     if (createdBy.role === ROLES.SUPERVISOR || createdBy.role === ROLES.BRANCH) {
       if (!isStaff) {
         throw new EmployeeError('INSUFFICIENT_PERMISSIONS', 'Only Super Admin may create a non-staff account', 403);
       }
-      const outOfScope = data.branch_ids.some((id) => !createdBy.branch_ids.includes(id));
+      const accessible = await getAccessibleBranchIds(createdBy);
+      const outOfScope = accessible !== 'all' && data.branch_ids.some((id) => !accessible.includes(id));
       if (outOfScope) {
         throw new EmployeeError('BRANCH_ACCESS_DENIED', 'You do not have access to one or more of the requested branches', 400);
       }
@@ -262,7 +265,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
-    assertEmployeeAccess(updatedBy, before);
+    await assertEmployeeAccess(updatedBy, before);
 
     if (data.branch_ids) {
       // Branch Employee Authorization: an Employee belongs to exactly one
@@ -272,7 +275,7 @@ export const employeesService = {
       if (before.role === ROLES.STAFF && data.branch_ids.length !== 1) {
         throw new EmployeeError('INVALID_BRANCH_ASSIGNMENT', 'An employee must be assigned to exactly one branch', 400);
       }
-      const accessible = getAccessibleBranchIds(updatedBy);
+      const accessible = await getAccessibleBranchIds(updatedBy);
       if (accessible !== 'all') {
         const outOfScope = data.branch_ids.some((id) => !accessible.includes(id));
         if (outOfScope) {
@@ -317,7 +320,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
-    assertEmployeeAccess(deactivatedBy, before);
+    await assertEmployeeAccess(deactivatedBy, before);
     if (!before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_INACTIVE', 'This employee is already deactivated', 409);
 
     const hasActiveShift = await employeesRepository.hasActiveShift(employeeId);
@@ -355,7 +358,7 @@ export const employeesService = {
   async reactivateEmployee(employeeId: string, reactivatedBy: ActorContext, ipAddress: string | null): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
-    assertEmployeeAccess(reactivatedBy, before);
+    await assertEmployeeAccess(reactivatedBy, before);
     if (before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_ACTIVE', 'This employee is already active', 409);
 
     const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.user_id);
@@ -392,7 +395,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
-    assertEmployeeAccess(changedBy, before);
+    await assertEmployeeAccess(changedBy, before);
     if (before.status === status) {
       throw new EmployeeError('EMPLOYEE_STATUS_UNCHANGED', `This employee is already ${status}`, 409);
     }
@@ -454,7 +457,7 @@ export const employeesService = {
     if (employee.role === ROLES.STAFF) {
       throw new EmployeeError('EMPLOYEE_HAS_NO_CREDENTIALS', 'Employees have no password to reset — change their status instead', 400);
     }
-    assertEmployeeAccess(resetBy, employee);
+    await assertEmployeeAccess(resetBy, employee);
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);
     await authRepository.updatePasswordHash(employeeId, passwordHash);
@@ -475,7 +478,7 @@ export const employeesService = {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
 
-    assertEmployeeAccess(requestingUser, employee);
+    await assertEmployeeAccess(requestingUser, employee);
 
     const activity = await employeesRepository.getActivity(employeeId);
 

@@ -23,6 +23,7 @@ vi.mock('./branches.repository.js', () => ({
     generateBranchCode: vi.fn(),
     findAllAccounts: vi.fn(),
     findAllStatsGrouped: vi.fn(),
+    findAllActiveBranchIds: vi.fn(),
   },
 }));
 
@@ -473,8 +474,12 @@ describe('branchesRepository.generateBranchCode (real implementation, Postgres c
 });
 
 describe('branchesService.getAllBranches', () => {
-  it('for a supervisor returns only their assigned branches', async () => {
+  // Supervisor is organization-wide over every currently-active branch,
+  // resolved from the database (findAllActiveBranchIds) — never the JWT's
+  // branch_ids claim, and with no UserBranchAssignment requirement.
+  it('for a supervisor returns every currently-active branch, not their JWT branch_ids', async () => {
     vi.mocked(branchesRepository.findAll).mockResolvedValue({ branches: [], total: 0 });
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x', 'branch-y', 'branch-z']);
 
     const supervisor = {
       user_id: 'sup-1',
@@ -488,17 +493,36 @@ describe('branchesService.getAllBranches', () => {
     await branchesService.getAllBranches(supervisor, { page: 1, limit: 25 });
 
     expect(branchesRepository.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ ids: ['branch-a', 'branch-b'] }),
+      expect.objectContaining({ ids: ['branch-x', 'branch-y', 'branch-z'] }),
     );
   });
 
-  it('for a supervisor with no assigned branches, scopes to zero results instead of leaking every branch', async () => {
+  it('for a supervisor with zero UserBranchAssignment records, still returns every active branch', async () => {
     vi.mocked(branchesRepository.findAll).mockResolvedValue({ branches: [], total: 0 });
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x']);
 
     const supervisor = {
       user_id: 'sup-2',
       role: ROLES.SUPERVISOR,
       email: 'sup2@test.com',
+      branch_ids: [] as string[],
+      iat: 0,
+      exp: 9999999999,
+    };
+
+    await branchesService.getAllBranches(supervisor, { page: 1, limit: 25 });
+
+    expect(branchesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ ids: ['branch-x'] }));
+  });
+
+  it('when the database genuinely has zero active branches, scopes the supervisor to zero results', async () => {
+    vi.mocked(branchesRepository.findAll).mockResolvedValue({ branches: [], total: 0 });
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+
+    const supervisor = {
+      user_id: 'sup-3',
+      role: ROLES.SUPERVISOR,
+      email: 'sup3@test.com',
       branch_ids: [] as string[],
       iat: 0,
       exp: 9999999999,
@@ -837,6 +861,7 @@ describe('branchesService.getAllBranchStats', () => {
   }
 
   it('filters results to accessible branches when accessibleBranchIds returns an array (supervisor)', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     vi.mocked(branchesRepository.findAllStatsGrouped).mockResolvedValue([
       statsRow({ branchId: 'branch-1' }),
       statsRow({ branchId: 'branch-2' }),
@@ -880,6 +905,7 @@ describe('branchesService.getAllBranchStats', () => {
   });
 
   it('with a branchId the requester cannot access throws BRANCH_ACCESS_DENIED (403)', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     await expect(
       branchesService.getAllBranchStats(SUPERVISOR as never, 'branch-2'),
     ).rejects.toMatchObject({
@@ -967,6 +993,7 @@ describe('branchesService.getBranchById', () => {
   } as const;
 
   it('returns the branch when a supervisor requests a branch they have access to', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     vi.mocked(branchesRepository.findById).mockResolvedValue(
       buildBranch({ id: 'branch-1' }) as never,
     );
@@ -977,6 +1004,7 @@ describe('branchesService.getBranchById', () => {
   });
 
   it('throws BRANCH_ACCESS_DENIED (403) when a supervisor requests a branch they cannot access', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     await expect(
       branchesService.getBranchById('branch-2', SUPERVISOR as never),
     ).rejects.toMatchObject({
@@ -1098,6 +1126,7 @@ describe('branchesService.getAssignments', () => {
   };
 
   it('throws BRANCH_ACCESS_DENIED (403) when the requester cannot access the branch', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     await expect(
       branchesService.getAssignments('branch-2', SUPERVISOR as never),
     ).rejects.toMatchObject({
@@ -1109,6 +1138,7 @@ describe('branchesService.getAssignments', () => {
   });
 
   it('throws BRANCH_NOT_FOUND (404) when the branch does not exist', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     vi.mocked(branchesRepository.findById).mockResolvedValue(null);
 
     await expect(
@@ -1120,6 +1150,7 @@ describe('branchesService.getAssignments', () => {
   });
 
   it('returns mapped assignment rows for a branch the requester can access', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch() as never);
     vi.mocked(branchesRepository.getActiveAssignments).mockResolvedValue([
       {
@@ -1165,6 +1196,7 @@ describe('branchesService.getBranchStats (single branch)', () => {
   };
 
   it('throws BRANCH_ACCESS_DENIED (403) when the requester cannot access the branch', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     await expect(
       branchesService.getBranchStats('branch-2', SUPERVISOR as never),
     ).rejects.toMatchObject({
@@ -1176,6 +1208,7 @@ describe('branchesService.getBranchStats (single branch)', () => {
   });
 
   it('throws BRANCH_NOT_FOUND (404) when the branch does not exist', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     vi.mocked(branchesRepository.findById).mockResolvedValue(null);
 
     await expect(
@@ -1189,6 +1222,7 @@ describe('branchesService.getBranchStats (single branch)', () => {
   });
 
   it('returns the repository stats directly for a branch the requester can access', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch() as never);
     const stats = {
       activeShiftsCount: 1,

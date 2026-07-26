@@ -61,7 +61,7 @@ export const auditService = {
    * getAllEmployees / branches.service.ts's getAllBranchStats.
    */
   async listLogs(filters: AuditLogFilters, requestingUser: JwtPayload): Promise<AuditLogListResponse> {
-    const accessible = getAccessibleBranchIds(requestingUser);
+    const accessible = await getAccessibleBranchIds(requestingUser);
     let branchIds: string[] | undefined;
     if (accessible === 'all') {
       branchIds = filters.branchId ? [filters.branchId] : undefined;

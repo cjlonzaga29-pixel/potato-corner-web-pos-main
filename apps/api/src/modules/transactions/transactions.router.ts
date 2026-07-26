@@ -23,6 +23,7 @@ import { shiftGuard } from '../../middleware/shift-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
 
 const router: Router = Router();
 
@@ -358,11 +359,16 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
       });
       return;
     }
-    const branchIds = parsed.data.branch_id
-      ? [parsed.data.branch_id]
-      : req.user.role === ROLES.SUPER_ADMIN
-        ? ('all' as const)
-        : req.user.branch_ids;
+    let branchIds: 'all' | string[];
+    if (parsed.data.branch_id) {
+      if (!(await hasBranchAccess(req.user, parsed.data.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      branchIds = [parsed.data.branch_id];
+    } else {
+      branchIds = await getAccessibleBranchIds(req.user);
+    }
     const result = await transactionsService.getDiscountAuditTrail(
       {
         branchIds,
@@ -388,7 +394,7 @@ router.get('/:transactionId', authenticate, allRoles, requireActiveEmployee, req
     // branchGuard can't run here — it extracts branch_id from params/query/
     // body, and this route only has a transaction id in the URL. Same inline
     // pattern as GET /ingredients/:id and GET /shifts/:shiftId.
-    if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(transaction.branch_id)) {
+    if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }
@@ -404,7 +410,7 @@ router.get('/:transactionId/payment-proof', authenticate, allRoles, requireActiv
     const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
     // Same inline branch-scope check as GET /:transactionId — branchGuard
     // can't run here, there's only a transaction id in the URL.
-    if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(transaction.branch_id)) {
+    if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }
@@ -426,7 +432,7 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
-      if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(transaction.branch_id)) {
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }
@@ -457,7 +463,7 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
-      if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(transaction.branch_id)) {
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }
@@ -485,7 +491,7 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
-      if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(transaction.branch_id)) {
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }

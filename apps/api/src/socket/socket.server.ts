@@ -5,6 +5,7 @@ import { verifyAccessToken, AccessTokenError, type AccessTokenErrorCode } from '
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
 import { SUPER_ADMIN_ROOM, branchRoom, userRoom } from './rooms.js';
 import { onBranchSocketJoined, onBranchSocketLeft } from './presence.js';
+import { getAccessibleBranchIds } from '../lib/branch-access.js';
 
 /**
  * Initializes Socket.io with its default in-memory adapter. Phase 21
@@ -98,21 +99,29 @@ export async function socketAuthMiddleware(socket: Socket, next: (err?: Error) =
  * Room assignment per the architecture doc's §3.5 room model: Super Admin
  * joins the one dedicated admin room and sees every branch's events (via
  * notifyBranch + notifySuperAdmin's dual-emit); everyone else joins one
- * room per branch in their JWT's `branch_ids` claim — never a room outside
- * that list, which is what keeps one branch's events from reaching another
- * branch's staff/supervisor. Exported standalone (like socketAuthMiddleware
- * above) so it can be unit-tested against a fake socket without spinning up
- * a real server.
+ * room per accessible branch. Resolved via getAccessibleBranchIds — the same
+ * database-sourced authorization the REST API uses — never the JWT's
+ * `branch_ids` claim directly, so a supervisor's real-time rooms reflect
+ * every currently-active branch rather than a stale login-time snapshot.
+ * branch/staff remain scoped to their (single) JWT branch_id, unchanged.
+ * Returns the joined branch ids so the caller can mirror them into presence
+ * tracking on connect/disconnect. Exported standalone (like
+ * socketAuthMiddleware above) so it can be unit-tested against a fake socket
+ * without spinning up a real server.
  */
-export function joinRoomsForUser(socket: Pick<Socket, 'join'>, user: JwtPayload): void {
+export async function joinRoomsForUser(socket: Pick<Socket, 'join'>, user: JwtPayload): Promise<string[]> {
   void socket.join(userRoom(user.user_id));
   if (user.role === ROLES.SUPER_ADMIN) {
     void socket.join(SUPER_ADMIN_ROOM);
-  } else {
-    for (const branchId of user.branch_ids) {
-      void socket.join(branchRoom(branchId));
-    }
+    return [];
   }
+
+  const accessible = await getAccessibleBranchIds(user);
+  const branchIds = accessible === 'all' ? [] : accessible;
+  for (const branchId of branchIds) {
+    void socket.join(branchRoom(branchId));
+  }
+  return branchIds;
 }
 
 export function createSocketServer(httpServer: HttpServer): Server {
@@ -124,20 +133,23 @@ export function createSocketServer(httpServer: HttpServer): Server {
 
   io.on('connection', (socket) => {
     const user = socket.data.user as JwtPayload;
-    joinRoomsForUser(socket, user);
 
-    if (user.role !== ROLES.SUPER_ADMIN) {
-      for (const branchId of user.branch_ids) {
-        onBranchSocketJoined(branchId);
-      }
-    }
+    void (async () => {
+      const branchIds = await joinRoomsForUser(socket, user);
 
-    socket.on('disconnect', () => {
-      if (user.role === ROLES.SUPER_ADMIN) return;
-      for (const branchId of user.branch_ids) {
-        onBranchSocketLeft(io, branchId);
+      if (user.role !== ROLES.SUPER_ADMIN) {
+        for (const branchId of branchIds) {
+          onBranchSocketJoined(branchId);
+        }
       }
-    });
+
+      socket.on('disconnect', () => {
+        if (user.role === ROLES.SUPER_ADMIN) return;
+        for (const branchId of branchIds) {
+          onBranchSocketLeft(io, branchId);
+        }
+      });
+    })();
   });
 
   ioInstance = io;

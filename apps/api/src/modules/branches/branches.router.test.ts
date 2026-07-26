@@ -31,7 +31,19 @@ vi.mock('../../lib/prisma.js', () => ({
   prisma: { revokedToken: { findFirst: vi.fn().mockResolvedValue(null) } },
 }));
 
+// branchGuard (mounted ahead of the mocked branchesService on several
+// routes below) resolves Supervisor access via the real branch-access.ts
+// helper, which queries branchesRepository directly — mocked here so those
+// routes can exercise the database-sourced active-branch rule without a
+// real Prisma connection.
+vi.mock('./branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { branchesService } = await import('./branches.service.js');
+const { branchesRepository } = await import('./branches.repository.js');
 const { branchesRouter } = await import('./branches.router.js');
 const { BranchError } = await import('./branches.types.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } =
@@ -232,7 +244,8 @@ describe('GET /api/branches/:branchId — role guard', () => {
     expect(branchesService.getBranchById).not.toHaveBeenCalled();
   });
 
-  it('returns 403 for supervisor requesting a branch outside their branch_ids (branchGuard)', async () => {
+  it('returns 403 for supervisor requesting a branch that is not currently active (branchGuard)', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([randomUUID()]);
     const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
     const branchId = randomUUID();
     const token = generateSupervisorToken([randomUUID()]);
@@ -741,7 +754,8 @@ describe('GET /api/branches/:branchId/assignments — role guard', () => {
     expect(branchesService.getAssignments).not.toHaveBeenCalled();
   });
 
-  it('returns 403 for supervisor requesting a branch outside their branch_ids', async () => {
+  it('returns 403 for supervisor requesting a branch that is not currently active', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([randomUUID()]);
     const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
     const branchId = randomUUID();
     const token = generateSupervisorToken([randomUUID()]);
@@ -753,9 +767,10 @@ describe('GET /api/branches/:branchId/assignments — role guard', () => {
     expect(branchesService.getAssignments).not.toHaveBeenCalled();
   });
 
-  it('returns 200 for a supervisor requesting their own branch', async () => {
+  it('returns 200 for a supervisor requesting an active branch', async () => {
     const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
     const branchId = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([branchId]);
     const token = generateSupervisorToken([branchId]);
     const res = mockRes();
     vi.mocked(branchesService.getAssignments).mockResolvedValue([]);
@@ -1010,7 +1025,8 @@ describe('GET /api/branches/:branchId/stats — role guard', () => {
     expect(branchesService.getBranchStats).not.toHaveBeenCalled();
   });
 
-  it('returns 403 for supervisor requesting a branch outside their branch_ids', async () => {
+  it('returns 403 for supervisor requesting a branch that is not currently active', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([randomUUID()]);
     const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
     const branchId = randomUUID();
     const token = generateSupervisorToken([randomUUID()]);

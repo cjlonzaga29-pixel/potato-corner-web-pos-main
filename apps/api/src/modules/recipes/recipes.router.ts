@@ -6,7 +6,6 @@ import {
   createRecipeOverrideSchema,
   updateRecipeOverrideSchema,
   simulateDeductionSchema,
-  ROLES,
 } from '@potato-corner/shared';
 import { recipesService } from './recipes.service.js';
 import { RecipeError } from './recipes.types.js';
@@ -15,6 +14,7 @@ import { adminOnly, adminSupervisorOrBranch, branchOnly } from '../../middleware
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 
 const router: Router = Router();
 
@@ -91,7 +91,7 @@ router.post('/simulate', authenticate, adminSupervisorOrBranch, requirePasswordC
     const body = req.body as { branch_id?: string };
     // CR-003: was `=== ROLES.SUPERVISOR` — now that the router also admits
     // branch, this must scope any non-admin caller, not just supervisor.
-    if (req.user.role !== ROLES.SUPER_ADMIN && body.branch_id && !req.user.branch_ids.includes(body.branch_id)) {
+    if (body.branch_id && !(await hasBranchAccess(req.user, body.branch_id))) {
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }

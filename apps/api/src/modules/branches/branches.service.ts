@@ -128,20 +128,19 @@ export const branchesService = {
   },
 
   async getAllBranchStats(requestingUser: JwtPayload, branchId?: string) {
-    const accessible = getAccessibleBranchIds(requestingUser);
-
     if (branchId) {
-      assertBranchAccess(requestingUser, branchId, BranchError);
+      await assertBranchAccess(requestingUser, branchId, BranchError);
       const stats = await branchesRepository.branchStats(branchId);
       return [{ branchId, ...stats }];
     }
 
+    const accessible = await getAccessibleBranchIds(requestingUser);
     const stats = await branchesRepository.findAllStatsGrouped();
     return accessible === 'all' ? stats : stats.filter((s) => accessible.includes(s.branchId));
   },
 
   async getAllBranches(requestingUser: JwtPayload, filters: BranchListFilters) {
-    const accessible = getAccessibleBranchIds(requestingUser);
+    const accessible = await getAccessibleBranchIds(requestingUser);
     const effectiveFilters: BranchListFilters = {
       ...filters,
       ...(accessible !== 'all' && { ids: accessible }),
@@ -157,7 +156,7 @@ export const branchesService = {
   },
 
   async getBranchById(branchId: string, requestingUser: JwtPayload) {
-    assertBranchAccess(requestingUser, branchId, BranchError);
+    await assertBranchAccess(requestingUser, branchId, BranchError);
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
     return toBranchResponse(branch);
@@ -461,7 +460,7 @@ export const branchesService = {
   },
 
   async getAssignments(branchId: string, requestingUser: JwtPayload) {
-    assertBranchAccess(requestingUser, branchId, BranchError);
+    await assertBranchAccess(requestingUser, branchId, BranchError);
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 
@@ -470,7 +469,7 @@ export const branchesService = {
   },
 
   async getBranchStats(branchId: string, requestingUser: JwtPayload) {
-    assertBranchAccess(requestingUser, branchId, BranchError);
+    await assertBranchAccess(requestingUser, branchId, BranchError);
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 

@@ -1,6 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import {
-  ROLES,
   updateSecurityPolicySchema,
   updateNotificationPreferencesSchema,
   updateReceiptConfigSchema,
@@ -12,6 +11,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 
 const router: Router = Router();
 const branchReceiptConfigRouter: Router = Router();
@@ -101,7 +101,7 @@ branchReceiptConfigRouter.get(
     try {
       if (!requireUser(req, res)) return;
       const branchId = req.params.branchId as string;
-      if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(branchId)) {
+      if (!(await hasBranchAccess(req.user, branchId))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }

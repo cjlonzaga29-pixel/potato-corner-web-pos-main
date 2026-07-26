@@ -93,6 +93,22 @@ export const branchesRepository = {
     return branches.map((b) => b.id);
   },
 
+  /**
+   * The database is the source of truth for Supervisor branch access
+   * (branch-access.ts's getAccessibleBranchIds) — every currently-active
+   * branch id, queried fresh on every call so a branch created or
+   * (re)activated after a supervisor's token was minted is visible
+   * immediately, with no UserBranchAssignment row required.
+   */
+  async findAllActiveBranchIds(): Promise<string[]> {
+    const branches = await prisma.branch.findMany({
+      where: { status: 'active' },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return branches.map((b) => b.id);
+  },
+
   create(data: CreateBranchData, tx?: Prisma.TransactionClient) {
     return (tx ?? prisma).branch.create({
       data: {

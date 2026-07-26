@@ -41,11 +41,21 @@ vi.mock('../auth/auth.repository.js', () => ({
   },
 }));
 
+// branch-access.ts (getAccessibleBranchIds) resolves Supervisor scope from
+// the database, never the JWT's branch_ids — mocked here so supervisor
+// authorization tests below can control exactly which branches are "active".
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { employeesRepository } = await import('./employees.repository.js');
 const { employeesService } = await import('./employees.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { authRepository } = await import('../auth/auth.repository.js');
 const { encryptField } = await import('../../lib/encryption.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 
 const SUPER_ADMIN_USER = {
   user_id: 'admin-1',
@@ -121,6 +131,11 @@ function buildEmployee(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: branch-a/branch-b are active — matches SUPERVISOR_USER's old
+  // branch_ids so the existing "allows a supervisor..." tests keep passing
+  // unchanged; tests exercising the "outside accessible scope" path
+  // override this to a set that excludes branch-a.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-a', 'branch-b']);
 });
 
 describe('employeesService.createEmployee', () => {
@@ -384,7 +399,8 @@ describe('employeesService.updateEmployee branch ownership', () => {
     expect(result.first_name).toBe('Updated');
   });
 
-  it('rejects a supervisor updating an employee outside their assigned branches', async () => {
+  it('rejects a supervisor updating an employee outside the accessible (active) branch scope', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x']);
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
 
     await expect(
@@ -446,7 +462,8 @@ describe('employeesService.resetEmployeePassword', () => {
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPERVISOR_USER, null)).resolves.toBeUndefined();
   });
 
-  it('rejects a supervisor resetting the password of an employee outside their assigned branches', async () => {
+  it('rejects a supervisor resetting the password of an employee outside the accessible (active) branch scope', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x']);
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
     await expect(
@@ -645,7 +662,8 @@ describe('employeesService.deactivateEmployee', () => {
     expect(result.is_active).toBe(false);
   });
 
-  it('rejects a supervisor deactivating an employee outside their assigned branches', async () => {
+  it('rejects a supervisor deactivating an employee outside the accessible (active) branch scope', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x']);
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: true }) as never);
 
     await expect(
@@ -708,7 +726,8 @@ describe('employeesService.reactivateEmployee', () => {
     expect(result.is_active).toBe(true);
   });
 
-  it('rejects a supervisor reactivating an employee outside their assigned branches', async () => {
+  it('rejects a supervisor reactivating an employee outside the accessible (active) branch scope', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x']);
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: false }) as never);
 
     await expect(employeesService.reactivateEmployee('emp-1', UNASSIGNED_SUPERVISOR_USER, null)).rejects.toMatchObject({

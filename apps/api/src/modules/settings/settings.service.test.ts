@@ -22,6 +22,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 vi.mock('../branches/branches.repository.js', () => ({
   branchesRepository: {
     findById: vi.fn(),
+    findAllActiveBranchIds: vi.fn(),
   },
 }));
 
@@ -113,6 +114,11 @@ function buildPaymentMethodConfig(overrides: Partial<Record<string, unknown>> = 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: branch-1 is active — matches SUPERVISOR_ACTOR's old branch_ids
+  // and every buildReceiptConfig/buildPaymentMethodConfig's branchId;
+  // OTHER_BRANCH_SUPERVISOR_ACTOR's tests expect denial since branch-2 is
+  // never in this list.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
 });
 
 describe('settingsService.getSecurityPolicy', () => {
@@ -244,16 +250,22 @@ describe('settingsService.getPaymentMethodConfig', () => {
     expect(result?.cashEnabled).toBe(true);
   });
 
-  it('allows a supervisor assigned to the branch', async () => {
+  // Supervisor is organization-wide over every active branch (database-
+  // sourced) — no UserBranchAssignment or matching JWT branch_ids required,
+  // so OTHER_BRANCH_SUPERVISOR_ACTOR (JWT branch_ids: ['branch-2']) can
+  // still reach branch-1 as long as it's active.
+  it('allows any supervisor when the branch is active, regardless of their JWT branch_ids', async () => {
     vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(buildPaymentMethodConfig() as never);
 
-    const result = await settingsService.getPaymentMethodConfig('branch-1', SUPERVISOR_ACTOR);
+    const result = await settingsService.getPaymentMethodConfig('branch-1', OTHER_BRANCH_SUPERVISOR_ACTOR);
 
     expect(result?.cashEnabled).toBe(true);
   });
 
-  it('rejects a supervisor not assigned to the branch with BRANCH_ACCESS_DENIED', async () => {
-    await expect(settingsService.getPaymentMethodConfig('branch-1', OTHER_BRANCH_SUPERVISOR_ACTOR)).rejects.toMatchObject({
+  it('rejects a supervisor requesting a branch that is not in the active-branch list with BRANCH_ACCESS_DENIED', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
+
+    await expect(settingsService.getPaymentMethodConfig('branch-2', SUPERVISOR_ACTOR)).rejects.toMatchObject({
       code: 'BRANCH_ACCESS_DENIED',
       statusCode: 403,
     });
@@ -304,9 +316,21 @@ describe('settingsService.updatePaymentMethodConfig', () => {
     ).rejects.toThrow('Branch not found');
   });
 
-  it('rejects a supervisor not assigned to the branch with BRANCH_ACCESS_DENIED', async () => {
+  it('allows any supervisor when the branch is active, regardless of their JWT branch_ids', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1' } as never);
+    vi.mocked(settingsRepository.findPaymentMethodConfig).mockResolvedValue(null);
+    vi.mocked(settingsRepository.upsertPaymentMethodConfig).mockResolvedValue(buildPaymentMethodConfig() as never);
+
     await expect(
-      settingsService.updatePaymentMethodConfig('branch-1', { cashEnabled: false }, OTHER_BRANCH_SUPERVISOR_ACTOR, null),
+      settingsService.updatePaymentMethodConfig('branch-1', { cashEnabled: true, gcashEnabled: true }, OTHER_BRANCH_SUPERVISOR_ACTOR, null),
+    ).resolves.toMatchObject({ branchId: 'branch-1' });
+  });
+
+  it('rejects a supervisor requesting a branch that is not in the active-branch list with BRANCH_ACCESS_DENIED', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
+
+    await expect(
+      settingsService.updatePaymentMethodConfig('branch-2', { cashEnabled: false }, SUPERVISOR_ACTOR, null),
     ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
   });
 });

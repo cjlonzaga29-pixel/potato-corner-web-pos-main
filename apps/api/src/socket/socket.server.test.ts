@@ -12,7 +12,14 @@ vi.mock('../lib/prisma.js', () => ({
   },
 }));
 
+vi.mock('../modules/branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { prisma } = await import('../lib/prisma.js');
+const { branchesRepository } = await import('../modules/branches/branches.repository.js');
 const { revokedTokenHash } = await import('../lib/verify-access-token.js');
 const { socketAuthMiddleware, joinRoomsForUser } = await import('./socket.server.js');
 const { SUPER_ADMIN_ROOM, branchRoom, userRoom } = await import('./rooms.js');
@@ -37,6 +44,7 @@ const IAT_EXP = { iat: 0, exp: 0 };
 beforeEach(() => {
   vi.mocked(prisma.revokedToken.findFirst).mockReset();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockReset();
 });
 
 describe('socketAuthMiddleware', () => {
@@ -148,26 +156,32 @@ describe('socketAuthMiddleware', () => {
 });
 
 describe('joinRoomsForUser', () => {
-  it('joins a staff connection to its own user room and its single assigned branch room, and no other room', () => {
+  it('joins a staff connection to its own user room and its single assigned branch room, and no other room', async () => {
     const userId = randomUUID();
     const branchId = randomUUID();
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.STAFF, email: 'staff@potatocorner.test', branch_ids: [branchId] });
+    await joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.STAFF, email: 'staff@potatocorner.test', branch_ids: [branchId] });
 
     expect(socket.join).toHaveBeenCalledTimes(2);
     expect(socket.join).toHaveBeenCalledWith(userRoom(userId));
     expect(socket.join).toHaveBeenCalledWith(branchRoom(branchId));
     expect(socket.join).not.toHaveBeenCalledWith(SUPER_ADMIN_ROOM);
+    expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
   });
 
-  it('joins a supervisor connection to its own user room and every branch room in branch_ids', () => {
+  // Supervisor rooms are resolved from the database's active-branch list
+  // (findAllActiveBranchIds), never the JWT's branch_ids claim — this keeps
+  // real-time delivery aligned with the same organization-wide, active-only
+  // access rule the REST API enforces via getAccessibleBranchIds.
+  it('joins a supervisor connection to its own user room and every currently-active branch room', async () => {
     const userId = randomUUID();
     const branchA = randomUUID();
     const branchB = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([branchA, branchB]);
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPERVISOR, email: 'supervisor@potatocorner.test', branch_ids: [branchA, branchB] });
+    await joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPERVISOR, email: 'supervisor@potatocorner.test', branch_ids: [] });
 
     expect(socket.join).toHaveBeenCalledWith(userRoom(userId));
     expect(socket.join).toHaveBeenCalledWith(branchRoom(branchA));
@@ -175,23 +189,35 @@ describe('joinRoomsForUser', () => {
     expect(socket.join).toHaveBeenCalledTimes(3);
   });
 
-  it('joins a super_admin connection to its own user room and the Super Admin room only, never a branch room', () => {
+  it('joins a supervisor to an active branch even when absent from their (stale) JWT branch_ids', async () => {
+    const userId = randomUUID();
+    const branchA = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([branchA]);
+    const socket = mockJoinableSocket();
+
+    await joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPERVISOR, email: 'supervisor@potatocorner.test', branch_ids: [] });
+
+    expect(socket.join).toHaveBeenCalledWith(branchRoom(branchA));
+  });
+
+  it('joins a super_admin connection to its own user room and the Super Admin room only, never a branch room', async () => {
     const userId = randomUUID();
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPER_ADMIN, email: 'admin@potatocorner.test' });
+    await joinRoomsForUser(socket, { ...IAT_EXP, user_id: userId, role: ROLES.SUPER_ADMIN, email: 'admin@potatocorner.test' });
 
     expect(socket.join).toHaveBeenCalledTimes(2);
     expect(socket.join).toHaveBeenCalledWith(userRoom(userId));
     expect(socket.join).toHaveBeenCalledWith(SUPER_ADMIN_ROOM);
+    expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
   });
 
-  it('room isolation — a staff connection for branch A never joins branch B\'s room', () => {
+  it('room isolation — a staff connection for branch A never joins branch B\'s room', async () => {
     const branchA = randomUUID();
     const branchB = randomUUID();
     const socket = mockJoinableSocket();
 
-    joinRoomsForUser(socket, { ...IAT_EXP, user_id: randomUUID(), role: ROLES.STAFF, email: 'staff@potatocorner.test', branch_ids: [branchA] });
+    await joinRoomsForUser(socket, { ...IAT_EXP, user_id: randomUUID(), role: ROLES.STAFF, email: 'staff@potatocorner.test', branch_ids: [branchA] });
 
     expect(socket.join).not.toHaveBeenCalledWith(branchRoom(branchB));
   });

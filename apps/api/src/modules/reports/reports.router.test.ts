@@ -27,8 +27,18 @@ vi.mock('../../lib/prisma.js', () => ({
   prisma: { revokedToken: { findFirst: vi.fn().mockResolvedValue(null) } },
 }));
 
+// branchGuard/hasBranchAccess resolve Supervisor scope from the database via
+// branch-access.ts, never the JWT's branch_ids — mocked here so the
+// supervisor cases below don't depend on a real Prisma connection.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { reportsService } = await import('./reports.service.js');
 const { reportsRouter } = await import('./reports.router.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
 const { ReportError } = await import('./reports.types.js');
 
@@ -78,6 +88,7 @@ const BRANCH_1 = randomUUID();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
 });
 
 describe('reports routes — authentication', () => {

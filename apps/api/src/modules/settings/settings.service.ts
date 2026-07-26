@@ -59,9 +59,9 @@ function toPaymentMethodConfigResponse(row: BranchPaymentMethodConfigRow): Payme
 /** Default state assumed when no BranchPaymentMethodConfig row exists yet (both methods enabled). */
 const DEFAULT_PAYMENT_METHOD_CONFIG = { cashEnabled: true, gcashEnabled: true };
 
-/** Throws BRANCH_ACCESS_DENIED unless the actor is a Super Admin or is assigned to this branch. */
-function assertBranchAccess(branchId: string, actor: ActorContext): void {
-  sharedAssertBranchAccess(actor, branchId, SettingsError);
+/** Throws BRANCH_ACCESS_DENIED unless the actor is a Super Admin, a Supervisor (any active branch), or is assigned to this branch. */
+async function assertBranchAccess(branchId: string, actor: ActorContext): Promise<void> {
+  await sharedAssertBranchAccess(actor, branchId, SettingsError);
 }
 
 export const settingsService = {
@@ -147,7 +147,7 @@ export const settingsService = {
     // (adminSupervisorOrBranch) — this had no branch-ownership check at all
     // pre-CR-003 because only super_admin could ever reach it. Same guard
     // as updatePaymentMethodConfig below.
-    assertBranchAccess(branchId, updatedBy);
+    await assertBranchAccess(branchId, updatedBy);
 
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
@@ -172,7 +172,7 @@ export const settingsService = {
   },
 
   async getPaymentMethodConfig(branchId: string, actor: ActorContext): Promise<PaymentMethodConfigResponse | null> {
-    assertBranchAccess(branchId, actor);
+    await assertBranchAccess(branchId, actor);
 
     const config = await settingsRepository.findPaymentMethodConfig(branchId);
     return config ? toPaymentMethodConfigResponse(config) : null;
@@ -184,7 +184,7 @@ export const settingsService = {
     actor: ActorContext,
     ipAddress: string | null,
   ): Promise<PaymentMethodConfigResponse> {
-    assertBranchAccess(branchId, actor);
+    await assertBranchAccess(branchId, actor);
 
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);

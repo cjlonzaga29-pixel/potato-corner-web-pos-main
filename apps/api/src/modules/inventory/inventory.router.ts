@@ -9,7 +9,6 @@ import {
   transferIngredientSchema,
   physicalCountSubmissionSchema,
   MOVEMENT_TYPE,
-  ROLES,
   type MovementType,
 } from '@potato-corner/shared';
 import { inventoryService } from './inventory.service.js';
@@ -19,6 +18,7 @@ import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../mid
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 
 const movementTypeValues = Object.values(MOVEMENT_TYPE) as [MovementType, ...MovementType[]];
 
@@ -76,7 +76,7 @@ inventoryRouter.get(
       // params/query/body, and this route only has an ingredient id in the
       // URL. The branch to check is only known once the ingredient has been
       // fetched, so the same allow/deny rule is applied inline instead.
-      if (req.user.role !== ROLES.SUPER_ADMIN && !req.user.branch_ids.includes(ingredient.branch_id)) {
+      if (!(await hasBranchAccess(req.user, ingredient.branch_id))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }
@@ -97,12 +97,9 @@ inventoryRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as { branch_id: string };
-      if (req.user.role !== ROLES.SUPER_ADMIN) {
-        const branchIds = req.user.branch_ids ?? [];
-        if (!branchIds.includes(body.branch_id)) {
-          res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
-          return;
-        }
+      if (!(await hasBranchAccess(req.user, body.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
+        return;
       }
       const ingredient = await inventoryService.createIngredient(
         req.body,
@@ -134,12 +131,9 @@ inventoryRouter.patch(
       } catch (error) {
         return handleModuleError(error, res, next);
       }
-      if (req.user.role !== ROLES.SUPER_ADMIN) {
-        const branchIds = req.user.branch_ids ?? [];
-        if (!branchIds.includes(existing.branch_id)) {
-          res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
-          return;
-        }
+      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_NOT_ASSIGNED' }, meta: null });
+        return;
       }
       const ingredient = await inventoryService.updateIngredient(
         req.params.id as string,

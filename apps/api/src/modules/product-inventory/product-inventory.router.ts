@@ -51,7 +51,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
 router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductInventorySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const branchIds = getAccessibleBranchIds(req.user);
+    const branchIds = await getAccessibleBranchIds(req.user);
     const mapping = await productInventoryService.createMapping(req.body, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(201).json({ data: mapping, error: null, meta: null });
   } catch (error) {
@@ -62,7 +62,7 @@ router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(c
 router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductInventorySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const branchIds = getAccessibleBranchIds(req.user);
+    const branchIds = await getAccessibleBranchIds(req.user);
     const mapping = await productInventoryService.updateMapping(req.params.id as string, req.body, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(200).json({ data: mapping, error: null, meta: null });
   } catch (error) {
@@ -73,7 +73,7 @@ router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, valida
 router.delete('/:id', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const branchIds = getAccessibleBranchIds(req.user);
+    const branchIds = await getAccessibleBranchIds(req.user);
     await productInventoryService.deleteMapping(req.params.id as string, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(204).send();
   } catch (error) {

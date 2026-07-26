@@ -40,9 +40,19 @@ vi.mock('sharp', () => ({
   })),
 }));
 
+// branch-access.ts (getAccessibleBranchIds) resolves Supervisor scope from
+// the database, never the JWT's branch_ids — mocked here so the supervisor
+// cases below don't depend on a real Prisma connection.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { expensesRepository } = await import('./expenses.repository.js');
 const { expensesService } = await import('./expenses.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 
 const SUPER_ADMIN_JWT = {
   user_id: 'admin-1',
@@ -83,6 +93,10 @@ function buildExpenseRow(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: branch-a is active — matches SUPERVISOR_JWT's old branch_ids
+  // and every buildExpenseRow's branchId, so existing "allowed" cases keep
+  // passing unchanged; the "outside accessible scope" case overrides this.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-a']);
 });
 
 describe('expensesService.createExpense', () => {

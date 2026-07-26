@@ -30,9 +30,19 @@ vi.mock('../../lib/prisma.js', () => ({
   },
 }));
 
+// branchGuard/hasBranchAccess resolve Supervisor scope from the database via
+// branch-access.ts, never the JWT's branch_ids — mocked here so the
+// supervisor cases below don't depend on a real Prisma connection.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { prisma } = await import('../../lib/prisma.js');
 const { cashService } = await import('./cash.service.js');
 const { cashRouter } = await import('./cash.router.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
@@ -84,6 +94,10 @@ const SHIFT_1 = randomUUID();
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
+  // Default: BRANCH_1 is active — matches every supervisor test's "own
+  // branch"; BRANCH_2 is deliberately excluded, matching the "outside
+  // assigned scope" tests below.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
 });
 
 describe('cash routes — authentication', () => {

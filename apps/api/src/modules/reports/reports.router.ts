@@ -8,6 +8,7 @@ import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.j
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 
 const router: Router = Router();
 
@@ -191,7 +192,7 @@ router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordCha
         res.status(400).json({ data: null, error: { code: 'BRANCH_ID_REQUIRED' }, meta: null });
         return;
       }
-      if (!req.user.branch_ids.includes(branchId)) {
+      if (!(await hasBranchAccess(req.user, branchId))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }

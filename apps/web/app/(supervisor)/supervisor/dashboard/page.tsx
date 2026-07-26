@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { startOfDay } from 'date-fns';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { DashboardShiftCard } from '@/components/supervisor/dashboard-shift-card';
 import { DashboardInventoryAlerts } from '@/components/supervisor/dashboard-inventory-alerts';
 import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-attendance-overview';
@@ -12,6 +13,7 @@ import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-tra
 import { formatDate } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
 import { useSocketStore } from '@/stores/socket.store';
+import { useBranches } from '@/hooks/queries/use-branches';
 import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchInventoryAlerts, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
@@ -26,6 +28,15 @@ export default function SupervisorDashboardPage() {
   const activeBranch = useBranchStore((s) => s.activeBranch);
   const isConnected = useSocketStore((s) => s.isConnected);
   const isReconnecting = useSocketStore((s) => s.isReconnecting);
+  // BranchSelector (mounted in the sidebar) drives activeBranchId off this
+  // same query — reused here (same key, no extra request) so the dashboard
+  // can tell "still loading the active-branch list" and "failed to load it"
+  // apart from "the account genuinely has zero active branches", instead of
+  // collapsing all three into the same "No branch configured" empty state.
+  const { isLoading: isBranchesLoading, isError: isBranchesError, data: branchesData } = useBranches({
+    status: 'active',
+    limit: 100,
+  });
 
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
@@ -53,6 +64,32 @@ export default function SupervisorDashboardPage() {
   });
 
   if (!activeBranchId) {
+    if (isBranchesLoading) {
+      return (
+        <div className="flex justify-center py-12">
+          <LoadingSpinner size="lg" />
+        </div>
+      );
+    }
+
+    if (isBranchesError) {
+      return (
+        <EmptyState
+          title="Couldn't load your branches"
+          description="Something went wrong fetching active branches. Try refreshing the page."
+        />
+      );
+    }
+
+    if ((branchesData?.branches.length ?? 0) === 0) {
+      return (
+        <EmptyState
+          title="No active branches available"
+          description="There are no active branches yet. Ask a Super Admin to create or activate one."
+        />
+      );
+    }
+
     return (
       <EmptyState
         title="No branch configured"

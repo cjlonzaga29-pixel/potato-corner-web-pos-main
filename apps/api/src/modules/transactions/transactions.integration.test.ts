@@ -120,11 +120,11 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration', () => {
  * (transactionsService.createTransaction) against a real Postgres database,
  * proving two guarantees that can't be verified by mocking the repository:
  *
- *  1. Cross-branch stock isolation: a master Recipe's ingredientId is pinned
- *     to whichever branch's Ingredient row it was created against (see
- *     recipes.service.ts computeDeduction / resolveIngredientForBranch) — a
- *     sale at any *other* branch must resolve to that branch's own
- *     equivalent Ingredient and never touch the pinned branch's stock.
+ *  1. Cross-branch stock isolation: ProductInventory mappings are branch-
+ *     scoped (findByVariantForDeduction filters on the selling branch's own
+ *     branchId) — a sale at branch B must deduct only branch B's own mapped
+ *     Ingredient and never touch another branch's identically-named
+ *     Ingredient (e.g. branch A's "Potato").
  *  2. Rollback on insufficient stock: the sale, its line items, and its
  *     inventory deduction all happen inside one `prisma.$transaction` — a
  *     stock shortfall on any ingredient must roll back the entire write,
@@ -157,6 +157,11 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
         },
       });
     }
+    // Deduction reads exclusively from ProductInventory (branch-scoped) —
+    // each selling branch needs its own mapping to its own Potato Ingredient.
+    await prisma.productInventory.create({
+      data: { branchId: branch.id, productVariantId: variantId, ingredientId: potato.id, flavorId: null, quantityRequired: 200, unit: 'g' },
+    });
     const shift = await prisma.shift.create({
       data: { branchId: branch.id, cashierId, openedBy: cashierId, status: 'active', openingCashAmount: 0, startedAt: new Date() },
     });
@@ -197,9 +202,9 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     });
     variantId = variant.id;
 
-    // Master recipe created against branch A's own Potato — the pinned
-    // ingredient every other branch's sale must NOT resolve to.
-    await prisma.recipe.create({ data: { productVariantId: variantId, ingredientId: potatoAId, flavorId: null, quantity: 200, unit: 'g' } });
+    // Branch A gets its own Potato Ingredient but deliberately NO
+    // ProductInventory mapping for variantId — it exists only so tests can
+    // assert its stock is never touched by a sale at another branch.
   });
 
   afterAll(async () => {
@@ -212,7 +217,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     await prisma.$executeRaw`DELETE FROM "inventory_movements" WHERE "ingredient_id" IN (SELECT id FROM "ingredients" WHERE "name" = 'Potato')`;
     await prisma.branchProductAvailability.deleteMany({ where: { productId } });
     await prisma.shift.deleteMany({ where: { cashierId } });
-    await prisma.recipe.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productInventory.deleteMany({ where: { productVariantId: variantId } });
     await prisma.productVariant.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.ingredient.deleteMany({ where: { name: 'Potato' } });

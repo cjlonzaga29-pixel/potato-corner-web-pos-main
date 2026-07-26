@@ -19,7 +19,7 @@ export interface CreateExpenseData {
 
 export type UpdateExpenseData = Partial<CreateExpenseData>;
 
-/** Mirrors PriceOverrideError — every module maps its own domain errors to HTTP status via its router's error handler. */
+/** Every module maps its own domain errors to HTTP status via its router's error handler. */
 export class ExpenseError extends Error {
   constructor(
     public readonly code: string,

@@ -33,16 +33,6 @@ export const PERMISSIONS = {
   FLAVOR_UPDATE: 'adminOnly',
   FLAVOR_BRANCH_AVAILABILITY: 'adminOrSupervisor',
 
-  // CR-002 — flavor requests (supervisor submits, Super Admin approves)
-  FLAVOR_REQUEST_SUBMIT: 'supervisorOnly',
-  FLAVOR_REQUEST_LIST: 'adminOrSupervisor + role-scoped',
-  FLAVOR_REQUEST_REVIEW: 'adminOnly',
-
-  // CR-001 — branch price overrides (supervisor submits, Super Admin approves)
-  PRICE_OVERRIDE_SUBMIT: 'supervisorOnly',
-  PRICE_OVERRIDE_LIST: 'adminOrSupervisor + role-scoped',
-  PRICE_OVERRIDE_REVIEW: 'adminOnly',
-
   // Inventory
   INVENTORY_VIEW: 'adminOrSupervisor',
   INVENTORY_ADJUST: 'adminOrSupervisor',

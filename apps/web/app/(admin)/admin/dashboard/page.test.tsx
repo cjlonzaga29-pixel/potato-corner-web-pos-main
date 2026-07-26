@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import type { PriceOverrideResponse, ShiftResponse } from '@potato-corner/shared';
+import type { ShiftResponse } from '@potato-corner/shared';
 import AdminDashboardPage from './page';
 
 const {
@@ -10,8 +10,6 @@ const {
   mockUseShiftsRealtimeSync,
   mockUseTransactionsRealtimeSync,
   mockUseBranchRealtimeSync,
-  mockUsePriceOverrides,
-  mockUsePriceOverridesRealtimeSync,
   mockUseSocketStore,
   mockUseAdminInventoryRollup,
   mockUseAdminInventoryRollupRealtimeSync,
@@ -26,8 +24,6 @@ const {
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
   mockUseBranchRealtimeSync: vi.fn(),
-  mockUsePriceOverrides: vi.fn(),
-  mockUsePriceOverridesRealtimeSync: vi.fn(),
   mockUseSocketStore: vi.fn(),
   mockUseAdminInventoryRollup: vi.fn(),
   mockUseAdminInventoryRollupRealtimeSync: vi.fn(),
@@ -88,11 +84,6 @@ vi.mock('@/components/monitoring/live-alerts-stream', () => ({
 
 vi.mock('@/components/monitoring/branch-connection-panel', () => ({
   BranchConnectionPanel: () => <div>Branch Connection Panel</div>,
-}));
-
-vi.mock('@/hooks/queries/use-price-overrides', () => ({
-  usePriceOverrides: mockUsePriceOverrides,
-  usePriceOverridesRealtimeSync: mockUsePriceOverridesRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-admin-inventory-rollup', () => ({
@@ -188,38 +179,8 @@ function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
   };
 }
 
-function priceOverride(overrides: Partial<PriceOverrideResponse> = {}): PriceOverrideResponse {
-  return {
-    id: 'override-1',
-    branch_id: 'branch-1',
-    branch_name: 'Manila Branch',
-    product_variant_id: 'variant-1',
-    variant_name: 'Regular',
-    product_name: 'Classic Potato',
-    master_price: 65,
-    requested_price: 75,
-    status: 'pending',
-    requested_by: 'user-1',
-    requested_by_name: 'Juan Dela Cruz',
-    request_reason: 'Local ingredient cost increase requires a branch-specific price adjustment.',
-    reviewed_by: null,
-    reviewed_by_name: null,
-    reviewed_at: null,
-    review_notes: null,
-    effective_from: null,
-    created_at: '2026-07-16T01:00:00.000Z',
-    updated_at: '2026-07-16T01:00:00.000Z',
-    ...overrides,
-  };
-}
-
 interface ShiftsFilters {
   status?: 'active' | 'closed' | 'flagged';
-  limit?: number;
-}
-
-interface RequestFilters {
-  status?: string;
   limit?: number;
 }
 
@@ -231,21 +192,12 @@ function mockShiftsData(active: ShiftResponse[], flagged: ShiftResponse[], isLoa
   });
 }
 
-function mockPriceOverridesData(list: PriceOverrideResponse[], total: number, isLoading = false) {
-  mockUsePriceOverrides.mockImplementation((filters: RequestFilters) => {
-    if (filters.limit === 1) return { data: { overrides: [], total, page: 1, limit: 1 }, isLoading };
-    return { data: { overrides: list, total, page: 1, limit: 5 }, isLoading };
-  });
-}
-
 beforeEach(() => {
   mockSocketState({ isConnected: true, isReconnecting: false });
   mockUseShiftsRealtimeSync.mockReturnValue(undefined);
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
   mockUseBranchRealtimeSync.mockReturnValue(undefined);
-  mockUsePriceOverridesRealtimeSync.mockReturnValue(undefined);
   mockShiftsData([], []);
-  mockPriceOverridesData([], 0);
   mockUseAllBranchStats.mockReturnValue({ data: [], isLoading: false, isError: false });
   mockUseSelectedBranch.mockReturnValue({
     selectedBranchId: 'all',
@@ -270,12 +222,10 @@ afterEach(() => {
 describe('AdminDashboardPage', () => {
   it('renders loading skeletons for all panels when every query is loading', () => {
     mockShiftsData([], [], true);
-    mockPriceOverridesData([], 0, true);
 
-    const { container } = render(<AdminDashboardPage />);
+    render(<AdminDashboardPage />);
 
     expect(screen.getAllByText('loading').length).toBeGreaterThan(0);
-    expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
   });
 
   it('renders the active shifts count from data.total', () => {
@@ -297,32 +247,11 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('₱7000.50')).toBeInTheDocument();
   });
 
-  it('renders pending approvals as the price override total', () => {
-    mockPriceOverridesData([], 2);
-    render(<AdminDashboardPage />);
-    expect(screen.getByText('Pending Approvals')).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument();
-  });
-
   it('renders the flagged shifts count', () => {
     mockShiftsData([], [shift({ id: 's1', status: 'flagged' }), shift({ id: 's2', status: 'flagged' })]);
     render(<AdminDashboardPage />);
     expect(screen.getByText('Flagged Shifts')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
-  });
-
-  it('renders the pending price overrides list with product_name and price values', () => {
-    mockPriceOverridesData([priceOverride({ product_name: 'Classic Potato', master_price: 65, requested_price: 75 })], 1);
-    render(<AdminDashboardPage />);
-    expect(screen.getByText(/Classic Potato/)).toBeInTheDocument();
-    expect(screen.getByText('₱65.00')).toBeInTheDocument();
-    expect(screen.getByText('₱75.00')).toBeInTheDocument();
-  });
-
-  it('renders "No pending price overrides" empty state when the list is empty', () => {
-    mockPriceOverridesData([], 0);
-    render(<AdminDashboardPage />);
-    expect(screen.getByText('No pending price overrides')).toBeInTheDocument();
   });
 
   it('renders the attendance shortcut card linking to /admin/attendance', () => {
@@ -345,11 +274,10 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByTitle('Connected').className).toContain('bg-success');
   });
 
-  it('calls all 4 realtime sync hooks on mount', () => {
+  it('calls all realtime sync hooks on mount', () => {
     render(<AdminDashboardPage />);
     expect(mockUseShiftsRealtimeSync).toHaveBeenCalled();
     expect(mockUseTransactionsRealtimeSync).toHaveBeenCalled();
-    expect(mockUsePriceOverridesRealtimeSync).toHaveBeenCalled();
     expect(mockUseBranchRealtimeSync).toHaveBeenCalled();
   });
 

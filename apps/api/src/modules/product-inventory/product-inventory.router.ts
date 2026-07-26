@@ -7,6 +7,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 
 const router: Router = Router();
 
@@ -26,7 +27,10 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
   next(error);
 }
 
-const listQuerySchema = z.object({ product_variant_id: z.uuid() });
+const listQuerySchema = z.object({
+  branch_id: z.string().min(1, 'branch_id is required'),
+  product_variant_id: z.uuid(),
+});
 
 // Read: admin (overview) + supervisor (full CRUD power below). Write: supervisor only.
 router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
@@ -37,7 +41,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
       res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR' }, meta: null });
       return;
     }
-    const mappings = await productInventoryService.listByVariant(parsed.data.product_variant_id);
+    const mappings = await productInventoryService.listByVariant(parsed.data.branch_id, parsed.data.product_variant_id);
     res.status(200).json({ data: { mappings }, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
@@ -47,7 +51,8 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
 router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductInventorySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const mapping = await productInventoryService.createMapping(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    const branchIds = getAccessibleBranchIds(req.user);
+    const mapping = await productInventoryService.createMapping(req.body, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(201).json({ data: mapping, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
@@ -57,7 +62,8 @@ router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(c
 router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductInventorySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const mapping = await productInventoryService.updateMapping(req.params.id as string, req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    const branchIds = getAccessibleBranchIds(req.user);
+    const mapping = await productInventoryService.updateMapping(req.params.id as string, req.body, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(200).json({ data: mapping, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
@@ -67,7 +73,8 @@ router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, valida
 router.delete('/:id', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    await productInventoryService.deleteMapping(req.params.id as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    const branchIds = getAccessibleBranchIds(req.user);
+    await productInventoryService.deleteMapping(req.params.id as string, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(204).send();
   } catch (error) {
     handleModuleError(error, res, next);

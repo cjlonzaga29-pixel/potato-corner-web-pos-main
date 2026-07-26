@@ -9,12 +9,9 @@ import {
   Clock,
   Banknote,
   BarChart3,
-  DollarSign,
   ChefHat,
-  Palette,
   Users,
   Receipt,
-  ClipboardList,
   ChevronsLeft,
   ChevronsRight,
   LogOut,
@@ -23,12 +20,8 @@ import {
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
-import { useBranchStore } from '@/stores/branch.store';
-import { useFlavorRequests } from '@/hooks/queries/use-flavor-requests';
-import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 import type { NavItem } from '@/components/shared/nav-types';
@@ -42,10 +35,6 @@ export const SUPERVISOR_NAV_ITEMS = [
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },
   { label: 'Employees', href: '/supervisor/employees', icon: Users },
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
-  // CR-002
-  { label: 'Flavor Requests', href: '/supervisor/flavor-requests', icon: Palette },
-  { label: 'Inventory Requests', href: '/supervisor/inventory-requests', icon: ClipboardList },
-  { label: 'Price Overrides', href: '/supervisor/price-overrides', icon: DollarSign },
   { label: 'Recipes', href: '/supervisor/recipes', icon: ChefHat },
 ] satisfies ReadonlyArray<NavItem>;
 
@@ -63,14 +52,6 @@ export function SupervisorSidebar() {
       setIsLoggingOut(false);
     }
   }
-  const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: myFlavorRequests } = useFlavorRequests({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
-  const { data: myPriceOverrides } = usePriceOverrides({ status: 'pending', branch_id: activeBranchId ?? undefined, limit: 1 });
-  const badgeCounts: Record<string, number> = {
-    '/supervisor/flavor-requests': myFlavorRequests?.total ?? 0,
-    '/supervisor/price-overrides': myPriceOverrides?.total ?? 0,
-  };
-
   return (
     <aside
       className={cn(
@@ -110,8 +91,6 @@ export function SupervisorSidebar() {
         <TooltipProvider delayDuration={200}>
           {SUPERVISOR_NAV_ITEMS.map((item) => {
             const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
-            const count = badgeCounts[item.href] ?? 0;
-            const showBadge = count > 0;
             const link = (
               <Link
                 href={item.href}
@@ -124,11 +103,6 @@ export function SupervisorSidebar() {
               >
                 <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
                 {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-                {showBadge && (
-                  <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
-                    {count}
-                  </Badge>
-                )}
               </Link>
             );
             return collapsed ? (

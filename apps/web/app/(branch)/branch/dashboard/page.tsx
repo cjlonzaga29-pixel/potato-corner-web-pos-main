@@ -21,12 +21,9 @@ import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shif
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchInventoryAlerts, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
-import { useFlavorRequests, useFlavorRequestsRealtimeSync } from '@/hooks/queries/use-flavor-requests';
-import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
 const ATTENDANCE_OVERVIEW_LIMIT = 100;
-const TOTAL_ONLY_LIMIT = 1;
 
 const QUICK_ACTIONS = [
   { label: 'Open POS Terminal', href: '/branch/terminal', icon: ShoppingCart },
@@ -53,8 +50,6 @@ export default function BranchDashboardPage() {
   useTransactionsRealtimeSync();
   useInventoryRealtimeSync(branchId);
   useAttendanceRealtimeSync();
-  useFlavorRequestsRealtimeSync();
-  usePriceOverridesRealtimeSync();
 
   // Calendar-day boundary, computed once on mount — deliberately not
   // reactive to clock ticking, same as the supervisor dashboard's
@@ -77,17 +72,6 @@ export default function BranchDashboardPage() {
     to,
     limit: ATTENDANCE_OVERVIEW_LIMIT,
   });
-  const { data: pendingFlavorRequests, isLoading: isLoadingFlavorRequests } = useFlavorRequests({
-    status: 'pending',
-    branch_id: branchId,
-    limit: TOTAL_ONLY_LIMIT,
-  });
-  const { data: pendingPriceOverrides, isLoading: isLoadingPriceOverrides } = usePriceOverrides({
-    status: 'pending',
-    branch_id: branchId,
-    limit: TOTAL_ONLY_LIMIT,
-  });
-
   if (!branchId) {
     return (
       <EmptyState
@@ -124,24 +108,6 @@ export default function BranchDashboardPage() {
         <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} />
         <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} />
         <DashboardShiftCard shift={shift} isLoading={isShiftLoading} />
-      </div>
-
-      <div className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">Pending Approvals</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <KpiCard
-            title="Pending Flavor Requests"
-            value={pendingFlavorRequests?.total ?? 0}
-            isLoading={isLoadingFlavorRequests}
-            tone={pendingFlavorRequests?.total ? 'warning' : 'default'}
-          />
-          <KpiCard
-            title="Pending Price Overrides"
-            value={pendingPriceOverrides?.total ?? 0}
-            isLoading={isLoadingPriceOverrides}
-            tone={pendingPriceOverrides?.total ? 'warning' : 'default'}
-          />
-        </div>
       </div>
 
       <Card>

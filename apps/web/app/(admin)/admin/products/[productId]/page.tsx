@@ -16,6 +16,7 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { formatDateTime } from '@/lib/utils';
+import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import {
   useBranchProductAvailability,
   useBulkUpdateBranchProductAvailability,
@@ -44,6 +45,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
   const { productId } = use(params);
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
   const deleteProduct = useDeleteProduct();
+  const { selectedBranchId } = useSelectedBranch();
 
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
@@ -115,7 +117,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
         </TabsContent>
 
         <TabsContent value="variants" className="space-y-4">
-          <VariantsTab product={product} />
+          <VariantsTab product={product} selectedBranchId={selectedBranchId} />
         </TabsContent>
 
         <TabsContent value="availability" className="space-y-4">
@@ -210,7 +212,7 @@ function OverviewTab({ product }: { product: ProductDetailResponse }) {
   );
 }
 
-function VariantsTab({ product }: { product: ProductDetailResponse }) {
+function VariantsTab({ product, selectedBranchId }: { product: ProductDetailResponse; selectedBranchId: string }) {
   const [variantDialog, setVariantDialog] = useState<{ open: boolean; variant?: ProductVariantResponse }>({ open: false });
   const [linkFlavorFor, setLinkFlavorFor] = useState<ProductVariantResponse | null>(null);
   const [editFlavor, setEditFlavor] = useState<{ variant: ProductVariantResponse; flavor: ProductVariantResponse['flavors'][number] } | null>(
@@ -221,6 +223,7 @@ function VariantsTab({ product }: { product: ProductDetailResponse }) {
 
   const isArchived = product.status === 'archived';
   const sortedVariants = [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+  const hasSelectedBranch = selectedBranchId !== 'all';
 
   return (
     <div className="space-y-4">
@@ -233,12 +236,15 @@ function VariantsTab({ product }: { product: ProductDetailResponse }) {
 
       {sortedVariants.length === 0 ? (
         <EmptyState title="No variants yet" description="Add a variant to start selling this product." />
+      ) : !hasSelectedBranch ? (
+        <EmptyState title="No branch selected" description="Select a branch to view and manage inventory items." />
       ) : (
         <div className="space-y-3">
           {sortedVariants.map((variant) => (
             <VariantCard
               key={variant.id}
               variant={variant}
+              branchId={selectedBranchId}
               onEditVariant={() => setVariantDialog({ open: true, variant })}
               onLinkFlavor={() => setLinkFlavorFor(variant)}
               onEditFlavorPricing={(flavor) => setEditFlavor({ variant, flavor })}

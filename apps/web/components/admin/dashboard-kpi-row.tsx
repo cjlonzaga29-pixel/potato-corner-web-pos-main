@@ -3,7 +3,6 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 interface DashboardKpiRowProps {
   activeShiftsCount: number | undefined;
   liveRevenue: number | undefined;
-  pendingApprovalsCount: number | undefined;
   flaggedShiftsCount: number | undefined;
   transactionsCount: number | undefined;
   activeCashiersCount: number | undefined;
@@ -13,7 +12,6 @@ interface DashboardKpiRowProps {
   netProfit: number | undefined;
   isLoadingShifts: boolean;
   isLoadingRevenue: boolean;
-  isLoadingApprovals: boolean;
   isLoadingFlagged: boolean;
   isLoadingStats: boolean;
 }
@@ -26,7 +24,6 @@ interface DashboardKpiRowProps {
 export function DashboardKpiRow({
   activeShiftsCount,
   liveRevenue,
-  pendingApprovalsCount,
   flaggedShiftsCount,
   transactionsCount,
   activeCashiersCount,
@@ -36,7 +33,6 @@ export function DashboardKpiRow({
   netProfit,
   isLoadingShifts,
   isLoadingRevenue,
-  isLoadingApprovals,
   isLoadingFlagged,
   isLoadingStats,
 }: DashboardKpiRowProps) {
@@ -64,12 +60,6 @@ export function DashboardKpiRow({
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Operational</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <KpiCard title="Active Shifts" value={activeShiftsCount ?? 0} isLoading={isLoadingShifts} />
-          <KpiCard
-            title="Pending Approvals"
-            value={pendingApprovalsCount ?? 0}
-            isLoading={isLoadingApprovals}
-            tone={(pendingApprovalsCount ?? 0) > 0 ? 'warning' : 'default'}
-          />
           <KpiCard
             title="Flagged Shifts"
             value={flaggedShiftsCount ?? 0}

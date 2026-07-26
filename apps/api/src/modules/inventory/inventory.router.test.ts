@@ -298,9 +298,8 @@ describe('POST /ingredients/:id/stock-in — validate middleware', () => {
   it('rejects a payload missing the required quantity field with 422 VALIDATION_ERROR', async () => {
     // Every route in this codebase returns 422 (not 400) for a failed
     // validate(schema) check — see middleware/validate.ts and every other
-    // module's router (e.g. price-overrides.router.ts's listQuerySchema
-    // handler). Asserting 400 here would test for behavior this codebase
-    // deliberately doesn't have.
+    // module's router. Asserting 400 here would test for behavior this
+    // codebase deliberately doesn't have.
     const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: {} });

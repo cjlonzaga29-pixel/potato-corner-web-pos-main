@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import { ROLES, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
-import { recipesRepository } from '../recipes/recipes.repository.js';
+import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -187,10 +187,11 @@ export const branchesService = {
       const created = await branchesRepository.create({ ...data, code }, tx);
 
       // CR-004 idempotent branch provisioning — every ingredient identity an
-      // active master Recipe references gets a zero-stock row here, so a
-      // master-recipe sale at this branch resolves to its own stock instead
-      // of leaking against whichever branch's Ingredient the recipe was
-      // created against (see recipes.service.ts computeDeduction).
+      // active ProductInventory mapping references gets a zero-stock row
+      // here, so a sale at this branch resolves to its own stock instead of
+      // leaking against whichever branch's Ingredient the mapping was
+      // created against (see recipes.service.ts computeDeduction, which
+      // reads ProductInventory, not the legacy Recipe table).
       //
       // CR-005 Sub-phase 3b — unioned with every distinct flavor-derived
       // identity (CR-005 Sub-phase 3a) so a new branch is provisioned for
@@ -198,11 +199,11 @@ export const branchesService = {
       // a branch created *after* a flavor existed used to never get that
       // flavor's Ingredient row. Deduped by (name, unit); FLAVOR wins the
       // category on a collision since it's the more specific classification.
-      const recipeIdentities = await recipesRepository.findDistinctIngredientIdentities(tx);
+      const productInventoryIdentities = await productInventoryRepository.findDistinctIngredientIdentities(tx);
       const flavorIdentities = await flavorsRepository.findDistinctFlavorIngredientIdentities(tx);
 
       const identityMap = new Map<string, { name: string; unit: string; category: IngredientCategory }>();
-      for (const identity of recipeIdentities) {
+      for (const identity of productInventoryIdentities) {
         identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.OTHER });
       }
       for (const identity of flavorIdentities) {
@@ -372,15 +373,6 @@ export const branchesService = {
       throw new BranchError(
         'BRANCH_HAS_ACTIVE_SHIFTS',
         'Cannot permanently delete a branch with active shifts — close all shifts first',
-        409,
-      );
-    }
-
-    const pendingInventoryRequests = await branchesRepository.countPendingInventoryRequests(branchId);
-    if (pendingInventoryRequests > 0) {
-      throw new BranchError(
-        'BRANCH_HAS_PENDING_INVENTORY_REQUESTS',
-        'Cannot permanently delete a branch with pending inventory requests — resolve them first',
         409,
       );
     }

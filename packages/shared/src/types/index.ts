@@ -100,16 +100,6 @@ export type SimulateDeductionInput = z.infer<typeof schemas.simulateDeductionSch
 export type DeductionLine = z.infer<typeof schemas.deductionLineSchema>;
 export type SimulateDeductionResponse = z.infer<typeof schemas.simulateDeductionResponseSchema>;
 
-export type CreateFlavorRequestInput = z.infer<typeof schemas.createFlavorRequestSchema>;
-export type ReviewFlavorRequestInput = z.infer<typeof schemas.reviewFlavorRequestSchema>;
-export type FlavorRequestResponse = z.infer<typeof schemas.flavorRequestResponseSchema>;
-export type FlavorRequestListResponse = z.infer<typeof schemas.flavorRequestListResponseSchema>;
-
-export type CreatePriceOverrideInput = z.infer<typeof schemas.createPriceOverrideSchema>;
-export type ReviewPriceOverrideInput = z.infer<typeof schemas.reviewPriceOverrideSchema>;
-export type PriceOverrideResponse = z.infer<typeof schemas.priceOverrideResponseSchema>;
-export type PriceOverrideListResponse = z.infer<typeof schemas.priceOverrideListResponseSchema>;
-
 export type CartItem = z.infer<typeof schemas.cartItemSchema>;
 export type CreateTransactionInput = z.infer<typeof schemas.createTransactionSchema>;
 export type VoidTransactionRequest = z.infer<typeof schemas.voidTransactionRequestSchema>;

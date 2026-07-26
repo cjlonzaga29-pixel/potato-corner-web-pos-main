@@ -1,6 +1,7 @@
 import { Prisma, type IngredientCategory } from '@prisma/client';
 import type { InventoryDeductionStatus, MovementType } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
+import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import type { AppendMovementInput, CreateIngredientData, MovementListFilters, UpdateIngredientData } from './inventory.types.js';
 
 const movementInclude = {
@@ -279,14 +280,7 @@ export const inventoryRepository = {
    */
   async runOutOfStockCascade(branchId: string, ingredientId: string, tx?: Prisma.TransactionClient): Promise<OutOfStockCascadeResult> {
     const run = async (client: Prisma.TransactionClient) => {
-      const [masterRows, overrideRows] = await Promise.all([
-        client.recipe.findMany({ where: { ingredientId, deletedAt: null }, select: { productVariantId: true, flavorId: true } }),
-        client.branchRecipeOverride.findMany({
-          where: { ingredientId, branchId, deletedAt: null },
-          select: { productVariantId: true, flavorId: true },
-        }),
-      ]);
-      const rows = [...masterRows, ...overrideRows];
+      const rows = await productInventoryRepository.findByIngredientId(ingredientId, client);
       if (rows.length === 0) return { affectedFlavors: [], affectedProducts: [] };
 
       const baseVariantIds = [...new Set(rows.filter((r) => r.flavorId === null).map((r) => r.productVariantId))];

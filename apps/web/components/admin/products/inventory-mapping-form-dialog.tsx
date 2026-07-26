@@ -18,6 +18,8 @@ interface InventoryMappingFormDialogProps {
   variant: ProductVariantResponse;
   existingMappings: ProductInventoryResponse[];
   editingMapping?: ProductInventoryResponse;
+  /** Branch the mapping being edited belongs to. ProductInventoryResponse carries no branch_id, so the caller must supply it for edit mode. */
+  editingBranchId?: string;
 }
 
 /**
@@ -32,16 +34,18 @@ export function InventoryMappingFormDialog({
   variant,
   existingMappings,
   editingMapping,
+  editingBranchId,
 }: InventoryMappingFormDialogProps) {
   const isEdit = Boolean(editingMapping);
-  const createMapping = useCreateProductInventory(variant.id);
-  const updateMapping = useUpdateProductInventory(variant.id, editingMapping?.id ?? '');
-  const mutation = isEdit ? updateMapping : createMapping;
 
   const [branchId, setBranchId] = useState('');
   const [ingredientId, setIngredientId] = useState('');
   const [quantityRequired, setQuantityRequired] = useState('');
   const [unit, setUnit] = useState('');
+
+  const createMapping = useCreateProductInventory(variant.id);
+  const updateMapping = useUpdateProductInventory(branchId, variant.id, editingMapping?.id ?? '');
+  const mutation = isEdit ? updateMapping : createMapping;
 
   const { data: branchData, isLoading: branchesLoading } = useBranches({ status: 'active', limit: 100 });
   const { data: ingredients, isLoading: ingredientsLoading } = useIngredients(branchId || undefined);
@@ -52,14 +56,14 @@ export function InventoryMappingFormDialog({
       setIngredientId(editingMapping.ingredient_id);
       setQuantityRequired(String(editingMapping.quantity_required));
       setUnit(editingMapping.unit);
-      setBranchId('');
+      setBranchId(editingBranchId ?? '');
     } else {
       setBranchId('');
       setIngredientId('');
       setQuantityRequired('');
       setUnit('');
     }
-  }, [open, editingMapping]);
+  }, [open, editingMapping, editingBranchId]);
 
   const usedIngredientIds = new Set(existingMappings.map((mapping) => mapping.ingredient_id));
   const availableIngredients = (ingredients ?? []).filter((ingredient) => !usedIngredientIds.has(ingredient.id));
@@ -71,10 +75,12 @@ export function InventoryMappingFormDialog({
   async function handleSubmit() {
     const numericQuantity = Number(quantityRequired);
     if (isEdit) {
+      if (!branchId) return;
       await updateMapping.mutateAsync({ quantity_required: numericQuantity, unit });
     } else {
-      if (!ingredientId) return;
+      if (!branchId || !ingredientId) return;
       await createMapping.mutateAsync({
+        branch_id: branchId,
         product_variant_id: variant.id,
         ingredient_id: ingredientId,
         quantity_required: numericQuantity,
@@ -85,8 +91,8 @@ export function InventoryMappingFormDialog({
   }
 
   const isValid = isEdit
-    ? quantityRequired !== '' && unit.trim() !== ''
-    : Boolean(ingredientId) && quantityRequired !== '' && unit.trim() !== '';
+    ? Boolean(branchId) && quantityRequired !== '' && unit.trim() !== ''
+    : Boolean(branchId) && Boolean(ingredientId) && quantityRequired !== '' && unit.trim() !== '';
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

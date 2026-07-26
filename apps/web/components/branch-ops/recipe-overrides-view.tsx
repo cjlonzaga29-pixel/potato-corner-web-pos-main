@@ -83,7 +83,10 @@ export function RecipeOverridesView() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Recipe Overrides</h1>
-        <p className="text-sm text-muted-foreground">Override master recipe ingredients for your branch. No approval needed — every change is audit-logged.</p>
+        <p className="text-sm text-muted-foreground">
+          Legacy recipe overrides are not currently used by POS inventory deduction. Active stock deduction is driven by
+          ProductInventory mappings; changes here are audit-logged but do not affect current POS deduction.
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -162,14 +165,16 @@ export function RecipeOverridesView() {
                   ))}
                 </ul>
               ) : (
-                <p className="text-sm text-muted-foreground">No overrides yet — deduction uses the master recipe as-is.</p>
+                <p className="text-sm text-muted-foreground">
+                  No overrides yet. Legacy recipe overrides are not currently used by POS inventory deduction.
+                </p>
               )}
             </div>
           </div>
 
           <div className="space-y-2 rounded-md border p-3">
             <div className="flex items-center gap-2">
-              <p className="font-medium">Simulate Deduction</p>
+              <p className="font-medium">Legacy Recipe Simulation</p>
               <Select value={flavorFilter} onValueChange={setFlavorFilter}>
                 <SelectTrigger className="w-40">
                   <SelectValue />
@@ -185,9 +190,12 @@ export function RecipeOverridesView() {
               </Select>
               <Button size="sm" variant="outline" onClick={() => void handleSimulate()} disabled={simulate.isPending}>
                 {simulate.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Run (branch overrides applied)
+                Run Legacy Simulation
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Legacy simulation only — does not reflect active POS inventory deduction.
+            </p>
             {simulate.data && (
               <ul className="space-y-1 text-sm">
                 {simulate.data.lines.map((line) => (
@@ -209,6 +217,9 @@ export function RecipeOverridesView() {
             <DialogTitle>Add Branch Recipe Override</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Legacy recipe overrides are not currently used by POS inventory deduction.
+            </p>
             <div className="space-y-1">
               <Label>Ingredient</Label>
               <Select value={ingredientId} onValueChange={setIngredientId}>
@@ -274,7 +285,7 @@ export function RecipeOverridesView() {
         open={!!deleteTargetId}
         onOpenChange={(o) => !o && setDeleteTargetId(null)}
         title="Delete Recipe Override"
-        description="This removes the branch-specific override and reverts to the base recipe."
+        description="This removes the branch-specific legacy recipe override. Legacy recipe overrides are not currently used by POS inventory deduction."
         confirmLabel="Delete"
         variant="danger"
         onConfirm={async () => {

@@ -14,6 +14,7 @@ import { computeAmounts } from './transactions.service.js';
 
 function line(lineTotal: number, quantity: number, vatableCapAmount: number | null) {
   return {
+    id: 'item-1',
     productId: 'product-1',
     productVariantId: 'variant-1',
     flavorId: null,

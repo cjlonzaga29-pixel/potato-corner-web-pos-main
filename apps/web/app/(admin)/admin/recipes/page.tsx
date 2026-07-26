@@ -29,7 +29,8 @@ export default function AdminRecipesPage() {
       <div>
         <h1 className="text-2xl font-bold">Master Recipes</h1>
         <p className="text-sm text-muted-foreground">
-          Master recipes for inventory deduction. Supervisors manage branch-level recipe overrides separately.
+          Legacy recipe configuration — not currently used by POS inventory deduction. Active stock deduction is driven
+          by ProductInventory mappings. Supervisors manage branch-level recipe overrides separately.
         </p>
       </div>
 

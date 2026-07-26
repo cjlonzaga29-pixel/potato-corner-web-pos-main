@@ -37,6 +37,7 @@ vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
     fraudAlert: { findMany: vi.fn() },
     transaction: { update: vi.fn().mockResolvedValue({}) },
+    transactionItem: { update: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) },
     $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
@@ -47,13 +48,22 @@ vi.mock('../../lib/prisma.js', () => {
 // so prisma.$transaction's callback doesn't need real recipe/ingredient rows.
 vi.mock('../recipes/recipes.service.js', () => ({
   computeDeduction: vi.fn().mockResolvedValue([]),
-  // CR-004: resolveCartItems now checks recipe existence and stamps a
-  // version per cart line — default to "recipe exists, version 1" so the
+  // CR-004: resolveCartItems checks recipe existence before stamping a
+  // version per cart line — default to "recipe exists" so the
   // pricing/VAT/sync tests in this file (which aren't about recipes) don't
   // need their own recipe fixtures. Tests that specifically cover the
-  // RECIPE_MISSING rejection override assertRecipeExists per-test.
-  assertRecipeExists: vi.fn().mockResolvedValue(undefined),
-  getRecipeVersion: vi.fn().mockResolvedValue(1),
+  // RECIPE_MISSING rejection override assertProductInventoryExists per-test.
+  assertProductInventoryExists: vi.fn().mockResolvedValue(undefined),
+}));
+
+// recipeVersion is sourced from ProductInventory.version (max across the
+// branch-scoped base+flavor mappings for a variant), not from the recipe —
+// default to version 1 so the pricing/VAT/sync tests don't need their own
+// ProductInventory fixtures. The CR-004 test below overrides this per-test.
+vi.mock('../product-inventory/product-inventory.repository.js', () => ({
+  productInventoryRepository: {
+    getVersionForVariant: vi.fn().mockResolvedValue(1),
+  },
 }));
 
 vi.mock('../cash/cash.repository.js', () => ({
@@ -62,10 +72,6 @@ vi.mock('../cash/cash.repository.js', () => ({
     findCashiersWithClosedShifts: vi.fn().mockResolvedValue([]),
     findLastNClosedShiftsForCashier: vi.fn().mockResolvedValue([]),
   },
-}));
-
-vi.mock('../price-overrides/price-overrides.service.js', () => ({
-  priceOverridesService: { getActivePriceForBranch: vi.fn() },
 }));
 
 vi.mock('../../middleware/audit-log.js', () => ({
@@ -104,10 +110,10 @@ vi.mock('sharp', () => ({
 }));
 
 const { transactionsRepository } = await import('./transactions.repository.js');
-const { assertRecipeExists, getRecipeVersion } = await import('../recipes/recipes.service.js');
+const { assertProductInventoryExists } = await import('../recipes/recipes.service.js');
+const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { RecipeError } = await import('../recipes/recipes.types.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
-const { priceOverridesService } = await import('../price-overrides/price-overrides.service.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
@@ -214,7 +220,6 @@ beforeEach(() => {
   vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
   vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([] as never);
   vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
-  vi.mocked(priceOverridesService.getActivePriceForBranch).mockImplementation(async (_b, _v, masterPrice) => masterPrice as number);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
   vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(0);
   vi.mocked(transactionsRepository.createHoldOrder).mockResolvedValue(holdOrderRow() as never);
@@ -414,18 +419,6 @@ describe('transactionsService.createTransaction — shift validation', () => {
 });
 
 describe('transactionsService.createTransaction — pricing and snapshots', () => {
-  it('uses the branch price override instead of the master base_price when one is active', async () => {
-    vi.mocked(priceOverridesService.getActivePriceForBranch).mockResolvedValue(45);
-
-    await transactionsService.createTransaction(baseInput, null);
-
-    expect(priceOverridesService.getActivePriceForBranch).toHaveBeenCalledWith('branch-1', 'variant-1', 100);
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ subtotal: 45, items: [expect.objectContaining({ unitPrice: 45, lineTotal: 45 })] }),
-      expect.anything(),
-    );
-  });
-
   it('snapshots product/variant/flavor names and the resolved price at time of sale', async () => {
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
       variantRow({
@@ -482,7 +475,6 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
     vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
     vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
-    vi.mocked(priceOverridesService.getActivePriceForBranch).mockResolvedValue(100);
     vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ discountType: 'pwd' }) as never);
 
@@ -515,7 +507,6 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
     vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
     vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
-    vi.mocked(priceOverridesService.getActivePriceForBranch).mockResolvedValue(100);
     vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
 
@@ -950,7 +941,7 @@ describe('transactionsService.getDiscountAuditTrail', () => {
 
 describe('transactionsService.createTransaction — CR-004 recipe integrity', () => {
   it('rejects the whole sale with RECIPE_MISSING when the variant has no recipe configured — no transaction row is created', async () => {
-    vi.mocked(assertRecipeExists).mockRejectedValueOnce(
+    vi.mocked(assertProductInventoryExists).mockRejectedValueOnce(
       new RecipeError('RECIPE_MISSING', 'This product variant has no recipe configured', 422),
     );
 
@@ -962,8 +953,14 @@ describe('transactionsService.createTransaction — CR-004 recipe integrity', ()
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
+  it('passes the transaction\'s branchId through to assertProductInventoryExists — the mapping check must never fall back to an inferred branch', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(assertProductInventoryExists).toHaveBeenCalledWith('branch-1', expect.any(String));
+  });
+
   it('stamps each resolved cart line with the recipe version resolved for its variant+flavor', async () => {
-    vi.mocked(getRecipeVersion).mockResolvedValueOnce(4);
+    vi.mocked(productInventoryRepository.getVersionForVariant).mockResolvedValueOnce(4);
 
     await transactionsService.createTransaction(baseInput, null);
 

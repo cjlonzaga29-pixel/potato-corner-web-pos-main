@@ -12,10 +12,9 @@ import {
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { recipesRepository } from '../recipes/recipes.repository.js';
-import { inventoryRepository } from '../inventory/inventory.repository.js';
+import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -70,40 +69,20 @@ async function notifyVariantBranches(productId: string, event: string, payload: 
 }
 
 /**
- * CR-005 Guarantee 6 gate for approveVariant: every master Recipe row on the
- * variant must resolve to a real Ingredient in at least one active branch —
- * either the row's own pinned Ingredient already belongs to that branch, or
- * an Ingredient of the same name has been provisioned there (mirrors
- * recipes.service.ts's resolveIngredientForBranch, minus the throw-per-sale
- * behavior, since here we're checking existence across every branch, not
- * resolving for one specific sale).
+ * CR-005 Guarantee 6 gate for approveVariant: the variant must have at least
+ * one ProductInventory mapping — computeDeduction's actual data source —
+ * before it can go ACTIVE. Replaces the former Recipe-resolvability check;
+ * Product approval no longer depends on Recipe. Uses the branch-agnostic
+ * lookup since approval is a global gate, not scoped to any one branch.
  */
 async function assertRecipesResolvableSomewhere(productVariantId: string): Promise<void> {
-  const recipes = await recipesRepository.findByVariant(productVariantId);
-  if (recipes.length === 0) return;
-
-  const branches = await productsRepository.allActiveBranches();
-
-  for (const recipe of recipes) {
-    let resolvable = false;
-    for (const branch of branches) {
-      if (recipe.ingredient.branchId === branch.id) {
-        resolvable = true;
-        break;
-      }
-      const found = await inventoryRepository.findIngredientByBranchAndName(branch.id, recipe.ingredient.name);
-      if (found) {
-        resolvable = true;
-        break;
-      }
-    }
-    if (!resolvable) {
-      throw new ProductError(
-        'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
-        `Ingredient "${recipe.ingredient.name}" cannot be resolved in any active branch — approval blocked until it is provisioned somewhere`,
-        409,
-      );
-    }
+  const hasMapping = await productInventoryRepository.hasAnyActiveMappingForVariant(productVariantId);
+  if (!hasMapping) {
+    throw new ProductError(
+      'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
+      'Variant has no ProductInventory mapping — approval blocked until at least one ingredient mapping is provisioned',
+      409,
+    );
   }
 }
 
@@ -767,14 +746,11 @@ export const productsService = {
 
     assertVariantTransition(existing.lifecycleStatus, 'ACTIVE');
 
-    const [flavorSlotRecipeCount, flavorSlotCount] = await Promise.all([
-      productsRepository.countRecipesWithFlavorSlot(variantId),
-      productsRepository.countFlavorSlots(variantId),
-    ]);
-    if (flavorSlotRecipeCount > 0 || flavorSlotCount > 0) {
+    const flavorSlotCount = await productsRepository.countFlavorSlots(variantId);
+    if (flavorSlotCount > 0) {
       throw new ProductError(
         'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
-        'Variant contains flavor-slot recipe rows or ProductFlavorSlot definitions that require Phase 4 runtime resolver. Approval blocked until Phase 4 lands.',
+        'Variant contains ProductFlavorSlot definitions that require Phase 4 runtime resolver. Approval blocked until Phase 4 lands.',
         409,
       );
     }
@@ -1188,9 +1164,8 @@ export const productsService = {
 
   /**
    * Phase 10 POS terminal catalog — a lean, staff-accessible read model
-   * distinct from getAllProducts (admin/supervisor only). Effective price is
-   * resolved server-side via priceOverridesService so the terminal never
-   * computes pricing from a client-trusted base_price.
+   * distinct from getAllProducts (admin/supervisor only), so the terminal
+   * never computes pricing from a client-trusted base_price.
    */
   async getPosCatalog(branchId: string) {
     const [products, disabledFlavorIds] = await Promise.all([
@@ -1199,37 +1174,30 @@ export const productsService = {
     ]);
     const disabledFlavors = new Set(disabledFlavorIds);
 
-    const catalogProducts = await Promise.all(
-      products.map(async (product) => {
-        const variants = await Promise.all(
-          product.variants.map(async (variant) => {
-            const price = await priceOverridesService.getActivePriceForBranch(branchId, variant.id, variant.basePrice.toNumber());
-            return {
-              id: variant.id,
-              name: variant.name,
-              size_label: variant.sizeLabel,
-              price,
-              vatable_cap_amount: variant.vatableCapAmount?.toNumber() ?? null,
-              flavors: variant.variantFlavors
-                .filter((vf) => !disabledFlavors.has(vf.flavorId))
-                .map((vf) => ({
-                  flavor_id: vf.flavorId,
-                  name: vf.flavor.name,
-                  color_hex: vf.flavor.colorHex,
-                  price_premium: vf.pricePremium.toNumber(),
-                })),
-            };
-          }),
-        );
-        return {
-          id: product.id,
-          name: product.name,
-          category: product.category,
-          image_url: product.imageUrl,
-          variants,
-        };
-      }),
-    );
+    const catalogProducts = products.map((product) => {
+      const variants = product.variants.map((variant) => ({
+        id: variant.id,
+        name: variant.name,
+        size_label: variant.sizeLabel,
+        price: variant.basePrice.toNumber(),
+        vatable_cap_amount: variant.vatableCapAmount?.toNumber() ?? null,
+        flavors: variant.variantFlavors
+          .filter((vf) => !disabledFlavors.has(vf.flavorId))
+          .map((vf) => ({
+            flavor_id: vf.flavorId,
+            name: vf.flavor.name,
+            color_hex: vf.flavor.colorHex,
+            price_premium: vf.pricePremium.toNumber(),
+          })),
+      }));
+      return {
+        id: product.id,
+        name: product.name,
+        category: product.category,
+        image_url: product.imageUrl,
+        variants,
+      };
+    });
 
     const categories = [...new Set(catalogProducts.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort();
 
@@ -1249,7 +1217,7 @@ export const productsService = {
       if (isForeignKeyViolation(error)) {
         throw new ProductError(
           'PRODUCT_HAS_DEPENDENCIES',
-          'Cannot delete: product has associated transactions or price overrides. Change status to Archived instead.',
+          'Cannot delete: product has associated transactions. Change status to Archived instead.',
           409,
         );
       }

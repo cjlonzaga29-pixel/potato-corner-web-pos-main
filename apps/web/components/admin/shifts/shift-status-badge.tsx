@@ -6,8 +6,7 @@ import { Badge } from '@/components/ui/badge';
  * this phase's brief explicitly specifies OPEN=blue, CLOSED=green,
  * PENDING_REVIEW=amber for the shift review UI specifically, so it's defined
  * locally here rather than changing the shared map's colors for every other
- * consumer (same pattern as the price-overrides approval page's own local
- * STATUS_BADGE_VARIANT).
+ * consumer.
  */
 const VARIANT: Record<string, 'pending' | 'active' | 'warning'> = {
   active: 'pending', // blue

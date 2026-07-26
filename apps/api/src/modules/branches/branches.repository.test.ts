@@ -9,7 +9,6 @@ vi.mock('../../lib/prisma.js', () => {
     transaction: { groupBy: vi.fn(), aggregate: vi.fn() },
     expense: { groupBy: vi.fn(), aggregate: vi.fn() },
     ingredient: { findMany: vi.fn() },
-    inventoryRequest: { count: vi.fn() },
   };
   return { prisma: prismaMock };
 });
@@ -217,19 +216,6 @@ describe('branchesRepository.branchStats', () => {
     expect(stats.todayGrossSales).toBe(1120);
     expect(stats.todayVat).toBe(120);
     expect(stats.todayNetProfit).toBe(700);
-  });
-});
-
-describe('branchesRepository.countPendingInventoryRequests', () => {
-  it('counts only pending inventory requests for the branch', async () => {
-    vi.mocked(prisma.inventoryRequest.count).mockResolvedValue(3);
-
-    const count = await branchesRepository.countPendingInventoryRequests('branch-1');
-
-    expect(count).toBe(3);
-    expect(prisma.inventoryRequest.count).toHaveBeenCalledWith({
-      where: { branchId: 'branch-1', status: 'pending' },
-    });
   });
 });
 

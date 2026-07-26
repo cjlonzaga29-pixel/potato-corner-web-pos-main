@@ -17,7 +17,7 @@ interface ReviewVarianceDialogProps {
   shift: ShiftResponse;
 }
 
-/** Notes are required (>= 50 chars) for both approve and reject here — unlike price-override review, approveVarianceSchema has no "optional for approval" carve-out. */
+/** Notes are required (>= 50 chars) for both approve and reject here — approveVarianceSchema has no "optional for approval" carve-out. */
 export function ReviewVarianceDialog({ open, onOpenChange, shift }: ReviewVarianceDialogProps) {
   const approveVariance = useApproveVariance(shift.id);
   const [notes, setNotes] = useState('');

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const createProductInventorySchema = z.object({
+  branch_id: z.string().min(1, 'branch_id is required'),
   product_variant_id: z.uuid(),
   ingredient_id: z.uuid(),
   quantity_required: z.number().positive(),

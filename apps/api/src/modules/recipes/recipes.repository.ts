@@ -118,42 +118,6 @@ export const recipesRepository = {
     return count > 0;
   },
 
-  /**
-   * The highest `version` among the master rows that apply to this
-   * variant+flavor selection (base rows plus this specific flavor's rows, if
-   * any — same set computeDeduction's masterRows covers). Snapshotted onto
-   * TransactionItem.recipeVersion. Defaults to 1 when the variant has no
-   * master rows yet (guarded against separately by hasActiveRecipeForVariant).
-   */
-  async getMaxVersionForSelection(productVariantId: string, flavorId: string | null): Promise<number> {
-    const rows = await prisma.recipe.findMany({
-      where: { productVariantId, deletedAt: null, OR: [{ flavorId: null }, ...(flavorId ? [{ flavorId }] : [])] },
-      select: { version: true },
-    });
-    if (rows.length === 0) return 1;
-    return Math.max(...rows.map((r) => r.version));
-  },
-
-  /**
-   * Every distinct (name, unit) ingredient identity referenced by an active
-   * master recipe row, deduped by name — the set a newly created branch
-   * needs a zero-stock Ingredient row for (branchesService.createBranch ->
-   * inventoryService.provisionBranchIngredients).
-   */
-  async findDistinctIngredientIdentities(tx?: Prisma.TransactionClient): Promise<{ name: string; unit: string }[]> {
-    const client = tx ?? prisma;
-    const rows = await client.recipe.findMany({
-      where: { deletedAt: null },
-      select: { ingredient: { select: { name: true, unit: true } } },
-      distinct: ['ingredientId'],
-    });
-    const byName = new Map<string, { name: string; unit: string }>();
-    for (const row of rows) {
-      if (!byName.has(row.ingredient.name)) byName.set(row.ingredient.name, row.ingredient);
-    }
-    return [...byName.values()];
-  },
-
   // --- CR-005 Sub-phase 3f — slot-recipe coupling (productsService flavor slot CRUD guards) ---
 
   /** Used by productsService.removeFlavorSlot's guard — a slot with any recipe still pointing at it cannot be removed. */

@@ -21,13 +21,6 @@ interface OfflineSequenceCounter {
   value: number;
 }
 
-interface CachedPriceOverride {
-  /** productVariantId — one active override price per variant, at the currently-cached branch. */
-  id: string;
-  price: number;
-  cachedAt: number;
-}
-
 /**
  * IndexedDB schema for offline POS operation. See Architecture doc §10 for
  * the full offline strategy — this is the local queue that
@@ -37,7 +30,6 @@ export const db = new Dexie('potato-corner-pos') as Dexie & {
   offlineTransactions: EntityTable<OfflineTransaction, 'id'>;
   cachedProducts: EntityTable<CachedProduct, 'id'>;
   offlineSequenceCounters: EntityTable<OfflineSequenceCounter, 'key'>;
-  cachedPriceOverrides: EntityTable<CachedPriceOverride, 'id'>;
 };
 
 db.version(1).stores({
@@ -47,5 +39,5 @@ db.version(1).stores({
 });
 
 db.version(2).stores({
-  cachedPriceOverrides: 'id, cachedAt',
+  cachedPriceOverrides: null,
 });

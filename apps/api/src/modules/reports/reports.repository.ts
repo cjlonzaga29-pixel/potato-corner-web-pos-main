@@ -682,7 +682,6 @@ export const reportsRepository = {
             'ACCOUNT_UNLOCKED',
             'VOID_TRANSACTION',
             'REFUND_TRANSACTION',
-            'PRICE_OVERRIDE_APPROVED',
           ],
         },
         ...(filters.branchId ? { branchId: filters.branchId } : {}),

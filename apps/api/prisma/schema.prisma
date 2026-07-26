@@ -131,17 +131,6 @@ enum FraudAlertStatus {
   escalated
 }
 
-enum InventoryRequestType {
-  stock_in
-  stock_out
-}
-
-enum InventoryRequestStatus {
-  pending
-  approved
-  rejected
-}
-
 enum ExpenseCategory {
   utilities
   supplies
@@ -240,16 +229,7 @@ model User {
   passwordResetTokens              PasswordResetToken[]
 
   // CR-001
-  priceOverrideRequests   BranchPriceOverride[]  @relation("PriceOverrideRequester")
-  priceOverrideReviews    BranchPriceOverride[]  @relation("PriceOverrideReviewer")
-  recipeOverridesCreated  BranchRecipeOverride[]
-
-  // CR-002 — flavor requests (supervisor submits, Super Admin approves)
-  flavorRequestsFiled    FlavorRequest[] @relation("FlavorRequestRequester")
-  flavorRequestsReviewed FlavorRequest[] @relation("FlavorRequestReviewer")
-
-  requestedInventoryRequests InventoryRequest[] @relation("RequestedInventoryRequests")
-  approvedInventoryRequests  InventoryRequest[] @relation("ApprovedInventoryRequests")
+  recipeOverridesCreated BranchRecipeOverride[]
 
   expenses Expense[]
 
@@ -297,14 +277,10 @@ model Branch {
 
   // CR-001
   exclusiveProducts Product[]              @relation("ProductExclusiveBranch")
-  priceOverrides    BranchPriceOverride[]
   recipeOverrides   BranchRecipeOverride[]
+  productInventory  ProductInventory[]
 
-  // CR-002
-  flavorRequests FlavorRequest[]
-
-  inventoryRequests InventoryRequest[]
-  expenses          Expense[]
+  expenses Expense[]
 
   // Step 12a (System Settings)
   receiptConfig       BranchReceiptConfig?
@@ -518,7 +494,6 @@ model ProductVariant {
   productInventory ProductInventory[]
 
   // CR-001
-  priceOverrides  BranchPriceOverride[]
   recipeOverrides BranchRecipeOverride[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -561,9 +536,7 @@ model Flavor {
   transactionItems   TransactionItem[]
   recipeOverrides    BranchRecipeOverride[]
   holdOrderItems     HoldOrderItem[]
-
-  // CR-002
-  flavorRequests FlavorRequest[]
+  productInventory   ProductInventory[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -621,73 +594,6 @@ model BranchFlavorAvailability {
 // CR-001 — branch approval workflows (product requests, price overrides)
 // ---------------------------------------------------------------------------
 
-/// Supervisor-submitted request to add a branch-exclusive price for an
-/// existing catalog variant. status is a plain String (not a native enum,
-/// matching this refactor's other request tables) because it's checked in
-/// application code against REQUEST_STATUS rather than needing a Postgres
-/// CREATE TYPE. The partial unique index enforcing "at most one pending
-/// request per branch+variant" is added by raw SQL in the migration — Prisma's
-/// schema DSL has no WHERE-clause index syntax.
-model BranchPriceOverride {
-  id               String    @id @default(uuid())
-  branchId         String    @map("branch_id")
-  productVariantId String    @map("product_variant_id")
-  requestedPrice   Decimal   @map("requested_price") @db.Decimal(10, 2)
-  status           String    @default("pending")
-  requestedBy      String    @map("requested_by")
-  requestReason    String    @map("request_reason")
-  reviewedBy       String?   @map("reviewed_by")
-  reviewedAt       DateTime? @map("reviewed_at")
-  reviewNotes      String?   @map("review_notes")
-  effectiveFrom    DateTime? @map("effective_from")
-
-  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
-  requester      User           @relation("PriceOverrideRequester", fields: [requestedBy], references: [id])
-  reviewer       User?          @relation("PriceOverrideReviewer", fields: [reviewedBy], references: [id])
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  @@index([branchId])
-  @@index([productVariantId])
-  @@index([status])
-  @@map("branch_price_overrides")
-}
-
-/// CR-002 — supervisor-submitted request to add a brand-new flavor to the
-/// catalog: status is a plain String checked against REQUEST_STATUS in
-/// application code, and approval
-/// creates the real Flavor row (via flavorsRepository.create) only once a
-/// Super Admin approves — nothing here is a committed catalog row until then.
-model FlavorRequest {
-  id                   String    @id @default(uuid())
-  branchId             String    @map("branch_id")
-  requestedBy          String    @map("requested_by")
-  proposedName         String    @map("proposed_name")
-  proposedDescription  String?   @map("proposed_description")
-  proposedColorHex     String    @map("proposed_color_hex")
-  proposedDisplayOrder Int?      @map("proposed_display_order")
-  requestReason        String    @map("request_reason")
-  status               String    @default("pending")
-  reviewedBy           String?   @map("reviewed_by")
-  reviewedAt           DateTime? @map("reviewed_at")
-  reviewNotes          String?   @map("review_notes")
-  createdFlavorId      String?   @map("created_flavor_id")
-
-  branch        Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  requester     User    @relation("FlavorRequestRequester", fields: [requestedBy], references: [id])
-  reviewer      User?   @relation("FlavorRequestReviewer", fields: [reviewedBy], references: [id])
-  createdFlavor Flavor? @relation(fields: [createdFlavorId], references: [id])
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  @@index([branchId])
-  @@index([status])
-  @@map("flavor_requests")
-}
-
 // ---------------------------------------------------------------------------
 // Inventory and recipes
 // ---------------------------------------------------------------------------
@@ -711,12 +617,11 @@ model Ingredient {
   // CR-005 Phase 1
   category          IngredientCategory @default(OTHER)
 
-  branch            Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  recipes           Recipe[]
-  movements         InventoryMovement[]
-  recipeOverrides   BranchRecipeOverride[]
-  inventoryRequests InventoryRequest[]
-  productInventory  ProductInventory[]
+  branch           Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  recipes          Recipe[]
+  movements        InventoryMovement[]
+  recipeOverrides  BranchRecipeOverride[]
+  productInventory ProductInventory[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -724,8 +629,7 @@ model Ingredient {
   @@index([branchId])
   // Unique on (branch_id, name) WHERE deleted_at IS NULL — a soft-deleted
   // ingredient's name can be reused. Partial index added by raw SQL in the
-  // migration, same reason as BranchPriceOverride's pending-request index:
-  // Prisma's schema DSL has no WHERE-clause index syntax.
+  // migration — Prisma's schema DSL has no WHERE-clause index syntax.
   @@map("ingredients")
 }
 
@@ -764,26 +668,50 @@ model Recipe {
   @@map("recipes")
 }
 
-/// ProductInventory foundation — generic, branch-agnostic mapping of which
-/// Ingredient rows (and how much of each) a ProductVariant requires, keyed
-/// only by variant + ingredient (no flavorId dimension, unlike Recipe).
-/// Additive alongside Recipe/BranchRecipeOverride; does not replace them.
+/// ProductInventory is the inventory deduction source of truth — generic,
+/// branch-agnostic mapping of which Ingredient rows (and how much of each)
+/// a ProductVariant requires. Mappings may include base variant ingredient
+/// mappings (flavorId IS NULL) and optional flavor-specific ingredient
+/// mappings (flavorId set), keyed by variant + ingredient (+ flavor).
 model ProductInventory {
   id               String  @id @default(uuid())
+  branchId         String  @map("branch_id")
   productVariantId String  @map("product_variant_id")
   ingredientId     String  @map("ingredient_id")
+  flavorId         String? @map("flavor_id")
   quantityRequired Decimal @map("quantity_required") @db.Decimal(10, 4)
   unit             String
+  /// Bumped on every ProductInventory update; source for TransactionItem.recipeVersion once transactions.service.ts is switched over.
+  version          Int     @default(1)
 
+  // Soft-delete + audit metadata. deletedAt/isActive follow the same
+  // soft-delete shape as Ingredient/Recipe/BranchRecipeOverride; reason
+  // records why a mapping was deactivated, createdBy/updatedBy record who
+  // last touched the row (no FK — same pattern as BranchRecipeOverride
+  // avoids coupling this table to User lifecycle).
+  deletedAt DateTime? @map("deleted_at")
+  isActive  Boolean   @default(true) @map("is_active")
+  reason    String?
+  createdBy String?   @map("created_by")
+  updatedBy String?   @map("updated_by")
+
+  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   ingredient     Ingredient     @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@unique([productVariantId, ingredientId])
+  // No @@unique here: active-row uniqueness on (branch_id, product_variant_id,
+  // ingredient_id, flavor_id) is enforced by a partial unique index
+  // (WHERE deleted_at IS NULL) created via raw SQL in the migration, since
+  // Prisma's schema DSL cannot express a partial index. See migration
+  // add_product_inventory_soft_delete.
+  @@index([branchId])
   @@index([productVariantId])
   @@index([ingredientId])
+  @@index([flavorId])
   @@map("product_inventory")
 }
 
@@ -991,6 +919,13 @@ model TransactionItem {
   // CR-005 Phase 1: multi-slot flavor selections (Product Builder). Snapshot
   // JSON, same freezing rationale as the name/price snapshot fields above.
   selectedFlavors     Json?   @map("selected_flavors")
+  // Sale-time snapshot of the exact deduction lines computeDeduction()
+  // produced for this line item, captured before inventory was deducted:
+  // [{ ingredientId, ingredientName, quantity, unit }]. Null for rows
+  // written before this column existed; recipeVersion remains the
+  // backward-compatible fallback for those. Additive alongside
+  // recipeVersion, not a replacement.
+  deductionSnapshot   Json?   @map("deduction_snapshot")
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -1270,32 +1205,6 @@ model Notification {
   @@index([recipientUserId, readAt])
   @@index([branchId, createdAt])
   @@map("notifications")
-}
-
-model InventoryRequest {
-  id              String                 @id @default(cuid())
-  branchId        String
-  ingredientId    String
-  type            InventoryRequestType
-  quantity        Decimal                @db.Decimal(10, 3)
-  reason          String
-  status          InventoryRequestStatus @default(pending)
-  requestedById   String
-  requestedByName String
-  approvedById    String?
-  approvedByName  String?
-  rejectionReason String?
-  createdAt       DateTime               @default(now())
-  approvedAt      DateTime?
-
-  branch      Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  ingredient  Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
-  requestedBy User       @relation("RequestedInventoryRequests", fields: [requestedById], references: [id], onDelete: Restrict)
-  approvedBy  User?      @relation("ApprovedInventoryRequests", fields: [approvedById], references: [id], onDelete: Restrict)
-
-  @@index([branchId, status])
-  @@index([ingredientId])
-  @@map("inventory_requests")
 }
 
 model Expense {

@@ -19,7 +19,6 @@ vi.mock('./branches.repository.js', () => ({
     getUserActiveBranches: vi.fn(),
     findUserById: vi.fn(),
     countActiveShifts: vi.fn(),
-    countPendingInventoryRequests: vi.fn(),
     branchStats: vi.fn(),
     generateBranchCode: vi.fn(),
     findAllAccounts: vi.fn(),
@@ -42,8 +41,8 @@ vi.mock('../../lib/prisma.js', () => ({
   prisma: { $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txMock)) },
 }));
 
-vi.mock('../recipes/recipes.repository.js', () => ({
-  recipesRepository: { findDistinctIngredientIdentities: vi.fn().mockResolvedValue([]) },
+vi.mock('../product-inventory/product-inventory.repository.js', () => ({
+  productInventoryRepository: { findDistinctIngredientIdentities: vi.fn().mockResolvedValue([]) },
 }));
 
 vi.mock('../flavors/flavors.repository.js', () => ({
@@ -89,7 +88,7 @@ const { branchesRepository } = await import('./branches.repository.js');
 const { branchesService } = await import('./branches.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { supabaseAdmin } = await import('../../lib/supabase.js');
-const { recipesRepository } = await import('../recipes/recipes.repository.js');
+const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { flavorsRepository } = await import('../flavors/flavors.repository.js');
 const { inventoryService } = await import('../inventory/inventory.service.js');
 const { prisma } = await import('../../lib/prisma.js');
@@ -202,7 +201,7 @@ describe('branchesService.createBranch', () => {
   it('CR-004: provisions the new branch with a zero-stock ingredient for every distinct master-recipe ingredient identity', async () => {
     vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-003');
     vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-3', code: 'PC-MNL-003' }) as never);
-    vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([
+    vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([
       { name: 'Potato', unit: 'g' },
       { name: 'Cooking Oil', unit: 'ml' },
     ]);
@@ -227,7 +226,7 @@ describe('branchesService.createBranch', () => {
   it('CR-004: skips provisioning entirely when no master recipe ingredients exist yet', async () => {
     vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-004');
     vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-4', code: 'PC-MNL-004' }) as never);
-    vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+    vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
     vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
     await branchesService.createBranch(
@@ -243,7 +242,7 @@ describe('branchesService.createBranch', () => {
     it('unions recipe and flavor identities, deduped by (name, unit)', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-005');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-5', code: 'PC-MNL-005' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
 
       await branchesService.createBranch(
@@ -266,7 +265,7 @@ describe('branchesService.createBranch', () => {
     it('FLAVOR wins the category on a (name, unit) collision with a recipe identity', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-006');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-6', code: 'PC-MNL-006' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
 
       await branchesService.createBranch(
@@ -285,7 +284,7 @@ describe('branchesService.createBranch', () => {
     it('with only recipe identities behaves like pre-3b (all category OTHER)', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-007');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-7', code: 'PC-MNL-007' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
       await branchesService.createBranch(
@@ -304,7 +303,7 @@ describe('branchesService.createBranch', () => {
     it('with only flavor identities provisions all of them as category FLAVOR', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-008');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-8', code: 'PC-MNL-008' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([
         { name: 'Sour Cream', unit: 'g' },
         { name: 'BBQ', unit: 'g' },
@@ -329,7 +328,7 @@ describe('branchesService.createBranch', () => {
     it('with zero recipe and zero flavor identities never calls provisionBranchIngredients', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-009');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-9', code: 'PC-MNL-009' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
       await branchesService.createBranch(
@@ -344,7 +343,7 @@ describe('branchesService.createBranch', () => {
     it('passes the final merged list, not the raw recipe/flavor arrays, to provisionBranchIngredients', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-010');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-10', code: 'PC-MNL-010' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([{ name: 'Cheese Powder', unit: 'g' }]);
 
       await branchesService.createBranch(
@@ -370,7 +369,7 @@ describe('branchesService.createBranch', () => {
     it('runs branch create + identity resolution + provisioning inside a single prisma.$transaction call', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-011');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-11', code: 'PC-MNL-011' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
       await branchesService.createBranch(
@@ -382,14 +381,14 @@ describe('branchesService.createBranch', () => {
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
       expect(branchesRepository.create).toHaveBeenCalledWith(expect.objectContaining({ code: 'PC-MNL-011' }), txMock);
-      expect(recipesRepository.findDistinctIngredientIdentities).toHaveBeenCalledWith(txMock);
+      expect(productInventoryRepository.findDistinctIngredientIdentities).toHaveBeenCalledWith(txMock);
       expect(flavorsRepository.findDistinctFlavorIngredientIdentities).toHaveBeenCalledWith(txMock);
     });
 
     it('a failure inside the transaction (e.g. provisioning throws) rejects createBranch, and no post-commit side effects run', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-012');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-12', code: 'PC-MNL-012' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([{ name: 'Potato', unit: 'g' }]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
       vi.mocked(inventoryService.provisionBranchIngredients).mockRejectedValueOnce(new Error('provisioning failed'));
 
@@ -412,7 +411,7 @@ describe('branchesService.createBranch', () => {
     it('records the BRANCH_CREATED audit log only after the transaction resolves', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-013');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-13', code: 'PC-MNL-013' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
       await branchesService.createBranch(
@@ -431,7 +430,7 @@ describe('branchesService.createBranch', () => {
     it('emits BRANCH_CREATED over the socket only after the transaction resolves', async () => {
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-014');
       vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-14', code: 'PC-MNL-014' }) as never);
-      vi.mocked(recipesRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
       vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
 
       const emit = vi.fn();
@@ -561,21 +560,6 @@ describe('branchesService.deleteBranch', () => {
     expect(branchesRepository.delete).not.toHaveBeenCalled();
   });
 
-  it('with pending inventory requests throws BRANCH_HAS_PENDING_INVENTORY_REQUESTS and never deletes', async () => {
-    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch() as never);
-    vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(0);
-    vi.mocked(branchesRepository.countPendingInventoryRequests).mockResolvedValue(2);
-
-    await expect(
-      branchesService.deleteBranch('branch-1', ACTOR, null),
-    ).rejects.toMatchObject({
-      code: 'BRANCH_HAS_PENDING_INVENTORY_REQUESTS',
-      statusCode: 409,
-    });
-
-    expect(branchesRepository.delete).not.toHaveBeenCalled();
-  });
-
   it('with no branch found throws BRANCH_NOT_FOUND', async () => {
     vi.mocked(branchesRepository.findById).mockResolvedValue(null);
 
@@ -587,12 +571,11 @@ describe('branchesService.deleteBranch', () => {
     });
   });
 
-  it('with no active shifts and no pending inventory requests deletes and records a BRANCH_DELETED audit entry', async () => {
+  it('with no active shifts deletes and records a BRANCH_DELETED audit entry', async () => {
     vi.mocked(branchesRepository.findById).mockResolvedValue(
       buildBranch({ id: 'branch-9', name: 'Old Branch', code: 'PC-MNL-009' }) as never,
     );
     vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(0);
-    vi.mocked(branchesRepository.countPendingInventoryRequests).mockResolvedValue(0);
     vi.mocked(branchesRepository.delete).mockResolvedValue(undefined as never);
 
     await branchesService.deleteBranch('branch-9', ACTOR, '127.0.0.1');

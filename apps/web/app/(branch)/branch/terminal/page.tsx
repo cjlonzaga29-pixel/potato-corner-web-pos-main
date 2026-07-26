@@ -17,7 +17,7 @@ import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
 import { useCurrentShift } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof } from '@/hooks/queries/use-transactions';
-import { cacheBranchPriceOverrides, cacheProductCatalog, getCachedPriceOverrides, getCachedProductCatalog } from '@/lib/offline/cache';
+import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 
@@ -116,22 +116,15 @@ export default function TerminalPage() {
   useEffect(() => {
     if (!liveCatalog) return;
     void cacheProductCatalog(liveCatalog.products.map((p) => ({ id: p.id, data: p })));
-    void cacheBranchPriceOverrides(
-      liveCatalog.products.flatMap((p) => p.variants.map((v) => ({ productVariantId: v.id, price: v.price }))),
-    );
   }, [liveCatalog]);
 
-  // Fall back to the Dexie-cached catalog (with cached override prices
-  // layered on top) when offline or before the first live fetch resolves.
+  // Fall back to the Dexie-cached catalog when offline or before the first
+  // live fetch resolves.
   useEffect(() => {
     if (liveCatalog) return;
     void (async () => {
-      const [cached, overrides] = await Promise.all([getCachedProductCatalog(), getCachedPriceOverrides()]);
-      const overrideMap = new Map(overrides.map((o) => [o.id, o.price]));
-      const products = cached.map((row) => row.data as PosCatalogProduct).map((product) => ({
-        ...product,
-        variants: product.variants.map((variant) => ({ ...variant, price: overrideMap.get(variant.id) ?? variant.price })),
-      }));
+      const cached = await getCachedProductCatalog();
+      const products = cached.map((row) => row.data as PosCatalogProduct);
       setCachedProducts(products);
     })();
   }, [liveCatalog]);

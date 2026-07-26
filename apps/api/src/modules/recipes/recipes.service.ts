@@ -3,6 +3,7 @@ import { recipesRepository } from './recipes.repository.js';
 import { RecipeError, type DeductionLine } from './recipes.types.js';
 import { productsRepository } from '../products/products.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
+import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifySuperAdmin } from '../../lib/notify.js';
 
@@ -106,15 +107,16 @@ interface ComputeDeductionInput {
 }
 
 /**
- * CR-004: a master Recipe row's ingredientId points at one specific branch's
- * Ingredient (Ingredient has no branch-neutral identity — see
- * docs/decisions/CR-004-pos-deduction-integrity.md). A sale at any *other*
- * branch must resolve that row to its own equivalent Ingredient (matched by
- * name — the same match findIngredientByBranchAndName and idempotent branch
- * provisioning both use), never deduct against the pinned branch's stock.
- * A no-op (zero extra queries) when the row's own ingredient already belongs
- * to the selling branch, which covers every single-branch deployment and
- * every recipe an admin happened to create against that branch's ingredient.
+ * CR-004: a ProductInventory mapping row's ingredientId points at one
+ * specific branch's Ingredient (Ingredient has no branch-neutral identity —
+ * see docs/decisions/CR-004-pos-deduction-integrity.md). A sale at any
+ * *other* branch must resolve that row to its own equivalent Ingredient
+ * (matched by name — the same match findIngredientByBranchAndName and
+ * idempotent branch provisioning both use), never deduct against the pinned
+ * branch's stock. A no-op (zero extra queries) when the row's own ingredient
+ * already belongs to the selling branch, which covers every single-branch
+ * deployment and every mapping an admin happened to create against that
+ * branch's ingredient.
  */
 async function resolveIngredientForBranch(branchId: string, row: RecipeRow): Promise<{ id: string; name: string }> {
   if (row.ingredient.branchId === branchId) {
@@ -166,78 +168,54 @@ async function assertRecipeFlavorTargetingValid(
 }
 
 /**
- * CR-001 Phase 7.5 deduction algorithm. Preserves the original master-only
- * behavior (architecture doc §7.1 steps 1-4) exactly when branchId is
- * omitted or the branch has no overrides — branch overrides are layered on
- * top last and only replace/add matching ingredient rows, never remove
- * master rows outright.
+ * Computes ingredient deductions for a POS sale from active ProductInventory
+ * mappings for the given branch and product variant (see
+ * productInventoryRepository.findByVariantForDeduction) — that query already
+ * excludes soft-deleted (deletedAt) and inactive (isActive: false) mappings,
+ * so every row returned here is eligible to deduct. branchId is required;
+ * this function does not read the Recipe or BranchRecipeOverride tables.
  *
- * Layering order (each step may replace a same-ingredient_id entry from the
- * step before it, or add a new one):
- *   1. master base      (flavor_id IS NULL)
- *   2. master flavor     (flavor_id = selected) — overrides same-ingredient master base
- *   3. branch base        — overrides same-ingredient result so far
- *   4. branch flavor       — overrides same-ingredient result so far
+ * Layering order (a later step replaces a same-ingredient_id entry from an
+ * earlier step, or adds a new one):
+ *   1. base mappings    (flavor_id IS NULL)
+ *   2. flavor mappings   (flavor_id = selected) — overrides same-ingredient base
  *
- * When branchId is given, master rows are resolved to that branch's own
- * Ingredient first (CR-004, resolveIngredientForBranch) — branch override
- * rows are exempt since a branch account can only ever create an override
- * against its own branch's ingredients in the first place.
+ * Each mapping's ingredient is resolved to the selling branch's own
+ * Ingredient (CR-004, resolveIngredientForBranch) before being added to the
+ * result.
  */
 export async function computeDeduction(input: ComputeDeductionInput): Promise<DeductionLine[]> {
-  const masterRows = (await recipesRepository.findMasterRows(input.productVariantId, input.flavorId)) as RecipeRow[];
-  const masterBase = masterRows.filter((r) => r.flavorId === null);
-  const masterFlavor = masterRows.filter((r) => r.flavorId !== null);
+  if (!input.branchId) {
+    throw new RecipeError('BRANCH_ID_REQUIRED', 'A branchId is required to compute inventory deduction.', 400);
+  }
+  const rows = await productInventoryRepository.findByVariantForDeduction(
+    input.branchId,
+    input.productVariantId,
+    input.flavorId ?? undefined,
+  );
+
+  // Query order is not guaranteed, so partition explicitly: base mappings
+  // (flavorId null) are applied first, flavor mappings second, so a flavor
+  // mapping always wins over a base mapping for the same ingredientId
+  // regardless of the row order the DB returns.
+  const baseRows = rows.filter((row) => row.flavorId === null);
+  const flavorRows = rows.filter((row) => row.flavorId !== null);
 
   const map = new Map<string, DeductionLine>();
-  for (const row of masterBase) {
-    const ingredient = input.branchId ? await resolveIngredientForBranch(input.branchId, row) : { id: row.ingredientId, name: row.ingredient.name };
+  for (const row of [...baseRows, ...flavorRows]) {
+    const ingredient = input.branchId
+      ? await resolveIngredientForBranch(
+          input.branchId,
+          { ingredientId: row.ingredientId, ingredient: { name: row.ingredient.name, branchId: row.ingredient.branchId } } as unknown as RecipeRow,
+        )
+      : { id: row.ingredientId, name: row.ingredient.name };
     map.set(ingredient.id, {
       ingredient_id: ingredient.id,
       ingredient_name: ingredient.name,
-      quantity: row.quantity.toNumber(),
+      quantity: row.quantityRequired.toNumber(),
       unit: row.unit,
       source: 'master_base',
     });
-  }
-  for (const row of masterFlavor) {
-    const ingredient = input.branchId ? await resolveIngredientForBranch(input.branchId, row) : { id: row.ingredientId, name: row.ingredient.name };
-    map.set(ingredient.id, {
-      ingredient_id: ingredient.id,
-      ingredient_name: ingredient.name,
-      quantity: row.quantity.toNumber(),
-      unit: row.unit,
-      source: 'master_flavor',
-    });
-  }
-
-  if (input.branchId) {
-    const overrideRows = (await recipesRepository.findOverrideRows(
-      input.productVariantId,
-      input.branchId,
-      input.flavorId,
-    )) as RecipeRow[];
-    const branchBase = overrideRows.filter((r) => r.flavorId === null);
-    const branchFlavor = overrideRows.filter((r) => r.flavorId !== null);
-
-    for (const row of branchBase) {
-      map.set(row.ingredientId, {
-        ingredient_id: row.ingredientId,
-        ingredient_name: row.ingredient.name,
-        quantity: row.quantity.toNumber(),
-        unit: row.unit,
-        source: 'branch_base',
-      });
-    }
-    for (const row of branchFlavor) {
-      map.set(row.ingredientId, {
-        ingredient_id: row.ingredientId,
-        ingredient_name: row.ingredient.name,
-        quantity: row.quantity.toNumber(),
-        unit: row.unit,
-        source: 'branch_flavor',
-      });
-    }
   }
 
   return Array.from(map.values()).map((line) => ({ ...line, quantity: line.quantity * input.quantitySold }));
@@ -245,13 +223,15 @@ export async function computeDeduction(input: ComputeDeductionInput): Promise<De
 
 /**
  * CR-004: transactions.service.ts calls this before pricing a cart line —
- * a sale must never be recorded for a variant with zero master recipe rows,
- * since computeDeduction would silently return an empty deduction list
- * (i.e. "sell it for free, deduct nothing") rather than signal that no one
- * has configured the recipe yet.
+ * a sale must never be recorded for a variant with zero recipe rows, since
+ * computeDeduction would silently return an empty deduction list (i.e. "sell
+ * it for free, deduct nothing") rather than signal that no one has
+ * configured the recipe yet. Checked against ProductInventory since that's
+ * computeDeduction's actual data source (see findByVariantForDeduction
+ * above) — not the legacy Recipe table.
  */
-export async function assertRecipeExists(productVariantId: string): Promise<void> {
-  const exists = await recipesRepository.hasActiveRecipeForVariant(productVariantId);
+export async function assertProductInventoryExists(branchId: string, productVariantId: string): Promise<void> {
+  const exists = await productInventoryRepository.hasMappingForVariant(branchId, productVariantId);
   if (!exists) {
     throw new RecipeError(
       'RECIPE_MISSING',
@@ -259,16 +239,6 @@ export async function assertRecipeExists(productVariantId: string): Promise<void
       422,
     );
   }
-}
-
-/** CR-004: the master recipe version snapshotted onto TransactionItem.recipeVersion at sale time. */
-export function getRecipeVersion(productVariantId: string, flavorId: string | null): Promise<number> {
-  return recipesRepository.getMaxVersionForSelection(productVariantId, flavorId);
-}
-
-/** CR-004: the ingredient identities branchesService.createBranch provisions a new branch with. */
-export function listDistinctIngredientIdentities(): Promise<{ name: string; unit: string }[]> {
-  return recipesRepository.findDistinctIngredientIdentities();
 }
 
 export const recipesService = {

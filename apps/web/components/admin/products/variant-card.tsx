@@ -15,13 +15,14 @@ import { formatCurrency } from '@/lib/utils';
 
 interface VariantCardProps {
   variant: ProductVariantResponse;
+  branchId: string;
   onEditVariant: () => void;
   onLinkFlavor: () => void;
   onEditFlavorPricing: (flavor: ProductVariantResponse['flavors'][number]) => void;
   onDeleteVariant: () => void;
 }
 
-export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavorPricing, onDeleteVariant }: VariantCardProps) {
+export function VariantCard({ variant, branchId, onEditVariant, onLinkFlavor, onEditFlavorPricing, onDeleteVariant }: VariantCardProps) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
@@ -67,22 +68,22 @@ export function VariantCard({ variant, onEditVariant, onLinkFlavor, onEditFlavor
           </div>
         )}
 
-        <InventoryItemsSection variant={variant} />
+        <InventoryItemsSection variant={variant} branchId={branchId} />
       </CardContent>
     </Card>
   );
 }
 
 /**
- * Business-neutral stock-item mappings for one variant (Phase 6). Additive to
- * Recipe, which remains the sole POS deduction engine — this section only
- * manages ProductInventory rows and never references recipes or flavors.
+ * Branch-scoped stock-item mappings for one variant (Phase 6). ProductInventory
+ * is the active POS deduction mapping source, not Recipe — this section manages
+ * ProductInventory rows and never references recipes or flavors.
  */
-function InventoryItemsSection({ variant }: { variant: ProductVariantResponse }) {
+function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantResponse; branchId: string }) {
   const { isSupervisor: getIsSupervisor } = useAuth();
   const isSupervisor = getIsSupervisor();
-  const { data: mappings, isLoading } = useProductInventoryList(variant.id);
-  const deleteMapping = useDeleteProductInventory(variant.id);
+  const { data: mappings, isLoading } = useProductInventoryList(branchId, variant.id);
+  const deleteMapping = useDeleteProductInventory(branchId, variant.id);
 
   const [mappingDialog, setMappingDialog] = useState<{ open: boolean; mapping?: ProductInventoryResponse }>({ open: false });
   const [deletingMapping, setDeletingMapping] = useState<ProductInventoryResponse | null>(null);
@@ -140,6 +141,7 @@ function InventoryItemsSection({ variant }: { variant: ProductVariantResponse })
         variant={variant}
         existingMappings={mappings ?? []}
         editingMapping={mappingDialog.mapping}
+        editingBranchId={branchId}
       />
 
       {deletingMapping && (
@@ -147,7 +149,7 @@ function InventoryItemsSection({ variant }: { variant: ProductVariantResponse })
           open
           onOpenChange={(open) => !open && setDeletingMapping(null)}
           title={`Remove ${deletingMapping.ingredient_name}?`}
-          description="This only removes the informational stock mapping — it does not affect POS deduction, which is driven by Recipe."
+          description="Removing this mapping can affect whether and how POS stock deduction happens for this item."
           confirmLabel="Remove"
           variant="danger"
           onConfirm={async () => {

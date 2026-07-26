@@ -57,21 +57,9 @@ export const SOCKET_EVENTS = {
   // is connected to receive this event).
   EMPLOYEE_SESSION_REVOKED: 'employee:session_revoked',
 
-  // CR-001 — approval workflow notifications
-  PRICE_OVERRIDE_SUBMITTED: 'price_override:submitted',
-  PRICE_OVERRIDE_REVIEWED: 'price_override:reviewed',
-
-  // CR-002 — flavor request approval workflow notifications
-  FLAVOR_REQUEST_SUBMITTED: 'flavor_request:submitted',
-  FLAVOR_REQUEST_REVIEWED: 'flavor_request:reviewed',
-
   // Phase 16 — report export lifecycle (async CSV/PDF jobs)
   REPORT_EXPORT_READY: 'report:export_ready',
   REPORT_EXPORT_FAILED: 'report:export_failed',
-
-  INVENTORY_REQUEST_SUBMITTED: 'inventory_request:submitted',
-  INVENTORY_REQUEST_APPROVED: 'inventory_request:approved',
-  INVENTORY_REQUEST_REJECTED: 'inventory_request:rejected',
 
   // Phase 7 realtime pass — expense ledger had no socket coverage at all.
   EXPENSE_CREATED: 'expense:created',

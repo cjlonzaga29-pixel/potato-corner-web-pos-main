@@ -343,10 +343,6 @@ export const productsRepository = {
     return tx.productChangeLog.create({ data });
   },
 
-  countRecipesWithFlavorSlot(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
-    return tx.recipe.count({ where: { productVariantId, deletedAt: null, flavorSlotIndex: { not: null } } });
-  },
-
   countFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
     return tx.productFlavorSlot.count({ where: { productVariantId } });
   },

@@ -5,10 +5,9 @@
 //
 // Two of the three flows this file covers have NO frontend page at all:
 // - Variance approval (POST /api/cash/:shiftId/approve-variance) — there is
-//   no admin UI for it; only price-overrides and product-requests have
-//   approval pages under apps/web/app/(admin)/admin/approvals/. Tested at
-//   the API layer directly, with that gap called out explicitly rather than
-//   silently worked around.
+//   no admin UI for it (approval workflows were removed in favor of direct
+//   branch management). Tested at the API layer directly, with that gap
+//   called out explicitly rather than silently worked around.
 // - Cashier handover detection (SHIFT_UNAUTHORIZED_CLOSE, cash.service.ts
 //   closeShift) — apps/web/app/(pos)/shift/close/page.tsx has no visible
 //   error rendering for a failed close mutation at all (no {closeShift.

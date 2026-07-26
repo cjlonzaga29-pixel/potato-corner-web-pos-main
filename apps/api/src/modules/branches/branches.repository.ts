@@ -159,10 +159,6 @@ export const branchesRepository = {
     return prisma.shift.count({ where: { branchId, status: 'active' } });
   },
 
-  countPendingInventoryRequests(branchId: string) {
-    return prisma.inventoryRequest.count({ where: { branchId, status: 'pending' } });
-  },
-
   delete(branchId: string) {
     return prisma.branch.delete({ where: { id: branchId } });
   },

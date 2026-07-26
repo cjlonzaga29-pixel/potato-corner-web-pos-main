@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import {
   DISCOUNT_TYPE,
@@ -22,10 +23,10 @@ import {
   type UploadPaymentProofData,
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
-import { priceOverridesService } from '../price-overrides/price-overrides.service.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
-import { computeDeduction, assertRecipeExists, getRecipeVersion } from '../recipes/recipes.service.js';
+import { computeDeduction, assertProductInventoryExists } from '../recipes/recipes.service.js';
 import { RecipeError } from '../recipes/recipes.types.js';
+import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
 import { hashToLockId } from '../../lib/pg-lock.js';
@@ -229,6 +230,9 @@ function toHoldOrderResponse(row: HoldOrderRow) {
 }
 
 interface ResolvedItem {
+  // Pre-generated here (not left to the DB default) so deductInventoryForSale
+  // can write the deduction snapshot back onto this exact row by id.
+  id: string;
   productId: string;
   productVariantId: string;
   flavorId: string | null;
@@ -281,7 +285,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     // CR-004: reject the whole sale rather than silently deduct nothing for
     // a variant no one has configured a recipe for yet.
     try {
-      await assertRecipeExists(variant.id);
+      await assertProductInventoryExists(branchId, variant.id);
     } catch (error) {
       if (error instanceof RecipeError) {
         throw new TransactionError('RECIPE_MISSING', error.message, error.statusCode);
@@ -303,12 +307,13 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       pricePremium = link.pricePremium.toNumber();
     }
 
-    const basePrice = await priceOverridesService.getActivePriceForBranch(branchId, variant.id, variant.basePrice.toNumber());
+    const basePrice = variant.basePrice.toNumber();
     const unitPrice = round2(basePrice + pricePremium);
     const lineTotal = round2(unitPrice * item.quantity);
-    const recipeVersion = await getRecipeVersion(variant.id, item.flavorId ?? null);
+    const recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id, item.flavorId ?? undefined);
 
     resolved.push({
+      id: randomUUID(),
       productId: variant.productId,
       productVariantId: variant.id,
       flavorId: item.flavorId ?? null,
@@ -391,7 +396,7 @@ async function deductInventoryForSale(
   tx: Prisma.TransactionClient,
   branchId: string,
   transactionId: string,
-  items: { productVariantId: string; flavorId: string | null; quantity: number }[],
+  items: { transactionItemId: string; productVariantId: string; flavorId: string | null; quantity: number }[],
 ): Promise<Array<() => Promise<void>>> {
   const totals = new Map<string, { quantity: number; ingredientName: string }>();
   for (const item of items) {
@@ -401,6 +406,21 @@ async function deductInventoryForSale(
       quantitySold: item.quantity,
       branchId,
     });
+
+    // Deduction snapshot: exactly what computeDeduction produced for this
+    // line, captured before the loop below deducts any stock.
+    await tx.transactionItem.update({
+      where: { id: item.transactionItemId },
+      data: {
+        deductionSnapshot: lines.map((line) => ({
+          ingredientId: line.ingredient_id,
+          ingredientName: line.ingredient_name,
+          quantity: line.quantity,
+          unit: line.unit,
+        })),
+      },
+    });
+
     for (const line of lines) {
       const existing = totals.get(line.ingredient_id);
       totals.set(line.ingredient_id, {
@@ -511,11 +531,33 @@ async function reverseInventoryForTransaction(
   tx: Prisma.TransactionClient,
   branchId: string,
   transactionId: string,
-  items: { productVariantId: string; flavorId: string | null; quantity: number }[],
+  // Superseded by the deductionSnapshot-driven fetch below (kept in the
+  // signature so both call sites stay unchanged).
+  _items: { productVariantId: string; flavorId: string | null; quantity: number }[],
   kind: 'void' | 'refund',
 ): Promise<void> {
+  const transactionItems = await tx.transactionItem.findMany({
+    where: { transactionId },
+    select: { productVariantId: true, flavorId: true, quantity: true, deductionSnapshot: true },
+  });
+
   const totals = new Map<string, number>();
-  for (const item of items) {
+  for (const item of transactionItems) {
+    const snapshot = item.deductionSnapshot as
+      | { ingredientId: string; ingredientName: string; quantity: number; unit: string }[]
+      | null;
+
+    if (snapshot) {
+      // Replay exactly what was deducted at sale time instead of
+      // recomputing against the (possibly since-changed) recipe/inventory.
+      for (const entry of snapshot) {
+        totals.set(entry.ingredientId, (totals.get(entry.ingredientId) ?? 0) + entry.quantity);
+      }
+      continue;
+    }
+
+    // No snapshot: historical transaction predating this column. Fall back
+    // to the original recompute-from-recipe behavior.
     const lines = await computeDeduction({
       productVariantId: item.productVariantId,
       flavorId: item.flavorId,
@@ -751,6 +793,7 @@ export const transactionsService = {
             data.branchId,
             txCreated.id,
             resolvedItems.map((item) => ({
+              transactionItemId: item.id,
               productVariantId: item.productVariantId,
               flavorId: item.flavorId,
               quantity: item.quantity,

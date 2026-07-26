@@ -9,7 +9,6 @@ import {
   ShoppingBag,
   Palette,
   ChefHat,
-  DollarSign,
   Users,
   ClipboardCheck,
   BarChart3,
@@ -21,7 +20,6 @@ import {
   LogOut,
   Loader2,
   Wallet,
-  ShieldCheck,
   ShieldAlert,
   Clock,
   Percent,
@@ -32,10 +30,7 @@ import {
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
-import { useFlavorRequests } from '@/hooks/queries/use-flavor-requests';
-import { usePriceOverrides } from '@/hooks/queries/use-price-overrides';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
@@ -55,14 +50,6 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
   { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },
-  {
-    label: 'Approvals',
-    icon: ShieldCheck,
-    children: [
-      { label: 'Flavor Requests', href: '/admin/approvals/flavor-requests', icon: Palette },
-      { label: 'Price Overrides', href: '/admin/approvals/price-overrides', icon: DollarSign },
-    ],
-  },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   {
@@ -105,13 +92,6 @@ export function AdminSidebar() {
       setIsLoggingOut(false);
     }
   }
-  const { data: pendingFlavorRequests } = useFlavorRequests({ status: 'pending', limit: 1 });
-  const { data: pendingPriceOverrides } = usePriceOverrides({ status: 'pending', limit: 1 });
-  const badgeCounts: Record<string, number> = {
-    '/admin/approvals/flavor-requests': pendingFlavorRequests?.total ?? 0,
-    '/admin/approvals/price-overrides': pendingPriceOverrides?.total ?? 0,
-  };
-
   return (
     <aside
       className={cn(
@@ -191,7 +171,6 @@ export function AdminSidebar() {
                   <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-2">
                     {item.children.map((child) => {
                       const isActive = pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`);
-                      const count = badgeCounts[child.href] ?? 0;
                       return (
                         <Link
                           key={child.href}
@@ -205,11 +184,6 @@ export function AdminSidebar() {
                         >
                           <NavLinkIcon icon={child.icon} className="h-4 w-4 shrink-0" />
                           <span className="flex-1 truncate">{child.label}</span>
-                          {count > 0 && (
-                            <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
-                              {count}
-                            </Badge>
-                          )}
                         </Link>
                       );
                     })}
@@ -220,7 +194,6 @@ export function AdminSidebar() {
           }
 
           const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
-          const count = badgeCounts[item.href] ?? 0;
           const link = (
             <Link
               href={item.href}
@@ -233,11 +206,6 @@ export function AdminSidebar() {
             >
               <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
               {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-              {count > 0 && (
-                <Badge variant={isActive ? 'secondary' : 'critical'} className="ml-auto px-1.5 py-0 text-[10px]">
-                  {count}
-                </Badge>
-              )}
             </Link>
           );
           return (

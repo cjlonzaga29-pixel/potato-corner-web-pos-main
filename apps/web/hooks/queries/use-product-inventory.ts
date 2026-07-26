@@ -14,24 +14,24 @@ function errorMessage(response: ApiErrorShape, fallback: string): string {
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
 }
 
-/** Business-neutral stock-item mappings for one product variant (Phase 6 foundation). Recipe remains the active POS deduction engine — these mappings are additive, informational only. */
-export function useProductInventoryList(productVariantId: string | null | undefined) {
+/** Branch-scoped stock-item mappings for one product variant (Phase 6 foundation). ProductInventory is the active POS deduction mapping source, not Recipe. */
+export function useProductInventoryList(branchId: string | null | undefined, productVariantId: string | null | undefined) {
   return useQuery({
-    queryKey: ['product-inventory', productVariantId],
+    queryKey: ['product-inventory', branchId, productVariantId],
     queryFn: async () => {
       const response = await apiClient<{ mappings: ProductInventoryResponse[] }>(
-        `/api/product-inventory?product_variant_id=${productVariantId}`,
+        `/api/product-inventory?branch_id=${branchId}&product_variant_id=${productVariantId}`,
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load inventory item mappings'));
       return response.data.mappings;
     },
-    enabled: Boolean(productVariantId),
+    enabled: Boolean(branchId) && Boolean(productVariantId),
     staleTime: 30 * 1000,
   });
 }
 
-function invalidateProductInventory(queryClient: ReturnType<typeof useQueryClient>, productVariantId: string) {
-  void queryClient.invalidateQueries({ queryKey: ['product-inventory', productVariantId] });
+function invalidateProductInventory(queryClient: ReturnType<typeof useQueryClient>, branchId: string, productVariantId: string) {
+  void queryClient.invalidateQueries({ queryKey: ['product-inventory', branchId, productVariantId] });
 }
 
 export function useCreateProductInventory(productVariantId: string) {
@@ -45,15 +45,15 @@ export function useCreateProductInventory(productVariantId: string) {
       if (!response.data) throw new Error(errorMessage(response, 'Failed to add inventory item'));
       return response.data;
     },
-    onSuccess: () => {
-      invalidateProductInventory(queryClient, productVariantId);
+    onSuccess: (_data, variables) => {
+      invalidateProductInventory(queryClient, variables.branch_id, productVariantId);
       toast.success('Inventory item added');
     },
     onError: (error: Error) => toast.error(error.message),
   });
 }
 
-export function useUpdateProductInventory(productVariantId: string, mappingId: string) {
+export function useUpdateProductInventory(branchId: string, productVariantId: string, mappingId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: UpdateProductInventoryInput) => {
@@ -65,14 +65,14 @@ export function useUpdateProductInventory(productVariantId: string, mappingId: s
       return response.data;
     },
     onSuccess: () => {
-      invalidateProductInventory(queryClient, productVariantId);
+      invalidateProductInventory(queryClient, branchId, productVariantId);
       toast.success('Inventory item updated');
     },
     onError: (error: Error) => toast.error(error.message),
   });
 }
 
-export function useDeleteProductInventory(productVariantId: string) {
+export function useDeleteProductInventory(branchId: string, productVariantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (mappingId: string) => {
@@ -80,7 +80,7 @@ export function useDeleteProductInventory(productVariantId: string) {
       if (response.error) throw new Error(errorMessage(response, 'Failed to remove inventory item'));
     },
     onSuccess: () => {
-      invalidateProductInventory(queryClient, productVariantId);
+      invalidateProductInventory(queryClient, branchId, productVariantId);
       toast.success('Inventory item removed');
     },
     onError: (error: Error) => toast.error(error.message),

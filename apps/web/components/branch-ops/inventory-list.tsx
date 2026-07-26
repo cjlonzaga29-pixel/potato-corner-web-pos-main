@@ -1,131 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ArrowRightLeft, ClipboardList, History, Loader2, MinusCircle, Pencil, Plus, PlusCircle, TriangleAlert } from 'lucide-react';
-import { SOCKET_EVENTS } from '@potato-corner/shared';
-import type { BranchInventoryRow, IngredientResponse, InventoryRequestResponse, SubmitInventoryRequestInput } from '@potato-corner/shared';
+import { ArrowRightLeft, ClipboardList, History, MinusCircle, Pencil, Plus, PlusCircle, TriangleAlert } from 'lucide-react';
+import type { BranchInventoryRow, IngredientResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { DataTable } from '@/components/shared/data-table';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useBranchStore } from '@/stores/branch.store';
 import { useBranchInventory, useBranchInventoryAlerts, useIngredients, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
 import { IngredientDialog } from '@/components/supervisor/inventory/ingredient-dialog';
-import { apiClient } from '@/lib/api-client';
-import { useSocket } from '@/hooks/use-socket';
-
-interface ApiErrorShape {
-  error: { code: string; message?: string } | string | null;
-}
-
-function errorMessage(response: ApiErrorShape, fallback: string): string {
-  if (!response.error) return fallback;
-  return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
-}
-
-function useCreateInventoryRequest() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: SubmitInventoryRequestInput) => {
-      const response = await apiClient<InventoryRequestResponse>('/api/inventory-requests', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit inventory request'));
-      return response.data;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['inventory-requests', 'pending'] });
-      toast.success('Inventory request submitted');
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-}
-
-function InventoryRequestDialog({
-  branchId,
-  ingredient,
-  type,
-  onOpenChange,
-}: {
-  branchId: string;
-  ingredient: BranchInventoryRow;
-  type: 'stock_in' | 'stock_out';
-  onOpenChange: (open: boolean) => void;
-}) {
-  const createRequest = useCreateInventoryRequest();
-  const [quantity, setQuantity] = useState('');
-  const [reason, setReason] = useState('');
-  const quantityValue = Number(quantity);
-  const invalid = !quantity || !(quantityValue > 0) || reason.trim().length < 3;
-
-  async function handleSubmit() {
-    if (invalid) return;
-    await createRequest.mutateAsync({
-      branchId,
-      ingredientId: ingredient.ingredient_id,
-      type,
-      quantity: quantityValue,
-      reason: reason.trim(),
-    });
-    onOpenChange(false);
-  }
-
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{type === 'stock_in' ? 'Request Stock In' : 'Request Stock Out'}</DialogTitle>
-          <DialogDescription>{ingredient.name}</DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label htmlFor="inventory-request-quantity">
-              Quantity<span className="ml-0.5 text-destructive">*</span>
-            </Label>
-            <Input
-              id="inventory-request-quantity"
-              type="number"
-              step="any"
-              min="0"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="inventory-request-reason">
-              Reason<span className="ml-0.5 text-destructive">*</span>
-            </Label>
-            <Textarea
-              id="inventory-request-reason"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              rows={3}
-              placeholder="Reason for this request"
-            />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button type="button" disabled={createRequest.isPending || invalid} onClick={() => void handleSubmit()}>
-            {createRequest.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Submit Request
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 /**
  * Shared body behind both `/supervisor/inventory` and `/branch/inventory` —
@@ -142,25 +29,6 @@ export function InventoryList({ basePath }: { basePath: string }) {
   const { data: ingredients } = useIngredients(activeBranchId);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingIngredient, setEditingIngredient] = useState<IngredientResponse | null>(null);
-  const [requestDialog, setRequestDialog] = useState<{ ingredient: BranchInventoryRow; type: 'stock_in' | 'stock_out' } | null>(null);
-
-  const { on, off } = useSocket();
-  useEffect(() => {
-    function handleApproved(payload: unknown) {
-      const req = payload as InventoryRequestResponse;
-      toast.success(`Inventory request approved: ${req.ingredientName}`);
-    }
-    function handleRejected(payload: unknown) {
-      const req = payload as InventoryRequestResponse;
-      toast.error(`Inventory request rejected: ${req.ingredientName}`);
-    }
-    on(SOCKET_EVENTS.INVENTORY_REQUEST_APPROVED, handleApproved);
-    on(SOCKET_EVENTS.INVENTORY_REQUEST_REJECTED, handleRejected);
-    return () => {
-      off(SOCKET_EVENTS.INVENTORY_REQUEST_APPROVED, handleApproved);
-      off(SOCKET_EVENTS.INVENTORY_REQUEST_REJECTED, handleRejected);
-    };
-  }, [on, off]);
 
   function openCreateDialog() {
     setEditingIngredient(null);
@@ -232,12 +100,6 @@ export function InventoryList({ basePath }: { basePath: string }) {
           <Button variant="ghost" size="sm" onClick={() => openEditDialog(row.original.ingredient_id)}>
             <Pencil className="mr-1 h-4 w-4" />
             Edit
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setRequestDialog({ ingredient: row.original, type: 'stock_in' })}>
-            Request Stock In
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setRequestDialog({ ingredient: row.original, type: 'stock_out' })}>
-            Request Stock Out
           </Button>
         </div>
       ),
@@ -311,15 +173,6 @@ export function InventoryList({ basePath }: { basePath: string }) {
         branchId={activeBranchId}
         ingredient={editingIngredient}
       />
-
-      {requestDialog && (
-        <InventoryRequestDialog
-          branchId={activeBranchId}
-          ingredient={requestDialog.ingredient}
-          type={requestDialog.type}
-          onOpenChange={(open) => !open && setRequestDialog(null)}
-        />
-      )}
     </div>
   );
 }

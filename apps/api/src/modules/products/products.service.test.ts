@@ -30,7 +30,6 @@ vi.mock('./products.repository.js', () => ({
     // CR-005 Sub-phase 3c
     updateVariantLifecycle: vi.fn(),
     insertVariantChangeLog: vi.fn(),
-    countRecipesWithFlavorSlot: vi.fn(),
     countFlavorSlots: vi.fn(),
     // CR-005 Sub-phase 3d — flavor slot CRUD
     listVariantFlavorSlots: vi.fn().mockResolvedValue([]),
@@ -46,7 +45,6 @@ vi.mock('./products.repository.js', () => ({
 
 vi.mock('../recipes/recipes.repository.js', () => ({
   recipesRepository: {
-    findByVariant: vi.fn().mockResolvedValue([]),
     // CR-005 3f — slot-recipe coupling guards
     countRecipesReferencingSlot: vi.fn().mockResolvedValue(0),
     shiftRecipesFlavorSlotIndicesDown: vi.fn(),
@@ -54,9 +52,10 @@ vi.mock('../recipes/recipes.repository.js', () => ({
   },
 }));
 
-vi.mock('../inventory/inventory.repository.js', () => ({
-  inventoryRepository: {
-    findIngredientByBranchAndName: vi.fn(),
+vi.mock('../product-inventory/product-inventory.repository.js', () => ({
+  productInventoryRepository: {
+    hasMappingForVariant: vi.fn().mockResolvedValue(true),
+    hasAnyActiveMappingForVariant: vi.fn().mockResolvedValue(true),
   },
 }));
 
@@ -105,7 +104,7 @@ const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { supabaseAdmin } = await import('../../lib/supabase.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { recipesRepository } = await import('../recipes/recipes.repository.js');
-const { inventoryRepository } = await import('../inventory/inventory.repository.js');
+const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
 
 function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
@@ -609,7 +608,6 @@ describe('productsService.deleteProductImage', () => {
 
 describe('productsService — VARIANT_TRANSITIONS matrix', () => {
   beforeEach(() => {
-    vi.mocked(productsRepository.countRecipesWithFlavorSlot).mockResolvedValue(0);
     vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(0);
     vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([]);
   });
@@ -708,9 +706,8 @@ describe('productsService.submitVariantForApproval', () => {
 
 describe('productsService.approveVariant', () => {
   beforeEach(() => {
-    vi.mocked(productsRepository.countRecipesWithFlavorSlot).mockResolvedValue(0);
     vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(0);
-    vi.mocked(recipesRepository.findByVariant).mockResolvedValue([]);
+    vi.mocked(productInventoryRepository.hasAnyActiveMappingForVariant).mockResolvedValue(true);
     vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([
       { id: 'branch-a', code: 'PC-A-001', name: 'Branch A', city: 'Manila' },
     ] as never);
@@ -735,6 +732,8 @@ describe('productsService.approveVariant', () => {
     );
     expect(notifyBranch).toHaveBeenCalledWith('branch-a', SOCKET_EVENTS.VARIANT_APPROVED, expect.anything());
     expect(notifySuperAdmin).toHaveBeenCalledWith(SOCKET_EVENTS.VARIANT_APPROVED, expect.anything());
+    expect(productInventoryRepository.hasAnyActiveMappingForVariant).toHaveBeenCalledWith('variant-1');
+    expect(productInventoryRepository.hasMappingForVariant).not.toHaveBeenCalled();
   });
 
   it('supervisor gets 403', async () => {
@@ -755,17 +754,6 @@ describe('productsService.approveVariant', () => {
     expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith('variant-1', expect.objectContaining({ lastChangeReason: null }));
   });
 
-  it('Phase 4 gate blocks approval when a recipe row has a flavor slot index', async () => {
-    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
-    vi.mocked(productsRepository.countRecipesWithFlavorSlot).mockResolvedValue(1);
-
-    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
-      code: 'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
-      statusCode: 409,
-    });
-    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
-  });
-
   it('Phase 4 gate blocks approval when a ProductFlavorSlot row exists', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
     vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(1);
@@ -777,17 +765,16 @@ describe('productsService.approveVariant', () => {
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
   });
 
-  it('Guarantee 6 gate blocks approval when a recipe ingredient is unresolvable in every branch', async () => {
+  it('Guarantee 6 gate blocks approval when the variant has no active ProductInventory mapping in any branch', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
-    vi.mocked(recipesRepository.findByVariant).mockResolvedValue([
-      { id: 'recipe-1', ingredient: { id: 'ing-1', name: 'Ghost Potato', branchId: 'branch-z' } },
-    ] as never);
-    vi.mocked(inventoryRepository.findIngredientByBranchAndName).mockResolvedValue(null);
+    vi.mocked(productInventoryRepository.hasAnyActiveMappingForVariant).mockResolvedValue(false);
 
     await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
       code: 'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
       statusCode: 409,
     });
+    expect(productInventoryRepository.hasAnyActiveMappingForVariant).toHaveBeenCalledWith('variant-1');
+    expect(productInventoryRepository.hasMappingForVariant).not.toHaveBeenCalled();
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
   });
 });

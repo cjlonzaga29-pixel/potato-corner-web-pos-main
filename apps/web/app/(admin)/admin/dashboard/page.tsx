@@ -5,7 +5,6 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats } from '@/hooks/queries/use-branches';
-import { usePriceOverrides, usePriceOverridesRealtimeSync } from '@/hooks/queries/use-price-overrides';
 import { useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
 import { useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
@@ -14,7 +13,6 @@ import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
 import { DashboardTrendsSection } from '@/components/admin/dashboard-trends-section';
-import { DashboardPendingOverrides } from '@/components/admin/dashboard-pending-overrides';
 import { DashboardShortcutCards } from '@/components/admin/dashboard-shortcut-cards';
 import { DashboardAttendanceOverview } from '@/components/admin/dashboard-attendance-overview';
 import { DashboardInventoryAlerts } from '@/components/admin/dashboard-inventory-alerts';
@@ -24,8 +22,6 @@ import { LiveAlertsStream } from '@/components/monitoring/live-alerts-stream';
 import { BranchConnectionPanel } from '@/components/monitoring/branch-connection-panel';
 
 const SHIFT_LIST_LIMIT = 100;
-const TOTAL_ONLY_LIMIT = 1;
-const PANEL_LIST_LIMIT = 5;
 
 function AdminDashboardPageContent() {
   const isConnected = useSocketStore((s) => s.isConnected);
@@ -36,7 +32,6 @@ function AdminDashboardPageContent() {
 
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
-  usePriceOverridesRealtimeSync();
   useBranchRealtimeSync();
   useExpensesRealtimeSync();
   useAttendanceRealtimeSync();
@@ -53,24 +48,12 @@ function AdminDashboardPageContent() {
     branch_id: branchFilter,
     limit: SHIFT_LIST_LIMIT,
   });
-  const { data: pendingPriceOverridesTotal, isLoading: isLoadingPendingPriceOverridesTotal } = usePriceOverrides({
-    status: 'pending',
-    branch_id: branchFilter,
-    limit: TOTAL_ONLY_LIMIT,
-  });
-  const { data: pendingPriceOverridesList, isLoading: isLoadingPendingPriceOverridesList } = usePriceOverrides({
-    status: 'pending',
-    branch_id: branchFilter,
-    limit: PANEL_LIST_LIMIT,
-  });
   const { data: branchStats, isLoading: isLoadingBranchStats } = useAllBranchStats(branchFilter);
 
   const liveRevenue = activeShiftsData?.shifts.reduce(
     (sum, shift) => sum + shift.cash_sales_total + shift.gcash_sales_total,
     0,
   );
-  const pendingApprovalsCount = pendingPriceOverridesTotal !== undefined ? pendingPriceOverridesTotal.total : undefined;
-  const isLoadingApprovals = isLoadingPendingPriceOverridesTotal;
 
   const transactionsCount = branchStats?.reduce((sum, b) => sum + b.todayTransactionCount, 0);
   const activeCashiersCount = branchStats?.reduce((sum, b) => sum + b.activeStaffCount, 0);
@@ -102,7 +85,6 @@ function AdminDashboardPageContent() {
       <DashboardKpiRow
         activeShiftsCount={activeShiftsData?.total}
         liveRevenue={liveRevenue}
-        pendingApprovalsCount={pendingApprovalsCount}
         flaggedShiftsCount={flaggedShiftsData?.total}
         transactionsCount={transactionsCount}
         activeCashiersCount={activeCashiersCount}
@@ -112,22 +94,11 @@ function AdminDashboardPageContent() {
         netProfit={netProfit}
         isLoadingShifts={isLoadingActiveShifts}
         isLoadingRevenue={isLoadingActiveShifts}
-        isLoadingApprovals={isLoadingApprovals}
         isLoadingFlagged={isLoadingFlaggedShifts}
         isLoadingStats={isLoadingBranchStats}
       />
 
       <DashboardTrendsSection branchFilter={branchFilter} />
-
-      <div className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">Approvals</h2>
-        <div className="grid grid-cols-1 gap-4 md:max-w-md">
-          <DashboardPendingOverrides
-            overrides={pendingPriceOverridesList?.overrides}
-            isLoading={isLoadingPendingPriceOverridesList}
-          />
-        </div>
-      </div>
 
       <div className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight">Operations</h2>

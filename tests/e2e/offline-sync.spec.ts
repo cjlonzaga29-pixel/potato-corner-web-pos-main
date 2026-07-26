@@ -79,8 +79,8 @@ test.describe('offline transaction processing + reconnect sync (staff)', () => {
     // Load the terminal while online first — TanStack Query caches the
     // product catalog and current-shift lookup, and terminal/page.tsx's own
     // useEffect populates the Dexie offline cache from that live fetch
-    // (cacheProductCatalog/cacheBranchPriceOverrides). Charging while
-    // offline depends on this cache already being warm.
+    // (cacheProductCatalog). Charging while offline depends on this cache
+    // already being warm.
     await page.goto('/terminal');
     await expect(page.getByText(OFFLINE_PRODUCT.name)).toBeVisible();
 

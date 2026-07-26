@@ -27,7 +27,6 @@ import { DashboardKpiRow } from './dashboard-kpi-row';
 const BASE_PROPS = {
   activeShiftsCount: 5,
   liveRevenue: 12345.5,
-  pendingApprovalsCount: 0,
   flaggedShiftsCount: 0,
   transactionsCount: 10,
   activeCashiersCount: 4,
@@ -37,7 +36,6 @@ const BASE_PROPS = {
   netProfit: 15000,
   isLoadingShifts: false,
   isLoadingRevenue: false,
-  isLoadingApprovals: false,
   isLoadingFlagged: false,
   isLoadingStats: false,
 };
@@ -48,12 +46,11 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders 10 KpiCards', () => {
+  it('renders 9 KpiCards', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
     expect(screen.getByText('Active Shifts')).toBeInTheDocument();
     expect(screen.getByText('Live Revenue (Open Shifts)')).toBeInTheDocument();
-    expect(screen.getByText('Pending Approvals')).toBeInTheDocument();
     expect(screen.getByText('Flagged Shifts')).toBeInTheDocument();
     expect(screen.getByText('Transactions Today')).toBeInTheDocument();
     expect(screen.getByText('Active Cashiers')).toBeInTheDocument();
@@ -96,16 +93,6 @@ describe('DashboardKpiRow', () => {
     expect(screen.getByText('₱12345.50')).toBeInTheDocument();
   });
 
-  it('applies a warning treatment to pending approvals when count > 0', () => {
-    const { container } = render(<DashboardKpiRow {...BASE_PROPS} pendingApprovalsCount={3} />);
-    expect(container.querySelector('[data-tone="warning"]')).toBeInTheDocument();
-  });
-
-  it('does not apply a warning treatment to pending approvals when count is 0', () => {
-    const { container } = render(<DashboardKpiRow {...BASE_PROPS} pendingApprovalsCount={0} />);
-    expect(container.querySelector('[data-tone="warning"]')).not.toBeInTheDocument();
-  });
-
   it('applies a danger treatment to flagged shifts when count > 0', () => {
     const { container } = render(<DashboardKpiRow {...BASE_PROPS} flaggedShiftsCount={2} />);
     expect(container.querySelector('[data-tone="danger"]')).toBeInTheDocument();
@@ -117,7 +104,6 @@ describe('DashboardKpiRow', () => {
         {...BASE_PROPS}
         isLoadingShifts={true}
         isLoadingRevenue={false}
-        isLoadingApprovals={false}
         isLoadingFlagged={false}
       />,
     );

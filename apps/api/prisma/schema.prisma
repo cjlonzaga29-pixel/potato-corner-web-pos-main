@@ -176,6 +176,73 @@ enum UnitDimension {
   COUNT
 }
 
+// CR-009 -- durable initialization audit/provenance infrastructure for the
+// future reference-data initialization system (categories/units/conversions).
+// Single value today; kept as an enum (not a free string) for future
+// extensibility per CR-009's decision doc.
+enum InitializationType {
+  REFERENCE_DATA
+}
+
+enum InitializationExecutionMode {
+  DRY_RUN
+  APPLY
+  ROLLBACK
+}
+
+enum InitializationRunStatus {
+  PLANNED
+  DRY_RUN_VALIDATED
+  APPLYING
+  APPLIED
+  APPLY_FAILED
+  ROLLBACK_ASSESSING
+  ROLLBACK_BLOCKED
+  ROLLING_BACK
+  ROLLED_BACK
+  ROLLBACK_PARTIAL
+  SUPERSEDED
+}
+
+enum InitializationEntityType {
+  INVENTORY_CATEGORY
+  UNIT_OF_MEASURE
+  UNIT_CONVERSION
+}
+
+// VALIDATED is the dry-run-created initial action per CR-009.2's locked
+// lifecycle model: a dry-run row is created with action = VALIDATED before
+// apply transitions it to CREATED/REUSED/SKIPPED/BLOCKED/FAILED.
+enum InitializationAction {
+  VALIDATED
+  CREATED
+  REUSED
+  SKIPPED
+  BLOCKED
+  FAILED
+}
+
+// Nullable on InitializationRecord -- null until rollback eligibility has
+// been assessed (see InitializationRollbackStatus.NOT_ASSESSED).
+enum InitializationRollbackEligibility {
+  ELIGIBLE
+  BLOCKED
+}
+
+enum InitializationRollbackStatus {
+  NOT_ASSESSED
+  ELIGIBLE
+  BLOCKED
+  ROLLED_BACK
+  ROLLBACK_FAILED
+}
+
+enum InitializationApplyStatus {
+  PENDING
+  COMMITTED
+  ROLLED_BACK_ATTEMPT_FAILED
+}
+
 // ---------------------------------------------------------------------------
 // Core tables
 // ---------------------------------------------------------------------------
@@ -261,6 +328,9 @@ model User {
   createdProductVariants  ProductVariant[]   @relation("ProductVariantCreatedBy")
   approvedProductVariants ProductVariant[]   @relation("ProductVariantApprovedBy")
   productChangeLogs       ProductChangeLog[] @relation("ProductChangeLogChangedBy")
+
+  // CR-009
+  initiatedInitializationRuns InitializationRun[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1458,4 +1528,156 @@ model BranchPaymentMethodConfig {
 
   @@index([branchId])
   @@map("branch_payment_method_configs")
+}
+
+// ---------------------------------------------------------------------------
+// CR-009 — Durable Initialization Audit
+// ---------------------------------------------------------------------------
+// Provenance/audit infrastructure for a future reference-data initialization
+// system (categories/units/conversions) driven by a versioned manifest.
+// Schema-only in this task (R1) -- no migration is generated here, no
+// service-layer code exists yet. See docs/decisions/CR-009-durable-
+// initialization-audit.md for full rationale.
+
+// One row per initialization attempt (dry-run, apply, or rollback) against a
+// versioned reference-data manifest. `manifestSnapshot` freezes the exact
+// manifest content evaluated so later audits don't depend on mutable source
+// files. `fingerprintVersion` / `decimalCanonicalizationVersion` are pinned
+// alongside every stored fingerprint so a future change to hashing or
+// decimal-canonicalization rules doesn't silently invalidate historical
+// comparisons -- consumers must check these versions before comparing
+// fingerprints across runs.
+model InitializationRun {
+  id                             String                      @id @default(uuid())
+  migrationBatch                 String                      @map("migration_batch")
+  initializationType             InitializationType          @map("initialization_type")
+  manifestVersion                Int                         @map("manifest_version")
+  manifestFingerprint            String                      @map("manifest_fingerprint")
+  manifestSnapshot               Json                        @map("manifest_snapshot")
+  // Version of the manifestEntryKey encoding rules (see
+  // InitializationRecord below) in effect for this run. Starts at 1.
+  manifestEntryKeyVersion        Int                         @default(1) @map("manifest_entry_key_version")
+  fingerprintVersion             Int                         @default(1) @map("fingerprint_version")
+  decimalCanonicalizationVersion Int                         @default(1) @map("decimal_canonicalization_version")
+  targetEnvironment              String                      @map("target_environment")
+  executionMode                  InitializationExecutionMode @map("execution_mode")
+  status                         InitializationRunStatus
+  initiatedBy                    String                      @map("initiated_by")
+  startedAt                      DateTime?                   @map("started_at")
+  completedAt                    DateTime?                   @map("completed_at")
+  failedAt                       DateTime?                   @map("failed_at")
+  failureReason                  String?                     @map("failure_reason")
+  dryRunReportFingerprint        String?                     @map("dry_run_report_fingerprint")
+  applyReportFingerprint         String?                     @map("apply_report_fingerprint")
+  rollbackReportFingerprint      String?                     @map("rollback_report_fingerprint")
+  // Optimistic-concurrency guard, matching the `version` convention used
+  // elsewhere in this schema (e.g. ProductComponent, InventoryStock).
+  version                        Int                         @default(1)
+
+  // Restrict, never cascade: deleting a User must not silently delete the
+  // audit trail of initialization runs they triggered.
+  initiatedByUser User                   @relation(fields: [initiatedBy], references: [id], onDelete: Restrict)
+  records         InitializationRecord[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([migrationBatch])
+  @@index([targetEnvironment, status])
+  @@index([manifestFingerprint])
+  @@map("initialization_runs")
+}
+
+// One row per manifest entry evaluated within an InitializationRun --
+// the durable provenance record of what happened to that entry (validated,
+// created, reused, skipped, blocked, or failed) and, if rollback is later
+// attempted, what happened to the rollback.
+//
+// Manifest-entry provenance identity (locked, CR-009.2): `manifestEntryKey`
+// is the model's PRIMARY identity within a run -- `@@unique([initializationRunId,
+// manifestEntryKey])` below -- NOT `entityId`, which is nullable and carries
+// no FK (a loose reference only; see CR-009 "no polymorphic FK"). This is
+// deliberate: a manifest entry can be VALIDATED/SKIPPED/BLOCKED/FAILED before
+// any entity ever exists, so entity identity cannot be the primary key.
+//
+// manifestEntryKey encoding (locked, CR-009.2) -- format per entityType:
+//   INVENTORY_CATEGORY:<normalized-category-name>
+//   UNIT_OF_MEASURE:<normalized-unit-code>
+//   UNIT_CONVERSION:<normalized-from-unit-code>-><normalized-to-unit-code>
+// (UNIT_CONVERSION direction is significant and is never sorted -- A->B and
+// B->A are distinct manifest entries.)
+//
+// Normalization rules for the key components above (documented here; the
+// normalization function itself is implemented in a later task, not R1):
+//   1. Input must be a string.
+//   2. Unicode NFC-normalize.
+//   3. Trim outer whitespace.
+//   4. Locale-independent lowercase.
+//   5. Reject empty strings.
+//   6. Reject ASCII control chars U+0000-U+001F and U+007F.
+//   7. Reject the `:` character (reserved as the entityType/key separator).
+//   8. Reject the `->` sequence (reserved as the conversion direction
+//      separator).
+//   9. Preserve internal spaces (do not strip them).
+//   10. Never collapse repeated whitespace.
+//   11. No transliteration (e.g. accented characters are left as-is, not
+//       ASCII-folded).
+//   12. Never use a DB-generated ID as a key component.
+//   13. Prefer a stable code over a mutable display label.
+// Manifest validation must reject duplicate normalized keys within a single
+// manifest before a run is ever created (enforced in a later task's
+// service/validation layer, not the database).
+//
+// Required invariants across (action, createdByRun, reusedExisting, entityId)
+// (enforced in a later task's service layer, not the DB -- documented here
+// for reviewers):
+//   - createdByRun = true only when action = CREATED, entityId != null,
+//     reusedExisting = false.
+//   - reusedExisting = true only when action = REUSED, entityId != null,
+//     createdByRun = false.
+//   - For BLOCKED / SKIPPED / FAILED: createdByRun = false,
+//     reusedExisting = false, entityId may be null.
+//
+// Secondary partial-unique index (NOT expressible in Prisma -- to be added
+// as raw SQL to the generated migration in a later task, not this one):
+//   CREATE UNIQUE INDEX "InitializationRecord_run_entity_target_key"
+//   ON "initialization_records" ("initialization_run_id", "entity_type", "entity_id")
+//   WHERE "entity_id" IS NOT NULL;
+// This protects against two manifest entries within the same run resolving
+// to the same concrete entity. A plain nullable `@@unique` cannot express
+// this because Postgres treats NULL as distinct in unique constraints, which
+// would silently allow duplicate (run, entityType, NULL) rows -- harmless in
+// itself, but the real target-collision case (entityId IS NOT NULL) still
+// needs an index and Prisma has no partial-index syntax.
+model InitializationRecord {
+  id                             String                             @id @default(uuid())
+  initializationRunId            String                             @map("initialization_run_id")
+  manifestEntryKey               String                             @map("manifest_entry_key")
+  entityType                     InitializationEntityType           @map("entity_type")
+  // Nullable, no FK -- loose reference only (see comment above).
+  entityId                       String?                            @map("entity_id")
+  action                         InitializationAction
+  createdByRun                   Boolean                            @map("created_by_run")
+  reusedExisting                 Boolean                            @map("reused_existing")
+  preexistingFingerprint         String?                            @map("preexisting_fingerprint")
+  resultingFingerprint           String?                            @map("resulting_fingerprint")
+  currentVerificationFingerprint String?                            @map("current_verification_fingerprint")
+  applyStatus                    InitializationApplyStatus          @default(PENDING) @map("apply_status")
+  rollbackEligibility            InitializationRollbackEligibility? @map("rollback_eligibility")
+  rollbackStatus                 InitializationRollbackStatus       @default(NOT_ASSESSED) @map("rollback_status")
+  rollbackBlockedReason          String?                            @map("rollback_blocked_reason")
+  rolledBackAt                   DateTime?                          @map("rolled_back_at")
+  version                        Int                                @default(1)
+
+  // Restrict, never cascade: deleting an InitializationRun must not silently
+  // delete the per-entry audit trail underneath it.
+  initializationRun InitializationRun @relation(fields: [initializationRunId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([initializationRunId, manifestEntryKey])
+  @@index([entityType, entityId])
+  @@index([rollbackEligibility])
+  @@map("initialization_records")
 }

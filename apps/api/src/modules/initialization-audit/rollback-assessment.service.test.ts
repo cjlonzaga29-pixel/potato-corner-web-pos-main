@@ -245,6 +245,32 @@ describe.skipIf(!canRunIntegrationTests)('rollback-assessment.service integratio
     expect(assessed?.rollbackBlockedReason).toBe(DOWNSTREAM_REFERENCE_EXISTS);
   });
 
+  it('a soft-deleted InventoryItem does not count as a downstream reference (ELIGIBLE, not blocked)', async () => {
+    const run = await createRun();
+    const unit = await createUnit();
+    const fp = computeFingerprint('UnitOfMeasure', unit, 1).hash;
+
+    const record = await createRecord({
+      runId: run.id,
+      entityType: 'UNIT_OF_MEASURE',
+      entityId: unit.id,
+      action: 'CREATED',
+      createdByRun: true,
+      reusedExisting: false,
+      resultingFingerprint: fp,
+    });
+
+    const item = await createInventoryItem(unit.id, null);
+    // Soft-delete it -- a soft-deleted row is not "live" and must not block
+    // rollback, per this codebase's established soft-delete convention.
+    await prisma.inventoryItem.update({ where: { id: item.id }, data: { deletedAt: new Date() } });
+
+    const results = await assessRollbackEligibility(run.id);
+    const assessed = results.find((r) => r.id === record.id);
+    expect(assessed?.rollbackEligibility).toBe('ELIGIBLE');
+    expect(assessed?.rollbackBlockedReason).toBeNull();
+  });
+
   it('a CREATED UNIT_OF_MEASURE record with a live UnitConversion.fromUnitId reference is BLOCKED with DOWNSTREAM_REFERENCE_EXISTS', async () => {
     const run = await createRun();
     const unitA = await createUnit();

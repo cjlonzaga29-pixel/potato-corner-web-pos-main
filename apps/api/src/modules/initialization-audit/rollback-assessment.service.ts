@@ -100,12 +100,16 @@ async function fetchLiveEntityFields(
 async function hasDownstreamReference(entityType: InitializationEntityType, entityId: string): Promise<boolean> {
   switch (entityType) {
     case 'INVENTORY_CATEGORY': {
-      const count = await prisma.inventoryItem.count({ where: { categoryId: entityId } });
+      // deletedAt: null excludes soft-deleted InventoryItem rows -- a
+      // soft-deleted item is not a "live" reference (see this codebase's
+      // established soft-delete convention, e.g. product-inventory.repository.ts).
+      const count = await prisma.inventoryItem.count({ where: { categoryId: entityId, deletedAt: null } });
       return count > 0;
     }
     case 'UNIT_OF_MEASURE': {
       const [itemCount, conversionCount] = await Promise.all([
-        prisma.inventoryItem.count({ where: { baseUnitId: entityId } }),
+        prisma.inventoryItem.count({ where: { baseUnitId: entityId, deletedAt: null } }),
+        // UnitConversion has no soft-delete field -- every row is live.
         prisma.unitConversion.count({ where: { OR: [{ fromUnitId: entityId }, { toUnitId: entityId }] } }),
       ]);
       return itemCount > 0 || conversionCount > 0;

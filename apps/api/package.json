@@ -12,7 +12,8 @@
     "test": "vitest run --passWithNoTests",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "inventory:migration:dry-run": "tsx scripts/inventory-migration-dry-run.ts"
   },
   "dependencies": {
     "@potato-corner/shared": "workspace:*",

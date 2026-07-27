@@ -1,6 +1,9 @@
-import type { InitializationEntityType, InitializationRecord } from '@prisma/client';
+import type { InitializationEntityType, InitializationRecord, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { computeFingerprint, FINGERPRINT_VERSION } from './fingerprint.js';
+
+/** Either the root `prisma` singleton or a `Prisma.TransactionClient` passed into a `prisma.$transaction(...)` callback -- accepted so callers (e.g. R10's rollback-execution.service.ts) can re-run this exact check LIVE, inside their own transaction, immediately before a delete. */
+type PrismaClientOrTx = typeof prisma | Prisma.TransactionClient;
 
 /**
  * CR-009 "Rollback assessment service" — computes (but never acts on)
@@ -96,21 +99,32 @@ async function fetchLiveEntityFields(
  *    UnitConversion row by FK — this check always passes (no downstream
  *    reference possible) for this entity type. This is an explicit,
  *    considered no-op, not an omission.
+ *
+ * Exported (R10 addition) so the rollback-execution service can re-run this
+ * EXACT logic live, inside its own per-type `prisma.$transaction(...)`
+ * callback, immediately before each delete — passing its `tx` client via
+ * the optional `client` parameter rather than reimplementing the check.
+ * Defaults to the root `prisma` singleton so R9's own call sites (and R9's
+ * existing tests) are unaffected.
  */
-async function hasDownstreamReference(entityType: InitializationEntityType, entityId: string): Promise<boolean> {
+export async function hasDownstreamReference(
+  entityType: InitializationEntityType,
+  entityId: string,
+  client: PrismaClientOrTx = prisma,
+): Promise<boolean> {
   switch (entityType) {
     case 'INVENTORY_CATEGORY': {
       // deletedAt: null excludes soft-deleted InventoryItem rows -- a
       // soft-deleted item is not a "live" reference (see this codebase's
       // established soft-delete convention, e.g. product-inventory.repository.ts).
-      const count = await prisma.inventoryItem.count({ where: { categoryId: entityId, deletedAt: null } });
+      const count = await client.inventoryItem.count({ where: { categoryId: entityId, deletedAt: null } });
       return count > 0;
     }
     case 'UNIT_OF_MEASURE': {
       const [itemCount, conversionCount] = await Promise.all([
-        prisma.inventoryItem.count({ where: { baseUnitId: entityId, deletedAt: null } }),
+        client.inventoryItem.count({ where: { baseUnitId: entityId, deletedAt: null } }),
         // UnitConversion has no soft-delete field -- every row is live.
-        prisma.unitConversion.count({ where: { OR: [{ fromUnitId: entityId }, { toUnitId: entityId }] } }),
+        client.unitConversion.count({ where: { OR: [{ fromUnitId: entityId }, { toUnitId: entityId }] } }),
       ]);
       return itemCount > 0 || conversionCount > 0;
     }

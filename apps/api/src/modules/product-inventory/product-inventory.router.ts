@@ -1,13 +1,13 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { createProductInventorySchema, updateProductInventorySchema } from '@potato-corner/shared';
-import { productInventoryService } from './product-inventory.service.js';
+import { createProductInventorySchema, updateProductInventorySchema, simulateDeductionSchema } from '@potato-corner/shared';
+import { productInventoryService, computeDeduction } from './product-inventory.service.js';
 import { ProductInventoryError } from './product-inventory.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
+import { adminOrSupervisor, adminSupervisorOrBranch, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
-import { getAccessibleBranchIds } from '../../lib/branch-access.js';
+import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
 
 const router: Router = Router();
 
@@ -76,6 +76,38 @@ router.delete('/:id', authenticate, supervisorOnly, requirePasswordChange, async
     const branchIds = await getAccessibleBranchIds(req.user);
     await productInventoryService.deleteMapping(req.params.id as string, branchIds, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(204).send();
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+// --- Deduction simulation (mirrors POST /api/recipes/simulate permissions) ---
+
+router.post('/simulate', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(simulateDeductionSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const body = req.body as { product_variant_id: string; flavor_id?: string | null; quantity_sold: number; branch_id?: string };
+    if (body.branch_id && !(await hasBranchAccess(req.user, body.branch_id))) {
+      res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+      return;
+    }
+    const lines = await computeDeduction({
+      productVariantId: body.product_variant_id,
+      flavorId: body.flavor_id ?? null,
+      quantitySold: body.quantity_sold,
+      branchId: body.branch_id,
+    });
+    res.status(200).json({
+      data: {
+        product_variant_id: body.product_variant_id,
+        flavor_id: body.flavor_id ?? null,
+        branch_id: body.branch_id ?? null,
+        quantity_sold: body.quantity_sold,
+        lines,
+      },
+      error: null,
+      meta: null,
+    });
   } catch (error) {
     handleModuleError(error, res, next);
   }

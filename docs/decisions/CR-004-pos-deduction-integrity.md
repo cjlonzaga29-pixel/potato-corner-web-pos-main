@@ -2,6 +2,8 @@
 
 **Status:** Implemented. **Date:** 2026-07-24.
 
+> **SUPERSEDED — historical reference (commit `8d699a3`).** The Recipe/BranchRecipeOverride mechanics described below were later removed. `ProductInventory` is now the sole source of truth for POS inventory deduction, and `/api/product-inventory/simulate` replaces the recipe simulate endpoint. The `recipes`/`branch_recipe_overrides` tables and Prisma `Recipe`/`BranchRecipeOverride` models are deprecated remnants pending schema cleanup. This document is preserved to record why the CR-001–CR-004 guarantees exist — they were carried forward into `product-inventory.service.ts` and `transactions.service.ts`; the guarantees still apply, the Recipe-specific implementation below does not.
+
 ## Context
 
 A compliance-verification request came in framed as "CR-003" covering seven

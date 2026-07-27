@@ -16,6 +16,8 @@
 > - Deploy stack confirmed: Render (backend, not Railway), Vercel (frontend), Supabase (database), Upstash (Redis), Resend (email, live and verified), Sentry (configured). Render deploy green.
 > - `docs/architecture/phase-19-debt.md` tracks resolved vs. still-open debt items from Phases 17-20.
 
+> **Recipe → ProductInventory sync note (commit `8d699a3`):** the Recipe/BranchRecipeOverride API, service, repository, and admin pages described throughout this report (§7, §17, §19, and elsewhere) have since been removed. `ProductInventory` is now the sole source of truth for POS inventory deduction; `POST /api/product-inventory/simulate` replaces the old `/api/recipes/simulate`. The `recipes`/`branch_recipe_overrides` tables and Prisma `Recipe`/`BranchRecipeOverride` models are deprecated remnants pending schema cleanup (zero production rows). Every "Recipe"/"`/api/recipes`" reference below this line is historical — describing repo state before this change — not current architecture.
+
 ---
 
 ## 2026-07-22 update — 4 super-admin feature gaps closed

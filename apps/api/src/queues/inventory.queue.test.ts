@@ -16,7 +16,7 @@ vi.mock('../modules/inventory/inventory.repository.js', () => ({
   },
 }));
 
-vi.mock('../modules/recipes/recipes.service.js', () => ({
+vi.mock('../modules/product-inventory/product-inventory.service.js', () => ({
   computeDeduction: vi.fn(),
 }));
 
@@ -34,7 +34,7 @@ vi.mock('../lib/notify.js', () => ({
 }));
 
 const { inventoryRepository } = await import('../modules/inventory/inventory.repository.js');
-const { computeDeduction } = await import('../modules/recipes/recipes.service.js');
+const { computeDeduction } = await import('../modules/product-inventory/product-inventory.service.js');
 const { enqueueRawNotificationJob } = await import('./notification.queue.js');
 const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
 const { processSaleDeduction } = await import('./inventory.queue.js');

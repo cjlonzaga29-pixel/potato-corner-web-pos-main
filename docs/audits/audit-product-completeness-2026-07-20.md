@@ -1,5 +1,7 @@
 # Product Management Admin UX Completeness Audit — 2026-07-20
 
+> **Historical reference (commit `8d699a3`).** This audit's Recipes findings describe the now-removed `recipes.router.ts`/`recipes/page.tsx` surfaces. The Recipe API and frontend have since been deleted entirely (not built out) — `ProductInventory` and `/api/product-inventory/simulate` are the current deduction/simulation surfaces. Treat every Recipes-specific finding below as describing prior repo state, not an open gap to fix.
+
 ## 1. Executive Summary
 
 Feature completeness score: **14/32** standard POS catalog-management features implemented.

@@ -1,6 +1,6 @@
 import { MOVEMENT_TYPE, INVENTORY_DEDUCTION_STATUS, SOCKET_EVENTS } from '@potato-corner/shared';
 import { inventoryRepository } from '../modules/inventory/inventory.repository.js';
-import { computeDeduction } from '../modules/recipes/recipes.service.js';
+import { computeDeduction } from '../modules/product-inventory/product-inventory.service.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
 import { enqueueRawNotificationJob } from './notification.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';

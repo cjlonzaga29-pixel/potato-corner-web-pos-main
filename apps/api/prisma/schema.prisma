@@ -228,9 +228,6 @@ model User {
   holdOrders                       HoldOrder[]
   passwordResetTokens              PasswordResetToken[]
 
-  // CR-001
-  recipeOverridesCreated BranchRecipeOverride[]
-
   expenses Expense[]
 
   // Step 12a (System Settings)
@@ -276,8 +273,7 @@ model Branch {
   fraudAlerts         FraudAlert[]
 
   // CR-001
-  exclusiveProducts Product[]              @relation("ProductExclusiveBranch")
-  recipeOverrides   BranchRecipeOverride[]
+  exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
   productInventory  ProductInventory[]
 
   expenses Expense[]
@@ -486,15 +482,11 @@ model ProductVariant {
   createdBy        User?                  @relation("ProductVariantCreatedBy", fields: [createdById], references: [id])
   approvedBy       User?                  @relation("ProductVariantApprovedBy", fields: [approvedById], references: [id])
   variantFlavors   ProductVariantFlavor[]
-  recipes          Recipe[]
   transactionItems TransactionItem[]
   holdOrderItems   HoldOrderItem[]
   flavorSlots      ProductFlavorSlot[]
   changeLogs       ProductChangeLog[]
   productInventory ProductInventory[]
-
-  // CR-001
-  recipeOverrides BranchRecipeOverride[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -532,9 +524,7 @@ model Flavor {
 
   variantFlavors     ProductVariantFlavor[]
   branchAvailability BranchFlavorAvailability[]
-  recipes            Recipe[]
   transactionItems   TransactionItem[]
-  recipeOverrides    BranchRecipeOverride[]
   holdOrderItems     HoldOrderItem[]
   productInventory   ProductInventory[]
 
@@ -617,10 +607,8 @@ model Ingredient {
   // CR-005 Phase 1
   category          IngredientCategory @default(OTHER)
 
-  branch           Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  recipes          Recipe[]
+  branch           Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
   movements        InventoryMovement[]
-  recipeOverrides  BranchRecipeOverride[]
   productInventory ProductInventory[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -634,40 +622,6 @@ model Ingredient {
 }
 
 /// The flavorId column is the key field for the deduction algorithm:
-/// NULL means the row is a base ingredient applied to every sale of the
-/// variant regardless of flavor. A specific flavorId means the row applies
-/// only when that flavor is selected, and overrides the base quantity for
-/// the same ingredient. See the recipe deduction algorithm specification.
-model Recipe {
-  id               String    @id @default(uuid())
-  productVariantId String    @map("product_variant_id")
-  ingredientId     String    @map("ingredient_id")
-  flavorId         String?   @map("flavor_id")
-  quantity         Decimal   @db.Decimal(10, 4)
-  unit             String
-  // CR-004: bumped on every quantity/unit update (recipesRepository.updateRecipe).
-  // Snapshotted onto TransactionItem.recipeVersion at sale time so a completed
-  // sale's line item stays traceable to the exact recipe revision that priced
-  // its deduction, even after the master recipe changes later.
-  version          Int       @default(1)
-  deletedAt        DateTime? @map("deleted_at")
-  // CR-005 Phase 1: fixed row (NULL) vs. flavor-slot placeholder row.
-  flavorSlotIndex  Int?      @map("flavor_slot_index")
-
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
-  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
-  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
-
-  @@index([productVariantId])
-  @@index([ingredientId])
-  @@index([flavorId])
-  // Unique on (product_variant_id, ingredient_id, flavor_id) WHERE deleted_at
-  // IS NULL — matches BranchRecipeOverride's constraint shape, but partial so
-  // a soft-deleted recipe row doesn't permanently block recreating the same
-  // combination. Added by raw SQL in the migration (see Ingredient's note).
-  @@map("recipes")
-}
-
 /// ProductInventory is the inventory deduction source of truth — generic,
 /// branch-agnostic mapping of which Ingredient rows (and how much of each)
 /// a ProductVariant requires. Mappings may include base variant ingredient
@@ -713,41 +667,6 @@ model ProductInventory {
   @@index([ingredientId])
   @@index([flavorId])
   @@map("product_inventory")
-}
-
-/// CR-001 Phase 7.5 — branch-scoped recipe row that replaces (same
-/// ingredient+flavor combination) or adds to (new ingredient) the master
-/// Recipe for one branch's computeDeduction. No approval workflow: a
-/// supervisor may create/update/delete these directly, audit-logged with a
-/// mandatory reason. Same flavorId-nullable base/flavor-specific semantics as
-/// the master Recipe model.
-model BranchRecipeOverride {
-  id               String    @id @default(uuid())
-  branchId         String    @map("branch_id")
-  productVariantId String    @map("product_variant_id")
-  ingredientId     String    @map("ingredient_id")
-  flavorId         String?   @map("flavor_id")
-  quantity         Decimal   @db.Decimal(10, 4)
-  unit             String
-  reason           String
-  createdBy        String    @map("created_by")
-  deletedAt        DateTime? @map("deleted_at")
-
-  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
-  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
-  flavor         Flavor?        @relation(fields: [flavorId], references: [id])
-  creator        User           @relation(fields: [createdBy], references: [id])
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  @@index([branchId, productVariantId])
-  // Unique on (branch_id, product_variant_id, ingredient_id, flavor_id) WHERE
-  // deleted_at IS NULL — matches Recipe's partial-unique shape, so a
-  // soft-deleted override doesn't permanently block recreating the same
-  // combination. Added by raw SQL in the migration (see Ingredient's note).
-  @@map("branch_recipe_overrides")
 }
 
 /// CR-005 Phase 1 — Product Builder flavor-slot definition for a variant

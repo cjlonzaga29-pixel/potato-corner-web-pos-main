@@ -76,7 +76,9 @@ All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE
 | GET | `/:flavorId/branch-availability` | admin+sup | — | |
 | PATCH | `/:flavorId/branch-availability/:branchId` | admin+sup, `branchGuard` | `branchFlavorAvailabilitySchema` (minus `branch_id`) | `{ is_available, unavailable_reason? }`. |
 
-## recipes — mounted at `/api/recipes` (CR-001 branch overrides layered on the Phase 7 master table)
+## recipes — REMOVED, `/api/recipes` no longer mounted (superseded by product-inventory, commit `8d699a3`)
+
+**Historical reference only.** The table below documented the CR-001-era recipe API, active through the recipe/BranchRecipeOverride architecture era. The `recipesRouter`, its service, repository, and frontend surfaces have all been deleted; `/api/recipes` returns 404. `ProductInventory` is now the sole source of truth for POS inventory deduction — see `product-inventory` below. The `recipes` and `branch_recipe_overrides` tables and the Prisma `Recipe`/`BranchRecipeOverride` models still exist but are deprecated remnants pending schema cleanup (zero production rows).
 
 | Method | Path | Access | Request schema | Notes |
 |---|---|---|---|---|
@@ -84,11 +86,17 @@ All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE
 | POST | `/` | **admin** | `createRecipeSchema` | Master recipe row. |
 | PATCH | `/:id` | **admin** | `updateRecipeSchema` | |
 | DELETE | `/:id` | **admin** | — | 204. Soft delete (`deletedAt`). |
-| POST | `/simulate` | admin+sup | `simulateDeductionSchema` | Runs the layered deduction algorithm without writing inventory movements. A supervisor passing a `branch_id` outside their `branch_ids` gets `403 BRANCH_ACCESS_DENIED` (checked inline, since `branch_id` here is optional and only sometimes present). |
+| POST | `/simulate` | admin+sup | `simulateDeductionSchema` | Ran the layered deduction algorithm without writing inventory movements. |
 | GET | `/:variantId/overrides` | admin+sup, `branchGuard` | query: `branch_id` (required) | CR-001 branch override rows. |
 | POST | `/:variantId/overrides` | **sup**, `branchGuard` | `createRecipeOverrideSchema` | No approval workflow — audit-logged with mandatory `reason`. |
 | PATCH | `/overrides/:overrideId` | **sup**, `branchGuard` | `updateRecipeOverrideSchema`; query: `branch_id` (required) | |
-| DELETE | `/overrides/:overrideId` | **sup**, `branchGuard` | query: `branch_id` (required) | 204. Soft delete (`deletedAt`) — see `docs/architecture/database-schema.md`'s index-state table. |
+| DELETE | `/overrides/:overrideId` | **sup**, `branchGuard` | query: `branch_id` (required) | 204. Soft delete (`deletedAt`). |
+
+## product-inventory — active deduction/simulation surface, replaces recipes above
+
+| Method | Path | Access | Request schema | Notes |
+|---|---|---|---|---|
+| POST | `/api/product-inventory/simulate` | admin+sup | — | **Active simulation endpoint.** Runs POS deduction logic against `ProductInventory` without writing inventory movements. CR-001/CR-004 guarantees (cross-branch resolution, idempotent provisioning, immutability) were preserved and moved into `product-inventory.service.ts` and `transactions.service.ts`. |
 
 ## inventory — `inventoryRouter` mounted at `/api/inventory`, `inventoryBranchRouter` mounted at `/api/branches`
 

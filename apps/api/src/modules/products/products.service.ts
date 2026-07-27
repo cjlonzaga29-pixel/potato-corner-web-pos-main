@@ -13,7 +13,6 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
-import { recipesRepository } from '../recipes/recipes.repository.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 
 type ActorContext = { id: string; role: string };
@@ -1386,22 +1385,8 @@ export const productsService = {
     if (!slot) throw new ProductError('VARIANT_SLOT_NOT_FOUND', 'Flavor slot not found', 404);
 
     await performSlotEditWithActiveGovernance(slot.productVariantId, reason, actor, ipAddress, 'REMOVE_SLOT', async (tx) => {
-      // CR-005 3f — a slot with any recipe still pointing at it cannot be
-      // removed; the admin must delete/reassign those recipes first.
-      const dependentRecipeCount = await recipesRepository.countRecipesReferencingSlot(slot.productVariantId, slot.slotIndex, tx);
-      if (dependentRecipeCount > 0) {
-        throw new ProductError(
-          'SLOT_HAS_DEPENDENT_RECIPES',
-          `Cannot remove flavor slot at index ${slot.slotIndex}: ${dependentRecipeCount} recipe(s) reference it. Delete those recipes first.`,
-          409,
-        );
-      }
-
       await productsRepository.deleteFlavorSlot(slotId, tx);
       await productsRepository.shiftFlavorSlotIndicesDown(slot.productVariantId, slot.slotIndex, tx);
-      // Recipes referencing slots above the removed one must shift down too,
-      // so their flavorSlotIndex keeps pointing at the same logical slot.
-      await recipesRepository.shiftRecipesFlavorSlotIndicesDown(slot.productVariantId, slot.slotIndex, tx);
     });
   },
 
@@ -1432,17 +1417,6 @@ export const productsService = {
       }
 
       await productsRepository.rewriteFlavorSlotOrder(variantId, data.slotIds, tx);
-
-      // CR-005 3f — reorder is purely cosmetic for slots, but Recipe rows
-      // pointing at a slot by index must follow it to its new position.
-      const oldIndexById = new Map(currentSlots.map((s) => [s.id, s.slotIndex]));
-      const slotIndexMap = new Map<number, number>();
-      for (const [newIndex, slotId] of data.slotIds.entries()) {
-        const oldIndex = oldIndexById.get(slotId);
-        // Every id in data.slotIds was already validated above to belong to currentSlots.
-        if (oldIndex !== undefined) slotIndexMap.set(oldIndex, newIndex);
-      }
-      await recipesRepository.cascadeRecipeSlotReindex(variantId, slotIndexMap, tx);
 
       return productsRepository.listVariantFlavorSlots(variantId, tx);
     });

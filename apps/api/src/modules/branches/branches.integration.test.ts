@@ -418,13 +418,10 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — CR-005 Sub-ph
 describe.skipIf(!canRunIntegrationTests)('branches integration — permanent delete cascade', () => {
   let adminId: string;
   let branchId: string;
-  let productId: string;
-  let variantId: string;
   let ingredientId: string;
   let shiftId: string;
   let holdOrderId: string;
   let inventoryMovementId: string;
-  let branchRecipeOverrideId: string;
   let transactionId: string;
 
   beforeAll(async () => {
@@ -496,29 +493,6 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — permanent del
     });
     inventoryMovementId = movement.id;
 
-    const product = await prisma.product.create({ data: { name: 'Delete Cascade Fries', status: 'active' } });
-    productId = product.id;
-    const variant = await prisma.productVariant.create({
-      data: { productId, name: 'Regular', sizeLabel: 'Regular', basePrice: 100, isActive: true },
-    });
-    variantId = variant.id;
-
-    // Exercises the branch_recipe_overrides.ingredient_id RESTRICT->CASCADE
-    // fix (Finding 1, item 2).
-    const override = await prisma.branchRecipeOverride.create({
-      data: {
-        branchId,
-        productVariantId: variantId,
-        ingredientId,
-        flavorId: null,
-        quantity: 50,
-        unit: 'g',
-        reason: 'Delete cascade integration test override',
-        createdBy: adminId,
-      },
-    });
-    branchRecipeOverrideId = override.id;
-
     const transaction = await prisma.transaction.create({
       data: {
         transactionNumber: `DELCASC-${randomUUID().slice(0, 8)}`,
@@ -548,13 +522,10 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — permanent del
     // when zero rows match — same reasoning and same raw-SQL escape hatch as
     // transactions.integration.test.ts's own teardown.
     await prisma.$executeRaw`DELETE FROM "transactions" WHERE "id" = ${transactionId}`;
-    await prisma.branchRecipeOverride.deleteMany({ where: { id: branchRecipeOverrideId } });
     await prisma.$executeRaw`DELETE FROM "inventory_movements" WHERE "id" = ${inventoryMovementId}`;
     await prisma.holdOrder.deleteMany({ where: { id: holdOrderId } });
     await prisma.shift.deleteMany({ where: { id: shiftId } });
     await prisma.ingredient.deleteMany({ where: { id: ingredientId } });
-    await prisma.productVariant.deleteMany({ where: { productId } });
-    await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.branch.deleteMany({ where: { id: branchId } });
     await prisma.user.deleteMany({ where: { id: adminId } });
     await prisma.$disconnect();
@@ -563,13 +534,12 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — permanent del
   it('deleteBranch cascades every dependent row and records a BRANCH_DELETED audit entry', async () => {
     await branchesService.deleteBranch(branchId, { id: adminId, role: 'super_admin' }, null);
 
-    const [branch, ingredient, shift, holdOrder, movement, override, transaction, auditLog] = await Promise.all([
+    const [branch, ingredient, shift, holdOrder, movement, transaction, auditLog] = await Promise.all([
       prisma.branch.findUnique({ where: { id: branchId } }),
       prisma.ingredient.findFirst({ where: { id: ingredientId } }),
       prisma.shift.findFirst({ where: { id: shiftId } }),
       prisma.holdOrder.findFirst({ where: { id: holdOrderId } }),
       prisma.inventoryMovement.findFirst({ where: { id: inventoryMovementId } }),
-      prisma.branchRecipeOverride.findFirst({ where: { id: branchRecipeOverrideId } }),
       prisma.transaction.findFirst({ where: { id: transactionId } }),
       // The row's branchId is null after the delete — the audit entry is
       // written after branchesRepository.delete() now (Finding 2), and
@@ -583,7 +553,6 @@ describe.skipIf(!canRunIntegrationTests)('branches integration — permanent del
     expect(shift).toBeNull();
     expect(holdOrder).toBeNull();
     expect(movement).toBeNull();
-    expect(override).toBeNull();
     expect(transaction).toBeNull();
     expect(auditLog).not.toBeNull();
     expect(auditLog?.branchId).toBeNull();

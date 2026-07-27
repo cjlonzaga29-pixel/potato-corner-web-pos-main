@@ -9,7 +9,6 @@ import {
   Clock,
   Banknote,
   BarChart3,
-  ChefHat,
   Users,
   Receipt,
   ChevronsLeft,
@@ -35,7 +34,6 @@ export const SUPERVISOR_NAV_ITEMS = [
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },
   { label: 'Employees', href: '/supervisor/employees', icon: Users },
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
-  { label: 'Recipes', href: '/supervisor/recipes', icon: ChefHat },
 ] satisfies ReadonlyArray<NavItem>;
 
 export function SupervisorSidebar() {

@@ -24,8 +24,8 @@ import {
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
-import { computeDeduction, assertProductInventoryExists } from '../recipes/recipes.service.js';
-import { RecipeError, type DeductionLine } from '../recipes/recipes.types.js';
+import { computeDeduction, assertProductInventoryExists } from '../product-inventory/product-inventory.service.js';
+import { ProductInventoryError, type DeductionLine } from '../product-inventory/product-inventory.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
@@ -292,7 +292,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     try {
       await assertProductInventoryExists(branchId, variant.id);
     } catch (error) {
-      if (error instanceof RecipeError) {
+      if (error instanceof ProductInventoryError) {
         throw new TransactionError('RECIPE_MISSING', error.message, error.statusCode);
       }
       throw error;

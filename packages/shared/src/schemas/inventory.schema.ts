@@ -164,41 +164,6 @@ export const transferIngredientResponseSchema = z.object({
   transfer_in: movementResponseSchema,
 });
 
-/**
- * Master recipe row. flavor_id is nullable — NULL means this row is a base
- * ingredient applied regardless of flavor selection. A specific flavor_id
- * means the row applies only when that flavor is selected, and overrides the
- * base quantity for the same ingredient (architecture doc §7.1).
- */
-export const createRecipeSchema = z.object({
-  product_variant_id: z.uuid(),
-  ingredient_id: z.uuid(),
-  flavor_id: z.uuid().nullable().optional(),
-  // CR-005 3f — mutually exclusive with flavor_id; targets a ProductFlavorSlot position instead of a fixed Flavor.
-  flavor_slot_index: z.number().int().nonnegative().nullable().optional(),
-  quantity: z.number().positive(),
-  unit: z.string().min(1).max(20),
-});
-
-export const updateRecipeSchema = z.object({
-  quantity: z.number().positive().optional(),
-  unit: z.string().min(1).max(20).optional(),
-  flavor_slot_index: z.number().int().nonnegative().nullable().optional(),
-});
-
-export const recipeResponseSchema = z.object({
-  id: z.uuid(),
-  product_variant_id: z.uuid(),
-  ingredient_id: z.uuid(),
-  ingredient_name: z.string(),
-  flavor_id: z.uuid().nullable(),
-  flavor_name: z.string().nullable(),
-  // Only present on master recipe responses — BranchRecipeOverride has no flavorSlotIndex column.
-  flavor_slot_index: z.number().nullable().optional(),
-  quantity: z.number(),
-  unit: z.string(),
-});
-
 export const createInventoryMovementSchema = z.object({
   branch_id: z.uuid(),
   ingredient_id: z.uuid(),

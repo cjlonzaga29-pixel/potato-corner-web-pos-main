@@ -22,3 +22,11 @@ export interface UpdateProductInventoryData {
   quantityRequired?: number;
   unit?: string;
 }
+
+export interface DeductionLine {
+  ingredient_id: string;
+  ingredient_name: string;
+  quantity: number;
+  unit: string;
+  source: 'master_base' | 'master_flavor' | 'branch_base' | 'branch_flavor';
+}

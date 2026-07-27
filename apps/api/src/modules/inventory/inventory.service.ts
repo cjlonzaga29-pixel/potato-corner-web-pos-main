@@ -586,13 +586,14 @@ export const inventoryService = {
 
   /**
    * CR-004 idempotent branch provisioning — called once at branch creation
-   * (branchesService.createBranch) with every distinct ingredient identity
-   * referenced by an active master Recipe row, unioned since CR-005
-   * Sub-phase 3b with every distinct flavor-derived identity. Ensures the
-   * new branch's own inventory ledger has a zero-stock row for each one, so
-   * master-recipe deductions can resolve to *this* branch's own Ingredient
-   * instead of leaking against whichever branch's Ingredient the recipe was
-   * originally created against (see recipes.service.ts computeDeduction).
+   * (branchesService.createBranch) with identities merged from two sources:
+   * every active ProductInventory mapping (category OTHER) and every
+   * flavor-derived ingredient identity (category FLAVOR), deduplicated by
+   * (name, unit) with FLAVOR winning on collision. This function performs
+   * no Recipe reads of its own — branchesService assembles the identity
+   * list before calling in. Ensures the new branch's own inventory ledger
+   * has a zero-stock row for each identity, so deductions resolve to *this*
+   * branch's own Ingredient instead of leaking against another branch's row.
    * Idempotent — safe to re-run for a branch that already has some of these
    * ingredients. category is optional so pre-3b callers passing bare
    * {name, unit} identities are unaffected. tx is optional too (CR-005

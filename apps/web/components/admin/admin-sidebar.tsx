@@ -8,7 +8,6 @@ import {
   Building2,
   ShoppingBag,
   Palette,
-  ChefHat,
   Users,
   ClipboardCheck,
   BarChart3,
@@ -49,7 +48,6 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Payment Settings', href: '/admin/payments', icon: Wallet },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
   { label: 'Flavors', href: '/admin/flavors', icon: Palette },
-  { label: 'Master Recipes', href: '/admin/recipes', icon: ChefHat },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   {

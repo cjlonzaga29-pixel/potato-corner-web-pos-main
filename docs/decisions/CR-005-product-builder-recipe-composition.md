@@ -2,6 +2,8 @@
 
 **Status:** Proposed. **Date:** 2026-07-24.
 
+> **SUPERSEDED — historical reference (commit `8d699a3`).** The Recipe-based composition/deduction model this proposal builds on has since been removed; `ProductInventory` is now the sole source of truth for POS deduction, and `/api/product-inventory/simulate` is the active simulation endpoint. The `recipes`/`branch_recipe_overrides` tables and Prisma `Recipe`/`BranchRecipeOverride` models are deprecated remnants pending schema cleanup. Preserved to record the composable-product rationale (multi-flavor variants, mix products); any future work here must retarget ProductInventory, not Recipe.
+
 ## Context
 
 CR-003 shipped the Branch Operating System (role split, employee

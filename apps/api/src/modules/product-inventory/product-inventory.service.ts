@@ -1,7 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { productInventoryRepository } from './product-inventory.repository.js';
-import { ProductInventoryError } from './product-inventory.types.js';
+import { ProductInventoryError, type DeductionLine } from './product-inventory.types.js';
 import { productsRepository } from '../products/products.repository.js';
+import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 type ActorContext = { id: string; role: string };
@@ -49,6 +50,116 @@ function mappingExistsError(): ProductInventoryError {
     'A mapping for this product variant and inventory item already exists',
     409,
   );
+}
+
+interface ComputeDeductionInput {
+  productVariantId: string;
+  flavorId: string | null;
+  quantitySold: number;
+  branchId?: string;
+}
+
+interface MappingIngredientRef {
+  ingredientId: string;
+  ingredient: { name: string; branchId: string };
+}
+
+/**
+ * CR-004: a ProductInventory mapping row's ingredientId points at one
+ * specific branch's Ingredient (Ingredient has no branch-neutral identity —
+ * see docs/decisions/CR-004-pos-deduction-integrity.md). A sale at any
+ * *other* branch must resolve that row to its own equivalent Ingredient
+ * (matched by name — the same match findIngredientByBranchAndName and
+ * idempotent branch provisioning both use), never deduct against the pinned
+ * branch's stock. A no-op (zero extra queries) when the row's own ingredient
+ * already belongs to the selling branch, which covers every single-branch
+ * deployment and every mapping an admin happened to create against that
+ * branch's ingredient.
+ */
+async function resolveIngredientForBranch(branchId: string, row: MappingIngredientRef): Promise<{ id: string; name: string }> {
+  if (row.ingredient.branchId === branchId) {
+    return { id: row.ingredientId, name: row.ingredient.name };
+  }
+  const resolved = await inventoryRepository.findIngredientByBranchAndName(branchId, row.ingredient.name);
+  if (!resolved) {
+    throw new ProductInventoryError(
+      'INGREDIENT_NOT_PROVISIONED',
+      `Ingredient "${row.ingredient.name}" has not been provisioned at this branch yet — add it under branch inventory before selling this item here`,
+      409,
+    );
+  }
+  return { id: resolved.id, name: resolved.name };
+}
+
+/**
+ * Computes ingredient deductions for a POS sale from active ProductInventory
+ * mappings for the given branch and product variant (see
+ * productInventoryRepository.findByVariantForDeduction) — that query already
+ * excludes soft-deleted (deletedAt) and inactive (isActive: false) mappings,
+ * so every row returned here is eligible to deduct. branchId is required;
+ * this function does not read the Recipe or BranchRecipeOverride tables.
+ *
+ * Layering order (a later step replaces a same-ingredient_id entry from an
+ * earlier step, or adds a new one):
+ *   1. base mappings    (flavor_id IS NULL)
+ *   2. flavor mappings   (flavor_id = selected) — overrides same-ingredient base
+ *
+ * Each mapping's ingredient is resolved to the selling branch's own
+ * Ingredient (CR-004, resolveIngredientForBranch) before being added to the
+ * result.
+ */
+export async function computeDeduction(input: ComputeDeductionInput): Promise<DeductionLine[]> {
+  if (!input.branchId) {
+    throw new ProductInventoryError('BRANCH_ID_REQUIRED', 'A branchId is required to compute inventory deduction.', 400);
+  }
+  const rows = await productInventoryRepository.findByVariantForDeduction(
+    input.branchId,
+    input.productVariantId,
+    input.flavorId ?? undefined,
+  );
+
+  // Query order is not guaranteed, so partition explicitly: base mappings
+  // (flavorId null) are applied first, flavor mappings second, so a flavor
+  // mapping always wins over a base mapping for the same ingredientId
+  // regardless of the row order the DB returns.
+  const baseRows = rows.filter((row) => row.flavorId === null);
+  const flavorRows = rows.filter((row) => row.flavorId !== null);
+
+  const map = new Map<string, DeductionLine>();
+  for (const row of [...baseRows, ...flavorRows]) {
+    const ingredient = input.branchId
+      ? await resolveIngredientForBranch(input.branchId, { ingredientId: row.ingredientId, ingredient: { name: row.ingredient.name, branchId: row.ingredient.branchId } })
+      : { id: row.ingredientId, name: row.ingredient.name };
+    map.set(ingredient.id, {
+      ingredient_id: ingredient.id,
+      ingredient_name: ingredient.name,
+      quantity: row.quantityRequired.toNumber(),
+      unit: row.unit,
+      source: 'master_base',
+    });
+  }
+
+  return Array.from(map.values()).map((line) => ({ ...line, quantity: line.quantity * input.quantitySold }));
+}
+
+/**
+ * CR-004: transactions.service.ts calls this before pricing a cart line —
+ * a sale must never be recorded for a variant with zero recipe rows, since
+ * computeDeduction would silently return an empty deduction list (i.e. "sell
+ * it for free, deduct nothing") rather than signal that no one has
+ * configured the recipe yet. Checked against ProductInventory since that's
+ * computeDeduction's actual data source (see findByVariantForDeduction
+ * above) — not the legacy Recipe table.
+ */
+export async function assertProductInventoryExists(branchId: string, productVariantId: string): Promise<void> {
+  const exists = await productInventoryRepository.hasMappingForVariant(branchId, productVariantId);
+  if (!exists) {
+    throw new ProductInventoryError(
+      'RECIPE_MISSING',
+      'This product variant has no recipe configured — a sale cannot be recorded until Super Admin adds one',
+      422,
+    );
+  }
 }
 
 export const productInventoryService = {

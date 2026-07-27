@@ -46,7 +46,7 @@ vi.mock('../../lib/prisma.js', () => {
 // Inventory deduction/reversal is exercised by inventory.integration.test.ts;
 // these tests cover pricing, VAT, and sync — stub the recipe lookup to no-op
 // so prisma.$transaction's callback doesn't need real recipe/ingredient rows.
-vi.mock('../recipes/recipes.service.js', () => ({
+vi.mock('../product-inventory/product-inventory.service.js', () => ({
   computeDeduction: vi.fn().mockResolvedValue([]),
   // CR-004: resolveCartItems checks recipe existence before stamping a
   // version per cart line — default to "recipe exists" so the
@@ -110,9 +110,9 @@ vi.mock('sharp', () => ({
 }));
 
 const { transactionsRepository } = await import('./transactions.repository.js');
-const { assertProductInventoryExists } = await import('../recipes/recipes.service.js');
+const { assertProductInventoryExists } = await import('../product-inventory/product-inventory.service.js');
 const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
-const { RecipeError } = await import('../recipes/recipes.types.js');
+const { ProductInventoryError } = await import('../product-inventory/product-inventory.types.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.js');
@@ -942,7 +942,7 @@ describe('transactionsService.getDiscountAuditTrail', () => {
 describe('transactionsService.createTransaction — CR-004 recipe integrity', () => {
   it('rejects the whole sale with RECIPE_MISSING when the variant has no recipe configured — no transaction row is created', async () => {
     vi.mocked(assertProductInventoryExists).mockRejectedValueOnce(
-      new RecipeError('RECIPE_MISSING', 'This product variant has no recipe configured', 422),
+      new ProductInventoryError('RECIPE_MISSING', 'This product variant has no recipe configured', 422),
     );
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({

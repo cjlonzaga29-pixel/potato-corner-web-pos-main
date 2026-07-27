@@ -43,7 +43,12 @@ export interface UnitClassificationEntry {
   normalizedUnit: string;
   occurrenceCount: number;
   affectedIngredientIds: string[];
-  proposedUnitOfMeasureCode: string | null;
+  /**
+   * Advisory only — a human-readable canonical unit name, never a
+   * UnitOfMeasure.code/id. No UnitOfMeasure row is assumed to exist;
+   * resolving to an actual FK is Phase C work.
+   */
+  proposedCanonicalUnitName: string | null;
   classification: UnitClassification;
   blockingReason: string | null;
 }

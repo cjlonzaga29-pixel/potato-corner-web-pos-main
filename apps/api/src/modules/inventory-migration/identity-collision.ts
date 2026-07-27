@@ -5,7 +5,7 @@ import type {
   SkuCollision,
   BarcodeCollision,
 } from './types.js';
-import { normalizeInventoryName, normalizeLegacyUnit } from './normalization.js';
+import { normalizeInventoryName, normalizeLegacyUnit, normalizeCategory } from './normalization.js';
 
 /**
  * CR-007 SS20.4/SS3 — matching normalized names alone is never sufficient.
@@ -47,10 +47,9 @@ export function detectIdentityCollisions(ingredients: LegacyIngredientRecord[]):
       continue;
     }
 
-    const subkeyOf = (i: LegacyIngredientRecord) => `${normalizeLegacyUnit(i.unit).normalized}::${i.category}`;
-    const distinctSubkeys = new Set(members.map(subkeyOf));
+    const distinctSubkeyCount = countDistinctUnitCategoryPairs(members);
 
-    if (distinctSubkeys.size === 1) {
+    if (distinctSubkeyCount === 1) {
       groups.push({
         normalizedName,
         classification: 'SAFE_AUTO_MATCH_CANDIDATE',
@@ -68,6 +67,34 @@ export function detectIdentityCollisions(ingredients: LegacyIngredientRecord[]):
   }
 
   return groups;
+}
+
+/**
+ * Counts distinct (normalized unit, normalized category) pairs without
+ * concatenating them into a delimited string key — a nested Map avoids any
+ * risk of unrelated values colliding when their raw text happens to contain
+ * the delimiter (e.g. a unit or category containing "::").
+ */
+function countDistinctUnitCategoryPairs(members: LegacyIngredientRecord[]): number {
+  const categoriesByUnit = new Map<string, Set<string>>();
+  let distinctCount = 0;
+
+  for (const member of members) {
+    const unit = normalizeLegacyUnit(member.unit).normalized;
+    const category = normalizeCategory(member.category).normalized;
+
+    let categories = categoriesByUnit.get(unit);
+    if (!categories) {
+      categories = new Set();
+      categoriesByUnit.set(unit, categories);
+    }
+    if (!categories.has(category)) {
+      categories.add(category);
+      distinctCount += 1;
+    }
+  }
+
+  return distinctCount;
 }
 
 function toMembers(ingredients: LegacyIngredientRecord[]): IdentityCandidateMember[] {

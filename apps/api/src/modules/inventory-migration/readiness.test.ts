@@ -51,7 +51,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness(
       baseInput({
         normalizedUnits: [
-          { rawUnit: 'x', normalizedUnit: 'x', occurrenceCount: 1, affectedIngredientIds: ['a'], proposedUnitOfMeasureCode: null, classification: 'UNKNOWN', blockingReason: 'r' },
+          { rawUnit: 'x', normalizedUnit: 'x', occurrenceCount: 1, affectedIngredientIds: ['a'], proposedCanonicalUnitName: null, classification: 'UNKNOWN', blockingReason: 'r' },
         ],
       }),
     );
@@ -63,7 +63,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness(
       baseInput({
         normalizedUnits: [
-          { rawUnit: 'x', normalizedUnit: 'x', occurrenceCount: 1, affectedIngredientIds: ['a'], proposedUnitOfMeasureCode: null, classification: 'ITEM_SPECIFIC_PACKAGE_UNIT', blockingReason: null },
+          { rawUnit: 'x', normalizedUnit: 'x', occurrenceCount: 1, affectedIngredientIds: ['a'], proposedCanonicalUnitName: null, classification: 'ITEM_SPECIFIC_PACKAGE_UNIT', blockingReason: null },
         ],
       }),
     );

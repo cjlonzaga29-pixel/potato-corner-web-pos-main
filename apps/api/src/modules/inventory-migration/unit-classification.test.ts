@@ -25,7 +25,25 @@ describe('classifyLegacyUnits', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'gram' })], []);
     // a single input ingredient always produces exactly one classification entry
     expect(result[0]!.classification).toBe('NORMALIZABLE_GLOBAL_UNIT');
-    expect(result[0]!.proposedUnitOfMeasureCode).toBe('GRAM');
+    expect(result[0]!.proposedCanonicalUnitName).toBe('gram');
+  });
+
+  it('classifies kg as NORMALIZABLE_GLOBAL_UNIT with advisory canonical name only (no UnitOfMeasure.code/id implied)', () => {
+    const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'kg' })], []);
+    expect(result[0]!.classification).toBe('NORMALIZABLE_GLOBAL_UNIT');
+    expect(result[0]!.proposedCanonicalUnitName).toBe('kilogram');
+  });
+
+  it('classifies box as ITEM_SPECIFIC_PACKAGE_UNIT with no proposed canonical unit name', () => {
+    const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'box' })], []);
+    expect(result[0]!.classification).toBe('ITEM_SPECIFIC_PACKAGE_UNIT');
+    expect(result[0]!.proposedCanonicalUnitName).toBeNull();
+  });
+
+  it('classifies an unknown unit with no proposed canonical unit name', () => {
+    const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'blorp' })], []);
+    expect(result[0]!.classification).toBe('UNKNOWN');
+    expect(result[0]!.proposedCanonicalUnitName).toBeNull();
   });
 
   it('classifies package-style units as ITEM_SPECIFIC_PACKAGE_UNIT with a blocking reason', () => {

@@ -21,6 +21,10 @@ export function normalizeLegacyUnit(value: string): NormalizedValue {
   return { raw: value, normalized: collapseWhitespace(value).toLowerCase() };
 }
 
+export function normalizeCategory(value: string): NormalizedValue {
+  return { raw: value, normalized: collapseWhitespace(value).toLowerCase() };
+}
+
 export function normalizeSku(value: string | null): NormalizedValue | null {
   if (value === null) return null;
   return { raw: value, normalized: collapseWhitespace(value).toUpperCase() };

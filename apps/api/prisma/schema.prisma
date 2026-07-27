@@ -155,6 +155,27 @@ enum VariantLifecycleStatus {
   ARCHIVED
 }
 
+enum InventoryMappingStatus {
+  PENDING
+  AUTO_MATCHED
+  MANUALLY_MATCHED
+  AMBIGUOUS
+  REJECTED
+}
+
+enum InventoryMappingMethod {
+  NORMALIZED_NAME_UNIT_CATEGORY
+  FLAVOR_IDENTITY
+  MANUAL
+  IMPORT
+}
+
+enum UnitDimension {
+  WEIGHT
+  VOLUME
+  COUNT
+}
+
 // ---------------------------------------------------------------------------
 // Core tables
 // ---------------------------------------------------------------------------
@@ -271,6 +292,9 @@ model Branch {
   attendanceRecords   AttendanceRecord[]
   auditLogs           AuditLog[]
   fraudAlerts         FraudAlert[]
+
+  // CR-006 Phase A
+  inventoryStocks InventoryStock[]
 
   // CR-001
   exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
@@ -488,6 +512,9 @@ model ProductVariant {
   changeLogs       ProductChangeLog[]
   productInventory ProductInventory[]
 
+  // CR-006 Phase A
+  productComponents ProductComponent[]
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -610,6 +637,9 @@ model Ingredient {
   branch           Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
   movements        InventoryMovement[]
   productInventory ProductInventory[]
+
+  // CR-006 Phase A — populated by the Phase C backfill; nullable until then.
+  identityMapping InventoryIdentityMapping?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -736,6 +766,202 @@ model InventoryMovement {
   @@index([branchId])
   @@index([ingredientId])
   @@map("inventory_movements")
+}
+
+// ---------------------------------------------------------------------------
+// CR-006 Phase A — Universal Inventory Domain foundation (CR-007).
+// Purely additive: coexists with Ingredient/ProductInventory/InventoryMovement
+// above until later phases backfill and cut over. Nothing here is read or
+// written by runtime code yet.
+// ---------------------------------------------------------------------------
+
+/// CR-006 Phase A corrective — InventoryCategory is a data-managed lookup
+/// table, not a hardcoded enum: categories are operator-configurable, not a
+/// fixed food-specific taxonomy baked into the schema.
+model InventoryCategory {
+  id          String  @id @default(uuid())
+  name        String
+  code        String?
+  description String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  items InventoryItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("inventory_categories")
+}
+
+/// Lookup table of measurement units. Dimension-only classification --
+/// conversion between units (even within the same dimension) is never a
+/// single universal factor stored here (e.g. sack-of-rice vs sack-of-flour),
+/// so it is not a schema field. Genuinely global same-dimension conversions
+/// (kg<->g, L<->mL) live in UnitConversion; item/packaging-specific
+/// conversions are out of scope for Phase A.
+model UnitOfMeasure {
+  id         String        @id @default(uuid())
+  code       String        @unique
+  name       String
+  dimension  UnitDimension
+  isBaseUnit Boolean       @default(false) @map("is_base_unit")
+  isActive   Boolean       @default(true) @map("is_active")
+
+  items           InventoryItem[]
+  conversionsFrom UnitConversion[] @relation("UnitConversionFrom")
+  conversionsTo   UnitConversion[] @relation("UnitConversionTo")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("units_of_measure")
+}
+
+/// Genuinely global, dimension-compatible unit conversions (kilogram<->gram,
+/// liter<->milliliter). Does NOT model variable packaging conversions (sack,
+/// box, tray, case, pack) -- those have no universal factor and belong on a
+/// future item-specific or purchasing-entry attach point, not here.
+model UnitConversion {
+  id         String  @id @default(uuid())
+  fromUnitId String  @map("from_unit_id")
+  toUnitId   String  @map("to_unit_id")
+  factor     Decimal @db.Decimal(18, 8)
+
+  fromUnit UnitOfMeasure @relation("UnitConversionFrom", fields: [fromUnitId], references: [id])
+  toUnit   UnitOfMeasure @relation("UnitConversionTo", fields: [toUnitId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([fromUnitId, toUnitId])
+  @@map("unit_conversions")
+}
+
+/// CR-007 §3 — the only immutable identity in the inventory domain. Replaces
+/// Ingredient's identity role. branchId is intentionally absent: InventoryItem
+/// is branch-agnostic; InventoryStock carries the per-branch aggregate
+/// (§13.3). sku/barcode are nullable, mutable, case-insensitively-unique
+/// business identifiers, never a join key (§3.1-3.2) -- uniqueness enforced
+/// by partial case-insensitive indexes added via raw SQL in the migration
+/// (Prisma's DSL cannot express citext/lower() collation).
+model InventoryItem {
+  id             String    @id @default(uuid())
+  name           String
+  sku            String?
+  barcode        String?
+  categoryId     String?   @map("category_id")
+  baseUnitId     String    @map("base_unit_id")
+  trackInventory Boolean   @default(true) @map("track_inventory")
+  deletedAt      DateTime? @map("deleted_at")
+
+  category          InventoryCategory?         @relation(fields: [categoryId], references: [id])
+  baseUnit          UnitOfMeasure              @relation(fields: [baseUnitId], references: [id])
+  stocks            InventoryStock[]
+  productComponents ProductComponent[]
+  identityMappings  InventoryIdentityMapping[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([categoryId])
+  @@index([baseUnitId])
+  @@map("inventory_items")
+}
+
+/// CR-007 §20.2 -- owns all legacy Ingredient -> InventoryItem migration
+/// metadata so InventoryItem itself stays clean of migration-era fields.
+/// Populated by the Phase C backfill, not Phase A. inventoryItemId stays
+/// nullable until a mapping is resolved -- PENDING/AMBIGUOUS/REJECTED rows
+/// have no candidate (or no accepted candidate) yet.
+model InventoryIdentityMapping {
+  id                 String                  @id @default(uuid())
+  inventoryItemId    String?                 @map("inventory_item_id")
+  legacyIngredientId String                  @map("legacy_ingredient_id")
+  legacyName         String                  @map("legacy_name")
+  legacyUnit         String                  @map("legacy_unit")
+  mappingStatus      InventoryMappingStatus  @default(PENDING) @map("mapping_status")
+  mappingMethod      InventoryMappingMethod? @map("mapping_method")
+  reviewedBy         String?                 @map("reviewed_by")
+  reviewedAt         DateTime?               @map("reviewed_at")
+  notes              String?
+  migrationBatch     String?                 @map("migration_batch")
+  migratedAt         DateTime?               @map("migrated_at")
+
+  inventoryItem    InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  legacyIngredient Ingredient     @relation(fields: [legacyIngredientId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([legacyIngredientId])
+  @@index([inventoryItemId])
+  @@map("inventory_identity_mappings")
+}
+
+/// CR-007 §13.3 -- per-branch aggregate projection over InventoryItem, one
+/// row per (branchId, inventoryItemId). A projection, never the source of
+/// truth: updated transactionally with its owning InventoryMovement starting
+/// Phase G, never hand-edited outside a declared reconciliation path (Phase
+/// H). Empty/zero-row in Phase A -- nothing populates it yet. Low/critical
+/// thresholds live here (not on InventoryItem) since they may differ by
+/// branch. version is an optimistic-concurrency guard for detecting stale
+/// projection writes -- Phase G may additionally use advisory locking.
+model InventoryStock {
+  id                String   @id @default(uuid())
+  branchId          String   @map("branch_id")
+  inventoryItemId   String   @map("inventory_item_id")
+  quantityOnHand    Decimal  @default(0) @map("quantity_on_hand") @db.Decimal(10, 3)
+  lowStockThreshold Decimal? @map("low_stock_threshold") @db.Decimal(10, 3)
+  criticalThreshold Decimal? @map("critical_threshold") @db.Decimal(10, 3)
+  version           Int      @default(0)
+
+  branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([branchId, inventoryItemId])
+  @@index([inventoryItemId])
+  @@map("inventory_stocks")
+}
+
+/// CR-007 §10 -- join between a ProductVariant and the InventoryItem it
+/// consumes. Supersedes ProductInventory. Neutral: no reference to Flavor,
+/// ProductFlavorSlot, or any product-option construct -- flavor-specific
+/// deduction remains on the existing compatibility architecture
+/// (ProductInventory.flavorId) until a future option-component CR is
+/// approved. A ProductVariant may have zero ProductComponent rows -- a valid
+/// first-class state for non-stock products/services (§9.1), not an error.
+model ProductComponent {
+  id               String  @id @default(uuid())
+  productVariantId String  @map("product_variant_id")
+  inventoryItemId  String  @map("inventory_item_id")
+  // Base-unit quantity (§10.1) -- the referenced InventoryItem.baseUnit. No
+  // component-level unit override.
+  quantityRequired Decimal @map("quantity_required") @db.Decimal(18, 6)
+  version          Int     @default(1)
+
+  // Soft-delete + audit metadata, matching ProductInventory's shape.
+  deletedAt DateTime? @map("deleted_at")
+  isActive  Boolean   @default(true) @map("is_active")
+  reason    String?
+  createdBy String?   @map("created_by")
+  updatedBy String?   @map("updated_by")
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  inventoryItem  InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // No @@unique here: active-row uniqueness on (product_variant_id,
+  // inventory_item_id) would need a partial index (WHERE deleted_at IS
+  // NULL), same limitation as ProductInventory -- deferred to whichever
+  // phase first writes real rows (Phase D/I), since Phase A seeds no data.
+  @@index([productVariantId])
+  @@index([inventoryItemId])
+  @@map("product_components")
 }
 
 // ---------------------------------------------------------------------------

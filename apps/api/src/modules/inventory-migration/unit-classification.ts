@@ -1,25 +1,25 @@
 import type { LegacyIngredientRecord, UnitClassificationEntry } from './types.js';
 import { normalizeLegacyUnit } from './normalization.js';
 
-const KNOWN_GLOBAL_UNIT_SYNONYMS: Record<string, { canonicalCode: string }> = {
-  gram: { canonicalCode: 'GRAM' },
-  grams: { canonicalCode: 'GRAM' },
-  g: { canonicalCode: 'GRAM' },
-  kilogram: { canonicalCode: 'KILOGRAM' },
-  kilograms: { canonicalCode: 'KILOGRAM' },
-  kg: { canonicalCode: 'KILOGRAM' },
-  liter: { canonicalCode: 'LITER' },
-  litre: { canonicalCode: 'LITER' },
-  liters: { canonicalCode: 'LITER' },
-  litres: { canonicalCode: 'LITER' },
-  l: { canonicalCode: 'LITER' },
-  milliliter: { canonicalCode: 'MILLILITER' },
-  millilitre: { canonicalCode: 'MILLILITER' },
-  ml: { canonicalCode: 'MILLILITER' },
-  piece: { canonicalCode: 'PIECE' },
-  pieces: { canonicalCode: 'PIECE' },
-  pc: { canonicalCode: 'PIECE' },
-  pcs: { canonicalCode: 'PIECE' },
+const KNOWN_GLOBAL_UNIT_SYNONYMS: Record<string, { canonicalName: string }> = {
+  gram: { canonicalName: 'gram' },
+  grams: { canonicalName: 'gram' },
+  g: { canonicalName: 'gram' },
+  kilogram: { canonicalName: 'kilogram' },
+  kilograms: { canonicalName: 'kilogram' },
+  kg: { canonicalName: 'kilogram' },
+  liter: { canonicalName: 'liter' },
+  litre: { canonicalName: 'liter' },
+  liters: { canonicalName: 'liter' },
+  litres: { canonicalName: 'liter' },
+  l: { canonicalName: 'liter' },
+  milliliter: { canonicalName: 'milliliter' },
+  millilitre: { canonicalName: 'milliliter' },
+  ml: { canonicalName: 'milliliter' },
+  piece: { canonicalName: 'piece' },
+  pieces: { canonicalName: 'piece' },
+  pc: { canonicalName: 'piece' },
+  pcs: { canonicalName: 'piece' },
 };
 
 const KNOWN_PACKAGE_UNITS = new Set([
@@ -62,7 +62,7 @@ function classifySingleUnit(
   if (normalizedUnit.length === 0) {
     return {
       ...base,
-      proposedUnitOfMeasureCode: null,
+      proposedCanonicalUnitName: null,
       classification: 'INVALID',
       blockingReason: 'Unit is empty or whitespace-only',
     };
@@ -71,7 +71,7 @@ function classifySingleUnit(
   if (existingCodes.has(normalizedUnit)) {
     return {
       ...base,
-      proposedUnitOfMeasureCode: normalizedUnit.toUpperCase(),
+      proposedCanonicalUnitName: normalizedUnit,
       classification: 'EXACT_GLOBAL_UNIT',
       blockingReason: null,
     };
@@ -81,7 +81,7 @@ function classifySingleUnit(
   if (synonym) {
     return {
       ...base,
-      proposedUnitOfMeasureCode: synonym.canonicalCode,
+      proposedCanonicalUnitName: synonym.canonicalName,
       classification: 'NORMALIZABLE_GLOBAL_UNIT',
       blockingReason: null,
     };
@@ -90,7 +90,7 @@ function classifySingleUnit(
   if (KNOWN_PACKAGE_UNITS.has(normalizedUnit)) {
     return {
       ...base,
-      proposedUnitOfMeasureCode: null,
+      proposedCanonicalUnitName: null,
       classification: 'ITEM_SPECIFIC_PACKAGE_UNIT',
       blockingReason: 'Package unit requires an explicit per-item conversion; none is created in Phase B',
     };
@@ -98,7 +98,7 @@ function classifySingleUnit(
 
   return {
     ...base,
-    proposedUnitOfMeasureCode: null,
+    proposedCanonicalUnitName: null,
     classification: 'UNKNOWN',
     blockingReason: 'No known global-unit synonym or package-unit mapping; requires manual classification',
   };

@@ -61,6 +61,48 @@ describe('detectIdentityCollisions', () => {
     expect(groups[0]!.classification).not.toBe('SAFE_AUTO_MATCH_CANDIDATE');
   });
 
+  it('does not falsely collide units/categories containing "::" with genuinely distinct pairs', () => {
+    const groups = detectIdentityCollisions([
+      ingredient({ id: 'a', name: 'Combo', unit: 'kg::box', category: 'RAW' }),
+      ingredient({ id: 'b', name: 'Combo', unit: 'kg', category: 'box::RAW' }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.classification).toBe('AMBIGUOUS');
+  });
+
+  it('normalizes category case when grouping (RAW vs raw match)', () => {
+    const groups = detectIdentityCollisions([
+      ingredient({ id: 'a', name: 'Salt', unit: 'kg', category: 'RAW' }),
+      ingredient({ id: 'b', name: 'Salt', unit: 'kg', category: 'raw' }),
+    ]);
+    expect(groups[0]!.classification).toBe('SAFE_AUTO_MATCH_CANDIDATE');
+  });
+
+  it('normalizes category whitespace when grouping (" RAW " vs "RAW" match)', () => {
+    const groups = detectIdentityCollisions([
+      ingredient({ id: 'a', name: 'Pepper', unit: 'kg', category: '  RAW ' }),
+      ingredient({ id: 'b', name: 'Pepper', unit: 'kg', category: 'RAW' }),
+    ]);
+    expect(groups[0]!.classification).toBe('SAFE_AUTO_MATCH_CANDIDATE');
+  });
+
+  it('preserves original (non-normalized) category text per member for reporting', () => {
+    const groups = detectIdentityCollisions([
+      ingredient({ id: 'a', name: 'Pepper', unit: 'kg', category: '  RAW ' }),
+      ingredient({ id: 'b', name: 'Pepper', unit: 'kg', category: 'raw' }),
+    ]);
+    const categories = groups[0]!.members.map((m) => m.legacyCategory).sort();
+    expect(categories).toEqual(['  RAW ', 'raw']);
+  });
+
+  it('keeps genuinely different categories distinct (still AMBIGUOUS)', () => {
+    const groups = detectIdentityCollisions([
+      ingredient({ id: 'a', name: 'Cheese', unit: 'kg', category: 'RAW' }),
+      ingredient({ id: 'b', name: 'Cheese', unit: 'kg', category: 'FLAVOR' }),
+    ]);
+    expect(groups[0]!.classification).toBe('AMBIGUOUS');
+  });
+
   it('excludes soft-deleted ingredients from grouping', () => {
     const groups = detectIdentityCollisions([
       ingredient({ id: 'a', name: 'Gone', deletedAt: new Date() }),

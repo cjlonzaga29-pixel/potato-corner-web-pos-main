@@ -20,15 +20,17 @@ describe('detectFlavorLinkedCandidates', () => {
       ],
     );
     expect(result).toHaveLength(1);
-    expect(result[0].matchedIngredientIds.sort()).toEqual(['a', 'b']);
-    expect(result[0].mappingMethod).toBe('FLAVOR_IDENTITY');
-    expect(result[0].unresolved).toBe(false);
+    // length asserted via toHaveLength(1) above
+    expect(result[0]!.matchedIngredientIds.sort()).toEqual(['a', 'b']);
+    expect(result[0]!.mappingMethod).toBe('FLAVOR_IDENTITY');
+    expect(result[0]!.unresolved).toBe(false);
   });
 
   it('marks a flavor unresolved when no matching legacy ingredient exists', () => {
     const result = detectFlavorLinkedCandidates([flavor({ ingredientName: 'Nonexistent', ingredientUnit: 'kg' })], []);
-    expect(result[0].unresolved).toBe(true);
-    expect(result[0].matchedIngredientIds).toEqual([]);
+    // detectFlavorLinkedCandidates maps 1:1 over the flavors array; exactly one flavor was passed in, so result[0] exists
+    expect(result[0]!.unresolved).toBe(true);
+    expect(result[0]!.matchedIngredientIds).toEqual([]);
   });
 
   it('excludes soft-deleted ingredients from matching', () => {
@@ -36,7 +38,8 @@ describe('detectFlavorLinkedCandidates', () => {
       [flavor({})],
       [ingredient({ id: 'a', deletedAt: new Date() })],
     );
-    expect(result[0].unresolved).toBe(true);
+    // detectFlavorLinkedCandidates maps 1:1 over the flavors array; exactly one flavor was passed in, so result[0] exists
+    expect(result[0]!.unresolved).toBe(true);
   });
 
   it('does not match on unit alone if name differs', () => {
@@ -44,6 +47,7 @@ describe('detectFlavorLinkedCandidates', () => {
       [flavor({ ingredientName: 'Cheese Powder', ingredientUnit: 'kg' })],
       [ingredient({ id: 'a', name: 'Chocolate Powder', unit: 'kg' })],
     );
-    expect(result[0].matchedIngredientIds).toEqual([]);
+    // detectFlavorLinkedCandidates maps 1:1 over the flavors array; exactly one flavor was passed in, so result[0] exists
+    expect(result[0]!.matchedIngredientIds).toEqual([]);
   });
 });

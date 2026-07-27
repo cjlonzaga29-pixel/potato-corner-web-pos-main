@@ -16,8 +16,9 @@ describe('detectIdentityCollisions', () => {
       ingredient({ id: 'b', branchId: 'b2', name: 'CHEESE   POWDER', unit: 'KG', category: 'RAW' }),
     ]);
     expect(groups).toHaveLength(1);
-    expect(groups[0].classification).toBe('SAFE_AUTO_MATCH_CANDIDATE');
-    expect(groups[0].members.map((m) => m.ingredientId).sort()).toEqual(['a', 'b']);
+    // length asserted via toHaveLength(1) above
+    expect(groups[0]!.classification).toBe('SAFE_AUTO_MATCH_CANDIDATE');
+    expect(groups[0]!.members.map((m) => m.ingredientId).sort()).toEqual(['a', 'b']);
   });
 
   it('marks same-name/different-unit as AMBIGUOUS, not auto-matched', () => {
@@ -26,7 +27,8 @@ describe('detectIdentityCollisions', () => {
       ingredient({ id: 'b', branchId: 'b2', name: 'Cheese', unit: 'piece' }),
     ]);
     expect(groups).toHaveLength(1);
-    expect(groups[0].classification).toBe('AMBIGUOUS');
+    // length asserted via toHaveLength(1) above
+    expect(groups[0]!.classification).toBe('AMBIGUOUS');
   });
 
   it('marks same-name/same-unit but conflicting category as AMBIGUOUS', () => {
@@ -34,17 +36,20 @@ describe('detectIdentityCollisions', () => {
       ingredient({ id: 'a', name: 'Sprinkles', unit: 'kg', category: 'RAW' }),
       ingredient({ id: 'b', name: 'Sprinkles', unit: 'kg', category: 'FLAVOR' }),
     ]);
-    expect(groups[0].classification).toBe('AMBIGUOUS');
+    // detectIdentityCollisions groups by normalized name; both share "sprinkles", so exactly one group is produced
+    expect(groups[0]!.classification).toBe('AMBIGUOUS');
   });
 
   it('classifies a name with no collision as DISTINCT', () => {
     const groups = detectIdentityCollisions([ingredient({ id: 'a', name: 'Unique Item' })]);
-    expect(groups[0].classification).toBe('DISTINCT');
+    // a single input ingredient always produces exactly one group
+    expect(groups[0]!.classification).toBe('DISTINCT');
   });
 
   it('classifies an empty name as INVALID', () => {
     const groups = detectIdentityCollisions([ingredient({ id: 'a', name: '   ' })]);
-    expect(groups[0].classification).toBe('INVALID');
+    // a single input ingredient always produces exactly one group
+    expect(groups[0]!.classification).toBe('INVALID');
   });
 
   it('does not infer a match from name equality alone (name matches, unit/category differ, still not SAFE)', () => {
@@ -52,7 +57,8 @@ describe('detectIdentityCollisions', () => {
       ingredient({ id: 'a', name: 'X', unit: 'kg', category: 'RAW' }),
       ingredient({ id: 'b', name: 'X', unit: 'bag', category: 'PACKAGING' }),
     ]);
-    expect(groups[0].classification).not.toBe('SAFE_AUTO_MATCH_CANDIDATE');
+    // detectIdentityCollisions groups by normalized name; both share "x", so exactly one group is produced
+    expect(groups[0]!.classification).not.toBe('SAFE_AUTO_MATCH_CANDIDATE');
   });
 
   it('excludes soft-deleted ingredients from grouping', () => {

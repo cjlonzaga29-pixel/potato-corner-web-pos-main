@@ -93,8 +93,19 @@ describe.skipIf(!canRunIntegrationTests)('withInitializationLock integration', (
 
 describe('compile-time shape (no DB access)', () => {
   it('withInitializationLock requires a fn argument — omitting it is a compile-time error', () => {
-    // @ts-expect-error -- fn is required.
-    void withInitializationLock().catch(() => {});
+    // Type-only check: wrapped in a function that is defined but never
+    // invoked, so `tsc` still evaluates the `@ts-expect-error` line (it
+    // type-checks all reachable-by-declaration code, called or not) while
+    // no runtime call — and therefore no real transaction/query — ever
+    // occurs. The previous version called this directly at runtime, which
+    // actually opened a real (if usually short-lived) transaction against
+    // the live database despite the "no DB access" claim in this block's
+    // name.
+    const neverCalled = (): void => {
+      // @ts-expect-error -- fn is required.
+      void withInitializationLock();
+    };
+    void neverCalled;
     expect(true).toBe(true);
   });
 });

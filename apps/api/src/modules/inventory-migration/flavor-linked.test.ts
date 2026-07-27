@@ -1,0 +1,49 @@
+import { describe, it, expect } from 'vitest';
+import { detectFlavorLinkedCandidates } from './flavor-linked.js';
+import type { LegacyFlavorRecord, LegacyIngredientRecord } from './types.js';
+
+function flavor(overrides: Partial<LegacyFlavorRecord>): LegacyFlavorRecord {
+  return { id: 'flavor-1', name: 'Cheese', ingredientName: 'Cheese Powder', ingredientUnit: 'kg', isActive: true, ...overrides };
+}
+
+function ingredient(overrides: Partial<LegacyIngredientRecord>): LegacyIngredientRecord {
+  return { id: 'ing-1', name: 'Cheese Powder', unit: 'kg', category: 'FLAVOR', branchId: 'b1', deletedAt: null, ...overrides };
+}
+
+describe('detectFlavorLinkedCandidates', () => {
+  it('matches a flavor to ingredients by normalized name+unit across branches', () => {
+    const result = detectFlavorLinkedCandidates(
+      [flavor({})],
+      [
+        ingredient({ id: 'a', branchId: 'b1', name: 'CHEESE   POWDER', unit: 'KG' }),
+        ingredient({ id: 'b', branchId: 'b2', name: 'cheese powder', unit: 'kg' }),
+      ],
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].matchedIngredientIds.sort()).toEqual(['a', 'b']);
+    expect(result[0].mappingMethod).toBe('FLAVOR_IDENTITY');
+    expect(result[0].unresolved).toBe(false);
+  });
+
+  it('marks a flavor unresolved when no matching legacy ingredient exists', () => {
+    const result = detectFlavorLinkedCandidates([flavor({ ingredientName: 'Nonexistent', ingredientUnit: 'kg' })], []);
+    expect(result[0].unresolved).toBe(true);
+    expect(result[0].matchedIngredientIds).toEqual([]);
+  });
+
+  it('excludes soft-deleted ingredients from matching', () => {
+    const result = detectFlavorLinkedCandidates(
+      [flavor({})],
+      [ingredient({ id: 'a', deletedAt: new Date() })],
+    );
+    expect(result[0].unresolved).toBe(true);
+  });
+
+  it('does not match on unit alone if name differs', () => {
+    const result = detectFlavorLinkedCandidates(
+      [flavor({ ingredientName: 'Cheese Powder', ingredientUnit: 'kg' })],
+      [ingredient({ id: 'a', name: 'Chocolate Powder', unit: 'kg' })],
+    );
+    expect(result[0].matchedIngredientIds).toEqual([]);
+  });
+});

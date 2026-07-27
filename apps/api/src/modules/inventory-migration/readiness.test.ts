@@ -58,4 +58,49 @@ describe('evaluateReadiness', () => {
     expect(result.migrationReadiness).toBe(true);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
+
+  it('does not block on ITEM_SPECIFIC_PACKAGE_UNIT units — warning only', () => {
+    const result = evaluateReadiness(
+      baseInput({
+        normalizedUnits: [
+          { rawUnit: 'x', normalizedUnit: 'x', occurrenceCount: 1, affectedIngredientIds: ['a'], proposedUnitOfMeasureCode: null, classification: 'ITEM_SPECIFIC_PACKAGE_UNIT', blockingReason: null },
+        ],
+      }),
+    );
+    expect(result.migrationReadiness).toBe(true);
+    expect(result.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('does not block on unresolved flavor-linked candidates — warning only', () => {
+    const result = evaluateReadiness(
+      baseInput({
+        flavorLinkedCandidates: [
+          {
+            flavorId: 'f1',
+            flavorName: 'Cheese',
+            normalizedIngredientName: 'cheese powder',
+            normalizedIngredientUnit: 'g',
+            matchedIngredientIds: [],
+            mappingMethod: 'FLAVOR_IDENTITY',
+            unresolved: true,
+          },
+        ],
+      }),
+    );
+    expect(result.migrationReadiness).toBe(true);
+    expect(result.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('accumulates multiple simultaneous blocker types instead of masking one another', () => {
+    const result = evaluateReadiness(
+      baseInput({
+        skuCollisions: [{ sku: 'X', ingredientIds: ['a', 'b'] }],
+        invalidRecords: [{ ingredientId: 'a', reason: 'Empty name' }],
+      }),
+    );
+    expect(result.migrationReadiness).toBe(false);
+    expect(result.blockers.length).toBe(2);
+    expect(result.blockers.some((b) => b.includes('SKU collision'))).toBe(true);
+    expect(result.blockers.some((b) => b.includes('invalid legacy ingredient record'))).toBe(true);
+  });
 });

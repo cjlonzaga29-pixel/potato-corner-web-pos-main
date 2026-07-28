@@ -478,6 +478,8 @@ describe.skipIf(!canRunIntegrationTests)('CR-009 R13 initialization-audit end-to
       expect(catRecord.reusedExisting).toBe(false);
       expect(catRecord.entityId).not.toBeNull();
       expect(unitRecord.action).toBe('CREATED');
+      // Safe: action=CREATED requires a non-null entityId (record-writer.service.ts's
+      // assertValidActionInvariants), and both records were just asserted CREATED above.
       const categoryId = catRecord.entityId!;
       const unitId = unitRecord.entityId!;
 
@@ -558,6 +560,8 @@ describe.skipIf(!canRunIntegrationTests)('CR-009 R13 initialization-audit end-to
       ]);
       const firstRecord = await prisma.initializationRecord.findUniqueOrThrow({ where: { id: firstOf(first.records).id } });
       expect(firstRecord.action).toBe('CREATED');
+      // Safe: action=CREATED requires a non-null entityId (record-writer.service.ts's
+      // assertValidActionInvariants), just asserted above.
       const categoryId = firstRecord.entityId!;
 
       // Run 2 — same manifest key, same resolver: must REUSE, not duplicate.

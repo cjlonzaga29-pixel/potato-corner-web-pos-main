@@ -752,8 +752,8 @@ describe('productsService.approveVariant', () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
     vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
     vi.mocked(productsRepository.listVariantFlavorSlots).mockResolvedValue([
-      { id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
-      { id: 'slot-2', productVariantId: 'variant-1', slotIndex: 2, label: 'Flavor 2', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
+      { id: 'slot-1', productVariantId: 'variant-1', slotIndex: 0, label: 'Flavor 1', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
+      { id: 'slot-2', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 2', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
     ] as never);
 
     await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();

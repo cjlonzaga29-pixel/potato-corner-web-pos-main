@@ -106,12 +106,12 @@ function assertFlavorSlotsWellFormed(slots: ProductFlavorSlot[]): void {
       throw new ProductError('VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS', `Slot ${slot.slotIndex} is missing a label or unit`, 409);
     }
   }
-  const expected = Array.from({ length: slots.length }, (_, i) => i + 1);
+  const expected = Array.from({ length: slots.length }, (_, i) => i);
   const actual = [...seen].sort((a, b) => a - b);
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new ProductError(
       'VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS',
-      `Flavor slots must form a contiguous 1..${slots.length} sequence`,
+      `Flavor slots must form a contiguous 0..${slots.length - 1} sequence`,
       409,
     );
   }

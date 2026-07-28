@@ -32,6 +32,7 @@ export function useProductInventoryList(branchId: string | null | undefined, pro
 
 function invalidateProductInventory(queryClient: ReturnType<typeof useQueryClient>, branchId: string | null, productVariantId: string) {
   void queryClient.invalidateQueries({ queryKey: ['product-inventory', branchId, productVariantId] });
+  void queryClient.invalidateQueries({ queryKey: ['catalog', branchId] });
 }
 
 export function useCreateProductInventory(productVariantId: string) {

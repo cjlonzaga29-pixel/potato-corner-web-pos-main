@@ -8,9 +8,13 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const { apiClient } = await import('@/lib/api-client');
 const { toast } = await import('sonner');
-const { useProductInventoryList, useCreateProductInventory, useUpdateProductInventory, useDeleteProductInventory } = await import(
-  './use-product-inventory.js'
-);
+const {
+  useProductInventoryList,
+  useCreateProductInventory,
+  useUpdateProductInventory,
+  useDeleteProductInventory,
+  useSetProductInventoryActive,
+} = await import('./use-product-inventory.js');
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -100,6 +104,18 @@ describe('useCreateProductInventory', () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['product-inventory', 'variant-1'] });
   });
 
+  it('also invalidates the branch catalog query on success', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'm1' }, error: null, meta: null });
+
+    const { result } = renderHook(() => useCreateProductInventory('variant-1'), { wrapper: clientWrapper(queryClient) });
+    await result.current.mutateAsync(CREATE_INPUT);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-1'] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-2'] });
+  });
+
   it('invalidates a different key for a different branch_id', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -109,6 +125,7 @@ describe('useCreateProductInventory', () => {
     await result.current.mutateAsync({ ...CREATE_INPUT, branch_id: 'branch-2' });
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product-inventory', 'branch-2', 'variant-1'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-2'] });
   });
 
   it('sends the create payload unchanged to POST /api/product-inventory', async () => {
@@ -148,6 +165,19 @@ describe('useUpdateProductInventory', () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['product-inventory', 'variant-1'] });
   });
 
+  it('also invalidates the branch catalog query on success', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'm1' }, error: null, meta: null });
+
+    const { result } = renderHook(() => useUpdateProductInventory('branch-1', 'variant-1', 'mapping-1'), {
+      wrapper: clientWrapper(queryClient),
+    });
+    await result.current.mutateAsync(UPDATE_INPUT);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-1'] });
+  });
+
   it('invalidates a different key for a different branchId argument', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -159,6 +189,7 @@ describe('useUpdateProductInventory', () => {
     await result.current.mutateAsync(UPDATE_INPUT);
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product-inventory', 'branch-2', 'variant-1'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-2'] });
   });
 
   it('sends the update payload unchanged to PATCH /api/product-inventory/:mappingId', async () => {
@@ -194,6 +225,17 @@ describe('useDeleteProductInventory', () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['product-inventory', 'variant-1'] });
   });
 
+  it('also invalidates the branch catalog query on success', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({ data: null, error: null, meta: null });
+
+    const { result } = renderHook(() => useDeleteProductInventory('branch-1', 'variant-1'), { wrapper: clientWrapper(queryClient) });
+    await result.current.mutateAsync('mapping-1');
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-1'] });
+  });
+
   it('invalidates a different key for a different branchId argument', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -203,6 +245,7 @@ describe('useDeleteProductInventory', () => {
     await result.current.mutateAsync('mapping-1');
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product-inventory', 'branch-2', 'variant-1'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-2'] });
   });
 
   it('sends DELETE /api/product-inventory/:mappingId unchanged', async () => {
@@ -221,6 +264,59 @@ describe('useDeleteProductInventory', () => {
 
     vi.mocked(apiClient).mockResolvedValueOnce({ data: null, error: { code: 'NOT_FOUND', message: 'Mapping not found' }, meta: null });
     await expect(result.current.mutateAsync('mapping-1')).rejects.toThrow('Mapping not found');
+    expect(toast.error).toHaveBeenCalledWith('Mapping not found');
+  });
+});
+
+describe('useSetProductInventoryActive', () => {
+  it('invalidates both the branch-scoped product-inventory list and the branch catalog query on success', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'm1' }, error: null, meta: null });
+
+    const { result } = renderHook(() => useSetProductInventoryActive('branch-1', 'variant-1'), { wrapper: clientWrapper(queryClient) });
+    await result.current.mutateAsync({ mappingId: 'mapping-1', is_active: false });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product-inventory', 'branch-1', 'variant-1'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-1'] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['product-inventory', 'variant-1'] });
+  });
+
+  it('invalidates a different key for a different branchId argument', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'm1' }, error: null, meta: null });
+
+    const { result } = renderHook(() => useSetProductInventoryActive('branch-2', 'variant-1'), { wrapper: clientWrapper(queryClient) });
+    await result.current.mutateAsync({ mappingId: 'mapping-1', is_active: true });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product-inventory', 'branch-2', 'variant-1'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-2'] });
+  });
+
+  it('sends the is_active payload unchanged to PATCH /api/product-inventory/:mappingId', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'm1' }, error: null, meta: null });
+    const { result } = renderHook(() => useSetProductInventoryActive('branch-1', 'variant-1'), { wrapper });
+    await result.current.mutateAsync({ mappingId: 'mapping-1', is_active: false });
+
+    expect(apiClient).toHaveBeenCalledWith('/api/product-inventory/mapping-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ is_active: false }),
+    });
+  });
+
+  it('shows the correct toast for activate vs deactivate and surfaces the error toast on failure', async () => {
+    vi.mocked(apiClient).mockResolvedValueOnce({ data: { id: 'm1' }, error: null, meta: null });
+    const { result } = renderHook(() => useSetProductInventoryActive('branch-1', 'variant-1'), { wrapper });
+    await result.current.mutateAsync({ mappingId: 'mapping-1', is_active: true });
+    expect(toast.success).toHaveBeenCalledWith('Inventory item activated');
+
+    vi.mocked(apiClient).mockResolvedValueOnce({ data: { id: 'm1' }, error: null, meta: null });
+    await result.current.mutateAsync({ mappingId: 'mapping-1', is_active: false });
+    expect(toast.success).toHaveBeenCalledWith('Inventory item deactivated');
+
+    vi.mocked(apiClient).mockResolvedValueOnce({ data: null, error: { code: 'NOT_FOUND', message: 'Mapping not found' }, meta: null });
+    await expect(result.current.mutateAsync({ mappingId: 'mapping-1', is_active: true })).rejects.toThrow('Mapping not found');
     expect(toast.error).toHaveBeenCalledWith('Mapping not found');
   });
 });

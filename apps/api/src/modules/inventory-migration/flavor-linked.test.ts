@@ -10,6 +10,13 @@ function ingredient(overrides: Partial<LegacyIngredientRecord>): LegacyIngredien
   return { id: 'ing-1', name: 'Cheese Powder', unit: 'kg', category: 'FLAVOR', branchId: 'b1', deletedAt: null, ...overrides };
 }
 
+/** First element of an array asserted non-empty (avoids `!` under noUncheckedIndexedAccess). */
+function firstOf<T>(arr: readonly T[]): T {
+  const [head] = arr;
+  if (head === undefined) throw new Error('expected a non-empty array');
+  return head;
+}
+
 describe('detectFlavorLinkedCandidates', () => {
   it('matches a flavor to ingredients by normalized name+unit across branches', () => {
     const result = detectFlavorLinkedCandidates(
@@ -21,16 +28,16 @@ describe('detectFlavorLinkedCandidates', () => {
     );
     expect(result).toHaveLength(1);
     // length asserted via toHaveLength(1) above
-    expect(result[0]!.matchedIngredientIds.sort()).toEqual(['a', 'b']);
-    expect(result[0]!.mappingMethod).toBe('FLAVOR_IDENTITY');
-    expect(result[0]!.unresolved).toBe(false);
+    expect(firstOf(result).matchedIngredientIds.sort()).toEqual(['a', 'b']);
+    expect(firstOf(result).mappingMethod).toBe('FLAVOR_IDENTITY');
+    expect(firstOf(result).unresolved).toBe(false);
   });
 
   it('marks a flavor unresolved when no matching legacy ingredient exists', () => {
     const result = detectFlavorLinkedCandidates([flavor({ ingredientName: 'Nonexistent', ingredientUnit: 'kg' })], []);
     // detectFlavorLinkedCandidates maps 1:1 over the flavors array; exactly one flavor was passed in, so result[0] exists
-    expect(result[0]!.unresolved).toBe(true);
-    expect(result[0]!.matchedIngredientIds).toEqual([]);
+    expect(firstOf(result).unresolved).toBe(true);
+    expect(firstOf(result).matchedIngredientIds).toEqual([]);
   });
 
   it('excludes soft-deleted ingredients from matching', () => {
@@ -39,7 +46,7 @@ describe('detectFlavorLinkedCandidates', () => {
       [ingredient({ id: 'a', deletedAt: new Date() })],
     );
     // detectFlavorLinkedCandidates maps 1:1 over the flavors array; exactly one flavor was passed in, so result[0] exists
-    expect(result[0]!.unresolved).toBe(true);
+    expect(firstOf(result).unresolved).toBe(true);
   });
 
   it('does not match on unit alone if name differs', () => {
@@ -48,6 +55,6 @@ describe('detectFlavorLinkedCandidates', () => {
       [ingredient({ id: 'a', name: 'Chocolate Powder', unit: 'kg' })],
     );
     // detectFlavorLinkedCandidates maps 1:1 over the flavors array; exactly one flavor was passed in, so result[0] exists
-    expect(result[0]!.matchedIngredientIds).toEqual([]);
+    expect(firstOf(result).matchedIngredientIds).toEqual([]);
   });
 });

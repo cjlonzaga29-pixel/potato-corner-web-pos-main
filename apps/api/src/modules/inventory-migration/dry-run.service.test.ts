@@ -25,7 +25,7 @@ describe('runMigrationDryRun', () => {
     expect(report.batchId).toBe('CR006-INGREDIENT-20260727-000000');
     expect(report.identityCandidates).toHaveLength(1);
     // length asserted via toHaveLength(1) above
-    expect(report.identityCandidates[0]!.classification).toBe('SAFE_AUTO_MATCH_CANDIDATE');
+    expect(report.identityCandidates[0]).toMatchObject({ classification: 'SAFE_AUTO_MATCH_CANDIDATE' });
     expect(report.skuCollisions).toEqual([]);
     expect(report.barcodeCollisions).toEqual([]);
     expect(report.migrationReadiness).toBe(true);

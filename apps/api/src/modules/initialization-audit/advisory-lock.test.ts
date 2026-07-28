@@ -81,13 +81,14 @@ describe.skipIf(!canRunIntegrationTests)('withInitializationLock integration', (
     const secondStart = events.find((e) => e.call === 2 && e.phase === 'start')?.at;
     expect(firstEnd).toBeDefined();
     expect(secondStart).toBeDefined();
+    if (firstEnd === undefined || secondStart === undefined) throw new Error('unreachable: asserted above');
 
     // The genuine ordering proof: call 2's fn must not have started before
     // call 1's fn finished. A small tolerance absorbs clock/scheduling jitter
     // -- without real lock blocking, call 2 would start ~immediately
     // (within a few ms of call 1's start), well before call 1's ~300ms hold
     // ends, so this assertion would fail without correct locking.
-    expect(secondStart! + 5).toBeGreaterThanOrEqual(firstEnd!);
+    expect(secondStart + 5).toBeGreaterThanOrEqual(firstEnd);
   });
 });
 

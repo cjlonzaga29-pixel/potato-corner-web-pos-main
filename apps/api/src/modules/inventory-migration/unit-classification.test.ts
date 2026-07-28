@@ -9,6 +9,13 @@ function ingredient(overrides: Partial<LegacyIngredientRecord>): LegacyIngredien
   };
 }
 
+/** First element of an array asserted non-empty (avoids `!` under noUncheckedIndexedAccess). */
+function firstOf<T>(arr: readonly T[]): T {
+  const [head] = arr;
+  if (head === undefined) throw new Error('expected a non-empty array');
+  return head;
+}
+
 describe('classifyLegacyUnits', () => {
   it('classifies a unit matching an existing UnitOfMeasure code as EXACT_GLOBAL_UNIT', () => {
     const result = classifyLegacyUnits(
@@ -17,52 +24,52 @@ describe('classifyLegacyUnits', () => {
     );
     expect(result).toHaveLength(1);
     // length asserted via toHaveLength(1) above
-    expect(result[0]!.classification).toBe('EXACT_GLOBAL_UNIT');
-    expect(result[0]!.affectedIngredientIds).toEqual(['a']);
+    expect(firstOf(result).classification).toBe('EXACT_GLOBAL_UNIT');
+    expect(firstOf(result).affectedIngredientIds).toEqual(['a']);
   });
 
   it('classifies known synonyms as NORMALIZABLE_GLOBAL_UNIT without an existing UnitOfMeasure row', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'gram' })], []);
     // a single input ingredient always produces exactly one classification entry
-    expect(result[0]!.classification).toBe('NORMALIZABLE_GLOBAL_UNIT');
-    expect(result[0]!.proposedCanonicalUnitName).toBe('gram');
+    expect(firstOf(result).classification).toBe('NORMALIZABLE_GLOBAL_UNIT');
+    expect(firstOf(result).proposedCanonicalUnitName).toBe('gram');
   });
 
   it('classifies kg as NORMALIZABLE_GLOBAL_UNIT with advisory canonical name only (no UnitOfMeasure.code/id implied)', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'kg' })], []);
-    expect(result[0]!.classification).toBe('NORMALIZABLE_GLOBAL_UNIT');
-    expect(result[0]!.proposedCanonicalUnitName).toBe('kilogram');
+    expect(firstOf(result).classification).toBe('NORMALIZABLE_GLOBAL_UNIT');
+    expect(firstOf(result).proposedCanonicalUnitName).toBe('kilogram');
   });
 
   it('classifies box as ITEM_SPECIFIC_PACKAGE_UNIT with no proposed canonical unit name', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'box' })], []);
-    expect(result[0]!.classification).toBe('ITEM_SPECIFIC_PACKAGE_UNIT');
-    expect(result[0]!.proposedCanonicalUnitName).toBeNull();
+    expect(firstOf(result).classification).toBe('ITEM_SPECIFIC_PACKAGE_UNIT');
+    expect(firstOf(result).proposedCanonicalUnitName).toBeNull();
   });
 
   it('classifies an unknown unit with no proposed canonical unit name', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'blorp' })], []);
-    expect(result[0]!.classification).toBe('UNKNOWN');
-    expect(result[0]!.proposedCanonicalUnitName).toBeNull();
+    expect(firstOf(result).classification).toBe('UNKNOWN');
+    expect(firstOf(result).proposedCanonicalUnitName).toBeNull();
   });
 
   it('classifies package-style units as ITEM_SPECIFIC_PACKAGE_UNIT with a blocking reason', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'box' })], []);
     // a single input ingredient always produces exactly one classification entry
-    expect(result[0]!.classification).toBe('ITEM_SPECIFIC_PACKAGE_UNIT');
-    expect(result[0]!.blockingReason).not.toBeNull();
+    expect(firstOf(result).classification).toBe('ITEM_SPECIFIC_PACKAGE_UNIT');
+    expect(firstOf(result).blockingReason).not.toBeNull();
   });
 
   it('classifies unrecognized units as UNKNOWN', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: 'blorp' })], []);
     // a single input ingredient always produces exactly one classification entry
-    expect(result[0]!.classification).toBe('UNKNOWN');
+    expect(firstOf(result).classification).toBe('UNKNOWN');
   });
 
   it('classifies empty/whitespace units as INVALID', () => {
     const result = classifyLegacyUnits([ingredient({ id: 'a', unit: '   ' })], []);
     // a single input ingredient always produces exactly one classification entry
-    expect(result[0]!.classification).toBe('INVALID');
+    expect(firstOf(result).classification).toBe('INVALID');
   });
 
   it('preserves distinct units as separate entries (does not merge kg and bag)', () => {
@@ -84,7 +91,7 @@ describe('classifyLegacyUnits', () => {
     );
     expect(result).toHaveLength(1);
     // length asserted via toHaveLength(1) above
-    expect(result[0]!.occurrenceCount).toBe(2);
-    expect(result[0]!.affectedIngredientIds.sort()).toEqual(['a', 'b']);
+    expect(firstOf(result).occurrenceCount).toBe(2);
+    expect(firstOf(result).affectedIngredientIds.sort()).toEqual(['a', 'b']);
   });
 });

@@ -118,6 +118,12 @@ describe.skipIf(!canRunIntegrationTests)('CR-009 R13 initialization-audit end-to
     return found;
   }
 
+  /** Unwraps a nullable value asserted non-null (avoids `!` under noUncheckedIndexedAccess). */
+  function nonNull<T>(value: T | null | undefined): T {
+    if (value === null || value === undefined) throw new Error('expected a non-null value');
+    return value;
+  }
+
   let userId: string;
   const createdRunIds: string[] = [];
   const createdMigrationBatches: string[] = [];
@@ -480,8 +486,8 @@ describe.skipIf(!canRunIntegrationTests)('CR-009 R13 initialization-audit end-to
       expect(unitRecord.action).toBe('CREATED');
       // Safe: action=CREATED requires a non-null entityId (record-writer.service.ts's
       // assertValidActionInvariants), and both records were just asserted CREATED above.
-      const categoryId = catRecord.entityId!;
-      const unitId = unitRecord.entityId!;
+      const categoryId = nonNull(catRecord.entityId);
+      const unitId = nonNull(unitRecord.entityId);
 
       // Exactly one record per (runId, manifestEntryKey).
       const allRecords = await prisma.initializationRecord.findMany({ where: { initializationRunId: run.id } });
@@ -562,7 +568,7 @@ describe.skipIf(!canRunIntegrationTests)('CR-009 R13 initialization-audit end-to
       expect(firstRecord.action).toBe('CREATED');
       // Safe: action=CREATED requires a non-null entityId (record-writer.service.ts's
       // assertValidActionInvariants), just asserted above.
-      const categoryId = firstRecord.entityId!;
+      const categoryId = nonNull(firstRecord.entityId);
 
       // Run 2 — same manifest key, same resolver: must REUSE, not duplicate.
       const second = await dryRun([{ manifestEntryKey: catKey, entityType: 'INVENTORY_CATEGORY' }]);

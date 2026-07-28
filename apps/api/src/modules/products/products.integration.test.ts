@@ -230,22 +230,14 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     expect(logs.map((l) => l.reason)).toEqual(['price adjustment', 'end of test']);
   });
 
-  it('Phase 4 gate blocks approval of a variant with a ProductFlavorSlot definition, leaving it PENDING_APPROVAL', async () => {
-    const variant = await createDraftVariant('phase4-gate');
-    // approveVariant's PENDING_PHASE_4 gate checks countFlavorSlots (real
-    // ProductFlavorSlot rows only, since this migration removed the old
-    // Recipe.flavorSlotIndex half of that check — see products.service.ts).
+  it('Phase 4 runtime resolver approves a variant with a well-formed ProductFlavorSlot definition', async () => {
+    const variant = await createDraftVariant('phase4-approve');
     await productsService.addFlavorSlot(variant.id, { label: 'A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR(), null);
+    await provisionInventoryMapping(variant.id);
 
     await productsService.submitVariantForApproval(variant.id, SUPERVISOR(), null);
-
-    await expect(productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null)).rejects.toMatchObject({
-      code: 'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
-      statusCode: 409,
-    });
-
-    const stillPending = await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } });
-    expect(stillPending.lifecycleStatus).toBe('PENDING_APPROVAL');
+    const approved = await productsService.approveVariant(variant.id, undefined, SUPER_ADMIN(), null);
+    expect(approved.lifecycle_status).toBe('ACTIVE');
   });
 
   it('rolls back editActiveVariant when the change log insert fails — version and fields stay untouched, no log row leaks', async () => {

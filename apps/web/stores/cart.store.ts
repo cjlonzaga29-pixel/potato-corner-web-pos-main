@@ -1,6 +1,20 @@
 import { create } from 'zustand';
 import type { CartItem } from '@potato-corner/shared';
 
+function sameSelectedFlavors(a: CartItem['selected_flavors'], b: CartItem['selected_flavors']): boolean {
+  const aList = a ?? [];
+  const bList = b ?? [];
+  if (aList.length !== bList.length) return false;
+  const sortedA = [...aList].sort((x, y) => x.slot_index - y.slot_index);
+  const sortedB = [...bList].sort((x, y) => x.slot_index - y.slot_index);
+  return sortedA.every(
+    (slot, i) =>
+      slot.slot_index === sortedB[i]?.slot_index &&
+      slot.snack_product_variant_id === sortedB[i]?.snack_product_variant_id &&
+      slot.flavor_id === sortedB[i]?.flavor_id,
+  );
+}
+
 interface HeldOrder {
   id: string;
   items: CartItem[];
@@ -31,7 +45,10 @@ export const useCartStore = create<CartState>((set, get) => ({
   addItem: (item) =>
     set((state) => {
       const existing = state.items.find(
-        (i) => i.product_variant_id === item.product_variant_id && i.flavor_id === item.flavor_id,
+        (i) =>
+          i.product_variant_id === item.product_variant_id &&
+          i.flavor_id === item.flavor_id &&
+          sameSelectedFlavors(i.selected_flavors, item.selected_flavors),
       );
       if (!existing) return { items: [...state.items, item] };
       return {

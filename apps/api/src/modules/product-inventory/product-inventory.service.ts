@@ -142,6 +142,58 @@ export async function computeDeduction(input: ComputeDeductionInput): Promise<De
   return Array.from(map.values()).map((line) => ({ ...line, quantity: line.quantity * input.quantitySold }));
 }
 
+interface ComputeDeductionForSlotsInput {
+  /** The Mix & Max parent variant — used only to resolve its own packaging (box/cup) mappings, never the snack ingredients themselves. */
+  productVariantId: string;
+  selectedFlavors: { slotIndex: number; snackProductVariantId: string; flavorId: string }[];
+  quantitySold: number;
+  branchId: string;
+}
+
+/**
+ * Phase 5 (Mix & Max snack selection): the parent Mix & Max variant's own
+ * base mappings (flavor_id IS NULL) represent packaging (box/cup), resolved
+ * once regardless of slot count. Each slot's actual ingredient deduction is
+ * resolved against the *selected snack's own* ProductInventory (its base
+ * mappings + its selected flavor's mappings) via computeDeduction — never
+ * against the parent variant. Repeated snack/flavor picks across slots sum
+ * rather than overwrite, since each is a genuinely separate consumption.
+ */
+export async function computeDeductionForSlots(input: ComputeDeductionForSlotsInput): Promise<DeductionLine[]> {
+  if (!input.branchId) {
+    throw new ProductInventoryError('BRANCH_ID_REQUIRED', 'A branchId is required to compute inventory deduction.', 400);
+  }
+
+  const packagingRows = await productInventoryRepository.findByVariantForDeduction(input.branchId, input.productVariantId);
+  const map = new Map<string, DeductionLine>();
+  for (const row of packagingRows) {
+    const ingredient = await resolveIngredientForBranch(input.branchId, { ingredientId: row.ingredientId, ingredient: { name: row.ingredient.name, branchId: row.ingredient.branchId } });
+    const existing = map.get(ingredient.id);
+    map.set(ingredient.id, {
+      ingredient_id: ingredient.id,
+      ingredient_name: ingredient.name,
+      quantity: (existing?.quantity ?? 0) + row.quantityRequired.toNumber(),
+      unit: row.unit,
+      source: 'master_base',
+    });
+  }
+
+  for (const selection of input.selectedFlavors) {
+    const lines = await computeDeduction({
+      productVariantId: selection.snackProductVariantId,
+      flavorId: selection.flavorId,
+      quantitySold: 1,
+      branchId: input.branchId,
+    });
+    for (const line of lines) {
+      const existing = map.get(line.ingredient_id);
+      map.set(line.ingredient_id, { ...line, quantity: (existing?.quantity ?? 0) + line.quantity });
+    }
+  }
+
+  return Array.from(map.values()).map((line) => ({ ...line, quantity: line.quantity * input.quantitySold }));
+}
+
 /**
  * CR-004: transactions.service.ts calls this before pricing a cart line —
  * a sale must never be recorded for a variant with zero recipe rows, since

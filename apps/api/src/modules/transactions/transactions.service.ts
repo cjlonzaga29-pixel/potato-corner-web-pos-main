@@ -24,7 +24,7 @@ import {
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
-import { computeDeduction, assertProductInventoryExists } from '../product-inventory/product-inventory.service.js';
+import { computeDeduction, computeDeductionForSlots, assertProductInventoryExists } from '../product-inventory/product-inventory.service.js';
 import { ProductInventoryError, type DeductionLine } from '../product-inventory/product-inventory.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -251,6 +251,7 @@ interface ResolvedItem {
   deductionLines: DeductionLine[];
   vatableCapAmount: number | null;
   recipeVersion: number;
+  selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
 }
 
 /**
@@ -266,11 +267,19 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
   const variants = await transactionsRepository.findVariantsForSale(variantIds);
   const variantMap = new Map(variants.map((v) => [v.id, v]));
 
-  const productIds = [...new Set(variants.map((v) => v.productId))];
+  const productIds = [
+    ...new Set(
+      variants.flatMap((v) => [
+        v.productId,
+        ...(v.flavorSlots ?? []).flatMap((s) => s.snackOptions.map((so) => so.snackProductVariant.product.id)),
+      ]),
+    ),
+  ];
   const productAvailability = await transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds);
   const productAvailabilityMap = new Map(productAvailability.map((r) => [r.productId, r.isAvailable]));
 
-  const flavorIds = [...new Set(items.filter((i) => i.flavorId).map((i) => i.flavorId as string))];
+  const slotFlavorIds = items.flatMap((i) => (i.selectedFlavors ?? []).map((sf) => sf.flavorId));
+  const flavorIds = [...new Set([...items.filter((i) => i.flavorId).map((i) => i.flavorId as string), ...slotFlavorIds])];
   const flavorAvailability = flavorIds.length
     ? await transactionsRepository.findBranchFlavorAvailabilityMap(branchId, flavorIds)
     : [];
@@ -302,34 +311,111 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
 
     let flavorName: string | null = null;
     let pricePremium = 0;
-    if (item.flavorId) {
-      const link = variant.variantFlavors.find((vf) => vf.flavorId === item.flavorId);
-      if (!link || !link.isAvailable || !link.flavor.isActive) {
-        throw new TransactionError('PRODUCT_UNAVAILABLE', `Selected flavor is not available for ${variant.name}`, 422);
+    let deductionLines: DeductionLine[];
+    let recipeVersion: number;
+    let selectedFlavors: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null = null;
+
+    const flavorSlots = variant.flavorSlots ?? [];
+    if (flavorSlots.length > 0) {
+      // Mix & Max: exactly one submitted (snack + flavor) per
+      // ProductFlavorSlot, no duplicates, no unknown slot indexes, no extras.
+      const submitted = item.selectedFlavors ?? [];
+      if (submitted.length !== flavorSlots.length) {
+        throw new TransactionError(
+          'FLAVOR_SLOTS_INCOMPLETE',
+          `${variant.name} requires exactly ${flavorSlots.length} flavor selection(s), received ${submitted.length}`,
+          422,
+        );
       }
-      if (flavorAvailabilityMap.get(item.flavorId) === false) {
-        throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected flavor is not available at this branch', 422);
+      const seenSlotIndexes = new Set<number>();
+      const slotByIndex = new Map(flavorSlots.map((s) => [s.slotIndex, s]));
+      let premiumTotal = 0;
+      const names: string[] = [];
+      for (const sel of submitted) {
+        if (!sel.flavorId || !sel.snackProductVariantId) {
+          throw new TransactionError('FLAVOR_SLOTS_INVALID', 'Every flavor slot requires a snack_product_variant_id and flavorId', 422);
+        }
+        const slot = slotByIndex.get(sel.slotIndex);
+        if (!slot) {
+          throw new TransactionError('FLAVOR_SLOTS_INVALID', `Unknown slot index ${sel.slotIndex} for ${variant.name}`, 422);
+        }
+        if (seenSlotIndexes.has(sel.slotIndex)) {
+          throw new TransactionError('FLAVOR_SLOTS_INVALID', `Duplicate slot index ${sel.slotIndex} for ${variant.name}`, 422);
+        }
+        seenSlotIndexes.add(sel.slotIndex);
+
+        const snackOption = slot.snackOptions.find((so) => so.snackProductVariantId === sel.snackProductVariantId);
+        if (!snackOption) {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', `Selected snack is not offered for slot ${slot.slotIndex} of ${variant.name}`, 422);
+        }
+        const snackVariant = snackOption.snackProductVariant;
+        if (!snackVariant.isActive || snackVariant.product.status !== 'active') {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected snack is not currently sellable', 422);
+        }
+        if (productAvailabilityMap.get(snackVariant.product.id) !== true) {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected snack is not available at this branch', 422);
+        }
+        try {
+          await assertProductInventoryExists(branchId, snackVariant.id);
+        } catch (error) {
+          if (error instanceof ProductInventoryError) {
+            throw new TransactionError('RECIPE_MISSING', error.message, error.statusCode);
+          }
+          throw error;
+        }
+
+        const link = snackVariant.variantFlavors.find((vf) => vf.flavorId === sel.flavorId);
+        if (!link || !link.isAvailable || !link.flavor.isActive) {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected flavor is not available for the chosen snack', 422);
+        }
+        if (flavorAvailabilityMap.get(sel.flavorId) === false) {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected flavor is not available at this branch', 422);
+        }
+        premiumTotal += link.pricePremium.toNumber();
+        names.push(`${link.flavor.name}`);
       }
-      flavorName = link.flavor.name;
-      pricePremium = link.pricePremium.toNumber();
+      pricePremium = premiumTotal;
+      flavorName = names.join(' / ');
+      selectedFlavors = submitted.map((s) => ({ slotIndex: s.slotIndex, snackProductVariantId: s.snackProductVariantId, flavorId: s.flavorId }));
+
+      recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id);
+      deductionLines = await computeDeductionForSlots({
+        productVariantId: variant.id,
+        selectedFlavors,
+        quantitySold: item.quantity,
+        branchId,
+      });
+    } else {
+      if (item.flavorId) {
+        const link = variant.variantFlavors.find((vf) => vf.flavorId === item.flavorId);
+        if (!link || !link.isAvailable || !link.flavor.isActive) {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', `Selected flavor is not available for ${variant.name}`, 422);
+        }
+        if (flavorAvailabilityMap.get(item.flavorId) === false) {
+          throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected flavor is not available at this branch', 422);
+        }
+        flavorName = link.flavor.name;
+        pricePremium = link.pricePremium.toNumber();
+      }
+
+      recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id, item.flavorId ?? undefined);
+      deductionLines = await computeDeduction({
+        productVariantId: variant.id,
+        flavorId: item.flavorId ?? null,
+        quantitySold: item.quantity,
+        branchId,
+      });
     }
 
     const basePrice = variant.basePrice.toNumber();
     const unitPrice = round2(basePrice + pricePremium);
     const lineTotal = round2(unitPrice * item.quantity);
-    const recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id, item.flavorId ?? undefined);
-    const deductionLines = await computeDeduction({
-      productVariantId: variant.id,
-      flavorId: item.flavorId ?? null,
-      quantitySold: item.quantity,
-      branchId,
-    });
 
     resolved.push({
       id: randomUUID(),
       productId: variant.productId,
       productVariantId: variant.id,
-      flavorId: item.flavorId ?? null,
+      flavorId: flavorSlots.length > 0 ? null : (item.flavorId ?? null),
       productName: variant.product.name,
       variantName: variant.name,
       flavorName,
@@ -339,6 +425,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
       recipeVersion,
       deductionLines,
+      selectedFlavors,
     });
   }
   return resolved;
@@ -796,6 +883,7 @@ export const transactionsService = {
                   quantity: line.quantity,
                   unit: line.unit,
                 })),
+                selectedFlavors: item.selectedFlavors,
               })),
             },
             tx,

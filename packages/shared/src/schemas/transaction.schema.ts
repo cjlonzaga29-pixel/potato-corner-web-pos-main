@@ -18,11 +18,24 @@ const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [
 ];
 const imageProofTypeValues = Object.values(IMAGE_PROOF_TYPE) as [ImageProofType, ...ImageProofType[]];
 
-/** flavor_id is optional — not every product variant has flavors to choose from. */
+/**
+ * flavor_id is optional — not every product variant has flavors to choose
+ * from. selected_flavors is the Mix & Max alternative used instead of
+ * flavor_id when the variant has ProductFlavorSlot rows: one entry per slot.
+ */
 export const cartItemSchema = z.object({
   product_id: z.uuid(),
   product_variant_id: z.uuid(),
   flavor_id: z.uuid().optional(),
+  selected_flavors: z
+    .array(
+      z.object({
+        slot_index: z.number().int(),
+        snack_product_variant_id: z.uuid(),
+        flavor_id: z.uuid(),
+      }),
+    )
+    .optional(),
   quantity: z.number().int().positive(),
 });
 

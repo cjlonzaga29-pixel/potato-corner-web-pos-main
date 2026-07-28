@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+﻿import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { transactionResponseSchema } from '@potato-corner/shared';
 
@@ -48,6 +48,7 @@ vi.mock('../../lib/prisma.js', () => {
 // so prisma.$transaction's callback doesn't need real recipe/ingredient rows.
 vi.mock('../product-inventory/product-inventory.service.js', () => ({
   computeDeduction: vi.fn().mockResolvedValue([]),
+  computeDeductionForSlots: vi.fn().mockResolvedValue([]),
   // CR-004: resolveCartItems checks recipe existence before stamping a
   // version per cart line — default to "recipe exists" so the
   // pricing/VAT/sync tests in this file (which aren't about recipes) don't
@@ -487,6 +488,326 @@ describe('transactionsService.createTransaction — pricing and snapshots', () =
     vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: false }] as never);
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+  });
+});
+
+describe('transactionsService.createTransaction — Phase 4 Mix & Max slot-based flavors', () => {
+  const snackVariantFixture = {
+    id: 'snack-1',
+    isActive: true,
+    product: { id: 'product-1', status: 'active' },
+    variantFlavors: [
+      { flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } },
+      { flavorId: 'flavor-2', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-2', name: 'BBQ', isActive: true } },
+      { flavorId: 'flavor-3', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-3', name: 'Sour Cream', isActive: true } },
+    ],
+  };
+
+  function flavorSlot(overrides: Record<string, unknown> = {}) {
+    return {
+      snackOptions: [{ snackProductVariantId: snackVariantFixture.id, snackProductVariant: snackVariantFixture }],
+      ...overrides,
+    };
+  }
+
+  function slotVariant(overrides: Record<string, unknown> = {}) {
+    return variantRow({
+      variantFlavors: [
+        { flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } },
+        { flavorId: 'flavor-2', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-2', name: 'BBQ', isActive: true } },
+        { flavorId: 'flavor-3', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-3', name: 'Sour Cream', isActive: true } },
+      ],
+      flavorSlots: [
+        flavorSlot({ id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', unit: 'scoop' }),
+        flavorSlot({ id: 'slot-2', productVariantId: 'variant-1', slotIndex: 2, label: 'Flavor 2', unit: 'scoop' }),
+      ],
+      ...overrides,
+    });
+  }
+
+  it('accepts a two-slot (Mega Mix) variant with two valid flavor selections and persists selectedFlavors', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [
+          {
+            productId: 'product-1',
+            productVariantId: 'variant-1',
+            quantity: 1,
+            selectedFlavors: [
+              { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+              { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+            ],
+          },
+        ],
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            selectedFlavors: [
+              { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+              { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+            ],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('accepts a three-slot (Tera Mix) variant with three valid flavor selections', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      slotVariant({
+        flavorSlots: [
+          flavorSlot({ id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', unit: 'scoop' }),
+          flavorSlot({ id: 'slot-2', productVariantId: 'variant-1', slotIndex: 2, label: 'Flavor 2', unit: 'scoop' }),
+          flavorSlot({ id: 'slot-3', productVariantId: 'variant-1', slotIndex: 3, label: 'Flavor 3', unit: 'scoop' }),
+        ],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+                { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+                { slotIndex: 3, snackProductVariantId: 'snack-1', flavorId: 'flavor-3' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('rejects when a slot is missing', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            { productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedFlavors: [{ slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' }] },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INCOMPLETE' });
+  });
+
+  it('rejects a duplicate slot index', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+                { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INVALID' });
+  });
+
+  it('rejects an unknown slot index', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+                { slotIndex: 99, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INVALID' });
+  });
+
+  it('rejects extra flavor selections beyond the slot count', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+                { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+                { slotIndex: 3, snackProductVariantId: 'snack-1', flavorId: 'flavor-3' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INCOMPLETE' });
+  });
+
+  it('rejects an invalid/unlinked flavor ID for a slot', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+                { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-not-linked' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+  });
+
+  it('rejects a snack variant that is not offered for the slot', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-not-offered', flavorId: 'flavor-1' },
+                { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+  });
+
+  it('rejects a slot selection missing snack_product_variant_id', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: '', flavorId: 'flavor-1' } as never,
+                { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INVALID' });
+  });
+
+  it('validates the selected flavor against the chosen snack\'s own flavors, not the Mix & Max parent variant\'s flavors', async () => {
+    const restrictedSnack = {
+      id: 'snack-restricted',
+      isActive: true,
+      product: { id: 'product-1', status: 'active' },
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } }],
+    };
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      slotVariant({
+        // The parent variant itself has flavor-2 linked, but the chosen snack for
+        // slot 1 (restrictedSnack) does not — the slot must reject based on the
+        // snack's own variantFlavors, not the parent's.
+        flavorSlots: [
+          { id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', unit: 'scoop', snackOptions: [{ snackProductVariantId: restrictedSnack.id, snackProductVariant: restrictedSnack }] },
+          flavorSlot({ id: 'slot-2', productVariantId: 'variant-1', slotIndex: 2, label: 'Flavor 2', unit: 'scoop' }),
+        ],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [
+                { slotIndex: 1, snackProductVariantId: 'snack-restricted', flavorId: 'flavor-2' },
+                { slotIndex: 2, snackProductVariantId: 'snack-1', flavorId: 'flavor-2' },
+              ],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+  });
+
+  it('preserves the existing single-flavor path for variants with no ProductFlavorSlot rows', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+        null,
+      ),
+    ).resolves.toBeDefined();
   });
 });
 

@@ -63,7 +63,8 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
   const defaultBranchId = isBranchAccount ? (callerBranchIds[0] ?? '') : (activeBranchId ?? callerBranchIds[0] ?? '');
 
   const { data: branchData, isLoading: branchesLoading } = useBranches({ status: 'active', limit: 100 });
-  const branches = (branchData?.branches ?? []).filter((branch) => callerBranchIds.includes(branch.id));
+  const allBranches = branchData?.branches ?? [];
+  const branches = isBranchAccount ? allBranches.filter((branch) => callerBranchIds.includes(branch.id)) : allBranches;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),

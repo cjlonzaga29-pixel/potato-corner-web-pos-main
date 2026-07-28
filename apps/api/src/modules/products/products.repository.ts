@@ -309,6 +309,36 @@ export const productsRepository = {
             optionGroupAssignments: {
               include: { optionGroup: { select: { id: true, name: true, selectionType: true, required: true, isActive: true } } },
             },
+            // Mix & Max flavor slots — one selector per row in the POS UI.
+            flavorSlots: {
+              orderBy: { slotIndex: 'asc' },
+              include: {
+                snackOptions: {
+                  include: {
+                    snackProductVariant: {
+                      select: {
+                        id: true,
+                        name: true,
+                        sizeLabel: true,
+                        isActive: true,
+                        product: {
+                          select: {
+                            id: true,
+                            name: true,
+                            status: true,
+                            branchAvailability: { where: { branchId }, select: { isAvailable: true } },
+                          },
+                        },
+                        variantFlavors: {
+                          where: { isAvailable: true, flavor: { isActive: true } },
+                          include: { flavor: { select: { id: true, name: true, colorHex: true } } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },

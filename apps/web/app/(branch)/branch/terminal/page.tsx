@@ -88,6 +88,11 @@ export default function TerminalPage() {
   const [cachedProducts, setCachedProducts] = useState<PosCatalogProduct[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [flavorPrompt, setFlavorPrompt] = useState<{ product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] } | null>(null);
+  const [slotPrompt, setSlotPrompt] = useState<{
+    product: PosCatalogProduct;
+    variant: PosCatalogProduct['variants'][number];
+    selections: Record<number, { snackProductVariantId: string; flavorId: string }>;
+  } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash'>('cash');
   const [discountType, setDiscountType] = useState<DiscountChoice>('none');
   const [discountIdReference, setDiscountIdReference] = useState('');
@@ -145,6 +150,10 @@ export default function TerminalPage() {
   }, [catalog]);
 
   function handleProductTap(product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) {
+    if (variant.flavor_slots.length > 0) {
+      setSlotPrompt({ product, variant, selections: {} });
+      return;
+    }
     if (variant.flavors.length > 0) {
       setFlavorPrompt({ product, variant });
       return;
@@ -163,16 +172,66 @@ export default function TerminalPage() {
     setFlavorPrompt(null);
   }
 
+  function handleSlotSnackPick(slotIndex: number, snackProductVariantId: string) {
+    setSlotPrompt((prev) =>
+      prev ? { ...prev, selections: { ...prev.selections, [slotIndex]: { snackProductVariantId, flavorId: '' } } } : prev,
+    );
+  }
+
+  function handleSlotFlavorPick(slotIndex: number, flavorId: string) {
+    setSlotPrompt((prev) => {
+      if (!prev) return prev;
+      const current = prev.selections[slotIndex];
+      if (!current) return prev;
+      return { ...prev, selections: { ...prev.selections, [slotIndex]: { ...current, flavorId } } };
+    });
+  }
+
+  function handleSlotAddToCart() {
+    if (!slotPrompt) return;
+    const selectedFlavors = slotPrompt.variant.flavor_slots.map((slot) => ({
+      slot_index: slot.slot_index,
+      snack_product_variant_id: slotPrompt.selections[slot.slot_index]?.snackProductVariantId ?? '',
+      flavor_id: slotPrompt.selections[slot.slot_index]?.flavorId ?? '',
+    }));
+    if (selectedFlavors.some((s) => !s.snack_product_variant_id || !s.flavor_id)) return;
+    addItem({
+      product_id: slotPrompt.product.id,
+      product_variant_id: slotPrompt.variant.id,
+      selected_flavors: selectedFlavors as { slot_index: number; snack_product_variant_id: string; flavor_id: string }[],
+      quantity: 1,
+    });
+    setSlotPrompt(null);
+  }
+
   const cartLines = items.map((item, index) => {
     const info = variantIndex.get(item.product_variant_id);
     const flavor = info?.variant.flavors.find((f) => f.flavor_id === item.flavor_id);
-    const unitPrice = (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0);
+    const slotSelections = (item.selected_flavors ?? [])
+      .slice()
+      .sort((a, b) => a.slot_index - b.slot_index)
+      .map((sel) => {
+        const slot = info?.variant.flavor_slots.find((s) => s.slot_index === sel.slot_index);
+        const snackOption = slot?.snack_options.find((so) => so.product_variant_id === sel.snack_product_variant_id);
+        const slotFlavor = snackOption?.flavors.find((f) => f.flavor_id === sel.flavor_id);
+        return {
+          label: slot?.label ?? `Slot ${sel.slot_index}`,
+          snackName: snackOption ? `${snackOption.product_name} (${snackOption.variant_name})` : 'Unknown snack',
+          flavorName: slotFlavor?.name ?? 'Unknown flavor',
+          pricePremium: slotFlavor?.price_premium ?? 0,
+        };
+      });
+    const unitPrice =
+      slotSelections.length > 0
+        ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0)
+        : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0);
     return {
       index,
       item,
       productName: info?.product.name ?? 'Unknown item',
       variantName: info?.variant.name ?? '',
       flavorName: flavor?.name ?? null,
+      slotSelections,
       unitPrice,
       quantity: item.quantity,
       lineTotal: round2(unitPrice * item.quantity),
@@ -321,6 +380,82 @@ export default function TerminalPage() {
             </Card>
           </div>
         )}
+
+        {slotPrompt && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
+            <Card className="w-full max-w-sm">
+              <CardContent className="space-y-3 p-4">
+                <p className="font-medium">
+                  {slotPrompt.product.name} ({slotPrompt.variant.name})
+                </p>
+                {slotPrompt.variant.flavor_slots
+                  .slice()
+                  .sort((a, b) => a.slot_index - b.slot_index)
+                  .map((slot) => {
+                    const selection = slotPrompt.selections[slot.slot_index];
+                    const chosenSnack = slot.snack_options.find(
+                      (so) => so.product_variant_id === selection?.snackProductVariantId,
+                    );
+                    return (
+                      <div key={slot.slot_index} className="space-y-1">
+                        <p className="text-sm font-medium">{slot.label}</p>
+                        <Select
+                          value={selection?.snackProductVariantId ?? ''}
+                          onValueChange={(snackProductVariantId) => handleSlotSnackPick(slot.slot_index, snackProductVariantId)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose a snack" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {slot.snack_options.map((option) => (
+                              <SelectItem key={option.product_variant_id} value={option.product_variant_id}>
+                                {option.product_name} ({option.variant_name})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={selection?.flavorId ?? ''}
+                          onValueChange={(flavorId) => handleSlotFlavorPick(slot.slot_index, flavorId)}
+                          disabled={!chosenSnack}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose a flavor" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(chosenSnack?.flavors ?? []).map((flavor) => (
+                              <SelectItem key={flavor.flavor_id} value={flavor.flavor_id}>
+                                {flavor.name}
+                                {flavor.price_premium > 0 ? ` (+${formatPeso(flavor.price_premium)})` : ''}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    );
+                  })}
+                <p className="text-xs text-muted-foreground">
+                  {
+                    Object.values(slotPrompt.selections).filter((s) => s.snackProductVariantId && s.flavorId).length
+                  }{' '}
+                  of {slotPrompt.variant.flavor_slots.length} slots selected
+                </p>
+                <Button
+                  className="w-full"
+                  disabled={slotPrompt.variant.flavor_slots.some(
+                    (slot) => !slotPrompt.selections[slot.slot_index]?.snackProductVariantId || !slotPrompt.selections[slot.slot_index]?.flavorId,
+                  )}
+                  onClick={handleSlotAddToCart}
+                >
+                  Add to Cart
+                </Button>
+                <Button variant="outline" className="w-full" onClick={() => setSlotPrompt(null)}>
+                  Cancel
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
 
       {/* RIGHT PANEL — cart + payment */}
@@ -338,6 +473,11 @@ export default function TerminalPage() {
                   <p className="text-xs text-muted-foreground">
                     {line.variantName} · {formatPeso(line.unitPrice)} each
                   </p>
+                  {line.slotSelections.map((sel, i) => (
+                    <p key={i} className="text-xs text-muted-foreground">
+                      {sel.label}: {sel.snackName} — {sel.flavorName}
+                    </p>
+                  ))}
                 </div>
                 <div className="flex items-center gap-1">
                   <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity - 1)}>

@@ -269,6 +269,22 @@ export const posCatalogOptionGroupSchema = z.object({
   required: z.boolean(),
 });
 
+// Mix & Max — one flavor selector per ProductFlavorSlot row, ordered by
+// slot_index. Only variants with flavor slots use this; others keep `flavors`.
+export const posCatalogSnackOptionSchema = z.object({
+  product_variant_id: z.uuid(),
+  product_name: z.string(),
+  variant_name: z.string(),
+  flavors: z.array(posCatalogFlavorSchema),
+});
+
+export const posCatalogFlavorSlotSchema = z.object({
+  slot_index: z.number().int(),
+  label: z.string(),
+  required: z.boolean(),
+  snack_options: z.array(posCatalogSnackOptionSchema),
+});
+
 export const posCatalogVariantSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -276,6 +292,7 @@ export const posCatalogVariantSchema = z.object({
   price: z.number(),
   vatable_cap_amount: z.number().nullable(),
   flavors: z.array(posCatalogFlavorSchema),
+  flavor_slots: z.array(posCatalogFlavorSlotSchema),
   option_groups: z.array(posCatalogOptionGroupSchema),
 });
 

@@ -17,6 +17,8 @@ export interface CartItemInput {
   productId: string;
   productVariantId: string;
   flavorId?: string;
+  /** Mix & Max slot selections — required instead of flavorId when the variant has ProductFlavorSlot rows. */
+  selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[];
   quantity: number;
 }
 

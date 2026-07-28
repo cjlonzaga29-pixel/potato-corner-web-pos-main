@@ -1,0 +1,32 @@
+branch_name,inventory_item_name,opening_quantity,unit,unit_cost,effective_date,notes
+,Fries Base,50,kg,105.00,2026-07-29,TEST DATA — Replace before production.
+,Cooking Oil,40,L,68.00,2026-07-29,TEST DATA — Replace before production.
+,Loopys Base,35,kg,120.00,2026-07-29,TEST DATA — Replace before production.
+,Chicken Pops,35,kg,190.00,2026-07-29,TEST DATA — Replace before production.
+,Cheese Powder,300,tbsp,5.00,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,BBQ Powder,300,tbsp,4.50,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,Sour Cream Powder,300,tbsp,5.50,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,White Cheddar Powder,300,tbsp,6.00,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,Sour Cheese Powder,300,tbsp,5.50,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,Chili BBQ Powder,300,tbsp,5.00,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,Chili Cheese Powder,300,tbsp,5.50,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,Sweet Corn Powder,300,tbsp,4.50,2026-07-29,TEST DATA — Replace before production. Unit changed g->tbsp to match ingredients-template.csv.
+,Regular Fries Cup,300,pc,1.50,2026-07-29,TEST DATA — Replace before production.
+,Large Fries Cup,250,pc,1.80,2026-07-29,TEST DATA — Replace before production.
+,Jumbo Fries Cup,200,pc,2.20,2026-07-29,TEST DATA — Replace before production.
+,Mega Fries Cup,150,pc,2.50,2026-07-29,TEST DATA — Replace before production.
+,Giga Fries Container,100,pc,3.50,2026-07-29,TEST DATA — Replace before production.
+,Tera Fries Container,80,pc,4.20,2026-07-29,TEST DATA — Replace before production.
+,Large Loopys Container,150,pc,2.00,2026-07-29,TEST DATA — Replace before production.
+,Mega Loopys Container,100,pc,2.60,2026-07-29,TEST DATA — Replace before production.
+,Regular Chicken Pops Container,180,pc,1.60,2026-07-29,TEST DATA — Replace before production.
+,Large Chicken Pops Container,150,pc,2.00,2026-07-29,TEST DATA — Replace before production.
+,Mega Chicken Pops Container,100,pc,2.60,2026-07-29,TEST DATA — Replace before production.
+,Large Mix & Max Box,500,pc,4.00,2026-07-29,TEST DATA — Replace before production.
+,Mega Mix & Max Box,400,pc,5.00,2026-07-29,TEST DATA — Replace before production.
+,Tera Mix & Max Box,300,pc,6.50,2026-07-29,TEST DATA — Replace before production.
+,Bottled Water,100,pc,12.00,2026-07-29,TEST DATA — Replace before production.
+,Soda,100,pc,15.00,2026-07-29,TEST DATA — Replace before production.
+,Tissue,2000,pc,0.20,2026-07-29,OPTIONAL - confirm if tracked as inventory; TEST DATA — Replace before production.
+,Fork,1000,pc,0.50,2026-07-29,OPTIONAL - confirm if tracked as inventory; TEST DATA — Replace before production.
+,Kraft Bag,1000,pc,1.50,2026-07-29,TEST DATA — Replace before production.

@@ -40,6 +40,9 @@ vi.mock('./products.repository.js', () => ({
     shiftFlavorSlotIndicesDown: vi.fn(),
     rewriteFlavorSlotOrder: vi.fn(),
     countVariantFlavorSlots: vi.fn().mockResolvedValue(0),
+    // Phase 10 POS catalog
+    findCatalogForBranch: vi.fn().mockResolvedValue([]),
+    findDisabledFlavorIds: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -598,7 +601,7 @@ describe('productsService.deleteProductImage', () => {
 
 describe('productsService — VARIANT_TRANSITIONS matrix', () => {
   beforeEach(() => {
-    vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(0);
+    vi.mocked(productsRepository.listVariantFlavorSlots).mockResolvedValue([]);
     vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([]);
   });
 
@@ -696,7 +699,7 @@ describe('productsService.submitVariantForApproval', () => {
 
 describe('productsService.approveVariant', () => {
   beforeEach(() => {
-    vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(0);
+    vi.mocked(productsRepository.listVariantFlavorSlots).mockResolvedValue([]);
     vi.mocked(productInventoryRepository.hasAnyActiveMappingForVariant).mockResolvedValue(true);
     vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([
       { id: 'branch-a', code: 'PC-A-001', name: 'Branch A', city: 'Manila' },
@@ -744,12 +747,27 @@ describe('productsService.approveVariant', () => {
     expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith('variant-1', expect.objectContaining({ lastChangeReason: null }));
   });
 
-  it('Phase 4 gate blocks approval when a ProductFlavorSlot row exists', async () => {
+  it('approves a variant with valid, contiguous ProductFlavorSlot rows', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
-    vi.mocked(productsRepository.countFlavorSlots).mockResolvedValue(1);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+    vi.mocked(productsRepository.listVariantFlavorSlots).mockResolvedValue([
+      { id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
+      { id: 'slot-2', productVariantId: 'variant-1', slotIndex: 2, label: 'Flavor 2', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalled();
+  });
+
+  it('rejects approval when ProductFlavorSlot rows have a duplicate slot index', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.listVariantFlavorSlots).mockResolvedValue([
+      { id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
+      { id: 'slot-2', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 2', flavorQty: new Prisma.Decimal(1), unit: 'scoop', required: true, createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
 
     await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
-      code: 'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
+      code: 'VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS',
       statusCode: 409,
     });
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
@@ -1263,5 +1281,117 @@ describe('productsService.listFlavorSlots', () => {
       code: 'VARIANT_NOT_FOUND',
       statusCode: 404,
     });
+  });
+});
+
+describe('productsService.getPosCatalog — Mix & Max snack options', () => {
+  function snackProductVariant(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'snack-1',
+      name: 'Small',
+      isActive: true,
+      product: { id: 'product-2', name: 'Flavored Fries', status: 'active', branchAvailability: [{ isAvailable: true }] },
+      variantFlavors: [
+        { flavorId: 'flavor-1', pricePremium: { toNumber: () => 0 }, flavor: { name: 'Cheese', colorHex: null } },
+        { flavorId: 'flavor-2', pricePremium: { toNumber: () => 0 }, flavor: { name: 'BBQ', colorHex: null } },
+      ],
+      ...overrides,
+    };
+  }
+
+  function catalogProduct(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'product-1',
+      name: 'Mega Mix',
+      category: 'Snacks',
+      imageUrl: null,
+      variants: [
+        {
+          id: 'variant-1',
+          name: 'Regular',
+          sizeLabel: 'Regular',
+          basePrice: { toNumber: () => 100 },
+          vatableCapAmount: null,
+          variantFlavors: [],
+          optionGroupAssignments: [],
+          flavorSlots: [
+            {
+              slotIndex: 1,
+              label: 'Snack 1 Flavor',
+              required: true,
+              snackOptions: [{ snackProductVariant: snackProductVariant() }],
+            },
+          ],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('exposes snack_options per flavor slot with product_variant_id, product_name, variant_name, and flavors', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProduct()] as never);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const slot = result.products[0]?.variants[0]?.flavor_slots[0];
+    expect(slot?.snack_options).toEqual([
+      {
+        product_variant_id: 'snack-1',
+        product_name: 'Flavored Fries',
+        variant_name: 'Small',
+        flavors: [
+          { flavor_id: 'flavor-1', name: 'Cheese', color_hex: null, price_premium: 0 },
+          { flavor_id: 'flavor-2', name: 'BBQ', color_hex: null, price_premium: 0 },
+        ],
+      },
+    ]);
+  });
+
+  it('excludes a snack option whose product is inactive, unavailable at the branch, or whose variant is deactivated', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      catalogProduct({
+        variants: [
+          {
+            id: 'variant-1',
+            name: 'Regular',
+            sizeLabel: 'Regular',
+            basePrice: { toNumber: () => 100 },
+            vatableCapAmount: null,
+            variantFlavors: [],
+            optionGroupAssignments: [],
+            flavorSlots: [
+              {
+                slotIndex: 1,
+                label: 'Snack 1 Flavor',
+                required: true,
+                snackOptions: [
+                  { snackProductVariant: snackProductVariant({ id: 'snack-inactive', isActive: false }) },
+                  { snackProductVariant: snackProductVariant({ id: 'snack-not-branch-available', product: { id: 'product-3', name: 'X', status: 'active', branchAvailability: [{ isAvailable: false }] } }) },
+                  { snackProductVariant: snackProductVariant({ id: 'snack-product-inactive', product: { id: 'product-4', name: 'Y', status: 'archived', branchAvailability: [{ isAvailable: true }] } }) },
+                  { snackProductVariant: snackProductVariant({ id: 'snack-ok' }) },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ] as never);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const options = result.products[0]?.variants[0]?.flavor_slots[0]?.snack_options ?? [];
+    expect(options.map((o) => o.product_variant_id)).toEqual(['snack-ok']);
+  });
+
+  it('filters a branch-disabled flavor out of a snack option\'s flavors list, reusing the same disabledFlavors rule as the parent variant', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProduct()] as never);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue(['flavor-2']);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const flavors = result.products[0]?.variants[0]?.flavor_slots[0]?.snack_options[0]?.flavors ?? [];
+    expect(flavors.map((f) => f.flavor_id)).toEqual(['flavor-1']);
   });
 });

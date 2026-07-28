@@ -1,0 +1,22 @@
+mix_variant,slot_index,slot_label,allowed_snack_product,allowed_snack_variant,required,notes
+Large Mix,1,Snack 1,Flavored Fries,Regular,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Large Mix,1,Snack 1,Loopys,Large,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Large Mix,1,Snack 1,Crunchy Chicken Pops,Regular,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Large Mix,2,Snack 2,Flavored Fries,Regular,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Large Mix,2,Snack 2,Loopys,Large,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Large Mix,2,Snack 2,Crunchy Chicken Pops,Regular,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Mega Mix,1,Snack 1,Flavored Fries,Jumbo,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Mega Mix,1,Snack 1,Loopys,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Mega Mix,1,Snack 1,Crunchy Chicken Pops,Large,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Mega Mix,2,Snack 2,Flavored Fries,Jumbo,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Mega Mix,2,Snack 2,Loopys,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Mega Mix,2,Snack 2,Crunchy Chicken Pops,Large,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,1,Snack 1,Flavored Fries,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,1,Snack 1,Loopys,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,1,Snack 1,Crunchy Chicken Pops,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,2,Snack 2,Flavored Fries,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,2,Snack 2,Loopys,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,2,Snack 2,Crunchy Chicken Pops,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,3,Snack 3,Flavored Fries,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,3,Snack 3,Loopys,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.
+Tera Mix,3,Snack 3,Crunchy Chicken Pops,Mega,TRUE,TEST DATA — Replace before production. Temporary mapping for functionality testing only.

@@ -1,0 +1,32 @@
+branch_name,inventory_item_name,item_type,stock_unit,cost_per_unit,reorder_level,notes
+,Fries Base,RAW_MATERIAL,kg,105.00,20,TEST DATA — Replace before production.
+,Cooking Oil,RAW_MATERIAL,L,68.00,15,TEST DATA — Replace before production.
+,Loopys Base,RAW_MATERIAL,kg,120.00,15,TEST DATA — Replace before production.
+,Chicken Pops,RAW_MATERIAL,kg,190.00,15,TEST DATA — Replace before production.
+,Cheese Powder,SEASONING,tbsp,5.00,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,BBQ Powder,SEASONING,tbsp,4.50,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,Sour Cream Powder,SEASONING,tbsp,5.50,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,White Cheddar Powder,SEASONING,tbsp,6.00,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,Sour Cheese Powder,SEASONING,tbsp,5.50,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,Chili BBQ Powder,SEASONING,tbsp,5.00,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,Chili Cheese Powder,SEASONING,tbsp,5.50,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,Sweet Corn Powder,SEASONING,tbsp,4.50,50,TEST DATA — Replace before production. stock_unit changed g->tbsp; recipe reference sheet uses tablespoons and no verified tbsp->g conversion exists.
+,Regular Fries Cup,PACKAGING,pc,1.50,150,TEST DATA — Replace before production.
+,Large Fries Cup,PACKAGING,pc,1.80,120,TEST DATA — Replace before production.
+,Jumbo Fries Cup,PACKAGING,pc,2.20,100,TEST DATA — Replace before production.
+,Mega Fries Cup,PACKAGING,pc,2.50,80,TEST DATA — Replace before production.
+,Giga Fries Container,PACKAGING,pc,3.50,60,TEST DATA — Replace before production.
+,Tera Fries Container,PACKAGING,pc,4.20,50,TEST DATA — Replace before production.
+,Large Loopys Container,PACKAGING,pc,2.00,80,TEST DATA — Replace before production.
+,Mega Loopys Container,PACKAGING,pc,2.60,60,TEST DATA — Replace before production.
+,Regular Chicken Pops Container,PACKAGING,pc,1.60,100,TEST DATA — Replace before production.
+,Large Chicken Pops Container,PACKAGING,pc,2.00,80,TEST DATA — Replace before production.
+,Mega Chicken Pops Container,PACKAGING,pc,2.60,60,TEST DATA — Replace before production.
+,Large Mix & Max Box,PACKAGING,pc,4.00,200,TEST DATA — Replace before production.
+,Mega Mix & Max Box,PACKAGING,pc,5.00,200,TEST DATA — Replace before production.
+,Tera Mix & Max Box,PACKAGING,pc,6.50,200,TEST DATA — Replace before production.
+,Bottled Water,FINISHED_GOOD,pc,12.00,48,TEST DATA — Replace before production.
+,Soda,FINISHED_GOOD,pc,15.00,48,TEST DATA — Replace before production.
+,Tissue,PACKAGING,pc,0.20,500,OPTIONAL - confirm if tracked as inventory; TEST DATA — Replace before production.
+,Fork,PACKAGING,pc,0.50,300,OPTIONAL - confirm if tracked as inventory; TEST DATA — Replace before production.
+,Kraft Bag,PACKAGING,pc,1.50,300,TEST DATA — Replace before production.

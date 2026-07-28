@@ -69,6 +69,7 @@ interface CreateTransactionRow {
     lineTotal: number;
     recipeVersion: number;
     deductionSnapshot?: { ingredientId: string; ingredientName: string; quantity: number; unit: string }[];
+    selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
   }[];
 }
 
@@ -133,6 +134,23 @@ export const transactionsRepository = {
       include: {
         product: { select: { id: true, name: true, status: true } },
         variantFlavors: { include: { flavor: { select: { id: true, name: true, isActive: true } } } },
+        flavorSlots: {
+          orderBy: { slotIndex: 'asc' },
+          include: {
+            snackOptions: {
+              include: {
+                snackProductVariant: {
+                  select: {
+                    id: true,
+                    isActive: true,
+                    product: { select: { id: true, status: true } },
+                    variantFlavors: { include: { flavor: { select: { id: true, name: true, isActive: true } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
   },
@@ -204,6 +222,7 @@ export const transactionsRepository = {
           lineTotal: item.lineTotal,
           recipeVersion: item.recipeVersion,
           deductionSnapshot: item.deductionSnapshot,
+          selectedFlavors: item.selectedFlavors ?? undefined,
         })),
       });
 

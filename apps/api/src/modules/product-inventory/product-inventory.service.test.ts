@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+﻿import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 vi.mock('./product-inventory.repository.js', () => ({
@@ -32,7 +32,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 const { productInventoryRepository } = await import('./product-inventory.repository.js');
 const { productsRepository } = await import('../products/products.repository.js');
 const { inventoryRepository } = await import('../inventory/inventory.repository.js');
-const { productInventoryService, computeDeduction, assertProductInventoryExists } = await import('./product-inventory.service.js');
+const { productInventoryService, computeDeduction, computeDeductionForSlots, assertProductInventoryExists } = await import('./product-inventory.service.js');
 
 const ACTOR = { id: 'user-1', role: 'supervisor' };
 
@@ -499,6 +499,96 @@ describe('computeDeduction — CR-004 cross-branch ingredient resolution', () =>
     await expect(
       computeDeduction({ productVariantId: 'variant-1', flavorId: null, quantitySold: 1, branchId: 'branch-b' }),
     ).rejects.toMatchObject({ code: 'INGREDIENT_NOT_PROVISIONED' });
+  });
+});
+
+describe('computeDeductionForSlots — Phase 4 Mix & Max', () => {
+  it('resolves each selected flavor slot independently and deducts base ingredients once', async () => {
+    vi.mocked(productInventoryRepository.findByVariantForDeduction).mockImplementation((async (_branch: string, _variant: string, flavorId?: string) => {
+      if (!flavorId) return [deductionRow('potato', 'Potato', 200, 'g', null)] as never;
+      if (flavorId === 'flavor-1') return [deductionRow('cheese', 'Cheese Powder', 10, 'g', 'flavor-1')] as never;
+      if (flavorId === 'flavor-2') return [deductionRow('bbq', 'BBQ Powder', 12, 'g', 'flavor-2')] as never;
+      return [] as never;
+    }) as never);
+
+    const lines = await computeDeductionForSlots({
+      productVariantId: 'variant-1',
+      selectedFlavors: [
+        { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+        { slotIndex: 2, snackProductVariantId: 'snack-2', flavorId: 'flavor-2' },
+      ],
+      quantitySold: 1,
+      branchId: 'branch-a',
+    });
+
+    expect(lines.find((l) => l.ingredient_id === 'potato')).toMatchObject({ quantity: 200 });
+    expect(lines.find((l) => l.ingredient_id === 'cheese')).toMatchObject({ quantity: 10 });
+    expect(lines.find((l) => l.ingredient_id === 'bbq')).toMatchObject({ quantity: 12 });
+    expect(lines).toHaveLength(3);
+  });
+
+  it('resolves three slots (Tera Mix) independently', async () => {
+    vi.mocked(productInventoryRepository.findByVariantForDeduction).mockImplementation((async (_branch: string, _variant: string, flavorId?: string) => {
+      if (!flavorId) return [] as never;
+      return [deductionRow(`ing-${flavorId}`, flavorId, 5, 'g', flavorId)] as never;
+    }) as never);
+
+    const lines = await computeDeductionForSlots({
+      productVariantId: 'variant-1',
+      selectedFlavors: [
+        { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+        { slotIndex: 2, snackProductVariantId: 'snack-2', flavorId: 'flavor-2' },
+        { slotIndex: 3, snackProductVariantId: 'snack-3', flavorId: 'flavor-3' },
+      ],
+      quantitySold: 1,
+      branchId: 'branch-a',
+    });
+
+    expect(lines).toHaveLength(3);
+  });
+
+  it('sums quantity when the same flavor is selected in two different slots, without duplicating base ingredients', async () => {
+    vi.mocked(productInventoryRepository.findByVariantForDeduction).mockImplementation((async (_branch: string, _variant: string, flavorId?: string) => {
+      if (!flavorId) return [deductionRow('potato', 'Potato', 200, 'g', null)] as never;
+      return [deductionRow('cheese', 'Cheese Powder', 10, 'g', 'flavor-1')] as never;
+    }) as never);
+
+    const lines = await computeDeductionForSlots({
+      productVariantId: 'variant-1',
+      selectedFlavors: [
+        { slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' },
+        { slotIndex: 2, snackProductVariantId: 'snack-2', flavorId: 'flavor-1' },
+      ],
+      quantitySold: 1,
+      branchId: 'branch-a',
+    });
+
+    expect(lines).toHaveLength(2);
+    expect(lines.find((l) => l.ingredient_id === 'potato')).toMatchObject({ quantity: 200 });
+    expect(lines.find((l) => l.ingredient_id === 'cheese')).toMatchObject({ quantity: 20 });
+  });
+
+  it('resolves each slot\'s ProductInventory mappings against the selected snack\'s own variant id, never the Mix & Max parent variant id', async () => {
+    vi.mocked(productInventoryRepository.findByVariantForDeduction).mockImplementation((async (_branch: string, _variant: string, flavorId?: string) => {
+      if (!flavorId) return [] as never;
+      return [deductionRow(`ing-${flavorId}`, flavorId, 5, 'g', flavorId)] as never;
+    }) as never);
+
+    await computeDeductionForSlots({
+      productVariantId: 'variant-parent',
+      selectedFlavors: [{ slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' }],
+      quantitySold: 1,
+      branchId: 'branch-a',
+    });
+
+    expect(productInventoryRepository.findByVariantForDeduction).toHaveBeenCalledWith('branch-a', 'snack-1', 'flavor-1');
+    expect(productInventoryRepository.findByVariantForDeduction).not.toHaveBeenCalledWith('branch-a', 'variant-parent', 'flavor-1');
+  });
+
+  it('rejects when no branchId is provided', async () => {
+    await expect(
+      computeDeductionForSlots({ productVariantId: 'variant-1', selectedFlavors: [], quantitySold: 1, branchId: '' }),
+    ).rejects.toMatchObject({ code: 'BRANCH_ID_REQUIRED' });
   });
 });
 

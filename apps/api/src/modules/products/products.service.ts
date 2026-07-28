@@ -86,6 +86,37 @@ async function assertRecipesResolvableSomewhere(productVariantId: string): Promi
   }
 }
 
+/**
+ * Phase 4: a variant's ProductFlavorSlot rows must form a valid, contiguous
+ * 1..N slot-index sequence with no duplicates before its slot-based sale
+ * flow (transactions.service.ts resolveCartItems) can trust slotIndex as
+ * the runtime contract. listVariantFlavorSlots already orders by slotIndex.
+ */
+function assertFlavorSlotsWellFormed(slots: ProductFlavorSlot[]): void {
+  const seen = new Set<number>();
+  for (const slot of slots) {
+    if (!Number.isInteger(slot.slotIndex) || slot.slotIndex < 1) {
+      throw new ProductError('VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS', `Flavor slot has an invalid slotIndex (${slot.slotIndex})`, 409);
+    }
+    if (seen.has(slot.slotIndex)) {
+      throw new ProductError('VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS', `Duplicate slot index ${slot.slotIndex} on this variant`, 409);
+    }
+    seen.add(slot.slotIndex);
+    if (!slot.label || !slot.unit) {
+      throw new ProductError('VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS', `Slot ${slot.slotIndex} is missing a label or unit`, 409);
+    }
+  }
+  const expected = Array.from({ length: slots.length }, (_, i) => i + 1);
+  const actual = [...seen].sort((a, b) => a - b);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new ProductError(
+      'VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS',
+      `Flavor slots must form a contiguous 1..${slots.length} sequence`,
+      409,
+    );
+  }
+}
+
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -764,13 +795,9 @@ export const productsService = {
 
     assertVariantTransition(existing.lifecycleStatus, 'ACTIVE');
 
-    const flavorSlotCount = await productsRepository.countFlavorSlots(variantId);
-    if (flavorSlotCount > 0) {
-      throw new ProductError(
-        'VARIANT_APPROVAL_BLOCKED_PENDING_PHASE_4',
-        'Variant contains ProductFlavorSlot definitions that require Phase 4 runtime resolver. Approval blocked until Phase 4 lands.',
-        409,
-      );
+    const flavorSlots = await productsRepository.listVariantFlavorSlots(variantId);
+    if (flavorSlots.length > 0) {
+      assertFlavorSlotsWellFormed(flavorSlots);
     }
 
     await assertRecipesResolvableSomewhere(variantId);
@@ -1214,6 +1241,33 @@ export const productsService = {
             name: assignment.optionGroup.name,
             selection_type: assignment.optionGroup.selectionType,
             required: assignment.required ?? assignment.optionGroup.required,
+          })),
+        flavor_slots: variant.flavorSlots
+          .slice()
+          .sort((a, b) => a.slotIndex - b.slotIndex)
+          .map((slot) => ({
+            slot_index: slot.slotIndex,
+            label: slot.label,
+            required: slot.required,
+            snack_options: slot.snackOptions
+              .map((so) => so.snackProductVariant)
+              .filter(
+                (sv) => sv.isActive && sv.product.status === 'active' && sv.product.branchAvailability[0]?.isAvailable === true,
+              )
+              .map((sv) => ({
+                product_variant_id: sv.id,
+                product_name: sv.product.name,
+                variant_name: sv.name,
+                flavors: sv.variantFlavors
+                  .filter((vf) => !disabledFlavors.has(vf.flavorId))
+                  .map((vf) => ({
+                    flavor_id: vf.flavorId,
+                    name: vf.flavor.name,
+                    color_hex: vf.flavor.colorHex,
+                    price_premium: vf.pricePremium.toNumber(),
+                  })),
+              }))
+              .sort((a, b) => a.product_name.localeCompare(b.product_name) || a.variant_name.localeCompare(b.variant_name)),
           })),
       }));
       return {

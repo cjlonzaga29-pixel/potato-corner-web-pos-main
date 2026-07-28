@@ -1,0 +1,34 @@
+branch_name,product_name,variant_name,inventory_item_name,mapping_type,quantity_required,unit,required_from_user,notes
+,Flavored Fries,Regular,Fries Base,BASE,0.064,kg,NO,Raw fries weight 64g per standard weight reference sheet; converted g->kg to match Fries Base stock_unit.
+,Flavored Fries,Regular,Cooking Oil,BASE,0.008,L,NO,"TEST DATA — Replace before production. Temporary oil allocation for inventory-deduction testing, not an official recipe figure."
+,Flavored Fries,Regular,Regular Fries Cup,PACKAGING,1,pc,NO,1 regular cup per reference sheet.
+,Flavored Fries,Large,Fries Base,BASE,0.131,kg,NO,Raw fries weight 131g per standard weight reference sheet; converted g->kg.
+,Flavored Fries,Large,Cooking Oil,BASE,0.015,L,NO,"TEST DATA — Replace before production. Temporary oil allocation for inventory-deduction testing, not an official recipe figure."
+,Flavored Fries,Large,Large Fries Cup,PACKAGING,1,pc,NO,1 large cup per reference sheet.
+,Flavored Fries,Jumbo,Fries Base,BASE,0.197,kg,NO,Raw fries weight 197g per standard weight reference sheet; converted g->kg.
+,Flavored Fries,Jumbo,Cooking Oil,BASE,0.022,L,NO,"TEST DATA — Replace before production. Temporary oil allocation for inventory-deduction testing, not an official recipe figure."
+,Flavored Fries,Jumbo,Jumbo Fries Cup,PACKAGING,1,pc,NO,1 jumbo cup per reference sheet.
+,Flavored Fries,Mega,Fries Base,BASE,0.264,kg,NO,Raw fries weight 264g per standard weight reference sheet; converted g->kg.
+,Flavored Fries,Mega,Cooking Oil,BASE,0.030,L,NO,"TEST DATA — Replace before production. Temporary oil allocation for inventory-deduction testing, not an official recipe figure."
+,Flavored Fries,Mega,Mega Fries Cup,PACKAGING,1,pc,NO,1 mega cup per reference sheet.
+,Flavored Fries,Giga,Fries Base,BASE,0.465,kg,NO,Raw fries weight 465g per standard weight reference sheet; converted g->kg.
+,Flavored Fries,Giga,Cooking Oil,BASE,0.050,L,NO,"TEST DATA — Replace before production. Temporary oil allocation for inventory-deduction testing, not an official recipe figure."
+,Flavored Fries,Giga,Giga Fries Container,PACKAGING,1,pc,NO,1 giga cup per reference sheet.
+,Flavored Fries,Tera,Fries Base,BASE,0.527,kg,NO,Raw fries weight 527g per standard weight reference sheet; converted g->kg.
+,Flavored Fries,Tera,Cooking Oil,BASE,0.060,L,NO,"TEST DATA — Replace before production. Temporary oil allocation for inventory-deduction testing, not an official recipe figure."
+,Flavored Fries,Tera,Tera Fries Container,PACKAGING,1,pc,NO,1 tera cup per reference sheet.
+,Loopys,Large,Loopys Base,BASE,0.1,kg,NO,100g loopys per Large Loopys recipe sheet; converted g->kg.
+,Loopys,Large,Large Loopys Container,PACKAGING,1,pc,NO,1 large cup per recipe sheet.
+,Loopys,Mega,Loopys Base,BASE,0.2,kg,NO,200g loopys per Mega Loopys recipe sheet; converted g->kg.
+,Loopys,Mega,Mega Loopys Container,PACKAGING,1,pc,NO,1 mega cup per recipe sheet.
+,Crunchy Chicken Pops,Regular,Chicken Pops,BASE,0.07,kg,NO,70g chicken pops per Regular CCP recipe sheet; converted g->kg.
+,Crunchy Chicken Pops,Regular,Regular Chicken Pops Container,PACKAGING,1,pc,NO,1 regular cup per recipe sheet.
+,Crunchy Chicken Pops,Large,Chicken Pops,BASE,0.12,kg,NO,120g chicken pops per Large CCP recipe sheet; converted g->kg.
+,Crunchy Chicken Pops,Large,Large Chicken Pops Container,PACKAGING,1,pc,NO,1 large cup per recipe sheet.
+,Crunchy Chicken Pops,Mega,Chicken Pops,BASE,0.23,kg,NO,230g chicken pops per Mega CCP recipe sheet; converted g->kg.
+,Crunchy Chicken Pops,Mega,Mega Chicken Pops Container,PACKAGING,1,pc,NO,Container size per catalog packaging item name; recipe sheet cup/kraft-bag row alignment for Mega CCP was visually unclear beyond the gram figure so container count only (not cup label) is asserted.
+,Mix & Max,Large Mix,Large Mix & Max Box,PACKAGING,1,pc,NO,"TEST DATA — Replace before production. Temporary packaging allocation for inventory-deduction testing; parent packaging only, snack contents defined in mix-max-snack-options-template.csv."
+,Mix & Max,Mega Mix,Mega Mix & Max Box,PACKAGING,1,pc,NO,"TEST DATA — Replace before production. Temporary packaging allocation for inventory-deduction testing; parent packaging only, snack contents defined in mix-max-snack-options-template.csv."
+,Mix & Max,Tera Mix,Tera Mix & Max Box,PACKAGING,1,pc,NO,"TEST DATA — Replace before production. Temporary packaging allocation for inventory-deduction testing; parent packaging only, snack contents defined in mix-max-snack-options-template.csv."
+,Drinks,Water,Bottled Water,FINISHED_GOOD,1,pc,NO,"TEST DATA — Replace before production. One bottle per sale, matching existing ""Bottled Water"" ingredient."
+,Drinks,Soda,Soda,FINISHED_GOOD,1,pc,NO,TEST DATA — Replace before production. One can per sale.

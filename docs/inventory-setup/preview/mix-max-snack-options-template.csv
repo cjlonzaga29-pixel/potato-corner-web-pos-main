@@ -1,0 +1,22 @@
+mix_variant,slot_index,slot_label,allowed_snack_product,allowed_snack_variant,required,notes
+Large Mix,1,Snack 1,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Large Mix,1,Snack 1,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Large Mix,1,Snack 1,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Large Mix,2,Snack 2,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Large Mix,2,Snack 2,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Large Mix,2,Snack 2,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Mega Mix,1,Snack 1,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Mega Mix,1,Snack 1,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Mega Mix,1,Snack 1,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Mega Mix,2,Snack 2,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Mega Mix,2,Snack 2,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Mega Mix,2,Snack 2,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,1,Snack 1,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,1,Snack 1,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,1,Snack 1,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,2,Snack 2,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,2,Snack 2,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,2,Snack 2,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,3,Snack 3,Flavored Fries,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,3,Snack 3,Loopys,,TRUE,REQUIRED FROM USER — choose exact catalog variant
+Tera Mix,3,Snack 3,Crunchy Chicken Pops,,TRUE,REQUIRED FROM USER — choose exact catalog variant

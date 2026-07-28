@@ -23,7 +23,12 @@
     "inventory:reconciliation:report": "tsx scripts/inventory-reconciliation-report.ts",
     "inventory:rebuild:dry-run": "tsx scripts/inventory-rebuild-dry-run.ts",
     "inventory:rebuild:confirm": "tsx scripts/inventory-rebuild-confirm.ts",
-    "shadow-bom-deduction:report": "tsx scripts/shadow-bom-deduction-report.ts"
+    "shadow-bom-deduction:report": "tsx scripts/shadow-bom-deduction-report.ts",
+    "validate:inventory-setup": "tsx scripts/validate-inventory-setup.ts",
+    "generate:inventory-workbook": "tsx scripts/generate-inventory-workbook.ts",
+    "sync:inventory-workbook:check": "tsx scripts/sync-inventory-workbook-to-csv.ts --check",
+    "sync:inventory-workbook:preview": "tsx scripts/sync-inventory-workbook-to-csv.ts --preview",
+    "sync:inventory-workbook:write": "tsx scripts/sync-inventory-workbook-to-csv.ts --write"
   },
   "dependencies": {
     "@potato-corner/shared": "workspace:*",
@@ -64,6 +69,7 @@
     "@vitest/coverage-v8": "^3.0.2",
     "bcryptjs": "^3.0.3",
     "eslint": "^9.18.0",
+    "exceljs": "^4.4.0",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

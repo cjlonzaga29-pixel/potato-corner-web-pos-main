@@ -603,6 +603,9 @@ model ProductVariant {
   changeLogs       ProductChangeLog[]
   productInventory ProductInventory[]
 
+  // Mix & Max — slots this variant is a sellable snack option for.
+  snackSlotOptions ProductFlavorSlotSnackOption[] @relation("SnackOptionVariant")
+
   // CR-006 Phase A
   productComponents ProductComponent[]
 
@@ -922,10 +925,31 @@ model ProductFlavorSlot {
   updatedAt        DateTime @updatedAt @map("updated_at")
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  snackOptions   ProductFlavorSlotSnackOption[]
 
   @@unique([productVariantId, slotIndex])
   @@index([productVariantId])
   @@map("product_flavor_slots")
+}
+
+/// Mix & Max — which snack ProductVariants (e.g. Fries, Loopys) are sellable
+/// into a given ProductFlavorSlot. The selected snackProductVariantId is what
+/// inventory deduction resolves ProductInventory against, not the parent
+/// Mix & Max variant — see product-inventory.service.ts computeDeductionForSlots.
+model ProductFlavorSlotSnackOption {
+  id                   String   @id @default(cuid())
+  flavorSlotId         String   @map("flavor_slot_id")
+  snackProductVariantId String  @map("snack_product_variant_id")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  flavorSlot         ProductFlavorSlot @relation(fields: [flavorSlotId], references: [id], onDelete: Cascade)
+  snackProductVariant ProductVariant   @relation("SnackOptionVariant", fields: [snackProductVariantId], references: [id], onDelete: Cascade)
+
+  @@unique([flavorSlotId, snackProductVariantId])
+  @@index([flavorSlotId])
+  @@index([snackProductVariantId])
+  @@map("product_flavor_slot_snack_options")
 }
 
 /// CR-005 Phase 1 — append-only audit trail of ProductVariant changes.

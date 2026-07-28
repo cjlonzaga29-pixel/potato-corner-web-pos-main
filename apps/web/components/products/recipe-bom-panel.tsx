@@ -80,7 +80,7 @@ export function RecipeBomPanel({ productVariantId, variantLabel }: RecipeBomPane
                   <Badge variant={component.is_active ? 'active' : 'inactive'}>{component.is_active ? 'Active' : 'Inactive'}</Badge>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  {component.quantity_required} {component.base_unit_code} required
+                  {component.quantity_required} {component.recipe_unit_code} required
                 </p>
                 {canManage && (
                   <div className="mt-1 flex gap-2">

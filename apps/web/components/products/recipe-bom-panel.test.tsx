@@ -31,9 +31,9 @@ const COMPONENT: ProductComponentResponse = {
   inventory_item_name: 'Cheese Powder',
   inventory_item_sku: 'CHZ-1',
   base_unit_code: 'kg',
-  recipe_unit_id: 'unit-kg',
-  recipe_unit_code: 'kg',
-  quantity_required: 2,
+  recipe_unit_id: 'unit-g',
+  recipe_unit_code: 'g',
+  quantity_required: 100,
   is_active: true,
   version: 1,
   created_at: '2026-01-01T00:00:00.000Z',
@@ -102,7 +102,8 @@ describe('RecipeBomPanel — Admin write access', () => {
     renderPanel();
 
     expect(screen.getByText('Cheese Powder')).toBeInTheDocument();
-    expect(screen.getByText('2 kg required')).toBeInTheDocument();
+    expect(screen.getByText('100 g required')).toBeInTheDocument();
+    expect(screen.queryByText('100 kg required')).not.toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
   });
 

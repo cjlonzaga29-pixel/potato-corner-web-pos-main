@@ -75,19 +75,48 @@ const FINGERPRINT_ENTITY_TYPE: Record<InitializationEntityType, string> = {
   UNIT_CONVERSION: 'UnitConversion',
 };
 
-/** Fetches the live target row's fingerprint-relevant fields, or `null` if the row no longer exists. */
+/**
+ * Fetches the live target row's fingerprint-relevant fields, or `null` if the
+ * row no longer exists. Accepts an optional `client` (defaulting to the root
+ * `prisma` singleton) so R10's rollback-execution service can read the live
+ * row inside its own `prisma.$transaction(...)` via the `tx` client — same
+ * precedent as `hasDownstreamReference`.
+ */
 async function fetchLiveEntityFields(
   entityType: InitializationEntityType,
   entityId: string,
+  client: PrismaClientOrTx = prisma,
 ): Promise<Record<string, unknown> | null> {
   switch (entityType) {
     case 'INVENTORY_CATEGORY':
-      return prisma.inventoryCategory.findUnique({ where: { id: entityId } });
+      return client.inventoryCategory.findUnique({ where: { id: entityId } });
     case 'UNIT_OF_MEASURE':
-      return prisma.unitOfMeasure.findUnique({ where: { id: entityId } });
+      return client.unitOfMeasure.findUnique({ where: { id: entityId } });
     case 'UNIT_CONVERSION':
-      return prisma.unitConversion.findUnique({ where: { id: entityId } });
+      return client.unitConversion.findUnique({ where: { id: entityId } });
   }
+}
+
+/**
+ * Recomputes the live target row's verification fingerprint from its current
+ * DB state, or returns `null` if the row no longer exists. Wraps R9's exact
+ * `fetchLiveEntityFields` + `computeFingerprint` + `FINGERPRINT_ENTITY_TYPE`
+ * logic (the SAME logic `assessOneRecord`'s condition-2 check uses) so R10 can
+ * re-verify fingerprint drift LIVE, inside its own transaction, immediately
+ * before a delete — passing its `tx` client via `client` rather than
+ * reimplementing "how to fingerprint a live row" a third time. Defaults to the
+ * root `prisma` singleton so this helper is safe outside a transaction too.
+ */
+export async function computeLiveFingerprint(
+  entityType: InitializationEntityType,
+  entityId: string,
+  client: PrismaClientOrTx = prisma,
+): Promise<string | null> {
+  const liveFields = await fetchLiveEntityFields(entityType, entityId, client);
+  if (liveFields === null) {
+    return null;
+  }
+  return computeFingerprint(FINGERPRINT_ENTITY_TYPE[entityType], liveFields, FINGERPRINT_VERSION).hash;
 }
 
 /**
@@ -137,13 +166,23 @@ export async function hasDownstreamReference(
  * Condition 4, "Cross-run dependency" — another run's InitializationRecord
  * resolved (action=REUSED) to this same (entityType, entityId): deleting
  * this run's row now would orphan that later run's provenance.
+ *
+ * Exported (R10 addition) so the rollback-execution service can re-run this
+ * EXACT check live, inside its own per-type `prisma.$transaction(...)`
+ * callback, immediately before each delete — passing its `tx` client via the
+ * optional `client` parameter rather than reimplementing it. A cross-run
+ * REUSED dependency carries NO FK to `entityId`, so nothing else stops R10
+ * from orphaning it; this live re-check is the only guard. Defaults to the
+ * root `prisma` singleton so R9's own call site (and R9's tests) are
+ * unaffected by the added parameter — same precedent as `hasDownstreamReference`.
  */
-async function hasCrossRunDependency(
+export async function hasCrossRunDependency(
   runId: string,
   entityType: InitializationEntityType,
   entityId: string,
+  client: PrismaClientOrTx = prisma,
 ): Promise<boolean> {
-  const dependent = await prisma.initializationRecord.findFirst({
+  const dependent = await client.initializationRecord.findFirst({
     where: {
       initializationRunId: { not: runId },
       entityType,

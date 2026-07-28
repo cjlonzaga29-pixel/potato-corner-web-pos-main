@@ -1,6 +1,6 @@
 import type { InitializationEntityType, InitializationRun, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { hasDownstreamReference } from './rollback-assessment.service.js';
+import { computeLiveFingerprint, hasCrossRunDependency, hasDownstreamReference } from './rollback-assessment.service.js';
 import { markRolledBack, markRollbackPartial } from './run-lifecycle.service.js';
 
 /**
@@ -114,12 +114,18 @@ async function deleteTargetRow(tx: Prisma.TransactionClient, entityType: Initial
 
 /**
  * Executes one reference type's confirmed-and-still-eligible rollback
- * deletes inside a SINGLE `prisma.$transaction`. Every candidate record
- * for this type gets a fresh, in-transaction re-read of its
- * `rollbackEligibility` and a fresh, in-transaction re-run of R9's
- * `hasDownstreamReference` immediately before any delete is attempted —
- * neither check ever trusts a value computed before this transaction
- * opened. If a delete throws (e.g. a live FK violation, a race where the
+ * deletes inside a SINGLE `prisma.$transaction`. Every candidate record for
+ * this type gets a fresh, in-transaction re-read of its
+ * `rollbackEligibility` AND a fresh, in-transaction re-verification of ALL
+ * the conditions from R9 that can go stale between assessment and execution
+ * — the live downstream-reference check (condition 3), a live fingerprint
+ * recompute vs `resultingFingerprint` (condition 2, catches an edit to the
+ * target row after assessment), and a live cross-run dependency check
+ * (condition 4, catches another run REUSING this entityId after assessment)
+ * — all immediately before any delete is attempted. No check ever trusts a
+ * value computed before this transaction opened, honoring this module's
+ * "never trusts a value computed before this transaction opened" contract.
+ * If a delete throws (e.g. a live FK violation, a race where the
  * row is already gone), the transaction rejects and Prisma rolls back
  * EVERYTHING attempted in it, including sibling rows' otherwise-successful
  * deletes in this same type — intentional per-type atomicity, not
@@ -175,9 +181,46 @@ async function executeTypeTransaction(
           continue;
         }
 
-        // Both checks passed, live, inside this transaction: delete the
+        // (c) Fresh, in-transaction fingerprint recompute -- catches a target
+        // row EDITED between R9's assessment and this execution. The
+        // confirmation-token check above only compares against
+        // `currentVerificationFingerprint` (the value R9's assessment STORED),
+        // so a row modified after assessment still carries a stale ELIGIBLE
+        // and a token that still matches that stored value. Recompute the live
+        // fingerprint now (reusing R9's exact logic, tx-scoped) and compare it
+        // against `resultingFingerprint` -- the fingerprint that was true at
+        // CREATE time, the invariant a rollback is allowed to reverse. A
+        // mismatch (or a row that vanished, `null`) means the row is no longer
+        // the one this run created: skip, same as any other at-execution
+        // ineligibility (reusing the existing generic skip outcome).
+        const liveFingerprint = await computeLiveFingerprint(entityType, entityId, tx);
+        if (liveFingerprint === null || liveFingerprint !== fresh.resultingFingerprint) {
+          skipOutcomes.set(candidate.id, 'skipped-became-ineligible-at-execution');
+          continue;
+        }
+
+        // (d) Fresh, in-transaction re-run of R9's cross-run dependency check
+        // -- catches another run that REUSED this same entityId after R9's
+        // assessment. `entityId` carries no FK, so deleting now would silently
+        // orphan that other run's provenance row; this live, tx-scoped
+        // re-check is the only thing that stops it.
+        if (await hasCrossRunDependency(fresh.initializationRunId, entityType, entityId, tx)) {
+          skipOutcomes.set(candidate.id, 'skipped-became-ineligible-at-execution');
+          continue;
+        }
+
+        // All four live re-checks passed, inside this transaction: delete the
         // target row AND update InitializationRecord together.
         await deleteTargetRow(tx, entityType, entityId);
+        // Update-by-id (not the CAS `updateMany({ id, version })` pattern used
+        // by every other write in this branch) is deliberate and safe HERE:
+        // this update is inside the SAME transaction as the delete above, and
+        // the delete of a target row is itself unique-per-row. A concurrent
+        // second rollback of the same candidate would attempt to delete the
+        // same (now-gone) target row and fail/serialize, rolling its whole
+        // transaction back -- so the delete's own uniqueness already provides
+        // the serialization CAS would otherwise add. No lost-update race
+        // exists for this write to guard against.
         await tx.initializationRecord.update({
           where: { id: candidate.id },
           data: { rollbackStatus: 'ROLLED_BACK', rolledBackAt: new Date() },

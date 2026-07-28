@@ -278,6 +278,101 @@ describe.skipIf(!canRunIntegrationTests)('rollback-execution.service integration
     expect(result.runStatus).toBe('ROLLBACK_PARTIAL');
   });
 
+  it('the live fingerprint re-check catches a target row EDITED after assessment but before executeRollback (stale ELIGIBLE + still-valid token is not trusted)', async () => {
+    const run = await createRollingBackRun();
+    const category = await createCategory();
+    const fp = computeFingerprint('InventoryCategory', category, 1).hash;
+    const record = await createCreatedRecord({
+      runId: run.id,
+      entityType: 'INVENTORY_CATEGORY',
+      entityId: category.id,
+      resultingFingerprint: fp,
+    });
+
+    await assessRollbackEligibility(run.id);
+    const freshAfterAssess = await prisma.initializationRecord.findUniqueOrThrow({ where: { id: record.id } });
+    expect(freshAfterAssess.rollbackEligibility).toBe('ELIGIBLE');
+
+    // The confirmation token is built from the value R9 STORED
+    // (currentVerificationFingerprint) -- it stays valid even after the row is
+    // edited, so this proves the token check alone would NOT catch the drift.
+    const validToken = buildConfirmationToken(record.id, freshAfterAssess.currentVerificationFingerprint);
+
+    // The live target row is EDITED after assessment, before execution. The
+    // stored rollbackEligibility stays stale ELIGIBLE and the token stays
+    // valid, but the live fingerprint no longer matches resultingFingerprint.
+    await prisma.inventoryCategory.update({ where: { id: category.id }, data: { name: `r10-edited-${randomUUID()}` } });
+
+    const result = await executeRollback({
+      runId: run.id,
+      confirmations: [{ recordId: record.id, confirmationToken: validToken }],
+    });
+
+    const row = result.records.find((r) => r.recordId === record.id);
+    expect(row?.outcome).toBe('skipped-became-ineligible-at-execution');
+
+    const stillExists = await prisma.inventoryCategory.findUnique({ where: { id: category.id } });
+    expect(stillExists).not.toBeNull();
+
+    // Stale ELIGIBLE still sits in the DB (R9 never re-ran) -- proving R10's
+    // OWN live fingerprint re-check caught this, not a fresh assessment.
+    const freshRecord = await prisma.initializationRecord.findUniqueOrThrow({ where: { id: record.id } });
+    expect(freshRecord.rollbackEligibility).toBe('ELIGIBLE');
+    expect(freshRecord.rollbackStatus).not.toBe('ROLLED_BACK');
+    expect(result.runStatus).toBe('ROLLBACK_PARTIAL');
+  });
+
+  it('the live cross-run dependency re-check catches another run REUSING the same entityId after assessment but before executeRollback', async () => {
+    const run = await createRollingBackRun();
+    const category = await createCategory();
+    const fp = computeFingerprint('InventoryCategory', category, 1).hash;
+    const record = await createCreatedRecord({
+      runId: run.id,
+      entityType: 'INVENTORY_CATEGORY',
+      entityId: category.id,
+      resultingFingerprint: fp,
+    });
+
+    await assessRollbackEligibility(run.id);
+    const freshAfterAssess = await prisma.initializationRecord.findUniqueOrThrow({ where: { id: record.id } });
+    expect(freshAfterAssess.rollbackEligibility).toBe('ELIGIBLE');
+
+    // Another run REUSES this exact entityId AFTER assessment, BEFORE
+    // execution. Deleting our row now would orphan that other run's
+    // provenance (entityId carries no FK to stop it).
+    const otherRun = await createRollingBackRun();
+    await prisma.initializationRecord.create({
+      data: {
+        initializationRunId: otherRun.id,
+        manifestEntryKey: `entry-${randomUUID()}`,
+        entityType: 'INVENTORY_CATEGORY',
+        entityId: category.id,
+        action: 'REUSED',
+        createdByRun: false,
+        reusedExisting: true,
+        version: 1,
+      },
+    });
+
+    const result = await executeRollback({
+      runId: run.id,
+      confirmations: [
+        { recordId: record.id, confirmationToken: buildConfirmationToken(record.id, freshAfterAssess.currentVerificationFingerprint) },
+      ],
+    });
+
+    const row = result.records.find((r) => r.recordId === record.id);
+    expect(row?.outcome).toBe('skipped-became-ineligible-at-execution');
+
+    const stillExists = await prisma.inventoryCategory.findUnique({ where: { id: category.id } });
+    expect(stillExists).not.toBeNull();
+
+    const freshRecord = await prisma.initializationRecord.findUniqueOrThrow({ where: { id: record.id } });
+    expect(freshRecord.rollbackEligibility).toBe('ELIGIBLE');
+    expect(freshRecord.rollbackStatus).not.toBe('ROLLED_BACK');
+    expect(result.runStatus).toBe('ROLLBACK_PARTIAL');
+  });
+
   it('deletion and record-status-update happen in the same transaction: a delete failure leaves NEITHER the target row nor rollbackStatus changed, and rolls back sibling rows in the same type', async () => {
     const run = await createRollingBackRun();
 
@@ -305,13 +400,17 @@ describe.skipIf(!canRunIntegrationTests)('rollback-execution.service integration
     expect(freshA.rollbackEligibility).toBe('ELIGIBLE');
     expect(freshB.rollbackEligibility).toBe('ELIGIBLE');
 
-    // Delete unitB's live target row out-of-band, WITHOUT re-running
-    // assessment -- its rollbackEligibility stays stale ELIGIBLE, but the
-    // live re-check will find no downstream reference (nothing references a
-    // nonexistent row) and only the delete call itself will fail (target
-    // row already gone), simulating a live delete failure mid-transaction.
-    createdUnitIds.splice(createdUnitIds.indexOf(unitB.id), 1);
-    await prisma.unitOfMeasure.delete({ where: { id: unitB.id } });
+    // Attach a SOFT-DELETED InventoryItem to unitB's live target row, WITHOUT
+    // re-running assessment. hasDownstreamReference filters `deletedAt: null`,
+    // so R10's live downstream re-check sees NO reference and lets unitB
+    // through all four re-checks (its fingerprint is unchanged, no cross-run
+    // dependency) -- but the physical FK row still exists, so the delete call
+    // itself fails with an FK violation, simulating a live delete failure
+    // mid-transaction. (This mechanism, unlike deleting unitB out-of-band,
+    // survives R10's live fingerprint re-check, which now correctly SKIPS a
+    // vanished target row instead of letting its delete throw.)
+    const softDeletedItem = await createInventoryItem(unitB.id, null);
+    await prisma.inventoryItem.update({ where: { id: softDeletedItem.id }, data: { deletedAt: new Date() } });
 
     const result = await executeRollback({
       runId: run.id,

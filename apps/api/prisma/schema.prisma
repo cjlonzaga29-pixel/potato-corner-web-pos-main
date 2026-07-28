@@ -1640,7 +1640,7 @@ model InitializationRun {
 //
 // Secondary partial-unique index (NOT expressible in Prisma -- to be added
 // as raw SQL to the generated migration in a later task, not this one):
-//   CREATE UNIQUE INDEX "InitializationRecord_run_entity_target_key"
+//   CREATE UNIQUE INDEX "initialization_records_run_entity_target_key"
 //   ON "initialization_records" ("initialization_run_id", "entity_type", "entity_id")
 //   WHERE "entity_id" IS NOT NULL;
 // This protects against two manifest entries within the same run resolving

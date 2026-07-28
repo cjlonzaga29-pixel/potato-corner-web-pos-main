@@ -14,7 +14,9 @@ export function validate(schema: ZodType) {
         field: issue.path.join('.'),
         message: issue.message,
       }));
-      res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', fields: fieldErrors }, meta: null });
+      const [firstError] = fieldErrors;
+      const message = firstError ? `${firstError.field}: ${firstError.message}` : 'Validation failed';
+      res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', message, fields: fieldErrors }, meta: null });
       return;
     }
     req.body = result.data;

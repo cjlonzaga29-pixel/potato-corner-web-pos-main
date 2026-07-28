@@ -140,6 +140,50 @@ describe('universalInventoryService.createItem', () => {
     expect(result.id).toBe('item-1');
     expect(repo.createItem).toHaveBeenCalledTimes(1);
   });
+
+  it('creates the item with blank sku/barcode/category treated as absent', async () => {
+    vi.mocked(repo.findItemByName).mockResolvedValue(null);
+    vi.mocked(repo.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.createItem).mockResolvedValue(buildItem() as never);
+
+    await universalInventoryService.createItem({ name: 'Cheese Powder', baseUnitId: 'unit-1' }, ACTOR, null);
+
+    expect(repo.findItemBySku).not.toHaveBeenCalled();
+    expect(repo.findItemByBarcode).not.toHaveBeenCalled();
+    expect(repo.findCategoryById).not.toHaveBeenCalled();
+  });
+
+  it('rejects a duplicate SKU with a clear 409', async () => {
+    vi.mocked(repo.findItemByName).mockResolvedValue(null);
+    vi.mocked(repo.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.findItemBySku).mockResolvedValue(buildItem({ id: 'item-2', sku: 'RAW-001' }) as never);
+
+    await expect(
+      universalInventoryService.createItem({ name: 'Frozen Fries', sku: 'RAW-001', baseUnitId: 'unit-1' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'SKU_CONFLICT', statusCode: 409 });
+    expect(repo.createItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown base_unit_id', async () => {
+    vi.mocked(repo.findItemByName).mockResolvedValue(null);
+    vi.mocked(repo.findUnitById).mockResolvedValue(null);
+
+    await expect(
+      universalInventoryService.createItem({ name: 'Frozen Fries', baseUnitId: 'missing-unit' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'UNIT_NOT_FOUND', statusCode: 404 });
+    expect(repo.createItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown category_id', async () => {
+    vi.mocked(repo.findItemByName).mockResolvedValue(null);
+    vi.mocked(repo.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.findCategoryById).mockResolvedValue(null);
+
+    await expect(
+      universalInventoryService.createItem({ name: 'Frozen Fries', baseUnitId: 'unit-1', categoryId: 'missing-category' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'CATEGORY_NOT_FOUND', statusCode: 404 });
+    expect(repo.createItem).not.toHaveBeenCalled();
+  });
 });
 
 describe('universalInventoryService.getItemById', () => {

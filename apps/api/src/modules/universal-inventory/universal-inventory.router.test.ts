@@ -143,6 +143,44 @@ describe('POST /api/universal-inventory/items', () => {
     expect(res.status).toHaveBeenCalledWith(201);
     expect(universalInventoryService.createItem).toHaveBeenCalledTimes(1);
   });
+
+  it('maps the snake_case request body to the camelCase service input (regression: base_unit_id/category_id were never forwarded)', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items');
+    const CATEGORY_1 = randomUUID();
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      body: { name: 'Frozen Fries', sku: 'RAW-001', category_id: CATEGORY_1, base_unit_id: UNIT_1 },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.createItem).mockResolvedValue({ id: 'item-1' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(universalInventoryService.createItem).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Frozen Fries', sku: 'RAW-001', categoryId: CATEGORY_1, baseUnitId: UNIT_1 }),
+      expect.anything(),
+      null,
+    );
+  });
+
+  it('accepts blank/omitted sku, barcode, and category as undefined rather than invalid empty values', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      body: { name: 'Frozen Fries', base_unit_id: UNIT_1 },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.createItem).mockResolvedValue({ id: 'item-1' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(universalInventoryService.createItem).toHaveBeenCalledWith(
+      expect.objectContaining({ sku: undefined, barcode: undefined, categoryId: undefined }),
+      expect.anything(),
+      null,
+    );
+  });
 });
 
 describe('POST /api/universal-inventory/items/:itemId/branches', () => {

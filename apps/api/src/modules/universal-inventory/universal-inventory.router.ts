@@ -228,7 +228,19 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const item = await universalInventoryService.createItem(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+      const body = req.body as z.infer<typeof createInventoryItemSchema>;
+      const item = await universalInventoryService.createItem(
+        {
+          name: body.name,
+          sku: body.sku,
+          barcode: body.barcode,
+          categoryId: body.category_id,
+          baseUnitId: body.base_unit_id,
+          trackInventory: body.track_inventory,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
       res.status(201).json({ data: item, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -245,9 +257,16 @@ router.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof updateInventoryItemSchema>;
       const item = await universalInventoryService.updateItem(
         req.params.itemId as string,
-        req.body,
+        {
+          name: body.name,
+          sku: body.sku,
+          barcode: body.barcode,
+          categoryId: body.category_id,
+          trackInventory: body.track_inventory,
+        },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );

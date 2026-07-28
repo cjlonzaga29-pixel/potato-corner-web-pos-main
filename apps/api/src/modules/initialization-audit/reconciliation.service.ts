@@ -1,6 +1,14 @@
 import type { InitializationEntityType, InitializationRun, InitializationRunStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { markApplied, markApplyFailed, markRollbackPartial, markRolledBack, StaleVersionError } from './run-lifecycle.service.js';
+import {
+  markApplied,
+  markApplyFailed,
+  markRollbackPartial,
+  markRolledBack,
+  InvalidTransitionError,
+  RunNotFoundError,
+  StaleVersionError,
+} from './run-lifecycle.service.js';
 
 /**
  * CR-009 "Failure recovery and stale-run reconciliation" (R11).
@@ -240,7 +248,18 @@ export async function reconcileRun(runId: string): Promise<ReconciliationOutcome
     await markRollbackPartial({ runId, expectedVersion: run.version, failureReason: determination.failureReason });
     return { runId, outcome: 'ROLLBACK_PARTIAL', failureReason: determination.failureReason, anomalyDetected: false };
   } catch (error) {
-    if (error instanceof StaleVersionError) {
+    // A concurrent process may transition this run between our fresh read
+    // above and this call's write. R4's transitionRunStatus checks
+    // transition validity BEFORE the version-CAS check (see
+    // run-lifecycle.service.ts), so a race landing in that window is more
+    // likely to surface as InvalidTransitionError than StaleVersionError --
+    // both mean the same thing here: someone else already moved this run
+    // out from under us. RunNotFoundError covers the (unlikely) case of the
+    // run being removed entirely mid-flight. All three are reported as a
+    // CONFLICT for this run alone, never thrown -- a concurrent-race
+    // conflict on one run must never abort a batch reconciliation of
+    // multiple runs.
+    if (error instanceof StaleVersionError || error instanceof InvalidTransitionError || error instanceof RunNotFoundError) {
       return { runId, outcome: 'CONFLICT', anomalyDetected: false, conflictReason: error.message };
     }
     throw error;
@@ -257,7 +276,21 @@ export async function reconcileAllStaleRuns(now: Date, timeoutMs: number): Promi
   const staleRuns = await findStaleRuns(now, timeoutMs);
   const outcomes: ReconciliationOutcome[] = [];
   for (const run of staleRuns) {
-    outcomes.push(await reconcileRun(run.id));
+    try {
+      outcomes.push(await reconcileRun(run.id));
+    } catch (error) {
+      // Defense in depth: reconcileRun is documented to catch every
+      // conflict condition it knows about and never throw for them. If it
+      // ever throws anyway (an R4 error type this module hasn't been
+      // taught about, or something unrelated), one run's failure must still
+      // never abort the rest of the batch.
+      outcomes.push({
+        runId: run.id,
+        outcome: 'CONFLICT',
+        anomalyDetected: false,
+        conflictReason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return outcomes;
 }

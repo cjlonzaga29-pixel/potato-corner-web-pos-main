@@ -276,5 +276,44 @@ describe.skipIf(!canRunIntegrationTests)('reconciliation.service integration', (
       const freshA = await prisma.initializationRun.findUniqueOrThrow({ where: { id: runA.id } });
       expect(freshA.status).toBe('APPLIED');
     });
+
+    it('a race landing between reconcileRun\'s own read and its final write surfaces as InvalidTransitionError from R4, still reported as CONFLICT, never thrown', async () => {
+      const run = await createRun({ status: 'APPLYING', startedAt: OLD_STARTED_AT });
+      await createRecord({ runId: run.id, entityType: 'INVENTORY_CATEGORY', action: 'CREATED' });
+
+      // reconcileRun's own initial read (inside reconcileRun itself, before
+      // determineApplyOutcome runs) sees status=APPLYING and captures
+      // run.version. Inject a concurrent transition during
+      // determineApplyOutcome's first InitializationRecord scan -- AFTER
+      // reconcileRun's own read, BEFORE its final markApplyFailed call --
+      // so R4's own transitionRunStatus (called with the now-stale
+      // expectedVersion/status pair) throws InvalidTransitionError, not
+      // this module inferring the conflict itself.
+      const originalFindMany = prisma.initializationRecord.findMany.bind(prisma.initializationRecord);
+      const findManySpy = vi.spyOn(prisma.initializationRecord, 'findMany');
+      // mockImplementationOnce only covers the NEXT single call -- once that
+      // queue is exhausted, an otherwise-unconfigured spy returns undefined
+      // rather than calling through, so a permanent fallback to the real
+      // implementation is required for determineApplyOutcome's later calls
+      // (UNIT_OF_MEASURE, UNIT_CONVERSION) to behave normally.
+      findManySpy.mockImplementation(originalFindMany as typeof originalFindMany);
+      findManySpy.mockImplementationOnce((async (...args: Parameters<typeof originalFindMany>) => {
+        const rows = await originalFindMany(...args);
+        const fresh = await prisma.initializationRun.findUniqueOrThrow({ where: { id: run.id } });
+        await markApplyFailed({ runId: run.id, expectedVersion: fresh.version, failureReason: 'concurrent-race-for-test' });
+        return rows;
+      }) as typeof originalFindMany);
+
+      const outcome = await reconcileRun(run.id);
+      findManySpy.mockRestore();
+
+      expect(outcome.outcome).toBe('CONFLICT');
+      expect(outcome.conflictReason).toBeTruthy();
+
+      // The concurrent transition's own result is untouched.
+      const fresh = await prisma.initializationRun.findUniqueOrThrow({ where: { id: run.id } });
+      expect(fresh.status).toBe('APPLY_FAILED');
+      expect(fresh.failureReason).toBe('concurrent-race-for-test');
+    });
   });
 });

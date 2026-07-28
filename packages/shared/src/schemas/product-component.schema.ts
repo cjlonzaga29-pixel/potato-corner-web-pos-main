@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
-// CR-010 R8 — extensible ProductVariant -> InventoryItem mapping (supersedes
-// ProductInventory once a future CR builds deduction against it; no
-// Recipe/BOM or POS deduction logic is implemented here).
+// CR-011.1 — Recipe/BOM ProductVariant -> InventoryItem mapping (supersedes
+// ProductInventory once a future CR builds POS deduction against it; no
+// deduction logic reads this table yet).
 
 export const createProductComponentSchema = z.object({
   product_variant_id: z.uuid(),
@@ -22,6 +22,7 @@ export const productComponentResponseSchema = z.object({
   inventory_item_sku: z.string().nullable(),
   base_unit_code: z.string(),
   quantity_required: z.number(),
+  is_active: z.boolean(),
   version: z.number().int(),
   created_at: z.iso.datetime(),
   updated_at: z.iso.datetime(),

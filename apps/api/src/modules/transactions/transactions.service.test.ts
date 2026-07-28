@@ -92,6 +92,32 @@ vi.mock('../../queues/hold-order.queue.js', () => ({
   enqueueHoldOrderExpiry: vi.fn().mockResolvedValue(undefined),
 }));
 
+// CR-012.1 / CR-012.1A — the shadow BOM comparison hook. Defaults to
+// disabled (matching the real flags' defaults) so every pre-existing test in
+// this file behaves exactly as before; the dedicated describe block below
+// flips them per-test. isShadowBomDeductionEnabledForBranch closes over the
+// same mutable `config` object (not destructured values) so per-test
+// mutations of mutableConfig are visible here too, mirroring the real
+// module's computeShadowBomDeductionEnabledForBranch semantics.
+vi.mock('../../config/index.js', () => {
+  const config: { shadowBomDeductionEnabled: boolean; shadowBomDeductionBranchIds: string[] } = {
+    shadowBomDeductionEnabled: false,
+    shadowBomDeductionBranchIds: [],
+  };
+  return {
+    config,
+    isShadowBomDeductionEnabledForBranch: (branchId: string) => {
+      if (!config.shadowBomDeductionEnabled) return false;
+      if (config.shadowBomDeductionBranchIds.length === 0) return true;
+      return config.shadowBomDeductionBranchIds.includes(branchId);
+    },
+  };
+});
+
+vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
+  shadowBomDeductionService: { runShadowComparison: vi.fn().mockResolvedValue(undefined) },
+}));
+
 const storageMock = {
   upload: vi.fn().mockResolvedValue({ error: null }),
   createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: 'https://example.com/proof.webp' }, error: null }),
@@ -119,6 +145,13 @@ const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.j
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { prisma } = await import('../../lib/prisma.js');
+const { config } = await import('../../config/index.js');
+// The real config module types these fields as readonly (`as const`) — fine
+// at runtime for the mocked module (a plain object), but tsc still checks
+// assignments against the real declaration. This mutable view lets tests
+// flip the mocked flag/branch list per-case.
+const mutableConfig = config as { shadowBomDeductionEnabled: boolean; shadowBomDeductionBranchIds: string[] };
+const { shadowBomDeductionService } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { TransactionError } = await import('./transactions.types.js');
 
@@ -214,6 +247,8 @@ const baseInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mutableConfig.shadowBomDeductionEnabled = false;
+  mutableConfig.shadowBomDeductionBranchIds = [];
   vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
   vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
   vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
@@ -466,6 +501,79 @@ describe('transactionsService.createTransaction — side effects', () => {
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'transaction:completed', result);
     expect(notifySuperAdmin).toHaveBeenCalledWith('transaction:completed', result);
     expect(transactionResponseSchema.safeParse(result).success).toBe(true);
+  });
+});
+
+describe('transactionsService.createTransaction — shadow BOM deduction hook (CR-012.1)', () => {
+  it('produces zero shadow calculation when the feature flag is disabled', async () => {
+    mutableConfig.shadowBomDeductionEnabled = false;
+
+    await transactionsService.createTransaction(baseInput, null);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(shadowBomDeductionService.runShadowComparison).not.toHaveBeenCalled();
+  });
+
+  it('fires one non-blocking shadow comparison per sale line, without awaiting it, when the flag is enabled', async () => {
+    mutableConfig.shadowBomDeductionEnabled = true;
+    let resolveShadow: (() => void) | undefined;
+    vi.mocked(shadowBomDeductionService.runShadowComparison).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveShadow = () => resolve(undefined);
+        }),
+    );
+
+    // If createTransaction awaited the shadow call, this would hang forever
+    // since resolveShadow is never invoked before the await — it resolving
+    // at all proves the call is fire-and-forget.
+    const result = await transactionsService.createTransaction(baseInput, null);
+
+    expect(result).toBeDefined();
+    expect(shadowBomDeductionService.runShadowComparison).toHaveBeenCalledTimes(1);
+    expect(shadowBomDeductionService.runShadowComparison).toHaveBeenCalledWith('txn-1', expect.any(String), 'branch-1', 'variant-1', 1);
+    resolveShadow?.();
+  });
+
+  it('swallows a shadow comparison rejection without failing the sale', async () => {
+    mutableConfig.shadowBomDeductionEnabled = true;
+    vi.mocked(shadowBomDeductionService.runShadowComparison).mockRejectedValueOnce(new Error('shadow boom'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).resolves.toBeDefined();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Shadow BOM comparison failed'),
+      expect.objectContaining({
+        transactionId: 'txn-1',
+        branchId: 'branch-1',
+        productVariantId: 'variant-1',
+        errorCategory: 'Error',
+      }),
+    );
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('fires the shadow comparison when the sale branch is included in a populated branch allowlist', async () => {
+    mutableConfig.shadowBomDeductionEnabled = true;
+    mutableConfig.shadowBomDeductionBranchIds = ['branch-1'];
+
+    await transactionsService.createTransaction(baseInput, null);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(shadowBomDeductionService.runShadowComparison).toHaveBeenCalledTimes(1);
+    expect(shadowBomDeductionService.runShadowComparison).toHaveBeenCalledWith('txn-1', expect.any(String), 'branch-1', 'variant-1', 1);
+  });
+
+  it('performs no shadow comparison call when the sale branch is excluded from a populated branch allowlist', async () => {
+    mutableConfig.shadowBomDeductionEnabled = true;
+    mutableConfig.shadowBomDeductionBranchIds = ['some-other-branch'];
+
+    await transactionsService.createTransaction(baseInput, null);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(shadowBomDeductionService.runShadowComparison).not.toHaveBeenCalled();
   });
 });
 

@@ -28,6 +28,8 @@ import {
   Ruler,
   ListTree,
   SlidersHorizontal,
+  ClipboardList,
+  GitCompare,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -55,6 +57,8 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
   { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
   { label: 'Units', href: '/admin/inventory/units', icon: Ruler },
+  { label: 'Recipe Readiness', href: '/admin/recipe-readiness', icon: ClipboardList },
+  { label: 'Shadow BOM Deduction', href: '/admin/shadow-bom-deduction', icon: GitCompare },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   {

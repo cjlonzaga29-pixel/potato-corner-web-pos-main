@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   Package,
+  ShoppingBag,
   Clock,
   Banknote,
   BarChart3,
@@ -15,6 +16,7 @@ import {
   ChevronsRight,
   LogOut,
   Loader2,
+  ClipboardList,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -29,6 +31,8 @@ import { BranchSelector } from './branch-selector';
 export const SUPERVISOR_NAV_ITEMS = [
   { label: 'Dashboard', href: '/supervisor/dashboard', icon: LayoutDashboard },
   { label: 'Inventory', href: '/supervisor/inventory', icon: Package },
+  { label: 'Products', href: '/supervisor/products', icon: ShoppingBag },
+  { label: 'Recipe Readiness', href: '/supervisor/recipe-readiness', icon: ClipboardList },
   { label: 'Attendance', href: '/supervisor/attendance', icon: Clock },
   { label: 'Cash Management', href: '/supervisor/cash', icon: Banknote },
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },

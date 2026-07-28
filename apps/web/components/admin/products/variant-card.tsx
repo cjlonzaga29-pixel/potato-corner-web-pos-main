@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { FlavorColorSwatch } from '@/components/admin/flavors/flavor-color-swatch';
 import { InventoryMappingFormDialog } from '@/components/admin/products/inventory-mapping-form-dialog';
 import { AssignOptionGroupDialog } from '@/components/admin/products/assign-option-group-dialog';
+import { RecipeBomPanel } from '@/components/products/recipe-bom-panel';
 import { useAuth } from '@/hooks/use-auth';
 import { useProductInventoryList, useDeleteProductInventory } from '@/hooks/queries/use-product-inventory';
 import { useVariantOptionGroups, useUnassignVariantOptionGroup } from '@/hooks/queries/use-product-options';
@@ -73,6 +74,10 @@ export function VariantCard({ variant, branchId, onEditVariant, onLinkFlavor, on
         <OptionGroupsSection productId={variant.product_id} variantId={variant.id} />
 
         <InventoryItemsSection variant={variant} branchId={branchId} />
+
+        <div className="border-t pt-3">
+          <RecipeBomPanel productVariantId={variant.id} variantLabel={`${variant.name} (${variant.size_label})`} />
+        </div>
       </CardContent>
     </Card>
   );

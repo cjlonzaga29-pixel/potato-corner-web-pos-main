@@ -970,9 +970,45 @@ model InventoryMovement {
 
   createdAt DateTime @default(now()) @map("created_at")
 
+  projectionOutbox InventoryProjectionOutbox?
+
   @@index([branchId])
   @@index([ingredientId])
   @@map("inventory_movements")
+}
+
+enum InventoryProjectionOutboxStatus {
+  pending
+  processing
+  deferred
+  processed
+  stuck
+}
+
+/// Durable outbox for projecting InventoryMovement into future read-optimized
+/// stock tables (CR-010A). InventoryMovement remains the source of truth —
+/// this table only tracks which movements still need to be projected, so a
+/// worker can poll/retry safely. One row per movement; movementId is the
+/// projection idempotency key, enforced by the unique constraint below.
+model InventoryProjectionOutbox {
+  id            String                           @id @default(uuid())
+  movementId    String                           @unique @map("movement_id")
+  status        InventoryProjectionOutboxStatus  @default(pending)
+  attempts      Int                              @default(0)
+  lastError     String?                          @map("last_error")
+  nextAttemptAt DateTime?                        @map("next_attempt_at")
+  lockedAt      DateTime?                        @map("locked_at")
+  claimToken    String?                          @map("claim_token")
+  processedAt   DateTime?                        @map("processed_at")
+  createdAt     DateTime                         @default(now()) @map("created_at")
+  updatedAt     DateTime                         @updatedAt @map("updated_at")
+
+  movement InventoryMovement @relation(fields: [movementId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([nextAttemptAt])
+  @@index([createdAt])
+  @@map("inventory_projection_outbox")
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,6 +1157,15 @@ model InventoryStock {
   lowStockThreshold Decimal? @map("low_stock_threshold") @db.Decimal(10, 3)
   criticalThreshold Decimal? @map("critical_threshold") @db.Decimal(10, 3)
   version           Int      @default(0)
+  /// CR-010A.3 -- watermark set by the reconciliation rebuild: the latest
+  /// InventoryMovement.createdAt already folded into quantityOnHand as of
+  /// the last rebuild. The projection worker (applyProjection) compares an
+  /// outbox row's movement.createdAt against this before incrementing --
+  /// a movement at or before the watermark is already reflected in the
+  /// rebuilt quantity, so applying it again would double-count. Null means
+  /// this row has never been rebuilt; normal incremental projection is
+  /// unaffected either way.
+  rebuiltThroughAt  DateTime? @map("rebuilt_through_at")
 
   branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
@@ -1163,12 +1208,71 @@ model ProductComponent {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // No @@unique here: active-row uniqueness on (product_variant_id,
-  // inventory_item_id) would need a partial index (WHERE deleted_at IS
-  // NULL), same limitation as ProductInventory -- deferred to whichever
-  // phase first writes real rows (Phase D/I), since Phase A seeds no data.
+  // inventory_item_id) is enforced by a partial unique index (WHERE
+  // deleted_at IS NULL) created via raw SQL in the migration, since
+  // Prisma's schema DSL cannot express a partial index -- same pattern as
+  // ProductInventory. See migration cr011a_product_component_bom_foundation.
   @@index([productVariantId])
   @@index([inventoryItemId])
   @@map("product_components")
+}
+
+/// CR-012.1 -- shadow-mode classification of how a single sale line's BOM
+/// (ProductComponent) deduction would have compared against the legacy
+/// (ProductInventory) deduction that actually ran. See ShadowBomComparison.
+enum ShadowBomComparisonClassification {
+  MATCH
+  BOM_NOT_READY
+  MISSING_LEGACY_MAPPING
+  MISSING_BOM_COMPONENT
+  EXTRA_BOM_COMPONENT
+  QUANTITY_MISMATCH
+  UNIT_CONVERSION_UNSUPPORTED
+  FLAVOR_DEPENDENCY
+  ERROR
+}
+
+/// CR-012.1 -- Shadow BOM Deduction Calculation. Append-only, read-only
+/// comparison record: for every eligible completed sale line, what the new
+/// ProductComponent/BOM deduction would have been versus what the legacy
+/// ProductInventory deduction actually was. Never read by any POS/reporting
+/// runtime path and never itself writes InventoryMovement/InventoryStock/
+/// ProductInventory -- see shadow-bom-deduction.service.ts. transactionId/
+/// saleLineId are plain (unenforced) references, not Prisma relations --
+/// this table must never gate or cascade against Transaction/TransactionItem
+/// lifecycle (void/refund must be free to proceed regardless of this row's
+/// state).
+model ShadowBomComparison {
+  id                String                            @id @default(uuid())
+  transactionId     String                            @map("transaction_id")
+  saleLineId        String                            @map("sale_line_id")
+  branchId          String                            @map("branch_id")
+  productVariantId  String                            @map("product_variant_id")
+  // Normalized legacy deduction lines: Array<{ inventoryItemId: string | null,
+  // legacyIngredientId: string, baseUnitId: string | null, quantity: number }>.
+  legacyCalculation Json                              @map("legacy_calculation")
+  // Normalized BOM deduction lines: Array<{ inventoryItemId: string,
+  // baseUnitId: string, quantity: number }>. Null when classification is
+  // BOM_NOT_READY (readiness blocked before a BOM calculation ran) or ERROR
+  // (something threw before a BOM result existed).
+  bomCalculation    Json?                             @map("bom_calculation")
+  classification    ShadowBomComparisonClassification
+  // Populated only when classification = ERROR: { message, stack } (message
+  // truncated, no raw error object persisted -- same sanitization posture as
+  // InventoryProjectionOutbox.lastError).
+  errorDetails      Json?                             @map("error_details")
+  comparedAt        DateTime                          @default(now()) @map("compared_at")
+
+  // No @@unique([transactionId, saleLineId]) attribute here -- Prisma's
+  // schema DSL @@unique already supports this (unlike the partial-index
+  // cases elsewhere in this file), so it's declared normally and enforced
+  // by a real unique index, used by the repository's idempotent upsert.
+  @@unique([transactionId, saleLineId])
+  @@index([classification])
+  @@index([branchId])
+  @@index([productVariantId])
+  @@index([comparedAt])
+  @@map("shadow_bom_comparisons")
 }
 
 // ---------------------------------------------------------------------------

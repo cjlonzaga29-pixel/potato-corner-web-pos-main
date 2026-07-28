@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Prisma } from '@prisma/client';
 
 vi.mock('./product-components.repository.js', () => ({
   productComponentsRepository: {
     findByVariant: vi.fn(),
     findById: vi.fn(),
     findByVariantAndItem: vi.fn(),
+    findByVariantAndItemAnyState: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
@@ -17,12 +19,19 @@ vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
   },
 }));
 
+vi.mock('../products/products.repository.js', () => ({
+  productsRepository: {
+    findVariantById: vi.fn(),
+  },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { productComponentsRepository: repo } = await import('./product-components.repository.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
+const { productsRepository } = await import('../products/products.repository.js');
 const { productComponentsService } = await import('./product-components.service.js');
 
 const ACTOR = { id: 'admin-1', role: 'super_admin' };
@@ -37,6 +46,7 @@ function buildComponent(overrides: Partial<Record<string, unknown>> = {}) {
     productVariantId: 'variant-1',
     inventoryItemId: 'item-1',
     quantityRequired: decimal(2),
+    isActive: true,
     version: 1,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -47,15 +57,26 @@ function buildComponent(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
 });
 
 describe('productComponentsService.createMapping', () => {
+  it('rejects a mapping against a non-existent product variant', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(null);
+
+    await expect(
+      productComponentsService.createMapping({ product_variant_id: 'missing-variant', inventory_item_id: 'item-1', quantity_required: 1 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_VARIANT_NOT_FOUND' });
+    expect(universalInventoryRepository.findItemById).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
   it('rejects a duplicate (variant, inventory item) mapping', async () => {
     vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(buildComponent() as never);
 
     await expect(
-      productComponentsService.createMapping({ productVariantId: 'variant-1', inventoryItemId: 'item-1', quantityRequired: 1 }, ACTOR, null),
+      productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'MAPPING_ALREADY_EXISTS' });
     expect(repo.create).not.toHaveBeenCalled();
   });
@@ -64,22 +85,97 @@ describe('productComponentsService.createMapping', () => {
     vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(null);
 
     await expect(
-      productComponentsService.createMapping({ productVariantId: 'variant-1', inventoryItemId: 'missing', quantityRequired: 1 }, ACTOR, null),
+      productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'missing', quantity_required: 1 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
   });
 
-  it('creates the mapping when the item exists and no duplicate is present', async () => {
+  it('rejects a mapping against a soft-deleted (inactive) inventory item', async () => {
+    // universalInventoryRepository.findItemById already filters deletedAt: null,
+    // so a soft-deleted item resolves to null here — same path as "not found".
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(null);
+
+    await expect(
+      productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'deleted-item', quantity_required: 1 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
+  });
+
+  it('creates the mapping when the variant and item exist and no duplicate is present', async () => {
     vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
     vi.mocked(repo.create).mockResolvedValue(buildComponent() as never);
 
     const result = await productComponentsService.createMapping(
-      { productVariantId: 'variant-1', inventoryItemId: 'item-1', quantityRequired: 2 },
+      { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 2 },
       ACTOR,
       null,
     );
 
     expect(result.id).toBe('component-1');
     expect(result.quantity_required).toBe(2);
+    expect(result.is_active).toBe(true);
+  });
+
+  it('maps a concurrent unique-constraint violation (P2002) from a create race to MAPPING_ALREADY_EXISTS', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(repo.create).mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'test' }),
+    );
+
+    await expect(
+      productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'MAPPING_ALREADY_EXISTS' });
+  });
+
+  it('rethrows an unrelated create error unchanged', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(repo.create).mockRejectedValue(new Error('connection lost'));
+
+    await expect(
+      productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1 }, ACTOR, null),
+    ).rejects.toThrow('connection lost');
+  });
+});
+
+describe('productComponentsService.updateMapping', () => {
+  it('rejects updating a mapping that does not exist', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(null);
+
+    await expect(productComponentsService.updateMapping('missing', { quantity_required: 3 }, ACTOR, null)).rejects.toMatchObject({
+      code: 'MAPPING_NOT_FOUND',
+    });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('updates the quantity and returns the updated mapping', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(repo.update).mockResolvedValue(buildComponent({ quantityRequired: decimal(5), version: 2 }) as never);
+
+    const result = await productComponentsService.updateMapping('component-1', { quantity_required: 5 }, ACTOR, null);
+
+    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 5 });
+    expect(result.quantity_required).toBe(5);
+    expect(result.version).toBe(2);
+  });
+});
+
+describe('productComponentsService.deleteMapping', () => {
+  it('rejects deleting a mapping that does not exist', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(null);
+
+    await expect(productComponentsService.deleteMapping('missing', ACTOR, null)).rejects.toMatchObject({ code: 'MAPPING_NOT_FOUND' });
+    expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  it('soft-deletes the mapping and records an audit log', async () => {
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(repo.delete).mockResolvedValue(undefined as never);
+
+    await productComponentsService.deleteMapping('component-1', ACTOR, null);
+
+    expect(repo.delete).toHaveBeenCalledWith('component-1', ACTOR.id);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_COMPONENT_DELETED', entityId: 'component-1' }));
   });
 });

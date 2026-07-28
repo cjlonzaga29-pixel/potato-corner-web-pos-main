@@ -18,7 +18,12 @@
     "inventory:reference-init:apply": "tsx scripts/inventory-reference-init-apply.ts",
     "inventory:reference-init:rollback-assess": "tsx scripts/inventory-reference-init-rollback-assess.ts",
     "inventory:reference-init:rollback-execute": "tsx scripts/inventory-reference-init-rollback-execute.ts",
-    "initialization:reconcile": "tsx scripts/initialization-reconcile.ts"
+    "initialization:reconcile": "tsx scripts/initialization-reconcile.ts",
+    "inventory:projection:drain": "tsx scripts/inventory-projection-drain.ts",
+    "inventory:reconciliation:report": "tsx scripts/inventory-reconciliation-report.ts",
+    "inventory:rebuild:dry-run": "tsx scripts/inventory-rebuild-dry-run.ts",
+    "inventory:rebuild:confirm": "tsx scripts/inventory-rebuild-confirm.ts",
+    "shadow-bom-deduction:report": "tsx scripts/shadow-bom-deduction-report.ts"
   },
   "dependencies": {
     "@potato-corner/shared": "workspace:*",

@@ -37,6 +37,8 @@ import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
+import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -830,6 +832,35 @@ export const transactionsService = {
 
     for (const effect of postCommitEffects) {
       await effect();
+    }
+
+    // CR-012.1 -- shadow BOM deduction comparison. Strictly best-effort and
+    // strictly after the legacy deduction/transaction has already committed:
+    // fired without `await` so it can never add latency to (or fail) this
+    // response, gated on the feature flag so a disabled flag produces zero
+    // extra calculation and zero ShadowBomComparison rows, and `.catch()`-
+    // guarded so a throw here can never surface as an unhandled rejection or
+    // affect the sale in any way. runShadowComparison itself already never
+    // throws (every internal failure is caught and persisted as
+    // classification ERROR) -- this catch is belt-and-suspenders only.
+    // CR-012.1A -- branch rollout gate checked before any shadow work: an
+    // excluded branch performs zero shadow queries and zero shadow writes.
+    if (isShadowBomDeductionEnabledForBranch(data.branchId)) {
+      for (const item of resolvedItems) {
+        void shadowBomDeductionService
+          .runShadowComparison(created.id, item.id, data.branchId, item.productVariantId, item.quantity)
+          .catch((error: unknown) => {
+            // Belt-and-suspenders only -- runShadowComparison already never
+            // throws. Log safe identifiers only, never the raw error/stack.
+            console.error('Shadow BOM comparison failed unexpectedly (non-blocking, sale unaffected)', {
+              transactionId: created.id,
+              saleLineId: item.id,
+              branchId: data.branchId,
+              productVariantId: item.productVariantId,
+              errorCategory: error instanceof Error ? error.name : 'UnknownError',
+            });
+          });
+      }
     }
 
     const response = toTransactionResponse(created as TransactionRow);

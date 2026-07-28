@@ -29,6 +29,9 @@ vi.mock('../../lib/prisma.js', () => {
       count: vi.fn(),
       create: vi.fn(),
     },
+    inventoryProjectionOutbox: {
+      create: vi.fn(),
+    },
     transaction: {
       update: vi.fn(),
     },
@@ -37,15 +40,26 @@ vi.mock('../../lib/prisma.js', () => {
   return { prisma: prismaMock };
 });
 
+vi.mock('../../config/index.js', () => ({
+  config: { inventoryProjectionOutboxEnabled: false },
+}));
+
 const { prisma } = await import('../../lib/prisma.js');
+const { config } = await import('../../config/index.js');
 const { inventoryRepository } = await import('./inventory.repository.js');
 
 function decimal(value: number): Prisma.Decimal {
   return new Prisma.Decimal(value);
 }
 
+/** The real config object is typed `as const` (readonly); the mock isn't, but TS resolves types from the real module. */
+function setOutboxEnabled(value: boolean): void {
+  (config as { inventoryProjectionOutboxEnabled: boolean }).inventoryProjectionOutboxEnabled = value;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  setOutboxEnabled(false);
 });
 
 describe('inventoryRepository.findIngredientById', () => {
@@ -263,6 +277,62 @@ describe('inventoryRepository.appendMovement', () => {
     expect(call.data.quantityBefore.toNumber()).toBe(50);
     expect(call.data.quantityAfter.toNumber()).toBe(75);
   });
+
+  describe('projection outbox (CR-010A.1)', () => {
+    const outboxMovementTypes = ['stock_in', 'sale_deduction', 'manual_adjustment', 'waste'] as const;
+
+    it.each(outboxMovementTypes)('creates exactly one outbox row keyed by movementId when the flag is enabled (%s)', async (movementType) => {
+      setOutboxEnabled(true);
+      vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(100) } } as never);
+      const created = { id: 'mov-1', movementType };
+      vi.mocked(prisma.inventoryMovement.create).mockResolvedValue(created as never);
+
+      await inventoryRepository.appendMovement({
+        branchId: 'branch-1',
+        ingredientId: 'ing-1',
+        movementType,
+        quantityChange: -10,
+        recordedBy: 'user-1',
+      });
+
+      expect(prisma.inventoryProjectionOutbox.create).toHaveBeenCalledOnce();
+      expect(prisma.inventoryProjectionOutbox.create).toHaveBeenCalledWith({ data: { movementId: 'mov-1' } });
+    });
+
+    it('does not create an outbox row when the flag is disabled', async () => {
+      vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(100) } } as never);
+      vi.mocked(prisma.inventoryMovement.create).mockResolvedValue({ id: 'mov-1' } as never);
+
+      await inventoryRepository.appendMovement({
+        branchId: 'branch-1',
+        ingredientId: 'ing-1',
+        movementType: 'stock_in',
+        quantityChange: 10,
+        recordedBy: 'user-1',
+      });
+
+      expect(prisma.inventoryProjectionOutbox.create).not.toHaveBeenCalled();
+    });
+
+    it('rolls back the whole transaction (propagates) when the outbox insert fails, e.g. a duplicate movementId', async () => {
+      setOutboxEnabled(true);
+      vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(100) } } as never);
+      vi.mocked(prisma.inventoryMovement.create).mockResolvedValue({ id: 'mov-1' } as never);
+      vi.mocked(prisma.inventoryProjectionOutbox.create).mockRejectedValueOnce(
+        new Error('Unique constraint failed on the fields: (`movement_id`)'),
+      );
+
+      await expect(
+        inventoryRepository.appendMovement({
+          branchId: 'branch-1',
+          ingredientId: 'ing-1',
+          movementType: 'stock_in',
+          quantityChange: 10,
+          recordedBy: 'user-1',
+        }),
+      ).rejects.toThrow('Unique constraint failed');
+    });
+  });
 });
 
 describe('inventoryRepository.transferStock', () => {
@@ -308,6 +378,49 @@ describe('inventoryRepository.transferStock', () => {
     const outArgs = vi.mocked(prisma.inventoryMovement.create).mock.calls[0]?.[0] as { data: { quantityChange: Prisma.Decimal } };
     expect(outArgs.data.quantityChange.toNumber()).toBe(-15);
     expect(result).toEqual({ transferOut: { id: 'mov-out', movementType: 'transfer_out' }, transferIn: { id: 'mov-in', movementType: 'transfer_in' } });
+  });
+
+  it('creates one outbox row per leg (both movementIds) when the flag is enabled', async () => {
+    setOutboxEnabled(true);
+    vi.mocked(prisma.inventoryMovement.aggregate)
+      .mockResolvedValueOnce({ _sum: { quantityChange: decimal(100) } } as never)
+      .mockResolvedValueOnce({ _sum: { quantityChange: decimal(20) } } as never);
+    vi.mocked(prisma.inventoryMovement.create)
+      .mockResolvedValueOnce({ id: 'mov-out', movementType: 'transfer_out' } as never)
+      .mockResolvedValueOnce({ id: 'mov-in', movementType: 'transfer_in' } as never);
+
+    await inventoryRepository.transferStock({
+      fromBranchId: 'branch-a',
+      fromIngredientId: 'ing-a',
+      toBranchId: 'branch-b',
+      toIngredientId: 'ing-b',
+      quantity: 15,
+      recordedBy: 'user-1',
+    });
+
+    expect(prisma.inventoryProjectionOutbox.create).toHaveBeenCalledTimes(2);
+    expect(prisma.inventoryProjectionOutbox.create).toHaveBeenNthCalledWith(1, { data: { movementId: 'mov-out' } });
+    expect(prisma.inventoryProjectionOutbox.create).toHaveBeenNthCalledWith(2, { data: { movementId: 'mov-in' } });
+  });
+
+  it('does not create outbox rows for either leg when the flag is disabled', async () => {
+    vi.mocked(prisma.inventoryMovement.aggregate)
+      .mockResolvedValueOnce({ _sum: { quantityChange: decimal(100) } } as never)
+      .mockResolvedValueOnce({ _sum: { quantityChange: decimal(20) } } as never);
+    vi.mocked(prisma.inventoryMovement.create)
+      .mockResolvedValueOnce({ id: 'mov-out', movementType: 'transfer_out' } as never)
+      .mockResolvedValueOnce({ id: 'mov-in', movementType: 'transfer_in' } as never);
+
+    await inventoryRepository.transferStock({
+      fromBranchId: 'branch-a',
+      fromIngredientId: 'ing-a',
+      toBranchId: 'branch-b',
+      toIngredientId: 'ing-b',
+      quantity: 15,
+      recordedBy: 'user-1',
+    });
+
+    expect(prisma.inventoryProjectionOutbox.create).not.toHaveBeenCalled();
   });
 });
 

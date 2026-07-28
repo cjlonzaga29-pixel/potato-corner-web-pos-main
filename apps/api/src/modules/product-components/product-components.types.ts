@@ -11,10 +11,13 @@ export class ProductComponentError extends Error {
   }
 }
 
+/** Repository-level shape (camelCase, Prisma field names) — used by both the service and the legacy backfill. */
 export interface CreateProductComponentData {
   productVariantId: string;
   inventoryItemId: string;
   quantityRequired: number;
+  /** Set by the legacy backfill to mark rows it created, so a re-run can tell them apart from manually created rows. Omitted (null) for API-created rows. */
+  createdBy?: string;
 }
 
 export interface UpdateProductComponentData {

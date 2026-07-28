@@ -7,10 +7,11 @@ const productComponentInclude = {
 } satisfies Prisma.ProductComponentInclude;
 
 /**
- * CR-010 R8 — extensible ProductVariant -> InventoryItem mapping only.
- * No Recipe/BOM logic and no POS deduction reads this table; it exists so
- * a future CR can build deduction against Universal Inventory without a
- * schema change (CR-007 §10).
+ * CR-011.1 — Recipe/BOM: ProductVariant -> InventoryItem mapping with
+ * quantity required. No POS deduction reads this table yet; it exists so a
+ * future CR can build deduction against Universal Inventory without a
+ * schema change (CR-007 §10). Legacy ProductInventory remains the live POS
+ * deduction source during this phase.
  */
 export const productComponentsRepository = {
   findByVariant(productVariantId: string) {
@@ -37,8 +38,16 @@ export const productComponentsRepository = {
         productVariantId: data.productVariantId,
         inventoryItemId: data.inventoryItemId,
         quantityRequired: data.quantityRequired,
+        ...(data.createdBy !== undefined && { createdBy: data.createdBy }),
       },
       include: productComponentInclude,
+    });
+  },
+
+  /** Includes soft-deleted rows — used by the legacy backfill's idempotency check, which must distinguish "never created" from "created then deactivated". */
+  findByVariantAndItemAnyState(productVariantId: string, inventoryItemId: string) {
+    return prisma.productComponent.findFirst({
+      where: { productVariantId, inventoryItemId },
     });
   },
 

@@ -19,3 +19,5 @@ export * from './product-inventory.schema.js';
 export * from './universal-inventory.schema.js';
 export * from './product-component.schema.js';
 export * from './product-catalog.schema.js';
+export * from './recipe-readiness.schema.js';
+export * from './shadow-bom-deduction.schema.js';

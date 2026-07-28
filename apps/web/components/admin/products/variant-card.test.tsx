@@ -11,6 +11,7 @@ const {
   mockUseVariantOptionGroups,
   mockUseUnassignVariantOptionGroup,
   mockAssignOptionGroupDialog,
+  mockRecipeBomPanel,
 } = vi.hoisted(() => ({
   mockUseAuth: vi.fn(),
   mockUseProductInventoryList: vi.fn(),
@@ -19,6 +20,7 @@ const {
   mockUseVariantOptionGroups: vi.fn(),
   mockUseUnassignVariantOptionGroup: vi.fn(),
   mockAssignOptionGroupDialog: vi.fn((_props: unknown) => null),
+  mockRecipeBomPanel: vi.fn((_props: unknown) => null),
 }));
 
 vi.mock('@/hooks/use-auth', () => ({
@@ -45,6 +47,13 @@ vi.mock('@/components/admin/products/inventory-mapping-form-dialog', () => ({
 vi.mock('@/components/admin/products/assign-option-group-dialog', () => ({
   AssignOptionGroupDialog: (props: unknown) => {
     mockAssignOptionGroupDialog(props);
+    return null;
+  },
+}));
+
+vi.mock('@/components/products/recipe-bom-panel', () => ({
+  RecipeBomPanel: (props: unknown) => {
+    mockRecipeBomPanel(props);
     return null;
   },
 }));

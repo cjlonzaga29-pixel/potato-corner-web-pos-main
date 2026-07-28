@@ -1,5 +1,6 @@
 import { Prisma, type IngredientCategory } from '@prisma/client';
 import type { InventoryDeductionStatus, MovementType } from '@potato-corner/shared';
+import { config } from '../../config/index.js';
 import { prisma } from '../../lib/prisma.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import type { AppendMovementInput, CreateIngredientData, MovementListFilters, UpdateIngredientData } from './inventory.types.js';
@@ -7,6 +8,18 @@ import type { AppendMovementInput, CreateIngredientData, MovementListFilters, Up
 const movementInclude = {
   ingredient: { select: { name: true } },
 } satisfies Prisma.InventoryMovementInclude;
+
+/**
+ * CR-010A.1 — creates the projection outbox row for a just-created movement,
+ * inside the same transaction client that created it. A no-op while the
+ * feature flag is off, so existing movement-write behavior is unchanged.
+ * Called from every movement-creating path (appendMovement and
+ * transferStock's two legs) so no producer needs its own outbox logic.
+ */
+async function createProjectionOutboxRow(movementId: string, client: Prisma.TransactionClient): Promise<void> {
+  if (!config.inventoryProjectionOutboxEnabled) return;
+  await client.inventoryProjectionOutbox.create({ data: { movementId } });
+}
 
 /**
  * Inventory repository. All Prisma calls for this module live here — the
@@ -156,7 +169,7 @@ export const inventoryRepository = {
       const quantityBefore = sumResult._sum.quantityChange ?? new Prisma.Decimal(0);
       const quantityAfter = quantityBefore.plus(input.quantityChange);
 
-      return client.inventoryMovement.create({
+      const movement = await client.inventoryMovement.create({
         data: {
           branchId: input.branchId,
           ingredientId: input.ingredientId,
@@ -173,6 +186,8 @@ export const inventoryRepository = {
         },
         include: movementInclude,
       });
+      await createProjectionOutboxRow(movement.id, client);
+      return movement;
     };
     if (tx) return run(tx);
     return prisma.$transaction(run);
@@ -213,6 +228,7 @@ export const inventoryRepository = {
         },
         include: movementInclude,
       });
+      await createProjectionOutboxRow(transferOut.id, tx);
 
       const inSum = await tx.inventoryMovement.aggregate({
         where: { ingredientId: params.toIngredientId },
@@ -235,6 +251,7 @@ export const inventoryRepository = {
         },
         include: movementInclude,
       });
+      await createProjectionOutboxRow(transferIn.id, tx);
 
       return { transferOut, transferIn };
     });

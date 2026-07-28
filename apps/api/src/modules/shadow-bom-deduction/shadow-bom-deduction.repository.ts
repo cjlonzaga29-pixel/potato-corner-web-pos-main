@@ -12,6 +12,8 @@ export interface ActiveComponentRow {
   inventoryItemId: string;
   quantityRequired: Prisma.Decimal;
   baseUnitId: string;
+  /** Null for rows with no recipe unit recorded (pre-CR-011.2 or backfill-created) — treated as already-base-unit by the caller. */
+  recipeUnitId: string | null;
 }
 
 function reportWhere(filters: ShadowBomReportFilters): Prisma.ShadowBomComparisonWhereInput {
@@ -87,12 +89,13 @@ export const shadowBomDeductionRepository = {
   async findActiveComponentsForVariant(productVariantId: string): Promise<ActiveComponentRow[]> {
     const rows = await prisma.productComponent.findMany({
       where: { productVariantId, deletedAt: null, isActive: true },
-      select: { inventoryItemId: true, quantityRequired: true, inventoryItem: { select: { baseUnitId: true } } },
+      select: { inventoryItemId: true, quantityRequired: true, recipeUnitId: true, inventoryItem: { select: { baseUnitId: true } } },
     });
     return rows.map((row) => ({
       inventoryItemId: row.inventoryItemId,
       quantityRequired: row.quantityRequired,
       baseUnitId: row.inventoryItem.baseUnitId,
+      recipeUnitId: row.recipeUnitId,
     }));
   },
 

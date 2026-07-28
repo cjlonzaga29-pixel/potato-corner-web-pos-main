@@ -16,6 +16,7 @@ vi.mock('./product-components.repository.js', () => ({
 vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
   universalInventoryRepository: {
     findItemById: vi.fn(),
+    findUnitById: vi.fn(),
   },
 }));
 
@@ -46,11 +47,13 @@ function buildComponent(overrides: Partial<Record<string, unknown>> = {}) {
     productVariantId: 'variant-1',
     inventoryItemId: 'item-1',
     quantityRequired: decimal(2),
+    recipeUnitId: 'unit-kg',
     isActive: true,
     version: 1,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
-    inventoryItem: { id: 'item-1', name: 'Cheese Powder', sku: null, baseUnit: { code: 'kg' } },
+    inventoryItem: { id: 'item-1', name: 'Cheese Powder', sku: null, baseUnitId: 'unit-kg', baseUnit: { code: 'kg' } },
+    recipeUnit: { id: 'unit-kg', code: 'kg' },
     ...overrides,
   };
 }
@@ -72,7 +75,7 @@ describe('productComponentsService.createMapping', () => {
   });
 
   it('rejects a duplicate (variant, inventory item) mapping', async () => {
-    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(buildComponent() as never);
 
     await expect(
@@ -100,7 +103,7 @@ describe('productComponentsService.createMapping', () => {
   });
 
   it('creates the mapping when the variant and item exist and no duplicate is present', async () => {
-    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
     vi.mocked(repo.create).mockResolvedValue(buildComponent() as never);
 
@@ -116,7 +119,7 @@ describe('productComponentsService.createMapping', () => {
   });
 
   it('maps a concurrent unique-constraint violation (P2002) from a create race to MAPPING_ALREADY_EXISTS', async () => {
-    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
     vi.mocked(repo.create).mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'test' }),
@@ -128,13 +131,95 @@ describe('productComponentsService.createMapping', () => {
   });
 
   it('rethrows an unrelated create error unchanged', async () => {
-    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1' } as never);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
     vi.mocked(repo.create).mockRejectedValue(new Error('connection lost'));
 
     await expect(
       productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1 }, ACTOR, null),
     ).rejects.toThrow('connection lost');
+  });
+
+  it('defaults recipe_unit_id to the inventory item base unit when omitted', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(repo.create).mockResolvedValue(buildComponent() as never);
+
+    await productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 2 }, ACTOR, null);
+
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ recipeUnitId: 'unit-kg' }));
+    expect(universalInventoryRepository.findUnitById).not.toHaveBeenCalled();
+  });
+
+  it('accepts a recipe_unit_id equal to the base unit without querying UnitOfMeasure again', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(repo.create).mockResolvedValue(buildComponent() as never);
+
+    await productComponentsService.createMapping(
+      { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 2, recipe_unit_id: 'unit-kg' },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ recipeUnitId: 'unit-kg' }));
+    expect(universalInventoryRepository.findUnitById).not.toHaveBeenCalled();
+  });
+
+  it('accepts a compatible different-unit recipe_unit_id (100 g for a kg item)', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(repo.create).mockResolvedValue(buildComponent({ recipeUnitId: 'unit-g', recipeUnit: { id: 'unit-g', code: 'g' } }) as never);
+    vi.mocked(universalInventoryRepository.findUnitById).mockImplementation(
+      ((id: string) =>
+        Promise.resolve(
+          id === 'unit-kg' ? { id: 'unit-kg', code: 'kg', dimension: 'WEIGHT', isActive: true } : { id: 'unit-g', code: 'g', dimension: 'WEIGHT', isActive: true },
+        )) as never,
+    );
+
+    const result = await productComponentsService.createMapping(
+      { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 100, recipe_unit_id: 'unit-g' },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ recipeUnitId: 'unit-g' }));
+    expect(result.recipe_unit_code).toBe('g');
+  });
+
+  it('rejects a recipe_unit_id with a different UnitDimension than the item base unit', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(universalInventoryRepository.findUnitById).mockImplementation(
+      ((id: string) =>
+        Promise.resolve(
+          id === 'unit-kg' ? { id: 'unit-kg', code: 'kg', dimension: 'WEIGHT', isActive: true } : { id: 'unit-ml', code: 'ml', dimension: 'VOLUME', isActive: true },
+        )) as never,
+    );
+
+    await expect(
+      productComponentsService.createMapping(
+        { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1, recipe_unit_id: 'unit-ml' },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'RECIPE_UNIT_DIMENSION_MISMATCH' });
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown or inactive recipe_unit_id', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(universalInventoryRepository.findUnitById).mockResolvedValue(null);
+
+    await expect(
+      productComponentsService.createMapping(
+        { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1, recipe_unit_id: 'missing-unit' },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'RECIPE_UNIT_NOT_FOUND' });
+    expect(repo.create).not.toHaveBeenCalled();
   });
 });
 
@@ -157,6 +242,24 @@ describe('productComponentsService.updateMapping', () => {
     expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 5 });
     expect(result.quantity_required).toBe(5);
     expect(result.version).toBe(2);
+  });
+
+  it('changes the recipe unit when recipe_unit_id is provided, validated against the item base unit', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(universalInventoryRepository.findUnitById).mockImplementation(
+      ((id: string) =>
+        Promise.resolve(
+          id === 'unit-kg' ? { id: 'unit-kg', code: 'kg', dimension: 'WEIGHT', isActive: true } : { id: 'unit-g', code: 'g', dimension: 'WEIGHT', isActive: true },
+        )) as never,
+    );
+    vi.mocked(repo.update).mockResolvedValue(
+      buildComponent({ quantityRequired: decimal(100), recipeUnitId: 'unit-g', recipeUnit: { id: 'unit-g', code: 'g' }, version: 2 }) as never,
+    );
+
+    const result = await productComponentsService.updateMapping('component-1', { quantity_required: 100, recipe_unit_id: 'unit-g' }, ACTOR, null);
+
+    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 100, recipeUnitId: 'unit-g' });
+    expect(result.recipe_unit_code).toBe('g');
   });
 });
 

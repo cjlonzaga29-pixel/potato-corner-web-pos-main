@@ -41,6 +41,16 @@ describe('productComponentsRepository.create', () => {
       }),
     );
   });
+
+  it('includes recipeUnitId when the service resolves one', async () => {
+    vi.mocked(prisma.productComponent.create).mockResolvedValue({} as never);
+
+    await productComponentsRepository.create({ productVariantId: 'v1', inventoryItemId: 'i1', quantityRequired: 2, recipeUnitId: 'unit-g' });
+
+    expect(prisma.productComponent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { productVariantId: 'v1', inventoryItemId: 'i1', quantityRequired: 2, recipeUnitId: 'unit-g' } }),
+    );
+  });
 });
 
 describe('productComponentsRepository.findByVariantAndItemAnyState', () => {

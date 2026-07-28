@@ -1074,9 +1074,10 @@ model UnitOfMeasure {
   isBaseUnit Boolean       @default(false) @map("is_base_unit")
   isActive   Boolean       @default(true) @map("is_active")
 
-  items           InventoryItem[]
-  conversionsFrom UnitConversion[] @relation("UnitConversionFrom")
-  conversionsTo   UnitConversion[] @relation("UnitConversionTo")
+  items             InventoryItem[]
+  conversionsFrom   UnitConversion[]   @relation("UnitConversionFrom")
+  conversionsTo     UnitConversion[]   @relation("UnitConversionTo")
+  recipeComponents  ProductComponent[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1213,10 +1214,19 @@ model ProductComponent {
   id               String  @id @default(uuid())
   productVariantId String  @map("product_variant_id")
   inventoryItemId  String  @map("inventory_item_id")
-  // Base-unit quantity (§10.1) -- the referenced InventoryItem.baseUnit. No
-  // component-level unit override.
+  // Quantity expressed in recipeUnitId's unit (the recipe-authoring unit),
+  // not necessarily the InventoryItem's base unit -- conversion to base
+  // unit happens only where deduction actually needs it (see
+  // shadow-bom-deduction.service.ts / unit-conversion.util.ts).
   quantityRequired Decimal @map("quantity_required") @db.Decimal(18, 6)
-  version          Int     @default(1)
+  // Nullable for backfill safety -- rows created before this column existed
+  // (and the legacy backfill, which always writes base-unit quantities) may
+  // have no recipeUnitId; consumers treat null as "already the item's base
+  // unit". API-created rows always have this set (defaulted to the item's
+  // base unit when omitted) and are validated at the service layer to share
+  // the item's base unit UnitDimension.
+  recipeUnitId String? @map("recipe_unit_id")
+  version      Int     @default(1)
 
   // Soft-delete + audit metadata, matching ProductInventory's shape.
   deletedAt DateTime? @map("deleted_at")
@@ -1227,6 +1237,7 @@ model ProductComponent {
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   inventoryItem  InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  recipeUnit     UnitOfMeasure? @relation(fields: [recipeUnitId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1238,6 +1249,7 @@ model ProductComponent {
   // ProductInventory. See migration cr011a_product_component_bom_foundation.
   @@index([productVariantId])
   @@index([inventoryItemId])
+  @@index([recipeUnitId])
   @@map("product_components")
 }
 

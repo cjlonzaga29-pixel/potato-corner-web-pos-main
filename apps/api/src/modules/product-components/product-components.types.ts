@@ -16,11 +16,14 @@ export interface CreateProductComponentData {
   productVariantId: string;
   inventoryItemId: string;
   quantityRequired: number;
+  /** Optional — the legacy backfill omits this (its quantities are always already in the item's base unit); the API service always resolves and passes one. */
+  recipeUnitId?: string;
   /** Set by the legacy backfill to mark rows it created, so a re-run can tell them apart from manually created rows. Omitted (null) for API-created rows. */
   createdBy?: string;
 }
 
 export interface UpdateProductComponentData {
   quantityRequired?: number;
+  recipeUnitId?: string;
   isActive?: boolean;
 }

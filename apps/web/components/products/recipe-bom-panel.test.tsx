@@ -31,6 +31,8 @@ const COMPONENT: ProductComponentResponse = {
   inventory_item_name: 'Cheese Powder',
   inventory_item_sku: 'CHZ-1',
   base_unit_code: 'kg',
+  recipe_unit_id: 'unit-kg',
+  recipe_unit_code: 'kg',
   quantity_required: 2,
   is_active: true,
   version: 1,

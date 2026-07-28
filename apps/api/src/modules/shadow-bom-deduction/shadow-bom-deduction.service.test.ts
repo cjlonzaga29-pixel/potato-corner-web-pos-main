@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Prisma } from '@prisma/client';
 import type { DeductionLine } from '../product-inventory/product-inventory.types.js';
 
 vi.mock('./shadow-bom-deduction.repository.js', () => ({
@@ -19,6 +20,10 @@ vi.mock('../recipe-readiness/recipe-readiness.service.js', () => ({
   recipeReadinessService: { buildReport: vi.fn() },
 }));
 
+vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
+  universalInventoryRepository: { findConversion: vi.fn() },
+}));
+
 // No InventoryMovement/InventoryStock/ProductInventory writer is imported by
 // this module at all — asserted implicitly below by never mocking (and
 // therefore never being able to call) any such repository. If the service
@@ -28,6 +33,7 @@ vi.mock('../recipe-readiness/recipe-readiness.service.js', () => ({
 const { shadowBomDeductionRepository } = await import('./shadow-bom-deduction.repository.js');
 const { computeDeduction } = await import('../product-inventory/product-inventory.service.js');
 const { recipeReadinessService } = await import('../recipe-readiness/recipe-readiness.service.js');
+const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const {
   shadowBomDeductionService,
   computeBomDeduction,
@@ -36,7 +42,7 @@ const {
 } = await import('./shadow-bom-deduction.service.js');
 
 function decimal(value: number) {
-  return { toNumber: () => value };
+  return new Prisma.Decimal(value);
 }
 
 function legacyLine(overrides: Partial<DeductionLine> = {}): DeductionLine {
@@ -121,7 +127,7 @@ describe('normalizeLegacyDeduction', () => {
 describe('computeBomDeduction', () => {
   it('scales active ProductComponent quantities by quantitySold', async () => {
     vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg' },
+      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
     ]);
 
     const result = await computeBomDeduction('variant-1', 'branch-1', 3);
@@ -131,13 +137,36 @@ describe('computeBomDeduction', () => {
 
   it('merges duplicate InventoryItem rows onto one line', async () => {
     vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg' },
-      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg' },
+      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
+      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
     ]);
 
     const result = await computeBomDeduction('variant-1', 'branch-1', 1);
 
     expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 3 }]);
+  });
+
+  it('converts a component recorded in a non-base recipe unit (g) to the item base unit (kg) before scaling', async () => {
+    vi.mocked(universalInventoryRepository.findConversion).mockImplementation(
+      ((fromUnitId: string, toUnitId: string) =>
+        Promise.resolve(fromUnitId === 'unit-g' && toUnitId === 'unit-kg' ? { factor: new Prisma.Decimal(0.001) } : null)) as never,
+    );
+    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
+      { inventoryItemId: 'item-1', quantityRequired: decimal(100) as never, baseUnitId: 'unit-kg', recipeUnitId: 'unit-g' },
+    ]);
+
+    const result = await computeBomDeduction('variant-1', 'branch-1', 1);
+
+    expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 0.1 }]);
+  });
+
+  it('fails closed (rejects) when a recorded recipe unit has no UnitConversion to the base unit', async () => {
+    vi.mocked(universalInventoryRepository.findConversion).mockResolvedValue(null);
+    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
+      { inventoryItemId: 'item-1', quantityRequired: decimal(100) as never, baseUnitId: 'unit-kg', recipeUnitId: 'unit-ml' },
+    ]);
+
+    await expect(computeBomDeduction('variant-1', 'branch-1', 1)).rejects.toThrow(/No UnitConversion/);
   });
 });
 
@@ -201,7 +230,7 @@ describe('shadowBomDeductionService.runShadowComparison', () => {
       baseUnitCode: 'kg',
     });
     vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(4) as never, baseUnitId: 'unit-kg' },
+      { inventoryItemId: 'item-1', quantityRequired: decimal(4) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
     ]);
 
     await shadowBomDeductionService.runShadowComparison('txn-1', 'line-1', 'branch-1', 'variant-1', 1);
@@ -220,7 +249,7 @@ describe('shadowBomDeductionService.runShadowComparison', () => {
       baseUnitCode: 'kg',
     });
     vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg' },
+      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
     ]);
 
     await shadowBomDeductionService.runShadowComparison('txn-1', 'line-1', 'branch-1', 'variant-1', 5);
@@ -255,7 +284,7 @@ describe('shadowBomDeductionService.runShadowComparison', () => {
       baseUnitCode: 'kg',
     });
     vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(4) as never, baseUnitId: 'unit-kg' },
+      { inventoryItemId: 'item-1', quantityRequired: decimal(4) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
     ]);
 
     await shadowBomDeductionService.runShadowComparison('txn-1', 'line-1', 'branch-1', 'variant-1', 1);

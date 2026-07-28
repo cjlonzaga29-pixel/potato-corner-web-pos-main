@@ -3,7 +3,8 @@ import { prisma } from '../../lib/prisma.js';
 import type { CreateProductComponentData, UpdateProductComponentData } from './product-components.types.js';
 
 const productComponentInclude = {
-  inventoryItem: { select: { id: true, name: true, sku: true, baseUnit: { select: { code: true } } } },
+  inventoryItem: { select: { id: true, name: true, sku: true, baseUnitId: true, baseUnit: { select: { code: true } } } },
+  recipeUnit: { select: { id: true, code: true } },
 } satisfies Prisma.ProductComponentInclude;
 
 /**
@@ -38,6 +39,7 @@ export const productComponentsRepository = {
         productVariantId: data.productVariantId,
         inventoryItemId: data.inventoryItemId,
         quantityRequired: data.quantityRequired,
+        ...(data.recipeUnitId !== undefined && { recipeUnitId: data.recipeUnitId }),
         ...(data.createdBy !== undefined && { createdBy: data.createdBy }),
       },
       include: productComponentInclude,
@@ -56,6 +58,7 @@ export const productComponentsRepository = {
       where: { id },
       data: {
         ...(data.quantityRequired !== undefined && { quantityRequired: data.quantityRequired }),
+        ...(data.recipeUnitId !== undefined && { recipeUnitId: data.recipeUnitId }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         version: { increment: 1 },
       },

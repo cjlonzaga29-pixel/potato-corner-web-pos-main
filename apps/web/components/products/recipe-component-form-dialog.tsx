@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import type { ProductComponentResponse } from '@potato-corner/shared';
+import type { ProductComponentResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
-import { useInventoryItems } from '@/hooks/queries/use-universal-inventory';
+import { useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useCreateProductComponent, useUpdateProductComponent } from '@/hooks/queries/use-product-components';
 
 interface RecipeComponentFormDialogProps {
@@ -20,11 +20,27 @@ interface RecipeComponentFormDialogProps {
   editingComponent?: ProductComponentResponse;
 }
 
+/** CR-011.2 — preferred recipe unit per base unit code, when a compatible (same-dimension) unit with that code exists; otherwise falls back to the base unit itself. */
+const PREFERRED_RECIPE_UNIT_CODE: Record<string, string> = {
+  kg: 'g',
+  l: 'ml',
+  pc: 'pc',
+  tbsp: 'tbsp',
+};
+
+function pickDefaultRecipeUnit(compatibleUnits: UnitOfMeasureResponse[], baseUnit: UnitOfMeasureResponse | undefined): string {
+  if (!baseUnit) return '';
+  const preferredCode = PREFERRED_RECIPE_UNIT_CODE[baseUnit.code.toLowerCase()];
+  const preferred = preferredCode ? compatibleUnits.find((u) => u.code.toLowerCase() === preferredCode) : undefined;
+  return (preferred ?? baseUnit).id;
+}
+
 /**
- * Create/edit one ProductComponent Recipe/BOM row (CR-011.1). Editing only
- * allows changing quantity, matching updateProductComponentSchema — the
- * inventory item and its unit (the item's base unit — no per-component
- * override) are fixed once created.
+ * Create/edit one ProductComponent Recipe/BOM row (CR-011.1, unit conversion
+ * per CR-011.2). Quantity and recipe unit may both be entered/changed — the
+ * recipe unit is restricted to units sharing the selected inventory item's
+ * base unit UnitDimension (e.g. grams for a kg-based item), converted to the
+ * item's base unit only when shadow BOM deduction runs.
  *
  * useInventoryItems(false) (includeInactive=false, the default) already
  * excludes soft-deleted/inactive items from the picker, so an inactive item
@@ -41,6 +57,7 @@ export function RecipeComponentFormDialog({
 
   const [inventoryItemId, setInventoryItemId] = useState('');
   const [quantityRequired, setQuantityRequired] = useState('');
+  const [recipeUnitId, setRecipeUnitId] = useState('');
   const [isActive, setIsActive] = useState(true);
 
   const createComponent = useCreateProductComponent(productVariantId);
@@ -48,46 +65,66 @@ export function RecipeComponentFormDialog({
   const mutation = isEdit ? updateComponent : createComponent;
 
   const { data: inventoryItems, isLoading: itemsLoading } = useInventoryItems(false);
+  const { data: units, isLoading: unitsLoading } = useUnitsOfMeasure(false);
+
+  const selectedItem = inventoryItems?.find((item) => item.id === inventoryItemId);
+  const baseUnitCode = isEdit ? editingComponent?.base_unit_code : selectedItem?.base_unit_code;
+  const baseUnit = units?.find((u) => u.code === baseUnitCode);
+  const compatibleUnits = baseUnit ? (units ?? []).filter((u) => u.dimension === baseUnit.dimension) : [];
 
   useEffect(() => {
     if (!open) return;
     if (editingComponent) {
       setInventoryItemId(editingComponent.inventory_item_id);
       setQuantityRequired(String(editingComponent.quantity_required));
+      setRecipeUnitId(editingComponent.recipe_unit_id);
       setIsActive(editingComponent.is_active);
     } else {
       setInventoryItemId('');
       setQuantityRequired('');
+      setRecipeUnitId('');
       setIsActive(true);
     }
   }, [open, editingComponent]);
 
+  // Default the recipe unit whenever the selected item (add mode) resolves a
+  // base unit and no recipe unit has been chosen yet.
+  useEffect(() => {
+    if (isEdit || !baseUnit || recipeUnitId) return;
+    setRecipeUnitId(pickDefaultRecipeUnit(compatibleUnits, baseUnit));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, baseUnit?.id]);
+
   const usedItemIds = new Set(existingComponents.map((component) => component.inventory_item_id));
   const availableItems = (inventoryItems ?? []).filter((item) => !usedItemIds.has(item.id));
-  const selectedUnit = isEdit
-    ? editingComponent?.base_unit_code
-    : inventoryItems?.find((item) => item.id === inventoryItemId)?.base_unit_code;
 
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
   }
 
+  function handleInventoryItemChange(nextItemId: string) {
+    setInventoryItemId(nextItemId);
+    setRecipeUnitId('');
+  }
+
   async function handleSubmit() {
     const numericQuantity = Number(quantityRequired);
     if (isEdit) {
-      await updateComponent.mutateAsync({ quantity_required: numericQuantity, is_active: isActive });
+      await updateComponent.mutateAsync({ quantity_required: numericQuantity, recipe_unit_id: recipeUnitId, is_active: isActive });
     } else {
       if (!inventoryItemId) return;
       await createComponent.mutateAsync({
         product_variant_id: productVariantId,
         inventory_item_id: inventoryItemId,
         quantity_required: numericQuantity,
+        recipe_unit_id: recipeUnitId || undefined,
       });
     }
     handleOpenChange(false);
   }
 
-  const isValid = (isEdit || Boolean(inventoryItemId)) && quantityRequired !== '' && Number(quantityRequired) > 0;
+  const isValid =
+    (isEdit || Boolean(inventoryItemId)) && quantityRequired !== '' && Number(quantityRequired) > 0 && Boolean(recipeUnitId);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -96,7 +133,7 @@ export function RecipeComponentFormDialog({
           <DialogTitle>{isEdit ? 'Edit Recipe Component' : 'Add Recipe Component'}</DialogTitle>
           <DialogDescription>
             {isEdit
-              ? 'Quantity is the only field that can change after a component is added.'
+              ? 'Change the quantity or the unit it was recorded in.'
               : 'Choose an inventory item and how much of it this variant consumes.'}
           </DialogDescription>
         </DialogHeader>
@@ -110,7 +147,7 @@ export function RecipeComponentFormDialog({
           ) : (
             <div className="space-y-2">
               <Label htmlFor="recipe-component-item">Inventory Item</Label>
-              <Select value={inventoryItemId} onValueChange={setInventoryItemId} disabled={itemsLoading}>
+              <Select value={inventoryItemId} onValueChange={handleInventoryItemChange} disabled={itemsLoading}>
                 <SelectTrigger id="recipe-component-item">
                   <SelectValue placeholder={itemsLoading ? 'Loading…' : 'Select an inventory item'} />
                 </SelectTrigger>
@@ -142,10 +179,19 @@ export function RecipeComponentFormDialog({
               />
             </div>
             <div className="space-y-2">
-              <Label>Unit</Label>
-              <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm text-muted-foreground">
-                {selectedUnit ?? '—'}
-              </div>
+              <Label htmlFor="recipe-component-unit">Unit</Label>
+              <Select value={recipeUnitId} onValueChange={setRecipeUnitId} disabled={unitsLoading || compatibleUnits.length === 0}>
+                <SelectTrigger id="recipe-component-unit">
+                  <SelectValue placeholder={unitsLoading ? 'Loading…' : 'Unit'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {compatibleUnits.map((unit) => (
+                    <SelectItem key={unit.id} value={unit.id}>
+                      {unit.code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

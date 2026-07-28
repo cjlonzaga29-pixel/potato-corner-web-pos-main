@@ -1,4 +1,5 @@
 import { computeDeduction } from '../product-inventory/product-inventory.service.js';
+import { convertQuantity } from '../product-components/unit-conversion.util.js';
 import type { DeductionLine } from '../product-inventory/product-inventory.types.js';
 import { recipeReadinessService } from '../recipe-readiness/recipe-readiness.service.js';
 import type { ReadinessStatus } from '../recipe-readiness/recipe-readiness.types.js';
@@ -82,7 +83,14 @@ export async function computeBomDeduction(productVariantId: string, _branchId: s
   const components = await shadowBomDeductionRepository.findActiveComponentsForVariant(productVariantId);
   const map = new Map<string, BomDeductionLine>();
   for (const component of components) {
-    const quantity = component.quantityRequired.toNumber() * quantitySold;
+    // Null recipeUnitId (pre-CR-011.2 or backfill-created rows) is treated as
+    // already-base-unit — no conversion attempted. convertQuantity throws
+    // (fail closed) if a recorded recipe unit has no supporting
+    // UnitConversion row; the caller (runShadowComparison) turns that into
+    // an ERROR-classified comparison rather than a silent bad number.
+    const recipeUnitId = component.recipeUnitId ?? component.baseUnitId;
+    const baseQuantity = await convertQuantity(component.quantityRequired, recipeUnitId, component.baseUnitId);
+    const quantity = baseQuantity.toNumber() * quantitySold;
     const existing = map.get(component.inventoryItemId);
     if (existing) {
       existing.quantity += quantity;

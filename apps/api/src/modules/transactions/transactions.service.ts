@@ -386,13 +386,17 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
         branchId,
       });
     } else {
+      const activeFlavorLinks = variant.variantFlavors.filter((vf) => vf.isAvailable && vf.flavor.isActive);
+      if (!item.flavorId && activeFlavorLinks.length > 0) {
+        throw new TransactionError('FLAVOR_SELECTION_REQUIRED', `${variant.name} requires a flavor selection`, 422);
+      }
       if (item.flavorId) {
         const link = variant.variantFlavors.find((vf) => vf.flavorId === item.flavorId);
         if (!link || !link.isAvailable || !link.flavor.isActive) {
-          throw new TransactionError('PRODUCT_UNAVAILABLE', `Selected flavor is not available for ${variant.name}`, 422);
+          throw new TransactionError('FLAVOR_NOT_AVAILABLE_FOR_VARIANT', `Selected flavor is not available for ${variant.name}`, 422);
         }
         if (flavorAvailabilityMap.get(item.flavorId) === false) {
-          throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected flavor is not available at this branch', 422);
+          throw new TransactionError('FLAVOR_NOT_AVAILABLE_FOR_VARIANT', 'Selected flavor is not available at this branch', 422);
         }
         flavorName = link.flavor.name;
         pricePremium = link.pricePremium.toNumber();

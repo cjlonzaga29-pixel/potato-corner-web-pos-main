@@ -491,6 +491,70 @@ describe('transactionsService.createTransaction — pricing and snapshots', () =
   });
 });
 
+describe('transactionsService.createTransaction — single-flavor variant flavor requirement', () => {
+  const flavoredVariant = () =>
+    variantRow({
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+    });
+
+  it('rejects a flavored variant with no flavorId', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SELECTION_REQUIRED' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts a flavored variant with a validly linked flavorId', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('rejects a flavorId that is linked to a different variant', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-other-variant', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_NOT_AVAILABLE_FOR_VARIANT' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a flavorId whose link is inactive/unavailable', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: false, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_NOT_AVAILABLE_FOR_VARIANT' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('allows a variant with no linked flavors to check out without flavorId', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ variantFlavors: [] })] as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).resolves.toBeDefined();
+  });
+});
+
 describe('transactionsService.createTransaction — Phase 4 Mix & Max slot-based flavors', () => {
   const snackVariantFixture = {
     id: 'snack-1',

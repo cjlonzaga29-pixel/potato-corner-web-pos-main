@@ -1,6 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { createFlavorSchema, updateFlavorSchema, branchFlavorAvailabilitySchema } from '@potato-corner/shared';
+import { updateFlavorSchema, branchFlavorAvailabilitySchema } from '@potato-corner/shared';
 import { flavorsService } from './flavors.service.js';
 import { FlavorError } from './flavors.types.js';
 import { ProductError } from '../products/products.types.js';
@@ -74,14 +74,17 @@ router.get('/:flavorId', authenticate, adminSupervisorOrBranch, requirePasswordC
   }
 });
 
-router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createFlavorSchema), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!requireUser(req, res)) return;
-    const flavor = await flavorsService.createFlavor(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
-    res.status(201).json({ data: flavor, error: null, meta: null });
-  } catch (error) {
-    handleModuleError(error, res, next);
-  }
+// CR-010 R7 — standalone Flavor creation is disabled at the API boundary.
+// Existing Flavor records are preserved and remain fully viewable/editable
+// (see PATCH below); flavorsService.createFlavor itself is untouched so its
+// existing test coverage (CR-005 Hook A branch provisioning) stays valid —
+// this route is simply no longer reachable for creating new flavors.
+router.post('/', authenticate, adminOnly, requirePasswordChange, (_req: Request, res: Response) => {
+  res.status(403).json({
+    data: null,
+    error: { code: 'FLAVOR_CREATION_DISABLED', message: 'Standalone Flavor creation is disabled. Existing flavors remain editable.' },
+    meta: null,
+  });
 });
 
 router.patch('/:flavorId', authenticate, adminOnly, requirePasswordChange, validate(updateFlavorSchema), async (req: Request, res: Response, next: NextFunction) => {

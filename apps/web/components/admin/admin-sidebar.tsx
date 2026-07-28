@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Building2,
   ShoppingBag,
-  Palette,
   Users,
   ClipboardCheck,
   BarChart3,
@@ -25,6 +24,8 @@ import {
   Boxes,
   CalendarCheck,
   FileSearch,
+  Tags,
+  Ruler,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -47,7 +48,9 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
   { label: 'Payment Settings', href: '/admin/payments', icon: Wallet },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
-  { label: 'Flavors', href: '/admin/flavors', icon: Palette },
+  { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
+  { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
+  { label: 'Units', href: '/admin/inventory/units', icon: Ruler },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   {

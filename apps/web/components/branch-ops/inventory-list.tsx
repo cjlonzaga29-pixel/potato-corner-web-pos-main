@@ -130,10 +130,12 @@ export function InventoryList({ basePath }: { basePath: string }) {
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
           </Button>
-          <Button onClick={openCreateDialog} disabled={!activeBranchId}>
-            <Plus className="mr-2 h-4 w-4" />
-            Create Ingredient
-          </Button>
+          {basePath !== '/branch' && (
+            <Button onClick={openCreateDialog} disabled={!activeBranchId}>
+              <Plus className="mr-2 h-4 w-4" />
+              Create Ingredient
+            </Button>
+          )}
         </div>
       </div>
 

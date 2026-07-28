@@ -77,6 +77,26 @@ export type CreateInventoryMovementInput = z.infer<typeof schemas.createInventor
 export type PhysicalCountSubmission = z.infer<typeof schemas.physicalCountSubmissionSchema>;
 
 export type StockInInput = z.infer<typeof schemas.stockInSchema>;
+
+export type CreateInventoryCategoryInput = z.infer<typeof schemas.createInventoryCategorySchema>;
+export type UpdateInventoryCategoryInput = z.infer<typeof schemas.updateInventoryCategorySchema>;
+export type InventoryCategoryResponse = z.infer<typeof schemas.inventoryCategoryResponseSchema>;
+export type CreateUnitOfMeasureInput = z.infer<typeof schemas.createUnitOfMeasureSchema>;
+export type UpdateUnitOfMeasureInput = z.infer<typeof schemas.updateUnitOfMeasureSchema>;
+export type UnitOfMeasureResponse = z.infer<typeof schemas.unitOfMeasureResponseSchema>;
+export type CreateUnitConversionInput = z.infer<typeof schemas.createUnitConversionSchema>;
+export type UnitConversionResponse = z.infer<typeof schemas.unitConversionResponseSchema>;
+export type CreateInventoryItemInput = z.infer<typeof schemas.createInventoryItemSchema>;
+export type UpdateInventoryItemInput = z.infer<typeof schemas.updateInventoryItemSchema>;
+export type InventoryItemResponse = z.infer<typeof schemas.inventoryItemResponseSchema>;
+export type InventoryItemBranchAssignment = z.infer<typeof schemas.inventoryItemBranchAssignmentSchema>;
+export type InventoryItemDetailResponse = z.infer<typeof schemas.inventoryItemDetailResponseSchema>;
+export type AssignInventoryItemToBranchesInput = z.infer<typeof schemas.assignInventoryItemToBranchesSchema>;
+export type AssignInventoryItemToBranchesResponse = z.infer<typeof schemas.assignInventoryItemToBranchesResponseSchema>;
+
+export type CreateProductComponentInput = z.infer<typeof schemas.createProductComponentSchema>;
+export type UpdateProductComponentInput = z.infer<typeof schemas.updateProductComponentSchema>;
+export type ProductComponentResponse = z.infer<typeof schemas.productComponentResponseSchema>;
 export type AdjustIngredientInput = z.infer<typeof schemas.adjustIngredientSchema>;
 export type WasteIngredientInput = z.infer<typeof schemas.wasteIngredientSchema>;
 export type TransferIngredientInput = z.infer<typeof schemas.transferIngredientSchema>;

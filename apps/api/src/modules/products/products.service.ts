@@ -95,7 +95,7 @@ async function assertRecipesResolvableSomewhere(productVariantId: string): Promi
 function assertFlavorSlotsWellFormed(slots: ProductFlavorSlot[]): void {
   const seen = new Set<number>();
   for (const slot of slots) {
-    if (!Number.isInteger(slot.slotIndex) || slot.slotIndex < 1) {
+    if (!Number.isInteger(slot.slotIndex) || slot.slotIndex < 0) {
       throw new ProductError('VARIANT_APPROVAL_MALFORMED_FLAVOR_SLOTS', `Flavor slot has an invalid slotIndex (${slot.slotIndex})`, 409);
     }
     if (seen.has(slot.slotIndex)) {

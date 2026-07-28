@@ -1,13 +1,24 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { ProductInventoryResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { VariantCard } from './variant-card';
 
-const { mockUseAuth, mockUseProductInventoryList, mockUseDeleteProductInventory, mockInventoryMappingFormDialog } = vi.hoisted(() => ({
+const {
+  mockUseAuth,
+  mockUseProductInventoryList,
+  mockUseDeleteProductInventory,
+  mockInventoryMappingFormDialog,
+  mockUseVariantOptionGroups,
+  mockUseUnassignVariantOptionGroup,
+  mockAssignOptionGroupDialog,
+} = vi.hoisted(() => ({
   mockUseAuth: vi.fn(),
   mockUseProductInventoryList: vi.fn(),
   mockUseDeleteProductInventory: vi.fn(),
   mockInventoryMappingFormDialog: vi.fn((_props: unknown) => null),
+  mockUseVariantOptionGroups: vi.fn(),
+  mockUseUnassignVariantOptionGroup: vi.fn(),
+  mockAssignOptionGroupDialog: vi.fn((_props: unknown) => null),
 }));
 
 vi.mock('@/hooks/use-auth', () => ({
@@ -19,9 +30,21 @@ vi.mock('@/hooks/queries/use-product-inventory', () => ({
   useDeleteProductInventory: mockUseDeleteProductInventory,
 }));
 
+vi.mock('@/hooks/queries/use-product-options', () => ({
+  useVariantOptionGroups: mockUseVariantOptionGroups,
+  useUnassignVariantOptionGroup: mockUseUnassignVariantOptionGroup,
+}));
+
 vi.mock('@/components/admin/products/inventory-mapping-form-dialog', () => ({
   InventoryMappingFormDialog: (props: unknown) => {
     mockInventoryMappingFormDialog(props);
+    return null;
+  },
+}));
+
+vi.mock('@/components/admin/products/assign-option-group-dialog', () => ({
+  AssignOptionGroupDialog: (props: unknown) => {
+    mockAssignOptionGroupDialog(props);
     return null;
   },
 }));
@@ -64,6 +87,11 @@ function renderVariantCard() {
     />
   );
 }
+
+beforeEach(() => {
+  mockUseVariantOptionGroups.mockReturnValue({ data: [], isLoading: false });
+  mockUseUnassignVariantOptionGroup.mockReturnValue({ mutateAsync: vi.fn() });
+});
 
 afterEach(() => {
   cleanup();

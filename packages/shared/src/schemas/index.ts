@@ -18,3 +18,4 @@ export * from './settings.schema.js';
 export * from './product-inventory.schema.js';
 export * from './universal-inventory.schema.js';
 export * from './product-component.schema.js';
+export * from './product-catalog.schema.js';

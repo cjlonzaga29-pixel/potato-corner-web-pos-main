@@ -9,8 +9,10 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { FlavorColorSwatch } from '@/components/admin/flavors/flavor-color-swatch';
 import { InventoryMappingFormDialog } from '@/components/admin/products/inventory-mapping-form-dialog';
+import { AssignOptionGroupDialog } from '@/components/admin/products/assign-option-group-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import { useProductInventoryList, useDeleteProductInventory } from '@/hooks/queries/use-product-inventory';
+import { useVariantOptionGroups, useUnassignVariantOptionGroup } from '@/hooks/queries/use-product-options';
 import { formatCurrency } from '@/lib/utils';
 
 interface VariantCardProps {
@@ -68,9 +70,64 @@ export function VariantCard({ variant, branchId, onEditVariant, onLinkFlavor, on
           </div>
         )}
 
+        <OptionGroupsSection productId={variant.product_id} variantId={variant.id} />
+
         <InventoryItemsSection variant={variant} branchId={branchId} />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * CR-008 R6 — Option Group assignments for this variant (Flavor/Size/
+ * Add-ons/etc.), distinct from the legacy variantFlavors shown above.
+ */
+function OptionGroupsSection({ productId, variantId }: { productId: string; variantId: string }) {
+  const { data: assignments, isLoading } = useVariantOptionGroups(productId, variantId);
+  const unassign = useUnassignVariantOptionGroup(productId, variantId);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+
+  return (
+    <div className="space-y-2 border-t pt-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">Option Groups</p>
+        <Button size="sm" variant="outline" onClick={() => setAssignDialogOpen(true)}>
+          <Plus className="mr-1 h-3 w-3" />
+          Assign Option Group
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading option groups…</p>
+      ) : !assignments || assignments.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No option groups assigned yet.</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {assignments.map((assignment) => (
+            <div key={assignment.id} className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs">
+              <span>{assignment.name}</span>
+              <Badge variant={assignment.required ? 'active' : 'inactive'}>{assignment.required ? 'Required' : 'Optional'}</Badge>
+              <span className="text-muted-foreground">{assignment.allowed_options.length || 'all'} options</span>
+              <button
+                type="button"
+                className="text-destructive hover:text-destructive/80"
+                onClick={() => void unassign.mutateAsync(assignment.id)}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <AssignOptionGroupDialog
+        open={assignDialogOpen}
+        onOpenChange={setAssignDialogOpen}
+        productId={productId}
+        variantId={variantId}
+        assignedGroupIds={(assignments ?? []).map((a) => a.option_group_id)}
+      />
+    </div>
   );
 }
 

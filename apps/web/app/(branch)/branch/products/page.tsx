@@ -18,6 +18,7 @@ interface CatalogRow {
   sizeLabel: string;
   price: number;
   flavorCount: number;
+  optionGroupCount: number;
 }
 
 // The catalog endpoint (same one the POS Terminal charges against) only
@@ -35,6 +36,7 @@ function flattenCatalog(products: PosCatalogProduct[]): CatalogRow[] {
       sizeLabel: variant.size_label,
       price: variant.price,
       flavorCount: variant.flavors.length,
+      optionGroupCount: variant.option_groups.length,
     })),
   );
 }
@@ -49,6 +51,11 @@ const columns: ColumnDef<CatalogRow>[] = [
     id: 'flavorCount',
     header: 'Flavors',
     cell: ({ row }) => (row.original.flavorCount > 0 ? <Badge variant="secondary">{row.original.flavorCount} available</Badge> : '—'),
+  },
+  {
+    id: 'optionGroupCount',
+    header: 'Options',
+    cell: ({ row }) => (row.original.optionGroupCount > 0 ? <Badge variant="secondary">{row.original.optionGroupCount} groups</Badge> : '—'),
   },
 ];
 

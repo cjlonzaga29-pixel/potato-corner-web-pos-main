@@ -97,6 +97,8 @@ function product(overrides: Partial<ProductDetailResponse> = {}): ProductDetailR
     name: 'Potato Corner Regular',
     description: null,
     category: 'Snacks',
+    category_id: null,
+    category_name: null,
     image_url: null,
     status: 'active',
     status_label: 'Active',

@@ -13,6 +13,7 @@ import type {
 const creatorInclude = {
   creator: { select: { id: true, firstName: true, lastName: true, email: true } },
   exclusiveBranch: { select: { id: true, name: true } },
+  productCategory: { select: { id: true, name: true } },
 } satisfies Prisma.ProductInclude;
 
 const detailInclude = {
@@ -73,6 +74,7 @@ export const productsRepository = {
           variants: { select: { isActive: true } },
           branchAvailability: { select: { isAvailable: true } },
           exclusiveBranch: { select: { id: true, name: true } },
+          productCategory: { select: { id: true, name: true } },
         },
       }),
       prisma.product.count({ where }),
@@ -104,6 +106,7 @@ export const productsRepository = {
           name: data.name,
           description: data.description,
           category: data.category,
+          categoryId: data.categoryId,
           status: data.status,
           displayOrder: data.displayOrder,
           isSeasonal: data.isSeasonal,
@@ -144,6 +147,7 @@ export const productsRepository = {
         name: data.name,
         description: data.description,
         category: data.category,
+        ...(data.categoryId !== undefined && { categoryId: data.categoryId }),
         displayOrder: data.displayOrder,
         isSeasonal: data.isSeasonal,
         ...(data.seasonalStartDate !== undefined && {
@@ -298,6 +302,12 @@ export const productsRepository = {
             variantFlavors: {
               where: { isAvailable: true, flavor: { isActive: true } },
               include: { flavor: { select: { id: true, name: true, colorHex: true } } },
+            },
+            // CR-008 R11/R12 — read-only, additive: assigned Option Groups
+            // surfaced to the branch catalog view. Not consumed by pricing
+            // or inventory deduction.
+            optionGroupAssignments: {
+              include: { optionGroup: { select: { id: true, name: true, selectionType: true, required: true, isActive: true } } },
             },
           },
         },

@@ -26,6 +26,8 @@ import {
   FileSearch,
   Tags,
   Ruler,
+  ListTree,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -48,6 +50,8 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
   { label: 'Payment Settings', href: '/admin/payments', icon: Wallet },
   { label: 'Products', href: '/admin/products', icon: ShoppingBag },
+  { label: 'Product Categories', href: '/admin/product-categories', icon: ListTree },
+  { label: 'Product Options', href: '/admin/product-options', icon: SlidersHorizontal },
   { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
   { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
   { label: 'Units', href: '/admin/inventory/units', icon: Ruler },

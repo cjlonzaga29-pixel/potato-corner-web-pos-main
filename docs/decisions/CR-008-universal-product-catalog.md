@@ -1,7 +1,7 @@
 # CR-008 — Universal Product Catalog Architecture
 
-**Status:** Planning only. No code, schema, or data changes performed by this document.
-**Date:** 2026-07-27
+**Status:** Foundation implemented 2026-07-28 (see §24 below). The full architecture this document describes (ProductOptionPrice, LegacyCatalogIdentityMapping, effective-dated pricing, cross-group exclusion, recipe-adjustment options, POS runtime cutover) remains a future-state design — only the R0–R16 foundation scope was built in this pass. No FINAL-RESET, legacy migration, or POS cutover was performed.
+**Date:** 2026-07-27 (planning), 2026-07-28 (foundation implementation)
 **Authority (descending):** CR-007 (final, universal inventory) > CR-006 (Phase B doc + Phase B/B.1/C0/C0.1/C plans) > CR-005 (Product Builder/recipe composition) > CR-004 (POS deduction integrity) > existing POS/product schema.
 
 This CR does not weaken or redesign the universal inventory architecture. `InventoryItem` and `Product`/`ProductVariant` remain distinct domains. This CR governs the sellable side only.
@@ -408,3 +408,37 @@ Mandatory before Stage 5 (runtime cutover) of §23.6 may proceed:
 - Cross-group mutual exclusion (e.g. "size L is incompatible with topping X") has no dedicated model in this pass — deferred per §23.9 until a real case surfaces; not a blocker for Stages 1–4.
 - The exact enum member set for `legacyType`/`genericType` on `LegacyCatalogIdentityMapping` may need a third pairing if a future legacy structure beyond `Flavor`/`ProductFlavorSlot` needs migrating — extendable without a boundary change.
 - No blocker requiring renegotiation of CR-007's inventory boundary was found; §23.8's recipe-adjustment shape is deliberately left to the future BOM CR.
+
+---
+
+## 24. Implementation status (foundation pass, 2026-07-28)
+
+This section records what was actually built, as a deliberately smaller scope than §1–23's full target design. §1–23 remain the aspirational architecture; treat any name overlap below as this pass's schema, not a claim that the full design above was implemented.
+
+### 24.1 What shipped
+
+- **Prisma schema (additive only):** `ProductCategory`, `ProductOptionGroup`, `ProductOption`, `ProductVariantOptionGroup` (variant ↔ group assignment), `ProductVariantOptionGroupOption` (allowed-option subset per assignment), enum `ProductOptionSelectionType` (`SINGLE`/`MULTIPLE`). `Product.categoryId` added as a nullable FK alongside the existing free-text `category` column (untouched). Migration: `prisma/migrations/20260728084256_cr008_universal_product_catalog_foundation/migration.sql` — **written but not applied** to any database (see §24.4).
+- **API modules:**
+  - `apps/api/src/modules/product-categories/` — CRUD for categories (`/api/product-categories`), admin write / admin+supervisor read, code-uniqueness enforced.
+  - `apps/api/src/modules/product-options/` — CRUD for option groups and their nested options (`/api/product-options`), same authorization posture. Option code uniqueness is scoped per group.
+  - Variant ↔ option-group assignment endpoints added to the existing `products.router.ts` (mirroring the legacy variant-flavor-link pattern): `GET/POST /api/products/:productId/variants/:variantId/option-groups`, `PATCH`/`DELETE .../option-groups/:assignmentId`. Duplicate assignment, cross-group option leakage, and required/min/max override are all validated server-side in `product-options.service.ts`.
+  - `products.service.ts`/`products.repository.ts` extended (additively) to accept/return `category_id`/`category_name` on Product create/update/read, and to surface each POS-catalog variant's active assigned option groups as a read-only `option_groups` array (id/name/selection_type/required) — not consumed by pricing, flavor premium, or inventory deduction logic.
+- **Shared package:** `packages/shared/src/schemas/product-catalog.schema.ts` (zod schemas + SINGLE/MULTIPLE cross-field validation) and matching `types/index.ts` exports.
+- **Admin UI:** `/admin/product-categories` (list + create/edit dialogs), `/admin/product-options` (option-group list + create dialog) and `/admin/product-options/[groupId]` (option list + add-option dialog, active toggle). Sidebar nav entries added. Variant cards in the existing product detail page gained an "Option Groups" section (assign/unassign), alongside the pre-existing Flavor and Inventory Items sections.
+- **Branch UI:** `/branch/products` (read-only) gained an "Options" column showing each variant's assigned option-group count, sourced from the same POS-catalog read used by the Terminal.
+- **Tests:** service-level tests for category/option-group/option CRUD and duplicate-prevention, variant-assignment duplicate/cross-group rejection, and router-level authorization tests (branch/supervisor rejected with 403 on write endpoints, super_admin allowed) — see `product-categories.service.test.ts`, `product-categories.router.test.ts`, `product-options.service.test.ts`, `product-options.router.test.ts`, and `product-catalog.schema.test.ts` (SINGLE/MULTIPLE selection-rule validation). Full API suite (1321 tests) and full web suite (324 tests) pass; typecheck and lint are clean on both packages (zero new errors/warnings).
+
+### 24.2 What did not ship (explicitly out of scope for this pass)
+
+- §2.3–§2.4's SKU/barcode identity, §4's promo/scheduled pricing, §5's per-branch variant-level pricing/availability beyond the pre-existing product-level `BranchProductAvailability`, §6's bundles, §7's `LegacyCatalogIdentityMapping`, §20's sold-out computation, §23's `ProductOptionPrice`/effective-dating/priority-tie resolution, and any Recipe/BOM or POS inventory-deduction logic. `ProductComponent` (CR-007 §10) was reused as-is for the R9 linkage foundation — no redesign.
+- Legacy `Flavor`/`ProductVariantFlavor`/`BranchFlavorAvailability` data and APIs are unchanged; standalone Flavor creation remains disabled (CR-010 R7, unaffected by this pass).
+- No cutover of POS Terminal reads to the new Option Group/Option model — the Terminal continues to read `variantFlavors` for flavor selection; the new `option_groups` field on the POS catalog is additive and currently unused by checkout/pricing logic.
+
+### 24.3 Non-negotiables honored
+
+No Phase C0 apply, no FINAL-RESET, no legacy Product/Flavor deletion or migration, no Recipe/BOM, no automatic inventory deduction, no inventory-movement generation from sales, no sales-total changes, no dashboard redesign, no deploy, no push, no commit, no production data seeding/mutation, no startup initialization, no fake operational data outside tests, no authorization weakened.
+
+### 24.4 Known follow-up
+
+- The migration SQL exists but was **not applied** to the configured database (`apps/api/.env`'s `nliuhztaezaujzgtsrwp` Supabase project) — its prod-vs-throwaway status is unresolved in project memory, and applying a schema migration against it was left for the user to run explicitly (`npx prisma migrate deploy` from `apps/api/`) once confirmed.
+- Integration tests in `products.integration.test.ts` remain skipped (require a live database), consistent with the rest of the repo's existing test posture.

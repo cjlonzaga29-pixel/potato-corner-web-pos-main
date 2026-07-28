@@ -16,6 +16,7 @@ export interface CreateProductData {
   name: string;
   description?: string;
   category?: string;
+  categoryId?: string;
   status: ProductStatus;
   displayOrder?: number;
   isSeasonal: boolean;
@@ -30,6 +31,7 @@ export interface UpdateProductData {
   name?: string;
   description?: string;
   category?: string;
+  categoryId?: string | null;
   displayOrder?: number;
   isSeasonal?: boolean;
   seasonalStartDate?: string | null;

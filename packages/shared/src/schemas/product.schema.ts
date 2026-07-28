@@ -65,6 +65,8 @@ export const createProductSchema = z
     name: z.string().min(2).max(100),
     description: z.string().max(500).optional(),
     category: z.string().max(50).optional(),
+    // CR-008: canonical ProductCategory FK, additive alongside legacy `category`.
+    category_id: z.uuid().optional(),
     status: z.enum(productStatusValues).default(PRODUCT_STATUS.DRAFT),
     display_order: z.number().int().nonnegative().optional(),
     is_seasonal: z.boolean().default(false),
@@ -107,6 +109,7 @@ export const updateProductSchema = z
     name: z.string().min(2).max(100).optional(),
     description: z.string().max(500).optional(),
     category: z.string().max(50).optional(),
+    category_id: z.uuid().nullable().optional(),
     display_order: z.number().int().nonnegative().optional(),
     is_seasonal: z.boolean().optional(),
     seasonal_start_date: z.iso.date().nullable().optional(),
@@ -208,6 +211,8 @@ export const productResponseSchema = z.object({
   name: z.string(),
   description: z.string().nullable(),
   category: z.string().nullable(),
+  category_id: z.uuid().nullable(),
+  category_name: z.string().nullable(),
   image_url: z.string().nullable(),
   status: z.enum(productStatusValues),
   status_label: z.string(),
@@ -255,6 +260,15 @@ export const posCatalogFlavorSchema = z.object({
   price_premium: z.number(),
 });
 
+// CR-008 — read-only surface of a variant's assigned Option Groups (R11/R12:
+// additive read adapter only, no pricing/deduction logic reads this field).
+export const posCatalogOptionGroupSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  selection_type: z.enum(['SINGLE', 'MULTIPLE']),
+  required: z.boolean(),
+});
+
 export const posCatalogVariantSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -262,6 +276,7 @@ export const posCatalogVariantSchema = z.object({
   price: z.number(),
   vatable_cap_amount: z.number().nullable(),
   flavors: z.array(posCatalogFlavorSchema),
+  option_groups: z.array(posCatalogOptionGroupSchema),
 });
 
 export const posCatalogProductSchema = z.object({

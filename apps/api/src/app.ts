@@ -28,6 +28,8 @@ import { settingsRouter, branchReceiptConfigRouter } from './modules/settings/se
 import { productInventoryRouter } from './modules/product-inventory/product-inventory.router.js';
 import { universalInventoryRouter } from './modules/universal-inventory/universal-inventory.router.js';
 import { productComponentsRouter } from './modules/product-components/product-components.router.js';
+import { productCategoriesRouter } from './modules/product-categories/product-categories.router.js';
+import { productOptionsRouter } from './modules/product-options/product-options.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
 
 export const app: Express = express();
@@ -85,6 +87,8 @@ app.use('/api/branches', branchReceiptConfigRouter);
 app.use('/api/product-inventory', productInventoryRouter);
 app.use('/api/universal-inventory', universalInventoryRouter);
 app.use('/api/product-components', productComponentsRouter);
+app.use('/api/product-categories', productCategoriesRouter);
+app.use('/api/product-options', productOptionsRouter);
 
 // Express 5 catch-all syntax (path-to-regexp v8) — '*' alone is no longer valid.
 app.use('/{*splat}', (_req: Request, res: Response) => {

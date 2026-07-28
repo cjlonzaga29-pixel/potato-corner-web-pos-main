@@ -169,3 +169,22 @@ export type ReceiptConfigResponse = z.infer<typeof schemas.receiptConfigResponse
 export type PaymentMethodConfig = z.infer<typeof schemas.paymentMethodConfigSchema>;
 export type UpdatePaymentMethodConfigInput = z.infer<typeof schemas.updatePaymentMethodConfigSchema>;
 export type PaymentMethodConfigResponse = z.infer<typeof schemas.paymentMethodConfigResponseSchema>;
+
+// CR-008 — Universal Product Catalog
+export type CreateProductCategoryInput = z.infer<typeof schemas.createProductCategorySchema>;
+export type UpdateProductCategoryInput = z.infer<typeof schemas.updateProductCategorySchema>;
+export type ProductCategoryResponse = z.infer<typeof schemas.productCategoryResponseSchema>;
+export type ProductCategoryListResponse = z.infer<typeof schemas.productCategoryListResponseSchema>;
+
+export type CreateProductOptionGroupInput = z.infer<typeof schemas.createProductOptionGroupSchema>;
+export type UpdateProductOptionGroupInput = z.infer<typeof schemas.updateProductOptionGroupSchema>;
+export type ProductOptionGroupResponse = z.infer<typeof schemas.productOptionGroupResponseSchema>;
+export type ProductOptionGroupListResponse = z.infer<typeof schemas.productOptionGroupListResponseSchema>;
+export type ProductOptionGroupDetailResponse = z.infer<typeof schemas.productOptionGroupDetailResponseSchema>;
+export type CreateProductOptionInput = z.infer<typeof schemas.createProductOptionSchema>;
+export type UpdateProductOptionInput = z.infer<typeof schemas.updateProductOptionSchema>;
+export type ProductOptionResponse = z.infer<typeof schemas.productOptionResponseSchema>;
+
+export type AssignVariantOptionGroupInput = z.infer<typeof schemas.assignVariantOptionGroupSchema>;
+export type UpdateVariantOptionGroupInput = z.infer<typeof schemas.updateVariantOptionGroupSchema>;
+export type VariantOptionGroupResponse = z.infer<typeof schemas.variantOptionGroupResponseSchema>;

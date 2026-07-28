@@ -10,6 +10,8 @@ import {
   linkVariantFlavorSchema,
   updateVariantFlavorSchema,
   bulkBranchProductAvailabilitySchema,
+  assignVariantOptionGroupSchema,
+  updateVariantOptionGroupSchema,
   PRODUCT_STATUS,
   type ProductStatus,
 } from '@potato-corner/shared';
@@ -17,6 +19,8 @@ import { productsService } from './products.service.js';
 import { ProductError } from './products.types.js';
 import { FlavorError } from '../flavors/flavors.types.js';
 import { flavorsService } from '../flavors/flavors.service.js';
+import { productOptionsService } from '../product-options/product-options.service.js';
+import { ProductOptionError } from '../product-options/product-options.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -58,7 +62,7 @@ const branchAvailabilityBodySchema = z.object({ is_available: z.boolean() });
 
 /** Routes ProductError/FlavorError to their declared status code; unexpected errors fall through to the global handler. */
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
-  if (error instanceof ProductError || error instanceof FlavorError) {
+  if (error instanceof ProductError || error instanceof FlavorError || error instanceof ProductOptionError) {
     res
       .status(error.statusCode)
       .json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
@@ -413,6 +417,95 @@ router.patch(
         req.ip ?? null,
       );
       res.status(200).json({ data: link, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// CR-008 R6 — Variant <-> Product Option Group assignment. Same posture as
+// the flavor-linking routes above: Admin only (Supervisor/Branch have no
+// write access to catalog identity, per R13).
+
+router.get(
+  '/:productId/variants/:variantId/option-groups',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const assignments = await productOptionsService.listVariantOptionGroups(req.params.productId as string, req.params.variantId as string);
+      res.status(200).json({ data: { option_groups: assignments }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:productId/variants/:variantId/option-groups',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(assignVariantOptionGroupSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const assignment = await productOptionsService.assignOptionGroupToVariant(
+        req.params.productId as string,
+        req.params.variantId as string,
+        req.body,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: assignment, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/:productId/variants/:variantId/option-groups/:assignmentId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updateVariantOptionGroupSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const assignment = await productOptionsService.updateVariantOptionGroup(
+        req.params.productId as string,
+        req.params.variantId as string,
+        req.params.assignmentId as string,
+        req.body,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: assignment, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.delete(
+  '/:productId/variants/:variantId/option-groups/:assignmentId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      await productOptionsService.unassignOptionGroupFromVariant(
+        req.params.productId as string,
+        req.params.variantId as string,
+        req.params.assignmentId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(204).send();
     } catch (error) {
       handleModuleError(error, res, next);
     }

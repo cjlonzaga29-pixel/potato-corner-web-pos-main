@@ -176,6 +176,14 @@ enum UnitDimension {
   COUNT
 }
 
+// CR-008 -- generic selection rule for a Product Option Group (e.g. Flavor,
+// Size, Add-ons). SINGLE = radio-button choice, MULTIPLE = checkbox choice
+// bounded by minSelections/maxSelections.
+enum ProductOptionSelectionType {
+  SINGLE
+  MULTIPLE
+}
+
 // CR-009 -- durable initialization audit/provenance infrastructure for the
 // future reference-data initialization system (categories/units/conversions).
 // Single value today; kept as an enum (not a free string) for future
@@ -331,6 +339,12 @@ model User {
 
   // CR-009
   initiatedInitializationRuns InitializationRun[]
+
+  // CR-008
+  createdProductCategories          ProductCategory[]
+  createdProductOptionGroups        ProductOptionGroup[]
+  createdProductOptions             ProductOption[]
+  createdProductVariantOptionGroups ProductVariantOptionGroup[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -529,8 +543,14 @@ model Product {
   branchExclusive   Boolean @default(false) @map("branch_exclusive")
   exclusiveBranchId String? @map("exclusive_branch_id")
 
+  // CR-008: canonical ProductCategory FK, additive alongside the legacy free-text
+  // `category` column above (left untouched — existing POS/reporting code still
+  // reads it). New admin UI writes categoryId; `category` is no longer required.
+  categoryId String? @map("category_id")
+
   creator            User?                       @relation(fields: [createdBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
+  productCategory    ProductCategory?            @relation(fields: [categoryId], references: [id])
   variants           ProductVariant[]
   branchAvailability BranchProductAvailability[]
   transactionItems   TransactionItem[]
@@ -541,6 +561,7 @@ model Product {
 
   @@index([status])
   @@index([category])
+  @@index([categoryId])
   @@map("products")
 }
 
@@ -584,6 +605,10 @@ model ProductVariant {
 
   // CR-006 Phase A
   productComponents ProductComponent[]
+
+  // CR-008: generic Option Group assignments (Flavor/Size/Add-ons/etc.),
+  // distinct from the legacy variantFlavors above.
+  optionGroupAssignments ProductVariantOptionGroup[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -675,6 +700,118 @@ model BranchFlavorAvailability {
 
   @@unique([branchId, flavorId])
   @@map("branch_flavor_availability")
+}
+
+// ---------------------------------------------------------------------------
+// CR-008 — Universal Product Catalog. Admin-owned identity: categories, and a
+// generic Option Group/Option architecture that replaces standalone-Flavor
+// creation for new product work (legacy Flavor/ProductVariantFlavor above are
+// preserved unchanged — see docs/decisions/CR-008-universal-product-catalog.md).
+// ---------------------------------------------------------------------------
+
+model ProductCategory {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  isActive    Boolean @default(true) @map("is_active")
+  sortOrder   Int?    @map("sort_order")
+  createdBy   String? @map("created_by")
+
+  creator  User?     @relation(fields: [createdBy], references: [id])
+  products Product[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive])
+  @@map("product_categories")
+}
+
+model ProductOptionGroup {
+  id            String                     @id @default(uuid())
+  code          String                     @unique
+  name          String
+  description   String?
+  selectionType ProductOptionSelectionType @map("selection_type")
+  minSelections Int                        @default(0) @map("min_selections")
+  maxSelections Int?                       @map("max_selections")
+  required      Boolean                    @default(false)
+  isActive      Boolean                    @default(true) @map("is_active")
+  sortOrder     Int?                       @map("sort_order")
+  createdBy     String?                    @map("created_by")
+
+  creator            User?                       @relation(fields: [createdBy], references: [id])
+  options            ProductOption[]
+  variantAssignments ProductVariantOptionGroup[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive])
+  @@map("product_option_groups")
+}
+
+model ProductOption {
+  id              String  @id @default(uuid())
+  optionGroupId   String  @map("option_group_id")
+  code            String
+  name            String
+  priceAdjustment Decimal @default(0) @map("price_adjustment") @db.Decimal(10, 2)
+  imageUrl        String? @map("image_url")
+  isActive        Boolean @default(true) @map("is_active")
+  sortOrder       Int?    @map("sort_order")
+  createdBy       String? @map("created_by")
+
+  optionGroup           ProductOptionGroup                @relation(fields: [optionGroupId], references: [id])
+  creator               User?                             @relation(fields: [createdBy], references: [id])
+  variantAllowedOptions ProductVariantOptionGroupOption[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([optionGroupId, code])
+  @@map("product_options")
+}
+
+/// Assigns an Option Group to a Product Variant (R6). required overrides the
+/// group's own `required` default when set; sortOrder controls rendering
+/// order among a variant's assigned groups.
+model ProductVariantOptionGroup {
+  id               String   @id @default(uuid())
+  productVariantId String   @map("product_variant_id")
+  optionGroupId    String   @map("option_group_id")
+  required         Boolean? @map("required")
+  sortOrder        Int?     @map("sort_order")
+  createdBy        String?  @map("created_by")
+
+  productVariant ProductVariant                    @relation(fields: [productVariantId], references: [id])
+  optionGroup    ProductOptionGroup                @relation(fields: [optionGroupId], references: [id])
+  creator        User?                             @relation(fields: [createdBy], references: [id])
+  allowedOptions ProductVariantOptionGroupOption[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([productVariantId, optionGroupId])
+  @@map("product_variant_option_groups")
+}
+
+/// The subset of an assigned group's options actually sellable on this
+/// variant (R6 "control allowed options"), with independent ordering.
+model ProductVariantOptionGroupOption {
+  id                   String @id @default(uuid())
+  variantOptionGroupId String @map("variant_option_group_id")
+  productOptionId      String @map("product_option_id")
+  sortOrder            Int?   @map("sort_order")
+
+  variantOptionGroup ProductVariantOptionGroup @relation(fields: [variantOptionGroupId], references: [id], onDelete: Cascade)
+  productOption      ProductOption             @relation(fields: [productOptionId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([variantOptionGroupId, productOptionId])
+  @@map("product_variant_option_group_options")
 }
 
 // ---------------------------------------------------------------------------

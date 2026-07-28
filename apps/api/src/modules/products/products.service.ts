@@ -14,6 +14,7 @@ import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
+import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -171,6 +172,7 @@ function toProductBase(product: {
   name: string;
   description: string | null;
   category: string | null;
+  categoryId: string | null;
   imageUrl: string | null;
   status: ProductStatus;
   displayOrder: number | null;
@@ -180,6 +182,7 @@ function toProductBase(product: {
   branchExclusive: boolean;
   exclusiveBranchId: string | null;
   exclusiveBranch?: { id: string; name: string } | null;
+  productCategory?: { id: string; name: string } | null;
   createdBy: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -189,6 +192,8 @@ function toProductBase(product: {
     name: product.name,
     description: product.description,
     category: product.category,
+    category_id: product.categoryId,
+    category_name: product.productCategory?.name ?? null,
     image_url: product.imageUrl,
     status: product.status,
     status_label: STATUS_LABELS[product.status],
@@ -275,6 +280,7 @@ interface CreateProductInput {
   name: string;
   description?: string;
   category?: string;
+  category_id?: string;
   status: ProductStatus;
   display_order?: number;
   is_seasonal: boolean;
@@ -289,6 +295,7 @@ interface UpdateProductInput {
   name?: string;
   description?: string;
   category?: string;
+  category_id?: string | null;
   display_order?: number;
   is_seasonal?: boolean;
   seasonal_start_date?: string | null;
@@ -477,11 +484,17 @@ export const productsService = {
       }
     }
 
+    if (data.category_id) {
+      const category = await productCategoriesRepository.findById(data.category_id);
+      if (!category) throw new ProductError('CATEGORY_NOT_FOUND', 'category_id does not reference an existing product category', 422);
+    }
+
     const { product, cascadedBranchIds } = await productsRepository.createWithCascade(
       {
         name: data.name,
         description: data.description,
         category: data.category,
+        categoryId: data.category_id,
         status: data.status,
         displayOrder: data.display_order,
         isSeasonal: data.is_seasonal,
@@ -548,10 +561,16 @@ export const productsService = {
           : undefined;
     validateSeasonalRules({ isSeasonal: mergedIsSeasonal, seasonalStartDate: mergedStart, seasonalEndDate: mergedEnd });
 
+    if (data.category_id) {
+      const category = await productCategoriesRepository.findById(data.category_id);
+      if (!category) throw new ProductError('CATEGORY_NOT_FOUND', 'category_id does not reference an existing product category', 422);
+    }
+
     const product = await productsRepository.update(productId, {
       name: data.name,
       description: data.description,
       category: data.category,
+      categoryId: data.category_id,
       displayOrder: data.display_order,
       isSeasonal: data.is_seasonal,
       seasonalStartDate: data.seasonal_start_date,
@@ -1187,6 +1206,14 @@ export const productsService = {
             name: vf.flavor.name,
             color_hex: vf.flavor.colorHex,
             price_premium: vf.pricePremium.toNumber(),
+          })),
+        option_groups: variant.optionGroupAssignments
+          .filter((assignment) => assignment.optionGroup.isActive)
+          .map((assignment) => ({
+            id: assignment.optionGroup.id,
+            name: assignment.optionGroup.name,
+            selection_type: assignment.optionGroup.selectionType,
+            required: assignment.required ?? assignment.optionGroup.required,
           })),
       }));
       return {

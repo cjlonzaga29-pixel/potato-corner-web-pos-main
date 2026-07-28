@@ -36,11 +36,17 @@ export function RecipeBomPanel({ productVariantId, variantLabel }: RecipeBomPane
   const [formDialog, setFormDialog] = useState<{ open: boolean; component?: ProductComponentResponse }>({ open: false });
   const [deletingComponent, setDeletingComponent] = useState<ProductComponentResponse | null>(null);
 
+  // Mirrors recipe-readiness.service.ts's NO_RECIPE check (zero active ProductComponent rows) so this badge and the Recipe Readiness report never disagree.
+  const isReady = (components ?? []).some((component) => component.is_active);
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
         <div>
-          <CardTitle className="text-base">Recipe / BOM</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">Recipe / BOM</CardTitle>
+            {!isLoading && !isError && <Badge variant={isReady ? 'active' : 'inactive'}>{isReady ? 'Ready' : 'No Recipe'}</Badge>}
+          </div>
           <CardDescription>Inventory items consumed by {variantLabel}.</CardDescription>
         </div>
         {canManage && (

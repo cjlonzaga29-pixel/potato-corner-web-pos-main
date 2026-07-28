@@ -22,4 +22,5 @@ export interface CreateProductComponentData {
 
 export interface UpdateProductComponentData {
   quantityRequired?: number;
+  isActive?: boolean;
 }

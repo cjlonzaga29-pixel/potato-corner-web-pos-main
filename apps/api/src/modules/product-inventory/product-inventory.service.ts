@@ -11,11 +11,14 @@ interface ProductInventoryRow {
   id: string;
   productVariantId: string;
   ingredientId: string;
+  flavorId: string | null;
   quantityRequired: { toNumber(): number };
   unit: string;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
   ingredient: { name: string };
+  flavor: { name: string } | null;
 }
 
 function toResponse(row: ProductInventoryRow) {
@@ -24,8 +27,11 @@ function toResponse(row: ProductInventoryRow) {
     product_variant_id: row.productVariantId,
     ingredient_id: row.ingredientId,
     ingredient_name: row.ingredient.name,
+    flavor_id: row.flavorId,
+    flavor_name: row.flavor?.name ?? null,
     quantity_required: row.quantityRequired.toNumber(),
     unit: row.unit,
+    is_active: row.isActive,
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
   };
@@ -35,6 +41,7 @@ interface CreateProductInventoryInput {
   branch_id: string;
   product_variant_id: string;
   ingredient_id: string;
+  flavor_id?: string | null;
   quantity_required: number;
   unit: string;
 }
@@ -42,6 +49,7 @@ interface CreateProductInventoryInput {
 interface UpdateProductInventoryInput {
   quantity_required?: number;
   unit?: string;
+  is_active?: boolean;
 }
 
 function mappingExistsError(): ProductInventoryError {
@@ -238,7 +246,18 @@ export const productInventoryService = {
     const ingredient = await productInventoryRepository.findIngredientForBranch(data.ingredient_id, data.branch_id);
     if (!ingredient) throw new ProductInventoryError('INGREDIENT_NOT_FOUND', 'Inventory item not found', 404);
 
-    const existing = await productInventoryRepository.findByVariantAndIngredient(data.branch_id, data.product_variant_id, data.ingredient_id);
+    const flavorId = data.flavor_id ?? null;
+    if (flavorId) {
+      const flavor = await productInventoryRepository.findFlavorById(flavorId);
+      if (!flavor) throw new ProductInventoryError('FLAVOR_NOT_FOUND', 'Flavor not found', 404);
+    }
+
+    const existing = await productInventoryRepository.findByVariantAndIngredient(
+      data.branch_id,
+      data.product_variant_id,
+      data.ingredient_id,
+      flavorId,
+    );
     if (existing) throw mappingExistsError();
 
     let created: ProductInventoryRow;
@@ -247,6 +266,7 @@ export const productInventoryService = {
         branchId: data.branch_id,
         productVariantId: data.product_variant_id,
         ingredientId: data.ingredient_id,
+        flavorId,
         quantityRequired: data.quantity_required,
         unit: data.unit,
       })) as ProductInventoryRow;
@@ -289,6 +309,7 @@ export const productInventoryService = {
       {
         quantityRequired: data.quantity_required,
         unit: data.unit,
+        isActive: data.is_active,
       },
       branchIds,
     );

@@ -7,6 +7,7 @@ const {
   mockUseAuth,
   mockUseProductInventoryList,
   mockUseDeleteProductInventory,
+  mockUseSetProductInventoryActive,
   mockInventoryMappingFormDialog,
   mockUseVariantOptionGroups,
   mockUseUnassignVariantOptionGroup,
@@ -16,6 +17,7 @@ const {
   mockUseAuth: vi.fn(),
   mockUseProductInventoryList: vi.fn(),
   mockUseDeleteProductInventory: vi.fn(),
+  mockUseSetProductInventoryActive: vi.fn(),
   mockInventoryMappingFormDialog: vi.fn((_props: unknown) => null),
   mockUseVariantOptionGroups: vi.fn(),
   mockUseUnassignVariantOptionGroup: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock('@/hooks/use-auth', () => ({
 vi.mock('@/hooks/queries/use-product-inventory', () => ({
   useProductInventoryList: mockUseProductInventoryList,
   useDeleteProductInventory: mockUseDeleteProductInventory,
+  useSetProductInventoryActive: mockUseSetProductInventoryActive,
 }));
 
 vi.mock('@/hooks/queries/use-product-options', () => ({
@@ -76,8 +79,11 @@ const EDITING_MAPPING: ProductInventoryResponse = {
   product_variant_id: 'variant-1',
   ingredient_id: 'ingredient-1',
   ingredient_name: 'Cheese Powder',
+  flavor_id: null,
+  flavor_name: null,
   quantity_required: 10,
   unit: 'g',
+  is_active: true,
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
 };
@@ -100,6 +106,7 @@ function renderVariantCard() {
 beforeEach(() => {
   mockUseVariantOptionGroups.mockReturnValue({ data: [], isLoading: false });
   mockUseUnassignVariantOptionGroup.mockReturnValue({ mutateAsync: vi.fn() });
+  mockUseSetProductInventoryActive.mockReturnValue({ mutateAsync: vi.fn() });
 });
 
 afterEach(() => {
@@ -162,7 +169,8 @@ describe('VariantCard', () => {
 
     fireEvent.click(screen.getByText('Remove'));
 
-    expect(screen.getByText(/can affect whether and how POS stock deduction happens/i)).toBeInTheDocument();
+    expect(screen.getByText(/permanently deletes it/i)).toBeInTheDocument();
+    expect(screen.getByText(/block POS sales/i)).toBeInTheDocument();
     expect(screen.queryByText(/informational stock mapping/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/driven by Recipe/i)).not.toBeInTheDocument();
   });

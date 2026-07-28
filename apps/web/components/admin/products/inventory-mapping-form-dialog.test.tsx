@@ -69,8 +69,11 @@ const EDITING_MAPPING: ProductInventoryResponse = {
   product_variant_id: 'variant-1',
   ingredient_id: 'ingredient-1',
   ingredient_name: 'Cheese Powder',
+  flavor_id: null,
+  flavor_name: null,
   quantity_required: 10,
   unit: 'g',
+  is_active: true,
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
 };
@@ -108,6 +111,7 @@ describe('InventoryMappingFormDialog', () => {
         branch_id: 'branch-1',
         product_variant_id: 'variant-1',
         ingredient_id: 'ingredient-1',
+        flavor_id: null,
         quantity_required: 2.5,
         unit: 'g',
       })

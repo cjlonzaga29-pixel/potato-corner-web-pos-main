@@ -14,6 +14,7 @@ export class ProductInventoryError extends Error {
 export interface CreateProductInventoryData {
   productVariantId: string;
   ingredientId: string;
+  flavorId?: string | null;
   quantityRequired: number;
   unit: string;
 }
@@ -21,6 +22,7 @@ export interface CreateProductInventoryData {
 export interface UpdateProductInventoryData {
   quantityRequired?: number;
   unit?: string;
+  isActive?: boolean;
 }
 
 export interface DeductionLine {

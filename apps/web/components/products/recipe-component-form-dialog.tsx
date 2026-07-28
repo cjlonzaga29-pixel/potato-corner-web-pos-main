@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useInventoryItems } from '@/hooks/queries/use-universal-inventory';
 import { useCreateProductComponent, useUpdateProductComponent } from '@/hooks/queries/use-product-components';
@@ -40,6 +41,7 @@ export function RecipeComponentFormDialog({
 
   const [inventoryItemId, setInventoryItemId] = useState('');
   const [quantityRequired, setQuantityRequired] = useState('');
+  const [isActive, setIsActive] = useState(true);
 
   const createComponent = useCreateProductComponent(productVariantId);
   const updateComponent = useUpdateProductComponent(productVariantId, editingComponent?.id ?? '');
@@ -52,9 +54,11 @@ export function RecipeComponentFormDialog({
     if (editingComponent) {
       setInventoryItemId(editingComponent.inventory_item_id);
       setQuantityRequired(String(editingComponent.quantity_required));
+      setIsActive(editingComponent.is_active);
     } else {
       setInventoryItemId('');
       setQuantityRequired('');
+      setIsActive(true);
     }
   }, [open, editingComponent]);
 
@@ -71,7 +75,7 @@ export function RecipeComponentFormDialog({
   async function handleSubmit() {
     const numericQuantity = Number(quantityRequired);
     if (isEdit) {
-      await updateComponent.mutateAsync({ quantity_required: numericQuantity });
+      await updateComponent.mutateAsync({ quantity_required: numericQuantity, is_active: isActive });
     } else {
       if (!inventoryItemId) return;
       await createComponent.mutateAsync({
@@ -144,6 +148,16 @@ export function RecipeComponentFormDialog({
               </div>
             </div>
           </div>
+
+          {isEdit && (
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div>
+                <Label htmlFor="recipe-component-active">Active</Label>
+                <p className="text-xs text-muted-foreground">Inactive components are excluded from Recipe Readiness and POS deduction.</p>
+              </div>
+              <Switch id="recipe-component-active" checked={isActive} onCheckedChange={setIsActive} />
+            </div>
+          )}
         </div>
 
         <DialogFooter>

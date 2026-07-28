@@ -10,9 +10,14 @@ export const createProductComponentSchema = z.object({
   quantity_required: z.number().positive(),
 });
 
-export const updateProductComponentSchema = z.object({
-  quantity_required: z.number().positive().optional(),
-});
+export const updateProductComponentSchema = z
+  .object({
+    quantity_required: z.number().positive().optional(),
+    is_active: z.boolean().optional(),
+  })
+  .refine((data) => data.quantity_required !== undefined || data.is_active !== undefined, {
+    message: 'At least one of quantity_required or is_active must be provided',
+  });
 
 export const productComponentResponseSchema = z.object({
   id: z.uuid(),

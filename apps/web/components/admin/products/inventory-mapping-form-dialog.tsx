@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { useBranches } from '@/hooks/queries/use-branches';
 import { useIngredients } from '@/hooks/queries/use-inventory';
@@ -23,10 +24,14 @@ interface InventoryMappingFormDialogProps {
 }
 
 /**
- * Create/edit one ProductInventory stock mapping for a variant. Business-neutral
- * by design (Phase 6) — this is additive, informational stock bookkeeping, not
- * the Recipe deduction engine, so it never mentions flavors or recipes. Editing
- * only allows changing quantity/unit, matching updateProductInventorySchema.
+ * Create/edit one ProductInventory stock mapping for a variant (Phase 6 —
+ * the mapping checkout actually reads to unblock a sale). Editing only
+ * allows changing quantity/unit/active-status, matching
+ * updateProductInventorySchema — the item, branch, and flavor scope are
+ * fixed once created (delete + recreate to change those). A flavor-specific
+ * mapping (flavor_id set) overrides the base mapping for the same inventory
+ * item at sale time rather than stacking with it — see product-inventory
+ * .service.ts computeDeduction.
  */
 export function InventoryMappingFormDialog({
   open,
@@ -40,6 +45,8 @@ export function InventoryMappingFormDialog({
 
   const [branchId, setBranchId] = useState('');
   const [ingredientId, setIngredientId] = useState('');
+  const [isFlavorSpecific, setIsFlavorSpecific] = useState(false);
+  const [flavorId, setFlavorId] = useState('');
   const [quantityRequired, setQuantityRequired] = useState('');
   const [unit, setUnit] = useState('');
 
@@ -54,19 +61,25 @@ export function InventoryMappingFormDialog({
     if (!open) return;
     if (editingMapping) {
       setIngredientId(editingMapping.ingredient_id);
+      setIsFlavorSpecific(Boolean(editingMapping.flavor_id));
+      setFlavorId(editingMapping.flavor_id ?? '');
       setQuantityRequired(String(editingMapping.quantity_required));
       setUnit(editingMapping.unit);
       setBranchId(editingBranchId ?? '');
     } else {
       setBranchId('');
       setIngredientId('');
+      setIsFlavorSpecific(false);
+      setFlavorId('');
       setQuantityRequired('');
       setUnit('');
     }
   }, [open, editingMapping, editingBranchId]);
 
-  const usedIngredientIds = new Set(existingMappings.map((mapping) => mapping.ingredient_id));
-  const availableIngredients = (ingredients ?? []).filter((ingredient) => !usedIngredientIds.has(ingredient.id));
+  const selectedFlavorId = isFlavorSpecific ? flavorId || null : null;
+  const isDuplicate = !isEdit
+    ? existingMappings.some((mapping) => mapping.ingredient_id === ingredientId && mapping.flavor_id === selectedFlavorId)
+    : false;
 
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
@@ -78,11 +91,12 @@ export function InventoryMappingFormDialog({
       if (!branchId) return;
       await updateMapping.mutateAsync({ quantity_required: numericQuantity, unit });
     } else {
-      if (!branchId || !ingredientId) return;
+      if (!branchId || !ingredientId || isDuplicate) return;
       await createMapping.mutateAsync({
         branch_id: branchId,
         product_variant_id: variant.id,
         ingredient_id: ingredientId,
+        flavor_id: selectedFlavorId,
         quantity_required: numericQuantity,
         unit,
       });
@@ -92,7 +106,12 @@ export function InventoryMappingFormDialog({
 
   const isValid = isEdit
     ? Boolean(branchId) && quantityRequired !== '' && unit.trim() !== ''
-    : Boolean(branchId) && Boolean(ingredientId) && quantityRequired !== '' && unit.trim() !== '';
+    : Boolean(branchId) &&
+      Boolean(ingredientId) &&
+      quantityRequired !== '' &&
+      unit.trim() !== '' &&
+      !isDuplicate &&
+      (!isFlavorSpecific || Boolean(flavorId));
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -110,6 +129,9 @@ export function InventoryMappingFormDialog({
           {isEdit ? (
             <div className="rounded-md border bg-muted/30 p-3 text-sm">
               <p className="font-medium">{editingMapping?.ingredient_name}</p>
+              {editingMapping?.flavor_name && (
+                <p className="text-xs text-muted-foreground">Flavor-specific: applies only when {editingMapping.flavor_name} is sold</p>
+              )}
             </div>
           ) : (
             <>
@@ -153,10 +175,10 @@ export function InventoryMappingFormDialog({
                     />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableIngredients.length === 0 && branchId && !ingredientsLoading ? (
-                      <div className="px-2 py-1.5 text-sm text-muted-foreground">No available inventory items for this branch</div>
+                    {(ingredients ?? []).length === 0 && branchId && !ingredientsLoading ? (
+                      <div className="px-2 py-1.5 text-sm text-muted-foreground">No inventory items for this branch</div>
                     ) : (
-                      availableIngredients.map((ingredient) => (
+                      (ingredients ?? []).map((ingredient) => (
                         <SelectItem key={ingredient.id} value={ingredient.id}>
                           {ingredient.name}
                         </SelectItem>
@@ -165,6 +187,48 @@ export function InventoryMappingFormDialog({
                   </SelectContent>
                 </Select>
               </div>
+
+              {variant.flavors.length > 0 && (
+                <div className="space-y-2 rounded-md border p-3">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="inventory-mapping-flavor-specific"
+                      checked={isFlavorSpecific}
+                      onCheckedChange={(checked) => {
+                        setIsFlavorSpecific(checked === true);
+                        if (checked !== true) setFlavorId('');
+                      }}
+                    />
+                    <Label htmlFor="inventory-mapping-flavor-specific" className="cursor-pointer font-normal">
+                      Only applies to a specific flavor
+                    </Label>
+                  </div>
+                  {isFlavorSpecific && (
+                    <Select value={flavorId} onValueChange={setFlavorId}>
+                      <SelectTrigger id="inventory-mapping-flavor">
+                        <SelectValue placeholder="Select a flavor" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {variant.flavors.map((flavor) => (
+                          <SelectItem key={flavor.flavor_id} value={flavor.flavor_id}>
+                            {flavor.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    A flavor-specific mapping overrides (not adds to) a base mapping for the same inventory item when that flavor is
+                    sold.
+                  </p>
+                </div>
+              )}
+
+              {isDuplicate && (
+                <p className="text-xs text-destructive">
+                  A mapping for this inventory item{isFlavorSpecific ? ' and flavor' : ''} already exists for this variant.
+                </p>
+              )}
             </>
           )}
 

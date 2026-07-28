@@ -2,9 +2,10 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { CreateProductInventoryData, UpdateProductInventoryData } from './product-inventory.types.js';
 
-/** Joined for display in Product Management's business-neutral inventory-mapping UI (Phase 6) — same shape as recipesRepository's ingredient include. */
+/** Joined for display in Product Management's business-neutral inventory-mapping UI (Phase 6) — same shape as recipesRepository's ingredient include. flavor is included so the UI can show which mappings are flavor-scoped (flavorId set) vs base (flavorId null). */
 const productInventoryInclude = {
   ingredient: { select: { id: true, name: true } },
+  flavor: { select: { id: true, name: true } },
 } satisfies Prisma.ProductInventoryInclude;
 
 /** Ingredient fields needed for future inventory deduction (quantity math + stock check). Shape aligned with recipesRepository's recipeInclude. */
@@ -93,11 +94,17 @@ export const productInventoryRepository = {
         branchId: data.branchId,
         productVariantId: data.productVariantId,
         ingredientId: data.ingredientId,
+        flavorId: data.flavorId ?? null,
         quantityRequired: data.quantityRequired,
         unit: data.unit,
       },
       include: productInventoryInclude,
     });
+  },
+
+  /** Existence check for create — a flavor_id that doesn't resolve to a real Flavor row must not pass through to the FK insert as an opaque P2003 failure. */
+  findFlavorById(flavorId: string) {
+    return prisma.flavor.findUnique({ where: { id: flavorId }, select: { id: true, name: true } });
   },
 
   /**
@@ -114,6 +121,7 @@ export const productInventoryRepository = {
       data: {
         ...(data.quantityRequired !== undefined && { quantityRequired: data.quantityRequired }),
         ...(data.unit !== undefined && { unit: data.unit }),
+        ...(data.isActive !== undefined && { isActive: data.isActive }),
         version: { increment: 1 },
       },
     });

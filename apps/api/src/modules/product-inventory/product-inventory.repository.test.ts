@@ -16,6 +16,9 @@ vi.mock('../../lib/prisma.js', () => {
     ingredient: {
       findFirst: vi.fn(),
     },
+    flavor: {
+      findUnique: vi.fn(),
+    },
   };
   return { prisma: prismaMock };
 });
@@ -36,7 +39,7 @@ describe('productInventoryRepository.findByVariant', () => {
     expect(prisma.productInventory.findMany).toHaveBeenCalledWith({
       where: { branchId: 'branch-1', productVariantId: 'variant-1', deletedAt: null },
       orderBy: { createdAt: 'asc' },
-      include: { ingredient: { select: { id: true, name: true } } },
+      include: { ingredient: { select: { id: true, name: true } }, flavor: { select: { id: true, name: true } } },
     });
   });
 
@@ -199,9 +202,54 @@ describe('productInventoryRepository.create', () => {
     });
 
     expect(prisma.productInventory.create).toHaveBeenCalledWith({
-      data: { branchId: 'branch-1', productVariantId: 'variant-1', ingredientId: 'ingredient-1', quantityRequired: 2.5, unit: 'g' },
-      include: { ingredient: { select: { id: true, name: true } } },
+      data: {
+        branchId: 'branch-1',
+        productVariantId: 'variant-1',
+        ingredientId: 'ingredient-1',
+        flavorId: null,
+        quantityRequired: 2.5,
+        unit: 'g',
+      },
+      include: { ingredient: { select: { id: true, name: true } }, flavor: { select: { id: true, name: true } } },
     });
+  });
+});
+
+describe('productInventoryRepository.create with flavorId', () => {
+  it('passes the given flavorId through to the write', async () => {
+    vi.mocked(prisma.productInventory.create).mockResolvedValue({ id: 'row-1' } as never);
+
+    await productInventoryRepository.create({
+      branchId: 'branch-1',
+      productVariantId: 'variant-1',
+      ingredientId: 'ingredient-1',
+      flavorId: 'flavor-1',
+      quantityRequired: 2.5,
+      unit: 'g',
+    });
+
+    expect(prisma.productInventory.create).toHaveBeenCalledWith({
+      data: {
+        branchId: 'branch-1',
+        productVariantId: 'variant-1',
+        ingredientId: 'ingredient-1',
+        flavorId: 'flavor-1',
+        quantityRequired: 2.5,
+        unit: 'g',
+      },
+      include: { ingredient: { select: { id: true, name: true } }, flavor: { select: { id: true, name: true } } },
+    });
+  });
+});
+
+describe('productInventoryRepository.findFlavorById', () => {
+  it('looks up a Flavor by id, selecting only id and name', async () => {
+    vi.mocked(prisma.flavor.findUnique).mockResolvedValue({ id: 'flavor-1', name: 'Sour Cream' } as never);
+
+    const result = await productInventoryRepository.findFlavorById('flavor-1');
+
+    expect(prisma.flavor.findUnique).toHaveBeenCalledWith({ where: { id: 'flavor-1' }, select: { id: true, name: true } });
+    expect(result).toEqual({ id: 'flavor-1', name: 'Sour Cream' });
   });
 });
 
@@ -213,7 +261,7 @@ describe('productInventoryRepository.findById', () => {
 
     expect(prisma.productInventory.findFirst).toHaveBeenCalledWith({
       where: { id: 'row-1', deletedAt: null, branchId: { in: ['branch-1', 'branch-2'] } },
-      include: { ingredient: { select: { id: true, name: true } } },
+      include: { ingredient: { select: { id: true, name: true } }, flavor: { select: { id: true, name: true } } },
     });
   });
 
@@ -224,7 +272,7 @@ describe('productInventoryRepository.findById', () => {
 
     expect(prisma.productInventory.findFirst).toHaveBeenCalledWith({
       where: { id: 'row-1', deletedAt: null },
-      include: { ingredient: { select: { id: true, name: true } } },
+      include: { ingredient: { select: { id: true, name: true } }, flavor: { select: { id: true, name: true } } },
     });
   });
 
@@ -281,6 +329,17 @@ describe('productInventoryRepository.update', () => {
       expect.objectContaining({ where: expect.objectContaining({ deletedAt: null }) }),
     );
     expect(result.count).toBe(0);
+  });
+
+  it('includes isActive in the write data when provided, for deactivate/activate', async () => {
+    vi.mocked(prisma.productInventory.updateMany).mockResolvedValue({ count: 1 });
+
+    await productInventoryRepository.update('row-1', { isActive: false }, ['branch-1']);
+
+    expect(prisma.productInventory.updateMany).toHaveBeenCalledWith({
+      where: { id: 'row-1', deletedAt: null, branchId: { in: ['branch-1'] } },
+      data: { isActive: false, version: { increment: 1 } },
+    });
   });
 
   it('does not add isActive to the write condition — an inactive but non-deleted row can still be matched', async () => {

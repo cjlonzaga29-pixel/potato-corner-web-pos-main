@@ -56,6 +56,7 @@ export const productComponentsRepository = {
       where: { id },
       data: {
         ...(data.quantityRequired !== undefined && { quantityRequired: data.quantityRequired }),
+        ...(data.isActive !== undefined && { isActive: data.isActive }),
         version: { increment: 1 },
       },
       include: productComponentInclude,

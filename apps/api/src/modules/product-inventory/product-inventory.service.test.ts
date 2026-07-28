@@ -7,6 +7,7 @@ vi.mock('./product-inventory.repository.js', () => ({
     findById: vi.fn(),
     findByVariantAndIngredient: vi.fn(),
     findIngredientForBranch: vi.fn(),
+    findFlavorById: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
@@ -45,11 +46,14 @@ function mappingRow(overrides: Partial<Record<string, unknown>> = {}) {
     id: 'row-1',
     productVariantId: 'variant-1',
     ingredientId: 'ingredient-1',
+    flavorId: null,
     quantityRequired: decimal(2.5),
     unit: 'g',
+    isActive: true,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     ingredient: { name: 'Cheese Powder' },
+    flavor: null,
     ...overrides,
   };
 }
@@ -70,8 +74,11 @@ describe('productInventoryService.listByVariant', () => {
         product_variant_id: 'variant-1',
         ingredient_id: 'ingredient-1',
         ingredient_name: 'Cheese Powder',
+        flavor_id: null,
+        flavor_name: null,
         quantity_required: 2.5,
         unit: 'g',
+        is_active: true,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       },
@@ -131,7 +138,7 @@ describe('productInventoryService.createMapping', () => {
       code: 'PRODUCT_INVENTORY_MAPPING_EXISTS',
       statusCode: 409,
     });
-    expect(productInventoryRepository.findByVariantAndIngredient).toHaveBeenCalledWith('branch-1', 'variant-1', 'ingredient-1');
+    expect(productInventoryRepository.findByVariantAndIngredient).toHaveBeenCalledWith('branch-1', 'variant-1', 'ingredient-1', null);
     expect(productInventoryRepository.create).not.toHaveBeenCalled();
   });
 
@@ -179,11 +186,12 @@ describe('productInventoryService.createMapping', () => {
     const result = await productInventoryService.createMapping(input, ['branch-1'], ACTOR, null);
 
     expect(result.quantity_required).toBe(2.5);
-    expect(productInventoryRepository.findByVariantAndIngredient).toHaveBeenCalledWith('branch-1', 'variant-1', 'ingredient-1');
+    expect(productInventoryRepository.findByVariantAndIngredient).toHaveBeenCalledWith('branch-1', 'variant-1', 'ingredient-1', null);
     expect(productInventoryRepository.create).toHaveBeenCalledWith({
       branchId: 'branch-1',
       productVariantId: 'variant-1',
       ingredientId: 'ingredient-1',
+      flavorId: null,
       quantityRequired: 2.5,
       unit: 'g',
     });
@@ -208,6 +216,53 @@ describe('productInventoryService.createMapping', () => {
     vi.mocked(productInventoryRepository.create).mockResolvedValue(mappingRow() as never);
 
     await expect(productInventoryService.createMapping(input, 'all', ACTOR, null)).resolves.toMatchObject({ id: 'row-1' });
+  });
+
+  it('rejects with FLAVOR_NOT_FOUND when flavor_id does not resolve to a real Flavor row', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
+    vi.mocked(productInventoryRepository.findIngredientForBranch).mockResolvedValue({ id: 'ingredient-1' } as never);
+    vi.mocked(productInventoryRepository.findFlavorById).mockResolvedValue(null);
+
+    await expect(
+      productInventoryService.createMapping({ ...input, flavor_id: 'flavor-1' }, ['branch-1'], ACTOR, null),
+    ).rejects.toMatchObject({ code: 'FLAVOR_NOT_FOUND', statusCode: 404 });
+    expect(productInventoryRepository.findByVariantAndIngredient).not.toHaveBeenCalled();
+    expect(productInventoryRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a flavor-scoped mapping, checking duplicates and creating with the given flavor_id', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
+    vi.mocked(productInventoryRepository.findIngredientForBranch).mockResolvedValue({ id: 'ingredient-1' } as never);
+    vi.mocked(productInventoryRepository.findFlavorById).mockResolvedValue({ id: 'flavor-1', name: 'Sour Cream' } as never);
+    vi.mocked(productInventoryRepository.findByVariantAndIngredient).mockResolvedValue(null);
+    vi.mocked(productInventoryRepository.create).mockResolvedValue(mappingRow({ flavorId: 'flavor-1', flavor: { name: 'Sour Cream' } }) as never);
+
+    const result = await productInventoryService.createMapping({ ...input, flavor_id: 'flavor-1' }, ['branch-1'], ACTOR, null);
+
+    expect(result.flavor_id).toBe('flavor-1');
+    expect(result.flavor_name).toBe('Sour Cream');
+    expect(productInventoryRepository.findByVariantAndIngredient).toHaveBeenCalledWith('branch-1', 'variant-1', 'ingredient-1', 'flavor-1');
+    expect(productInventoryRepository.create).toHaveBeenCalledWith({
+      branchId: 'branch-1',
+      productVariantId: 'variant-1',
+      ingredientId: 'ingredient-1',
+      flavorId: 'flavor-1',
+      quantityRequired: 2.5,
+      unit: 'g',
+    });
+  });
+
+  it('does not treat a base mapping and a flavor-scoped mapping for the same ingredient as duplicates of each other', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
+    vi.mocked(productInventoryRepository.findIngredientForBranch).mockResolvedValue({ id: 'ingredient-1' } as never);
+    vi.mocked(productInventoryRepository.findFlavorById).mockResolvedValue({ id: 'flavor-1', name: 'Sour Cream' } as never);
+    // findByVariantAndIngredient is scoped to the given flavorId, so a base row existing elsewhere never surfaces here.
+    vi.mocked(productInventoryRepository.findByVariantAndIngredient).mockResolvedValue(null);
+    vi.mocked(productInventoryRepository.create).mockResolvedValue(mappingRow({ flavorId: 'flavor-1', flavor: { name: 'Sour Cream' } }) as never);
+
+    await expect(
+      productInventoryService.createMapping({ ...input, flavor_id: 'flavor-1' }, ['branch-1'], ACTOR, null),
+    ).resolves.toMatchObject({ id: 'row-1' });
   });
 });
 
@@ -275,6 +330,33 @@ describe('productInventoryService.updateMapping', () => {
     expect(productInventoryRepository.update).toHaveBeenCalledWith('row-1', { quantityRequired: undefined, unit: 'kg' }, ['branch-1']);
     expect(result.unit).toBe('kg');
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_INVENTORY_UPDATED' }));
+  });
+
+  it('deactivates a mapping via is_active: false without touching quantity/unit', async () => {
+    vi.mocked(productInventoryRepository.findById)
+      .mockResolvedValueOnce(mappingRow() as never)
+      .mockResolvedValueOnce(mappingRow({ isActive: false }) as never);
+    vi.mocked(productInventoryRepository.update).mockResolvedValue({ count: 1 });
+
+    const result = await productInventoryService.updateMapping('row-1', { is_active: false }, ['branch-1'], ACTOR, null);
+
+    expect(productInventoryRepository.update).toHaveBeenCalledWith(
+      'row-1',
+      { quantityRequired: undefined, unit: undefined, isActive: false },
+      ['branch-1'],
+    );
+    expect(result.is_active).toBe(false);
+  });
+
+  it('reactivates a mapping via is_active: true', async () => {
+    vi.mocked(productInventoryRepository.findById)
+      .mockResolvedValueOnce(mappingRow({ isActive: false }) as never)
+      .mockResolvedValueOnce(mappingRow({ isActive: true }) as never);
+    vi.mocked(productInventoryRepository.update).mockResolvedValue({ count: 1 });
+
+    const result = await productInventoryService.updateMapping('row-1', { is_active: true }, ['branch-1'], ACTOR, null);
+
+    expect(result.is_active).toBe(true);
   });
 
   it('succeeds for a supervisor with multiple allowed branches acting on a mapping in any one of them', async () => {

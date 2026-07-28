@@ -72,6 +72,26 @@ export function useUpdateProductInventory(branchId: string, productVariantId: st
   });
 }
 
+/** Toggles is_active for a mapping without touching quantity/unit — distinct from delete, which permanently removes the row (see useDeleteProductInventory). Takes the mapping id per-call so one hook instance can drive Deactivate/Activate across a whole list. */
+export function useSetProductInventoryActive(branchId: string, productVariantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ mappingId, is_active }: { mappingId: string; is_active: boolean }) => {
+      const response = await apiClient<ProductInventoryResponse>(`/api/product-inventory/${mappingId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active }),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update inventory item status'));
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      invalidateProductInventory(queryClient, branchId, productVariantId);
+      toast.success(variables.is_active ? 'Inventory item activated' : 'Inventory item deactivated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useDeleteProductInventory(branchId: string, productVariantId: string) {
   const queryClient = useQueryClient();
   return useMutation({

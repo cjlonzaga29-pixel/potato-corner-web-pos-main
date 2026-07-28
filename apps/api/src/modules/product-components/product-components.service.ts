@@ -85,7 +85,7 @@ export const productComponentsService = {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
 
-    const component = await repo.update(id, { quantityRequired: data.quantity_required });
+    const component = await repo.update(id, { quantityRequired: data.quantity_required, isActive: data.is_active });
     const response = toResponse(component);
 
     await recordAuditLog({

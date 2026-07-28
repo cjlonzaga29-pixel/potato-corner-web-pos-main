@@ -8,6 +8,7 @@ vi.mock('./product-inventory.repository.js', () => ({
     findByVariantAndIngredient: vi.fn(),
     findIngredientForBranch: vi.fn(),
     findFlavorById: vi.fn(),
+    findActiveVariantFlavorLink: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
@@ -230,10 +231,24 @@ describe('productInventoryService.createMapping', () => {
     expect(productInventoryRepository.create).not.toHaveBeenCalled();
   });
 
+  it('rejects with PRODUCT_INVENTORY_FLAVOR_NOT_LINKED when the flavor is not actively linked to this variant', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
+    vi.mocked(productInventoryRepository.findIngredientForBranch).mockResolvedValue({ id: 'ingredient-1' } as never);
+    vi.mocked(productInventoryRepository.findFlavorById).mockResolvedValue({ id: 'flavor-1', name: 'Sour Cream' } as never);
+    vi.mocked(productInventoryRepository.findActiveVariantFlavorLink).mockResolvedValue(null);
+
+    await expect(
+      productInventoryService.createMapping({ ...input, flavor_id: 'flavor-1' }, ['branch-1'], ACTOR, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_INVENTORY_FLAVOR_NOT_LINKED', statusCode: 422 });
+    expect(productInventoryRepository.findByVariantAndIngredient).not.toHaveBeenCalled();
+    expect(productInventoryRepository.create).not.toHaveBeenCalled();
+  });
+
   it('creates a flavor-scoped mapping, checking duplicates and creating with the given flavor_id', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
     vi.mocked(productInventoryRepository.findIngredientForBranch).mockResolvedValue({ id: 'ingredient-1' } as never);
     vi.mocked(productInventoryRepository.findFlavorById).mockResolvedValue({ id: 'flavor-1', name: 'Sour Cream' } as never);
+    vi.mocked(productInventoryRepository.findActiveVariantFlavorLink).mockResolvedValue({ id: 'link-1' } as never);
     vi.mocked(productInventoryRepository.findByVariantAndIngredient).mockResolvedValue(null);
     vi.mocked(productInventoryRepository.create).mockResolvedValue(mappingRow({ flavorId: 'flavor-1', flavor: { name: 'Sour Cream' } }) as never);
 
@@ -256,6 +271,7 @@ describe('productInventoryService.createMapping', () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1' } as never);
     vi.mocked(productInventoryRepository.findIngredientForBranch).mockResolvedValue({ id: 'ingredient-1' } as never);
     vi.mocked(productInventoryRepository.findFlavorById).mockResolvedValue({ id: 'flavor-1', name: 'Sour Cream' } as never);
+    vi.mocked(productInventoryRepository.findActiveVariantFlavorLink).mockResolvedValue({ id: 'link-1' } as never);
     // findByVariantAndIngredient is scoped to the given flavorId, so a base row existing elsewhere never surfaces here.
     vi.mocked(productInventoryRepository.findByVariantAndIngredient).mockResolvedValue(null);
     vi.mocked(productInventoryRepository.create).mockResolvedValue(mappingRow({ flavorId: 'flavor-1', flavor: { name: 'Sour Cream' } }) as never);

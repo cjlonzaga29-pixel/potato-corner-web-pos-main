@@ -1,7 +1,7 @@
 'use client';
 
 import type { ColumnDef } from '@tanstack/react-table';
-import type { PosCatalogProduct } from '@potato-corner/shared';
+import type { PosCatalogProduct, PosReadinessCode } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -19,12 +19,23 @@ interface CatalogRow {
   price: number;
   flavorCount: number;
   optionGroupCount: number;
+  liveReady: boolean;
+  readinessCode: PosReadinessCode;
 }
 
+const READINESS_LABELS: Record<PosReadinessCode, string> = {
+  READY: 'Ready',
+  MISSING_BASE_MAPPING: 'Missing Base Mapping',
+  MISSING_FLAVOR_MAPPING: 'Missing Flavor Mapping',
+  NOT_AVAILABLE_IN_BRANCH: 'Not Available',
+  INACTIVE: 'Inactive',
+};
+
 // The catalog endpoint (same one the POS Terminal charges against) only
-// ever returns variants currently purchasable at this branch — out-of-stock
-// or disabled ones are already filtered out server-side, so there is no
-// separate availability flag to show here.
+// ever returns variants that are active, branch-available product/variant
+// combinations — but that does NOT mean sellable: readiness (below) reflects
+// whether ProductInventory has actually been provisioned, so a row here can
+// still be non-Ready.
 function flattenCatalog(products: PosCatalogProduct[]): CatalogRow[] {
   return products.flatMap((product) =>
     product.variants.map((variant) => ({
@@ -37,6 +48,8 @@ function flattenCatalog(products: PosCatalogProduct[]): CatalogRow[] {
       price: variant.price,
       flavorCount: variant.flavors.length,
       optionGroupCount: variant.option_groups.length,
+      liveReady: variant.live_ready,
+      readinessCode: variant.readiness_code,
     })),
   );
 }
@@ -56,6 +69,13 @@ const columns: ColumnDef<CatalogRow>[] = [
     id: 'optionGroupCount',
     header: 'Options',
     cell: ({ row }) => (row.original.optionGroupCount > 0 ? <Badge variant="secondary">{row.original.optionGroupCount} groups</Badge> : '—'),
+  },
+  {
+    id: 'liveReady',
+    header: 'Live POS Ready',
+    cell: ({ row }) => (
+      <Badge variant={row.original.liveReady ? 'active' : 'critical'}>{READINESS_LABELS[row.original.readinessCode]}</Badge>
+    ),
   },
 ];
 

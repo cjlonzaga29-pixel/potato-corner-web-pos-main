@@ -89,6 +89,9 @@ function slotVariant(overrides: Partial<PosCatalogProduct['variants'][number]> =
     size_label: 'Large',
     price: 100,
     vatable_cap_amount: null,
+    live_ready: true,
+    readiness_code: 'READY',
+    missing_flavor_ids: [],
     flavors: [
       { flavor_id: 'flavor-1', name: 'Cheese', color_hex: null, price_premium: 0 },
       { flavor_id: 'flavor-2', name: 'BBQ', color_hex: null, price_premium: 0 },
@@ -131,6 +134,62 @@ function catalogWith(variants: PosCatalogProduct['variants'][number][]): { produ
     products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', image_url: null, variants }],
   };
 }
+
+describe('TerminalPage — live POS readiness', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockCartItems.mockReturnValue([]);
+  });
+
+  afterEach(() => cleanup());
+
+  it('disables the card and shows "Inventory setup incomplete." when missing a base mapping, blocking add-to-cart', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        slotVariant({ flavors: [], flavor_slots: [], live_ready: false, readiness_code: 'MISSING_BASE_MAPPING', missing_flavor_ids: [] }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Inventory setup incomplete.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    expect(mockAddItem).not.toHaveBeenCalled();
+  });
+
+  it('shows "Flavor inventory mapping incomplete." when the readiness code is MISSING_FLAVOR_MAPPING, blocking add-to-cart', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        slotVariant({
+          flavors: [],
+          flavor_slots: [],
+          live_ready: false,
+          readiness_code: 'MISSING_FLAVOR_MAPPING',
+          missing_flavor_ids: ['flavor-1'],
+        }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Flavor inventory mapping incomplete.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    expect(mockAddItem).not.toHaveBeenCalled();
+  });
+
+  it('shows no readiness message and allows add-to-cart when live_ready is true', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [] })]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    expect(screen.queryByText('Inventory setup incomplete.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Flavor inventory mapping incomplete.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+});
 
 describe('TerminalPage — flavor slot selection', () => {
   beforeEach(() => {

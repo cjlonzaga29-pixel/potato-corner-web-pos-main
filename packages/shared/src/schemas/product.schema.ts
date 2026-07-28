@@ -285,12 +285,26 @@ export const posCatalogFlavorSlotSchema = z.object({
   snack_options: z.array(posCatalogSnackOptionSchema),
 });
 
+// Live POS readiness (branch inventory mapping completeness) — computed
+// server-side from ProductInventory in productsService.getPosCatalog.
+export const POS_READINESS_CODES = [
+  'READY',
+  'MISSING_BASE_MAPPING',
+  'MISSING_FLAVOR_MAPPING',
+  'NOT_AVAILABLE_IN_BRANCH',
+  'INACTIVE',
+] as const;
+export type PosReadinessCode = (typeof POS_READINESS_CODES)[number];
+
 export const posCatalogVariantSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   size_label: z.string(),
   price: z.number(),
   vatable_cap_amount: z.number().nullable(),
+  live_ready: z.boolean(),
+  readiness_code: z.enum(POS_READINESS_CODES),
+  missing_flavor_ids: z.array(z.uuid()),
   flavors: z.array(posCatalogFlavorSchema),
   flavor_slots: z.array(posCatalogFlavorSlotSchema),
   option_groups: z.array(posCatalogOptionGroupSchema),

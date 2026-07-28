@@ -149,7 +149,14 @@ export default function TerminalPage() {
     return map;
   }, [catalog]);
 
+  function readinessMessage(variant: PosCatalogProduct['variants'][number]): string | null {
+    if (variant.readiness_code === 'MISSING_FLAVOR_MAPPING') return 'Flavor inventory mapping incomplete.';
+    if (!variant.live_ready) return 'Inventory setup incomplete.';
+    return null;
+  }
+
   function handleProductTap(product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) {
+    if (!variant.live_ready) return;
     if (variant.flavor_slots.length > 0) {
       setSlotPrompt({ product, variant, selections: {} });
       return;
@@ -333,25 +340,32 @@ export default function TerminalPage() {
 
         <div className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-3 lg:grid-cols-4">
           {visibleProducts.map((product) =>
-            product.variants.map((variant) => (
-              <Card
-                key={variant.id}
-                className="flex h-full flex-col cursor-pointer touch-target transition hover:border-primary"
-                onClick={() => handleProductTap(product, variant)}
-              >
-                <CardContent className="flex h-full flex-col gap-1 p-3">
-                  {product.image_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={product.image_url} alt={product.name} className="mb-1 h-20 w-full rounded object-cover" />
-                  ) : (
-                    <div className="mb-1 h-20 w-full rounded bg-muted" />
-                  )}
-                  <p className="line-clamp-2 min-h-[2.5rem] text-sm font-medium leading-tight">{product.name}</p>
-                  <p className="text-xs text-muted-foreground">{variant.name}</p>
-                  <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
-                </CardContent>
-              </Card>
-            )),
+            product.variants.map((variant) => {
+              const message = readinessMessage(variant);
+              return (
+                <Card
+                  key={variant.id}
+                  aria-disabled={!variant.live_ready}
+                  className={`flex h-full flex-col touch-target transition ${
+                    variant.live_ready ? 'cursor-pointer hover:border-primary' : 'cursor-not-allowed opacity-60'
+                  }`}
+                  onClick={() => handleProductTap(product, variant)}
+                >
+                  <CardContent className="flex h-full flex-col gap-1 p-3">
+                    {product.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={product.image_url} alt={product.name} className="mb-1 h-20 w-full rounded object-cover" />
+                    ) : (
+                      <div className="mb-1 h-20 w-full rounded bg-muted" />
+                    )}
+                    <p className="line-clamp-2 min-h-[2.5rem] text-sm font-medium leading-tight">{product.name}</p>
+                    <p className="text-xs text-muted-foreground">{variant.name}</p>
+                    <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
+                    {message && <p className="text-xs font-medium text-destructive">{message}</p>}
+                  </CardContent>
+                </Card>
+              );
+            }),
           )}
           {visibleProducts.length === 0 && (
             <p className="col-span-full p-6 text-center text-sm text-muted-foreground">

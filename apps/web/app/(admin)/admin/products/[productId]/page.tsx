@@ -20,6 +20,7 @@ import {
   useDeleteVariant,
   useDeleteProductImage,
 } from '@/hooks/queries/use-products';
+import { BranchSelector } from '@/components/admin/branch-selector';
 import { BranchAvailabilityPanel } from '@/components/products/branch-availability-panel';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
@@ -40,7 +41,8 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
   const { productId } = use(params);
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
   const deleteProduct = useDeleteProduct();
-  const { selectedBranchId } = useSelectedBranch();
+  const { selectedBranchId, availableBranches } = useSelectedBranch();
+  const selectedBranchName = availableBranches.find((b) => b.id === selectedBranchId)?.name ?? null;
 
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
@@ -112,7 +114,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
         </TabsContent>
 
         <TabsContent value="variants" className="space-y-4">
-          <VariantsTab product={product} selectedBranchId={selectedBranchId} />
+          <VariantsTab product={product} selectedBranchId={selectedBranchId} selectedBranchName={selectedBranchName} />
         </TabsContent>
 
         <TabsContent value="availability" className="space-y-4">
@@ -207,7 +209,15 @@ function OverviewTab({ product }: { product: ProductDetailResponse }) {
   );
 }
 
-function VariantsTab({ product, selectedBranchId }: { product: ProductDetailResponse; selectedBranchId: string }) {
+function VariantsTab({
+  product,
+  selectedBranchId,
+  selectedBranchName,
+}: {
+  product: ProductDetailResponse;
+  selectedBranchId: string;
+  selectedBranchName: string | null;
+}) {
   const [variantDialog, setVariantDialog] = useState<{ open: boolean; variant?: ProductVariantResponse }>({ open: false });
   const [linkFlavorFor, setLinkFlavorFor] = useState<ProductVariantResponse | null>(null);
   const [editFlavor, setEditFlavor] = useState<{ variant: ProductVariantResponse; flavor: ProductVariantResponse['flavors'][number] } | null>(
@@ -222,7 +232,10 @@ function VariantsTab({ product, selectedBranchId }: { product: ProductDetailResp
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <BranchSelector />
+        </div>
         <Button size="sm" onClick={() => setVariantDialog({ open: true })} disabled={isArchived}>
           <Plus className="mr-2 h-4 w-4" />
           Add Variant
@@ -238,6 +251,7 @@ function VariantsTab({ product, selectedBranchId }: { product: ProductDetailResp
               key={variant.id}
               variant={variant}
               branchId={inventoryBranchId}
+              branchName={inventoryBranchId ? selectedBranchName : null}
               onEditVariant={() => setVariantDialog({ open: true, variant })}
               onLinkFlavor={() => setLinkFlavorFor(variant)}
               onEditFlavorPricing={(flavor) => setEditFlavor({ variant, flavor })}

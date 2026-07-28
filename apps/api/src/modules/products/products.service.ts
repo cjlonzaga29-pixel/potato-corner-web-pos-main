@@ -1211,6 +1211,13 @@ export const productsService = {
    * Phase 10 POS terminal catalog — a lean, staff-accessible read model
    * distinct from getAllProducts (admin/supervisor only), so the terminal
    * never computes pricing from a client-trusted base_price.
+   *
+   * Live POS readiness: findCatalogForBranch already scopes to active
+   * products/variants available at this branch and to flavor links that are
+   * themselves active+available, so the only remaining readiness gap this
+   * computes is whether ProductInventory has been provisioned — the actual
+   * gate transactions.service.ts (assertProductInventoryExists) enforces at
+   * checkout. One query across every variant on this branch avoids N+1.
    */
   async getPosCatalog(branchId: string) {
     const [products, disabledFlavorIds] = await Promise.all([
@@ -1219,6 +1226,25 @@ export const productsService = {
     ]);
     const disabledFlavors = new Set(disabledFlavorIds);
 
+    const variantIds = products.flatMap((product) => product.variants.map((variant) => variant.id));
+    const mappings = variantIds.length > 0 ? await productInventoryRepository.findActiveMappingsForVariants(branchId, variantIds) : [];
+
+    const baseMappedVariantIds = new Set(mappings.filter((m) => m.flavorId === null).map((m) => m.productVariantId));
+    const flavorMappedKeys = new Set(mappings.filter((m) => m.flavorId !== null).map((m) => `${m.productVariantId}:${m.flavorId}`));
+
+    function computeReadiness(variant: { id: string; variantFlavors: { flavorId: string }[] }) {
+      if (!baseMappedVariantIds.has(variant.id)) {
+        return { live_ready: false, readiness_code: 'MISSING_BASE_MAPPING' as const, missing_flavor_ids: [] as string[] };
+      }
+      const missingFlavorIds = variant.variantFlavors
+        .map((vf) => vf.flavorId)
+        .filter((flavorId) => !flavorMappedKeys.has(`${variant.id}:${flavorId}`));
+      if (missingFlavorIds.length > 0) {
+        return { live_ready: false, readiness_code: 'MISSING_FLAVOR_MAPPING' as const, missing_flavor_ids: missingFlavorIds };
+      }
+      return { live_ready: true, readiness_code: 'READY' as const, missing_flavor_ids: [] as string[] };
+    }
+
     const catalogProducts = products.map((product) => {
       const variants = product.variants.map((variant) => ({
         id: variant.id,
@@ -1226,6 +1252,7 @@ export const productsService = {
         size_label: variant.sizeLabel,
         price: variant.basePrice.toNumber(),
         vatable_cap_amount: variant.vatableCapAmount?.toNumber() ?? null,
+        ...computeReadiness(variant),
         flavors: variant.variantFlavors
           .filter((vf) => !disabledFlavors.has(vf.flavorId))
           .map((vf) => ({

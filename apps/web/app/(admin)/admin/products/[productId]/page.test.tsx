@@ -62,7 +62,7 @@ vi.mock('@/hooks/queries/use-products', () => ({
 }));
 
 vi.mock('@/components/admin/products/variant-card', () => ({
-  VariantCard: (props: { variant: ProductVariantResponse; branchId: string }) => {
+  VariantCard: (props: { variant: ProductVariantResponse; branchId: string | null; branchName?: string | null }) => {
     mockVariantCard(props);
     return <div data-testid={`variant-card-${props.variant.id}`}>{props.variant.name}</div>;
   },
@@ -130,7 +130,13 @@ async function renderPage() {
 
 beforeEach(() => {
   mockUseProduct.mockReturnValue({ data: product(), isLoading: false, isError: false, refetch: vi.fn() });
-  mockUseSelectedBranch.mockReturnValue({ selectedBranchId: 'branch-1' });
+  mockUseSelectedBranch.mockReturnValue({
+    selectedBranchId: 'branch-1',
+    availableBranches: [{ id: 'branch-1', name: 'Downtown', code: 'DT' }],
+    setSelectedBranch: vi.fn(),
+    allLabel: 'All Branches',
+    isSingleBranchUser: true,
+  });
 });
 
 afterEach(() => {
@@ -147,13 +153,27 @@ describe('ProductDetailPage', () => {
   });
 
   it('still renders VariantCard with a null branchId when no branch is selected', async () => {
-    mockUseSelectedBranch.mockReturnValue({ selectedBranchId: 'all' });
+    mockUseSelectedBranch.mockReturnValue({
+      selectedBranchId: 'all',
+      availableBranches: [{ id: 'branch-1', name: 'Downtown', code: 'DT' }],
+      setSelectedBranch: vi.fn(),
+      allLabel: 'All Branches',
+      isSingleBranchUser: true,
+    });
     await renderPage();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Variants & Flavors' }));
 
     expect(mockVariantCard).toHaveBeenCalledWith(expect.objectContaining({ branchId: null }));
     expect(screen.getByText('Large Cup')).toBeInTheDocument();
+  });
+
+  it('renders the branch selector on the Variants & Flavors tab and passes the selected branch name to VariantCard', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: 'Variants & Flavors' }));
+
+    expect(screen.getByText('Downtown')).toBeInTheDocument();
+    expect(mockVariantCard).toHaveBeenCalledWith(expect.objectContaining({ branchName: 'Downtown' }));
   });
 
   it('renders existing product and variant info unchanged', async () => {

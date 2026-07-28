@@ -19,13 +19,22 @@ import { formatCurrency, cn } from '@/lib/utils';
 interface VariantCardProps {
   variant: ProductVariantResponse;
   branchId: string | null;
+  branchName?: string | null;
   onEditVariant: () => void;
   onLinkFlavor: () => void;
   onEditFlavorPricing: (flavor: ProductVariantResponse['flavors'][number]) => void;
   onDeleteVariant: () => void;
 }
 
-export function VariantCard({ variant, branchId, onEditVariant, onLinkFlavor, onEditFlavorPricing, onDeleteVariant }: VariantCardProps) {
+export function VariantCard({
+  variant,
+  branchId,
+  branchName,
+  onEditVariant,
+  onLinkFlavor,
+  onEditFlavorPricing,
+  onDeleteVariant,
+}: VariantCardProps) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
@@ -51,7 +60,7 @@ export function VariantCard({ variant, branchId, onEditVariant, onLinkFlavor, on
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <InventoryItemsSection variant={variant} branchId={branchId} />
+        <InventoryItemsSection variant={variant} branchId={branchId} branchName={branchName} />
 
         {variant.flavors.length === 0 ? (
           <p className="text-sm text-muted-foreground border-t pt-3">No flavors linked yet.</p>
@@ -146,7 +155,15 @@ function OptionGroupsSection({ productId, variantId }: { productId: string; vari
  * inventory item at sale time, it does not stack — see product-inventory
  * .service.ts computeDeduction).
  */
-function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantResponse; branchId: string | null }) {
+function InventoryItemsSection({
+  variant,
+  branchId,
+  branchName,
+}: {
+  variant: ProductVariantResponse;
+  branchId: string | null;
+  branchName?: string | null;
+}) {
   const { isSupervisor: getIsSupervisor } = useAuth();
   const isSupervisor = getIsSupervisor();
   const { data: mappings, isLoading } = useProductInventoryList(branchId, variant.id);
@@ -177,6 +194,7 @@ function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantR
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <p className="text-sm font-semibold">Inventory Items</p>
+          {branchName && <Badge variant="secondary">{branchName}</Badge>}
           <Badge variant={isBlocked ? 'critical' : 'active'}>
             {isBlocked ? 'Blocks POS sale' : `${activeMappings.length} active`}
           </Badge>

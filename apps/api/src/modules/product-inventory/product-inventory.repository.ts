@@ -108,6 +108,31 @@ export const productInventoryRepository = {
   },
 
   /**
+   * PRODUCT_INVENTORY_FLAVOR_NOT_LINKED gate (Phase 5) — a flavor-specific
+   * mapping may only be created for a flavor actively linked to this variant
+   * (ProductVariantFlavor.isAvailable) and itself active. Returns null when
+   * no such link exists, which the service treats as a rejection.
+   */
+  findActiveVariantFlavorLink(productVariantId: string, flavorId: string) {
+    return prisma.productVariantFlavor.findFirst({
+      where: { productVariantId, flavorId, isAvailable: true, flavor: { isActive: true } },
+    });
+  },
+
+  /**
+   * Live POS readiness (Phase 1) — every active, non-deleted ProductInventory
+   * mapping for this branch across the given variants in one query, avoiding
+   * an N+1 per variant. The service partitions the result into base
+   * (flavorId null) vs flavor-scoped mappings per variant.
+   */
+  findActiveMappingsForVariants(branchId: string, productVariantIds: string[]) {
+    return prisma.productInventory.findMany({
+      where: { branchId, productVariantId: { in: productVariantIds }, deletedAt: null, isActive: true },
+      select: { productVariantId: true, flavorId: true },
+    });
+  },
+
+  /**
    * updateMany (not update) so the WHERE clause itself enforces branch scope
    * at the write — a mapping outside branchIds resolves to `count: 0` rather
    * than a Prisma "record not found" throw, and can never be written to

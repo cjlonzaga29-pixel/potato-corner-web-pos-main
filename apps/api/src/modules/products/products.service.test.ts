@@ -50,6 +50,7 @@ vi.mock('../product-inventory/product-inventory.repository.js', () => ({
   productInventoryRepository: {
     hasMappingForVariant: vi.fn().mockResolvedValue(true),
     hasAnyActiveMappingForVariant: vi.fn().mockResolvedValue(true),
+    findActiveMappingsForVariants: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -1393,5 +1394,137 @@ describe('productsService.getPosCatalog — Mix & Max snack options', () => {
 
     const flavors = result.products[0]?.variants[0]?.flavor_slots[0]?.snack_options[0]?.flavors ?? [];
     expect(flavors.map((f) => f.flavor_id)).toEqual(['flavor-1']);
+  });
+});
+
+describe('productsService.getPosCatalog — live POS readiness', () => {
+  function readinessVariant(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'variant-1',
+      name: 'Regular',
+      sizeLabel: 'Regular',
+      basePrice: { toNumber: () => 100 },
+      vatableCapAmount: null,
+      variantFlavors: [],
+      optionGroupAssignments: [],
+      flavorSlots: [],
+      ...overrides,
+    };
+  }
+
+  function readinessProduct(variant: Record<string, unknown>) {
+    return {
+      id: 'product-1',
+      name: 'Mega Mix',
+      category: 'Snacks',
+      imageUrl: null,
+      variants: [variant],
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+  });
+
+  it('is not live-ready when no base ProductInventory mapping exists for the variant', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([readinessProduct(readinessVariant())] as never);
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([]);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.live_ready).toBe(false);
+    expect(variant?.readiness_code).toBe('MISSING_BASE_MAPPING');
+    expect(variant?.missing_flavor_ids).toEqual([]);
+  });
+
+  it('is live-ready when a base mapping exists and the variant has no linked flavors', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([readinessProduct(readinessVariant())] as never);
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([
+      { productVariantId: 'variant-1', flavorId: null },
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.live_ready).toBe(true);
+    expect(variant?.readiness_code).toBe('READY');
+  });
+
+  it('is not live-ready when a linked flavor has no ProductInventory mapping', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(
+        readinessVariant({
+          variantFlavors: [{ flavorId: 'flavor-1', pricePremium: { toNumber: () => 0 }, flavor: { name: 'Cheese', colorHex: null } }],
+        }),
+      ),
+    ] as never);
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([
+      { productVariantId: 'variant-1', flavorId: null },
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.live_ready).toBe(false);
+    expect(variant?.readiness_code).toBe('MISSING_FLAVOR_MAPPING');
+    expect(variant?.missing_flavor_ids).toEqual(['flavor-1']);
+  });
+
+  it('is live-ready when every active linked flavor has its own ProductInventory mapping', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(
+        readinessVariant({
+          variantFlavors: [
+            { flavorId: 'flavor-1', pricePremium: { toNumber: () => 0 }, flavor: { name: 'Cheese', colorHex: null } },
+            { flavorId: 'flavor-2', pricePremium: { toNumber: () => 0 }, flavor: { name: 'BBQ', colorHex: null } },
+          ],
+        }),
+      ),
+    ] as never);
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([
+      { productVariantId: 'variant-1', flavorId: null },
+      { productVariantId: 'variant-1', flavorId: 'flavor-1' },
+      { productVariantId: 'variant-1', flavorId: 'flavor-2' },
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.live_ready).toBe(true);
+    expect(variant?.readiness_code).toBe('READY');
+    expect(variant?.missing_flavor_ids).toEqual([]);
+  });
+
+  it('ignores an inactive/unavailable flavor link — findCatalogForBranch already excludes it from variantFlavors', async () => {
+    // variantFlavors here reflects what findCatalogForBranch actually returns
+    // (already filtered to isAvailable + flavor.isActive), so an
+    // inactive/unavailable flavor never reaches computeReadiness at all.
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(readinessVariant({ variantFlavors: [] })),
+    ] as never);
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([
+      { productVariantId: 'variant-1', flavorId: null },
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.live_ready).toBe(true);
+    expect(variant?.readiness_code).toBe('READY');
+  });
+
+  it('ignores a deleted/inactive ProductInventory mapping — findActiveMappingsForVariants only returns active, non-deleted rows', async () => {
+    // The repository query itself filters deletedAt: null, isActive: true,
+    // so a soft-deleted or deactivated mapping is never in this result set —
+    // the variant should read as still missing its base mapping.
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([readinessProduct(readinessVariant())] as never);
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.live_ready).toBe(false);
+    expect(variant?.readiness_code).toBe('MISSING_BASE_MAPPING');
   });
 });

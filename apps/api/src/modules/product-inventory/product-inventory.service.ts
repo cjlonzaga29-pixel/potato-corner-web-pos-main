@@ -216,7 +216,7 @@ export async function assertProductInventoryExists(branchId: string, productVari
   if (!exists) {
     throw new ProductInventoryError(
       'RECIPE_MISSING',
-      'This product variant has no recipe configured — a sale cannot be recorded until Super Admin adds one',
+      'Branch inventory mapping is missing for this product variant',
       422,
     );
   }
@@ -250,6 +250,15 @@ export const productInventoryService = {
     if (flavorId) {
       const flavor = await productInventoryRepository.findFlavorById(flavorId);
       if (!flavor) throw new ProductInventoryError('FLAVOR_NOT_FOUND', 'Flavor not found', 404);
+
+      const link = await productInventoryRepository.findActiveVariantFlavorLink(data.product_variant_id, flavorId);
+      if (!link) {
+        throw new ProductInventoryError(
+          'PRODUCT_INVENTORY_FLAVOR_NOT_LINKED',
+          'This flavor is not actively linked and available for this product variant',
+          422,
+        );
+      }
     }
 
     const existing = await productInventoryRepository.findByVariantAndIngredient(

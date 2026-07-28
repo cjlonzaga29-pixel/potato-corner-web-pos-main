@@ -7,8 +7,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_SETUP_DIR, FILES, parseCsv } from './validate-inventory-setup';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 export const DEFAULT_OUTPUT_PATH = path.resolve(DEFAULT_SETUP_DIR, 'potato-corner-master-bom.xlsx');
 
 const FLAVOR_NAMES = ['Cheese', 'BBQ', 'Sour Cream', 'White Cheddar', 'Sour Cheese', 'Chili BBQ', 'Chili Cheese', 'Sweet Corn'];

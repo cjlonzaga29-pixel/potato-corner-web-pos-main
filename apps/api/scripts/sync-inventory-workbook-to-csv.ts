@@ -348,8 +348,8 @@ async function checkWorkbookInternal(opts: CheckOptions = {}): Promise<InternalC
 }
 
 export async function checkWorkbook(opts: CheckOptions = {}): Promise<CheckReport> {
-  const { extracted: _extracted, ...report } = await checkWorkbookInternal(opts);
-  return report;
+  const { result, errors, warnings, sheets } = await checkWorkbookInternal(opts);
+  return { result, errors, warnings, sheets };
 }
 
 interface PreviewOptions extends CheckOptions {

@@ -11,6 +11,12 @@ function row(cols: string[]): string {
   return cols.join(',');
 }
 
+function getSheet(workbook: ExcelJS.Workbook, name: string): ExcelJS.Worksheet {
+  const sheet = workbook.getWorksheet(name);
+  if (!sheet) throw new Error(`Expected worksheet "${name}" to exist`);
+  return sheet;
+}
+
 function writeFixtures(dir: string) {
   const ingredientsRows = Array.from({ length: 31 }, (_, i) =>
     row(['', `Item ${i + 1}`, 'RAW_MATERIAL', '', '', '', i === 0 ? 'optional' : '']),
@@ -87,9 +93,9 @@ describe('generateWorkbook', () => {
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    expect(workbook.getWorksheet('Ingredients')!.rowCount - 1).toBe(31);
-    expect(workbook.getWorksheet('Product BOM')!.rowCount - 1).toBe(33);
-    expect(workbook.getWorksheet('Opening Stock')!.rowCount - 1).toBe(31);
+    expect(getSheet(workbook, 'Ingredients').rowCount - 1).toBe(31);
+    expect(getSheet(workbook, 'Product BOM').rowCount - 1).toBe(33);
+    expect(getSheet(workbook, 'Opening Stock').rowCount - 1).toBe(31);
   });
 
   it('creates exactly 21 Mix Max rows', async () => {
@@ -97,7 +103,7 @@ describe('generateWorkbook', () => {
     await generateWorkbook(tmpDir, outputPath);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    expect(workbook.getWorksheet('Mix Max Options')!.rowCount - 1).toBe(21);
+    expect(getSheet(workbook, 'Mix Max Options').rowCount - 1).toBe(21);
   });
 
   it('creates exactly 48 Flavor BOM rows', async () => {
@@ -105,7 +111,7 @@ describe('generateWorkbook', () => {
     await generateWorkbook(tmpDir, outputPath);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    expect(workbook.getWorksheet('Flavor BOM')!.rowCount - 1).toBe(48);
+    expect(getSheet(workbook, 'Flavor BOM').rowCount - 1).toBe(48);
   });
 
   it('preserves exact catalog names from source rows', async () => {
@@ -113,7 +119,7 @@ describe('generateWorkbook', () => {
     await generateWorkbook(tmpDir, outputPath);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    const sheet = workbook.getWorksheet('Mix Max Options')!;
+    const sheet = getSheet(workbook, 'Mix Max Options');
     expect(sheet.getRow(2).getCell(1).value).toBe('Large Mix');
     expect(sheet.getRow(2).getCell(4).value).toBe('Flavored Fries');
   });
@@ -124,15 +130,15 @@ describe('generateWorkbook', () => {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
 
-    const ingredients = workbook.getWorksheet('Ingredients')!;
+    const ingredients = getSheet(workbook, 'Ingredients');
     const itemTypeCell = ingredients.getRow(2).getCell(3);
     expect(itemTypeCell.dataValidation?.type).toBe('list');
 
-    const mixMax = workbook.getWorksheet('Mix Max Options')!;
+    const mixMax = getSheet(workbook, 'Mix Max Options');
     const variantCell = mixMax.getRow(2).getCell(5);
     expect(variantCell.dataValidation?.type).toBe('list');
 
-    const openingStock = workbook.getWorksheet('Opening Stock')!;
+    const openingStock = getSheet(workbook, 'Opening Stock');
     const dateCell = openingStock.getRow(2).getCell(6);
     expect(dateCell.dataValidation?.type).toBe('date');
   });
@@ -142,7 +148,7 @@ describe('generateWorkbook', () => {
     await generateWorkbook(tmpDir, outputPath);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    const summary = workbook.getWorksheet('Validation Summary')!;
+    const summary = getSheet(workbook, 'Validation Summary');
     let foundFormula = false;
     summary.eachRow((r) => {
       r.eachCell((c) => {

@@ -304,8 +304,8 @@ describe('writeWorkbook', () => {
     );
 
     expect(report.status).toBe('SUCCESS');
-    expect(report.backupDir).toBeDefined();
-    const backedUp = readFileSync(path.join(report.backupDir!, 'ingredients-template.csv'), 'utf8');
+    if (!report.backupDir) throw new Error('Expected report.backupDir to be set on a SUCCESS report');
+    const backedUp = readFileSync(path.join(report.backupDir, 'ingredients-template.csv'), 'utf8');
     expect(backedUp).toBe(originalIngredients);
   });
 

@@ -27,6 +27,14 @@ const CATALOG: Record<string, string[]> = {
   Drinks: ['Water', 'Soda'],
 };
 
+function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
+  const existing = map.get(key);
+  if (existing !== undefined) return existing;
+  const created = create();
+  map.set(key, created);
+  return created;
+}
+
 const ITEM_TYPES = ['RAW_MATERIAL', 'PACKAGING', 'FINISHED_GOOD', 'SEASONING'];
 const MAPPING_TYPES = ['BASE', 'PACKAGING', 'FINISHED_GOOD'];
 const OPTIONAL_INGREDIENT_NOTE = /optional/i;
@@ -306,11 +314,10 @@ function validateProductBom(ctx: Context, baseDir: string, ingredients: Map<stri
     }
 
     if (branch && product && variant && itemName) {
-      if (!coverage.has(branch)) coverage.set(branch, new Map());
-      const byProduct = coverage.get(branch)!;
+      const byProduct = getOrCreate(coverage, branch, () => new Map<string, Set<string>>());
       const covKey = `${product}::${variant}`;
-      if (!byProduct.has(covKey)) byProduct.set(covKey, new Set());
-      byProduct.get(covKey)!.add(itemName);
+      const items = getOrCreate(byProduct, covKey, () => new Set<string>());
+      items.add(itemName);
     }
   }
 
@@ -414,10 +421,9 @@ function validateFlavorBom(ctx: Context, baseDir: string, ingredients: Map<strin
     }
 
     if (branch && variant && flavor) {
-      if (!coverage.has(branch)) coverage.set(branch, new Map());
-      const byVariant = coverage.get(branch)!;
-      if (!byVariant.has(variant)) byVariant.set(variant, new Set());
-      byVariant.get(variant)!.add(flavor);
+      const byVariant = getOrCreate(coverage, branch, () => new Map<string, Set<string>>());
+      const flavors = getOrCreate(byVariant, variant, () => new Set<string>());
+      flavors.add(flavor);
     }
   }
 
@@ -488,8 +494,7 @@ function validateMixMax(ctx: Context, baseDir: string) {
     }
 
     if (mixVariant && Number.isInteger(slotIndex)) {
-      if (!slots.has(mixVariant)) slots.set(mixVariant, new Map());
-      const bySlot = slots.get(mixVariant)!;
+      const bySlot = getOrCreate(slots, mixVariant, () => new Map<number, number>());
       bySlot.set(slotIndex, (bySlot.get(slotIndex) ?? 0) + 1);
     }
   }
@@ -568,16 +573,16 @@ function validateOpeningStock(ctx: Context, baseDir: string, ingredients: Map<st
     }
 
     if (branch && itemName) {
-      if (!seenBranchItem.has(branch)) seenBranchItem.set(branch, new Set());
-      seenBranchItem.get(branch)!.add(itemName);
+      const items = getOrCreate(seenBranchItem, branch, () => new Set<string>());
+      items.add(itemName);
     }
   }
 
   const missingCoverage: string[] = [];
   const byBranch = new Map<string, IngredientRecord[]>();
   for (const record of ingredients.values()) {
-    if (!byBranch.has(record.branch)) byBranch.set(record.branch, []);
-    byBranch.get(record.branch)!.push(record);
+    const records = getOrCreate(byBranch, record.branch, () => [] as IngredientRecord[]);
+    records.push(record);
   }
   for (const [branch, records] of byBranch) {
     for (const record of records) {
@@ -632,8 +637,8 @@ export function runValidation(baseDir: string = DEFAULT_SETUP_DIR): ValidationRe
 function printReport(report: ValidationReport) {
   const errorsByFile = new Map<string, Issue[]>();
   for (const issue of report.errors) {
-    if (!errorsByFile.has(issue.file)) errorsByFile.set(issue.file, []);
-    errorsByFile.get(issue.file)!.push(issue);
+    const issues = getOrCreate(errorsByFile, issue.file, () => [] as Issue[]);
+    issues.push(issue);
   }
 
   console.log('='.repeat(70));

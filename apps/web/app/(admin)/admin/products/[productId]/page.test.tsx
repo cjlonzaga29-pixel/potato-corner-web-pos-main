@@ -146,14 +146,14 @@ describe('ProductDetailPage', () => {
     expect(mockVariantCard).toHaveBeenCalledWith(expect.objectContaining({ branchId: 'branch-1' }));
   });
 
-  it('does not render VariantCard when no branch is selected', async () => {
+  it('still renders VariantCard with a null branchId when no branch is selected', async () => {
     mockUseSelectedBranch.mockReturnValue({ selectedBranchId: 'all' });
     await renderPage();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Variants & Flavors' }));
 
-    expect(mockVariantCard).not.toHaveBeenCalled();
-    expect(screen.getByText('No branch selected')).toBeInTheDocument();
+    expect(mockVariantCard).toHaveBeenCalledWith(expect.objectContaining({ branchId: null }));
+    expect(screen.getByText('Large Cup')).toBeInTheDocument();
   });
 
   it('renders existing product and variant info unchanged', async () => {

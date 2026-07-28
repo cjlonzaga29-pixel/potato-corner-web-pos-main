@@ -218,7 +218,7 @@ function VariantsTab({ product, selectedBranchId }: { product: ProductDetailResp
 
   const isArchived = product.status === 'archived';
   const sortedVariants = [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
-  const hasSelectedBranch = selectedBranchId !== 'all';
+  const inventoryBranchId = selectedBranchId === 'all' ? null : selectedBranchId;
 
   return (
     <div className="space-y-4">
@@ -231,15 +231,13 @@ function VariantsTab({ product, selectedBranchId }: { product: ProductDetailResp
 
       {sortedVariants.length === 0 ? (
         <EmptyState title="No variants yet" description="Add a variant to start selling this product." />
-      ) : !hasSelectedBranch ? (
-        <EmptyState title="No branch selected" description="Select a branch to view and manage inventory items." />
       ) : (
         <div className="space-y-3">
           {sortedVariants.map((variant) => (
             <VariantCard
               key={variant.id}
               variant={variant}
-              branchId={selectedBranchId}
+              branchId={inventoryBranchId}
               onEditVariant={() => setVariantDialog({ open: true, variant })}
               onLinkFlavor={() => setLinkFlavorFor(variant)}
               onEditFlavorPricing={(flavor) => setEditFlavor({ variant, flavor })}

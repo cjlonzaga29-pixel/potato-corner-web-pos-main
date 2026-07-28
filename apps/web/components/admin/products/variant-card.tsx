@@ -18,7 +18,7 @@ import { formatCurrency, cn } from '@/lib/utils';
 
 interface VariantCardProps {
   variant: ProductVariantResponse;
-  branchId: string;
+  branchId: string | null;
   onEditVariant: () => void;
   onLinkFlavor: () => void;
   onEditFlavorPricing: (flavor: ProductVariantResponse['flavors'][number]) => void;
@@ -146,7 +146,7 @@ function OptionGroupsSection({ productId, variantId }: { productId: string; vari
  * inventory item at sale time, it does not stack — see product-inventory
  * .service.ts computeDeduction).
  */
-function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantResponse; branchId: string }) {
+function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantResponse; branchId: string | null }) {
   const { isSupervisor: getIsSupervisor } = useAuth();
   const isSupervisor = getIsSupervisor();
   const { data: mappings, isLoading } = useProductInventoryList(branchId, variant.id);
@@ -157,10 +157,19 @@ function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantR
   const [deletingMapping, setDeletingMapping] = useState<ProductInventoryResponse | null>(null);
 
   const activeMappings = (mappings ?? []).filter((mapping) => mapping.is_active);
-  const isBlocked = !isLoading && activeMappings.length === 0;
+  const isBlocked = Boolean(branchId) && !isLoading && activeMappings.length === 0;
 
   async function handleToggleActive(mapping: ProductInventoryResponse) {
     await toggleActive.mutateAsync({ mappingId: mapping.id, is_active: !mapping.is_active });
+  }
+
+  if (!branchId) {
+    return (
+      <div className="space-y-2 rounded-md border border-border p-3">
+        <p className="text-sm font-semibold">Inventory Items</p>
+        <p className="text-sm text-muted-foreground">Select a branch to view and manage inventory items.</p>
+      </div>
+    );
   }
 
   return (
@@ -256,7 +265,7 @@ function InventoryItemsSection({ variant, branchId }: { variant: ProductVariantR
         variant={variant}
         existingMappings={mappings ?? []}
         editingMapping={mappingDialog.mapping}
-        editingBranchId={branchId}
+        editingBranchId={branchId ?? undefined}
       />
 
       {deletingMapping && (

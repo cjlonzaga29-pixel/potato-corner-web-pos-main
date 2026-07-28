@@ -191,4 +191,24 @@ describe('VariantCard', () => {
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(EDITING_MAPPING.id));
   });
+
+  it('shows a select-a-branch message and skips fetching inventory when branchId is null', () => {
+    mockUseAuth.mockReturnValue({ isSupervisor: () => true });
+    mockUseProductInventoryList.mockReturnValue({ data: undefined, isLoading: false });
+    mockUseDeleteProductInventory.mockReturnValue({ mutateAsync: vi.fn() });
+
+    render(
+      <VariantCard
+        variant={VARIANT}
+        branchId={null}
+        onEditVariant={vi.fn()}
+        onLinkFlavor={vi.fn()}
+        onEditFlavorPricing={vi.fn()}
+        onDeleteVariant={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Select a branch to view and manage inventory items.')).toBeInTheDocument();
+    expect(mockInventoryMappingFormDialog).not.toHaveBeenCalled();
+  });
 });

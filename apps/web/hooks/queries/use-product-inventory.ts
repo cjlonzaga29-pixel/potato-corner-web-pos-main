@@ -30,7 +30,7 @@ export function useProductInventoryList(branchId: string | null | undefined, pro
   });
 }
 
-function invalidateProductInventory(queryClient: ReturnType<typeof useQueryClient>, branchId: string, productVariantId: string) {
+function invalidateProductInventory(queryClient: ReturnType<typeof useQueryClient>, branchId: string | null, productVariantId: string) {
   void queryClient.invalidateQueries({ queryKey: ['product-inventory', branchId, productVariantId] });
 }
 
@@ -53,7 +53,7 @@ export function useCreateProductInventory(productVariantId: string) {
   });
 }
 
-export function useUpdateProductInventory(branchId: string, productVariantId: string, mappingId: string) {
+export function useUpdateProductInventory(branchId: string | null, productVariantId: string, mappingId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: UpdateProductInventoryInput) => {
@@ -73,7 +73,7 @@ export function useUpdateProductInventory(branchId: string, productVariantId: st
 }
 
 /** Toggles is_active for a mapping without touching quantity/unit — distinct from delete, which permanently removes the row (see useDeleteProductInventory). Takes the mapping id per-call so one hook instance can drive Deactivate/Activate across a whole list. */
-export function useSetProductInventoryActive(branchId: string, productVariantId: string) {
+export function useSetProductInventoryActive(branchId: string | null, productVariantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ mappingId, is_active }: { mappingId: string; is_active: boolean }) => {
@@ -92,7 +92,7 @@ export function useSetProductInventoryActive(branchId: string, productVariantId:
   });
 }
 
-export function useDeleteProductInventory(branchId: string, productVariantId: string) {
+export function useDeleteProductInventory(branchId: string | null, productVariantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (mappingId: string) => {

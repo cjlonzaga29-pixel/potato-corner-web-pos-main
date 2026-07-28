@@ -13,7 +13,12 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
-    "inventory:migration:dry-run": "tsx scripts/inventory-migration-dry-run.ts"
+    "inventory:migration:dry-run": "tsx scripts/inventory-migration-dry-run.ts",
+    "inventory:reference-init:dry-run": "tsx scripts/inventory-reference-init-dry-run.ts",
+    "inventory:reference-init:apply": "tsx scripts/inventory-reference-init-apply.ts",
+    "inventory:reference-init:rollback-assess": "tsx scripts/inventory-reference-init-rollback-assess.ts",
+    "inventory:reference-init:rollback-execute": "tsx scripts/inventory-reference-init-rollback-execute.ts",
+    "initialization:reconcile": "tsx scripts/initialization-reconcile.ts"
   },
   "dependencies": {
     "@potato-corner/shared": "workspace:*",

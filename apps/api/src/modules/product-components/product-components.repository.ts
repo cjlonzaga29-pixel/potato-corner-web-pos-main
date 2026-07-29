@@ -72,4 +72,14 @@ export const productComponentsRepository = {
       data: { deletedAt: new Date(), isActive: false, updatedBy },
     });
   },
+
+  /** MAX(version) across a variant's active components — recorded on the sale line for audit/history, mirrors productInventoryRepository.getVersionForVariant. Defaults to 1 when there are no active components yet. */
+  async getVersionForVariant(productVariantId: string): Promise<number> {
+    const rows = await prisma.productComponent.findMany({
+      where: { productVariantId, deletedAt: null, isActive: true },
+      select: { version: true },
+    });
+    if (rows.length === 0) return 1;
+    return Math.max(...rows.map((r) => r.version));
+  },
 };

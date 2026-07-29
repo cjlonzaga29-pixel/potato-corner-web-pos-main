@@ -9,12 +9,19 @@ import {
   createInventoryItemSchema,
   updateInventoryItemSchema,
   assignInventoryItemToBranchesSchema,
+  receiveInventoryStockSchema,
+  adjustInventoryStockSchema,
+  wasteInventoryStockSchema,
+  transferInventoryStockSchema,
+  physicalCountInventoryStockSchema,
 } from '@potato-corner/shared';
 import { universalInventoryService } from './universal-inventory.service.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
+import type { InventoryStockMovementType } from './universal-inventory.types.js';
 import { runMigrationDryRun } from '../inventory-migration/dry-run.service.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -312,4 +319,248 @@ router.get('/migration-report', authenticate, adminOnly, requirePasswordChange, 
   }
 });
 
-export { router as universalInventoryRouter };
+// ---------------------------------------------------------------------------
+// Branch inventory cutover — direct InventoryStock read/write, replacing the
+// legacy Ingredient-based branch inventory endpoints (apps/api/src/modules/
+// inventory) as the active branch supply-side workflow. Mounted at
+// /api/branches, alongside inventoryBranchRouter (which is left in place,
+// unmodified, for historical/back-compat reads only — see the migration
+// cutover report for what still calls it).
+// ---------------------------------------------------------------------------
+
+const stockBranchRouter: Router = Router();
+
+const stockMovementTypeValues = [
+  'RECEIVING',
+  'ADJUSTMENT_IN',
+  'ADJUSTMENT_OUT',
+  'WASTE',
+  'TRANSFER_IN',
+  'TRANSFER_OUT',
+  'PHYSICAL_COUNT',
+  'SALE',
+  'SALE_REVERSAL',
+] as const;
+
+const stockMovementsQuerySchema = z.object({
+  inventory_item_id: z.uuid().optional(),
+  movement_type: z.enum(stockMovementTypeValues).optional(),
+  from_date: z.iso.datetime().optional(),
+  to_date: z.iso.datetime().optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(25),
+});
+
+stockBranchRouter.get(
+  '/:branchId/inventory-stock',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await universalInventoryService.getBranchStock(req.params.branchId as string);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.get(
+  '/:branchId/inventory-stock/alerts',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await universalInventoryService.getBranchStockAlerts(req.params.branchId as string);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.get(
+  '/:branchId/inventory-stock/movements',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const parsed = stockMovementsQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(422).json({
+          data: null,
+          error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+          meta: null,
+        });
+        return;
+      }
+      const result = await universalInventoryService.getStockMovements(req.params.branchId as string, {
+        inventoryItemId: parsed.data.inventory_item_id,
+        movementType: parsed.data.movement_type as InventoryStockMovementType | undefined,
+        fromDate: parsed.data.from_date ? new Date(parsed.data.from_date) : undefined,
+        toDate: parsed.data.to_date ? new Date(parsed.data.to_date) : undefined,
+        page: parsed.data.page,
+        limit: parsed.data.limit,
+      });
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/:inventoryItemId/receive',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  validate(receiveInventoryStockSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof receiveInventoryStockSchema>;
+      const result = await universalInventoryService.receiveStock(
+        {
+          branchId: req.params.branchId as string,
+          inventoryItemId: req.params.inventoryItemId as string,
+          quantity: body.quantity,
+          enteredUnitId: body.entered_unit_id,
+          deliveryReference: body.delivery_reference,
+          notes: body.notes,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/:inventoryItemId/adjust',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  validate(adjustInventoryStockSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof adjustInventoryStockSchema>;
+      const result = await universalInventoryService.adjustStock(
+        {
+          branchId: req.params.branchId as string,
+          inventoryItemId: req.params.inventoryItemId as string,
+          quantityDelta: body.quantity_delta,
+          reasonCode: body.reason_code,
+          notes: body.notes,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/:inventoryItemId/waste',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  validate(wasteInventoryStockSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof wasteInventoryStockSchema>;
+      const result = await universalInventoryService.wasteStock(
+        {
+          branchId: req.params.branchId as string,
+          inventoryItemId: req.params.inventoryItemId as string,
+          quantity: body.quantity,
+          enteredUnitId: body.entered_unit_id,
+          reasonCode: body.reason_code,
+          notes: body.notes,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/transfer',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  validate(transferInventoryStockSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof transferInventoryStockSchema>;
+      const result = await universalInventoryService.transferStock(
+        {
+          fromBranchId: req.params.branchId as string,
+          toBranchId: body.to_branch_id,
+          inventoryItemId: body.inventory_item_id,
+          quantity: body.quantity,
+          notes: body.notes,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/count',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  validate(physicalCountInventoryStockSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof physicalCountInventoryStockSchema>;
+      const result = await universalInventoryService.submitPhysicalCount(
+        {
+          branchId: req.params.branchId as string,
+          counts: body.counts.map((c) => ({ inventoryItemId: c.inventory_item_id, countedQuantity: c.counted_quantity })),
+          notes: body.notes,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+export { router as universalInventoryRouter, stockBranchRouter as inventoryStockBranchRouter };

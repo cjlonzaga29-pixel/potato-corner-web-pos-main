@@ -14,10 +14,10 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useIngredients, useTransferStock } from '@/hooks/queries/use-inventory';
+import { useBranchInventoryStock, useTransferInventoryStock } from '@/hooks/queries/use-universal-inventory';
 
 const formSchema = z.object({
-  ingredient_id: z.uuid('Select an ingredient'),
+  inventory_item_id: z.uuid('Select an item'),
   to_branch_id: z.uuid('Enter the destination branch ID'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
   notes: z.string().optional(),
@@ -25,21 +25,21 @@ const formSchema = z.object({
 
 type FormValues = z.input<typeof formSchema>;
 
-const DEFAULT_VALUES: FormValues = { ingredient_id: '', to_branch_id: '', quantity: 0, notes: '' };
+const DEFAULT_VALUES: FormValues = { inventory_item_id: '', to_branch_id: '', quantity: 0, notes: '' };
 
 function TransferFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: ingredients } = useIngredients(activeBranchId);
+  const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
-  const ingredientId = form.watch('ingredient_id');
-  const ingredient = ingredients?.find((i) => i.id === ingredientId);
-  const transfer = useTransferStock(activeBranchId);
+  const inventoryItemId = form.watch('inventory_item_id');
+  const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
+  const transfer = useTransferInventoryStock(activeBranchId);
 
   useEffect(() => {
-    const preselected = searchParams.get('ingredient_id');
-    if (preselected) form.setValue('ingredient_id', preselected);
+    const preselected = searchParams.get('inventory_item_id');
+    if (preselected) form.setValue('inventory_item_id', preselected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -52,7 +52,7 @@ function TransferFormContent({ basePath }: { basePath: string }) {
   async function handleConfirm() {
     if (!pendingValues) return;
     await transfer.mutateAsync({
-      ingredient_id: pendingValues.ingredient_id,
+      inventory_item_id: pendingValues.inventory_item_id,
       to_branch_id: pendingValues.to_branch_id,
       quantity: pendingValues.quantity,
       notes: pendingValues.notes || undefined,
@@ -78,22 +78,22 @@ function TransferFormContent({ basePath }: { basePath: string }) {
           {/* Radix Select takes value/onValueChange, not the onChange FormFieldWrapper clones onto children — wired directly via FormField instead. */}
           <FormField
             control={form.control}
-            name="ingredient_id"
+            name="inventory_item_id"
             render={({ field }) => (
               <FormItem>
                 <FormLabel>
-                  Ingredient<span className="ml-0.5 text-destructive">*</span>
+                  Item<span className="ml-0.5 text-destructive">*</span>
                 </FormLabel>
                 <Select value={field.value} onValueChange={field.onChange}>
                   <FormControl>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an ingredient" />
+                      <SelectValue placeholder="Select an item" />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {ingredients?.map((i) => (
-                      <SelectItem key={i.id} value={i.id}>
-                        {i.name} ({i.unit})
+                    {stock?.items.map((i) => (
+                      <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
+                        {i.name} ({i.base_unit_code})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -103,9 +103,9 @@ function TransferFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
-          {ingredient && (
+          {item && (
             <p className="rounded-md border bg-muted/30 p-3 text-sm">
-              Current stock: <span className="font-medium">{ingredient.current_stock}</span> {ingredient.unit}
+              Current stock: <span className="font-medium">{item.quantity_on_hand}</span> {item.base_unit_code}
             </p>
           )}
 
@@ -118,7 +118,7 @@ function TransferFormContent({ basePath }: { basePath: string }) {
             <Input placeholder="00000000-0000-0000-0000-000000000000" />
           </FormFieldWrapper>
 
-          <FormFieldWrapper<FormValues> name="quantity" label={`Quantity to Transfer${ingredient ? ` (${ingredient.unit})` : ''}`} required>
+          <FormFieldWrapper<FormValues> name="quantity" label={`Quantity to Transfer${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
 

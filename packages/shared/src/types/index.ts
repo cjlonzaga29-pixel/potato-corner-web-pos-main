@@ -103,6 +103,21 @@ export type InventoryItemDetailResponse = z.infer<typeof schemas.inventoryItemDe
 export type AssignInventoryItemToBranchesInput = z.infer<typeof schemas.assignInventoryItemToBranchesSchema>;
 export type AssignInventoryItemToBranchesResponse = z.infer<typeof schemas.assignInventoryItemToBranchesResponseSchema>;
 
+export type ReceiveInventoryStockInput = z.infer<typeof schemas.receiveInventoryStockSchema>;
+export type AdjustInventoryStockInput = z.infer<typeof schemas.adjustInventoryStockSchema>;
+export type WasteInventoryStockInput = z.infer<typeof schemas.wasteInventoryStockSchema>;
+export type TransferInventoryStockInput = z.infer<typeof schemas.transferInventoryStockSchema>;
+export type PhysicalCountInventoryStockInput = z.infer<typeof schemas.physicalCountInventoryStockSchema>;
+export type InventoryStockMovementResponse = z.infer<typeof schemas.inventoryStockMovementResponseSchema>;
+export type InventoryStockMovementListResponse = z.infer<typeof schemas.inventoryStockMovementListResponseSchema>;
+export type BranchInventoryStockRow = z.infer<typeof schemas.branchInventoryStockRowSchema>;
+export type BranchInventoryStockListResponse = z.infer<typeof schemas.branchInventoryStockListResponseSchema>;
+export type InventoryStockAlert = z.infer<typeof schemas.inventoryStockAlertSchema>;
+export type InventoryStockAlertListResponse = z.infer<typeof schemas.inventoryStockAlertListResponseSchema>;
+export type InventoryStockTransferResponse = z.infer<typeof schemas.inventoryStockTransferResponseSchema>;
+export type PhysicalCountStockResultRow = z.infer<typeof schemas.physicalCountStockResultRowSchema>;
+export type PhysicalCountStockResultResponse = z.infer<typeof schemas.physicalCountStockResultResponseSchema>;
+
 export type CreateProductComponentInput = z.infer<typeof schemas.createProductComponentSchema>;
 export type UpdateProductComponentInput = z.infer<typeof schemas.updateProductComponentSchema>;
 export type ProductComponentResponse = z.infer<typeof schemas.productComponentResponseSchema>;

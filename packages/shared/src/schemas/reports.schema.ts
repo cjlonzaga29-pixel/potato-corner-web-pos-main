@@ -215,6 +215,38 @@ export const InventoryValuationReportRowSchema = z.object({
 });
 export type InventoryValuationReportRow = z.infer<typeof InventoryValuationReportRowSchema>;
 
+// Admin Inventory Valuation rollup (InventoryItem/InventoryStock-sourced, org-wide across
+// all branches) -- distinct from InventoryValuationReportRow above, which stays
+// Ingredient-sourced for the existing branch-analytics tab and CSV/PDF export.
+export const AdminInventoryValuationBranchRowSchema = z.object({
+  branch_id: z.uuid(),
+  branch_name: z.string(),
+  inventory_item_count: z.number().int(),
+  total_inventory_value: z.number(),
+  low_stock_count: z.number().int(),
+  critical_stock_count: z.number().int(),
+  out_of_stock_count: z.number().int(),
+  last_movement_at: z.iso.datetime().nullable(),
+});
+export type AdminInventoryValuationBranchRow = z.infer<typeof AdminInventoryValuationBranchRowSchema>;
+
+export const AdminInventoryValuationSummarySchema = z.object({
+  total_inventory_value: z.number(),
+  total_active_inventory_items: z.number().int(),
+  total_inventory_stock_rows: z.number().int(),
+  total_low_stock_rows: z.number().int(),
+  total_critical_stock_rows: z.number().int(),
+  total_out_of_stock_rows: z.number().int(),
+});
+export type AdminInventoryValuationSummary = z.infer<typeof AdminInventoryValuationSummarySchema>;
+
+export const AdminInventoryValuationRollupResponseSchema = z.object({
+  generated_at: z.iso.datetime(),
+  branches: z.array(AdminInventoryValuationBranchRowSchema),
+  summary: AdminInventoryValuationSummarySchema,
+});
+export type AdminInventoryValuationRollupResponse = z.infer<typeof AdminInventoryValuationRollupResponseSchema>;
+
 export const PaymentMethodMixReportRowSchema = z.object({
   payment_method: z.string(),
   transaction_count: z.number().int(),

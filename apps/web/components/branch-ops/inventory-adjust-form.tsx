@@ -15,7 +15,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useAdjustIngredient, useIngredients } from '@/hooks/queries/use-inventory';
+import { useAdjustInventoryStock, useBranchInventoryStock } from '@/hooks/queries/use-universal-inventory';
 
 const REASON_LABELS: Record<AdjustmentReason, string> = {
   count_correction: 'Count Correction',
@@ -26,7 +26,7 @@ const REASON_LABELS: Record<AdjustmentReason, string> = {
 };
 
 const formSchema = z.object({
-  ingredient_id: z.uuid('Select an ingredient'),
+  inventory_item_id: z.uuid('Select an item'),
   quantity_delta: z.coerce.number().refine((n) => n !== 0, 'Must not be zero'),
   reason_code: z.enum(Object.values(ADJUSTMENT_REASON) as [AdjustmentReason, ...AdjustmentReason[]]),
   notes: z.string().optional(),
@@ -34,21 +34,21 @@ const formSchema = z.object({
 
 type FormValues = z.input<typeof formSchema>;
 
-const DEFAULT_VALUES: FormValues = { ingredient_id: '', quantity_delta: 0, reason_code: 'count_correction', notes: '' };
+const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity_delta: 0, reason_code: 'count_correction', notes: '' };
 
 function AdjustFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: ingredients } = useIngredients(activeBranchId);
+  const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
-  const ingredientId = form.watch('ingredient_id');
-  const ingredient = ingredients?.find((i) => i.id === ingredientId);
-  const adjust = useAdjustIngredient(activeBranchId, ingredientId);
+  const inventoryItemId = form.watch('inventory_item_id');
+  const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
+  const adjust = useAdjustInventoryStock(activeBranchId, inventoryItemId);
 
   useEffect(() => {
-    const preselected = searchParams.get('ingredient_id');
-    if (preselected) form.setValue('ingredient_id', preselected);
+    const preselected = searchParams.get('inventory_item_id');
+    if (preselected) form.setValue('inventory_item_id', preselected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -77,7 +77,7 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
       <div>
         <h1 className="text-2xl font-bold">Adjust Stock</h1>
         <p className="text-sm text-muted-foreground">
-          Correct an ingredient&apos;s stock level. Use a positive quantity to increase, negative to decrease.
+          Correct an item&apos;s stock level. Use a positive quantity to increase, negative to decrease.
         </p>
       </div>
 
@@ -86,22 +86,22 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
           {/* Radix Select takes value/onValueChange, not the onChange FormFieldWrapper clones onto children — wired directly via FormField instead. */}
           <FormField
             control={form.control}
-            name="ingredient_id"
+            name="inventory_item_id"
             render={({ field }) => (
               <FormItem>
                 <FormLabel>
-                  Ingredient<span className="ml-0.5 text-destructive">*</span>
+                  Item<span className="ml-0.5 text-destructive">*</span>
                 </FormLabel>
                 <Select value={field.value} onValueChange={field.onChange}>
                   <FormControl>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an ingredient" />
+                      <SelectValue placeholder="Select an item" />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {ingredients?.map((i) => (
-                      <SelectItem key={i.id} value={i.id}>
-                        {i.name} ({i.unit})
+                    {stock?.items.map((i) => (
+                      <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
+                        {i.name} ({i.base_unit_code})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -111,15 +111,15 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
-          {ingredient && (
+          {item && (
             <p className="rounded-md border bg-muted/30 p-3 text-sm">
-              Current stock: <span className="font-medium">{ingredient.current_stock}</span> {ingredient.unit}
+              Current stock: <span className="font-medium">{item.quantity_on_hand}</span> {item.base_unit_code}
             </p>
           )}
 
           <FormFieldWrapper<FormValues>
             name="quantity_delta"
-            label={`Quantity Change${ingredient ? ` (${ingredient.unit})` : ''}`}
+            label={`Quantity Change${item ? ` (${item.base_unit_code})` : ''}`}
             description="Positive to increase, negative to decrease"
             required
           >

@@ -54,6 +54,10 @@ vi.mock('../inventory/inventory.service.js', () => ({
   inventoryService: { provisionBranchIngredients: vi.fn().mockResolvedValue(undefined) },
 }));
 
+vi.mock('../universal-inventory/universal-inventory.service.js', () => ({
+  universalInventoryService: { provisionBranchStock: vi.fn().mockResolvedValue(undefined) },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -92,6 +96,7 @@ const { supabaseAdmin } = await import('../../lib/supabase.js');
 const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { flavorsRepository } = await import('../flavors/flavors.repository.js');
 const { inventoryService } = await import('../inventory/inventory.service.js');
+const { universalInventoryService } = await import('../universal-inventory/universal-inventory.service.js');
 const { prisma } = await import('../../lib/prisma.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
@@ -222,6 +227,19 @@ describe('branchesService.createBranch', () => {
       ],
       txMock,
     );
+  });
+
+  it('provisions zero-stock InventoryStock rows for every active InventoryItem on branch creation', async () => {
+    vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-003B');
+    vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-3b', code: 'PC-MNL-003B' }) as never);
+
+    await branchesService.createBranch(
+      { name: 'Branch 3b', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+      ACTOR,
+      null,
+    );
+
+    expect(universalInventoryService.provisionBranchStock).toHaveBeenCalledWith('branch-3b', txMock);
   });
 
   it('CR-004: skips provisioning entirely when no master recipe ingredients exist yet', async () => {

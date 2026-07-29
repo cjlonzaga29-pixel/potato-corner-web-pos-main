@@ -15,7 +15,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useIngredients, useWasteIngredient } from '@/hooks/queries/use-inventory';
+import { useBranchInventoryStock, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
 
 const REASON_LABELS: Record<WasteReason, string> = {
   spoilage: 'Spoilage',
@@ -26,36 +26,34 @@ const REASON_LABELS: Record<WasteReason, string> = {
 };
 
 const formSchema = z.object({
-  ingredient_id: z.uuid('Select an ingredient'),
+  inventory_item_id: z.uuid('Select an item'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
   reason_code: z.enum(Object.values(WASTE_REASON) as [WasteReason, ...WasteReason[]]),
   notes: z.string().optional(),
-  image_proof_url: z.union([z.url(), z.literal('')]).optional(),
 });
 
 type FormValues = z.input<typeof formSchema>;
 
 const DEFAULT_VALUES: FormValues = {
-  ingredient_id: '',
+  inventory_item_id: '',
   quantity: 0,
   reason_code: 'spoilage',
   notes: '',
-  image_proof_url: '',
 };
 
 function WasteFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: ingredients } = useIngredients(activeBranchId);
+  const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
-  const ingredientId = form.watch('ingredient_id');
-  const ingredient = ingredients?.find((i) => i.id === ingredientId);
-  const waste = useWasteIngredient(activeBranchId, ingredientId);
+  const inventoryItemId = form.watch('inventory_item_id');
+  const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
+  const waste = useWasteInventoryStock(activeBranchId, inventoryItemId);
 
   useEffect(() => {
-    const preselected = searchParams.get('ingredient_id');
-    if (preselected) form.setValue('ingredient_id', preselected);
+    const preselected = searchParams.get('inventory_item_id');
+    if (preselected) form.setValue('inventory_item_id', preselected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -71,8 +69,6 @@ function WasteFormContent({ basePath }: { basePath: string }) {
       quantity: pendingValues.quantity,
       reason_code: pendingValues.reason_code,
       notes: pendingValues.notes || undefined,
-      image_proof_url: pendingValues.image_proof_url || undefined,
-      image_proof_type: pendingValues.image_proof_url ? 'gallery_upload' : undefined,
     });
     router.push(`${basePath}/inventory`);
   }
@@ -93,22 +89,22 @@ function WasteFormContent({ basePath }: { basePath: string }) {
           {/* Radix Select takes value/onValueChange, not the onChange FormFieldWrapper clones onto children — wired directly via FormField instead. */}
           <FormField
             control={form.control}
-            name="ingredient_id"
+            name="inventory_item_id"
             render={({ field }) => (
               <FormItem>
                 <FormLabel>
-                  Ingredient<span className="ml-0.5 text-destructive">*</span>
+                  Item<span className="ml-0.5 text-destructive">*</span>
                 </FormLabel>
                 <Select value={field.value} onValueChange={field.onChange}>
                   <FormControl>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an ingredient" />
+                      <SelectValue placeholder="Select an item" />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {ingredients?.map((i) => (
-                      <SelectItem key={i.id} value={i.id}>
-                        {i.name} ({i.unit})
+                    {stock?.items.map((i) => (
+                      <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
+                        {i.name} ({i.base_unit_code})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -118,13 +114,13 @@ function WasteFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
-          {ingredient && (
+          {item && (
             <p className="rounded-md border bg-muted/30 p-3 text-sm">
-              Current stock: <span className="font-medium">{ingredient.current_stock}</span> {ingredient.unit}
+              Current stock: <span className="font-medium">{item.quantity_on_hand}</span> {item.base_unit_code}
             </p>
           )}
 
-          <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Wasted${ingredient ? ` (${ingredient.unit})` : ''}`} required>
+          <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Wasted${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
 
@@ -157,14 +153,6 @@ function WasteFormContent({ basePath }: { basePath: string }) {
 
           <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
             <Textarea rows={3} />
-          </FormFieldWrapper>
-
-          <FormFieldWrapper<FormValues>
-            name="image_proof_url"
-            label="Image Proof URL"
-            description="Optional — link to an already-uploaded photo of the waste"
-          >
-            <Input placeholder="https://..." />
           </FormFieldWrapper>
 
           <div className="flex justify-end gap-2">

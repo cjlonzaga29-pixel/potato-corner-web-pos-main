@@ -86,10 +86,11 @@ function readyResult(branchId: string, productVariantId: string): ProductVariant
       variantLifecycleActive: true,
       priceValid: true,
       branchAvailable: true,
-      baseInventoryMapped: true,
+      recipeReady: true,
+      componentsValid: true,
+      inventoryStockReady: true,
       flavorLinksConsistent: true,
       mixMaxSlotsComplete: true,
-      recipeReady: true,
     },
     blockingIssues: [],
     warnings: [],
@@ -658,15 +659,15 @@ describe('productsService.publishProduct (Phase D1)', () => {
         readyVariantCount: 0,
         blockingIssues: [
           {
-            code: 'BASE_INVENTORY_MAPPING_MISSING',
+            code: 'INVENTORY_STOCK_MISSING',
             severity: 'blocking',
             entityType: 'product_variant',
             entityId: 'variant-1',
             productVariantId: 'variant-1',
             productId: 'prod-1',
             branchId: 'branch-a',
-            message: 'Regular has no active base ProductInventory mapping for this branch.',
-            recommendedAction: 'Add at least one base ProductInventory mapping for this branch and variant.',
+            message: 'Regular has a Recipe/BOM component with no InventoryStock row at this branch.',
+            recommendedAction: 'Provision inventory stock for the missing item(s) at this branch.',
           },
         ],
       }),
@@ -676,7 +677,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
       code: 'PRODUCT_NOT_READY',
       statusCode: 409,
       details: {
-        blocking_issues: [expect.objectContaining({ code: 'BASE_INVENTORY_MAPPING_MISSING' })],
+        blocking_issues: [expect.objectContaining({ code: 'INVENTORY_STOCK_MISSING' })],
       },
     });
     expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
@@ -1751,12 +1752,12 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
     vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([
       notReadyResult('branch-1', 'variant-1', [
         {
-          code: 'BASE_INVENTORY_MAPPING_MISSING',
+          code: 'INVENTORY_STOCK_MISSING',
           severity: 'blocking',
           entityType: 'product_variant',
           entityId: 'variant-1',
-          message: 'Regular has no active base ProductInventory mapping for this branch.',
-          recommendedAction: 'Add a base ProductInventory mapping.',
+          message: 'Regular has a Recipe/BOM component with no InventoryStock row at this branch.',
+          recommendedAction: 'Provision inventory stock for the missing item(s) at this branch.',
         },
       ]),
     ]);
@@ -1769,7 +1770,7 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
     expect(variant?.missing_flavor_ids).toEqual([]);
   });
 
-  it('disables the variant and lists missing flavor names when the readiness engine reports a missing flavor mapping', async () => {
+  it('disables the variant and lists missing flavor names when the readiness engine reports a branch-disabled flavor', async () => {
     vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
       readinessProduct(
         readinessVariant({
@@ -1780,12 +1781,12 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
     vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([
       notReadyResult('branch-1', 'variant-1', [
         {
-          code: 'FLAVOR_INVENTORY_MAPPING_MISSING',
+          code: 'FLAVOR_NOT_AVAILABLE_AT_BRANCH',
           severity: 'blocking',
           entityType: 'flavor',
           entityId: 'flavor-1',
-          message: 'Regular is missing a ProductInventory mapping for linked flavor "Cheese".',
-          recommendedAction: 'Add a flavor-specific ProductInventory mapping for "Cheese".',
+          message: 'Flavor "Cheese" is disabled at this branch.',
+          recommendedAction: 'Enable flavor "Cheese" for this branch, or remove it from this variant.',
           flavorId: 'flavor-1',
           flavorName: 'Cheese',
         },
@@ -1796,7 +1797,7 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
 
     const variant = result.products[0]?.variants[0];
     expect(variant?.live_ready).toBe(false);
-    expect(variant?.readiness_code).toBe('MISSING_FLAVOR_MAPPING');
+    expect(variant?.readiness_code).toBe('NOT_AVAILABLE_IN_BRANCH');
     expect(variant?.missing_flavor_ids).toEqual(['flavor-1']);
     expect(variant?.blocking_issues[0]?.flavor_name).toBe('Cheese');
   });
@@ -1863,11 +1864,11 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
     vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([
       notReadyResult('branch-1', 'variant-1', [
         {
-          code: 'BASE_INVENTORY_MAPPING_MISSING',
+          code: 'INVENTORY_STOCK_MISSING',
           severity: 'blocking',
           entityType: 'product_variant',
           entityId: 'variant-1',
-          message: 'Missing base mapping.',
+          message: 'Missing inventory stock.',
           recommendedAction: 'Add one.',
         },
       ]),

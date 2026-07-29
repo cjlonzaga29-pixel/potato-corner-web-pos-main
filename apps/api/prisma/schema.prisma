@@ -379,6 +379,7 @@ model Branch {
 
   // CR-006 Phase A
   inventoryStocks InventoryStock[]
+  inventoryStockMovements InventoryStockMovement[]
 
   // CR-001
   exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
@@ -652,6 +653,7 @@ model Flavor {
   transactionItems   TransactionItem[]
   holdOrderItems     HoldOrderItem[]
   productInventory   ProductInventory[]
+  productComponents  ProductComponent[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1075,9 +1077,10 @@ model UnitOfMeasure {
   isActive   Boolean       @default(true) @map("is_active")
 
   items             InventoryItem[]
-  conversionsFrom   UnitConversion[]   @relation("UnitConversionFrom")
-  conversionsTo     UnitConversion[]   @relation("UnitConversionTo")
+  conversionsFrom   UnitConversion[]         @relation("UnitConversionFrom")
+  conversionsTo     UnitConversion[]         @relation("UnitConversionTo")
   recipeComponents  ProductComponent[]
+  stockMovements    InventoryStockMovement[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1120,11 +1123,15 @@ model InventoryItem {
   categoryId     String?   @map("category_id")
   baseUnitId     String    @map("base_unit_id")
   trackInventory Boolean   @default(true) @map("track_inventory")
+  // Default per-unit cost used for valuation when no branch-specific
+  // InventoryStock.unitCost override exists (CR-007 §20 valuation cutover).
+  unitCost       Decimal?  @map("unit_cost") @db.Decimal(10, 4)
   deletedAt      DateTime? @map("deleted_at")
 
   category          InventoryCategory?         @relation(fields: [categoryId], references: [id])
   baseUnit          UnitOfMeasure              @relation(fields: [baseUnitId], references: [id])
   stocks            InventoryStock[]
+  stockMovements    InventoryStockMovement[]
   productComponents ProductComponent[]
   identityMappings  InventoryIdentityMapping[]
 
@@ -1181,6 +1188,10 @@ model InventoryStock {
   quantityOnHand    Decimal  @default(0) @map("quantity_on_hand") @db.Decimal(10, 3)
   lowStockThreshold Decimal? @map("low_stock_threshold") @db.Decimal(10, 3)
   criticalThreshold Decimal? @map("critical_threshold") @db.Decimal(10, 3)
+  // Branch-specific override of InventoryItem.unitCost for valuation (e.g. a
+  // branch paying a different supplier price). Null means "use the item's
+  // default cost" -- not "cost is zero".
+  unitCost          Decimal? @map("unit_cost") @db.Decimal(10, 4)
   version           Int      @default(0)
   /// CR-010A.3 -- watermark set by the reconciliation rebuild: the latest
   /// InventoryMovement.createdAt already folded into quantityOnHand as of
@@ -1201,6 +1212,54 @@ model InventoryStock {
   @@unique([branchId, inventoryItemId])
   @@index([inventoryItemId])
   @@map("inventory_stocks")
+}
+
+enum InventoryStockMovementType {
+  RECEIVING
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  WASTE
+  TRANSFER_IN
+  TRANSFER_OUT
+  PHYSICAL_COUNT
+  SALE
+  SALE_REVERSAL
+}
+
+/// Branch inventory cutover -- append-only ledger for every InventoryStock
+/// quantity change. Written in the same database transaction as the
+/// InventoryStock.quantityOnHand update it explains (never after the fact).
+/// Mirrors the legacy InventoryMovement's role but keyed on InventoryItem
+/// instead of Ingredient, and is additive to it -- InventoryMovement keeps
+/// recording legacy-path changes untouched. referenceType/referenceId are a
+/// loose polymorphic pointer (e.g. "transaction" / transactionId for
+/// SALE/SALE_REVERSAL, "transfer" / a shared transfer id linking the paired
+/// TRANSFER_OUT/TRANSFER_IN rows) -- no FK, since the referenced entity type
+/// varies by movementType.
+model InventoryStockMovement {
+  id                 String                     @id @default(uuid())
+  branchId           String                     @map("branch_id")
+  inventoryItemId    String                     @map("inventory_item_id")
+  movementType       InventoryStockMovementType @map("movement_type")
+  quantityChange     Decimal                    @map("quantity_change") @db.Decimal(10, 3)
+  quantityBefore     Decimal                    @map("quantity_before") @db.Decimal(10, 3)
+  quantityAfter      Decimal                    @map("quantity_after") @db.Decimal(10, 3)
+  unitId             String?                    @map("unit_id")
+  referenceType      String?                    @map("reference_type")
+  referenceId        String?                    @map("reference_id")
+  notes              String?
+  performedByUserId  String?                    @map("performed_by_user_id")
+
+  branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  unit          UnitOfMeasure? @relation(fields: [unitId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([branchId, inventoryItemId])
+  @@index([inventoryItemId])
+  @@index([createdAt])
+  @@map("inventory_stock_movements")
 }
 
 /// CR-007 §10 -- join between a ProductVariant and the InventoryItem it
@@ -1228,6 +1287,12 @@ model ProductComponent {
   recipeUnitId String? @map("recipe_unit_id")
   version      Int     @default(1)
 
+  // Nullable: NULL means this component applies regardless of flavor
+  // (packaging, base powder, etc). Set means it only applies when this
+  // specific flavor is selected -- e.g. the flavor-specific seasoning that
+  // legacy modeled via Flavor.ingredientName/ingredientUnit instead.
+  flavorId String? @map("flavor_id")
+
   // Soft-delete + audit metadata, matching ProductInventory's shape.
   deletedAt DateTime? @map("deleted_at")
   isActive  Boolean   @default(true) @map("is_active")
@@ -1238,6 +1303,7 @@ model ProductComponent {
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   inventoryItem  InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   recipeUnit     UnitOfMeasure? @relation(fields: [recipeUnitId], references: [id])
+  flavor         Flavor?        @relation(fields: [flavorId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

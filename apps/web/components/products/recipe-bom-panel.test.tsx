@@ -3,10 +3,11 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { ProductComponentResponse } from '@potato-corner/shared';
 import { RecipeBomPanel } from './recipe-bom-panel';
 
-const { mockUseAuth, mockUseProductComponents, mockUseDeleteProductComponent, mockFormDialog } = vi.hoisted(() => ({
+const { mockUseAuth, mockUseProductComponents, mockUseDeleteProductComponent, mockUseRecipeReadiness, mockFormDialog } = vi.hoisted(() => ({
   mockUseAuth: vi.fn(),
   mockUseProductComponents: vi.fn(),
   mockUseDeleteProductComponent: vi.fn(),
+  mockUseRecipeReadiness: vi.fn(),
   mockFormDialog: vi.fn((_props: unknown) => null),
 }));
 
@@ -15,6 +16,10 @@ vi.mock('@/hooks/use-auth', () => ({ useAuth: mockUseAuth }));
 vi.mock('@/hooks/queries/use-product-components', () => ({
   useProductComponents: mockUseProductComponents,
   useDeleteProductComponent: mockUseDeleteProductComponent,
+}));
+
+vi.mock('@/hooks/queries/use-recipe-readiness', () => ({
+  useRecipeReadiness: mockUseRecipeReadiness,
 }));
 
 vi.mock('./recipe-component-form-dialog', () => ({
@@ -46,6 +51,7 @@ function renderPanel() {
 
 beforeEach(() => {
   mockUseDeleteProductComponent.mockReturnValue({ mutateAsync: vi.fn() });
+  mockUseRecipeReadiness.mockReturnValue({ data: undefined, isLoading: false });
 });
 
 afterEach(() => {
@@ -137,6 +143,34 @@ describe('RecipeBomPanel — Admin write access', () => {
     if (!lastCall) throw new Error('RecipeComponentFormDialog was not called');
     expect((lastCall[0] as { editingComponent?: ProductComponentResponse; open: boolean }).editingComponent).toBe(COMPONENT);
     expect((lastCall[0] as { open: boolean }).open).toBe(true);
+  });
+});
+
+describe('RecipeBomPanel — Inventory Ready badge', () => {
+  it('shows Inventory Ready when the branch readiness report has no blockers for this variant', () => {
+    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseRecipeReadiness.mockReturnValue({
+      data: { variants: [{ product_variant_id: 'variant-1', status: 'READY' }] },
+      isLoading: false,
+    });
+
+    render(<RecipeBomPanel productVariantId="variant-1" variantLabel="Regular (Small)" branchId="branch-1" />);
+
+    expect(screen.getByText('Inventory Ready')).toBeInTheDocument();
+  });
+
+  it('shows Inventory Incomplete when the branch is missing InventoryStock for a component', () => {
+    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseRecipeReadiness.mockReturnValue({
+      data: { variants: [{ product_variant_id: 'variant-1', status: 'INCOMPLETE_BRANCH_STOCK' }] },
+      isLoading: false,
+    });
+
+    render(<RecipeBomPanel productVariantId="variant-1" variantLabel="Regular (Small)" branchId="branch-1" />);
+
+    expect(screen.getByText('Inventory Incomplete')).toBeInTheDocument();
   });
 });
 

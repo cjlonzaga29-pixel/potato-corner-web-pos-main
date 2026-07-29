@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import type { AttendanceResponse, ExportReadyPayload, ExportRequestInput, MovementResponse, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
+import type {
+  AttendanceResponse,
+  ExportReadyPayload,
+  ExportRequestInput,
+  InventoryStockMovementResponse,
+  ShiftResponse,
+  TransactionResponse,
+} from '@potato-corner/shared';
 import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
@@ -20,7 +27,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
-import { useInventoryMovements, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
+import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
@@ -202,19 +209,50 @@ const discountComplianceColumns: ColumnDef<TransactionResponse>[] = [
   { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-const inventoryMovementColumns: ColumnDef<MovementResponse>[] = [
-  { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-  { id: 'ingredient_name', header: 'Ingredient', accessorKey: 'ingredient_name' },
-  {
-    id: 'movement_type',
-    header: 'Type',
-    cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.movement_type)}</Badge>,
-  },
-  { id: 'quantity_change', header: 'Change', cell: ({ row }) => row.original.quantity_change },
-  { id: 'quantity_before', header: 'Before', cell: ({ row }) => row.original.quantity_before },
-  { id: 'quantity_after', header: 'After', cell: ({ row }) => row.original.quantity_after },
-  { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
-];
+function createInventoryStockMovementColumns(
+  unitCodes: Map<string, string>,
+  itemSkus: Map<string, string | null>,
+  performedByNames: Map<string, string>,
+): ColumnDef<InventoryStockMovementResponse>[] {
+  return [
+    { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
+    { id: 'inventory_item_name', header: 'Item', accessorKey: 'inventory_item_name' },
+    { id: 'sku', header: 'SKU', cell: ({ row }) => itemSkus.get(row.original.inventory_item_id) ?? '—' },
+    {
+      id: 'movement_type',
+      header: 'Type',
+      cell: ({ row }) => <Badge variant="outline">{row.original.movement_type}</Badge>,
+    },
+    { id: 'quantity_before', header: 'Before', cell: ({ row }) => row.original.quantity_before },
+    {
+      id: 'quantity_change',
+      header: 'Change',
+      cell: ({ row }) => (
+        <span className={row.original.quantity_change < 0 ? 'text-destructive' : 'text-success'}>
+          {row.original.quantity_change > 0 ? '+' : ''}
+          {row.original.quantity_change}
+        </span>
+      ),
+    },
+    { id: 'quantity_after', header: 'After', cell: ({ row }) => row.original.quantity_after },
+    {
+      id: 'unit',
+      header: 'Unit',
+      cell: ({ row }) => (row.original.unit_id ? (unitCodes.get(row.original.unit_id) ?? '—') : '—'),
+    },
+    { id: 'reference_type', header: 'Reference Type', cell: ({ row }) => row.original.reference_type ?? '—' },
+    { id: 'reference_id', header: 'Reference ID', cell: ({ row }) => row.original.reference_id ?? '—' },
+    { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
+    {
+      id: 'performed_by',
+      header: 'Performed By',
+      cell: ({ row }) =>
+        row.original.performed_by_user_id
+          ? (performedByNames.get(row.original.performed_by_user_id) ?? row.original.performed_by_user_id)
+          : '—',
+    },
+  ];
+}
 
 function createAttendanceSummaryColumns(employeeNames: Map<string, string>): ColumnDef<AttendanceResponse>[] {
   return [
@@ -265,7 +303,7 @@ export function ReportsView() {
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  useInventoryRealtimeSync(activeBranchId);
+  useInventoryStockRealtimeSync(activeBranchId);
   useAttendanceRealtimeSync();
 
   const currentUserId = useAuthStore((s) => s.user?.id);
@@ -323,9 +361,11 @@ export function ReportsView() {
     date_to: dateRange.to,
     limit: QUERY_LIMIT,
   });
-  const movementsQuery = useInventoryMovements(activeBranchId, { from_date: dateRange.from, to_date: dateRange.to, page: 1, limit: QUERY_LIMIT });
+  const movementsQuery = useInventoryStockMovements(activeBranchId, { from_date: rangeStartISO, to_date: rangeEndISO, page: 1, limit: QUERY_LIMIT });
   const attendanceQuery = useAttendanceByBranch(activeBranchId, { from: rangeStartISO, to: rangeEndISO, page: 1, limit: QUERY_LIMIT });
   const employeesQuery = useEmployees({ branchId: activeBranchId ?? undefined, limit: QUERY_LIMIT });
+  const unitsQuery = useUnitsOfMeasure();
+  const inventoryItemsQuery = useInventoryItems();
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch to view its reports.</p>;
@@ -393,9 +433,11 @@ export function ReportsView() {
   // Inventory Movement
   const movements = movementsQuery.data?.movements ?? [];
   const totalMovements = movements.length;
-  const stockInCount = movements.filter((m) => m.movement_type === 'stock_in').length;
-  const wasteCount = movements.filter((m) => m.movement_type === 'waste').length;
-  const adjustmentsCount = movements.filter((m) => m.movement_type === 'manual_adjustment').length;
+  const receivingCount = movements.filter((m) => m.movement_type === 'RECEIVING').length;
+  const wasteCount = movements.filter((m) => m.movement_type === 'WASTE').length;
+  const adjustmentsCount = movements.filter((m) => m.movement_type === 'ADJUSTMENT_IN' || m.movement_type === 'ADJUSTMENT_OUT').length;
+  const unitCodes = new Map((unitsQuery.data ?? []).map((u) => [u.id, u.code]));
+  const itemSkus = new Map((inventoryItemsQuery.data ?? []).map((i) => [i.id, i.sku]));
 
   // Attendance Summary
   const attendanceRecords = attendanceQuery.data?.records ?? [];
@@ -405,6 +447,7 @@ export function ReportsView() {
   const overtimeMinutesSum = attendanceRecords.reduce((sum, r) => sum + r.overtime_minutes, 0);
   const employeeNames = new Map((employeesQuery.data?.employees ?? []).map((e) => [e.id, `${e.first_name} ${e.last_name}`]));
   const attendanceSummaryColumns = createAttendanceSummaryColumns(employeeNames);
+  const inventoryMovementColumns = createInventoryStockMovementColumns(unitCodes, itemSkus, employeeNames);
 
   return (
     <div className="space-y-6">
@@ -563,7 +606,7 @@ export function ReportsView() {
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Movements" value={totalMovements} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Stock In" value={stockInCount} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Receiving" value={receivingCount} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Waste" value={wasteCount} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Adjustments" value={adjustmentsCount} isLoading={movementsQuery.isLoading} />
           </div>

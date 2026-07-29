@@ -1,18 +1,18 @@
-import type { InventoryAlert } from '@potato-corner/shared';
+import type { InventoryStockAlert } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 
 const MAX_VISIBLE_ALERTS = 10;
-const SEVERITY_ORDER: Record<InventoryAlert['severity'], number> = { critical: 0, low: 1 };
+const SEVERITY_ORDER: Record<InventoryStockAlert['severity'], number> = { critical: 0, low: 1 };
 
 interface DashboardInventoryAlertsProps {
-  alerts: InventoryAlert[] | undefined;
+  alerts: InventoryStockAlert[] | undefined;
   isLoading: boolean;
 }
 
-/** Panel 3 of the supervisor dashboard — low/critical stock alerts for the active branch. Pure display, no data fetching. */
+/** Panel 3 of the supervisor dashboard — low/critical stock alerts for the active branch, sourced from InventoryStock (branch inventory cutover). Pure display, no data fetching. */
 export function DashboardInventoryAlerts({ alerts, isLoading }: DashboardInventoryAlertsProps) {
   if (isLoading) {
     return (
@@ -44,11 +44,9 @@ export function DashboardInventoryAlerts({ alerts, isLoading }: DashboardInvento
         ) : (
           <div className="space-y-2">
             {visible.map((alert) => (
-              <div key={alert.ingredient_id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+              <div key={alert.inventory_item_id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
                 <span className="font-medium">{alert.name}</span>
-                <span className="tabular-nums text-muted-foreground">
-                  {alert.current_stock} {alert.unit}
-                </span>
+                <span className="tabular-nums text-muted-foreground">{alert.quantity_on_hand}</span>
                 <StatusBadge status={alert.severity} type="inventory" />
               </div>
             ))}

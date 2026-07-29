@@ -1,4 +1,7 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { hashToLockId } from '../../lib/pg-lock.js';
+import { sha256Hex } from '../../lib/hash.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -7,12 +10,31 @@ import type {
   CreateUnitConversionData,
   CreateInventoryItemData,
   UpdateInventoryItemData,
+  InventoryStockMovementType,
 } from './universal-inventory.types.js';
 
 const inventoryItemInclude = {
   category: { select: { id: true, name: true } },
   baseUnit: { select: { id: true, code: true, name: true } },
 } as const;
+
+const stockMovementInclude = {
+  inventoryItem: { select: { name: true } },
+} satisfies Prisma.InventoryStockMovementInclude;
+
+export interface CreateStockMovementInput {
+  branchId: string;
+  inventoryItemId: string;
+  movementType: InventoryStockMovementType;
+  quantityChange: Prisma.Decimal | number;
+  quantityBefore: Prisma.Decimal | number;
+  quantityAfter: Prisma.Decimal | number;
+  unitId?: string;
+  referenceType?: string;
+  referenceId?: string;
+  notes?: string;
+  performedByUserId?: string;
+}
 
 /**
  * All Prisma calls for the CR-010 Universal Inventory identity layer
@@ -165,5 +187,113 @@ export const universalInventoryRepository = {
    */
   assignToBranch(branchId: string, inventoryItemId: string) {
     return prisma.inventoryStock.create({ data: { branchId, inventoryItemId } });
+  },
+
+  /** Symmetric fan-out helpers (CR-007 §20 item 9) — every active, tracked InventoryItem gets a zero-stock InventoryStock row in every branch. */
+  listActiveTrackedItemIds(tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.inventoryItem.findMany({
+      where: { deletedAt: null, trackInventory: true },
+      select: { id: true },
+    });
+  },
+  createStockRows(rows: { branchId: string; inventoryItemId: string }[], tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.inventoryStock.createMany({ data: rows, skipDuplicates: true });
+  },
+
+  /** Dry-run support for the branch-inventory-cutover backfill script — how many of the expected (branch, item) rows already exist. */
+  countExistingStockRows(branchIds: string[], inventoryItemIds: string[]) {
+    if (branchIds.length === 0 || inventoryItemIds.length === 0) return Promise.resolve(0);
+    return prisma.inventoryStock.count({
+      where: { branchId: { in: branchIds }, inventoryItemId: { in: inventoryItemIds } },
+    });
+  },
+
+  // --- Branch inventory cutover: direct InventoryStock read/write ---
+
+  /**
+   * Takes a per-(branch, item) advisory lock and returns the current
+   * InventoryStock row, inside the given transaction. Must be called before
+   * any read-then-write of quantityOnHand so concurrent operations against
+   * the same branch/item serialize instead of racing (same idiom as
+   * transactions.service.ts's deductInventoryForSale).
+   */
+  async lockAndGetStock(branchId: string, inventoryItemId: string, tx: Prisma.TransactionClient) {
+    const lockId = hashToLockId(sha256Hex(`${branchId}:${inventoryItemId}`));
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+    return tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
+  },
+
+  updateStockQuantity(branchId: string, inventoryItemId: string, quantityOnHand: Prisma.Decimal, tx: Prisma.TransactionClient) {
+    return tx.inventoryStock.update({
+      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
+      data: { quantityOnHand, version: { increment: 1 } },
+    });
+  },
+
+  createStockMovement(input: CreateStockMovementInput, tx: Prisma.TransactionClient) {
+    return tx.inventoryStockMovement.create({
+      data: {
+        branchId: input.branchId,
+        inventoryItemId: input.inventoryItemId,
+        movementType: input.movementType,
+        quantityChange: input.quantityChange,
+        quantityBefore: input.quantityBefore,
+        quantityAfter: input.quantityAfter,
+        unitId: input.unitId,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        notes: input.notes,
+        performedByUserId: input.performedByUserId,
+      },
+      include: stockMovementInclude,
+    });
+  },
+
+  /** Every active, tracked InventoryItem's stock row at this branch — the sole Branch Inventory list data source (brief §2). */
+  findBranchStockRows(branchId: string) {
+    return prisma.inventoryStock.findMany({
+      where: { branchId, inventoryItem: { deletedAt: null, trackInventory: true } },
+      include: { inventoryItem: { include: inventoryItemInclude } },
+      orderBy: { inventoryItem: { name: 'asc' } },
+    });
+  },
+
+  findStock(branchId: string, inventoryItemId: string) {
+    return prisma.inventoryStock.findUnique({
+      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
+      include: { inventoryItem: { include: inventoryItemInclude } },
+    });
+  },
+
+  async findStockMovements(
+    branchId: string,
+    filters: { inventoryItemId?: string; movementType?: InventoryStockMovementType; fromDate?: Date; toDate?: Date; page: number; limit: number },
+  ) {
+    const where: Prisma.InventoryStockMovementWhereInput = {
+      branchId,
+      ...(filters.inventoryItemId && { inventoryItemId: filters.inventoryItemId }),
+      ...(filters.movementType && { movementType: filters.movementType }),
+      ...((filters.fromDate ?? filters.toDate) && {
+        createdAt: {
+          ...(filters.fromDate && { gte: filters.fromDate }),
+          ...(filters.toDate && { lte: filters.toDate }),
+        },
+      }),
+    };
+
+    const [movements, total] = await Promise.all([
+      prisma.inventoryStockMovement.findMany({
+        where,
+        include: stockMovementInclude,
+        orderBy: { createdAt: 'desc' },
+        skip: (filters.page - 1) * filters.limit,
+        take: filters.limit,
+      }),
+      prisma.inventoryStockMovement.count({ where }),
+    ]);
+
+    return { movements, total };
   },
 };

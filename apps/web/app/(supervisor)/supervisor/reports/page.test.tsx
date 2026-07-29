@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-import type { AttendanceResponse, EmployeeResponse, MovementResponse, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
+import type {
+  AttendanceResponse,
+  EmployeeResponse,
+  InventoryItemResponse,
+  InventoryStockMovementResponse,
+  ShiftResponse,
+  TransactionResponse,
+  UnitOfMeasureResponse,
+} from '@potato-corner/shared';
 import { formatCurrency } from '@/lib/utils';
 import SupervisorReportsPage from './page';
 
@@ -10,8 +18,10 @@ const {
   mockUseShiftsRealtimeSync,
   mockUseTransactions,
   mockUseTransactionsRealtimeSync,
-  mockUseInventoryMovements,
-  mockUseInventoryRealtimeSync,
+  mockUseInventoryStockMovements,
+  mockUseInventoryStockRealtimeSync,
+  mockUseUnitsOfMeasure,
+  mockUseInventoryItems,
   mockUseAttendanceByBranch,
   mockUseAttendanceRealtimeSync,
   mockUseEmployees,
@@ -24,8 +34,10 @@ const {
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactions: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
-  mockUseInventoryMovements: vi.fn(),
-  mockUseInventoryRealtimeSync: vi.fn(),
+  mockUseInventoryStockMovements: vi.fn(),
+  mockUseInventoryStockRealtimeSync: vi.fn(),
+  mockUseUnitsOfMeasure: vi.fn(),
+  mockUseInventoryItems: vi.fn(),
   mockUseAttendanceByBranch: vi.fn(),
   mockUseAttendanceRealtimeSync: vi.fn(),
   mockUseEmployees: vi.fn(),
@@ -48,9 +60,11 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
 }));
 
-vi.mock('@/hooks/queries/use-inventory', () => ({
-  useInventoryMovements: mockUseInventoryMovements,
-  useInventoryRealtimeSync: mockUseInventoryRealtimeSync,
+vi.mock('@/hooks/queries/use-universal-inventory', () => ({
+  useInventoryStockMovements: mockUseInventoryStockMovements,
+  useInventoryStockRealtimeSync: mockUseInventoryStockRealtimeSync,
+  useUnitsOfMeasure: mockUseUnitsOfMeasure,
+  useInventoryItems: mockUseInventoryItems,
 }));
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
@@ -173,23 +187,53 @@ function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
   };
 }
 
-function movement(overrides: Partial<MovementResponse> = {}): MovementResponse {
+function movement(overrides: Partial<InventoryStockMovementResponse> = {}): InventoryStockMovementResponse {
   return {
     id: 'movement-1',
     branch_id: 'branch-1',
-    ingredient_id: 'ingredient-1',
-    ingredient_name: 'Cheddar Powder',
-    movement_type: 'stock_in',
+    inventory_item_id: 'item-1',
+    inventory_item_name: 'Cheddar Powder',
+    movement_type: 'RECEIVING',
     quantity_change: 10,
     quantity_before: 5,
     quantity_after: 15,
+    unit_id: null,
+    reference_type: null,
     reference_id: null,
     notes: null,
-    image_proof_url: null,
-    image_proof_type: null,
-    approved_by: null,
-    recorded_by: null,
+    performed_by_user_id: null,
     created_at: '2026-07-16T02:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function unitOfMeasure(overrides: Partial<UnitOfMeasureResponse> = {}): UnitOfMeasureResponse {
+  return {
+    id: 'unit-1',
+    code: 'pc',
+    name: 'Piece',
+    dimension: 'COUNT',
+    is_base_unit: true,
+    is_active: true,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function inventoryItem(overrides: Partial<InventoryItemResponse> = {}): InventoryItemResponse {
+  return {
+    id: 'item-1',
+    name: 'Cheddar Powder',
+    sku: null,
+    barcode: null,
+    category_id: null,
+    category_name: null,
+    base_unit_id: 'unit-1',
+    base_unit_code: 'pc',
+    track_inventory: true,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
 }
@@ -285,11 +329,13 @@ beforeEach(() => {
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
   mockUseShiftsRealtimeSync.mockReturnValue(undefined);
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
-  mockUseInventoryRealtimeSync.mockReturnValue(undefined);
+  mockUseInventoryStockRealtimeSync.mockReturnValue(undefined);
   mockUseAttendanceRealtimeSync.mockReturnValue(undefined);
   mockTransactionsByStatus({});
   mockShiftsByStatus({});
-  mockUseInventoryMovements.mockReturnValue({ data: { movements: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
+  mockUseInventoryStockMovements.mockReturnValue({ data: { movements: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
+  mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure()], isLoading: false });
+  mockUseInventoryItems.mockReturnValue({ data: [inventoryItem()], isLoading: false });
   mockUseAttendanceByBranch.mockReturnValue({ data: { records: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
   mockUseEmployees.mockReturnValue({ data: { employees: [], total: 0, page: 1, limit: 100 }, isLoading: false });
   mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string } }) => unknown) => selector({ user: { id: 'user-1' } }));
@@ -389,12 +435,12 @@ describe('SupervisorReportsPage', () => {
   });
 
   it('renders movement-type KPI counts and rows on the Inventory Movement tab', () => {
-    mockUseInventoryMovements.mockReturnValue({
+    mockUseInventoryStockMovements.mockReturnValue({
       data: {
         movements: [
-          movement({ id: 'm1', movement_type: 'stock_in' }),
-          movement({ id: 'm2', movement_type: 'waste' }),
-          movement({ id: 'm3', movement_type: 'manual_adjustment' }),
+          movement({ id: 'm1', movement_type: 'RECEIVING' }),
+          movement({ id: 'm2', movement_type: 'WASTE' }),
+          movement({ id: 'm3', movement_type: 'ADJUSTMENT_IN' }),
         ],
         total: 3,
         page: 1,
@@ -410,10 +456,10 @@ describe('SupervisorReportsPage', () => {
 
     expect(screen.getByText('Total Movements')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
-    // "Stock In"/"Waste" also appear as movement-type badges in the table
+    // "RECEIVING"/"WASTE" also appear as movement-type badges in the table
     // rows below the KPI row, so more than one match is expected here.
-    expect(screen.getAllByText('Stock In').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Waste').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('RECEIVING').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('WASTE').length).toBeGreaterThan(0);
     expect(screen.getByText('Adjustments')).toBeInTheDocument();
   });
 
@@ -485,7 +531,7 @@ describe('SupervisorReportsPage', () => {
     render(<SupervisorReportsPage />);
     expect(mockUseShiftsRealtimeSync).toHaveBeenCalled();
     expect(mockUseTransactionsRealtimeSync).toHaveBeenCalled();
-    expect(mockUseInventoryRealtimeSync).toHaveBeenCalled();
+    expect(mockUseInventoryStockRealtimeSync).toHaveBeenCalled();
     expect(mockUseAttendanceRealtimeSync).toHaveBeenCalled();
   });
 

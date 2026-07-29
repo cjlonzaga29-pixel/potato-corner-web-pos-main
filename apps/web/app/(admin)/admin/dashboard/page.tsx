@@ -5,7 +5,7 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats } from '@/hooks/queries/use-branches';
-import { useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
+import { useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
 import { useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
@@ -35,7 +35,7 @@ function AdminDashboardPageContent() {
   useBranchRealtimeSync();
   useExpensesRealtimeSync();
   useAttendanceRealtimeSync();
-  useInventoryRealtimeSync(branchFilter);
+  useInventoryStockRealtimeSync(branchFilter);
   useAdminInventoryRollupRealtimeSync();
 
   const { data: activeShiftsData, isLoading: isLoadingActiveShifts } = useShifts({

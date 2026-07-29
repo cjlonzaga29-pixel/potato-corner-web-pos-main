@@ -174,6 +174,24 @@ export const reportsService = {
   getBranchComparisonReport: (branchId: string | null, actorId: string, actorRole: string) =>
     precomputedReport('BRANCH_COMPARISON', branchId, actorId, actorRole),
 
+  // Admin Inventory Valuation rollup — InventoryStock/InventoryItem/Branch-sourced,
+  // org-wide. Computed fresh on every call (no snapshot cache to go stale): the admin
+  // dashboard already refetches this on inventory-affecting realtime events, so a
+  // snapshot layer here would only reintroduce the staleness this task removes.
+  async getInventoryValuationRollupReport(actorId: string, actorRole: string) {
+    const data = await reportsRepository.getInventoryValuationRollup();
+    await recordAuditLog({
+      action: 'REPORT_ACCESSED',
+      entityType: 'report',
+      entityId: 'ADMIN_INVENTORY_VALUATION_ROLLUP',
+      actorId,
+      actorRole,
+      branchId: null,
+      afterState: { reportType: 'ADMIN_INVENTORY_VALUATION_ROLLUP', branchCount: data.branches.length },
+    });
+    return data;
+  },
+
   async getPaymentMethodMixReport(filters: ReportFilters, actorId: string, actorRole: string) {
     const resolved = defaultRealtimeFilters(filters);
     const data = await reportsRepository.getPaymentMethodMix(resolved);

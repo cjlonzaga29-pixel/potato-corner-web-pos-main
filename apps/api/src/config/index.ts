@@ -52,6 +52,49 @@ export const shadowBomDeductionBranchIdsSchema = z
   });
 
 /**
+ * POS checkout — createTransaction's interactive $transaction (see
+ * transactions.service.ts) does a bounded but multi-round-trip write: the
+ * transaction/items insert plus a lock/read/update/movement-insert cycle per
+ * BOM component. Prisma's un-configured defaults (2s maxWait, 5s timeout)
+ * are sized for single-statement transactions and reliably trip P2028
+ * ("Transaction already closed") for a several-component BOM under
+ * realistic remote-DB latency or transient connection-pool contention.
+ * Scoped to this one call site (not a global Prisma default) rather than
+ * raising it everywhere -- most other $transaction calls in this codebase
+ * are single- or few-statement and shouldn't be allowed to hold a
+ * connection open for 30s if something hangs.
+ */
+export const posTransactionMaxWaitMsSchema = z.coerce
+  .number()
+  .int('PRISMA_TRANSACTION_MAX_WAIT_MS must be an integer')
+  .positive('PRISMA_TRANSACTION_MAX_WAIT_MS must be greater than 0')
+  .max(60_000, 'PRISMA_TRANSACTION_MAX_WAIT_MS must be 60000 or less')
+  .default(10_000);
+
+export const posTransactionTimeoutMsSchema = z.coerce
+  .number()
+  .int('PRISMA_TRANSACTION_TIMEOUT_MS must be an integer')
+  .positive('PRISMA_TRANSACTION_TIMEOUT_MS must be greater than 0')
+  .max(120_000, 'PRISMA_TRANSACTION_TIMEOUT_MS must be 120000 or less')
+  .default(30_000);
+
+/**
+ * maxWait only bounds how long checkout waits to acquire a transaction slot;
+ * timeout bounds the entire checkout write once it starts. A maxWait longer
+ * than the timeout is never sane (the wait alone could exhaust the whole
+ * budget), so this is rejected at boot rather than left to surface as a
+ * confusing runtime failure.
+ */
+export function assertPosTransactionTimingSane(maxWaitMs: number, timeoutMs: number): void {
+  if (maxWaitMs > timeoutMs) {
+    throw new Error(
+      `PRISMA_TRANSACTION_MAX_WAIT_MS (${maxWaitMs}) must not exceed PRISMA_TRANSACTION_TIMEOUT_MS (${timeoutMs}) -- ` +
+        'maxWait only bounds the wait for a transaction slot; timeout bounds the whole checkout write.',
+    );
+  }
+}
+
+/**
  * Validates process.env at boot. Fails fast with a clear, field-level error
  * if a required variable is missing, instead of surfacing a confusing
  * failure deep inside a request handler later.
@@ -108,6 +151,8 @@ const envSchema = z.object({
    * true -- see shadowBomDeductionBranchIds below for the parsed set.
    */
   SHADOW_BOM_DEDUCTION_BRANCH_IDS: shadowBomDeductionBranchIdsSchema,
+  PRISMA_TRANSACTION_MAX_WAIT_MS: posTransactionMaxWaitMsSchema,
+  PRISMA_TRANSACTION_TIMEOUT_MS: posTransactionTimeoutMsSchema,
 });
 
 /**
@@ -140,6 +185,7 @@ function loadConfig() {
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
   assertPgBouncerCompatible(result.data.DATABASE_URL);
+  assertPosTransactionTimingSane(result.data.PRISMA_TRANSACTION_MAX_WAIT_MS, result.data.PRISMA_TRANSACTION_TIMEOUT_MS);
   return result.data;
 }
 
@@ -166,6 +212,11 @@ export const config = {
   inventoryProjectionOutboxEnabled: env.INVENTORY_PROJECTION_OUTBOX_ENABLED,
   shadowBomDeductionEnabled: env.SHADOW_BOM_DEDUCTION_ENABLED,
   shadowBomDeductionBranchIds: env.SHADOW_BOM_DEDUCTION_BRANCH_IDS,
+  /** POS checkout's createTransaction $transaction options — see posTransactionMaxWaitMsSchema above. */
+  posTransaction: {
+    maxWaitMs: env.PRISMA_TRANSACTION_MAX_WAIT_MS,
+    timeoutMs: env.PRISMA_TRANSACTION_TIMEOUT_MS,
+  },
 } as const;
 
 /**

@@ -14,6 +14,9 @@ vi.mock('../../lib/prisma.js', () => {
     productVariant: { findMany: vi.fn() },
     flavor: { findMany: vi.fn() },
     ingredient: { findMany: vi.fn() },
+    inventoryStock: { findMany: vi.fn() },
+    inventoryItem: { count: vi.fn() },
+    inventoryStockMovement: { findMany: vi.fn(), groupBy: vi.fn(), count: vi.fn() },
     reportSnapshot: { create: vi.fn(), findFirst: vi.fn(), deleteMany: vi.fn() },
     auditLog: { findMany: vi.fn() },
   };
@@ -187,26 +190,275 @@ describe('reportsRepository.getFlavorPerformance', () => {
   });
 });
 
-describe('reportsRepository.getInventoryValuation', () => {
-  it('derives current_stock from summed InventoryMovement.quantityChange, not Ingredient.currentStock', async () => {
-    vi.mocked(prisma.ingredient.findMany).mockResolvedValue([
-      { id: 'ing-1', name: 'Potato', branchId: 'b1', unit: 'kg', unitCost: decimal(50), lowStockThreshold: decimal(10), criticalThreshold: decimal(5) },
+describe('reportsRepository.getInventoryMovement', () => {
+  it('reads InventoryStockMovement/InventoryItem, not the legacy InventoryMovement/Ingredient tables', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        id: 'mv-1',
+        branchId: 'b1',
+        inventoryItemId: 'item-1',
+        movementType: 'SALE',
+        quantityChange: decimal(-2),
+        quantityBefore: decimal(10),
+        quantityAfter: decimal(8),
+        performedByUserId: 'u1',
+        createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Potato', baseUnit: { code: 'kg' } },
+      },
     ] as never);
-    vi.mocked(prisma.inventoryMovement.groupBy).mockResolvedValue([{ ingredientId: 'ing-1', _sum: { quantityChange: decimal(20) } }] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
+
+    const rows = await reportsRepository.getInventoryMovement({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows).toEqual([
+      {
+        movement_id: 'mv-1',
+        branch_id: 'b1',
+        branch_name: 'SM North',
+        ingredient_id: 'item-1',
+        ingredient_name: 'Potato',
+        unit: 'kg',
+        movement_type: 'SALE',
+        quantity_change: -2,
+        quantity_before: 10,
+        quantity_after: 8,
+        recorded_by_name: 'Juan Cruz',
+        created_at: '2026-07-01T10:00:00.000Z',
+      },
+    ]);
+    expect(prisma.inventoryMovement.findMany).not.toHaveBeenCalled();
+  });
+
+  it('respects the branchId filter, date range, pagination and createdAt desc ordering', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getInventoryMovement({
+      branchId: 'b1',
+      dateFrom: new Date('2026-07-01T00:00:00.000Z'),
+      dateTo: new Date('2026-07-31T23:59:59.999Z'),
+      page: 2,
+      limit: 10,
+    });
+
+    expect(prisma.inventoryStockMovement.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          branchId: 'b1',
+          createdAt: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-31T23:59:59.999Z') },
+        }),
+        orderBy: { createdAt: 'desc' },
+        skip: 10,
+        take: 10,
+      }),
+    );
+  });
+
+  it('leaves recorded_by_name null without querying users when performedByUserId is null', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        id: 'mv-1', branchId: 'b1', inventoryItemId: 'item-1', movementType: 'PHYSICAL_COUNT',
+        quantityChange: decimal(0), quantityBefore: decimal(10), quantityAfter: decimal(10),
+        performedByUserId: null, createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', baseUnit: { code: 'kg' } },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryMovement(baseFilters);
+
+    expect(rows[0]?.recorded_by_name).toBeNull();
+    expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('reportsRepository.getInventoryValuation', () => {
+  it('derives current_stock from InventoryStock.quantityOnHand, not Ingredient/InventoryMovement', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-1',
+        quantityOnHand: decimal(20),
+        lowStockThreshold: decimal(10),
+        criticalThreshold: decimal(5),
+        unitCost: decimal(50),
+        inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'kg' } },
+      },
+    ] as never);
 
     const rows = await reportsRepository.getInventoryValuation({ branchId: 'b1', page: 1, limit: 25 });
 
-    expect(rows).toEqual([{ ingredient_id: 'ing-1', ingredient_name: 'Potato', branch_id: 'b1', unit: 'kg', current_stock: 20, unit_cost: 50, total_value: 1000, status: 'ok' }]);
+    expect(rows).toEqual([{ ingredient_id: 'item-1', ingredient_name: 'Potato', branch_id: 'b1', unit: 'kg', current_stock: 20, unit_cost: 50, total_value: 1000, status: 'ok' }]);
+    expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('maps low/critical InventoryStock thresholds to the ok/low/critical status literal', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { branchId: 'b1', inventoryItemId: 'item-low', quantityOnHand: decimal(8), lowStockThreshold: decimal(10), criticalThreshold: decimal(5), unitCost: decimal(1), inventoryItem: { name: 'Cheese', unitCost: null, baseUnit: { code: 'kg' } } },
+      { branchId: 'b1', inventoryItemId: 'item-crit', quantityOnHand: decimal(2), lowStockThreshold: decimal(10), criticalThreshold: decimal(5), unitCost: decimal(1), inventoryItem: { name: 'Ketchup', unitCost: null, baseUnit: { code: 'L' } } },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryValuation({ page: 1, limit: 25 });
+
+    expect(rows.find((r) => r.ingredient_id === 'item-low')?.status).toBe('low');
+    expect(rows.find((r) => r.ingredient_id === 'item-crit')?.status).toBe('critical');
+  });
+});
+
+describe('reportsRepository.getInventoryValuationRollup', () => {
+  function stockRow(overrides: {
+    branchId: string;
+    quantityOnHand: number;
+    stockUnitCost?: number | null;
+    itemUnitCost?: number | null;
+    lowStockThreshold?: number | null;
+    criticalThreshold?: number | null;
+  }) {
+    return {
+      branchId: overrides.branchId,
+      quantityOnHand: decimal(overrides.quantityOnHand),
+      lowStockThreshold: overrides.lowStockThreshold != null ? decimal(overrides.lowStockThreshold) : null,
+      criticalThreshold: overrides.criticalThreshold != null ? decimal(overrides.criticalThreshold) : null,
+      unitCost: overrides.stockUnitCost != null ? decimal(overrides.stockUnitCost) : null,
+      inventoryItem: { unitCost: overrides.itemUnitCost != null ? decimal(overrides.itemUnitCost) : null },
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(prisma.inventoryStockMovement.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.inventoryItem.count).mockResolvedValue(0 as never);
+  });
+
+  it('TEST A: 500 pcs of Large Cup at $0.08 unit cost values at $40.00', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 500, itemUnitCost: 0.08 }),
+    ] as never);
+    vi.mocked(prisma.inventoryItem.count).mockResolvedValue(1 as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    expect(result.branches).toEqual([
+      expect.objectContaining({ branch_id: 'b1', branch_name: 'SM North', inventory_item_count: 1, total_inventory_value: 40 }),
+    ]);
+    expect(result.summary.total_inventory_value).toBe(40);
+  });
+
+  it('TEST B: sums branch totals into the admin summary total across multiple branches', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([
+      { id: 'b1', name: 'Branch A' },
+      { id: 'b2', name: 'Branch B' },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 500, itemUnitCost: 0.08 }),
+      stockRow({ branchId: 'b2', quantityOnHand: 1000, itemUnitCost: 0.08 }),
+    ] as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    const byBranch = new Map(result.branches.map((b) => [b.branch_id, b.total_inventory_value]));
+    expect(byBranch.get('b1')).toBe(40);
+    expect(byBranch.get('b2')).toBe(80);
+    expect(result.summary.total_inventory_value).toBe(120);
+  });
+
+  it('TEST C: a zero-quantity stock row counts toward inventory_item_count with $0.00 value', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 0, itemUnitCost: 5 }),
+    ] as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    expect(result.branches[0]).toEqual(
+      expect.objectContaining({ branch_id: 'b1', inventory_item_count: 1, total_inventory_value: 0, out_of_stock_count: 1 }),
+    );
+  });
+
+  it('TEST D: healthy/low/critical/out-of-stock counts match the InventoryStock alert threshold rule', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 100, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // healthy
+      stockRow({ branchId: 'b1', quantityOnHand: 15, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // low
+      stockRow({ branchId: 'b1', quantityOnHand: 3, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // critical
+      stockRow({ branchId: 'b1', quantityOnHand: 0, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // critical + out of stock
+    ] as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    expect(result.branches[0]).toEqual(
+      expect.objectContaining({ low_stock_count: 1, critical_stock_count: 2, out_of_stock_count: 1 }),
+    );
+    expect(result.summary.total_low_stock_rows).toBe(1);
+    expect(result.summary.total_critical_stock_rows).toBe(2);
+    expect(result.summary.total_out_of_stock_rows).toBe(1);
+  });
+
+  it('TEST E: never reads the legacy Ingredient or InventoryMovement tables', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([stockRow({ branchId: 'b1', quantityOnHand: 10, itemUnitCost: 1 })] as never);
+
+    await reportsRepository.getInventoryValuationRollup();
+
+    expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('prefers InventoryStock.unit_cost over InventoryItem.unit_cost when a branch-specific override exists', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 10, stockUnitCost: 2, itemUnitCost: 1 }),
+    ] as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    expect(result.branches[0]?.total_inventory_value).toBe(20);
+  });
+});
+
+describe('reportsRepository.getBranchComparison', () => {
+  it('derives low_stock_ingredient_count from InventoryStock, not the legacy Ingredient/InventoryMovement tables', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
+      { branchId: 'b1', _sum: { totalAmount: decimal(500) }, _count: { _all: 5 } },
+    ] as never);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([{ branchId: 'b1' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { branchId: 'b1', quantityOnHand: decimal(3), lowStockThreshold: decimal(10) },
+      { branchId: 'b1', quantityOnHand: decimal(50), lowStockThreshold: decimal(10) },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getBranchComparison(baseFilters);
+
+    expect(rows).toEqual([
+      { branch_id: 'b1', branch_name: 'SM North', gross_sales: 500, transaction_count: 5, active_shift_count: 1, low_stock_ingredient_count: 1 },
+    ]);
+    expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('ignores stock rows with no low_stock_threshold configured', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { branchId: 'b1', quantityOnHand: decimal(0), lowStockThreshold: null },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getBranchComparison(baseFilters);
+
+    expect(rows[0]?.low_stock_ingredient_count).toBe(0);
   });
 });
 
 describe('reportsRepository.getInventoryAnalytics', () => {
   const dateFrom = new Date('2026-06-23T00:00:00.000Z');
   const dateTo = new Date('2026-07-23T00:00:00.000Z');
-  const ingredientRows = [
-    { id: 'ing-fast', name: 'Potato', unit: 'kg', currentStock: decimal(100), lowStockThreshold: decimal(10), unitCost: decimal(5), branchId: 'b1' },
-    { id: 'ing-slow', name: 'Cheese Powder', unit: 'kg', currentStock: decimal(50), lowStockThreshold: decimal(10), unitCost: decimal(20), branchId: 'b1' },
-    { id: 'ing-low', name: 'Ketchup', unit: 'L', currentStock: decimal(5), lowStockThreshold: decimal(4), unitCost: decimal(10), branchId: 'b1' },
+  const stockRows = [
+    { branchId: 'b1', inventoryItemId: 'item-fast', quantityOnHand: decimal(100), lowStockThreshold: decimal(10), unitCost: null, inventoryItem: { name: 'Potato', unitCost: decimal(5), baseUnit: { code: 'kg' } } },
+    { branchId: 'b1', inventoryItemId: 'item-slow', quantityOnHand: decimal(50), lowStockThreshold: decimal(10), unitCost: null, inventoryItem: { name: 'Cheese Powder', unitCost: decimal(20), baseUnit: { code: 'kg' } } },
+    { branchId: 'b1', inventoryItemId: 'item-low', quantityOnHand: decimal(5), lowStockThreshold: decimal(4), unitCost: null, inventoryItem: { name: 'Ketchup', unitCost: decimal(10), baseUnit: { code: 'L' } } },
   ];
 
   function mockPrismaCalls(overrides: {
@@ -214,46 +466,46 @@ describe('reportsRepository.getInventoryAnalytics', () => {
     waste?: unknown[];
     lastMovement?: unknown[];
     reorderConsumption?: unknown[];
-    ingredients?: unknown[];
+    stocks?: unknown[];
     branches?: unknown[];
     totalMovements?: number;
   }) {
-    vi.mocked(prisma.inventoryMovement.groupBy)
+    vi.mocked(prisma.inventoryStockMovement.groupBy)
       .mockResolvedValueOnce((overrides.consumption ?? []) as never)
       .mockResolvedValueOnce((overrides.lastMovement ?? []) as never)
       .mockResolvedValueOnce((overrides.reorderConsumption ?? []) as never);
-    vi.mocked(prisma.inventoryMovement.findMany).mockResolvedValue((overrides.waste ?? []) as never);
-    vi.mocked(prisma.ingredient.findMany).mockResolvedValue((overrides.ingredients ?? ingredientRows) as never);
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue((overrides.waste ?? []) as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue((overrides.stocks ?? stockRows) as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue((overrides.branches ?? [{ id: 'b1', name: 'SM North' }]) as never);
-    vi.mocked(prisma.inventoryMovement.count).mockResolvedValue((overrides.totalMovements ?? 0) as never);
+    vi.mocked(prisma.inventoryStockMovement.count).mockResolvedValue((overrides.totalMovements ?? 0) as never);
   }
 
   it('returns fast movers ordered by consumption desc', async () => {
     mockPrismaCalls({
       consumption: [
-        { ingredientId: 'ing-slow', _sum: { quantityChange: decimal(-5) } },
-        { ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-50) } },
+        { inventoryItemId: 'item-slow', branchId: 'b1', _sum: { quantityChange: decimal(-5) } },
+        { inventoryItemId: 'item-fast', branchId: 'b1', _sum: { quantityChange: decimal(-50) } },
       ],
     });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
-    expect(result.fast_movers.map((m) => m.ingredient_id)).toEqual(['ing-fast', 'ing-slow']);
+    expect(result.fast_movers.map((m) => m.ingredient_id)).toEqual(['item-fast', 'item-slow']);
     expect(result.fast_movers[0]).toMatchObject({ total_consumed: 50, avg_daily_consumption: 1.667 });
   });
 
   it('returns slow movers ordered by ascending consumption', async () => {
     mockPrismaCalls({
       consumption: [
-        { ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-50) } },
-        { ingredientId: 'ing-slow', _sum: { quantityChange: decimal(-5) } },
+        { inventoryItemId: 'item-fast', branchId: 'b1', _sum: { quantityChange: decimal(-50) } },
+        { inventoryItemId: 'item-slow', branchId: 'b1', _sum: { quantityChange: decimal(-5) } },
       ],
-      lastMovement: [{ ingredientId: 'ing-slow', _max: { createdAt: new Date('2026-07-10T00:00:00.000Z') } }],
+      lastMovement: [{ inventoryItemId: 'item-slow', branchId: 'b1', _max: { createdAt: new Date('2026-07-10T00:00:00.000Z') } }],
     });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
-    expect(result.slow_movers.map((m) => m.ingredient_id)).toEqual(['ing-slow', 'ing-fast']);
+    expect(result.slow_movers.map((m) => m.ingredient_id)).toEqual(['item-slow', 'item-fast']);
     const slowest = result.slow_movers[0];
     expect(slowest).toBeDefined();
     expect(slowest?.days_since_last_movement).toBe(13);
@@ -262,9 +514,9 @@ describe('reportsRepository.getInventoryAnalytics', () => {
   it('computes waste trends grouped by day', async () => {
     mockPrismaCalls({
       waste: [
-        { ingredientId: 'ing-fast', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z') },
-        { ingredientId: 'ing-fast', quantityChange: decimal(-3), createdAt: new Date('2026-07-10T20:00:00.000Z') },
-        { ingredientId: 'ing-slow', quantityChange: decimal(-1), createdAt: new Date('2026-07-11T08:00:00.000Z') },
+        { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z') },
+        { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-3), createdAt: new Date('2026-07-10T20:00:00.000Z') },
+        { inventoryItemId: 'item-slow', branchId: 'b1', quantityChange: decimal(-1), createdAt: new Date('2026-07-11T08:00:00.000Z') },
       ],
     });
 
@@ -278,7 +530,7 @@ describe('reportsRepository.getInventoryAnalytics', () => {
 
   it('computes turnover rate per branch', async () => {
     mockPrismaCalls({
-      consumption: [{ ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-10) } }],
+      consumption: [{ inventoryItemId: 'item-fast', branchId: 'b1', _sum: { quantityChange: decimal(-10) } }],
     });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
@@ -291,27 +543,27 @@ describe('reportsRepository.getInventoryAnalytics', () => {
 
   it('computes reorder recommendations with days until stockout', async () => {
     mockPrismaCalls({
-      reorderConsumption: [{ ingredientId: 'ing-low', _sum: { quantityChange: decimal(-30) } }],
+      reorderConsumption: [{ inventoryItemId: 'item-low', branchId: 'b1', _sum: { quantityChange: decimal(-30) } }],
     });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
     expect(result.reorder_recommendations).toHaveLength(1);
-    expect(result.reorder_recommendations[0]).toMatchObject({ ingredient_id: 'ing-low', current_stock: 5, avg_daily_consumption: 1, days_until_stockout: 5 });
+    expect(result.reorder_recommendations[0]).toMatchObject({ ingredient_id: 'item-low', current_stock: 5, avg_daily_consumption: 1, days_until_stockout: 5 });
   });
 
   it('respects branchId filter', async () => {
-    mockPrismaCalls({ ingredients: [ingredientRows[0]] });
+    mockPrismaCalls({ stocks: [stockRows[0]] });
 
     await reportsRepository.getInventoryAnalytics({ branchId: 'b1', dateFrom, dateTo, periodDays: 30 });
 
-    expect(prisma.ingredient.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }));
-    expect(prisma.inventoryMovement.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }));
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }));
+    expect(prisma.inventoryStockMovement.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }));
   });
 
   it('respects the period parameter when computing avg daily consumption', async () => {
     mockPrismaCalls({
-      consumption: [{ ingredientId: 'ing-fast', _sum: { quantityChange: decimal(-90) } }],
+      consumption: [{ inventoryItemId: 'item-fast', branchId: 'b1', _sum: { quantityChange: decimal(-90) } }],
     });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 90 });
@@ -322,7 +574,7 @@ describe('reportsRepository.getInventoryAnalytics', () => {
   });
 
   it('returns empty structures gracefully with no data', async () => {
-    mockPrismaCalls({ ingredients: [] });
+    mockPrismaCalls({ stocks: [] });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
@@ -334,6 +586,17 @@ describe('reportsRepository.getInventoryAnalytics', () => {
       reorder_recommendations: [],
       summary: { total_movements: 0, total_waste_cost: 0, total_consumption_cost: 0, avg_turnover_rate: 0 },
     });
+  });
+
+  it('never reads the legacy Ingredient or InventoryMovement tables', async () => {
+    mockPrismaCalls({});
+
+    await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.groupBy).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.count).not.toHaveBeenCalled();
   });
 });
 
@@ -403,12 +666,13 @@ describe('reportsRepository.countRows', () => {
     expect(prisma.transaction.count).toHaveBeenCalledWith({ where: expect.objectContaining({ status: { in: ['voided', 'refunded'] }, branchId: 'b1' }) });
   });
 
-  it('dispatches INVENTORY_MOVEMENT to inventoryMovement.count', async () => {
-    vi.mocked(prisma.inventoryMovement.count).mockResolvedValue(3);
+  it('dispatches INVENTORY_MOVEMENT to inventoryStockMovement.count, not the legacy inventoryMovement.count', async () => {
+    vi.mocked(prisma.inventoryStockMovement.count).mockResolvedValue(3);
 
     const count = await reportsRepository.countRows('INVENTORY_MOVEMENT', { page: 1, limit: 25 });
 
     expect(count).toBe(3);
+    expect(prisma.inventoryMovement.count).not.toHaveBeenCalled();
   });
 });
 

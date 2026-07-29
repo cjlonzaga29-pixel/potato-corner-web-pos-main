@@ -18,6 +18,7 @@ vi.mock('./reports.service.js', () => ({
     getFlavorPerformanceReport: vi.fn(),
     getEmployeePerformanceReport: vi.fn(),
     getInventoryValuationReport: vi.fn(),
+    getInventoryValuationRollupReport: vi.fn(),
     getBranchComparisonReport: vi.fn(),
     requestExport: vi.fn(),
   },
@@ -106,6 +107,7 @@ describe('reports routes — authentication', () => {
     { method: 'get', path: '/flavor-performance' },
     { method: 'get', path: '/employee-performance' },
     { method: 'get', path: '/inventory-valuation' },
+    { method: 'get', path: '/inventory-valuation-rollup' },
     { method: 'get', path: '/branch-comparison' },
     { method: 'post', path: '/export' },
   ];
@@ -140,6 +142,32 @@ describe('GET /fraud-alert-summary — role guard', () => {
     const req = mockReq(authHeader(token));
     const res = mockRes();
     vi.mocked(reportsService.getFraudAlertSummaryReport).mockResolvedValue({ report_type: 'FRAUD_ALERT_SUMMARY', data: [] } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('GET /inventory-valuation-rollup — role guard', () => {
+  it('returns 403 for supervisor', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'get', '/inventory-valuation-rollup');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(reportsService.getInventoryValuationRollupReport).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 for super_admin', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'get', '/inventory-valuation-rollup');
+    const token = generateSuperAdminToken();
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+    vi.mocked(reportsService.getInventoryValuationRollupReport).mockResolvedValue({ branches: [], summary: {} } as never);
 
     await runHandlers(handlers, req, res);
 

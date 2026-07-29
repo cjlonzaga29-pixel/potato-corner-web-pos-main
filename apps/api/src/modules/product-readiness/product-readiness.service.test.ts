@@ -9,15 +9,10 @@ vi.mock('../transactions/transactions.repository.js', () => ({
   },
 }));
 
-vi.mock('../product-inventory/product-inventory.repository.js', () => ({
-  productInventoryRepository: {
-    findActiveMappingsForVariants: vi.fn(),
-  },
-}));
-
 vi.mock('../../lib/prisma.js', () => ({
   prisma: {
     productComponent: { findMany: vi.fn() },
+    inventoryStock: { findMany: vi.fn() },
   },
 }));
 
@@ -28,7 +23,6 @@ vi.mock('../products/products.repository.js', () => ({
 }));
 
 const { transactionsRepository } = await import('../transactions/transactions.repository.js');
-const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
 const { productsRepository } = await import('../products/products.repository.js');
 const { productReadinessService } = await import('./product-readiness.service.js');
@@ -41,6 +35,7 @@ const BRANCH_1 = 'branch-1';
 const PRODUCT_1 = 'product-1';
 const VARIANT_1 = 'variant-1';
 const FLAVOR_1 = 'flavor-1';
+const ITEM_1 = 'item-1';
 
 interface FlavorLinkOverride {
   flavorId?: string;
@@ -111,12 +106,21 @@ function buildVariant(overrides: VariantOverrides = {}) {
   };
 }
 
+function componentRow(productVariantId: string, overrides: { inventoryItemId?: string; quantityRequired?: number; itemDeleted?: boolean } = {}) {
+  return {
+    productVariantId,
+    inventoryItemId: overrides.inventoryItemId ?? ITEM_1,
+    quantityRequired: decimal(overrides.quantityRequired ?? 1),
+    inventoryItem: { deletedAt: overrides.itemDeleted ? new Date() : null },
+  };
+}
+
 function mockDefaults(opts: {
   variants: ReturnType<typeof buildVariant>[];
   productAvailability?: Array<{ productId: string; isAvailable: boolean }>;
   flavorAvailability?: Array<{ flavorId: string; isAvailable: boolean }>;
-  mappings?: Array<{ productVariantId: string; flavorId: string | null }>;
-  recipeRows?: Array<{ productVariantId: string }>;
+  componentRows?: ReturnType<typeof componentRow>[];
+  stockedItemIds?: string[];
 }) {
   vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue(
     opts.variants as unknown as Awaited<ReturnType<typeof transactionsRepository.findVariantsForSale>>,
@@ -129,13 +133,13 @@ function mockDefaults(opts: {
   vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue(
     (opts.flavorAvailability ?? []) as unknown as Awaited<ReturnType<typeof transactionsRepository.findBranchFlavorAvailabilityMap>>,
   );
-  vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue(
-    (opts.mappings ?? [{ productVariantId: VARIANT_1, flavorId: null }]) as unknown as Awaited<
-      ReturnType<typeof productInventoryRepository.findActiveMappingsForVariants>
-    >,
-  );
+  const components = opts.componentRows ?? [componentRow(VARIANT_1)];
   vi.mocked(prisma.productComponent.findMany).mockResolvedValue(
-    (opts.recipeRows ?? []) as unknown as Awaited<ReturnType<typeof prisma.productComponent.findMany>>,
+    components as unknown as Awaited<ReturnType<typeof prisma.productComponent.findMany>>,
+  );
+  const stockedItemIds = opts.stockedItemIds ?? [...new Set(components.map((c) => c.inventoryItemId))];
+  vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue(
+    stockedItemIds.map((inventoryItemId) => ({ inventoryItemId })) as unknown as Awaited<ReturnType<typeof prisma.inventoryStock.findMany>>,
   );
 }
 
@@ -145,7 +149,7 @@ beforeEach(() => {
 
 describe('productReadinessService.evaluateProductVariantReadiness', () => {
   it('returns NOT_READY with VARIANT_NOT_FOUND when the variant does not exist', async () => {
-    mockDefaults({ variants: [] });
+    mockDefaults({ variants: [], componentRows: [] });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
       branchId: BRANCH_1,
@@ -158,7 +162,7 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
   });
 
   it('is READY when every dependency is satisfied', async () => {
-    mockDefaults({ variants: [buildVariant()], recipeRows: [{ productVariantId: VARIANT_1 }] });
+    mockDefaults({ variants: [buildVariant()] });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
       branchId: BRANCH_1,
@@ -232,38 +236,49 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
     expect(result.blockingIssues.some((i) => i.code === 'BRANCH_NOT_AVAILABLE')).toBe(true);
   });
 
-  it('flags BASE_INVENTORY_MAPPING_MISSING when there is no base ProductInventory row', async () => {
-    mockDefaults({ variants: [buildVariant()], mappings: [] });
+  it('flags RECIPE_MISSING (blocking) when there are no active ProductComponent rows', async () => {
+    mockDefaults({ variants: [buildVariant()], componentRows: [] });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
       branchId: BRANCH_1,
       productVariantId: VARIANT_1,
     });
 
-    expect(result.checks.baseInventoryMapped).toBe(false);
+    expect(result.recipeReady).toBe(false);
+    expect(result.blockingIssues.some((i) => i.code === 'RECIPE_MISSING')).toBe(true);
+    expect(result.sellable).toBe(false);
+  });
+
+  it('flags INVALID_COMPONENT when a component has a non-positive quantity or a deleted inventory item', async () => {
+    mockDefaults({ variants: [buildVariant()], componentRows: [componentRow(VARIANT_1, { itemDeleted: true })] });
+
+    const result = await productReadinessService.evaluateProductVariantReadiness({
+      branchId: BRANCH_1,
+      productVariantId: VARIANT_1,
+    });
+
+    expect(result.checks.componentsValid).toBe(false);
     expect(result.inventoryMappingReady).toBe(false);
-    expect(result.blockingIssues.some((i) => i.code === 'BASE_INVENTORY_MAPPING_MISSING')).toBe(true);
+    expect(result.blockingIssues.some((i) => i.code === 'INVALID_COMPONENT')).toBe(true);
   });
 
-  it('flags FLAVOR_INVENTORY_MAPPING_MISSING when a linked, active flavor has no flavor-scoped mapping', async () => {
-    mockDefaults({
-      variants: [buildVariant({ variantFlavors: [{ flavorId: FLAVOR_1 }] })],
-      mappings: [{ productVariantId: VARIANT_1, flavorId: null }],
-    });
+  it('flags INVENTORY_STOCK_MISSING when a component has no InventoryStock row at this branch', async () => {
+    mockDefaults({ variants: [buildVariant()], componentRows: [componentRow(VARIANT_1)], stockedItemIds: [] });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
       branchId: BRANCH_1,
       productVariantId: VARIANT_1,
     });
 
-    expect(result.checks.flavorLinksConsistent).toBe(false);
-    expect(result.blockingIssues.some((i) => i.code === 'FLAVOR_INVENTORY_MAPPING_MISSING')).toBe(true);
+    expect(result.checks.inventoryStockReady).toBe(false);
+    expect(result.inventoryMappingReady).toBe(false);
+    expect(result.blockingIssues.some((i) => i.code === 'INVENTORY_STOCK_MISSING')).toBe(true);
   });
 
-  it('does not require a mapping for a flavor link that is unavailable or inactive', async () => {
+  it('does not require a flavor to be branch-toggled when the link is unavailable or inactive', async () => {
     mockDefaults({
       variants: [buildVariant({ variantFlavors: [{ flavorId: FLAVOR_1, isAvailable: false }] })],
-      mappings: [{ productVariantId: VARIANT_1, flavorId: null }],
+      flavorAvailability: [{ flavorId: FLAVOR_1, isAvailable: false }],
     });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
@@ -271,16 +286,12 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
       productVariantId: VARIANT_1,
     });
 
-    expect(result.blockingIssues.some((i) => i.code === 'FLAVOR_INVENTORY_MAPPING_MISSING')).toBe(false);
+    expect(result.blockingIssues.some((i) => i.code === 'FLAVOR_NOT_AVAILABLE_AT_BRANCH')).toBe(false);
   });
 
   it('flags FLAVOR_NOT_AVAILABLE_AT_BRANCH when the flavor is explicitly disabled at the branch', async () => {
     mockDefaults({
       variants: [buildVariant({ variantFlavors: [{ flavorId: FLAVOR_1 }] })],
-      mappings: [
-        { productVariantId: VARIANT_1, flavorId: null },
-        { productVariantId: VARIANT_1, flavorId: FLAVOR_1 },
-      ],
       flavorAvailability: [{ flavorId: FLAVOR_1, isAvailable: false }],
     });
 
@@ -291,25 +302,6 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
 
     expect(result.checks.flavorLinksConsistent).toBe(false);
     expect(result.blockingIssues.some((i) => i.code === 'FLAVOR_NOT_AVAILABLE_AT_BRANCH')).toBe(true);
-  });
-
-  it('warns UNLINKED_FLAVOR_MAPPING (non-blocking) for a mapping whose flavor is not actively linked', async () => {
-    mockDefaults({
-      variants: [buildVariant()],
-      mappings: [
-        { productVariantId: VARIANT_1, flavorId: null },
-        { productVariantId: VARIANT_1, flavorId: FLAVOR_1 },
-      ],
-    });
-
-    const result = await productReadinessService.evaluateProductVariantReadiness({
-      branchId: BRANCH_1,
-      productVariantId: VARIANT_1,
-    });
-
-    expect(result.warnings.some((i) => i.code === 'UNLINKED_FLAVOR_MAPPING')).toBe(true);
-    expect(result.blockingIssues.some((i) => i.code === 'UNLINKED_FLAVOR_MAPPING')).toBe(false);
-    expect(result.sellable).toBe(true);
   });
 
   it('flags MIX_MAX_SLOT_INCOMPLETE when a required slot has no active, branch-available snack option', async () => {
@@ -326,7 +318,7 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
     expect(result.blockingIssues.some((i) => i.code === 'MIX_MAX_SLOT_INCOMPLETE')).toBe(true);
   });
 
-  it('flags MIX_MAX_SNACK_UNAVAILABLE when an offered snack variant has no base ProductInventory mapping', async () => {
+  it('flags MIX_MAX_SNACK_UNAVAILABLE when an offered snack variant has no active Recipe/BOM', async () => {
     mockDefaults({
       variants: [
         buildVariant({
@@ -337,7 +329,7 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
         { productId: PRODUCT_1, isAvailable: true },
         { productId: 'snack-product-1', isAvailable: true },
       ],
-      mappings: [{ productVariantId: VARIANT_1, flavorId: null }],
+      componentRows: [componentRow(VARIANT_1)],
     });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
@@ -349,7 +341,7 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
     expect(result.blockingIssues.some((i) => i.code === 'MIX_MAX_SNACK_UNAVAILABLE')).toBe(true);
   });
 
-  it('is READY when the required slot snack option is active, branch-available, and base-mapped', async () => {
+  it('is READY when the required slot snack option is active, branch-available, and has its own Recipe/BOM', async () => {
     mockDefaults({
       variants: [
         buildVariant({
@@ -360,10 +352,7 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
         { productId: PRODUCT_1, isAvailable: true },
         { productId: 'snack-product-1', isAvailable: true },
       ],
-      mappings: [
-        { productVariantId: VARIANT_1, flavorId: null },
-        { productVariantId: 'snack-1', flavorId: null },
-      ],
+      componentRows: [componentRow(VARIANT_1), componentRow('snack-1', { inventoryItemId: 'item-2' })],
     });
 
     const result = await productReadinessService.evaluateProductVariantReadiness({
@@ -373,42 +362,6 @@ describe('productReadinessService.evaluateProductVariantReadiness', () => {
 
     expect(result.checks.mixMaxSlotsComplete).toBe(true);
     expect(result.sellable).toBe(true);
-  });
-
-  it('warns RECIPE_MISSING when there are no active ProductComponent rows', async () => {
-    mockDefaults({ variants: [buildVariant()], recipeRows: [] });
-
-    const result = await productReadinessService.evaluateProductVariantReadiness({
-      branchId: BRANCH_1,
-      productVariantId: VARIANT_1,
-    });
-
-    expect(result.recipeReady).toBe(false);
-    expect(result.warnings.some((i) => i.code === 'RECIPE_MISSING')).toBe(true);
-    expect(result.sellable).toBe(true);
-  });
-
-  it('warns RECIPE_FLAVOR_SCOPE_UNSUPPORTED when recipeReady=true but flavor-scoped ProductInventory rows exist (recipe/inventory divergence)', async () => {
-    mockDefaults({
-      variants: [buildVariant({ variantFlavors: [{ flavorId: FLAVOR_1 }] })],
-      mappings: [
-        { productVariantId: VARIANT_1, flavorId: null },
-        { productVariantId: VARIANT_1, flavorId: FLAVOR_1 },
-      ],
-      recipeRows: [{ productVariantId: VARIANT_1 }],
-    });
-
-    const result = await productReadinessService.evaluateProductVariantReadiness({
-      branchId: BRANCH_1,
-      productVariantId: VARIANT_1,
-    });
-
-    expect(result.recipeReady).toBe(true);
-    expect(result.inventoryMappingReady).toBe(true);
-    expect(result.warnings.some((i) => i.code === 'RECIPE_FLAVOR_SCOPE_UNSUPPORTED')).toBe(true);
-    // A warning must never flip sellable/status — recipe/inventory divergence is disclosed, not blocking.
-    expect(result.sellable).toBe(true);
-    expect(result.status).toBe('READY');
   });
 });
 
@@ -425,10 +378,7 @@ describe('productReadinessService.evaluateProductVariantReadinessBatch', () => {
     const variants = [buildVariant({ id: VARIANT_1 }), buildVariant({ id: VARIANT_2, basePrice: 0 })];
     mockDefaults({
       variants,
-      mappings: [
-        { productVariantId: VARIANT_1, flavorId: null },
-        { productVariantId: VARIANT_2, flavorId: null },
-      ],
+      componentRows: [componentRow(VARIANT_1), componentRow(VARIANT_2)],
     });
 
     const batchResult = await productReadinessService.evaluateProductVariantReadinessBatch({
@@ -438,8 +388,8 @@ describe('productReadinessService.evaluateProductVariantReadinessBatch', () => {
 
     expect(transactionsRepository.findVariantsForSale).toHaveBeenCalledTimes(1);
     expect(transactionsRepository.findBranchProductAvailabilityMap).toHaveBeenCalledTimes(1);
-    expect(productInventoryRepository.findActiveMappingsForVariants).toHaveBeenCalledTimes(1);
     expect(prisma.productComponent.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledTimes(1);
 
     expect(batchResult).toHaveLength(2);
     const [batchFirst, batchSecond] = batchResult as [(typeof batchResult)[number], (typeof batchResult)[number]];
@@ -450,17 +400,11 @@ describe('productReadinessService.evaluateProductVariantReadinessBatch', () => {
     const [variant1, variant2] = variants as [(typeof variants)[number], (typeof variants)[number]];
 
     vi.clearAllMocks();
-    mockDefaults({
-      variants: [variant1],
-      mappings: [{ productVariantId: VARIANT_1, flavorId: null }],
-    });
+    mockDefaults({ variants: [variant1], componentRows: [componentRow(VARIANT_1)] });
     const single1 = await productReadinessService.evaluateProductVariantReadiness({ branchId: BRANCH_1, productVariantId: VARIANT_1 });
 
     vi.clearAllMocks();
-    mockDefaults({
-      variants: [variant2],
-      mappings: [{ productVariantId: VARIANT_2, flavorId: null }],
-    });
+    mockDefaults({ variants: [variant2], componentRows: [componentRow(VARIANT_2)] });
     const single2 = await productReadinessService.evaluateProductVariantReadiness({ branchId: BRANCH_1, productVariantId: VARIANT_2 });
 
     expect(batchFirst).toEqual(single1);

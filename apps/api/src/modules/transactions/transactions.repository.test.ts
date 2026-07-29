@@ -106,9 +106,8 @@ describe('transactionsRepository.countTransactionsWithPrefix', () => {
 });
 
 describe('transactionsRepository.createTransaction', () => {
-  it('creates the transaction row, writes line items, and re-fetches with items+shift included', async () => {
+  it('creates the transaction row with its line items nested in one call, including items+shift in the response', async () => {
     vi.mocked(prisma.transaction.create).mockResolvedValue({ id: 'txn-1' } as never);
-    vi.mocked(prisma.transaction.findUniqueOrThrow).mockResolvedValue({ id: 'txn-1' } as never);
 
     await transactionsRepository.createTransaction({
       branchId: 'branch-1',
@@ -158,28 +157,25 @@ describe('transactionsRepository.createTransaction', () => {
         paymentMethod: 'cash',
         subtotal: 100,
         totalAmount: 100,
+        items: {
+          create: [
+            expect.objectContaining({
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              lineTotal: 100,
+            }),
+          ],
+        },
       }),
-    });
-    expect(prisma.transactionItem.createMany).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({
-          transactionId: 'txn-1',
-          productId: 'product-1',
-          productVariantId: 'variant-1',
-          quantity: 1,
-          lineTotal: 100,
-        }),
-      ],
-    });
-    expect(prisma.transaction.findUniqueOrThrow).toHaveBeenCalledWith({
-      where: { id: 'txn-1' },
       include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
     });
+    expect(prisma.transactionItem.createMany).not.toHaveBeenCalled();
+    expect(prisma.transaction.findUniqueOrThrow).not.toHaveBeenCalled();
   });
 
   it('round-trips payment proof key/type/uploadedAt for a non-cash sale', async () => {
     vi.mocked(prisma.transaction.create).mockResolvedValue({ id: 'txn-2' } as never);
-    vi.mocked(prisma.transaction.findUniqueOrThrow).mockResolvedValue({ id: 'txn-2' } as never);
     const uploadedAt = new Date('2026-07-25T10:00:00.000Z');
 
     await transactionsRepository.createTransaction({
@@ -221,13 +217,15 @@ describe('transactionsRepository.createTransaction', () => {
       ],
     });
 
-    expect(prisma.transaction.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        paymentProofKey: 'branch-1/shift-1/user-1-123-proof.webp',
-        paymentProofType: 'live_capture',
-        paymentProofUploadedAt: uploadedAt,
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          paymentProofKey: 'branch-1/shift-1/user-1-123-proof.webp',
+          paymentProofType: 'live_capture',
+          paymentProofUploadedAt: uploadedAt,
+        }),
       }),
-    });
+    );
   });
 });
 

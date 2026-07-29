@@ -79,8 +79,13 @@ export async function normalizeLegacyDeduction(legacyLines: DeductionLine[]): Pr
  * overrides -- ProductComponent itself is branch-agnostic today (CR-007
  * §10), so it is not otherwise used.
  */
-export async function computeBomDeduction(productVariantId: string, _branchId: string, quantitySold: number): Promise<BomDeductionLine[]> {
-  const components = await shadowBomDeductionRepository.findActiveComponentsForVariant(productVariantId);
+export async function computeBomDeduction(
+  productVariantId: string,
+  _branchId: string,
+  quantitySold: number,
+  flavorId?: string | null,
+): Promise<BomDeductionLine[]> {
+  const components = await shadowBomDeductionRepository.findActiveComponentsForVariant(productVariantId, flavorId);
   const map = new Map<string, BomDeductionLine>();
   for (const component of components) {
     // Null recipeUnitId (pre-CR-011.2 or backfill-created rows) is treated as

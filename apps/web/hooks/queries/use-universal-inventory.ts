@@ -1,10 +1,13 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
+  AdjustInventoryStockInput,
   AssignInventoryItemToBranchesInput,
   AssignInventoryItemToBranchesResponse,
+  BranchInventoryStockListResponse,
   CreateInventoryCategoryInput,
   CreateInventoryItemInput,
   CreateUnitConversionInput,
@@ -12,13 +15,23 @@ import type {
   InventoryCategoryResponse,
   InventoryItemDetailResponse,
   InventoryItemResponse,
+  InventoryStockAlertListResponse,
+  InventoryStockMovementListResponse,
+  InventoryStockMovementResponse,
+  InventoryStockTransferResponse,
+  PhysicalCountInventoryStockInput,
+  PhysicalCountStockResultResponse,
+  ReceiveInventoryStockInput,
+  TransferInventoryStockInput,
   UnitConversionResponse,
   UnitOfMeasureResponse,
   UpdateInventoryCategoryInput,
   UpdateInventoryItemInput,
   UpdateUnitOfMeasureInput,
+  WasteInventoryStockInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 interface ApiErrorShape {
   error: { code: string; message?: string } | string | null;
@@ -269,5 +282,185 @@ export function useMigrationReport(enabled: boolean) {
     },
     enabled,
     staleTime: 0,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Branch inventory cutover — direct InventoryStock read/write. Replaces the
+// legacy Ingredient-based branch inventory hooks (use-inventory.ts) as the
+// active branch supply-side workflow; that file is left in place, unmodified,
+// for historical/back-compat reads only.
+// ---------------------------------------------------------------------------
+
+export function useBranchInventoryStock(branchId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['branch-inventory-stock', branchId],
+    queryFn: async () => {
+      const response = await apiClient<BranchInventoryStockListResponse>(`/api/branches/${branchId}/inventory-stock`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch inventory'));
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+  });
+}
+
+export function useBranchInventoryStockAlerts(branchId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['branch-inventory-stock', branchId, 'alerts'],
+    queryFn: async () => {
+      const response = await apiClient<InventoryStockAlertListResponse>(`/api/branches/${branchId}/inventory-stock/alerts`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load inventory alerts'));
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+  });
+}
+
+export interface InventoryStockMovementFilters {
+  inventory_item_id?: string;
+  movement_type?: InventoryStockMovementResponse['movement_type'];
+  from_date?: string;
+  to_date?: string;
+  page?: number;
+  limit?: number;
+}
+
+function buildStockMovementsQueryString(filters: InventoryStockMovementFilters): string {
+  const params = new URLSearchParams();
+  if (filters.inventory_item_id) params.set('inventory_item_id', filters.inventory_item_id);
+  if (filters.movement_type) params.set('movement_type', filters.movement_type);
+  if (filters.from_date) params.set('from_date', filters.from_date);
+  if (filters.to_date) params.set('to_date', filters.to_date);
+  params.set('page', String(filters.page ?? 1));
+  params.set('limit', String(filters.limit ?? 25));
+  return params.toString();
+}
+
+export function useInventoryStockMovements(branchId: string | null | undefined, filters: InventoryStockMovementFilters = {}) {
+  return useQuery({
+    queryKey: ['branch-inventory-stock', branchId, 'movements', filters],
+    queryFn: async () => {
+      const response = await apiClient<InventoryStockMovementListResponse>(
+        `/api/branches/${branchId}/inventory-stock/movements?${buildStockMovementsQueryString(filters)}`,
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load inventory movements'));
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 15 * 1000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Every mutation below invalidates the branch's stock list, alerts, and movement history — a single movement changes what all three would return. */
+function invalidateInventoryStock(queryClient: ReturnType<typeof useQueryClient>, branchId: string | null | undefined) {
+  void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock', branchId] });
+}
+
+/** Keeps the branch inventory DataTable and alert banner in sync with stock movements recorded from any other device (including POS sales), without a manual refresh. */
+export function useInventoryStockRealtimeSync(branchId: string | null | undefined): void {
+  useRealtimeInvalidate(
+    [SOCKET_EVENTS.INVENTORY_LOW_STOCK, SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED],
+    [['branch-inventory-stock', branchId]],
+  );
+}
+
+export function useReceiveInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: ReceiveInventoryStockInput) => {
+      const response = await apiClient<InventoryStockMovementResponse>(
+        `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/receive`,
+        { method: 'POST', body: JSON.stringify(input) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to receive stock'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+      toast.success('Stock received');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useAdjustInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AdjustInventoryStockInput) => {
+      const response = await apiClient<InventoryStockMovementResponse>(
+        `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/adjust`,
+        { method: 'POST', body: JSON.stringify(input) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to record adjustment'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+      toast.success('Adjustment recorded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useWasteInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: WasteInventoryStockInput) => {
+      const response = await apiClient<InventoryStockMovementResponse>(
+        `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/waste`,
+        { method: 'POST', body: JSON.stringify(input) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to record waste'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+      toast.success('Waste recorded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Branch-to-branch transfer — posts both the source's transfer_out and the destination's transfer_in atomically. `branchId` is the source (from) branch, taken from the URL, not the request body. */
+export function useTransferInventoryStock(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: TransferInventoryStockInput) => {
+      const response = await apiClient<InventoryStockTransferResponse>(`/api/branches/${branchId}/inventory-stock/transfer`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to transfer stock'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+      toast.success('Stock transferred');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useSubmitInventoryStockCount(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PhysicalCountInventoryStockInput) => {
+      const response = await apiClient<PhysicalCountStockResultResponse>(`/api/branches/${branchId}/inventory-stock/count`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit physical count'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+      toast.success('Physical count submitted');
+    },
+    onError: (error: Error) => toast.error(error.message),
   });
 }

@@ -7,14 +7,12 @@ export type ReadinessIssueCode =
   | 'VARIANT_LIFECYCLE_BLOCKED'
   | 'PRICE_MISSING'
   | 'BRANCH_NOT_AVAILABLE'
-  | 'BASE_INVENTORY_MAPPING_MISSING'
-  | 'FLAVOR_INVENTORY_MAPPING_MISSING'
-  | 'UNLINKED_FLAVOR_MAPPING'
+  | 'RECIPE_MISSING'
+  | 'INVALID_COMPONENT'
+  | 'INVENTORY_STOCK_MISSING'
   | 'FLAVOR_NOT_AVAILABLE_AT_BRANCH'
   | 'MIX_MAX_SLOT_INCOMPLETE'
   | 'MIX_MAX_SNACK_UNAVAILABLE'
-  | 'RECIPE_MISSING'
-  | 'RECIPE_FLAVOR_SCOPE_UNSUPPORTED'
   | 'NO_ELIGIBLE_VARIANTS';
 
 export interface ReadinessIssue {
@@ -44,10 +42,11 @@ export interface ReadinessChecks {
   variantLifecycleActive: boolean;
   priceValid: boolean;
   branchAvailable: boolean;
-  baseInventoryMapped: boolean;
+  recipeReady: boolean;
+  componentsValid: boolean;
+  inventoryStockReady: boolean;
   flavorLinksConsistent: boolean;
   mixMaxSlotsComplete: boolean;
-  recipeReady: boolean;
 }
 
 export interface ProductVariantReadinessResult {
@@ -57,9 +56,9 @@ export interface ProductVariantReadinessResult {
   status: 'READY' | 'NOT_READY';
   /** True only when there are zero blockingIssues — the single field every caller should gate on. */
   sellable: boolean;
-  /** ProductComponent (BOM) has at least one active row — distinct from inventoryMappingReady, see RECIPE_FLAVOR_SCOPE_UNSUPPORTED. */
+  /** ProductComponent (Recipe/BOM) has at least one active row. */
   recipeReady: boolean;
-  /** ProductInventory mapping coverage (base + required flavor + Mix & Max snack mappings) is complete. */
+  /** Every active ProductComponent row is valid and has an InventoryStock row at this branch. */
   inventoryMappingReady: boolean;
   /** Equivalent to `sellable` — named separately so callers evaluating "is this addable to a POS cart" have a self-describing field. */
   posSellable: boolean;

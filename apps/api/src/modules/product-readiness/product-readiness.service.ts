@@ -1,6 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
 import { transactionsRepository } from '../transactions/transactions.repository.js';
-import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { productsRepository } from '../products/products.repository.js';
 import type {
   EvaluateProductReadinessInput,
@@ -15,24 +14,30 @@ import type {
 
 type SaleVariantRow = Awaited<ReturnType<typeof transactionsRepository.findVariantsForSale>>[number];
 
+interface ComponentRow {
+  productVariantId: string;
+  inventoryItemId: string;
+  quantityRequired: { lessThanOrEqualTo(value: number): boolean };
+  inventoryItem: { deletedAt: Date | null };
+}
+
 interface ReadinessData {
   branchId: string;
   productAvailabilityMap: Map<string, boolean>;
   flavorAvailabilityMap: Map<string, boolean>;
-  baseMappedVariantIds: Set<string>;
-  /** variantId -> set of flavorIds with an active flavor-scoped ProductInventory mapping. */
-  flavorMappedByVariant: Map<string, Set<string>>;
-  recipeReadyVariantIds: Set<string>;
+  componentsByVariant: Map<string, ComponentRow[]>;
+  stockedItemIds: Set<string>;
 }
 
 /**
  * Every dependency here is fetched in one batched query keyed by the full
  * variant-id set (parent variants + every Mix & Max snack variant they
  * reference) — mirrors the batching pattern already used by
- * products.service.ts#getPosCatalog (findActiveMappingsForVariants) and
- * transactions.service.ts#resolveCartItems (findBranchProductAvailabilityMap
- * / findBranchFlavorAvailabilityMap), so evaluateProductVariantReadinessBatch
- * never issues an extra query per variant.
+ * products.service.ts#getPosCatalog and transactions.service.ts#resolveCartItems,
+ * so evaluateProductVariantReadinessBatch never issues an extra query per
+ * variant. Recipe/BOM readiness is sourced from ProductComponent +
+ * InventoryStock (the authoritative inventory pipeline) — legacy
+ * ProductInventory is never read here.
  */
 async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]): Promise<ReadinessData> {
   const snackVariantIds = variants.flatMap((v) => (v.flavorSlots ?? []).flatMap((s) => s.snackOptions.map((so) => so.snackProductVariant.id)));
@@ -42,47 +47,42 @@ async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]):
     ...new Set(variants.flatMap((v) => [v.productId, ...(v.flavorSlots ?? []).flatMap((s) => s.snackOptions.map((so) => so.snackProductVariant.product.id))])),
   ];
 
-  const flavorIds = [
-    ...new Set(
-      variants.flatMap((v) => [
-        ...v.variantFlavors.map((vf) => vf.flavorId),
-        ...(v.flavorSlots ?? []).flatMap((s) => s.snackOptions.flatMap((so) => so.snackProductVariant.variantFlavors.map((vf) => vf.flavorId))),
-      ]),
-    ),
-  ];
+  const flavorIds = [...new Set(variants.flatMap((v) => v.variantFlavors.map((vf) => vf.flavorId)))];
 
-  const [productAvailabilityRows, flavorAvailabilityRows, mappingRows, recipeRows] = await Promise.all([
+  const [productAvailabilityRows, flavorAvailabilityRows, componentRows] = await Promise.all([
     productIds.length ? transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds) : Promise.resolve([]),
     flavorIds.length ? transactionsRepository.findBranchFlavorAvailabilityMap(branchId, flavorIds) : Promise.resolve([]),
-    allVariantIds.length ? productInventoryRepository.findActiveMappingsForVariants(branchId, allVariantIds) : Promise.resolve([]),
-    // No existing repository exposes a batched "has an active ProductComponent
-    // row" check (product-components.repository.ts#findByVariant only takes a
-    // single id) — this direct query follows the same batched-select shape as
-    // findActiveMappingsForVariants above rather than adding a new repository
-    // module for one query.
     allVariantIds.length
       ? prisma.productComponent.findMany({
           where: { productVariantId: { in: allVariantIds }, isActive: true },
-          select: { productVariantId: true },
+          select: {
+            productVariantId: true,
+            inventoryItemId: true,
+            quantityRequired: true,
+            inventoryItem: { select: { deletedAt: true } },
+          },
         })
       : Promise.resolve([]),
   ]);
 
-  const flavorMappedByVariant = new Map<string, Set<string>>();
-  for (const m of mappingRows) {
-    if (m.flavorId === null) continue;
-    const set = flavorMappedByVariant.get(m.productVariantId) ?? new Set<string>();
-    set.add(m.flavorId);
-    flavorMappedByVariant.set(m.productVariantId, set);
+  const componentsByVariant = new Map<string, ComponentRow[]>();
+  for (const row of componentRows) {
+    const list = componentsByVariant.get(row.productVariantId) ?? [];
+    list.push(row);
+    componentsByVariant.set(row.productVariantId, list);
   }
+
+  const itemIds = [...new Set(componentRows.map((r) => r.inventoryItemId))];
+  const stockRows = itemIds.length
+    ? await prisma.inventoryStock.findMany({ where: { branchId, inventoryItemId: { in: itemIds } }, select: { inventoryItemId: true } })
+    : [];
 
   return {
     branchId,
     productAvailabilityMap: new Map(productAvailabilityRows.map((r) => [r.productId, r.isAvailable])),
     flavorAvailabilityMap: new Map(flavorAvailabilityRows.map((r) => [r.flavorId, r.isAvailable])),
-    baseMappedVariantIds: new Set(mappingRows.filter((m) => m.flavorId === null).map((m) => m.productVariantId)),
-    flavorMappedByVariant,
-    recipeReadyVariantIds: new Set(recipeRows.map((r) => r.productVariantId)),
+    componentsByVariant,
+    stockedItemIds: new Set(stockRows.map((r) => r.inventoryItemId)),
   };
 }
 
@@ -106,10 +106,11 @@ function notFoundResult(branchId: string, productVariantId: string): ProductVari
     variantLifecycleActive: false,
     priceValid: false,
     branchAvailable: false,
-    baseInventoryMapped: false,
+    recipeReady: false,
+    componentsValid: false,
+    inventoryStockReady: false,
     flavorLinksConsistent: false,
     mixMaxSlotsComplete: false,
-    recipeReady: false,
   };
   return {
     branchId,
@@ -139,11 +140,6 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
   const branchId = data.branchId;
   const productId = variant.productId;
 
-  // Checks 1-3 / 7 (product exists/active/valid category): product existence
-  // is guaranteed by the FK on ProductVariant.productId; category is not
-  // selected by findVariantsForSale today (transactions.service.ts never
-  // needed it) so it is intentionally not evaluated in Phase A — see
-  // "architectural concerns discovered" in the Phase A report.
   const productActive = variant.product.status === 'active';
   if (!productActive) {
     blockingIssues.push(
@@ -204,41 +200,60 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
     );
   }
 
-  const baseInventoryMapped = data.baseMappedVariantIds.has(variant.id);
-  if (!baseInventoryMapped) {
+  const components = data.componentsByVariant.get(variant.id) ?? [];
+
+  const recipeReady = components.length > 0;
+  if (!recipeReady) {
     blockingIssues.push(
       issue(
-        'BASE_INVENTORY_MAPPING_MISSING',
+        'RECIPE_MISSING',
         'blocking',
         'product_variant',
         variant.id,
-        `${variant.name} has no active base ProductInventory mapping for this branch.`,
-        'Add at least one base ProductInventory mapping for this branch and variant.',
+        `${variant.name} has no active Recipe/BOM (ProductComponent) rows.`,
+        'Configure a Recipe/BOM for this variant.',
+        { productId, productVariantId: variant.id, branchId },
+      ),
+    );
+  }
+
+  const invalidItemIds = [
+    ...new Set(components.filter((c) => c.quantityRequired.lessThanOrEqualTo(0) || c.inventoryItem.deletedAt !== null).map((c) => c.inventoryItemId)),
+  ];
+  const componentsValid = invalidItemIds.length === 0;
+  if (!componentsValid) {
+    blockingIssues.push(
+      issue(
+        'INVALID_COMPONENT',
+        'blocking',
+        'product_variant',
+        variant.id,
+        `${variant.name} has a Recipe/BOM component with an invalid quantity or a deleted inventory item.`,
+        'Fix or remove the invalid Recipe/BOM component(s).',
+        { productId, productVariantId: variant.id, branchId },
+      ),
+    );
+  }
+
+  const missingStockItemIds = [...new Set(components.filter((c) => !data.stockedItemIds.has(c.inventoryItemId)).map((c) => c.inventoryItemId))];
+  const inventoryStockReady = missingStockItemIds.length === 0;
+  if (!inventoryStockReady) {
+    blockingIssues.push(
+      issue(
+        'INVENTORY_STOCK_MISSING',
+        'blocking',
+        'product_variant',
+        variant.id,
+        `${variant.name} has a Recipe/BOM component with no InventoryStock row at this branch.`,
+        'Provision inventory stock for the missing item(s) at this branch.',
         { productId, productVariantId: variant.id, branchId },
       ),
     );
   }
 
   let flavorLinksConsistent = true;
-  const linkedFlavorIds = new Set(variant.variantFlavors.map((vf) => vf.flavorId));
-  const mappedFlavorIds = data.flavorMappedByVariant.get(variant.id) ?? new Set<string>();
   for (const vf of variant.variantFlavors) {
     if (!vf.isAvailable || !vf.flavor.isActive) continue;
-    const mapped = mappedFlavorIds.has(vf.flavorId);
-    if (!mapped) {
-      flavorLinksConsistent = false;
-      blockingIssues.push(
-        issue(
-          'FLAVOR_INVENTORY_MAPPING_MISSING',
-          'blocking',
-          'flavor',
-          vf.flavorId,
-          `${variant.name} is missing a ProductInventory mapping for linked flavor "${vf.flavor.name}".`,
-          `Add a flavor-specific ProductInventory mapping for "${vf.flavor.name}".`,
-          { productId, productVariantId: variant.id, branchId, flavorId: vf.flavorId, flavorName: vf.flavor.name },
-        ),
-      );
-    }
     if (data.flavorAvailabilityMap.get(vf.flavorId) === false) {
       flavorLinksConsistent = false;
       blockingIssues.push(
@@ -250,21 +265,6 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
           `Flavor "${vf.flavor.name}" is disabled at this branch.`,
           `Enable flavor "${vf.flavor.name}" for this branch, or remove it from this variant.`,
           { productId, productVariantId: variant.id, branchId, flavorId: vf.flavorId, flavorName: vf.flavor.name },
-        ),
-      );
-    }
-  }
-  for (const mappedFlavorId of mappedFlavorIds) {
-    if (!linkedFlavorIds.has(mappedFlavorId)) {
-      warnings.push(
-        issue(
-          'UNLINKED_FLAVOR_MAPPING',
-          'warning',
-          'flavor',
-          mappedFlavorId,
-          `${variant.name} has a ProductInventory mapping for a flavor that is not actively linked to it.`,
-          'Remove the stale mapping or re-link the flavor to this variant.',
-          { productId, productVariantId: variant.id, branchId, flavorId: mappedFlavorId },
         ),
       );
     }
@@ -293,7 +293,8 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
     }
     for (const so of activeOptions) {
       const sv = so.snackProductVariant;
-      if (!data.baseMappedVariantIds.has(sv.id)) {
+      const snackHasRecipe = (data.componentsByVariant.get(sv.id) ?? []).length > 0;
+      if (!snackHasRecipe) {
         mixMaxSlotsComplete = false;
         blockingIssues.push(
           issue(
@@ -301,8 +302,8 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
             'blocking',
             'product_variant',
             sv.id,
-            `${variant.name} slot "${slot.label}" offers a snack variant with no active base ProductInventory mapping for this branch.`,
-            'Add a base ProductInventory mapping for the snack variant at this branch.',
+            `${variant.name} slot "${slot.label}" offers a snack variant with no active Recipe/BOM.`,
+            'Configure a Recipe/BOM for the snack variant.',
             { productId, productVariantId: variant.id, branchId },
           ),
         );
@@ -310,40 +311,7 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
     }
   }
 
-  const recipeReady = data.recipeReadyVariantIds.has(variant.id);
-  if (!recipeReady) {
-    warnings.push(
-      issue(
-        'RECIPE_MISSING',
-        'warning',
-        'product_variant',
-        variant.id,
-        `${variant.name} has no active ProductComponent (Recipe/BOM) rows.`,
-        'Configure a Recipe/BOM for this variant, or confirm ProductInventory-only deduction is intentional.',
-        { productId, productVariantId: variant.id, branchId },
-      ),
-    );
-  }
-  const hasFlavorInventoryRows = mappedFlavorIds.size > 0;
-  if (recipeReady && hasFlavorInventoryRows) {
-    // ProductComponent has no flavor scope today (see recipe-readiness.service.ts
-    // LEGACY_FLAVOR_DEPENDENCY) — a "ready" BOM cannot represent per-flavor
-    // seasoning correctly for a variant that has flavor-specific ProductInventory
-    // rows. Surfaced as a warning, never silently reported as full readiness.
-    warnings.push(
-      issue(
-        'RECIPE_FLAVOR_SCOPE_UNSUPPORTED',
-        'warning',
-        'product_variant',
-        variant.id,
-        `${variant.name} has flavor-specific ProductInventory mappings, but ProductComponent (Recipe/BOM) is flavor-agnostic and cannot represent that consumption.`,
-        'Do not treat Recipe/BOM readiness as proof of correct per-flavor deduction; this requires a flavor-scoped ProductComponent design (approval required).',
-        { productId, productVariantId: variant.id, branchId },
-      ),
-    );
-  }
-
-  const inventoryMappingReady = baseInventoryMapped && flavorLinksConsistent && mixMaxSlotsComplete;
+  const inventoryMappingReady = componentsValid && inventoryStockReady;
   const sellable = blockingIssues.length === 0;
 
   const checks: ReadinessChecks = {
@@ -353,10 +321,11 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
     variantLifecycleActive,
     priceValid,
     branchAvailable,
-    baseInventoryMapped,
+    recipeReady,
+    componentsValid,
+    inventoryStockReady,
     flavorLinksConsistent,
     mixMaxSlotsComplete,
-    recipeReady,
   };
   const checkValues = Object.values(checks);
   const completionPercentage = Math.round((checkValues.filter(Boolean).length / checkValues.length) * 10000) / 100;
@@ -475,7 +444,7 @@ async function buildProductReadinessResult(
 }
 
 export const productReadinessService = {
-  /** Read-only. Never writes anything, never called from any existing runtime path yet (Phase A extraction only). */
+  /** Read-only. Never writes anything. */
   async evaluateProductVariantReadiness(input: EvaluateReadinessInput): Promise<ProductVariantReadinessResult> {
     const variants = await transactionsRepository.findVariantsForSale([input.productVariantId]);
     const variant = variants[0];

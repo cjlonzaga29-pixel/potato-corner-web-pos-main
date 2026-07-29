@@ -1,57 +1,50 @@
 'use client';
 
-import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ArrowRightLeft, ClipboardList, History, MinusCircle, Pencil, Plus, PlusCircle, TriangleAlert } from 'lucide-react';
-import type { BranchInventoryRow, IngredientResponse } from '@potato-corner/shared';
+import { ArrowRightLeft, ClipboardList, History, MinusCircle, PlusCircle, TriangleAlert } from 'lucide-react';
+import type { BranchInventoryStockRow } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useBranchStore } from '@/stores/branch.store';
-import { useBranchInventory, useBranchInventoryAlerts, useIngredients, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
-import { IngredientDialog } from '@/components/supervisor/inventory/ingredient-dialog';
+import {
+  useBranchInventoryStock,
+  useBranchInventoryStockAlerts,
+  useInventoryStockRealtimeSync,
+} from '@/hooks/queries/use-universal-inventory';
 
 /**
  * Shared body behind both `/supervisor/inventory` and `/branch/inventory` —
  * `basePath` is the only thing that differs between the two routes (their
  * page.tsx wrappers pass "/supervisor" or "/branch"), everything else
- * (data, mutations, dialogs) is the single copy of the real logic.
+ * (data, mutations) is the single copy of the real logic.
+ *
+ * Reads/writes InventoryStock directly (branch inventory cutover) — items
+ * themselves are Admin-owned (see /admin/inventory) and simply appear here
+ * once assigned to this branch, at zero quantity until received.
  */
 export function InventoryList({ basePath }: { basePath: string }) {
   const router = useRouter();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  useInventoryRealtimeSync(activeBranchId);
-  const { data, isLoading, isError, refetch } = useBranchInventory(activeBranchId);
-  const { data: alertsData } = useBranchInventoryAlerts(activeBranchId);
-  const { data: ingredients } = useIngredients(activeBranchId);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingIngredient, setEditingIngredient] = useState<IngredientResponse | null>(null);
-
-  function openCreateDialog() {
-    setEditingIngredient(null);
-    setDialogOpen(true);
-  }
-
-  function openEditDialog(ingredientId: string) {
-    setEditingIngredient(ingredients?.find((i) => i.id === ingredientId) ?? null);
-    setDialogOpen(true);
-  }
+  useInventoryStockRealtimeSync(activeBranchId);
+  const { data, isLoading, isError, refetch } = useBranchInventoryStock(activeBranchId);
+  const { data: alertsData } = useBranchInventoryStockAlerts(activeBranchId);
 
   const alertCount = alertsData?.alerts.length ?? 0;
   const criticalCount = alertsData?.alerts.filter((a) => a.severity === 'critical').length ?? 0;
 
-  const columns: ColumnDef<BranchInventoryRow>[] = [
-    { accessorKey: 'name', header: 'Ingredient' },
-    { accessorKey: 'unit', header: 'Unit' },
+  const columns: ColumnDef<BranchInventoryStockRow>[] = [
+    { accessorKey: 'name', header: 'Item' },
+    { accessorKey: 'base_unit_code', header: 'Unit' },
     {
-      id: 'current_stock',
+      id: 'quantity_on_hand',
       header: 'Current Stock',
       cell: ({ row }) => (
         <span className="tabular-nums">
-          {row.original.current_stock} {row.original.unit}
+          {row.original.quantity_on_hand} {row.original.base_unit_code}
         </span>
       ),
     },
@@ -60,7 +53,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
       header: 'Low / Critical',
       cell: ({ row }) => (
         <span className="text-sm text-muted-foreground tabular-nums">
-          {row.original.low_stock_threshold} / {row.original.critical_threshold}
+          {row.original.low_stock_threshold ?? '—'} / {row.original.critical_threshold ?? '—'}
         </span>
       ),
     },
@@ -77,7 +70,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => router.push(`${basePath}/inventory/stock-in?ingredient_id=${row.original.ingredient_id}`)}
+            onClick={() => router.push(`${basePath}/inventory/stock-in?inventory_item_id=${row.original.inventory_item_id}`)}
           >
             <PlusCircle className="mr-1 h-4 w-4" />
             Stock In
@@ -85,21 +78,17 @@ export function InventoryList({ basePath }: { basePath: string }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => router.push(`${basePath}/inventory/adjust?ingredient_id=${row.original.ingredient_id}`)}
+            onClick={() => router.push(`${basePath}/inventory/adjust?inventory_item_id=${row.original.inventory_item_id}`)}
           >
             Adjust
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => router.push(`${basePath}/inventory/waste?ingredient_id=${row.original.ingredient_id}`)}
+            onClick={() => router.push(`${basePath}/inventory/waste?inventory_item_id=${row.original.inventory_item_id}`)}
           >
             <MinusCircle className="mr-1 h-4 w-4" />
             Waste
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => openEditDialog(row.original.ingredient_id)}>
-            <Pencil className="mr-1 h-4 w-4" />
-            Edit
           </Button>
         </div>
       ),
@@ -130,12 +119,6 @@ export function InventoryList({ basePath }: { basePath: string }) {
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
           </Button>
-          {basePath !== '/branch' && (
-            <Button onClick={openCreateDialog} disabled={!activeBranchId}>
-              <Plus className="mr-2 h-4 w-4" />
-              Create Ingredient
-            </Button>
-          )}
         </div>
       </div>
 
@@ -143,7 +126,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
           <TriangleAlert className="h-4 w-4 shrink-0 text-destructive" />
           <span>
-            {alertCount} ingredient{alertCount === 1 ? '' : 's'} at or below the low-stock threshold
+            {alertCount} item{alertCount === 1 ? '' : 's'} at or below the low-stock threshold
             {criticalCount > 0 && (
               <>
                 {' '}
@@ -156,24 +139,17 @@ export function InventoryList({ basePath }: { basePath: string }) {
 
       <DataTable
         columns={columns}
-        data={data?.ingredients ?? []}
+        data={data?.items ?? []}
         isLoading={isLoading}
         isError={isError}
         onRetry={() => void refetch()}
         emptyState={
           <EmptyState
             icon={ArrowRightLeft}
-            title="No ingredients yet"
-            description="Ingredients are created by an admin — once added, their stock movements appear here."
+            title="No inventory items yet"
+            description="Inventory items are created by an admin and assigned to branches — once assigned, they appear here."
           />
         }
-      />
-
-      <IngredientDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        branchId={activeBranchId}
-        ingredient={editingIngredient}
       />
     </div>
   );

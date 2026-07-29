@@ -26,6 +26,7 @@ const STATUS_MAPS: Record<StatusType, Record<string, BadgeVariant>> = {
   },
   inventory: {
     ok: 'active',
+    healthy: 'active',
     low: 'warning',
     critical: 'critical',
     out_of_stock: 'critical',

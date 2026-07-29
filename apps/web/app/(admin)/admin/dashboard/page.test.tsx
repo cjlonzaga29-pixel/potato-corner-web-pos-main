@@ -91,8 +91,8 @@ vi.mock('@/hooks/queries/use-admin-inventory-rollup', () => ({
   useAdminInventoryRollupRealtimeSync: mockUseAdminInventoryRollupRealtimeSync,
 }));
 
-vi.mock('@/hooks/queries/use-inventory', () => ({
-  useInventoryRealtimeSync: mockUseInventoryRealtimeSync,
+vi.mock('@/hooks/queries/use-universal-inventory', () => ({
+  useInventoryStockRealtimeSync: mockUseInventoryRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-expenses', () => ({
@@ -207,7 +207,18 @@ beforeEach(() => {
     isSingleBranchUser: false,
   });
   mockUseAdminInventoryRollup.mockReturnValue({
-    data: { report_type: 'INVENTORY_VALUATION', computed_at: '2026-07-21T00:00:00.000Z', branch_id: null, data: [] },
+    data: {
+      generated_at: '2026-07-21T00:00:00.000Z',
+      branches: [],
+      summary: {
+        total_inventory_value: 0,
+        total_active_inventory_items: 0,
+        total_inventory_stock_rows: 0,
+        total_low_stock_rows: 0,
+        total_critical_stock_rows: 0,
+        total_out_of_stock_rows: 0,
+      },
+    },
     isLoading: false,
     isError: false,
     refetch: vi.fn(),

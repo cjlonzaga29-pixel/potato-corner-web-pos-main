@@ -118,6 +118,20 @@ export const MOVEMENT_TYPE = {
 } as const;
 export type MovementType = (typeof MOVEMENT_TYPE)[keyof typeof MOVEMENT_TYPE];
 
+// Branch inventory cutover — InventoryStockMovement ledger's movement types.
+export const INVENTORY_STOCK_MOVEMENT_TYPE = {
+  RECEIVING: 'RECEIVING',
+  ADJUSTMENT_IN: 'ADJUSTMENT_IN',
+  ADJUSTMENT_OUT: 'ADJUSTMENT_OUT',
+  WASTE: 'WASTE',
+  TRANSFER_IN: 'TRANSFER_IN',
+  TRANSFER_OUT: 'TRANSFER_OUT',
+  PHYSICAL_COUNT: 'PHYSICAL_COUNT',
+  SALE: 'SALE',
+  SALE_REVERSAL: 'SALE_REVERSAL',
+} as const;
+export type InventoryStockMovementType = (typeof INVENTORY_STOCK_MOVEMENT_TYPE)[keyof typeof INVENTORY_STOCK_MOVEMENT_TYPE];
+
 export const IMAGE_PROOF_TYPE = {
   LIVE_CAPTURE: 'live_capture',
   GALLERY_UPLOAD: 'gallery_upload',

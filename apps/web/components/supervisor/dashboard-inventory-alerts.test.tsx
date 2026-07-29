@@ -1,16 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { InventoryAlert } from '@potato-corner/shared';
+import type { InventoryStockAlert } from '@potato-corner/shared';
 import { DashboardInventoryAlerts } from './dashboard-inventory-alerts';
 
 afterEach(cleanup);
 
-function alert(overrides: Partial<InventoryAlert> = {}): InventoryAlert {
+function alert(overrides: Partial<InventoryStockAlert> = {}): InventoryStockAlert {
   return {
-    ingredient_id: 'ing-1',
+    inventory_item_id: 'item-1',
     name: 'Cheddar Powder',
-    unit: 'kg',
-    current_stock: 2,
+    quantity_on_hand: 2,
     threshold: 5,
     severity: 'low',
     ...overrides,
@@ -31,7 +30,7 @@ describe('DashboardInventoryAlerts', () => {
   it('renders critical alerts before low alerts', () => {
     render(
       <DashboardInventoryAlerts
-        alerts={[alert({ ingredient_id: 'ing-low', name: 'Low Item', severity: 'low' }), alert({ ingredient_id: 'ing-critical', name: 'Critical Item', severity: 'critical' })]}
+        alerts={[alert({ inventory_item_id: 'item-low', name: 'Low Item', severity: 'low' }), alert({ inventory_item_id: 'item-critical', name: 'Critical Item', severity: 'critical' })]}
         isLoading={false}
       />,
     );
@@ -40,7 +39,7 @@ describe('DashboardInventoryAlerts', () => {
   });
 
   it('caps the list at 10 items and shows an "and X more" footer', () => {
-    const alerts = Array.from({ length: 13 }, (_, i) => alert({ ingredient_id: `ing-${i}`, name: `Item ${i}` }));
+    const alerts = Array.from({ length: 13 }, (_, i) => alert({ inventory_item_id: `item-${i}`, name: `Item ${i}` }));
     render(<DashboardInventoryAlerts alerts={alerts} isLoading={false} />);
     expect(screen.getAllByText(/^Item \d+$/)).toHaveLength(10);
     expect(screen.getByText('and 3 more')).toBeInTheDocument();

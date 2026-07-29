@@ -68,7 +68,7 @@ interface CreateTransactionRow {
     quantity: number;
     lineTotal: number;
     recipeVersion: number;
-    deductionSnapshot?: { ingredientId: string; ingredientName: string; quantity: number; unit: string }[];
+    deductionSnapshot?: { inventoryItemId: string; quantity: number; baseUnitId: string }[];
     selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
   }[];
 }
@@ -176,11 +176,16 @@ export const transactionsRepository = {
 
   /**
    * Transaction row + its line items are created atomically — a crash
-   * partway through must never leave a transaction with zero items.
+   * partway through must never leave a transaction with zero items. Written
+   * as a single nested-create call (items created inline, response included
+   * in the same round trip) rather than create + createMany + a separate
+   * re-fetch — the re-fetch was reading back data this same call had just
+   * written, one avoidable round trip inside the POS checkout's interactive
+   * transaction (see transactions.service.ts createTransaction).
    */
   async createTransaction(data: CreateTransactionRow, tx?: Prisma.TransactionClient) {
-    const run = async (client: Prisma.TransactionClient) => {
-      const transaction = await client.transaction.create({
+    const run = (client: Prisma.TransactionClient) =>
+      client.transaction.create({
         data: {
           branchId: data.branchId,
           shiftId: data.shiftId,
@@ -204,30 +209,26 @@ export const transactionsRepository = {
           paymentProofUploadedAt: data.paymentProofUploadedAt,
           isOfflineTransaction: data.isOfflineTransaction,
           offlineProvisionalNumber: data.offlineProvisionalNumber,
+          items: {
+            create: data.items.map((item) => ({
+              id: item.id,
+              productId: item.productId,
+              productVariantId: item.productVariantId,
+              flavorId: item.flavorId,
+              productNameSnapshot: item.productName,
+              variantNameSnapshot: item.variantName,
+              flavorNameSnapshot: item.flavorName,
+              unitPriceSnapshot: item.unitPrice,
+              quantity: item.quantity,
+              lineTotal: item.lineTotal,
+              recipeVersion: item.recipeVersion,
+              deductionSnapshot: item.deductionSnapshot,
+              selectedFlavors: item.selectedFlavors ?? undefined,
+            })),
+          },
         },
+        include: transactionInclude,
       });
-
-      await client.transactionItem.createMany({
-        data: data.items.map((item) => ({
-          id: item.id,
-          transactionId: transaction.id,
-          productId: item.productId,
-          productVariantId: item.productVariantId,
-          flavorId: item.flavorId,
-          productNameSnapshot: item.productName,
-          variantNameSnapshot: item.variantName,
-          flavorNameSnapshot: item.flavorName,
-          unitPriceSnapshot: item.unitPrice,
-          quantity: item.quantity,
-          lineTotal: item.lineTotal,
-          recipeVersion: item.recipeVersion,
-          deductionSnapshot: item.deductionSnapshot,
-          selectedFlavors: item.selectedFlavors ?? undefined,
-        })),
-      });
-
-      return client.transaction.findUniqueOrThrow({ where: { id: transaction.id }, include: transactionInclude });
-    };
     if (tx) return run(tx);
     return prisma.$transaction(run);
   },

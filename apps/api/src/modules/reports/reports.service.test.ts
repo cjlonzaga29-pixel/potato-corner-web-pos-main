@@ -15,6 +15,7 @@ vi.mock('./reports.repository.js', () => ({
     getFlavorPerformance: vi.fn(),
     getEmployeePerformance: vi.fn(),
     getInventoryValuation: vi.fn(),
+    getInventoryValuationRollup: vi.fn(),
     getBranchComparison: vi.fn(),
     getInventoryAnalytics: vi.fn(),
     getLatestSnapshot: vi.fn(),
@@ -181,6 +182,27 @@ describe('reportsService.getBranchComparisonReport', () => {
     await reportsService.getBranchComparisonReport(null, 'admin-1', 'super_admin');
 
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ entityId: 'BRANCH_COMPARISON', actorRole: 'super_admin', branchId: null }));
+  });
+});
+
+describe('reportsService.getInventoryValuationRollupReport', () => {
+  it('computes fresh from the repository every call (no snapshot cache) and writes REPORT_ACCESSED', async () => {
+    const rollup = {
+      generated_at: '2026-07-29T00:00:00.000Z',
+      branches: [{ branch_id: 'b1', branch_name: 'SM North' }],
+      summary: { total_inventory_value: 40 },
+    };
+    vi.mocked(reportsRepository.getInventoryValuationRollup).mockResolvedValue(rollup as never);
+
+    const result = await reportsService.getInventoryValuationRollupReport('admin-1', 'super_admin');
+
+    expect(reportsRepository.getInventoryValuationRollup).toHaveBeenCalledWith();
+    expect(reportsRepository.getLatestSnapshot).not.toHaveBeenCalled();
+    expect(reportsRepository.saveSnapshot).not.toHaveBeenCalled();
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'REPORT_ACCESSED', entityType: 'report', entityId: 'ADMIN_INVENTORY_VALUATION_ROLLUP', actorId: 'admin-1', actorRole: 'super_admin', branchId: null }),
+    );
+    expect(result).toEqual(rollup);
   });
 });
 

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { History } from 'lucide-react';
-import { MOVEMENT_TYPE, type MovementResponse, type MovementType } from '@potato-corner/shared';
+import { INVENTORY_STOCK_MOVEMENT_TYPE, type InventoryStockMovementResponse, type InventoryStockMovementType } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -11,44 +11,46 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
-import { useIngredients, useInventoryMovements } from '@/hooks/queries/use-inventory';
+import { useBranchInventoryStock, useInventoryStockMovements } from '@/hooks/queries/use-universal-inventory';
 
-const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
-  stock_in: 'Stock In',
-  sale_deduction: 'Sale Deduction',
-  manual_adjustment: 'Manual Adjustment',
-  waste: 'Waste',
-  physical_count: 'Physical Count',
-  transfer_in: 'Transfer In',
-  transfer_out: 'Transfer Out',
+const MOVEMENT_TYPE_LABELS: Record<InventoryStockMovementType, string> = {
+  RECEIVING: 'Receiving',
+  ADJUSTMENT_IN: 'Adjustment (In)',
+  ADJUSTMENT_OUT: 'Adjustment (Out)',
+  WASTE: 'Waste',
+  TRANSFER_IN: 'Transfer In',
+  TRANSFER_OUT: 'Transfer Out',
+  PHYSICAL_COUNT: 'Physical Count',
+  SALE: 'Sale',
+  SALE_REVERSAL: 'Sale Reversal',
 };
 
 /** Shared body behind both `/supervisor/inventory/movements` and `/branch/inventory/movements` — no internal navigation, so no basePath is needed. */
 export function InventoryMovementsView() {
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: ingredients } = useIngredients(activeBranchId);
-  const [ingredientId, setIngredientId] = useState('all');
+  const { data: stock } = useBranchInventoryStock(activeBranchId);
+  const [inventoryItemId, setInventoryItemId] = useState('all');
   const [movementType, setMovementType] = useState('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
 
-  const { data, isLoading, isError, refetch } = useInventoryMovements(activeBranchId, {
-    ingredient_id: ingredientId === 'all' ? undefined : ingredientId,
-    movement_type: movementType === 'all' ? undefined : (movementType as MovementType),
+  const { data, isLoading, isError, refetch } = useInventoryStockMovements(activeBranchId, {
+    inventory_item_id: inventoryItemId === 'all' ? undefined : inventoryItemId,
+    movement_type: movementType === 'all' ? undefined : (movementType as InventoryStockMovementType),
     from_date: fromDate ? new Date(fromDate).toISOString() : undefined,
     to_date: toDate ? new Date(`${toDate}T23:59:59.999`).toISOString() : undefined,
     page: pagination.pageIndex + 1,
     limit: pagination.pageSize,
   });
 
-  const columns: ColumnDef<MovementResponse>[] = [
+  const columns: ColumnDef<InventoryStockMovementResponse>[] = [
     { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-    { id: 'ingredient', header: 'Ingredient', cell: ({ row }) => row.original.ingredient_name },
+    { id: 'item', header: 'Item', cell: ({ row }) => row.original.inventory_item_name },
     {
       id: 'movement_type',
       header: 'Type',
-      cell: ({ row }) => <Badge variant="secondary">{MOVEMENT_TYPE_LABELS[row.original.movement_type as MovementType]}</Badge>,
+      cell: ({ row }) => <Badge variant="secondary">{MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>,
     },
     {
       id: 'quantity_change',
@@ -81,19 +83,19 @@ export function InventoryMovementsView() {
         <>
           <div className="flex flex-wrap items-center gap-2">
             <Select
-              value={ingredientId}
+              value={inventoryItemId}
               onValueChange={(value) => {
-                setIngredientId(value);
+                setInventoryItemId(value);
                 setPagination((prev) => ({ ...prev, pageIndex: 0 }));
               }}
             >
               <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="All ingredients" />
+                <SelectValue placeholder="All items" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All ingredients</SelectItem>
-                {ingredients?.map((i) => (
-                  <SelectItem key={i.id} value={i.id}>
+                <SelectItem value="all">All items</SelectItem>
+                {stock?.items.map((i) => (
+                  <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
                     {i.name}
                   </SelectItem>
                 ))}
@@ -112,7 +114,7 @@ export function InventoryMovementsView() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All types</SelectItem>
-                {(Object.values(MOVEMENT_TYPE) as MovementType[]).map((type) => (
+                {(Object.values(INVENTORY_STOCK_MOVEMENT_TYPE) as InventoryStockMovementType[]).map((type) => (
                   <SelectItem key={type} value={type}>
                     {MOVEMENT_TYPE_LABELS[type]}
                   </SelectItem>

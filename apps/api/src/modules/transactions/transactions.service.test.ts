@@ -1,5 +1,6 @@
 ﻿import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { transactionResponseSchema } from '@potato-corner/shared';
 
 vi.mock('../../lib/notify.js', () => ({
@@ -38,39 +39,35 @@ vi.mock('../../lib/prisma.js', () => {
     fraudAlert: { findMany: vi.fn() },
     transaction: { update: vi.fn().mockResolvedValue({}) },
     transactionItem: { update: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) },
-    // Read by productReadinessService (Phase C) for the RECIPE_MISSING/RECIPE_FLAVOR_SCOPE_UNSUPPORTED
-    // warnings only — never blocking, so an empty default doesn't affect sellability.
-    productComponent: { findMany: vi.fn().mockResolvedValue([]) },
-    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prismaMock)),
+    // Read by productReadinessService (Phase C) — Recipe/BOM (ProductComponent)
+    // is the sole inventory mapping. Default implementation set in beforeEach
+    // below (it needs to see the per-test findVariantsForSale fixture).
+    productComponent: { findMany: vi.fn() },
+    inventoryStock: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+    inventoryItem: { findMany: vi.fn().mockResolvedValue([]) },
+    $executeRaw: vi.fn().mockResolvedValue(undefined),
+    $transaction: vi.fn((callback: (tx: unknown) => unknown, _options?: unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
 });
 
 // Inventory deduction/reversal is exercised by inventory.integration.test.ts;
-// these tests cover pricing, VAT, and sync — stub the recipe lookup to no-op
-// so prisma.$transaction's callback doesn't need real recipe/ingredient rows.
+// these tests cover pricing, VAT, and sync — stub deduction computation so
+// prisma.$transaction's callback doesn't need real ingredient rows.
 vi.mock('../product-inventory/product-inventory.service.js', () => ({
+  // Retained solely for reverseInventoryForTransaction's legacy-shaped
+  // deductionSnapshot fallback — not exercised by the create-transaction path.
   computeDeduction: vi.fn().mockResolvedValue([]),
-  computeDeductionForSlots: vi.fn().mockResolvedValue([]),
-  // CR-004: resolveCartItems checks recipe existence before stamping a
-  // version per cart line — default to "recipe exists" so the
-  // pricing/VAT/sync tests in this file (which aren't about recipes) don't
-  // need their own recipe fixtures. Tests that specifically cover the
-  // RECIPE_MISSING rejection override assertProductInventoryExists per-test.
-  assertProductInventoryExists: vi.fn().mockResolvedValue(undefined),
 }));
 
-// recipeVersion is sourced from ProductInventory.version (max across the
-// branch-scoped base+flavor mappings for a variant), not from the recipe —
-// default to version 1 so the pricing/VAT/sync tests don't need their own
-// ProductInventory fixtures. The CR-004 test below overrides this per-test.
-vi.mock('../product-inventory/product-inventory.repository.js', () => ({
-  productInventoryRepository: {
+// recipeVersion is sourced from ProductComponent's MAX(version) for the
+// variant (Recipe/BOM is the sole inventory mapping), not from legacy
+// ProductInventory — default to version 1 so the pricing/VAT/sync tests
+// don't need their own fixtures. The recipe-version test below overrides
+// this per-test.
+vi.mock('../product-components/product-components.repository.js', () => ({
+  productComponentsRepository: {
     getVersionForVariant: vi.fn().mockResolvedValue(1),
-    // Read by productReadinessService (Phase C) for baseInventoryMapped /
-    // flavorLinksConsistent. Default implementation set in beforeEach below
-    // (it needs to see the per-test findVariantsForSale fixture).
-    findActiveMappingsForVariants: vi.fn(),
   },
 }));
 
@@ -108,9 +105,17 @@ vi.mock('../../queues/hold-order.queue.js', () => ({
 // mutations of mutableConfig are visible here too, mirroring the real
 // module's computeShadowBomDeductionEnabledForBranch semantics.
 vi.mock('../../config/index.js', () => {
-  const config: { shadowBomDeductionEnabled: boolean; shadowBomDeductionBranchIds: string[] } = {
+  const config: {
+    shadowBomDeductionEnabled: boolean;
+    shadowBomDeductionBranchIds: string[];
+    posTransaction: { maxWaitMs: number; timeoutMs: number };
+  } = {
     shadowBomDeductionEnabled: false,
     shadowBomDeductionBranchIds: [],
+    // Mirrors config/index.ts's real defaults (posTransactionMaxWaitMsSchema /
+    // posTransactionTimeoutMsSchema) so the "threads the configured timeout
+    // through" test below stays in sync with production behavior.
+    posTransaction: { maxWaitMs: 10_000, timeoutMs: 30_000 },
   };
   return {
     config,
@@ -123,7 +128,21 @@ vi.mock('../../config/index.js', () => {
 });
 
 vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
+  // computeBomDeduction is now the live checkout deduction source (Phase 3
+  // cutover) — resolveCartItems calls it directly, not just the shadow hook.
+  computeBomDeduction: vi.fn().mockResolvedValue([]),
   shadowBomDeductionService: { runShadowComparison: vi.fn().mockResolvedValue(undefined) },
+}));
+
+// Branch inventory cutover — deductInventoryForSale/reverseInventoryForTransaction
+// write a paired InventoryStockMovement ledger row alongside every
+// InventoryStock quantity change. Mocked wholesale here (this file already
+// stubs the InventoryStock update itself via the prisma mock below); the
+// dedicated describe block further down asserts the real call shape.
+vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
+  universalInventoryRepository: {
+    createStockMovement: vi.fn().mockResolvedValue({ id: 'movement-1' }),
+  },
 }));
 
 const storageMock = {
@@ -144,9 +163,7 @@ vi.mock('sharp', () => ({
 }));
 
 const { transactionsRepository } = await import('./transactions.repository.js');
-const { assertProductInventoryExists } = await import('../product-inventory/product-inventory.service.js');
-const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
-const { ProductInventoryError } = await import('../product-inventory/product-inventory.types.js');
+const { productComponentsRepository } = await import('../product-components/product-components.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { enqueueHoldOrderExpiry } = await import('../../queues/hold-order.queue.js');
@@ -159,7 +176,8 @@ const { config } = await import('../../config/index.js');
 // assignments against the real declaration. This mutable view lets tests
 // flip the mocked flag/branch list per-case.
 const mutableConfig = config as { shadowBomDeductionEnabled: boolean; shadowBomDeductionBranchIds: string[] };
-const { shadowBomDeductionService } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
+const { shadowBomDeductionService, computeBomDeduction } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
+const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { TransactionError } = await import('./transactions.types.js');
 
@@ -263,38 +281,46 @@ beforeEach(() => {
   vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
   vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
   vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([] as never);
-  // productReadinessService (Phase C) derives base/flavor inventory-mapping
-  // coverage from this. Synthesizes "fully mapped" rows (a base row per
-  // variant + a flavor row per active/available variantFlavor link, walking
-  // Mix & Max snack variants too) from whatever findVariantsForSale is
-  // currently mocked to return, so every pre-existing fixture reads as
+  // productReadinessService (Phase C) derives recipe/inventory-stock
+  // coverage from these two. Synthesizes "fully ready" rows (one active
+  // ProductComponent + one stocked InventoryItem per variant, walking Mix &
+  // Max snack variants too) from whatever findVariantsForSale is currently
+  // mocked to return, so every pre-existing fixture reads as
   // readiness-sellable by default without per-test bookkeeping. Tests that
-  // want a readiness rejection override this mock directly.
-  vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockImplementation((async (_branchId: string, _variantIds: string[]) => {
-    type FlavorLink = { flavorId: string; isAvailable: boolean; flavor: { isActive: boolean } };
-    type Fixture = {
-      id: string;
-      variantFlavors?: FlavorLink[];
-      flavorSlots?: { snackOptions: { snackProductVariant: Fixture }[] }[];
-    };
+  // want a readiness rejection override prisma.productComponent.findMany or
+  // prisma.inventoryStock.findMany directly.
+  type SlotFixture = { id: string; flavorSlots?: { snackOptions: { snackProductVariant: SlotFixture }[] }[] };
+  const buildComponentRows = async () => {
     const calls = vi.mocked(transactionsRepository.findVariantsForSale).mock.results;
     const lastResult = calls[calls.length - 1]?.value;
-    const variants = ((await lastResult) ?? []) as unknown as Fixture[];
-    const rows: { productVariantId: string; flavorId: string | null }[] = [];
+    const variants = ((await lastResult) ?? []) as unknown as SlotFixture[];
+    const rows: {
+      productVariantId: string;
+      inventoryItemId: string;
+      quantityRequired: { lessThanOrEqualTo(value: number): boolean };
+      inventoryItem: { deletedAt: Date | null };
+    }[] = [];
     const visited = new Set<string>();
-    const addForVariant = (v: Fixture) => {
+    const addForVariant = (v: SlotFixture) => {
       if (visited.has(v.id)) return;
       visited.add(v.id);
-      rows.push({ productVariantId: v.id, flavorId: null });
-      for (const vf of v.variantFlavors ?? []) {
-        if (vf.isAvailable && vf.flavor?.isActive) rows.push({ productVariantId: v.id, flavorId: vf.flavorId });
-      }
+      rows.push({
+        productVariantId: v.id,
+        inventoryItemId: `item-${v.id}`,
+        quantityRequired: { lessThanOrEqualTo: (value: number) => 1 <= value },
+        inventoryItem: { deletedAt: null },
+      });
       for (const slot of v.flavorSlots ?? []) {
         for (const so of slot.snackOptions ?? []) addForVariant(so.snackProductVariant);
       }
     };
     for (const v of variants) addForVariant(v);
     return rows;
+  };
+  vi.mocked(prisma.productComponent.findMany).mockImplementation((async () => buildComponentRows()) as never);
+  vi.mocked(prisma.inventoryStock.findMany).mockImplementation((async (args: unknown) => {
+    const ids = ((args as { where?: { inventoryItemId?: { in?: string[] } } })?.where?.inventoryItemId?.in ?? []) as string[];
+    return ids.map((id) => ({ inventoryItemId: id }));
   }) as never);
   vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
@@ -1474,10 +1500,8 @@ describe('transactionsService.getDiscountAuditTrail', () => {
 });
 
 describe('transactionsService.createTransaction — CR-004 recipe integrity', () => {
-  it('rejects the whole sale with RECIPE_MISSING when the variant has no recipe configured — no transaction row is created', async () => {
-    vi.mocked(assertProductInventoryExists).mockRejectedValueOnce(
-      new ProductInventoryError('RECIPE_MISSING', 'This product variant has no recipe configured', 422),
-    );
+  it('rejects the whole sale with RECIPE_MISSING when the variant has no active Recipe/BOM configured — no transaction row is created', async () => {
+    vi.mocked(prisma.productComponent.findMany).mockResolvedValueOnce([]);
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
       code: 'RECIPE_MISSING',
@@ -1487,14 +1511,8 @@ describe('transactionsService.createTransaction — CR-004 recipe integrity', ()
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
-  it('passes the transaction\'s branchId through to assertProductInventoryExists — the mapping check must never fall back to an inferred branch', async () => {
-    await transactionsService.createTransaction(baseInput, null);
-
-    expect(assertProductInventoryExists).toHaveBeenCalledWith('branch-1', expect.any(String));
-  });
-
   it('stamps each resolved cart line with the recipe version resolved for its variant+flavor', async () => {
-    vi.mocked(productInventoryRepository.getVersionForVariant).mockResolvedValueOnce(4);
+    vi.mocked(productComponentsRepository.getVersionForVariant).mockResolvedValueOnce(4);
 
     await transactionsService.createTransaction(baseInput, null);
 
@@ -1561,15 +1579,6 @@ describe('transactionsService.createTransaction — Phase C readiness engine gat
     expect(transactionsRepository.createTransaction).toHaveBeenCalled();
   });
 
-  it('does not block checkout on warning-only readiness issues (no ProductComponent recipe configured)', async () => {
-    // prisma.productComponent.findMany defaults to [] in beforeEach, so
-    // recipeReady is always false here — RECIPE_MISSING is a warning, not a
-    // blocking issue, and must not prevent an otherwise-sellable variant from
-    // checking out.
-    await expect(transactionsService.createTransaction(baseInput, null)).resolves.toBeDefined();
-    expect(transactionsRepository.createTransaction).toHaveBeenCalled();
-  });
-
   it('rejects a variant whose lifecycle status is not ACTIVE before any deduction is computed', async () => {
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ lifecycleStatus: 'PENDING_APPROVAL' })] as never);
 
@@ -1577,7 +1586,6 @@ describe('transactionsService.createTransaction — Phase C readiness engine gat
       code: 'PRODUCT_UNAVAILABLE',
       statusCode: 422,
     });
-    expect(assertProductInventoryExists).not.toHaveBeenCalled();
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -1588,28 +1596,10 @@ describe('transactionsService.createTransaction — Phase C readiness engine gat
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
-  it('rejects a variant with no active base ProductInventory mapping for this branch (readiness), not just the CR-004 recipe check', async () => {
-    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([] as never);
+  it('rejects a variant with no InventoryStock row at this branch for its Recipe/BOM component', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([]);
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'RECIPE_MISSING', statusCode: 422 });
-    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
-  });
-
-  it('rejects a linked, available flavor that has no flavor-scoped ProductInventory mapping', async () => {
-    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
-      variantRow({
-        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
-      }),
-    ] as never);
-    // Base mapping present, but no flavor-scoped row for flavor-1.
-    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([{ productVariantId: 'variant-1', flavorId: null }] as never);
-
-    await expect(
-      transactionsService.createTransaction(
-        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
-        null,
-      ),
-    ).rejects.toMatchObject({ code: 'FLAVOR_INVENTORY_MAPPING_MISSING', statusCode: 422 });
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -1740,5 +1730,247 @@ describe('transactionsService.createTransaction — Phase C readiness engine gat
         null,
       ),
     ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INVALID' });
+  });
+});
+
+// Branch inventory cutover — Test H (POS deduction) and its reversal
+// counterpart. Every prior describe block above stubs computeBomDeduction to
+// return no lines, so deductInventoryForSale/reverseInventoryForTransaction's
+// InventoryStock/InventoryStockMovement loops never execute — these tests are
+// the only unit-level coverage of that actual read-lock-decrement-ledger path.
+describe('transactionsService.createTransaction — branch inventory cutover ledger (InventoryStockMovement)', () => {
+  it('decrements InventoryStock and records a SALE movement for each recipe deduction line', async () => {
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
+      quantityOnHand: decimal(10),
+    } as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
+      id: 'stock-1',
+      quantityOnHand: decimal(8),
+      lowStockThreshold: null,
+      criticalThreshold: null,
+    } as never);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
+      where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: 'item-flour' } },
+      data: { quantityOnHand: { decrement: 2 }, version: { increment: 1 } },
+    });
+    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchId: 'branch-1',
+        inventoryItemId: 'item-flour',
+        movementType: 'SALE',
+        unitId: 'unit-g',
+        referenceType: 'transaction',
+        referenceId: 'txn-1',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('rejects with INSUFFICIENT_STOCK and records no movement when InventoryStock cannot cover the sale', async () => {
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantity: 5, baseUnitId: 'unit-g' },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
+      quantityOnHand: decimal(1),
+    } as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
+      code: 'INSUFFICIENT_STOCK',
+    });
+    expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovement).not.toHaveBeenCalled();
+  });
+
+  it('increments InventoryStock and records a SALE_REVERSAL movement when voiding a transaction with a stock-shaped deduction snapshot', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }],
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
+      quantityOnHand: decimal(8),
+    } as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
+      id: 'stock-1',
+      quantityOnHand: decimal(10),
+    } as never);
+
+    await transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
+      where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: 'item-flour' } },
+      data: { quantityOnHand: { increment: 2 }, version: { increment: 1 } },
+    });
+    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchId: 'branch-1',
+        inventoryItemId: 'item-flour',
+        movementType: 'SALE_REVERSAL',
+        quantityChange: 2,
+        unitId: 'unit-g',
+        referenceType: 'transaction',
+        referenceId: 'txn-1',
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+// POS checkout transaction-timeout fix — a three-component BOM exercises the
+// full lock/read/update/movement cycle deductInventoryForSale runs once per
+// inventory item, which is exactly the shape that was tripping Prisma's
+// un-configured 5s default interactive-transaction timeout (P2028
+// "Transaction already closed") under realistic remote-DB latency.
+describe('transactionsService.createTransaction — multi-component BOM deduction (POS checkout timeout fix)', () => {
+  const bomLines = [
+    { inventoryItemId: 'item-cup', quantity: 2, baseUnitId: 'unit-pc' },
+    { inventoryItemId: 'item-potato', quantity: 5, baseUnitId: 'unit-g' },
+    { inventoryItemId: 'item-oil', quantity: 1, baseUnitId: 'unit-ml' },
+  ];
+  const stockOnHand: Record<string, number> = { 'item-cup': 10, 'item-potato': 20, 'item-oil': 30 };
+
+  beforeEach(() => {
+    vi.mocked(computeBomDeduction).mockResolvedValue(bomLines as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockImplementation((async (args: unknown) => {
+      const id = (args as { where: { branchId_inventoryItemId: { inventoryItemId: string } } }).where.branchId_inventoryItemId
+        .inventoryItemId;
+      return { quantityOnHand: decimal(stockOnHand[id] ?? 0) };
+    }) as never);
+    vi.mocked(prisma.inventoryStock.update).mockImplementation((async (args: unknown) => {
+      const call = args as {
+        where: { branchId_inventoryItemId: { inventoryItemId: string } };
+        data: { quantityOnHand: { decrement: number } };
+      };
+      const id = call.where.branchId_inventoryItemId.inventoryItemId;
+      const after = (stockOnHand[id] ?? 0) - call.data.quantityOnHand.decrement;
+      return { id: `stock-${id}`, quantityOnHand: decimal(after), lowStockThreshold: null, criticalThreshold: null };
+    }) as never);
+  });
+
+  // Test A — proves (deterministically, no sleeps) that checkout has room to
+  // finish even when the per-component lock/read/update/movement cycle takes
+  // longer than Prisma's un-configured 5s default: the interactive
+  // transaction is given the app's own configured budget, not Prisma's
+  // default.
+  it('threads the configured maxWait/timeout (well above Prisma\'s 5s/2s defaults) into the checkout $transaction call', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: config.posTransaction.maxWaitMs,
+      timeout: config.posTransaction.timeoutMs,
+    });
+    expect(config.posTransaction.timeoutMs).toBeGreaterThan(5_000);
+  });
+
+  // Test B
+  it('deducts the exact configured quantity from every InventoryStock row for a three-component BOM', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(prisma.inventoryStock.update).toHaveBeenCalledTimes(bomLines.length);
+    for (const line of bomLines) {
+      expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
+        where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: line.inventoryItemId } },
+        data: { quantityOnHand: { decrement: line.quantity }, version: { increment: 1 } },
+      });
+    }
+  });
+
+  // Test C
+  it('creates exactly one InventoryStockMovement row per BOM component', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledTimes(bomLines.length);
+    for (const line of bomLines) {
+      expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          branchId: 'branch-1',
+          inventoryItemId: line.inventoryItemId,
+          movementType: 'SALE',
+          unitId: line.baseUnitId,
+          referenceType: 'transaction',
+        }),
+        expect.anything(),
+      );
+    }
+  });
+
+  // Test D
+  it('snapshots TransactionItem.deductionSnapshot keyed by inventoryItemId (not the legacy ingredientId shape)', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: bomLines.map((line) => ({
+              inventoryItemId: line.inventoryItemId,
+              quantity: line.quantity,
+              baseUnitId: line.baseUnitId,
+            })),
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+// Test F — a forced P2028 ("Transaction already closed") must map to a
+// distinct, retryable, client-safe error and must never let the checkout be
+// reported as completed. Simulated deterministically by rejecting the
+// $transaction call itself, rather than depending on a real timeout/sleep —
+// Prisma/Postgres already guarantee the underlying transaction rolled back
+// before this rejection is even observable, so no assertion is made here
+// about intermediate writes (that guarantee is Prisma's, not this module's;
+// section 6 verifies it against a real database).
+describe('transactionsService.createTransaction — forced transaction-timeout handling', () => {
+  it('maps a P2028 failure to a retryable 503 without leaking raw Prisma internals, and skips every post-commit effect', async () => {
+    const p2028 = new Prisma.PrismaClientKnownRequestError('Transaction already closed: This transaction has already been committed or rolled back.', {
+      code: 'P2028',
+      clientVersion: '5.0.0',
+    });
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2028);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
+      name: 'TransactionError',
+      code: 'CHECKOUT_TIMEOUT',
+      statusCode: 503,
+    });
+
+    expect(recordAuditLog).not.toHaveBeenCalled();
+    expect(notifyBranch).not.toHaveBeenCalled();
+    expect(notifySuperAdmin).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a P2028 failure the way it retries a receipt-number collision (P2002)', async () => {
+    const p2028 = new Prisma.PrismaClientKnownRequestError('Transaction already closed', { code: 'P2028', clientVersion: '5.0.0' });
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2028);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'CHECKOUT_TIMEOUT' });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('still surfaces INSUFFICIENT_STOCK as-is (409) rather than reclassifying it as a timeout', async () => {
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 5, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(1) } as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
+      code: 'INSUFFICIENT_STOCK',
+      statusCode: 409,
+    });
   });
 });

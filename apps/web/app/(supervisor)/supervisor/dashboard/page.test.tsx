@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { AttendanceResponse, InventoryAlert, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
+import type { AttendanceResponse, InventoryStockAlert, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
 import SupervisorDashboardPage from './page';
 
 const {
@@ -57,9 +57,9 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
 }));
 
-vi.mock('@/hooks/queries/use-inventory', () => ({
-  useBranchInventoryAlerts: mockUseBranchInventoryAlerts,
-  useInventoryRealtimeSync: mockUseInventoryRealtimeSync,
+vi.mock('@/hooks/queries/use-universal-inventory', () => ({
+  useBranchInventoryStockAlerts: mockUseBranchInventoryAlerts,
+  useInventoryStockRealtimeSync: mockUseInventoryRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
@@ -180,12 +180,11 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
   };
 }
 
-function inventoryAlert(overrides: Partial<InventoryAlert> = {}): InventoryAlert {
+function inventoryAlert(overrides: Partial<InventoryStockAlert> = {}): InventoryStockAlert {
   return {
-    ingredient_id: 'ing-1',
+    inventory_item_id: 'item-1',
     name: 'Cheddar Powder',
-    unit: 'kg',
-    current_stock: 2,
+    quantity_on_hand: 2,
     threshold: 5,
     severity: 'low',
     ...overrides,
@@ -313,7 +312,7 @@ describe('SupervisorDashboardPage', () => {
 
   it('renders inventory alerts sorted critical-first', () => {
     mockUseBranchInventoryAlerts.mockReturnValue({
-      data: { branch_id: 'branch-1', alerts: [inventoryAlert({ ingredient_id: 'low-1', name: 'Low Item', severity: 'low' }), inventoryAlert({ ingredient_id: 'crit-1', name: 'Critical Item', severity: 'critical' })] },
+      data: { branch_id: 'branch-1', alerts: [inventoryAlert({ inventory_item_id: 'low-1', name: 'Low Item', severity: 'low' }), inventoryAlert({ inventory_item_id: 'crit-1', name: 'Critical Item', severity: 'critical' })] },
       isLoading: false,
     });
     render(<SupervisorDashboardPage />);

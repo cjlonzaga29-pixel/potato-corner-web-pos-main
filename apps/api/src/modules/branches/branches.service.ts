@@ -6,6 +6,7 @@ import { BranchError, type BranchListFilters, type CreateBranchData, type Update
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
+import { universalInventoryService } from '../universal-inventory/universal-inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../socket/socket.server.js';
 import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
@@ -213,6 +214,12 @@ export const branchesService = {
       if (mergedIdentities.length > 0) {
         await inventoryService.provisionBranchIngredients(created.id, mergedIdentities, tx);
       }
+
+      // The new-model equivalent of the block above: every active,
+      // tracked InventoryItem gets a zero-stock InventoryStock row in this
+      // branch too, so a Recipe/BOM-ready product is immediately sellable
+      // here without a manual inventory-mapping step.
+      await universalInventoryService.provisionBranchStock(created.id, tx);
 
       return created;
     });

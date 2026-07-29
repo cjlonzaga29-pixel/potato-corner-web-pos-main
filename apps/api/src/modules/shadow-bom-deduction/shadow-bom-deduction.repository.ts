@@ -86,9 +86,14 @@ export const shadowBomDeductionRepository = {
   },
 
   /** Active (non-soft-deleted, isActive) ProductComponent rows for a variant, already expressed in each InventoryItem's own base unit. */
-  async findActiveComponentsForVariant(productVariantId: string): Promise<ActiveComponentRow[]> {
+  async findActiveComponentsForVariant(productVariantId: string, flavorId?: string | null): Promise<ActiveComponentRow[]> {
     const rows = await prisma.productComponent.findMany({
-      where: { productVariantId, deletedAt: null, isActive: true },
+      where: {
+        productVariantId,
+        deletedAt: null,
+        isActive: true,
+        ...(flavorId ? { OR: [{ flavorId: null }, { flavorId }] } : { flavorId: null }),
+      },
       select: { inventoryItemId: true, quantityRequired: true, recipeUnitId: true, inventoryItem: { select: { baseUnitId: true } } },
     });
     return rows.map((row) => ({

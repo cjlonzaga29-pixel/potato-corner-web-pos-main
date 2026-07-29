@@ -24,9 +24,15 @@ import {
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
-import { computeDeduction, computeDeductionForSlots, assertProductInventoryExists } from '../product-inventory/product-inventory.service.js';
-import { ProductInventoryError, type DeductionLine } from '../product-inventory/product-inventory.types.js';
-import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
+import { computeBomDeduction } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
+import type { BomDeductionLine } from '../shadow-bom-deduction/shadow-bom-deduction.types.js';
+// Retained solely for reverseInventoryForTransaction's fallback path, which
+// replays a legacy-shaped deductionSnapshot (or, for transactions that
+// predate the snapshot column entirely, recomputes from ProductInventory) —
+// the only remaining live callers of the legacy deduction model.
+import { computeDeduction } from '../product-inventory/product-inventory.service.js';
+import { productComponentsRepository } from '../product-components/product-components.repository.js';
+import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
 import type { ProductVariantReadinessResult } from '../product-readiness/product-readiness.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -39,7 +45,7 @@ import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
+import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
 import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 
 type ActorContext = { id: string; role: string };
@@ -250,7 +256,7 @@ interface ResolvedItem {
   // written directly into the TransactionItem's create payload —
   // TransactionItem rows are immutable after creation (CR-004), so this can
   // never be patched in afterward.
-  deductionLines: DeductionLine[];
+  deductionLines: BomDeductionLine[];
   vatableCapAmount: number | null;
   recipeVersion: number;
   selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
@@ -281,14 +287,9 @@ const READINESS_TRANSACTION_ERRORS: { codes: string[]; txCode: string; message: 
     message: (name) => `${name} does not have a valid price configured`,
   },
   {
-    codes: ['BASE_INVENTORY_MAPPING_MISSING'],
+    codes: ['RECIPE_MISSING', 'INVALID_COMPONENT', 'INVENTORY_STOCK_MISSING'],
     txCode: 'RECIPE_MISSING',
     message: (name) => `${name} has no inventory mapping configured for this branch`,
-  },
-  {
-    codes: ['FLAVOR_INVENTORY_MAPPING_MISSING'],
-    txCode: 'FLAVOR_INVENTORY_MAPPING_MISSING',
-    message: () => 'The selected flavor is not fully configured for sale at this branch',
   },
   {
     codes: ['FLAVOR_NOT_AVAILABLE_AT_BRANCH'],
@@ -364,20 +365,9 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       throw readinessRejection(`${variant.product.name} — ${variant.name}`, readiness);
     }
 
-    // CR-004: reject the whole sale rather than silently deduct nothing for
-    // a variant no one has configured a recipe for yet.
-    try {
-      await assertProductInventoryExists(branchId, variant.id);
-    } catch (error) {
-      if (error instanceof ProductInventoryError) {
-        throw new TransactionError('RECIPE_MISSING', error.message, error.statusCode);
-      }
-      throw error;
-    }
-
     let flavorName: string | null = null;
     let pricePremium = 0;
-    let deductionLines: DeductionLine[];
+    let deductionLines: BomDeductionLine[];
     let recipeVersion: number;
     let selectedFlavors: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null = null;
 
@@ -421,14 +411,10 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
         if (productAvailabilityMap.get(snackVariant.product.id) !== true) {
           throw new TransactionError('PRODUCT_UNAVAILABLE', 'Selected snack is not available at this branch', 422);
         }
-        try {
-          await assertProductInventoryExists(branchId, snackVariant.id);
-        } catch (error) {
-          if (error instanceof ProductInventoryError) {
-            throw new TransactionError('RECIPE_MISSING', error.message, error.statusCode);
-          }
-          throw error;
-        }
+        // The parent variant's own readiness gate above already requires
+        // MIX_MAX_SNACK_UNAVAILABLE-free slots (every offered snack option
+        // has an active Recipe/BOM) before reaching this loop — see
+        // product-readiness.service.ts buildReadinessResult.
 
         const link = snackVariant.variantFlavors.find((vf) => vf.flavorId === sel.flavorId);
         if (!link || !link.isAvailable || !link.flavor.isActive) {
@@ -444,13 +430,8 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       flavorName = names.join(' / ');
       selectedFlavors = submitted.map((s) => ({ slotIndex: s.slotIndex, snackProductVariantId: s.snackProductVariantId, flavorId: s.flavorId }));
 
-      recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id);
-      deductionLines = await computeDeductionForSlots({
-        productVariantId: variant.id,
-        selectedFlavors,
-        quantitySold: item.quantity,
-        branchId,
-      });
+      recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
+      deductionLines = await computeComponentDeductionForSlots(variant.id, selectedFlavors, item.quantity, branchId);
     } else {
       const activeFlavorLinks = variant.variantFlavors.filter((vf) => vf.isAvailable && vf.flavor.isActive);
       if (!item.flavorId && activeFlavorLinks.length > 0) {
@@ -468,13 +449,8 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
         pricePremium = link.pricePremium.toNumber();
       }
 
-      recipeVersion = await productInventoryRepository.getVersionForVariant(branchId, variant.id, item.flavorId ?? undefined);
-      deductionLines = await computeDeduction({
-        productVariantId: variant.id,
-        flavorId: item.flavorId ?? null,
-        quantitySold: item.quantity,
-        branchId,
-      });
+      recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
+      deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null);
     }
 
     const basePrice = variant.basePrice.toNumber();
@@ -499,6 +475,33 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     });
   }
   return resolved;
+}
+
+/**
+ * Mix & Max slot deduction on the new model: the parent variant's own active
+ * Recipe/BOM (ProductComponent) rows represent packaging (box/cup), resolved
+ * once regardless of slot count; each slot's actual consumption is resolved
+ * against the *selected snack's own* active components. Mirrors the retired
+ * product-inventory.service.ts#computeDeductionForSlots exactly in shape.
+ */
+async function computeComponentDeductionForSlots(
+  productVariantId: string,
+  selectedFlavors: { slotIndex: number; snackProductVariantId: string; flavorId: string }[],
+  quantitySold: number,
+  branchId: string,
+): Promise<BomDeductionLine[]> {
+  const packagingLines = await computeBomDeduction(productVariantId, branchId, 1);
+  const map = new Map(packagingLines.map((line) => [line.inventoryItemId, { ...line }]));
+
+  for (const selection of selectedFlavors) {
+    const lines = await computeBomDeduction(selection.snackProductVariantId, branchId, 1);
+    for (const line of lines) {
+      const existing = map.get(line.inventoryItemId);
+      map.set(line.inventoryItemId, { ...line, quantity: (existing?.quantity ?? 0) + line.quantity });
+    }
+  }
+
+  return Array.from(map.values()).map((line) => ({ ...line, quantity: line.quantity * quantitySold }));
 }
 
 interface ComputedAmounts {
@@ -567,45 +570,56 @@ async function deductInventoryForSale(
   tx: Prisma.TransactionClient,
   branchId: string,
   transactionId: string,
-  items: { lines: DeductionLine[] }[],
+  items: { lines: BomDeductionLine[] }[],
 ): Promise<Array<() => Promise<void>>> {
-  const totals = new Map<string, { quantity: number; ingredientName: string }>();
+  const totals = new Map<string, { quantity: number; baseUnitId: string }>();
   for (const item of items) {
     for (const line of item.lines) {
-      const existing = totals.get(line.ingredient_id);
-      totals.set(line.ingredient_id, {
-        quantity: (existing?.quantity ?? 0) + line.quantity,
-        ingredientName: line.ingredient_name,
-      });
+      const existing = totals.get(line.inventoryItemId);
+      totals.set(line.inventoryItemId, { quantity: (existing?.quantity ?? 0) + line.quantity, baseUnitId: line.baseUnitId });
     }
   }
 
+  const itemNames = new Map(
+    (await tx.inventoryItem.findMany({ where: { id: { in: [...totals.keys()] } }, select: { id: true, name: true } })).map((i) => [
+      i.id,
+      i.name,
+    ]),
+  );
+
   const effects: Array<() => Promise<void>> = [];
 
-  for (const [ingredientId, total] of totals) {
-    const lockId = hashToLockId(sha256Hex(ingredientId));
+  for (const [inventoryItemId, { quantity, baseUnitId }] of totals) {
+    const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
+    const lockId = hashToLockId(sha256Hex(inventoryItemId));
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
 
-    const currentStock = (await inventoryRepository.getCurrentStock(ingredientId, tx)).toNumber();
-    if (currentStock < total.quantity) {
+    const stock = await tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
+    const currentStock = stock?.quantityOnHand.toNumber() ?? 0;
+    if (!stock || currentStock < quantity) {
       throw new TransactionError(
         'INSUFFICIENT_STOCK',
-        `Insufficient stock for ${total.ingredientName}: need ${total.quantity}, have ${currentStock}`,
+        `Insufficient stock for ${itemName}: need ${quantity}, have ${currentStock}`,
         409,
       );
     }
 
-    const ingredient = await inventoryRepository.findIngredientById(ingredientId, tx);
-    if (!ingredient) continue;
+    const updated = await tx.inventoryStock.update({
+      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
+      data: { quantityOnHand: { decrement: quantity }, version: { increment: 1 } },
+    });
 
-    const movement = await inventoryRepository.appendMovement(
+    await universalInventoryRepository.createStockMovement(
       {
         branchId,
-        ingredientId,
-        movementType: MOVEMENT_TYPE.SALE_DEDUCTION,
-        quantityChange: -total.quantity,
+        inventoryItemId,
+        movementType: 'SALE',
+        quantityChange: new Prisma.Decimal(quantity).negated(),
+        quantityBefore: stock.quantityOnHand,
+        quantityAfter: updated.quantityOnHand,
+        unitId: baseUnitId,
+        referenceType: 'transaction',
         referenceId: transactionId,
-        notes: `Sale deduction for transaction ${transactionId}`,
       },
       tx,
     );
@@ -613,53 +627,35 @@ async function deductInventoryForSale(
     effects.push(() =>
       recordAuditLog({
         action: 'INVENTORY_SALE_DEDUCTED',
-        entityType: 'inventory_movement',
-        entityId: movement.id,
+        entityType: 'inventory_stock',
+        entityId: updated.id,
         actorId: null,
         actorRole: 'system',
         branchId,
         afterState: {
-          ingredient_id: ingredientId,
-          quantity_change: movement.quantityChange.toNumber(),
-          quantity_after: movement.quantityAfter.toNumber(),
+          inventory_item_id: inventoryItemId,
+          quantity_change: -quantity,
+          quantity_after: updated.quantityOnHand.toNumber(),
           reference_id: transactionId,
         },
       }),
     );
 
-    const stockAfter = movement.quantityAfter.toNumber();
-    const lowThreshold = ingredient.lowStockThreshold.toNumber();
-    const criticalThreshold = ingredient.criticalThreshold.toNumber();
-    if (stockAfter <= lowThreshold) {
+    const stockAfter = updated.quantityOnHand.toNumber();
+    const lowThreshold = updated.lowStockThreshold?.toNumber() ?? null;
+    const criticalThreshold = updated.criticalThreshold?.toNumber() ?? null;
+    if (lowThreshold !== null && stockAfter <= lowThreshold) {
       effects.push(() =>
         enqueueRawNotificationJob('low_stock_alert', {
           branchId,
-          ingredientId,
-          ingredientName: total.ingredientName,
+          inventoryItemId,
+          ingredientName: itemName,
           currentStock: stockAfter,
           lowStockThreshold: lowThreshold,
-          criticalThreshold,
-          severity: stockAfter <= criticalThreshold ? 'critical' : 'low',
+          criticalThreshold: criticalThreshold ?? lowThreshold,
+          severity: criticalThreshold !== null && stockAfter <= criticalThreshold ? 'critical' : 'low',
         }),
       );
-    }
-
-    if (stockAfter <= 0) {
-      const cascadeResult = await inventoryRepository.runOutOfStockCascade(branchId, ingredientId, tx);
-      if (cascadeResult.affectedFlavors.length > 0 || cascadeResult.affectedProducts.length > 0) {
-        const cascadePayload = {
-          branchId,
-          triggeredByIngredientId: ingredientId,
-          triggeredByIngredientName: total.ingredientName,
-          affectedFlavors: cascadeResult.affectedFlavors.map((f) => ({ flavorId: f.flavorId, name: f.flavorName })),
-          affectedProducts: cascadeResult.affectedProducts.map((p) => ({ productId: p.productId, name: p.productName })),
-        };
-        effects.push(async () => {
-          notifyBranch(branchId, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
-          notifySuperAdmin(SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, cascadePayload);
-          await enqueueRawNotificationJob('inventory_product_unavailable', cascadePayload);
-        });
-      }
     }
   }
 
@@ -691,23 +687,45 @@ async function reverseInventoryForTransaction(
     select: { productVariantId: true, flavorId: true, quantity: true, deductionSnapshot: true },
   });
 
-  const totals = new Map<string, number>();
+  // Two snapshot shapes coexist: transactions created before this cutover
+  // recorded a legacy ingredient-keyed snapshot (reversed against
+  // Ingredient/InventoryMovement, unchanged below); transactions created
+  // after it record an inventoryItem-keyed snapshot (reversed against
+  // InventoryStock). Never cross-apply one shape's totals to the other
+  // system — that would corrupt whichever stock model didn't actually move.
+  const legacyTotals = new Map<string, number>();
+  const stockTotals = new Map<string, { quantity: number; baseUnitId?: string }>();
+
   for (const item of transactionItems) {
     const snapshot = item.deductionSnapshot as
-      | { ingredientId: string; ingredientName: string; quantity: number; unit: string }[]
+      | { ingredientId: string; quantity: number }[]
+      | { inventoryItemId: string; quantity: number; baseUnitId?: string }[]
       | null;
 
-    if (snapshot) {
-      // Replay exactly what was deducted at sale time instead of
-      // recomputing against the (possibly since-changed) recipe/inventory.
-      for (const entry of snapshot) {
-        totals.set(entry.ingredientId, (totals.get(entry.ingredientId) ?? 0) + entry.quantity);
+    const firstEntry = snapshot?.[0];
+    if (firstEntry && 'inventoryItemId' in firstEntry) {
+      for (const entry of snapshot as { inventoryItemId: string; quantity: number; baseUnitId?: string }[]) {
+        const existing = stockTotals.get(entry.inventoryItemId);
+        stockTotals.set(entry.inventoryItemId, {
+          quantity: (existing?.quantity ?? 0) + entry.quantity,
+          baseUnitId: entry.baseUnitId ?? existing?.baseUnitId,
+        });
       }
       continue;
     }
 
-    // No snapshot: historical transaction predating this column. Fall back
-    // to the original recompute-from-recipe behavior.
+    if (snapshot && snapshot.length > 0) {
+      // Replay exactly what was deducted at sale time instead of
+      // recomputing against the (possibly since-changed) recipe/inventory.
+      for (const entry of snapshot as { ingredientId: string; quantity: number }[]) {
+        legacyTotals.set(entry.ingredientId, (legacyTotals.get(entry.ingredientId) ?? 0) + entry.quantity);
+      }
+      continue;
+    }
+
+    // No snapshot: historical transaction predating the snapshot column
+    // entirely. Fall back to the original recompute-from-legacy-recipe
+    // behavior — these transactions necessarily predate this cutover too.
     const lines = await computeDeduction({
       productVariantId: item.productVariantId,
       flavorId: item.flavorId,
@@ -715,11 +733,11 @@ async function reverseInventoryForTransaction(
       branchId,
     });
     for (const line of lines) {
-      totals.set(line.ingredient_id, (totals.get(line.ingredient_id) ?? 0) + line.quantity);
+      legacyTotals.set(line.ingredient_id, (legacyTotals.get(line.ingredient_id) ?? 0) + line.quantity);
     }
   }
 
-  for (const [ingredientId, quantity] of totals) {
+  for (const [ingredientId, quantity] of legacyTotals) {
     const lockId = hashToLockId(sha256Hex(ingredientId));
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
 
@@ -729,6 +747,35 @@ async function reverseInventoryForTransaction(
         ingredientId,
         movementType: MOVEMENT_TYPE.MANUAL_ADJUSTMENT,
         quantityChange: quantity,
+        referenceId: transactionId,
+        notes: `Inventory reversal (${kind}) for transaction ${transactionId}`,
+      },
+      tx,
+    );
+  }
+
+  for (const [inventoryItemId, { quantity, baseUnitId }] of stockTotals) {
+    const lockId = hashToLockId(sha256Hex(inventoryItemId));
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+    const stock = await tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
+    const quantityBefore = stock?.quantityOnHand ?? new Prisma.Decimal(0);
+
+    const updated = await tx.inventoryStock.update({
+      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
+      data: { quantityOnHand: { increment: quantity }, version: { increment: 1 } },
+    });
+
+    await universalInventoryRepository.createStockMovement(
+      {
+        branchId,
+        inventoryItemId,
+        movementType: 'SALE_REVERSAL',
+        quantityChange: quantity,
+        quantityBefore,
+        quantityAfter: updated.quantityOnHand,
+        unitId: baseUnitId,
+        referenceType: 'transaction',
         referenceId: transactionId,
         notes: `Inventory reversal (${kind}) for transaction ${transactionId}`,
       },
@@ -948,10 +995,9 @@ export const transactionsService = {
                 // Written at creation, not patched in afterward —
                 // TransactionItem rows are immutable after creation (CR-004).
                 deductionSnapshot: item.deductionLines.map((line) => ({
-                  ingredientId: line.ingredient_id,
-                  ingredientName: line.ingredient_name,
+                  inventoryItemId: line.inventoryItemId,
                   quantity: line.quantity,
-                  unit: line.unit,
+                  baseUnitId: line.baseUnitId,
                 })),
                 selectedFlavors: item.selectedFlavors,
               })),
@@ -967,6 +1013,15 @@ export const transactionsService = {
           );
 
           return { txCreated, effects };
+        }, {
+          // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
+          // un-configured defaults (2s maxWait, 5s timeout) reliably trip
+          // P2028 ("Transaction already closed") for a several-component BOM
+          // under realistic remote-DB latency, since this callback does a
+          // transaction+items insert plus a lock/read/update/movement-insert
+          // round trip per BOM component.
+          maxWait: config.posTransaction.maxWaitMs,
+          timeout: config.posTransaction.timeoutMs,
         });
         created = result.txCreated;
         postCommitEffects = result.effects;
@@ -978,6 +1033,28 @@ export const transactionsService = {
         // number; retry with a bumped sequence instead of failing the sale.
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
           continue;
+        }
+        // P2028 = "Transaction API error: Transaction already closed" —
+        // fired when the interactive transaction exceeds maxWait/timeout
+        // (e.g. transient remote-DB latency or connection-pool contention).
+        // The transaction has already rolled back at this point (Prisma/
+        // Postgres guarantee), so no charge was made and no stock moved —
+        // surface a distinct, retryable, client-safe error instead of
+        // leaking the raw Prisma code/message, while still logging the
+        // original code server-side for diagnosis.
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2028') {
+          console.error('POS checkout transaction timed out or was closed early', {
+            branchId: data.branchId,
+            shiftId: data.shiftId,
+            attempt,
+            prismaCode: error.code,
+            prismaMessage: error.message,
+          });
+          throw new TransactionError(
+            'CHECKOUT_TIMEOUT',
+            'The sale could not be completed in time and was not charged. Please try again.',
+            503,
+          );
         }
         throw error;
       }
@@ -1135,21 +1212,27 @@ export const transactionsService = {
       throw new TransactionError('SHIFT_CLOSED', 'Cannot void a transaction from a shift that is no longer open', 409);
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const updatedRow = await transactionsRepository.voidTransaction(id, { voidedById: actor.id, voidReason }, tx);
-      await reverseInventoryForTransaction(
-        tx,
-        transaction.branchId,
-        transaction.id,
-        (transaction.items ?? []).map((item) => ({
-          productVariantId: item.productVariantId,
-          flavorId: item.flavorId,
-          quantity: item.quantity,
-        })),
-        'void',
-      );
-      return updatedRow;
-    });
+    const updated = await prisma.$transaction(
+      async (tx) => {
+        const updatedRow = await transactionsRepository.voidTransaction(id, { voidedById: actor.id, voidReason }, tx);
+        await reverseInventoryForTransaction(
+          tx,
+          transaction.branchId,
+          transaction.id,
+          (transaction.items ?? []).map((item) => ({
+            productVariantId: item.productVariantId,
+            flavorId: item.flavorId,
+            quantity: item.quantity,
+          })),
+          'void',
+        );
+        return updatedRow;
+      },
+      // Same round-trip shape (and same P2028 exposure — confirmed against a
+      // real database) as createTransaction's deduction loop: a lock/read/
+      // update/movement-insert cycle per originally-deducted inventory item.
+      { maxWait: config.posTransaction.maxWaitMs, timeout: config.posTransaction.timeoutMs },
+    );
     const response = toTransactionResponse(updated as TransactionRow);
 
     // The shift's cash total is never adjusted for a void (cash stays in the
@@ -1203,21 +1286,25 @@ export const transactionsService = {
       throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const updatedRow = await transactionsRepository.refundTransaction(id, { refundedById: actor.id, refundReason }, tx);
-      await reverseInventoryForTransaction(
-        tx,
-        transaction.branchId,
-        transaction.id,
-        (transaction.items ?? []).map((item) => ({
-          productVariantId: item.productVariantId,
-          flavorId: item.flavorId,
-          quantity: item.quantity,
-        })),
-        'refund',
-      );
-      return updatedRow;
-    });
+    const updated = await prisma.$transaction(
+      async (tx) => {
+        const updatedRow = await transactionsRepository.refundTransaction(id, { refundedById: actor.id, refundReason }, tx);
+        await reverseInventoryForTransaction(
+          tx,
+          transaction.branchId,
+          transaction.id,
+          (transaction.items ?? []).map((item) => ({
+            productVariantId: item.productVariantId,
+            flavorId: item.flavorId,
+            quantity: item.quantity,
+          })),
+          'refund',
+        );
+        return updatedRow;
+      },
+      // Same reasoning as voidTransaction above.
+      { maxWait: config.posTransaction.maxWaitMs, timeout: config.posTransaction.timeoutMs },
+    );
     const response = toTransactionResponse(updated as TransactionRow);
 
     await recordAuditLog({

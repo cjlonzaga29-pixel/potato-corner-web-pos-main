@@ -1,7 +1,14 @@
+import { randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
+import { SOCKET_EVENTS } from '@potato-corner/shared';
+import { prisma } from '../../lib/prisma.js';
 import { universalInventoryRepository as repo } from './universal-inventory.repository.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
+import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
+import { convertQuantity } from '../product-components/unit-conversion.util.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -10,6 +17,12 @@ import type {
   CreateUnitConversionData,
   CreateInventoryItemData,
   UpdateInventoryItemData,
+  ReceiveInventoryStockData,
+  AdjustInventoryStockData,
+  WasteInventoryStockData,
+  TransferInventoryStockData,
+  PhysicalCountInventoryStockData,
+  InventoryStockMovementType,
 } from './universal-inventory.types.js';
 
 type ActorContext = { id: string; role: string };
@@ -98,6 +111,108 @@ function toItemResponse(item: {
     created_at: item.createdAt.toISOString(),
     updated_at: item.updatedAt.toISOString(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Branch inventory cutover — direct InventoryStock operations (brief §1-9).
+// ---------------------------------------------------------------------------
+
+interface StockMovementRow {
+  id: string;
+  branchId: string;
+  inventoryItemId: string;
+  inventoryItem: { name: string };
+  movementType: string;
+  quantityChange: { toNumber(): number };
+  quantityBefore: { toNumber(): number };
+  quantityAfter: { toNumber(): number };
+  unitId: string | null;
+  referenceType: string | null;
+  referenceId: string | null;
+  notes: string | null;
+  performedByUserId: string | null;
+  createdAt: Date;
+}
+
+function toStockMovementResponse(row: StockMovementRow) {
+  return {
+    id: row.id,
+    branch_id: row.branchId,
+    inventory_item_id: row.inventoryItemId,
+    inventory_item_name: row.inventoryItem.name,
+    movement_type: row.movementType,
+    quantity_change: row.quantityChange.toNumber(),
+    quantity_before: row.quantityBefore.toNumber(),
+    quantity_after: row.quantityAfter.toNumber(),
+    unit_id: row.unitId,
+    reference_type: row.referenceType,
+    reference_id: row.referenceId,
+    notes: row.notes,
+    performed_by_user_id: row.performedByUserId,
+    created_at: row.createdAt.toISOString(),
+  };
+}
+
+/** Mirrors legacy inventory.service.ts's classifyStatus, but "healthy" (not "ok") per the brief's own wording, and threshold-null-safe since InventoryStock thresholds are nullable (brief §8). Exported so other InventoryStock-sourced reports (e.g. reports.repository.ts's valuation rollup) reuse the same rule instead of duplicating it. */
+export function classifyStockStatus(quantityOnHand: number, lowThreshold: number | null, criticalThreshold: number | null): 'healthy' | 'low' | 'critical' {
+  if (criticalThreshold !== null && quantityOnHand <= criticalThreshold) return 'critical';
+  if (lowThreshold !== null && quantityOnHand <= lowThreshold) return 'low';
+  return 'healthy';
+}
+
+interface StockRow {
+  inventoryItemId: string;
+  quantityOnHand: { toNumber(): number };
+  lowStockThreshold: { toNumber(): number } | null;
+  criticalThreshold: { toNumber(): number } | null;
+  inventoryItem: {
+    name: string;
+    sku: string | null;
+    category?: { name: string } | null;
+    baseUnit: { code: string };
+  };
+}
+
+function toStockRowResponse(row: StockRow) {
+  const quantity = row.quantityOnHand.toNumber();
+  const lowThreshold = row.lowStockThreshold?.toNumber() ?? null;
+  const criticalThreshold = row.criticalThreshold?.toNumber() ?? null;
+  return {
+    inventory_item_id: row.inventoryItemId,
+    name: row.inventoryItem.name,
+    sku: row.inventoryItem.sku,
+    category_name: row.inventoryItem.category?.name ?? null,
+    base_unit_code: row.inventoryItem.baseUnit.code,
+    quantity_on_hand: quantity,
+    low_stock_threshold: lowThreshold,
+    critical_threshold: criticalThreshold,
+    status: classifyStockStatus(quantity, lowThreshold, criticalThreshold),
+  };
+}
+
+/** Same low_stock_alert job the legacy path enqueues — fire-and-forget, never fails an already-committed movement. Null threshold means "no alerting configured for this item/branch", not "always alert". */
+async function notifyIfLowStock(params: {
+  branchId: string;
+  inventoryItemId: string;
+  itemName: string;
+  quantityAfter: number;
+  lowStockThreshold: number | null;
+  criticalThreshold: number | null;
+}): Promise<void> {
+  if (params.lowStockThreshold === null || params.quantityAfter > params.lowStockThreshold) return;
+  try {
+    await enqueueRawNotificationJob('low_stock_alert', {
+      branchId: params.branchId,
+      inventoryItemId: params.inventoryItemId,
+      itemName: params.itemName,
+      currentStock: params.quantityAfter,
+      lowStockThreshold: params.lowStockThreshold,
+      criticalThreshold: params.criticalThreshold,
+      severity: params.criticalThreshold !== null && params.quantityAfter <= params.criticalThreshold ? 'critical' : 'low',
+    });
+  } catch (error) {
+    console.error(`Failed to enqueue low-stock alert for inventory item ${params.inventoryItemId}:`, error);
+  }
 }
 
 export const universalInventoryService = {
@@ -274,6 +389,11 @@ export const universalInventoryService = {
     const item = await repo.createItem(data);
     const response = toItemResponse(item);
 
+    const activeBranchIds = await branchesRepository.listAllBranchIds();
+    if (activeBranchIds.length > 0) {
+      await this.provisionItemAcrossBranches(item.id, activeBranchIds);
+    }
+
     await recordAuditLog({
       action: 'INVENTORY_ITEM_CREATED',
       entityType: 'inventory_item',
@@ -285,6 +405,30 @@ export const universalInventoryService = {
     });
 
     return response;
+  },
+
+  /**
+   * Fan-out for new branches: every active, tracked InventoryItem gets a
+   * zero-stock InventoryStock row in the new branch. Mirrors
+   * inventoryService.provisionBranchIngredients for the legacy model.
+   * Idempotent via skipDuplicates — safe to re-run.
+   */
+  async provisionBranchStock(branchId: string, tx?: Prisma.TransactionClient): Promise<void> {
+    const items = await repo.listActiveTrackedItemIds(tx);
+    if (items.length === 0) return;
+    await repo.createStockRows(
+      items.map((item) => ({ branchId, inventoryItemId: item.id })),
+      tx,
+    );
+  },
+
+  /**
+   * Fan-out for new items: the given InventoryItem gets a zero-stock
+   * InventoryStock row in every listed branch. Idempotent via skipDuplicates.
+   */
+  async provisionItemAcrossBranches(inventoryItemId: string, branchIds: string[]): Promise<void> {
+    if (branchIds.length === 0) return;
+    await repo.createStockRows(branchIds.map((branchId) => ({ branchId, inventoryItemId })));
   },
 
   async updateItem(id: string, data: UpdateInventoryItemData, actor: ActorContext, ipAddress: string | null) {
@@ -355,5 +499,431 @@ export const universalInventoryService = {
     });
 
     return { assigned: created.map((c) => c.branchId), already_assigned: alreadyAssigned };
+  },
+
+  // --- Branch inventory list, alerts, movement history (brief §2, §8) ---
+
+  async getBranchStock(branchId: string) {
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+
+    const rows = await repo.findBranchStockRows(branchId);
+    return { branch_id: branchId, items: rows.map(toStockRowResponse) };
+  },
+
+  async getBranchStockAlerts(branchId: string) {
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+
+    const rows = (await repo.findBranchStockRows(branchId)).map(toStockRowResponse);
+    const alerts = rows
+      .filter((r) => r.status !== 'healthy')
+      .map((r) => ({
+        inventory_item_id: r.inventory_item_id,
+        name: r.name,
+        quantity_on_hand: r.quantity_on_hand,
+        threshold: r.status === 'critical' ? (r.critical_threshold ?? 0) : (r.low_stock_threshold ?? 0),
+        severity: r.status as 'low' | 'critical',
+      }));
+    return { branch_id: branchId, alerts };
+  },
+
+  async getStockMovements(
+    branchId: string,
+    filters: { inventoryItemId?: string; movementType?: InventoryStockMovementType; fromDate?: Date; toDate?: Date; page: number; limit: number },
+  ) {
+    const { movements, total } = await repo.findStockMovements(branchId, filters);
+    return {
+      movements: movements.map(toStockMovementResponse),
+      total,
+      page: filters.page,
+      limit: filters.limit,
+    };
+  },
+
+  // --- Direct receiving / stock-in (brief §3) ---
+
+  async receiveStock(data: ReceiveInventoryStockData, actor: ActorContext, ipAddress: string | null) {
+    const [branch, item] = await Promise.all([branchesRepository.findById(data.branchId), repo.findItemById(data.inventoryItemId)]);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId);
+
+    const movement = await prisma.$transaction(async (tx) => {
+      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
+      if (!stock) {
+        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+      }
+      const quantityBefore = stock.quantityOnHand;
+      const quantityAfter = quantityBefore.plus(baseQuantity);
+      await repo.updateStockQuantity(data.branchId, data.inventoryItemId, quantityAfter, tx);
+      return repo.createStockMovement(
+        {
+          branchId: data.branchId,
+          inventoryItemId: data.inventoryItemId,
+          movementType: 'RECEIVING',
+          quantityChange: baseQuantity,
+          quantityBefore,
+          quantityAfter,
+          unitId: item.baseUnitId,
+          referenceType: data.deliveryReference ? 'delivery' : undefined,
+          referenceId: data.deliveryReference,
+          notes: data.notes,
+          performedByUserId: data.performedByUserId ?? actor.id,
+        },
+        tx,
+      );
+    });
+
+    const response = toStockMovementResponse(movement);
+
+    await recordAuditLog({
+      action: 'INVENTORY_STOCK_RECEIVED',
+      entityType: 'inventory_stock_movement',
+      entityId: movement.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    return response;
+  },
+
+  // --- Stock adjustment (brief §4) ---
+
+  async adjustStock(data: AdjustInventoryStockData, actor: ActorContext, ipAddress: string | null) {
+    const [branch, item] = await Promise.all([branchesRepository.findById(data.branchId), repo.findItemById(data.inventoryItemId)]);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const movement = await prisma.$transaction(async (tx) => {
+      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
+      if (!stock) {
+        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+      }
+      const quantityBefore = stock.quantityOnHand;
+      const quantityAfter = quantityBefore.plus(data.quantityDelta);
+      if (quantityAfter.lessThan(0)) {
+        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
+      }
+      await repo.updateStockQuantity(data.branchId, data.inventoryItemId, quantityAfter, tx);
+      return repo.createStockMovement(
+        {
+          branchId: data.branchId,
+          inventoryItemId: data.inventoryItemId,
+          movementType: data.quantityDelta > 0 ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT',
+          quantityChange: data.quantityDelta,
+          quantityBefore,
+          quantityAfter,
+          unitId: item.baseUnitId,
+          notes: `Reason: ${data.reasonCode}${data.notes ? ` — ${data.notes}` : ''}`,
+          performedByUserId: data.performedByUserId ?? actor.id,
+        },
+        tx,
+      );
+    });
+
+    const response = toStockMovementResponse(movement);
+
+    await recordAuditLog({
+      action: 'INVENTORY_STOCK_ADJUSTED',
+      entityType: 'inventory_stock_movement',
+      entityId: movement.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    const stockAfter = await repo.findStock(data.branchId, data.inventoryItemId);
+    await notifyIfLowStock({
+      branchId: data.branchId,
+      inventoryItemId: data.inventoryItemId,
+      itemName: item.name,
+      quantityAfter: movement.quantityAfter.toNumber(),
+      lowStockThreshold: stockAfter?.lowStockThreshold?.toNumber() ?? null,
+      criticalThreshold: stockAfter?.criticalThreshold?.toNumber() ?? null,
+    });
+
+    return response;
+  },
+
+  // --- Waste management (brief §5) ---
+
+  async wasteStock(data: WasteInventoryStockData, actor: ActorContext, ipAddress: string | null) {
+    const [branch, item] = await Promise.all([branchesRepository.findById(data.branchId), repo.findItemById(data.inventoryItemId)]);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId);
+
+    const movement = await prisma.$transaction(async (tx) => {
+      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
+      if (!stock) {
+        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+      }
+      const quantityBefore = stock.quantityOnHand;
+      const quantityAfter = quantityBefore.minus(baseQuantity);
+      if (quantityAfter.lessThan(0)) {
+        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
+      }
+      await repo.updateStockQuantity(data.branchId, data.inventoryItemId, quantityAfter, tx);
+      return repo.createStockMovement(
+        {
+          branchId: data.branchId,
+          inventoryItemId: data.inventoryItemId,
+          movementType: 'WASTE',
+          quantityChange: baseQuantity.negated(),
+          quantityBefore,
+          quantityAfter,
+          unitId: item.baseUnitId,
+          notes: `Reason: ${data.reasonCode}${data.notes ? ` — ${data.notes}` : ''}`,
+          performedByUserId: data.performedByUserId ?? actor.id,
+        },
+        tx,
+      );
+    });
+
+    const response = toStockMovementResponse(movement);
+
+    await recordAuditLog({
+      action: 'INVENTORY_WASTE_RECORDED',
+      entityType: 'inventory_stock_movement',
+      entityId: movement.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    const stockAfter = await repo.findStock(data.branchId, data.inventoryItemId);
+    await notifyIfLowStock({
+      branchId: data.branchId,
+      inventoryItemId: data.inventoryItemId,
+      itemName: item.name,
+      quantityAfter: movement.quantityAfter.toNumber(),
+      lowStockThreshold: stockAfter?.lowStockThreshold?.toNumber() ?? null,
+      criticalThreshold: stockAfter?.criticalThreshold?.toNumber() ?? null,
+    });
+
+    return response;
+  },
+
+  // --- Branch transfers (brief §6) ---
+
+  async transferStock(data: TransferInventoryStockData, actor: ActorContext, ipAddress: string | null) {
+    if (data.fromBranchId === data.toBranchId) {
+      throw new UniversalInventoryError('INVALID_TRANSFER', 'Cannot transfer stock to the same branch', 422);
+    }
+
+    const [fromBranch, toBranch, item] = await Promise.all([
+      branchesRepository.findById(data.fromBranchId),
+      branchesRepository.findById(data.toBranchId),
+      repo.findItemById(data.inventoryItemId),
+    ]);
+    if (!fromBranch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Source branch not found', 404);
+    if (!toBranch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Destination branch not found', 404);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const transferId = randomUUID();
+
+    const { transferOut, transferIn } = await prisma.$transaction(async (tx) => {
+      // Lock both (branch, item) rows in a globally consistent order (by
+      // branchId) so two concurrent transfers of the same item in opposite
+      // directions between the same two branches can never deadlock.
+      const firstBranchId = data.fromBranchId < data.toBranchId ? data.fromBranchId : data.toBranchId;
+      const secondBranchId = data.fromBranchId < data.toBranchId ? data.toBranchId : data.fromBranchId;
+      const firstStock = await repo.lockAndGetStock(firstBranchId, data.inventoryItemId, tx);
+      const secondStock = await repo.lockAndGetStock(secondBranchId, data.inventoryItemId, tx);
+      const sourceStock = firstBranchId === data.fromBranchId ? firstStock : secondStock;
+      const destStock = firstBranchId === data.fromBranchId ? secondStock : firstStock;
+
+      if (!sourceStock) {
+        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for the source branch/item', 404);
+      }
+      if (!destStock) {
+        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for the destination branch/item', 404);
+      }
+
+      const outBefore = sourceStock.quantityOnHand;
+      const outAfter = outBefore.minus(data.quantity);
+      if (outAfter.lessThan(0)) {
+        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Transfer quantity exceeds current stock at the source branch', 409);
+      }
+      const inBefore = destStock.quantityOnHand;
+      const inAfter = inBefore.plus(data.quantity);
+
+      await repo.updateStockQuantity(data.fromBranchId, data.inventoryItemId, outAfter, tx);
+      await repo.updateStockQuantity(data.toBranchId, data.inventoryItemId, inAfter, tx);
+
+      const out = await repo.createStockMovement(
+        {
+          branchId: data.fromBranchId,
+          inventoryItemId: data.inventoryItemId,
+          movementType: 'TRANSFER_OUT',
+          quantityChange: new Prisma.Decimal(data.quantity).negated(),
+          quantityBefore: outBefore,
+          quantityAfter: outAfter,
+          unitId: item.baseUnitId,
+          referenceType: 'transfer',
+          referenceId: transferId,
+          notes: data.notes,
+          performedByUserId: data.performedByUserId ?? actor.id,
+        },
+        tx,
+      );
+      const inMovement = await repo.createStockMovement(
+        {
+          branchId: data.toBranchId,
+          inventoryItemId: data.inventoryItemId,
+          movementType: 'TRANSFER_IN',
+          quantityChange: data.quantity,
+          quantityBefore: inBefore,
+          quantityAfter: inAfter,
+          unitId: item.baseUnitId,
+          referenceType: 'transfer',
+          referenceId: transferId,
+          notes: data.notes,
+          performedByUserId: data.performedByUserId ?? actor.id,
+        },
+        tx,
+      );
+
+      return { transferOut: out, transferIn: inMovement };
+    });
+
+    const response = {
+      inventory_item_id: data.inventoryItemId,
+      to_branch_id: data.toBranchId,
+      quantity: data.quantity,
+      transfer_out: toStockMovementResponse(transferOut),
+      transfer_in: toStockMovementResponse(transferIn),
+    };
+
+    await recordAuditLog({
+      action: 'INVENTORY_STOCK_TRANSFERRED',
+      entityType: 'inventory_stock_movement',
+      entityId: transferOut.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.fromBranchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.fromBranchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifyBranch(data.toBranchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    const [sourceStockAfter, destStockAfter] = await Promise.all([
+      repo.findStock(data.fromBranchId, data.inventoryItemId),
+      repo.findStock(data.toBranchId, data.inventoryItemId),
+    ]);
+    await notifyIfLowStock({
+      branchId: data.fromBranchId,
+      inventoryItemId: data.inventoryItemId,
+      itemName: item.name,
+      quantityAfter: transferOut.quantityAfter.toNumber(),
+      lowStockThreshold: sourceStockAfter?.lowStockThreshold?.toNumber() ?? null,
+      criticalThreshold: sourceStockAfter?.criticalThreshold?.toNumber() ?? null,
+    });
+    await notifyIfLowStock({
+      branchId: data.toBranchId,
+      inventoryItemId: data.inventoryItemId,
+      itemName: item.name,
+      quantityAfter: transferIn.quantityAfter.toNumber(),
+      lowStockThreshold: destStockAfter?.lowStockThreshold?.toNumber() ?? null,
+      criticalThreshold: destStockAfter?.criticalThreshold?.toNumber() ?? null,
+    });
+
+    return response;
+  },
+
+  // --- Physical count (brief §7) ---
+
+  async submitPhysicalCount(data: PhysicalCountInventoryStockData, actor: ActorContext, ipAddress: string | null) {
+    const branch = await branchesRepository.findById(data.branchId);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+
+    // Sequential, not Promise.all — each count row both reads and writes the
+    // same InventoryStock row, matching legacy submitPhysicalCount's reasoning.
+    const results = [];
+    for (const count of data.counts) {
+      const item = await repo.findItemById(count.inventoryItemId);
+      if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', `Inventory item ${count.inventoryItemId} not found`, 404);
+
+      const variance = await prisma.$transaction(async (tx) => {
+        const stock = await repo.lockAndGetStock(data.branchId, count.inventoryItemId, tx);
+        if (!stock) {
+          throw new UniversalInventoryError(
+            'STOCK_ROW_NOT_FOUND',
+            `No InventoryStock row exists for branch/item ${count.inventoryItemId}`,
+            404,
+          );
+        }
+        const quantityBefore = stock.quantityOnHand;
+        const quantityAfter = new Prisma.Decimal(count.countedQuantity);
+        const varianceAmount = quantityAfter.minus(quantityBefore);
+
+        await repo.updateStockQuantity(data.branchId, count.inventoryItemId, quantityAfter, tx);
+
+        if (!varianceAmount.isZero()) {
+          await repo.createStockMovement(
+            {
+              branchId: data.branchId,
+              inventoryItemId: count.inventoryItemId,
+              movementType: 'PHYSICAL_COUNT',
+              quantityChange: varianceAmount,
+              quantityBefore,
+              quantityAfter,
+              unitId: item.baseUnitId,
+              notes: data.notes,
+              performedByUserId: data.performedByUserId ?? actor.id,
+            },
+            tx,
+          );
+        }
+
+        return { previousQuantity: quantityBefore.toNumber(), variance: varianceAmount.toNumber() };
+      });
+
+      results.push({
+        inventory_item_id: count.inventoryItemId,
+        previous_quantity: variance.previousQuantity,
+        counted_quantity: count.countedQuantity,
+        variance: variance.variance,
+      });
+    }
+
+    const response = { branch_id: data.branchId, results, submitted_at: new Date().toISOString() };
+
+    await recordAuditLog({
+      action: 'INVENTORY_PHYSICAL_COUNT_SUBMITTED',
+      entityType: 'inventory_stock_movement',
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    return response;
   },
 };

@@ -19,7 +19,7 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useBranch, useAllBranchStats } from '@/hooks/queries/use-branches';
 import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
-import { useBranchInventoryAlerts, useInventoryRealtimeSync } from '@/hooks/queries/use-inventory';
+import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
@@ -48,7 +48,7 @@ export default function BranchDashboardPage() {
 
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
-  useInventoryRealtimeSync(branchId);
+  useInventoryStockRealtimeSync(branchId);
   useAttendanceRealtimeSync();
 
   // Calendar-day boundary, computed once on mount — deliberately not
@@ -66,7 +66,7 @@ export default function BranchDashboardPage() {
     branch_id: branchId,
     limit: RECENT_TRANSACTIONS_LIMIT,
   });
-  const { data: alertsData, isLoading: isAlertsLoading } = useBranchInventoryAlerts(branchId);
+  const { data: alertsData, isLoading: isAlertsLoading } = useBranchInventoryStockAlerts(branchId);
   const { data: attendanceData, isLoading: isAttendanceLoading } = useAttendanceByBranch(branchId, {
     from,
     to,

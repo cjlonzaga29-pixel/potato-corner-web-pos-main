@@ -13,32 +13,32 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useIngredients, useStockIn } from '@/hooks/queries/use-inventory';
+import { useBranchInventoryStock, useReceiveInventoryStock } from '@/hooks/queries/use-universal-inventory';
 
 const formSchema = z.object({
-  ingredient_id: z.uuid('Select an ingredient'),
+  inventory_item_id: z.uuid('Select an item'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
-  supplier_reference: z.string().max(100).optional(),
+  delivery_reference: z.string().max(100).optional(),
   notes: z.string().optional(),
 });
 
 type FormValues = z.input<typeof formSchema>;
 
-const DEFAULT_VALUES: FormValues = { ingredient_id: '', quantity: 0, supplier_reference: '', notes: '' };
+const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity: 0, delivery_reference: '', notes: '' };
 
 function StockInFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const { data: ingredients } = useIngredients(activeBranchId);
+  const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
-  const ingredientId = form.watch('ingredient_id');
-  const ingredient = ingredients?.find((i) => i.id === ingredientId);
-  const stockIn = useStockIn(activeBranchId, ingredientId);
+  const inventoryItemId = form.watch('inventory_item_id');
+  const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
+  const stockIn = useReceiveInventoryStock(activeBranchId, inventoryItemId);
 
   useEffect(() => {
-    const preselected = searchParams.get('ingredient_id');
-    if (preselected) form.setValue('ingredient_id', preselected);
+    const preselected = searchParams.get('inventory_item_id');
+    if (preselected) form.setValue('inventory_item_id', preselected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -46,7 +46,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     const parsed = formSchema.parse(values);
     await stockIn.mutateAsync({
       quantity: parsed.quantity,
-      supplier_reference: parsed.supplier_reference || undefined,
+      delivery_reference: parsed.delivery_reference || undefined,
       notes: parsed.notes || undefined,
     });
     router.push(`${basePath}/inventory`);
@@ -60,7 +60,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     <div className="mx-auto max-w-lg space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Stock In</h1>
-        <p className="text-sm text-muted-foreground">Record newly received stock for an ingredient at this branch.</p>
+        <p className="text-sm text-muted-foreground">Record newly received stock for an item at this branch.</p>
       </div>
 
       <Form {...form}>
@@ -68,22 +68,22 @@ function StockInFormContent({ basePath }: { basePath: string }) {
           {/* Radix Select takes value/onValueChange, not the onChange FormFieldWrapper clones onto children — wired directly via FormField instead. */}
           <FormField
             control={form.control}
-            name="ingredient_id"
+            name="inventory_item_id"
             render={({ field }) => (
               <FormItem>
                 <FormLabel>
-                  Ingredient<span className="ml-0.5 text-destructive">*</span>
+                  Item<span className="ml-0.5 text-destructive">*</span>
                 </FormLabel>
                 <Select value={field.value} onValueChange={field.onChange}>
                   <FormControl>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an ingredient" />
+                      <SelectValue placeholder="Select an item" />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {ingredients?.map((i) => (
-                      <SelectItem key={i.id} value={i.id}>
-                        {i.name} ({i.unit})
+                    {stock?.items.map((i) => (
+                      <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
+                        {i.name} ({i.base_unit_code})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -93,17 +93,17 @@ function StockInFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
-          {ingredient && (
+          {item && (
             <p className="rounded-md border bg-muted/30 p-3 text-sm">
-              Current stock: <span className="font-medium">{ingredient.current_stock}</span> {ingredient.unit}
+              Current stock: <span className="font-medium">{item.quantity_on_hand}</span> {item.base_unit_code}
             </p>
           )}
 
-          <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Received${ingredient ? ` (${ingredient.unit})` : ''}`} required>
+          <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Received${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
 
-          <FormFieldWrapper<FormValues> name="supplier_reference" label="Supplier Reference" description="Optional">
+          <FormFieldWrapper<FormValues> name="delivery_reference" label="Delivery Reference" description="Optional">
             <Input placeholder="PO number, delivery receipt, etc." />
           </FormFieldWrapper>
 

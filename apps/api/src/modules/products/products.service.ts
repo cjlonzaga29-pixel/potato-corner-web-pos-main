@@ -492,8 +492,9 @@ const READINESS_CODE_PRIORITY: { code: ReadinessIssueCode; legacy: PosReadinessC
   { code: 'VARIANT_LIFECYCLE_BLOCKED', legacy: 'INACTIVE' },
   { code: 'BRANCH_NOT_AVAILABLE', legacy: 'NOT_AVAILABLE_IN_BRANCH' },
   { code: 'PRICE_MISSING', legacy: 'PRICE_MISSING' },
-  { code: 'BASE_INVENTORY_MAPPING_MISSING', legacy: 'MISSING_BASE_MAPPING' },
-  { code: 'FLAVOR_INVENTORY_MAPPING_MISSING', legacy: 'MISSING_FLAVOR_MAPPING' },
+  { code: 'RECIPE_MISSING', legacy: 'MISSING_BASE_MAPPING' },
+  { code: 'INVALID_COMPONENT', legacy: 'MISSING_BASE_MAPPING' },
+  { code: 'INVENTORY_STOCK_MISSING', legacy: 'MISSING_BASE_MAPPING' },
   { code: 'MIX_MAX_SLOT_INCOMPLETE', legacy: 'MIX_MAX_INCOMPLETE' },
   { code: 'MIX_MAX_SNACK_UNAVAILABLE', legacy: 'MIX_MAX_INCOMPLETE' },
   { code: 'FLAVOR_NOT_AVAILABLE_AT_BRANCH', legacy: 'NOT_AVAILABLE_IN_BRANCH' },
@@ -542,7 +543,7 @@ function notReadyLegacyReadiness() {
 
 function toLegacyReadiness(result: ProductVariantReadinessResult) {
   const missingFlavorIds = result.blockingIssues
-    .filter((issue): issue is ReadinessIssue & { flavorId: string } => issue.code === 'FLAVOR_INVENTORY_MAPPING_MISSING' && Boolean(issue.flavorId))
+    .filter((issue): issue is ReadinessIssue & { flavorId: string } => issue.code === 'FLAVOR_NOT_AVAILABLE_AT_BRANCH' && Boolean(issue.flavorId))
     .map((issue) => issue.flavorId);
 
   return {

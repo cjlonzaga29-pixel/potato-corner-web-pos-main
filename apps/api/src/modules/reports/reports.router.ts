@@ -140,6 +140,20 @@ precomputedRoute('/flavor-performance', (b, id, role) => reportsService.getFlavo
 precomputedRoute('/employee-performance', (b, id, role) => reportsService.getEmployeePerformanceReport(b, id, role));
 precomputedRoute('/inventory-valuation', (b, id, role) => reportsService.getInventoryValuationReport(b, id, role));
 
+// ---------- Admin Inventory Valuation rollup (real-time, super_admin only, no branchGuard) ----------
+// Separate from /inventory-valuation above (which stays Ingredient-sourced for the
+// branch-analytics tab and CSV/PDF export) — this one is InventoryStock/InventoryItem/
+// Branch-sourced and org-wide, powering only the admin dashboard's useAdminInventoryRollup.
+router.get('/inventory-valuation-rollup', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const data = await reportsService.getInventoryValuationRollupReport(req.user.user_id, req.user.role);
+    res.status(200).json({ data, error: null, meta: null });
+  } catch (error) {
+    handleReportError(error, res, next);
+  }
+});
+
 // ---------- Branch Comparison (pre-computed, super_admin only, no branchGuard) ----------
 
 router.get('/branch-comparison', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {

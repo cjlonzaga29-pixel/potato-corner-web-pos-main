@@ -12,32 +12,41 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import { useProductComponents, useDeleteProductComponent } from '@/hooks/queries/use-product-components';
+import { useRecipeReadiness } from '@/hooks/queries/use-recipe-readiness';
 import { RecipeComponentFormDialog } from './recipe-component-form-dialog';
 
 interface RecipeBomPanelProps {
   productVariantId: string;
   variantLabel: string;
+  branchId?: string | null;
 }
 
 /**
- * CR-011.1 Recipe/BOM: ProductVariant -> InventoryItem components. Read-only
- * for Supervisor and read/write for Admin, matching the existing
- * product-components authorization split (Admin owns writes, Supervisor
- * gets oversight) — no broadening beyond that here. ProductComponent is not
- * yet the live POS deduction source; legacy ProductInventory still is.
+ * CR-011.1/CR-012 Recipe/BOM: ProductVariant -> InventoryItem components.
+ * ProductComponent + InventoryStock is the authoritative POS inventory
+ * pipeline (see recipe-readiness.service.ts) — this panel is the sole
+ * inventory-mapping UI for a variant. Read-only for Supervisor and
+ * read/write for Admin, matching the existing product-components
+ * authorization split.
  */
-export function RecipeBomPanel({ productVariantId, variantLabel }: RecipeBomPanelProps) {
+export function RecipeBomPanel({ productVariantId, variantLabel, branchId }: RecipeBomPanelProps) {
   const { isAdmin } = useAuth();
   const canManage = isAdmin();
 
   const { data: components, isLoading, isError, refetch } = useProductComponents(productVariantId);
   const deleteComponent = useDeleteProductComponent(productVariantId);
+  const { data: readiness, isLoading: isReadinessLoading } = useRecipeReadiness(
+    { productVariantId, branchId: branchId ?? undefined },
+    Boolean(branchId),
+  );
 
   const [formDialog, setFormDialog] = useState<{ open: boolean; component?: ProductComponentResponse }>({ open: false });
   const [deletingComponent, setDeletingComponent] = useState<ProductComponentResponse | null>(null);
 
   // Mirrors recipe-readiness.service.ts's NO_RECIPE check (zero active ProductComponent rows) so this badge and the Recipe Readiness report never disagree.
   const isReady = (components ?? []).some((component) => component.is_active);
+  const variantReadiness = readiness?.variants.find((v) => v.product_variant_id === productVariantId);
+  const isStockReady = variantReadiness?.status === 'READY';
 
   return (
     <Card>
@@ -45,7 +54,10 @@ export function RecipeBomPanel({ productVariantId, variantLabel }: RecipeBomPane
         <div>
           <div className="flex items-center gap-2">
             <CardTitle className="text-base">Recipe / BOM</CardTitle>
-            {!isLoading && !isError && <Badge variant={isReady ? 'active' : 'inactive'}>{isReady ? 'Ready' : 'No Recipe'}</Badge>}
+            {!isLoading && !isError && <Badge variant={isReady ? 'active' : 'inactive'}>{isReady ? 'Recipe Ready' : 'No Recipe'}</Badge>}
+            {branchId && !isReadinessLoading && isReady && (
+              <Badge variant={isStockReady ? 'active' : 'critical'}>{isStockReady ? 'Inventory Ready' : 'Inventory Incomplete'}</Badge>
+            )}
           </div>
           <CardDescription>Inventory items consumed by {variantLabel}.</CardDescription>
         </div>

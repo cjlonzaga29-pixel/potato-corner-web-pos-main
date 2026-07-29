@@ -58,3 +58,59 @@ export interface UpdateInventoryItemData {
   categoryId?: string | null;
   trackInventory?: boolean;
 }
+
+export type InventoryStockMovementType =
+  | 'RECEIVING'
+  | 'ADJUSTMENT_IN'
+  | 'ADJUSTMENT_OUT'
+  | 'WASTE'
+  | 'TRANSFER_IN'
+  | 'TRANSFER_OUT'
+  | 'PHYSICAL_COUNT'
+  | 'SALE'
+  | 'SALE_REVERSAL';
+
+export interface ReceiveInventoryStockData {
+  branchId: string;
+  inventoryItemId: string;
+  quantity: number;
+  enteredUnitId?: string;
+  deliveryReference?: string;
+  notes?: string;
+  performedByUserId?: string;
+}
+
+export interface AdjustInventoryStockData {
+  branchId: string;
+  inventoryItemId: string;
+  quantityDelta: number;
+  reasonCode: string;
+  notes?: string;
+  performedByUserId?: string;
+}
+
+export interface WasteInventoryStockData {
+  branchId: string;
+  inventoryItemId: string;
+  quantity: number;
+  enteredUnitId?: string;
+  reasonCode: string;
+  notes?: string;
+  performedByUserId?: string;
+}
+
+export interface TransferInventoryStockData {
+  fromBranchId: string;
+  toBranchId: string;
+  inventoryItemId: string;
+  quantity: number;
+  notes?: string;
+  performedByUserId?: string;
+}
+
+export interface PhysicalCountInventoryStockData {
+  branchId: string;
+  counts: { inventoryItemId: string; countedQuantity: number }[];
+  notes?: string;
+  performedByUserId?: string;
+}

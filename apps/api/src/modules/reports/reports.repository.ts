@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
 import type {
   ReportFilters,
   ReportType,
@@ -16,9 +17,14 @@ import type {
   FlavorPerformanceReportRow,
   EmployeePerformanceReportRow,
   InventoryValuationReportRow,
+  AdminInventoryValuationRollupResponse,
   BranchComparisonReportRow,
   InventoryAnalyticsReport,
 } from './reports.types.js';
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
 
 /**
  * Reports repository. All Prisma calls for this module live here — the
@@ -218,16 +224,20 @@ export const reportsRepository = {
     }));
   },
 
+  // Final reporting cutover (CR-007 §20): sourced from InventoryStockMovement/
+  // InventoryItem only — never InventoryMovement or Ingredient. Field names
+  // (ingredient_id, ingredient_name, ...) are kept for API/CSV/PDF compatibility
+  // even though the source is now InventoryItem, not Ingredient.
   async getInventoryMovement(filters: ReportFilters): Promise<InventoryMovementReportRow[]> {
     const range = dateRangeFilter(filters);
-    const movements = await prisma.inventoryMovement.findMany({
+    const movements = await prisma.inventoryStockMovement.findMany({
       where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-      include: { branch: { select: { name: true } }, ingredient: { select: { name: true, unit: true } } },
+      include: { branch: { select: { name: true } }, inventoryItem: { select: { name: true, baseUnit: { select: { code: true } } } } },
       orderBy: { createdAt: 'desc' },
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });
-    const recorderIds = [...new Set(movements.map((m) => m.recordedBy).filter((id): id is string => id !== null))];
+    const recorderIds = [...new Set(movements.map((m) => m.performedByUserId).filter((id): id is string => id !== null))];
     const recorders = recorderIds.length
       ? await prisma.user.findMany({ where: { id: { in: recorderIds } }, select: { id: true, firstName: true, lastName: true } })
       : [];
@@ -236,14 +246,14 @@ export const reportsRepository = {
       movement_id: m.id,
       branch_id: m.branchId,
       branch_name: m.branch.name,
-      ingredient_id: m.ingredientId,
-      ingredient_name: m.ingredient.name,
-      unit: m.ingredient.unit,
+      ingredient_id: m.inventoryItemId,
+      ingredient_name: m.inventoryItem.name,
+      unit: m.inventoryItem.baseUnit.code,
       movement_type: m.movementType,
       quantity_change: m.quantityChange.toNumber(),
       quantity_before: m.quantityBefore.toNumber(),
       quantity_after: m.quantityAfter.toNumber(),
-      recorded_by_name: m.recordedBy ? (recorderNameById.get(m.recordedBy) ?? null) : null,
+      recorded_by_name: m.performedByUserId ? (recorderNameById.get(m.performedByUserId) ?? null) : null,
       created_at: m.createdAt.toISOString(),
     }));
   },
@@ -402,60 +412,158 @@ export const reportsRepository = {
       .sort((a, b) => b.gross_sales - a.gross_sales);
   },
 
+  // Final reporting cutover (CR-007 §20): sourced from InventoryStock/InventoryItem
+  // only — never Ingredient or InventoryMovement. Row shape (ingredient_id,
+  // ingredient_name, ..., status: 'ok'|'low'|'critical') is unchanged for the
+  // branch-analytics tab and CSV/PDF export; classifyStockStatus's 'healthy' is
+  // mapped back to the existing 'ok' literal to preserve that contract.
   async getInventoryValuation(filters: ReportFilters): Promise<InventoryValuationReportRow[]> {
-    const ingredients = await prisma.ingredient.findMany({
-      where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }) },
-      select: { id: true, name: true, branchId: true, unit: true, unitCost: true, lowStockThreshold: true, criticalThreshold: true },
+    const stocks = await prisma.inventoryStock.findMany({
+      where: { inventoryItem: { deletedAt: null }, ...(filters.branchId && { branchId: filters.branchId }) },
+      select: {
+        branchId: true,
+        inventoryItemId: true,
+        quantityOnHand: true,
+        lowStockThreshold: true,
+        criticalThreshold: true,
+        unitCost: true,
+        inventoryItem: { select: { name: true, unitCost: true, baseUnit: { select: { code: true } } } },
+      },
     });
-    if (ingredients.length === 0) return [];
 
-    const movementSums = await prisma.inventoryMovement.groupBy({
-      by: ['ingredientId'],
-      where: { ingredientId: { in: ingredients.map((i) => i.id) } },
-      _sum: { quantityChange: true },
-    });
-    const stockById = new Map(movementSums.map((m) => [m.ingredientId, m._sum.quantityChange?.toNumber() ?? 0]));
-
-    return ingredients
-      .map((ingredient) => {
-        const currentStock = stockById.get(ingredient.id) ?? 0;
-        const unitCost = ingredient.unitCost?.toNumber() ?? null;
-        const status =
-          currentStock <= ingredient.criticalThreshold.toNumber() ? 'critical' : currentStock <= ingredient.lowStockThreshold.toNumber() ? 'low' : 'ok';
+    return stocks
+      .map((stock) => {
+        const currentStock = stock.quantityOnHand.toNumber();
+        const lowThreshold = stock.lowStockThreshold?.toNumber() ?? null;
+        const criticalThreshold = stock.criticalThreshold?.toNumber() ?? null;
+        const unitCost = stock.unitCost?.toNumber() ?? stock.inventoryItem.unitCost?.toNumber() ?? null;
+        const status = classifyStockStatus(currentStock, lowThreshold, criticalThreshold);
         return {
-          ingredient_id: ingredient.id,
-          ingredient_name: ingredient.name,
-          branch_id: ingredient.branchId,
-          unit: ingredient.unit,
+          ingredient_id: stock.inventoryItemId,
+          ingredient_name: stock.inventoryItem.name,
+          branch_id: stock.branchId,
+          unit: stock.inventoryItem.baseUnit.code,
           current_stock: currentStock,
           unit_cost: unitCost,
           total_value: unitCost !== null ? Math.round(currentStock * unitCost * 100) / 100 : 0,
-          status: status as 'ok' | 'low' | 'critical',
+          status: (status === 'healthy' ? 'ok' : status) as 'ok' | 'low' | 'critical',
         };
       })
       .sort((a, b) => b.total_value - a.total_value);
   },
 
+  // Admin Inventory Valuation rollup: sourced from InventoryStock/InventoryItem/Branch only
+  // — never Ingredient or InventoryMovement. Distinct from getInventoryValuation above
+  // (also InventoryStock-sourced post-cutover) by response shape and scope: this rollup
+  // is always org-wide with no branchId filter/pagination (mirrors the existing "admin
+  // rollup, no branch_id" semantics) and returns the AdminInventoryValuation* shape,
+  // while getInventoryValuation supports branchId/pagination and the ok/low/critical
+  // per-item row shape for the branch-analytics tab and CSV/PDF export.
+  async getInventoryValuationRollup(): Promise<AdminInventoryValuationRollupResponse> {
+    const [branches, stockRows, activeItemCount, movementMaxByBranch] = await Promise.all([
+      prisma.branch.findMany({ select: { id: true, name: true } }),
+      prisma.inventoryStock.findMany({
+        where: { inventoryItem: { deletedAt: null } },
+        select: {
+          branchId: true,
+          quantityOnHand: true,
+          lowStockThreshold: true,
+          criticalThreshold: true,
+          unitCost: true,
+          inventoryItem: { select: { unitCost: true } },
+        },
+      }),
+      prisma.inventoryItem.count({ where: { deletedAt: null, trackInventory: true } }),
+      prisma.inventoryStockMovement.groupBy({ by: ['branchId'], _max: { createdAt: true } }),
+    ]);
+
+    const lastMovementByBranch = new Map(movementMaxByBranch.map((m) => [m.branchId, m._max.createdAt]));
+
+    interface BranchAccumulator {
+      itemCount: number;
+      totalValue: number;
+      lowStockCount: number;
+      criticalStockCount: number;
+      outOfStockCount: number;
+    }
+    const accByBranch = new Map<string, BranchAccumulator>();
+
+    for (const row of stockRows) {
+      const acc = accByBranch.get(row.branchId) ?? { itemCount: 0, totalValue: 0, lowStockCount: 0, criticalStockCount: 0, outOfStockCount: 0 };
+      const quantity = row.quantityOnHand.toNumber();
+      const lowThreshold = row.lowStockThreshold?.toNumber() ?? null;
+      const criticalThreshold = row.criticalThreshold?.toNumber() ?? null;
+      const effectiveUnitCost = row.unitCost?.toNumber() ?? row.inventoryItem.unitCost?.toNumber() ?? null;
+      const status = classifyStockStatus(quantity, lowThreshold, criticalThreshold);
+
+      acc.itemCount += 1;
+      acc.totalValue += effectiveUnitCost !== null ? quantity * effectiveUnitCost : 0;
+      if (status === 'low') acc.lowStockCount += 1;
+      if (status === 'critical') acc.criticalStockCount += 1;
+      if (quantity <= 0) acc.outOfStockCount += 1;
+
+      accByBranch.set(row.branchId, acc);
+    }
+
+    const branchRows = branches
+      .map((branch) => {
+        const acc = accByBranch.get(branch.id) ?? { itemCount: 0, totalValue: 0, lowStockCount: 0, criticalStockCount: 0, outOfStockCount: 0 };
+        return {
+          branch_id: branch.id,
+          branch_name: branch.name,
+          inventory_item_count: acc.itemCount,
+          total_inventory_value: round2(acc.totalValue),
+          low_stock_count: acc.lowStockCount,
+          critical_stock_count: acc.criticalStockCount,
+          out_of_stock_count: acc.outOfStockCount,
+          last_movement_at: lastMovementByBranch.get(branch.id)?.toISOString() ?? null,
+        };
+      })
+      .sort((a, b) => b.total_inventory_value - a.total_inventory_value);
+
+    const summary = branchRows.reduce(
+      (acc, row) => ({
+        total_inventory_value: round2(acc.total_inventory_value + row.total_inventory_value),
+        total_active_inventory_items: activeItemCount,
+        total_inventory_stock_rows: acc.total_inventory_stock_rows + row.inventory_item_count,
+        total_low_stock_rows: acc.total_low_stock_rows + row.low_stock_count,
+        total_critical_stock_rows: acc.total_critical_stock_rows + row.critical_stock_count,
+        total_out_of_stock_rows: acc.total_out_of_stock_rows + row.out_of_stock_count,
+      }),
+      {
+        total_inventory_value: 0,
+        total_active_inventory_items: activeItemCount,
+        total_inventory_stock_rows: 0,
+        total_low_stock_rows: 0,
+        total_critical_stock_rows: 0,
+        total_out_of_stock_rows: 0,
+      },
+    );
+
+    return { generated_at: new Date().toISOString(), branches: branchRows, summary };
+  },
+
+  // Final reporting cutover (CR-007 §20): low-stock counts are sourced from
+  // InventoryStock only — never Ingredient or InventoryMovement. The
+  // low_stock_ingredient_count field name is unchanged for API compatibility.
   async getBranchComparison(filters: ReportFilters): Promise<BranchComparisonReportRow[]> {
     const range = dateRangeFilter(filters);
-    const [salesGrouped, activeShifts, ingredients, branches] = await Promise.all([
+    const [salesGrouped, activeShifts, stocks, branches] = await Promise.all([
       prisma.transaction.groupBy({ by: ['branchId'], where: { status: 'completed', ...(range && { createdAt: range }) }, _sum: { totalAmount: true }, _count: { _all: true } }),
       prisma.shift.findMany({ where: { status: 'active' }, select: { branchId: true } }),
-      prisma.ingredient.findMany({ where: { deletedAt: null }, select: { id: true, branchId: true, lowStockThreshold: true } }),
+      prisma.inventoryStock.findMany({ where: { inventoryItem: { deletedAt: null } }, select: { branchId: true, quantityOnHand: true, lowStockThreshold: true } }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
 
     const activeShiftCountByBranch = new Map<string, number>();
     for (const shift of activeShifts) activeShiftCountByBranch.set(shift.branchId, (activeShiftCountByBranch.get(shift.branchId) ?? 0) + 1);
 
-    const movementSums = ingredients.length
-      ? await prisma.inventoryMovement.groupBy({ by: ['ingredientId'], where: { ingredientId: { in: ingredients.map((i) => i.id) } }, _sum: { quantityChange: true } })
-      : [];
-    const stockById = new Map(movementSums.map((m) => [m.ingredientId, m._sum.quantityChange?.toNumber() ?? 0]));
     const lowStockCountByBranch = new Map<string, number>();
-    for (const ingredient of ingredients) {
-      const stock = stockById.get(ingredient.id) ?? 0;
-      if (stock <= ingredient.lowStockThreshold.toNumber()) lowStockCountByBranch.set(ingredient.branchId, (lowStockCountByBranch.get(ingredient.branchId) ?? 0) + 1);
+    for (const stock of stocks) {
+      const lowThreshold = stock.lowStockThreshold?.toNumber() ?? null;
+      if (lowThreshold !== null && stock.quantityOnHand.toNumber() <= lowThreshold) {
+        lowStockCountByBranch.set(stock.branchId, (lowStockCountByBranch.get(stock.branchId) ?? 0) + 1);
+      }
     }
 
     const salesByBranch = new Map(salesGrouped.map((g) => [g.branchId, g]));
@@ -474,6 +582,13 @@ export const reportsRepository = {
       .sort((a, b) => b.gross_sales - a.gross_sales);
   },
 
+  // Sourced from InventoryStock/InventoryItem/InventoryStockMovement only —
+  // never Ingredient or InventoryMovement (CR-007 §20 analytics cutover).
+  // InventoryItem is shared across branches, so each (branchId,
+  // inventoryItemId) pair is the equivalent of the old per-branch Ingredient
+  // row; composite-keying preserves prior report granularity (same item at
+  // two branches still surfaces as two rows, as two Ingredient rows would
+  // have before).
   async getInventoryAnalytics(params: { branchId?: string; dateFrom: Date; dateTo: Date; periodDays: number }): Promise<InventoryAnalyticsReport> {
     const REORDER_LOOKBACK_DAYS = 30;
     const REORDER_COVERAGE_DAYS = 14;
@@ -483,46 +598,67 @@ export const reportsRepository = {
     const { branchId, dateFrom, dateTo, periodDays } = params;
     const branchWhere = branchId ? { branchId } : {};
     const reorderLookbackFrom = new Date(dateTo.getTime() - REORDER_LOOKBACK_DAYS * MS_PER_DAY);
+    const stockKey = (b: string, itemId: string) => `${b}::${itemId}`;
 
-    const [consumptionGrouped, wasteMovements, lastMovementByIngredient, reorderConsumptionGrouped, ingredients, branches, totalMovements] = await Promise.all([
-      prisma.inventoryMovement.groupBy({
-        by: ['ingredientId'],
-        where: { movementType: 'sale_deduction', createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere },
+    const [consumptionGrouped, wasteMovements, lastMovementGrouped, reorderConsumptionGrouped, stocks, branches, totalMovements] = await Promise.all([
+      prisma.inventoryStockMovement.groupBy({
+        by: ['inventoryItemId', 'branchId'],
+        where: { movementType: 'SALE', createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere },
         _sum: { quantityChange: true },
       }),
-      prisma.inventoryMovement.findMany({
-        where: { movementType: 'waste', createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere },
-        select: { quantityChange: true, createdAt: true, ingredientId: true },
+      prisma.inventoryStockMovement.findMany({
+        where: { movementType: 'WASTE', createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere },
+        select: { quantityChange: true, createdAt: true, inventoryItemId: true, branchId: true },
       }),
-      prisma.inventoryMovement.groupBy({ by: ['ingredientId'], where: { ...branchWhere }, _max: { createdAt: true } }),
-      prisma.inventoryMovement.groupBy({
-        by: ['ingredientId'],
-        where: { movementType: 'sale_deduction', createdAt: { gte: reorderLookbackFrom, lte: dateTo }, ...branchWhere },
+      prisma.inventoryStockMovement.groupBy({ by: ['inventoryItemId', 'branchId'], where: { ...branchWhere }, _max: { createdAt: true } }),
+      prisma.inventoryStockMovement.groupBy({
+        by: ['inventoryItemId', 'branchId'],
+        where: { movementType: 'SALE', createdAt: { gte: reorderLookbackFrom, lte: dateTo }, ...branchWhere },
         _sum: { quantityChange: true },
       }),
-      prisma.ingredient.findMany({
-        where: { deletedAt: null, ...branchWhere },
-        select: { id: true, name: true, unit: true, currentStock: true, lowStockThreshold: true, unitCost: true, branchId: true },
+      prisma.inventoryStock.findMany({
+        where: { inventoryItem: { deletedAt: null }, ...branchWhere },
+        select: {
+          branchId: true,
+          inventoryItemId: true,
+          quantityOnHand: true,
+          lowStockThreshold: true,
+          unitCost: true,
+          inventoryItem: { select: { name: true, unitCost: true, baseUnit: { select: { code: true } } } },
+        },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
-      prisma.inventoryMovement.count({ where: { createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere } }),
+      prisma.inventoryStockMovement.count({ where: { createdAt: { gte: dateFrom, lte: dateTo }, ...branchWhere } }),
     ]);
 
-    const ingredientById = new Map(ingredients.map((i) => [i.id, i]));
+    const stockByKey = new Map(
+      stocks.map((s) => [
+        stockKey(s.branchId, s.inventoryItemId),
+        {
+          inventoryItemId: s.inventoryItemId,
+          branchId: s.branchId,
+          name: s.inventoryItem.name,
+          unit: s.inventoryItem.baseUnit.code,
+          currentStock: s.quantityOnHand.toNumber(),
+          lowStockThreshold: s.lowStockThreshold?.toNumber() ?? null,
+          unitCost: s.unitCost?.toNumber() ?? s.inventoryItem.unitCost?.toNumber() ?? null,
+        },
+      ]),
+    );
     const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
-    const lastMovementById = new Map(lastMovementByIngredient.map((m) => [m.ingredientId, m._max.createdAt]));
+    const lastMovementByKey = new Map(lastMovementGrouped.map((m) => [stockKey(m.branchId, m.inventoryItemId), m._max.createdAt]));
 
     const consumption = consumptionGrouped
-      .map((g) => ({ ingredient: ingredientById.get(g.ingredientId), totalConsumed: Math.abs(g._sum.quantityChange?.toNumber() ?? 0) }))
-      .filter((c): c is { ingredient: NonNullable<typeof c.ingredient>; totalConsumed: number } => c.ingredient !== undefined);
+      .map((g) => ({ stock: stockByKey.get(stockKey(g.branchId, g.inventoryItemId)), totalConsumed: Math.abs(g._sum.quantityChange?.toNumber() ?? 0) }))
+      .filter((c): c is { stock: NonNullable<typeof c.stock>; totalConsumed: number } => c.stock !== undefined);
 
     const fastMovers = [...consumption]
       .sort((a, b) => b.totalConsumed - a.totalConsumed)
       .slice(0, 10)
       .map((c) => ({
-        ingredient_id: c.ingredient.id,
-        name: c.ingredient.name,
-        unit: c.ingredient.unit,
+        ingredient_id: c.stock.inventoryItemId,
+        name: c.stock.name,
+        unit: c.stock.unit,
         total_consumed: c.totalConsumed,
         avg_daily_consumption: Math.round((c.totalConsumed / periodDays) * 1000) / 1000,
       }));
@@ -531,11 +667,11 @@ export const reportsRepository = {
       .sort((a, b) => a.totalConsumed - b.totalConsumed)
       .slice(0, 10)
       .map((c) => {
-        const lastMovement = lastMovementById.get(c.ingredient.id) ?? null;
+        const lastMovement = lastMovementByKey.get(stockKey(c.stock.branchId, c.stock.inventoryItemId)) ?? null;
         return {
-          ingredient_id: c.ingredient.id,
-          name: c.ingredient.name,
-          unit: c.ingredient.unit,
+          ingredient_id: c.stock.inventoryItemId,
+          name: c.stock.name,
+          unit: c.stock.unit,
           total_consumed: c.totalConsumed,
           days_since_last_movement: lastMovement ? Math.floor((dateTo.getTime() - lastMovement.getTime()) / MS_PER_DAY) : null,
         };
@@ -545,7 +681,7 @@ export const reportsRepository = {
     for (const w of wasteMovements) {
       const day = w.createdAt.toISOString().slice(0, 10);
       const qty = Math.abs(w.quantityChange.toNumber());
-      const unitCost = ingredientById.get(w.ingredientId)?.unitCost?.toNumber() ?? 0;
+      const unitCost = stockByKey.get(stockKey(w.branchId, w.inventoryItemId))?.unitCost ?? 0;
       const existing = wasteByDay.get(day) ?? { quantity: 0, cost: 0 };
       existing.quantity += qty;
       existing.cost += qty * unitCost;
@@ -557,18 +693,18 @@ export const reportsRepository = {
 
     // Turnover is a cost ratio (consumption cost ÷ inventory value), so
     // per-branch consumption here is priced, not raw quantity — mixing
-    // units (kg, pieces, L) across ingredients only works once costed.
+    // units (kg, pieces, L) across items only works once costed.
     const consumedCostByBranch = new Map<string, number>();
     for (const c of consumption) {
-      const unitCost = c.ingredient.unitCost?.toNumber() ?? 0;
-      consumedCostByBranch.set(c.ingredient.branchId, (consumedCostByBranch.get(c.ingredient.branchId) ?? 0) + c.totalConsumed * unitCost);
+      const unitCost = c.stock.unitCost ?? 0;
+      consumedCostByBranch.set(c.stock.branchId, (consumedCostByBranch.get(c.stock.branchId) ?? 0) + c.totalConsumed * unitCost);
     }
     const inventoryValueByBranch = new Map<string, number>();
-    for (const ingredient of ingredients) {
-      const unitCost = ingredient.unitCost?.toNumber() ?? 0;
-      inventoryValueByBranch.set(ingredient.branchId, (inventoryValueByBranch.get(ingredient.branchId) ?? 0) + ingredient.currentStock.toNumber() * unitCost);
+    for (const stock of stockByKey.values()) {
+      const unitCost = stock.unitCost ?? 0;
+      inventoryValueByBranch.set(stock.branchId, (inventoryValueByBranch.get(stock.branchId) ?? 0) + stock.currentStock * unitCost);
     }
-    const branchIdsWithData = branchId ? [branchId] : [...new Set(ingredients.map((i) => i.branchId))];
+    const branchIdsWithData = branchId ? [branchId] : [...new Set([...stockByKey.values()].map((s) => s.branchId))];
     const turnoverByBranch = branchIdsWithData.map((id) => {
       const consumedCost = consumedCostByBranch.get(id) ?? 0;
       const avgInventoryValue = inventoryValueByBranch.get(id) ?? 0;
@@ -581,17 +717,18 @@ export const reportsRepository = {
       };
     });
 
-    const reorderConsumedByIngredient = new Map(reorderConsumptionGrouped.map((g) => [g.ingredientId, Math.abs(g._sum.quantityChange?.toNumber() ?? 0)]));
-    const reorderRecommendations = ingredients
-      .filter((i) => i.currentStock.toNumber() <= i.lowStockThreshold.toNumber() * REORDER_THRESHOLD_MULTIPLIER)
-      .map((i) => {
-        const currentStock = i.currentStock.toNumber();
-        const avgDailyConsumption = (reorderConsumedByIngredient.get(i.id) ?? 0) / REORDER_LOOKBACK_DAYS;
-        const daysUntilStockout = avgDailyConsumption > 0 ? Math.round((currentStock / avgDailyConsumption) * 10) / 10 : null;
+    const reorderConsumedByKey = new Map(
+      reorderConsumptionGrouped.map((g) => [stockKey(g.branchId, g.inventoryItemId), Math.abs(g._sum.quantityChange?.toNumber() ?? 0)]),
+    );
+    const reorderRecommendations = [...stockByKey.values()]
+      .filter((s) => s.lowStockThreshold !== null && s.currentStock <= s.lowStockThreshold * REORDER_THRESHOLD_MULTIPLIER)
+      .map((s) => {
+        const avgDailyConsumption = (reorderConsumedByKey.get(stockKey(s.branchId, s.inventoryItemId)) ?? 0) / REORDER_LOOKBACK_DAYS;
+        const daysUntilStockout = avgDailyConsumption > 0 ? Math.round((s.currentStock / avgDailyConsumption) * 10) / 10 : null;
         return {
-          ingredient_id: i.id,
-          name: i.name,
-          current_stock: currentStock,
+          ingredient_id: s.inventoryItemId,
+          name: s.name,
+          current_stock: s.currentStock,
           avg_daily_consumption: Math.round(avgDailyConsumption * 1000) / 1000,
           days_until_stockout: daysUntilStockout,
           recommended_reorder_qty: Math.round(avgDailyConsumption * REORDER_COVERAGE_DAYS * 1000) / 1000,
@@ -600,7 +737,7 @@ export const reportsRepository = {
       .sort((a, b) => (a.days_until_stockout ?? Infinity) - (b.days_until_stockout ?? Infinity));
 
     const totalWasteCost = wasteTrends.reduce((sum, w) => sum + w.total_waste_cost, 0);
-    const totalConsumptionCost = consumption.reduce((sum, c) => sum + c.totalConsumed * (c.ingredient.unitCost?.toNumber() ?? 0), 0);
+    const totalConsumptionCost = consumption.reduce((sum, c) => sum + c.totalConsumed * (c.stock.unitCost ?? 0), 0);
     const avgTurnoverRate = turnoverByBranch.length ? turnoverByBranch.reduce((sum, t) => sum + t.turnover_rate, 0) / turnoverByBranch.length : 0;
 
     return {
@@ -638,7 +775,7 @@ export const reportsRepository = {
       case 'VOID_REFUND':
         return prisma.transaction.count({ where: { status: { in: ['voided', 'refunded'] }, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) } });
       case 'INVENTORY_MOVEMENT':
-        return prisma.inventoryMovement.count({ where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) } });
+        return prisma.inventoryStockMovement.count({ where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) } });
       case 'ATTENDANCE_SUMMARY':
         return prisma.attendanceRecord.count({ where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { clockInServerTime: range }) } });
       case 'FRAUD_ALERT_SUMMARY':

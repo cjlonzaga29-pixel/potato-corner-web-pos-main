@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
-import { ROLES, SOCKET_EVENTS, type JwtPayload, type ProductStatus } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, type JwtPayload, type PosReadinessCode, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
 import {
   ProductError,
@@ -15,6 +15,8 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
+import { productReadinessService } from '../product-readiness/product-readiness.service.js';
+import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -476,6 +478,70 @@ async function performSlotEditWithActiveGovernance<T>(
   });
 
   return result;
+}
+
+/**
+ * Phase B (CR-008) — deterministic collapse of productReadinessService's
+ * full blockingIssues list down to the single legacy `readiness_code`
+ * existing POS clients already read. Order matters: the first matching code
+ * found in blockingIssues wins.
+ */
+const READINESS_CODE_PRIORITY: { code: ReadinessIssueCode; legacy: PosReadinessCode }[] = [
+  { code: 'PRODUCT_INACTIVE', legacy: 'INACTIVE' },
+  { code: 'VARIANT_INACTIVE', legacy: 'INACTIVE' },
+  { code: 'VARIANT_LIFECYCLE_BLOCKED', legacy: 'INACTIVE' },
+  { code: 'BRANCH_NOT_AVAILABLE', legacy: 'NOT_AVAILABLE_IN_BRANCH' },
+  { code: 'PRICE_MISSING', legacy: 'PRICE_MISSING' },
+  { code: 'BASE_INVENTORY_MAPPING_MISSING', legacy: 'MISSING_BASE_MAPPING' },
+  { code: 'FLAVOR_INVENTORY_MAPPING_MISSING', legacy: 'MISSING_FLAVOR_MAPPING' },
+  { code: 'MIX_MAX_SLOT_INCOMPLETE', legacy: 'MIX_MAX_INCOMPLETE' },
+  { code: 'MIX_MAX_SNACK_UNAVAILABLE', legacy: 'MIX_MAX_INCOMPLETE' },
+  { code: 'FLAVOR_NOT_AVAILABLE_AT_BRANCH', legacy: 'NOT_AVAILABLE_IN_BRANCH' },
+];
+
+function pickLegacyReadinessCode(blockingIssues: ReadinessIssue[]) {
+  for (const { code, legacy } of READINESS_CODE_PRIORITY) {
+    if (blockingIssues.some((issue) => issue.code === code)) return legacy;
+  }
+  return 'READY' as const;
+}
+
+function toReadinessIssueResponse(issue: ReadinessIssue) {
+  return {
+    code: issue.code,
+    severity: issue.severity,
+    message: issue.message,
+    flavor_name: issue.flavorName ?? null,
+  };
+}
+
+/** Fallback for a variant the readiness batch didn't return a result for (should not happen — every requested id is echoed back, see evaluateProductVariantReadinessBatch). */
+function notReadyLegacyReadiness() {
+  return {
+    live_ready: false,
+    readiness_code: 'INACTIVE' as const,
+    missing_flavor_ids: [] as string[],
+    readiness_status: 'NOT_READY' as const,
+    completion_percentage: 0,
+    blocking_issues: [] as ReturnType<typeof toReadinessIssueResponse>[],
+    readiness_warnings: [] as ReturnType<typeof toReadinessIssueResponse>[],
+  };
+}
+
+function toLegacyReadiness(result: ProductVariantReadinessResult) {
+  const missingFlavorIds = result.blockingIssues
+    .filter((issue): issue is ReadinessIssue & { flavorId: string } => issue.code === 'FLAVOR_INVENTORY_MAPPING_MISSING' && Boolean(issue.flavorId))
+    .map((issue) => issue.flavorId);
+
+  return {
+    live_ready: result.sellable,
+    readiness_code: pickLegacyReadinessCode(result.blockingIssues),
+    missing_flavor_ids: missingFlavorIds,
+    readiness_status: result.status,
+    completion_percentage: result.completionPercentage,
+    blocking_issues: result.blockingIssues.map(toReadinessIssueResponse),
+    readiness_warnings: result.warnings.map(toReadinessIssueResponse),
+  };
 }
 
 export const productsService = {
@@ -1212,12 +1278,11 @@ export const productsService = {
    * distinct from getAllProducts (admin/supervisor only), so the terminal
    * never computes pricing from a client-trusted base_price.
    *
-   * Live POS readiness: findCatalogForBranch already scopes to active
-   * products/variants available at this branch and to flavor links that are
-   * themselves active+available, so the only remaining readiness gap this
-   * computes is whether ProductInventory has been provisioned — the actual
-   * gate transactions.service.ts (assertProductInventoryExists) enforces at
-   * checkout. One query across every variant on this branch avoids N+1.
+   * Phase B (CR-008) — live POS readiness is now delegated to
+   * productReadinessService, the single authoritative readiness engine also
+   * used elsewhere (see product-readiness.service.ts). One batched call
+   * across every variant on this branch avoids N+1, mirroring the batching
+   * this function already did for ProductInventory mappings pre-Phase B.
    */
   async getPosCatalog(branchId: string) {
     const [products, disabledFlavorIds] = await Promise.all([
@@ -1227,23 +1292,8 @@ export const productsService = {
     const disabledFlavors = new Set(disabledFlavorIds);
 
     const variantIds = products.flatMap((product) => product.variants.map((variant) => variant.id));
-    const mappings = variantIds.length > 0 ? await productInventoryRepository.findActiveMappingsForVariants(branchId, variantIds) : [];
-
-    const baseMappedVariantIds = new Set(mappings.filter((m) => m.flavorId === null).map((m) => m.productVariantId));
-    const flavorMappedKeys = new Set(mappings.filter((m) => m.flavorId !== null).map((m) => `${m.productVariantId}:${m.flavorId}`));
-
-    function computeReadiness(variant: { id: string; variantFlavors: { flavorId: string }[] }) {
-      if (!baseMappedVariantIds.has(variant.id)) {
-        return { live_ready: false, readiness_code: 'MISSING_BASE_MAPPING' as const, missing_flavor_ids: [] as string[] };
-      }
-      const missingFlavorIds = variant.variantFlavors
-        .map((vf) => vf.flavorId)
-        .filter((flavorId) => !flavorMappedKeys.has(`${variant.id}:${flavorId}`));
-      if (missingFlavorIds.length > 0) {
-        return { live_ready: false, readiness_code: 'MISSING_FLAVOR_MAPPING' as const, missing_flavor_ids: missingFlavorIds };
-      }
-      return { live_ready: true, readiness_code: 'READY' as const, missing_flavor_ids: [] as string[] };
-    }
+    const readinessResults = await productReadinessService.evaluateProductVariantReadinessBatch({ branchId, productVariantIds: variantIds });
+    const readinessByVariantId = new Map(readinessResults.map((result) => [result.productVariantId, result]));
 
     const catalogProducts = products.map((product) => {
       const variants = product.variants.map((variant) => ({
@@ -1252,7 +1302,10 @@ export const productsService = {
         size_label: variant.sizeLabel,
         price: variant.basePrice.toNumber(),
         vatable_cap_amount: variant.vatableCapAmount?.toNumber() ?? null,
-        ...computeReadiness(variant),
+        ...(() => {
+          const readiness = readinessByVariantId.get(variant.id);
+          return readiness ? toLegacyReadiness(readiness) : notReadyLegacyReadiness();
+        })(),
         flavors: variant.variantFlavors
           .filter((vf) => !disabledFlavors.has(vf.flavorId))
           .map((vf) => ({

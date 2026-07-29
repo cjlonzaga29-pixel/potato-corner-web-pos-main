@@ -150,9 +150,25 @@ export default function TerminalPage() {
   }, [catalog]);
 
   function readinessMessage(variant: PosCatalogProduct['variants'][number]): string | null {
-    if (variant.readiness_code === 'MISSING_FLAVOR_MAPPING') return 'Flavor inventory mapping incomplete.';
-    if (!variant.live_ready) return 'Inventory setup incomplete.';
-    return null;
+    if (variant.live_ready) return null;
+    if (variant.readiness_code === 'MISSING_FLAVOR_MAPPING') {
+      const flavorNames = variant.blocking_issues.map((issue) => issue.flavor_name).filter((name): name is string => Boolean(name));
+      if (flavorNames.length > 0) return `Not ready: missing setup for ${flavorNames.join(', ')}.`;
+      return 'Flavor inventory mapping incomplete.';
+    }
+    switch (variant.readiness_code) {
+      case 'NOT_AVAILABLE_IN_BRANCH':
+        return 'Not available at this branch.';
+      case 'INACTIVE':
+        return 'Currently unavailable.';
+      case 'PRICE_MISSING':
+        return 'Price not set.';
+      case 'MIX_MAX_INCOMPLETE':
+        return 'Mix & Max setup incomplete.';
+      case 'MISSING_BASE_MAPPING':
+      default:
+        return 'Inventory setup incomplete.';
+    }
   }
 
   function handleProductTap(product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) {

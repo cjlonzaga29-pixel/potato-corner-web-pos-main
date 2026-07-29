@@ -134,10 +134,11 @@ export function useUpdateBranchFlavorAvailability(flavorId: string) {
       if (!response.data) throw new Error(errorMessage(response, 'Failed to update branch flavor availability'));
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['flavor', flavorId, 'branch-availability'] });
       void queryClient.invalidateQueries({ queryKey: ['flavor', flavorId] });
       void queryClient.invalidateQueries({ queryKey: ['flavors'] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog', variables.branchId] });
       toast.success('Branch flavor availability updated');
     },
     onError: (error: Error) => toast.error(error.message),

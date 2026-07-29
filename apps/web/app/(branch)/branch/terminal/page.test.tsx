@@ -92,6 +92,10 @@ function slotVariant(overrides: Partial<PosCatalogProduct['variants'][number]> =
     live_ready: true,
     readiness_code: 'READY',
     missing_flavor_ids: [],
+    readiness_status: 'READY',
+    completion_percentage: 100,
+    blocking_issues: [],
+    readiness_warnings: [],
     flavors: [
       { flavor_id: 'flavor-1', name: 'Cheese', color_hex: null, price_premium: 0 },
       { flavor_id: 'flavor-2', name: 'BBQ', color_hex: null, price_premium: 0 },
@@ -173,6 +177,35 @@ describe('TerminalPage — live POS readiness', () => {
     render(<TerminalPage />);
 
     expect(screen.getByText('Flavor inventory mapping incomplete.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    expect(mockAddItem).not.toHaveBeenCalled();
+  });
+
+  it('shows the missing flavor name (not internal ids) when blocking_issues carries flavor_name', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        slotVariant({
+          flavors: [],
+          flavor_slots: [],
+          live_ready: false,
+          readiness_code: 'MISSING_FLAVOR_MAPPING',
+          missing_flavor_ids: ['flavor-1'],
+          blocking_issues: [
+            {
+              code: 'FLAVOR_INVENTORY_MAPPING_MISSING',
+              severity: 'blocking',
+              message: 'Flavor inventory mapping missing for flavor-1.',
+              flavor_name: 'Cheese',
+            },
+          ],
+        }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Not ready: missing setup for Cheese.')).toBeInTheDocument();
+    expect(screen.queryByText(/flavor-1/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Mega Mix Fries'));
     expect(mockAddItem).not.toHaveBeenCalled();
   });

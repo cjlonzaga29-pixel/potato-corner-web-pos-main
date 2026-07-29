@@ -285,16 +285,28 @@ export const posCatalogFlavorSlotSchema = z.object({
   snack_options: z.array(posCatalogSnackOptionSchema),
 });
 
-// Live POS readiness (branch inventory mapping completeness) — computed
-// server-side from ProductInventory in productsService.getPosCatalog.
+// Live POS readiness — computed server-side by productReadinessService
+// (Phase B — CR-008) in productsService.getPosCatalog, replacing the former
+// inline ProductInventory-only computation. readiness_code is the
+// highest-priority blocking issue collapsed to one of these legacy codes for
+// existing clients; blocking_issues/readiness_warnings carry the full list.
 export const POS_READINESS_CODES = [
   'READY',
   'MISSING_BASE_MAPPING',
   'MISSING_FLAVOR_MAPPING',
   'NOT_AVAILABLE_IN_BRANCH',
   'INACTIVE',
+  'PRICE_MISSING',
+  'MIX_MAX_INCOMPLETE',
 ] as const;
 export type PosReadinessCode = (typeof POS_READINESS_CODES)[number];
+
+export const posCatalogReadinessIssueSchema = z.object({
+  code: z.string(),
+  severity: z.enum(['blocking', 'warning']),
+  message: z.string(),
+  flavor_name: z.string().nullable(),
+});
 
 export const posCatalogVariantSchema = z.object({
   id: z.uuid(),
@@ -305,6 +317,11 @@ export const posCatalogVariantSchema = z.object({
   live_ready: z.boolean(),
   readiness_code: z.enum(POS_READINESS_CODES),
   missing_flavor_ids: z.array(z.uuid()),
+  // Additive (Phase B) — backward-compatible with the fields above.
+  readiness_status: z.enum(['READY', 'NOT_READY']),
+  completion_percentage: z.number(),
+  blocking_issues: z.array(posCatalogReadinessIssueSchema),
+  readiness_warnings: z.array(posCatalogReadinessIssueSchema),
   flavors: z.array(posCatalogFlavorSchema),
   flavor_slots: z.array(posCatalogFlavorSlotSchema),
   option_groups: z.array(posCatalogOptionGroupSchema),

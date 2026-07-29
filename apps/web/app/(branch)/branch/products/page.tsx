@@ -29,6 +29,8 @@ const READINESS_LABELS: Record<PosReadinessCode, string> = {
   MISSING_FLAVOR_MAPPING: 'Missing Flavor Mapping',
   NOT_AVAILABLE_IN_BRANCH: 'Not Available',
   INACTIVE: 'Inactive',
+  PRICE_MISSING: 'Price Missing',
+  MIX_MAX_INCOMPLETE: 'Mix & Max Incomplete',
 };
 
 // The catalog endpoint (same one the POS Terminal charges against) only

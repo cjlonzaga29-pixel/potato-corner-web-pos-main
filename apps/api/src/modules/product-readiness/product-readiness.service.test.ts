@@ -111,15 +111,25 @@ function mockDefaults(opts: {
   mappings?: Array<{ productVariantId: string; flavorId: string | null }>;
   recipeRows?: Array<{ productVariantId: string }>;
 }) {
-  vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue(opts.variants as any);
+  vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue(
+    opts.variants as unknown as Awaited<ReturnType<typeof transactionsRepository.findVariantsForSale>>,
+  );
   vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue(
-    (opts.productAvailability ?? [{ productId: PRODUCT_1, isAvailable: true }]) as any,
+    (opts.productAvailability ?? [{ productId: PRODUCT_1, isAvailable: true }]) as unknown as Awaited<
+      ReturnType<typeof transactionsRepository.findBranchProductAvailabilityMap>
+    >,
   );
-  vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue((opts.flavorAvailability ?? []) as any);
+  vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue(
+    (opts.flavorAvailability ?? []) as unknown as Awaited<ReturnType<typeof transactionsRepository.findBranchFlavorAvailabilityMap>>,
+  );
   vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue(
-    (opts.mappings ?? [{ productVariantId: VARIANT_1, flavorId: null }]) as any,
+    (opts.mappings ?? [{ productVariantId: VARIANT_1, flavorId: null }]) as unknown as Awaited<
+      ReturnType<typeof productInventoryRepository.findActiveMappingsForVariants>
+    >,
   );
-  vi.mocked(prisma.productComponent.findMany).mockResolvedValue((opts.recipeRows ?? []) as any);
+  vi.mocked(prisma.productComponent.findMany).mockResolvedValue(
+    (opts.recipeRows ?? []) as unknown as Awaited<ReturnType<typeof prisma.productComponent.findMany>>,
+  );
 }
 
 beforeEach(() => {

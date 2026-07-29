@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
-import type { ProductVariantReadinessResult } from '../product-readiness/product-readiness.types.js';
+import type { ProductReadinessResult, ProductVariantReadinessResult } from '../product-readiness/product-readiness.types.js';
 
 vi.mock('./products.repository.js', () => ({
   productsRepository: {
@@ -64,6 +64,7 @@ vi.mock('../product-inventory/product-inventory.repository.js', () => ({
 vi.mock('../product-readiness/product-readiness.service.js', () => ({
   productReadinessService: {
     evaluateProductVariantReadinessBatch: vi.fn(),
+    evaluateProductReadiness: vi.fn(),
   },
 }));
 
@@ -103,6 +104,36 @@ function notReadyResult(branchId: string, productVariantId: string, blockingIssu
     posSellable: false,
     inventoryMappingReady: false,
     blockingIssues,
+  };
+}
+
+/** Phase D1 — Admin Readiness panel. Default: one eligible, sellable variant (product-level READY). */
+function productReadinessResult(overrides: Partial<ProductReadinessResult> = {}): ProductReadinessResult {
+  return {
+    productId: 'prod-1',
+    branchId: 'branch-a',
+    status: 'READY',
+    sellable: true,
+    completionPercentage: 100,
+    variantCount: 1,
+    eligibleVariantCount: 1,
+    readyVariantCount: 1,
+    blockingIssues: [],
+    warnings: [],
+    variants: [
+      {
+        productVariantId: 'variant-1',
+        variantName: 'Regular',
+        status: 'READY',
+        sellable: true,
+        completionPercentage: 100,
+        recipeReady: true,
+        inventoryMappingReady: true,
+        blockingIssues: [],
+        warnings: [],
+      },
+    ],
+    ...overrides,
   };
 }
 
@@ -540,6 +571,207 @@ describe('productsService.changeProductStatus — supervisor branch-scoped chang
     ).rejects.toMatchObject({ code: 'PRODUCT_GLOBALLY_UNAVAILABLE', statusCode: 403 });
 
     expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.getProductReadiness (Phase D1 — Admin Readiness panel)', () => {
+  it('returns full detail for a specific branch, delegating every computation to productReadinessService', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
+
+    const result = await productsService.getProductReadiness('prod-1', 'branch-a');
+
+    expect(productReadinessService.evaluateProductReadiness).toHaveBeenCalledWith({ productId: 'prod-1', branchId: 'branch-a' });
+    expect(result).toMatchObject({ scope: 'branch', product_id: 'prod-1', branch_id: 'branch-a', status: 'READY', sellable: true });
+    expect(result).toHaveProperty('publish_is_variant_level', false);
+  });
+
+  it('omits internal ids from mapped issues, keeping only code/severity/message/recommended_action/flavor_name', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
+      productReadinessResult({
+        status: 'NOT_READY',
+        sellable: false,
+        readyVariantCount: 0,
+        blockingIssues: [
+          {
+            code: 'PRICE_MISSING',
+            severity: 'blocking',
+            entityType: 'product_variant',
+            entityId: 'variant-1',
+            productVariantId: 'variant-1',
+            productId: 'prod-1',
+            branchId: 'branch-a',
+            message: 'Regular has no valid positive selling price.',
+            recommendedAction: 'Set a positive base price for this variant.',
+          },
+        ],
+      }),
+    );
+
+    const result = await productsService.getProductReadiness('prod-1', 'branch-a');
+
+    expect(result).toMatchObject({ scope: 'branch' });
+    if (result.scope !== 'branch') throw new Error('expected branch scope');
+    expect(result.blocking_issues).toEqual([
+      {
+        code: 'PRICE_MISSING',
+        severity: 'blocking',
+        entity_type: 'product_variant',
+        message: 'Regular has no valid positive selling price.',
+        recommended_action: 'Set a positive base price for this variant.',
+        flavor_name: null,
+      },
+    ]);
+  });
+
+  it('returns a read-only per-branch summary for scope "all"', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([
+      { id: 'branch-a', code: 'PC-A', name: 'Branch A', city: 'Manila' },
+      { id: 'branch-b', code: 'PC-B', name: 'Branch B', city: 'Cebu' },
+    ] as never);
+    vi.mocked(productsRepository.findBranchProductAvailability).mockResolvedValue([
+      { branchId: 'branch-a', isAvailable: true },
+    ] as never);
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockImplementation(async ({ branchId }) =>
+      productReadinessResult({ branchId, status: branchId === 'branch-a' ? 'READY' : 'NOT_READY', sellable: branchId === 'branch-a' }),
+    );
+
+    const result = await productsService.getProductReadiness('prod-1', 'all');
+
+    expect(result.scope).toBe('all_branches');
+    if (result.scope !== 'all_branches') throw new Error('expected all_branches scope');
+    expect(result.branches).toEqual([
+      expect.objectContaining({ branch_id: 'branch-a', is_published: true, status: 'READY' }),
+      expect.objectContaining({ branch_id: 'branch-b', is_published: false, status: 'NOT_READY' }),
+    ]);
+  });
+});
+
+describe('productsService.publishProduct (Phase D1)', () => {
+  it('blocks publish and returns the exact blocking issues when the product is NOT_READY', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
+      productReadinessResult({
+        status: 'NOT_READY',
+        sellable: false,
+        readyVariantCount: 0,
+        blockingIssues: [
+          {
+            code: 'BASE_INVENTORY_MAPPING_MISSING',
+            severity: 'blocking',
+            entityType: 'product_variant',
+            entityId: 'variant-1',
+            productVariantId: 'variant-1',
+            productId: 'prod-1',
+            branchId: 'branch-a',
+            message: 'Regular has no active base ProductInventory mapping for this branch.',
+            recommendedAction: 'Add at least one base ProductInventory mapping for this branch and variant.',
+          },
+        ],
+      }),
+    );
+
+    await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_NOT_READY',
+      statusCode: 409,
+      details: {
+        blocking_issues: [expect.objectContaining({ code: 'BASE_INVENTORY_MAPPING_MISSING' })],
+      },
+    });
+    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+  });
+
+  it('blocks publish when the product has no eligible variants at all, even with zero other blocking issues', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
+      productReadinessResult({ eligibleVariantCount: 0, readyVariantCount: 0, status: 'NOT_READY', sellable: false, variants: [], blockingIssues: [] }),
+    );
+
+    await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_NOT_READY',
+    });
+    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+  });
+
+  it('never gates on BRANCH_NOT_AVAILABLE alone — that is exactly what publishing resolves', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
+      productReadinessResult({
+        status: 'NOT_READY',
+        sellable: false,
+        blockingIssues: [
+          {
+            code: 'BRANCH_NOT_AVAILABLE',
+            severity: 'blocking',
+            entityType: 'product',
+            entityId: 'prod-1',
+            productId: 'prod-1',
+            productVariantId: 'variant-1',
+            branchId: 'branch-a',
+            message: 'Test Product is not available at this branch.',
+            recommendedAction: 'Enable the product for this branch under Branch Availability.',
+          },
+        ],
+      }),
+    );
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
+      id: 'row-1',
+      branchId: 'branch-a',
+      isAvailable: true,
+      updatedAt: new Date(),
+      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+    } as never);
+
+    const result = await productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
+
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPER_ADMIN.id);
+    expect((result as { is_available: boolean }).is_available).toBe(true);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
+  });
+
+  it('publishes a READY product, reusing updateBranchProductAvailability (existing BranchProductAvailability model, no new writes)', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
+      id: 'row-1',
+      branchId: 'branch-a',
+      isAvailable: true,
+      updatedAt: new Date(),
+      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+    } as never);
+
+    const result = await productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
+
+    expect((result as { is_available: boolean }).is_available).toBe(true);
+  });
+
+  it('refuses to publish a globally discontinued/archived product', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
+
+    await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_GLOBALLY_UNAVAILABLE',
+    });
+    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.unpublishProduct (Phase D1)', () => {
+  it('disables BranchProductAvailability without any readiness gate, and never touches variants/inventory', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
+      id: 'row-1',
+      branchId: 'branch-a',
+      isAvailable: false,
+      updatedAt: new Date(),
+      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+    } as never);
+
+    const result = await productsService.unpublishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
+
+    expect(productReadinessService.evaluateProductReadiness).not.toHaveBeenCalled();
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', false, SUPER_ADMIN.id);
+    expect((result as { is_available: boolean }).is_available).toBe(false);
   });
 });
 

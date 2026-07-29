@@ -27,6 +27,8 @@ import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { computeDeduction, computeDeductionForSlots, assertProductInventoryExists } from '../product-inventory/product-inventory.service.js';
 import { ProductInventoryError, type DeductionLine } from '../product-inventory/product-inventory.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
+import { productReadinessService } from '../product-readiness/product-readiness.service.js';
+import type { ProductVariantReadinessResult } from '../product-readiness/product-readiness.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
 import { hashToLockId } from '../../lib/pg-lock.js';
@@ -255,17 +257,82 @@ interface ResolvedItem {
 }
 
 /**
+ * Priority-ordered mapping from productReadinessService's blockingIssues down
+ * to a single stable checkout TransactionError — same "first match wins"
+ * approach as products.service.ts#pickLegacyReadinessCode (Phase B), so the
+ * POS catalog and checkout can never disagree about why a variant is
+ * unsellable. Existing checkout error codes are reused wherever the meaning
+ * lines up; new codes are added only where no existing one fits.
+ */
+const READINESS_TRANSACTION_ERRORS: { codes: string[]; txCode: string; message: (variantName: string) => string }[] = [
+  {
+    codes: ['PRODUCT_INACTIVE', 'VARIANT_INACTIVE', 'VARIANT_LIFECYCLE_BLOCKED'],
+    txCode: 'PRODUCT_UNAVAILABLE',
+    message: (name) => `${name} is not currently sellable`,
+  },
+  {
+    codes: ['BRANCH_NOT_AVAILABLE'],
+    txCode: 'PRODUCT_UNAVAILABLE',
+    message: (name) => `${name} is not available at this branch`,
+  },
+  {
+    codes: ['PRICE_MISSING'],
+    txCode: 'PRICE_MISSING',
+    message: (name) => `${name} does not have a valid price configured`,
+  },
+  {
+    codes: ['BASE_INVENTORY_MAPPING_MISSING'],
+    txCode: 'RECIPE_MISSING',
+    message: (name) => `${name} has no inventory mapping configured for this branch`,
+  },
+  {
+    codes: ['FLAVOR_INVENTORY_MAPPING_MISSING'],
+    txCode: 'FLAVOR_INVENTORY_MAPPING_MISSING',
+    message: () => 'The selected flavor is not fully configured for sale at this branch',
+  },
+  {
+    codes: ['FLAVOR_NOT_AVAILABLE_AT_BRANCH'],
+    txCode: 'FLAVOR_NOT_AVAILABLE_FOR_VARIANT',
+    message: () => 'The selected flavor is not available at this branch',
+  },
+  {
+    codes: ['MIX_MAX_SLOT_INCOMPLETE', 'MIX_MAX_SNACK_UNAVAILABLE'],
+    txCode: 'MIX_MAX_SLOT_INCOMPLETE',
+    message: (name) => `${name} is not fully configured for sale at this branch`,
+  },
+];
+
+/** Never surfaces internal ids or admin recommendedAction text — only a cashier-safe product/flavor name and a stable public code. */
+function readinessRejection(variantName: string, result: ProductVariantReadinessResult): TransactionError {
+  for (const entry of READINESS_TRANSACTION_ERRORS) {
+    if (result.blockingIssues.some((issue) => entry.codes.includes(issue.code))) {
+      return new TransactionError(entry.txCode, entry.message(variantName), 422);
+    }
+  }
+  return new TransactionError('PRODUCT_UNAVAILABLE', `${variantName} is not currently sellable`, 422);
+}
+
+/**
  * Resolves and prices every cart line against the live catalog — never
  * trusts a client-submitted price. Rejects the whole transaction if any
  * item references a variant/flavor that isn't active, sellable at this
  * product's global status, or available at this branch (architecture doc
  * §Transaction flow: "unavailable items hidden" applies just as much to
  * what the server accepts as what the client displays).
+ *
+ * Sellability itself (active/lifecycle/price/branch availability/inventory
+ * mapping/Mix & Max configuration completeness) is gated once per cart via
+ * productReadinessService — the same authoritative engine the POS catalog
+ * uses (Phase C) — so the two can never disagree. Everything below the
+ * readiness gate validates the customer's actual selection (which flavor,
+ * which slot), which the readiness engine deliberately does not evaluate.
  */
 async function resolveCartItems(branchId: string, items: CartItemInput[]): Promise<ResolvedItem[]> {
   const variantIds = [...new Set(items.map((i) => i.productVariantId))];
   const variants = await transactionsRepository.findVariantsForSale(variantIds);
   const variantMap = new Map(variants.map((v) => [v.id, v]));
+  const readinessResults = await productReadinessService.evaluateProductVariantReadinessForVariants(branchId, variants, variantIds);
+  const readinessMap = new Map(readinessResults.map((r) => [r.productVariantId, r]));
 
   const productIds = [
     ...new Set(
@@ -291,11 +358,10 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     if (!variant || variant.productId !== item.productId) {
       throw new TransactionError('PRODUCT_UNAVAILABLE', `Product variant ${item.productVariantId} is not available for sale`, 422);
     }
-    if (!variant.isActive || variant.product.status !== 'active') {
-      throw new TransactionError('PRODUCT_UNAVAILABLE', `${variant.product.name} — ${variant.name} is not currently sellable`, 422);
-    }
-    if (productAvailabilityMap.get(variant.productId) !== true) {
-      throw new TransactionError('PRODUCT_UNAVAILABLE', `${variant.product.name} is not available at this branch`, 422);
+
+    const readiness = readinessMap.get(variant.id);
+    if (readiness && !readiness.sellable) {
+      throw readinessRejection(`${variant.product.name} — ${variant.name}`, readiness);
     }
 
     // CR-004: reject the whole sale rather than silently deduct nothing for

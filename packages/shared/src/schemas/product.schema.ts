@@ -339,3 +339,77 @@ export const posCatalogResponseSchema = z.object({
   categories: z.array(z.string()),
   products: z.array(posCatalogProductSchema),
 });
+
+// ---------------------------------------------------------------------------
+// Phase D1 — Admin Readiness panel & product-level publish/unpublish. Reuses
+// the existing BranchProductAvailability model (no schema changes); every
+// readiness computation is delegated to productReadinessService (the same
+// engine POS/Checkout use), never re-derived here.
+// ---------------------------------------------------------------------------
+
+/** entity_id/product_variant_id/flavor_id are omitted from this DTO on purpose (spec: "do not expose internal IDs" in the admin UI) — message + recommended_action already carry the human-readable explanation. */
+export const readinessIssueSchema = z.object({
+  code: z.string(),
+  severity: z.enum(['blocking', 'warning']),
+  entity_type: z.enum(['product', 'product_variant', 'flavor', 'flavor_slot', 'branch']),
+  message: z.string(),
+  recommended_action: z.string(),
+  flavor_name: z.string().nullable(),
+});
+
+export const productVariantReadinessSummarySchema = z.object({
+  product_variant_id: z.uuid(),
+  variant_name: z.string(),
+  status: z.enum(['READY', 'NOT_READY']),
+  sellable: z.boolean(),
+  completion_percentage: z.number(),
+  recipe_ready: z.boolean(),
+  inventory_mapping_ready: z.boolean(),
+  blocking_issues: z.array(readinessIssueSchema),
+  warnings: z.array(readinessIssueSchema),
+});
+
+export const productReadinessResponseSchema = z.object({
+  scope: z.literal('branch'),
+  product_id: z.uuid(),
+  branch_id: z.uuid(),
+  status: z.enum(['READY', 'NOT_READY']),
+  sellable: z.boolean(),
+  completion_percentage: z.number(),
+  variant_count: z.number().int(),
+  eligible_variant_count: z.number().int(),
+  ready_variant_count: z.number().int(),
+  blocking_issues: z.array(readinessIssueSchema),
+  warnings: z.array(readinessIssueSchema),
+  variants: z.array(productVariantReadinessSummarySchema),
+  // Known limitation (Phase D1, do not fix here): BranchProductAvailability is
+  // product-level, so publish/unpublish always applies to every variant of
+  // this product at the branch — there is no per-variant branch publishing.
+  publish_is_variant_level: z.literal(false),
+});
+
+/** All Branches view — read-only summary per branch; publishing is disabled in this scope (a single branch must be selected to publish/unpublish). */
+export const productReadinessAllBranchesResponseSchema = z.object({
+  scope: z.literal('all_branches'),
+  product_id: z.uuid(),
+  branches: z.array(
+    z.object({
+      branch_id: z.uuid(),
+      branch_name: z.string(),
+      status: z.enum(['READY', 'NOT_READY']),
+      sellable: z.boolean(),
+      completion_percentage: z.number(),
+      is_published: z.boolean(),
+      blocking_issue_count: z.number().int(),
+      warning_count: z.number().int(),
+    }),
+  ),
+});
+
+export const publishProductSchema = z.object({
+  branch_id: z.uuid(),
+});
+
+export const unpublishProductSchema = z.object({
+  branch_id: z.uuid(),
+});

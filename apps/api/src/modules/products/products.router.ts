@@ -12,6 +12,8 @@ import {
   bulkBranchProductAvailabilitySchema,
   assignVariantOptionGroupSchema,
   updateVariantOptionGroupSchema,
+  publishProductSchema,
+  unpublishProductSchema,
   PRODUCT_STATUS,
   type ProductStatus,
 } from '@potato-corner/shared';
@@ -59,6 +61,10 @@ const listQuerySchema = z.object({
 });
 
 const branchAvailabilityBodySchema = z.object({ is_available: z.boolean() });
+
+// Phase D1 — Admin Readiness panel. branch_id accepts a specific branch uuid
+// or the literal 'all' (read-only, cross-branch summary view).
+const readinessQuerySchema = z.object({ branch_id: z.union([z.literal('all'), z.uuid()]) });
 
 /** Routes ProductError/FlavorError to their declared status code; unexpected errors fall through to the global handler. */
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
@@ -300,6 +306,78 @@ router.patch(
         req.params.productId as string,
         req.params.branchId as string,
         is_available,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: row, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// Phase D1 — Admin Readiness panel & product-level publish/unpublish. Read
+// access mirrors branch-availability (adminSupervisorOrBranch); publish/
+// unpublish are branch-scoped writes, so they get branchGuard the same way
+// the branch-availability PATCH routes above do.
+
+router.get('/:productId/readiness', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = readinessQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const readiness = await productsService.getProductReadiness(req.params.productId as string, parsed.data.branch_id);
+    res.status(200).json({ data: readiness, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.post(
+  '/:productId/publish',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  validate(publishProductSchema),
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { branch_id } = req.body as { branch_id: string };
+      const row = await productsService.publishProduct(
+        req.params.productId as string,
+        branch_id,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: row, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:productId/unpublish',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  validate(unpublishProductSchema),
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { branch_id } = req.body as { branch_id: string };
+      const row = await productsService.unpublishProduct(
+        req.params.productId as string,
+        branch_id,
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );

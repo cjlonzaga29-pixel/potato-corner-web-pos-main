@@ -88,6 +88,14 @@ export const productsRepository = {
     return result;
   },
 
+  /** Lightweight variant list for productReadinessService's product-level aggregation — avoids detailInclude's flavor/branch joins the readiness engine already fetches itself. */
+  findVariantsForReadiness(productId: string) {
+    return prisma.productVariant.findMany({
+      where: { productId },
+      select: { id: true, name: true, isActive: true, lifecycleStatus: true },
+    });
+  },
+
   findByName(name: string) {
     return prisma.product.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
   },

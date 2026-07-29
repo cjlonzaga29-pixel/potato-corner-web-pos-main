@@ -54,6 +54,15 @@ export type PosCatalogResponse = z.infer<typeof schemas.posCatalogResponseSchema
 export type PosCatalogProduct = z.infer<typeof schemas.posCatalogProductSchema>;
 export type PosCatalogVariant = z.infer<typeof schemas.posCatalogVariantSchema>;
 
+// Phase D1 — Admin Readiness panel & product-level publish/unpublish
+export type ReadinessIssueResponse = z.infer<typeof schemas.readinessIssueSchema>;
+export type ProductVariantReadinessSummary = z.infer<typeof schemas.productVariantReadinessSummarySchema>;
+export type ProductReadinessResponse = z.infer<typeof schemas.productReadinessResponseSchema>;
+export type ProductReadinessAllBranchesResponse = z.infer<typeof schemas.productReadinessAllBranchesResponseSchema>;
+export type ProductReadiness = ProductReadinessResponse | ProductReadinessAllBranchesResponse;
+export type PublishProductInput = z.infer<typeof schemas.publishProductSchema>;
+export type UnpublishProductInput = z.infer<typeof schemas.unpublishProductSchema>;
+
 export type CreateFlavorInput = z.infer<typeof schemas.createFlavorSchema>;
 export type UpdateFlavorInput = z.infer<typeof schemas.updateFlavorSchema>;
 export type LinkVariantFlavorInput = z.infer<typeof schemas.linkVariantFlavorSchema>;

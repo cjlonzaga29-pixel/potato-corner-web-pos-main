@@ -38,6 +38,9 @@ vi.mock('../../lib/prisma.js', () => {
     fraudAlert: { findMany: vi.fn() },
     transaction: { update: vi.fn().mockResolvedValue({}) },
     transactionItem: { update: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) },
+    // Read by productReadinessService (Phase C) for the RECIPE_MISSING/RECIPE_FLAVOR_SCOPE_UNSUPPORTED
+    // warnings only — never blocking, so an empty default doesn't affect sellability.
+    productComponent: { findMany: vi.fn().mockResolvedValue([]) },
     $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
@@ -64,6 +67,10 @@ vi.mock('../product-inventory/product-inventory.service.js', () => ({
 vi.mock('../product-inventory/product-inventory.repository.js', () => ({
   productInventoryRepository: {
     getVersionForVariant: vi.fn().mockResolvedValue(1),
+    // Read by productReadinessService (Phase C) for baseInventoryMapped /
+    // flavorLinksConsistent. Default implementation set in beforeEach below
+    // (it needs to see the per-test findVariantsForSale fixture).
+    findActiveMappingsForVariants: vi.fn(),
   },
 }));
 
@@ -167,6 +174,7 @@ function variantRow(overrides: Record<string, unknown> = {}) {
     name: 'Regular',
     basePrice: decimal(100),
     isActive: true,
+    lifecycleStatus: 'ACTIVE',
     product: { id: 'product-1', name: 'Original', status: 'active' },
     variantFlavors: [],
     ...overrides,
@@ -255,6 +263,39 @@ beforeEach(() => {
   vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
   vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
   vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([] as never);
+  // productReadinessService (Phase C) derives base/flavor inventory-mapping
+  // coverage from this. Synthesizes "fully mapped" rows (a base row per
+  // variant + a flavor row per active/available variantFlavor link, walking
+  // Mix & Max snack variants too) from whatever findVariantsForSale is
+  // currently mocked to return, so every pre-existing fixture reads as
+  // readiness-sellable by default without per-test bookkeeping. Tests that
+  // want a readiness rejection override this mock directly.
+  vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockImplementation((async (_branchId: string, _variantIds: string[]) => {
+    type FlavorLink = { flavorId: string; isAvailable: boolean; flavor: { isActive: boolean } };
+    type Fixture = {
+      id: string;
+      variantFlavors?: FlavorLink[];
+      flavorSlots?: { snackOptions: { snackProductVariant: Fixture }[] }[];
+    };
+    const calls = vi.mocked(transactionsRepository.findVariantsForSale).mock.results;
+    const lastResult = calls[calls.length - 1]?.value;
+    const variants = ((await lastResult) ?? []) as unknown as Fixture[];
+    const rows: { productVariantId: string; flavorId: string | null }[] = [];
+    const visited = new Set<string>();
+    const addForVariant = (v: Fixture) => {
+      if (visited.has(v.id)) return;
+      visited.add(v.id);
+      rows.push({ productVariantId: v.id, flavorId: null });
+      for (const vf of v.variantFlavors ?? []) {
+        if (vf.isAvailable && vf.flavor?.isActive) rows.push({ productVariantId: v.id, flavorId: vf.flavorId });
+      }
+      for (const slot of v.flavorSlots ?? []) {
+        for (const so of slot.snackOptions ?? []) addForVariant(so.snackProductVariant);
+      }
+    };
+    for (const v of variants) addForVariant(v);
+    return rows;
+  }) as never);
   vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
   vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(0);
@@ -1489,5 +1530,215 @@ describe('transactionsService.createTransaction — CR-004 recipe integrity', ()
     const result = await transactionsService.createTransaction(baseInput, null);
 
     expect(result.items?.[0]).toMatchObject({ recipe_version: 2 });
+  });
+});
+
+describe('transactionsService.createTransaction — Phase C readiness engine gate', () => {
+  it('calls the readiness batch once for a multi-item cart with duplicate and distinct variants', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ id: 'variant-1' }),
+      variantRow({ id: 'variant-2', name: 'Large' }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [
+          { productId: 'product-1', productVariantId: 'variant-1', quantity: 1 },
+          { productId: 'product-1', productVariantId: 'variant-1', quantity: 2 },
+          { productId: 'product-1', productVariantId: 'variant-2', quantity: 1 },
+        ],
+      },
+      null,
+    );
+
+    expect(transactionsRepository.findVariantsForSale).toHaveBeenCalledTimes(1);
+    expect(transactionsRepository.findVariantsForSale).toHaveBeenCalledWith(['variant-1', 'variant-2']);
+  });
+
+  it('proceeds to the existing deduction flow for a READY variant', async () => {
+    await expect(transactionsService.createTransaction(baseInput, null)).resolves.toBeDefined();
+    expect(transactionsRepository.createTransaction).toHaveBeenCalled();
+  });
+
+  it('does not block checkout on warning-only readiness issues (no ProductComponent recipe configured)', async () => {
+    // prisma.productComponent.findMany defaults to [] in beforeEach, so
+    // recipeReady is always false here — RECIPE_MISSING is a warning, not a
+    // blocking issue, and must not prevent an otherwise-sellable variant from
+    // checking out.
+    await expect(transactionsService.createTransaction(baseInput, null)).resolves.toBeDefined();
+    expect(transactionsRepository.createTransaction).toHaveBeenCalled();
+  });
+
+  it('rejects a variant whose lifecycle status is not ACTIVE before any deduction is computed', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ lifecycleStatus: 'PENDING_APPROVAL' })] as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
+      code: 'PRODUCT_UNAVAILABLE',
+      statusCode: 422,
+    });
+    expect(assertProductInventoryExists).not.toHaveBeenCalled();
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a variant with no valid base price', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ basePrice: decimal(0) })] as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'PRICE_MISSING', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a variant with no active base ProductInventory mapping for this branch (readiness), not just the CR-004 recipe check', async () => {
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([] as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'RECIPE_MISSING', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a linked, available flavor that has no flavor-scoped ProductInventory mapping', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+    // Base mapping present, but no flavor-scoped row for flavor-1.
+    vi.mocked(productInventoryRepository.findActiveMappingsForVariants).mockResolvedValue([{ productVariantId: 'variant-1', flavorId: null }] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_INVENTORY_MAPPING_MISSING', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the flavor is disabled at the branch (readiness FLAVOR_NOT_AVAILABLE_AT_BRANCH)', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+    vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([{ flavorId: 'flavor-1', isAvailable: false }] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_NOT_AVAILABLE_FOR_VARIANT', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('still enforces the required customer flavor selection for a flavored variant even though readiness is READY', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SELECTION_REQUIRED' });
+  });
+
+  it('still rejects an invalid selected flavor (linked to a different variant) even though readiness is READY', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-other-variant', quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_NOT_AVAILABLE_FOR_VARIANT' });
+  });
+
+  it('does not call inventory deduction computation when readiness rejects the item', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ basePrice: decimal(0) })] as never);
+    const { computeDeduction } = await import('../product-inventory/product-inventory.service.js');
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'PRICE_MISSING' });
+    expect(computeDeduction).not.toHaveBeenCalled();
+  });
+
+  it('does not create a transaction row (no partial write) when readiness rejects one item in a multi-item cart', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ id: 'variant-1' }),
+      variantRow({ id: 'variant-2', name: 'Large', basePrice: decimal(0) }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            { productId: 'product-1', productVariantId: 'variant-1', quantity: 1 },
+            { productId: 'product-1', productVariantId: 'variant-2', quantity: 1 },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRICE_MISSING' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('remains correct across multiple quantities of the same READY variant (cart-item resolution order preserved)', async () => {
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 5 }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ items: [expect.objectContaining({ productVariantId: 'variant-1', quantity: 5 })] }),
+      expect.anything(),
+    );
+  });
+
+  it('still enforces Mix & Max slot validation (unknown slot index) even though readiness is READY', async () => {
+    const snackVariantFixture = {
+      id: 'snack-1',
+      isActive: true,
+      product: { id: 'product-1', status: 'active' },
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } }],
+    };
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        flavorSlots: [
+          {
+            id: 'slot-1',
+            productVariantId: 'variant-1',
+            slotIndex: 1,
+            label: 'Flavor 1',
+            unit: 'scoop',
+            required: true,
+            snackOptions: [{ snackProductVariantId: snackVariantFixture.id, snackProductVariant: snackVariantFixture }],
+          },
+        ],
+      }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [{ slotIndex: 99, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' }],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'FLAVOR_SLOTS_INVALID' });
   });
 });

@@ -1,10 +1,14 @@
 import { prisma } from '../../lib/prisma.js';
 import { transactionsRepository } from '../transactions/transactions.repository.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
+import { productsRepository } from '../products/products.repository.js';
 import type {
+  EvaluateProductReadinessInput,
   EvaluateReadinessBatchInput,
   EvaluateReadinessInput,
+  ProductReadinessResult,
   ProductVariantReadinessResult,
+  ProductVariantReadinessSummary,
   ReadinessChecks,
   ReadinessIssue,
 } from './product-readiness.types.js';
@@ -373,6 +377,103 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
   };
 }
 
+/**
+ * Shared by evaluateProductVariantReadinessBatch and by callers (checkout's
+ * resolveCartItems) that already hold a findVariantsForSale result — lets
+ * checkout gate on the same readiness data without a second, redundant fetch
+ * of the same variant rows.
+ */
+async function evaluateFromLoadedVariants(
+  branchId: string,
+  variants: SaleVariantRow[],
+  productVariantIds: string[],
+): Promise<ProductVariantReadinessResult[]> {
+  if (productVariantIds.length === 0) return [];
+
+  const variantMap = new Map(variants.map((v) => [v.id, v]));
+  const data = await fetchReadinessData(branchId, variants);
+
+  return productVariantIds.map((id) => {
+    const variant = variantMap.get(id);
+    return variant ? buildReadinessResult(variant, data) : notFoundResult(branchId, id);
+  });
+}
+
+/**
+ * Product-level roll-up for the Admin Readiness panel (Phase D1). Aggregates
+ * evaluateProductVariantReadinessBatch results for a product's "eligible"
+ * variants (isActive && lifecycleStatus === 'ACTIVE') at one branch — a
+ * variant an admin has deliberately deactivated/archived is excluded rather
+ * than perpetually blocking the product as NOT_READY.
+ */
+async function buildProductReadinessResult(
+  productId: string,
+  branchId: string,
+  totalVariantCount: number,
+  variantResults: ProductVariantReadinessResult[],
+  variantNames: Map<string, string>,
+): Promise<ProductReadinessResult> {
+  if (variantResults.length === 0) {
+    const blockingIssues: ReadinessIssue[] = [
+      issue(
+        'NO_ELIGIBLE_VARIANTS',
+        'blocking',
+        'product',
+        productId,
+        'This product has no active variant eligible for sale.',
+        'Activate at least one variant (isActive + lifecycle ACTIVE) before publishing.',
+        { productId, branchId },
+      ),
+    ];
+    return {
+      productId,
+      branchId,
+      status: 'NOT_READY',
+      sellable: false,
+      completionPercentage: 0,
+      variantCount: totalVariantCount,
+      eligibleVariantCount: 0,
+      readyVariantCount: 0,
+      blockingIssues,
+      warnings: [],
+      variants: [],
+    };
+  }
+
+  const variants: ProductVariantReadinessSummary[] = variantResults.map((r) => ({
+    productVariantId: r.productVariantId,
+    variantName: variantNames.get(r.productVariantId) ?? r.productVariantId,
+    status: r.status,
+    sellable: r.sellable,
+    completionPercentage: r.completionPercentage,
+    recipeReady: r.recipeReady,
+    inventoryMappingReady: r.inventoryMappingReady,
+    blockingIssues: r.blockingIssues,
+    warnings: r.warnings,
+  }));
+
+  const blockingIssues = variantResults.flatMap((r) => r.blockingIssues);
+  const warnings = variantResults.flatMap((r) => r.warnings);
+  const readyVariantCount = variantResults.filter((r) => r.sellable).length;
+  const sellable = readyVariantCount === variantResults.length;
+  const completionPercentage =
+    Math.round((variantResults.reduce((sum, r) => sum + r.completionPercentage, 0) / variantResults.length) * 100) / 100;
+
+  return {
+    productId,
+    branchId,
+    status: sellable ? 'READY' : 'NOT_READY',
+    sellable,
+    completionPercentage,
+    variantCount: totalVariantCount,
+    eligibleVariantCount: variantResults.length,
+    readyVariantCount,
+    blockingIssues,
+    warnings,
+    variants,
+  };
+}
+
 export const productReadinessService = {
   /** Read-only. Never writes anything, never called from any existing runtime path yet (Phase A extraction only). */
   async evaluateProductVariantReadiness(input: EvaluateReadinessInput): Promise<ProductVariantReadinessResult> {
@@ -389,12 +490,23 @@ export const productReadinessService = {
     if (input.productVariantIds.length === 0) return [];
 
     const variants = await transactionsRepository.findVariantsForSale(input.productVariantIds);
-    const variantMap = new Map(variants.map((v) => [v.id, v]));
-    const data = await fetchReadinessData(input.branchId, variants);
+    return evaluateFromLoadedVariants(input.branchId, variants, input.productVariantIds);
+  },
 
-    return input.productVariantIds.map((id) => {
-      const variant = variantMap.get(id);
-      return variant ? buildReadinessResult(variant, data) : notFoundResult(input.branchId, id);
+  /** Same evaluation as evaluateProductVariantReadinessBatch, but reuses a findVariantsForSale result the caller already fetched. */
+  evaluateProductVariantReadinessForVariants: evaluateFromLoadedVariants,
+
+  /** Product-level readiness for the Admin Readiness panel (Phase D1) — see buildProductReadinessResult. */
+  async evaluateProductReadiness(input: EvaluateProductReadinessInput): Promise<ProductReadinessResult> {
+    const allVariants = await productsRepository.findVariantsForReadiness(input.productId);
+    const eligibleVariants = allVariants.filter((v) => v.isActive && v.lifecycleStatus === 'ACTIVE');
+    const variantNames = new Map(allVariants.map((v) => [v.id, v.name]));
+
+    const variantResults = await this.evaluateProductVariantReadinessBatch({
+      branchId: input.branchId,
+      productVariantIds: eligibleVariants.map((v) => v.id),
     });
+
+    return buildProductReadinessResult(input.productId, input.branchId, allVariants.length, variantResults, variantNames);
   },
 };

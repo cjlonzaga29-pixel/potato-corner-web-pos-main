@@ -13,6 +13,7 @@ import {
   type PosCatalogResponse,
   type ProductDetailResponse,
   type ProductListResponse,
+  type ProductReadiness,
   type ProductStatus,
   type ProductVariantResponse,
   type UpdateProductInput,
@@ -165,6 +166,10 @@ export function useChangeProductStatus(productId: string) {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'branch-availability'] });
+      // Product status/lifecycle is not branch-scoped, so it can flip
+      // readiness at every branch that carries this product — invalidate all
+      // catalog entries rather than guessing which branchIds are affected.
+      void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Product status updated');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -217,10 +222,11 @@ export function useUpdateBranchProductAvailability(productId: string) {
       if (!response.data) throw new Error(errorMessage(response, 'Failed to update branch availability'));
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'branch-availability'] });
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog', variables.branchId] });
       toast.success('Branch availability updated');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -241,11 +247,74 @@ export function useBulkUpdateBranchProductAvailability(productId: string) {
       if (!response.data) throw new Error(errorMessage(response, 'Failed to update branch availability'));
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'branch-availability'] });
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
+      for (const update of variables) {
+        void queryClient.invalidateQueries({ queryKey: ['catalog', update.branch_id] });
+      }
       toast.success('Branch availability updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Phase D1 — Admin Readiness panel. branchId 'all' returns a read-only per-branch summary; a specific id returns full readiness detail for that branch. */
+export function useProductReadiness(productId: string | null | undefined, branchId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['product', productId, 'readiness', branchId],
+    queryFn: async () => {
+      const response = await apiClient<ProductReadiness>(`/api/products/${productId}/readiness?branch_id=${branchId}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load readiness'));
+      return response.data;
+    },
+    enabled: Boolean(productId) && Boolean(branchId),
+    staleTime: 15 * 1000,
+  });
+}
+
+/** Scoped invalidation only (Phase D1 spec): product detail, readiness (every branch view for this product), and the affected branch's catalog — never a global reset. */
+function invalidateAfterPublishChange(queryClient: ReturnType<typeof useQueryClient>, productId: string, branchId: string) {
+  void queryClient.invalidateQueries({ queryKey: ['product', productId] });
+  void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
+  void queryClient.invalidateQueries({ queryKey: ['product', productId, 'branch-availability'] });
+  void queryClient.invalidateQueries({ queryKey: ['catalog', branchId] });
+}
+
+export function usePublishProduct(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (branchId: string) => {
+      const response = await apiClient<BranchProductAvailabilityRow>(`/api/products/${productId}/publish`, {
+        method: 'POST',
+        body: JSON.stringify({ branch_id: branchId }),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to publish product'));
+      return response.data;
+    },
+    onSuccess: (_data, branchId) => {
+      invalidateAfterPublishChange(queryClient, productId, branchId);
+      toast.success('Product published at this branch');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useUnpublishProduct(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (branchId: string) => {
+      const response = await apiClient<BranchProductAvailabilityRow>(`/api/products/${productId}/unpublish`, {
+        method: 'POST',
+        body: JSON.stringify({ branch_id: branchId }),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to unpublish product'));
+      return response.data;
+    },
+    onSuccess: (_data, branchId) => {
+      invalidateAfterPublishChange(queryClient, productId, branchId);
+      toast.success('Product unpublished at this branch');
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -265,6 +334,7 @@ export function useCreateVariant(productId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Variant created');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -285,6 +355,7 @@ export function useUpdateVariant(productId: string, variantId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Variant updated');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -304,6 +375,7 @@ export function useLinkVariantFlavor(productId: string, variantId: string) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Flavor linked');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -335,6 +407,7 @@ export function useDeleteVariant(productId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Variant deleted');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -370,6 +443,7 @@ export function useUpdateVariantFlavor(productId: string, variantId: string, fla
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
+      void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Flavor pricing updated');
     },
     onError: (error: Error) => toast.error(error.message),

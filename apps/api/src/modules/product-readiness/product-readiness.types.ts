@@ -14,7 +14,8 @@ export type ReadinessIssueCode =
   | 'MIX_MAX_SLOT_INCOMPLETE'
   | 'MIX_MAX_SNACK_UNAVAILABLE'
   | 'RECIPE_MISSING'
-  | 'RECIPE_FLAVOR_SCOPE_UNSUPPORTED';
+  | 'RECIPE_FLAVOR_SCOPE_UNSUPPORTED'
+  | 'NO_ELIGIBLE_VARIANTS';
 
 export interface ReadinessIssue {
   code: ReadinessIssueCode;
@@ -76,4 +77,42 @@ export interface EvaluateReadinessInput {
 export interface EvaluateReadinessBatchInput {
   branchId: string;
   productVariantIds: string[];
+}
+
+export interface EvaluateProductReadinessInput {
+  productId: string;
+  branchId: string;
+}
+
+/**
+ * Product-level aggregation over evaluateProductVariantReadinessBatch — a
+ * new roll-up layer, not a duplicate of the per-variant engine. Only
+ * "eligible" variants (isActive && lifecycleStatus === 'ACTIVE') count toward
+ * readiness: a variant an admin has intentionally deactivated/archived
+ * should not perpetually block the product from being marked ready.
+ */
+export interface ProductVariantReadinessSummary {
+  productVariantId: string;
+  variantName: string;
+  status: 'READY' | 'NOT_READY';
+  sellable: boolean;
+  completionPercentage: number;
+  recipeReady: boolean;
+  inventoryMappingReady: boolean;
+  blockingIssues: ReadinessIssue[];
+  warnings: ReadinessIssue[];
+}
+
+export interface ProductReadinessResult {
+  productId: string;
+  branchId: string;
+  status: 'READY' | 'NOT_READY';
+  sellable: boolean;
+  completionPercentage: number;
+  variantCount: number;
+  eligibleVariantCount: number;
+  readyVariantCount: number;
+  blockingIssues: ReadinessIssue[];
+  warnings: ReadinessIssue[];
+  variants: ProductVariantReadinessSummary[];
 }

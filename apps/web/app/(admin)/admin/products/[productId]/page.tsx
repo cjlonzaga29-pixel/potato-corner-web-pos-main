@@ -31,6 +31,7 @@ import { UploadProductImageDialog } from '@/components/admin/products/upload-pro
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
+import { ReadinessTab } from '@/components/admin/products/readiness-tab';
 
 interface ProductDetailPageProps {
   params: Promise<{ productId: string }>;
@@ -48,6 +49,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
 
   if (isLoading) {
     return (
@@ -101,9 +103,10 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
         </div>
       </div>
 
-      <Tabs defaultValue="overview">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="readiness">Readiness</TabsTrigger>
           <TabsTrigger value="variants">Variants & Flavors</TabsTrigger>
           <TabsTrigger value="availability">Branch Availability</TabsTrigger>
           <TabsTrigger value="media">Media</TabsTrigger>
@@ -111,6 +114,14 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
 
         <TabsContent value="overview" className="space-y-4">
           <OverviewTab product={product} />
+        </TabsContent>
+
+        <TabsContent value="readiness" className="space-y-4">
+          <ReadinessTab
+            product={product}
+            selectedBranchId={selectedBranchId}
+            onNavigateToTab={setActiveTab}
+          />
         </TabsContent>
 
         <TabsContent value="variants" className="space-y-4">

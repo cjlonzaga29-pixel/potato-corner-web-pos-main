@@ -21,9 +21,16 @@ vi.mock('../../lib/prisma.js', () => ({
   },
 }));
 
+vi.mock('../products/products.repository.js', () => ({
+  productsRepository: {
+    findVariantsForReadiness: vi.fn(),
+  },
+}));
+
 const { transactionsRepository } = await import('../transactions/transactions.repository.js');
 const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
+const { productsRepository } = await import('../products/products.repository.js');
 const { productReadinessService } = await import('./product-readiness.service.js');
 
 function decimal(value: number): Prisma.Decimal {
@@ -474,5 +481,56 @@ describe('productReadinessService.evaluateProductVariantReadinessBatch', () => {
     expect(first.blockingIssues.map((i) => i.code)).toEqual(['VARIANT_NOT_FOUND']);
     expect(second.productVariantId).toBe(VARIANT_1);
     expect(second.status).toBe('READY');
+  });
+});
+
+describe('productReadinessService.evaluateProductReadiness (Phase D1 — Admin Readiness panel)', () => {
+  it('returns NOT_READY / NO_ELIGIBLE_VARIANTS when the product has no active+lifecycle-ACTIVE variant', async () => {
+    vi.mocked(productsRepository.findVariantsForReadiness).mockResolvedValue([
+      { id: VARIANT_1, name: 'Test Variant', isActive: false, lifecycleStatus: 'ACTIVE' },
+    ] as unknown as Awaited<ReturnType<typeof productsRepository.findVariantsForReadiness>>);
+
+    const result = await productReadinessService.evaluateProductReadiness({ productId: PRODUCT_1, branchId: BRANCH_1 });
+
+    expect(result.status).toBe('NOT_READY');
+    expect(result.sellable).toBe(false);
+    expect(result.eligibleVariantCount).toBe(0);
+    expect(result.variantCount).toBe(1);
+    expect(result.blockingIssues.map((i) => i.code)).toEqual(['NO_ELIGIBLE_VARIANTS']);
+    expect(transactionsRepository.findVariantsForSale).not.toHaveBeenCalled();
+  });
+
+  it('excludes inactive/non-lifecycle-ACTIVE variants from the aggregate, and is READY when every eligible variant is sellable', async () => {
+    const INACTIVE_VARIANT = 'variant-inactive';
+    vi.mocked(productsRepository.findVariantsForReadiness).mockResolvedValue([
+      { id: VARIANT_1, name: 'Eligible Variant', isActive: true, lifecycleStatus: 'ACTIVE' },
+      { id: INACTIVE_VARIANT, name: 'Inactive Variant', isActive: false, lifecycleStatus: 'ACTIVE' },
+    ] as unknown as Awaited<ReturnType<typeof productsRepository.findVariantsForReadiness>>);
+    mockDefaults({ variants: [buildVariant({ id: VARIANT_1 })] });
+
+    const result = await productReadinessService.evaluateProductReadiness({ productId: PRODUCT_1, branchId: BRANCH_1 });
+
+    expect(result.status).toBe('READY');
+    expect(result.sellable).toBe(true);
+    expect(result.variantCount).toBe(2);
+    expect(result.eligibleVariantCount).toBe(1);
+    expect(result.readyVariantCount).toBe(1);
+    expect(result.variants.map((v) => v.productVariantId)).toEqual([VARIANT_1]);
+    // The batch call only requests the eligible variant — the inactive one never reaches the readiness engine.
+    expect(vi.mocked(transactionsRepository.findVariantsForSale).mock.calls[0]?.[0]).toEqual([VARIANT_1]);
+  });
+
+  it('is NOT_READY and surfaces the blocking issue when an eligible variant is not sellable', async () => {
+    vi.mocked(productsRepository.findVariantsForReadiness).mockResolvedValue([
+      { id: VARIANT_1, name: 'Eligible Variant', isActive: true, lifecycleStatus: 'ACTIVE' },
+    ] as unknown as Awaited<ReturnType<typeof productsRepository.findVariantsForReadiness>>);
+    mockDefaults({ variants: [buildVariant({ id: VARIANT_1, basePrice: 0 })] });
+
+    const result = await productReadinessService.evaluateProductReadiness({ productId: PRODUCT_1, branchId: BRANCH_1 });
+
+    expect(result.status).toBe('NOT_READY');
+    expect(result.readyVariantCount).toBe(0);
+    expect(result.blockingIssues.some((i) => i.code === 'PRICE_MISSING')).toBe(true);
+    expect(result.variants[0]?.status).toBe('NOT_READY');
   });
 });

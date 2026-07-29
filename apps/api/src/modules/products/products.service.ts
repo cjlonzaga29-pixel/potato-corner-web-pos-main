@@ -515,6 +515,18 @@ function toReadinessIssueResponse(issue: ReadinessIssue) {
   };
 }
 
+/** Phase D1 — Admin Readiness panel DTO. Deliberately omits entityId/productVariantId/flavorId: the spec calls for no internal IDs in the admin-facing issue list, only the human-readable message/recommendedAction. */
+function toAdminReadinessIssue(issue: ReadinessIssue) {
+  return {
+    code: issue.code,
+    severity: issue.severity,
+    entity_type: issue.entityType,
+    message: issue.message,
+    recommended_action: issue.recommendedAction,
+    flavor_name: issue.flavorName ?? null,
+  };
+}
+
 /** Fallback for a variant the readiness batch didn't return a result for (should not happen — every requested id is echoed back, see evaluateProductVariantReadinessBatch). */
 function notReadyLegacyReadiness() {
   return {
@@ -1271,6 +1283,99 @@ export const productsService = {
     }
 
     return { updated_count: rows.length, product_id: productId };
+  },
+
+  /**
+   * Phase D1 — Admin Readiness panel. branchId === 'all' returns a read-only,
+   * per-branch summary (publishing is disabled in that scope by the caller —
+   * the router/UI, not this method, enforces that); a specific branchId
+   * returns the full detail the readiness tab and the publish gate both use.
+   * Every computation is delegated to productReadinessService; this method
+   * only maps its result to the wire format and adds the current
+   * BranchProductAvailability flag.
+   */
+  async getProductReadiness(productId: string, branchId: string) {
+    const product = await productsRepository.findById(productId);
+    if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    if (branchId === 'all') {
+      const [branches, availabilityRows] = await Promise.all([
+        productsRepository.allActiveBranches(),
+        productsRepository.findBranchProductAvailability(productId),
+      ]);
+      const availabilityByBranch = new Map(availabilityRows.map((r) => [r.branchId, r.isAvailable]));
+
+      const results = await Promise.all(
+        branches.map(async (branch) => {
+          const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId: branch.id });
+          return {
+            branch_id: branch.id,
+            branch_name: branch.name,
+            status: readiness.status,
+            sellable: readiness.sellable,
+            completion_percentage: readiness.completionPercentage,
+            is_published: availabilityByBranch.get(branch.id) ?? false,
+            blocking_issue_count: readiness.blockingIssues.length,
+            warning_count: readiness.warnings.length,
+          };
+        }),
+      );
+
+      return { scope: 'all_branches' as const, product_id: productId, branches: results };
+    }
+
+    const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
+    return {
+      scope: 'branch' as const,
+      product_id: productId,
+      branch_id: branchId,
+      status: readiness.status,
+      sellable: readiness.sellable,
+      completion_percentage: readiness.completionPercentage,
+      variant_count: readiness.variantCount,
+      eligible_variant_count: readiness.eligibleVariantCount,
+      ready_variant_count: readiness.readyVariantCount,
+      blocking_issues: readiness.blockingIssues.map(toAdminReadinessIssue),
+      warnings: readiness.warnings.map(toAdminReadinessIssue),
+      variants: readiness.variants.map((v) => ({
+        product_variant_id: v.productVariantId,
+        variant_name: v.variantName,
+        status: v.status,
+        sellable: v.sellable,
+        completion_percentage: v.completionPercentage,
+        recipe_ready: v.recipeReady,
+        inventory_mapping_ready: v.inventoryMappingReady,
+        blocking_issues: v.blockingIssues.map(toAdminReadinessIssue),
+        warnings: v.warnings.map(toAdminReadinessIssue),
+      })),
+      publish_is_variant_level: false as const,
+    };
+  },
+
+  /**
+   * Publish = enable BranchProductAvailability for this product at one
+   * branch, gated by productReadinessService. BRANCH_NOT_AVAILABLE is
+   * excluded from the gate: it is precisely the flag this action flips, so
+   * gating on it would make every first-time publish permanently blocked.
+   * Never auto-creates mappings or fixes anything — a NOT_READY product is
+   * simply rejected with its exact blocking issues.
+   */
+  async publishProduct(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
+    const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
+    const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
+
+    if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
+      throw new ProductError('PRODUCT_NOT_READY', 'Product is not ready to publish at this branch', 409, {
+        blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
+      });
+    }
+
+    return this.updateBranchProductAvailability(productId, branchId, true, actor, ipAddress);
+  },
+
+  /** Unpublish = disable BranchProductAvailability only — never deletes configuration, archives variants, or touches ProductInventory. No readiness gate needed to turn something off. */
+  async unpublishProduct(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
+    return this.updateBranchProductAvailability(productId, branchId, false, actor, ipAddress);
   },
 
   /**

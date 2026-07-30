@@ -5,6 +5,7 @@ import { CashError, type ApproveVarianceData, type CloseShiftData, type OpenShif
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { enqueueNotification } from '../../queues/notification.queue.js';
+import { attendanceRepository } from '../attendance/attendance.repository.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -195,6 +196,14 @@ export const cashService = {
     const existingActive = await cashRepository.findActiveShiftByBranch(data.branchId);
     if (existingActive) {
       throw new CashError('SHIFT_ALREADY_OPEN', 'A shift is already open at this branch', 409);
+    }
+
+    // Simple Operational Audit §6 — a POS shift can't exist without the
+    // cashier having timed in first. Checked against this branch
+    // specifically, since a shift is branch-scoped.
+    const activeAttendance = await attendanceRepository.findActiveRecord(data.cashierId);
+    if (!activeAttendance || activeAttendance.branchId !== data.branchId) {
+      throw new CashError('ATTENDANCE_REQUIRED', 'Time in before opening a POS shift.', 409);
     }
 
     const computedStartingCash = data.denominations.reduce((sum, d) => sum + d.denomination * d.quantity, 0);

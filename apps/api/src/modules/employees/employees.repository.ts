@@ -1,6 +1,7 @@
 import type { Prisma, EmployeeStatus as PrismaEmployeeStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
+import { monthBounds } from '../../lib/manila-time.js';
 import type { CreateEmployeeData, EmployeeActivityData, EmployeeListFilters, UpdateEmployeeData } from './employees.types.js';
 
 /**
@@ -255,9 +256,7 @@ export const employeesRepository = {
   },
 
   async getActivity(employeeId: string): Promise<EmployeeActivityData> {
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    const { monthStart: startOfMonth } = monthBounds(new Date());
 
     const [lastTransaction, totalShiftsThisMonth, totalTransactionsThisMonth, openFraudAlertsCount] = await Promise.all([
       prisma.transaction.findFirst({

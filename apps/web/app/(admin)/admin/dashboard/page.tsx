@@ -57,10 +57,13 @@ function AdminDashboardPageContent() {
 
   const transactionsCount = branchStats?.reduce((sum, b) => sum + b.todayTransactionCount, 0);
   const activeCashiersCount = branchStats?.reduce((sum, b) => sum + b.activeStaffCount, 0);
+  const staffTimedInCount = branchStats?.reduce((sum, b) => sum + b.staffTimedInCount, 0);
   const lowStockCount = branchStats?.reduce((sum, b) => sum + b.lowStockIngredientCount, 0);
   const grossSales = branchStats?.reduce((sum, b) => sum + b.todayGrossSales, 0);
+  const netSales = branchStats?.reduce((sum, b) => sum + b.todayNetSales, 0);
   const expenses = branchStats?.reduce((sum, b) => sum + b.todayExpenses, 0);
   const netProfit = branchStats?.reduce((sum, b) => sum + b.todayNetProfit, 0);
+  const isNetProfitEstimated = branchStats?.some((b) => b.isNetProfitEstimated);
 
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
@@ -88,10 +91,13 @@ function AdminDashboardPageContent() {
         flaggedShiftsCount={flaggedShiftsData?.total}
         transactionsCount={transactionsCount}
         activeCashiersCount={activeCashiersCount}
+        staffTimedInCount={staffTimedInCount}
         lowStockCount={lowStockCount}
         grossSales={grossSales}
+        netSales={netSales}
         expenses={expenses}
         netProfit={netProfit}
+        isNetProfitEstimated={isNetProfitEstimated}
         isLoadingShifts={isLoadingActiveShifts}
         isLoadingRevenue={isLoadingActiveShifts}
         isLoadingFlagged={isLoadingFlaggedShifts}

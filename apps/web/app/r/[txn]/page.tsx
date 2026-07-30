@@ -92,7 +92,7 @@ export default function PublicReceiptPage() {
                 </>
               ) : (
                 <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>GCash Ref.</span>
+                  <span>{receipt.payment_method === 'other' ? 'Reference' : `${receipt.payment_method === 'gcash' ? 'GCash' : 'Maya'} Ref.`}</span>
                   <span>{receipt.gcash_reference_number}</span>
                 </div>
               )}

@@ -1,4 +1,4 @@
-import type { ImageProofType } from '@potato-corner/shared';
+import type { ImageProofType, PaymentMethod } from '@potato-corner/shared';
 
 /** Mirrors CashError/IngredientError — every module maps its own domain errors to HTTP status via its router's error handler. */
 export class TransactionError extends Error {
@@ -27,13 +27,14 @@ export interface CreateTransactionData {
   shiftId: string;
   cashierId: string;
   items: CartItemInput[];
-  paymentMethod: 'cash' | 'gcash';
+  paymentMethod: PaymentMethod;
   discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
   discountIdReference?: string;
   discountAmount?: number;
   cashTendered?: number;
   gcashReferenceNumber?: string;
   gcashManuallyVerified?: boolean;
+  otherReferenceNote?: string;
   paymentProofKey?: string;
   paymentProofType?: ImageProofType;
   isOfflineTransaction: boolean;
@@ -50,7 +51,7 @@ export interface TransactionListFilters {
   branchId?: string;
   shiftId?: string;
   status?: 'completed' | 'voided' | 'refunded';
-  paymentMethod?: 'cash' | 'gcash';
+  paymentMethod?: PaymentMethod;
   dateFrom?: string;
   dateTo?: string;
   page: number;
@@ -77,7 +78,7 @@ export interface OfflineTransactionItemInput {
   offlineProvisionalNumber: string;
   shiftId: string;
   items: CartItemInput[];
-  paymentMethod: 'cash' | 'gcash';
+  paymentMethod: PaymentMethod;
   discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
   discountIdReference?: string;
   discountAmount?: number;

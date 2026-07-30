@@ -39,6 +39,9 @@ export const cartItemSchema = z.object({
   quantity: z.number().int().positive(),
 });
 
+/** GCash and Maya carry identical proof requirements (audit "Simple Operational Fixes" §5: "use the same proof requirement as GCash unless existing requirements differ"). */
+const PROOF_REQUIRED_METHODS: readonly PaymentMethod[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA];
+
 export const createTransactionSchema = z
   .object({
     branch_id: z.uuid(),
@@ -51,13 +54,20 @@ export const createTransactionSchema = z
     // PROMO only — passed directly rather than computed (architecture doc §Discounts).
     discount_amount: z.number().nonnegative().optional(),
     cash_tendered: z.number().nonnegative().optional(),
+    // Shared by GCash and Maya — both are reference-number-based e-wallet
+    // payments with the same 10-20 digit reference format.
     gcash_reference_number: z
       .string()
       .regex(/^\d{10,20}$/)
       .optional(),
     gcash_manually_verified: z.boolean().optional(),
+    // "other" payment method only (bank transfer, voucher, etc.) — a short
+    // free-text reference/note in place of GCash/Maya's reference number and
+    // photo proof, per the audit's "do not require a new complex
+    // payment-settings workflow" instruction.
+    other_reference_note: z.string().min(1).max(200).optional(),
     // Storage key + capture mode returned by POST /api/transactions/payment-proof
-    // — required together for any non-cash payment method (see superRefine below).
+    // — required together for GCash/Maya only (see superRefine below).
     payment_proof_key: z.string().min(1).optional(),
     payment_proof_type: z.enum(imageProofTypeValues).optional(),
     is_offline_transaction: z.boolean().default(false),
@@ -67,23 +77,32 @@ export const createTransactionSchema = z
     if (data.payment_method === PAYMENT_METHOD.CASH && data.cash_tendered === undefined) {
       ctx.addIssue({ code: 'custom', path: ['cash_tendered'], message: 'cash_tendered is required for a cash payment' });
     }
-    if (data.payment_method === PAYMENT_METHOD.GCASH && !data.gcash_reference_number) {
+    if (PROOF_REQUIRED_METHODS.includes(data.payment_method) && !data.gcash_reference_number) {
       ctx.addIssue({
         code: 'custom',
         path: ['gcash_reference_number'],
-        message: 'gcash_reference_number is required for a GCash payment',
+        message: 'gcash_reference_number is required for a GCash or Maya payment',
       });
     }
-    if (data.payment_method !== PAYMENT_METHOD.CASH && (!data.payment_proof_key || !data.payment_proof_type)) {
+    if (PROOF_REQUIRED_METHODS.includes(data.payment_method) && (!data.payment_proof_key || !data.payment_proof_type)) {
       ctx.addIssue({
         code: 'custom',
         path: ['payment_proof_key'],
-        message: 'payment_proof_key and payment_proof_type are required for a non-cash payment',
+        message: 'payment_proof_key and payment_proof_type are required for a GCash or Maya payment',
+      });
+    }
+    if (data.payment_method === PAYMENT_METHOD.OTHER && !data.other_reference_note) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['other_reference_note'],
+        message: 'other_reference_note is required for an Other payment',
       });
     }
     // Proof capture requires a live, confirmed upload before the sale is
-    // created — there's no offline blob queue for it, so non-cash sales
+    // created — there's no offline blob queue for it, so GCash/Maya sales
     // can't be queued while offline (see terminal/page.tsx's offline guard).
+    // "other" is cash-adjacent (no photo proof) but still requires a live
+    // connection to keep the offline queue's contract simple: only cash.
     if (data.is_offline_transaction && data.payment_method !== PAYMENT_METHOD.CASH) {
       ctx.addIssue({
         code: 'custom',
@@ -155,6 +174,11 @@ export const transactionResponseSchema = z.object({
   change_given: z.number().nullable(),
   gcash_reference_number: z.string().nullable(),
   gcash_manually_verified: z.boolean().nullable(),
+  // Generic alias for gcash_reference_number — populated for gcash, maya,
+  // and other alike (the underlying gcash_reference column stores any
+  // non-cash payment's reference/note, not only GCash's). Prefer this field
+  // in new code; gcash_reference_number is kept for existing callers.
+  payment_reference: z.string().nullable(),
   // Existence flag only — never the raw key or a signed URL, so list
   // responses stay cheap. The actual signed URL is fetched lazily via
   // GET /:transactionId/payment-proof only when a viewer opens the dialog.

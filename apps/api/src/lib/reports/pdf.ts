@@ -3,6 +3,7 @@ import React from 'react';
 import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-pdf/renderer';
 import type { ReportColumn, ReportFilters } from '../../modules/reports/reports.types.js';
 import type { ReportType } from '@potato-corner/shared';
+import { manilaDateKey } from '../manila-time.js';
 
 const e = React.createElement;
 
@@ -41,9 +42,13 @@ export async function generatePdf<T extends Record<string, unknown>>(
 ): Promise<Buffer> {
   const visibleColumns = columns.filter((c) => !c.isAudit);
   const generatedAt = new Date().toISOString();
+  // filters.dateFrom/dateTo are Manila day-boundary UTC instants (see
+  // reports.router.ts's toBoundaryDate) — .toISOString().slice(0, 10) would
+  // print the UTC date, which is one calendar day behind the Manila date at
+  // dateFrom's exact midnight instant.
   const dateRangeLabel =
     filters.dateFrom || filters.dateTo
-      ? `${filters.dateFrom?.toISOString().slice(0, 10) ?? '...'} to ${filters.dateTo?.toISOString().slice(0, 10) ?? '...'}`
+      ? `${filters.dateFrom ? manilaDateKey(filters.dateFrom) : '...'} to ${filters.dateTo ? manilaDateKey(filters.dateTo) : '...'}`
       : 'All dates';
 
   const headerCells = visibleColumns.map((c) => e(Text, { key: String(c.key), style: styles.cell }, c.header));

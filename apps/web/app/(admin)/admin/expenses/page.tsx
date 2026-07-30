@@ -13,6 +13,7 @@ import { ExpenseFilterBar } from '@/components/admin/expense-filter-bar';
 import { useExpenses, useExpensesRealtimeSync, type ExpenseCategory } from '@/hooks/queries/use-expenses';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { downloadCsv, formatCurrency } from '@/lib/utils';
+import { manilaToday } from '@/lib/manila-date';
 
 const ALL_BRANCHES = 'all';
 const ALL_CATEGORIES = 'all';
@@ -66,7 +67,7 @@ function ExpensesPageContent() {
 
   function handleExportCsv() {
     downloadCsv(
-      `expenses-${new Date().toISOString().slice(0, 10)}.csv`,
+      `expenses-${manilaToday()}.csv`,
       rows.map((row) => ({
         incurred_at: row.incurred_at,
         branch: row.branch_name,

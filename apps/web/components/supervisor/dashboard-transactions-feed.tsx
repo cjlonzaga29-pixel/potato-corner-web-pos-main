@@ -26,6 +26,8 @@ const STATUS_LABEL: Record<TransactionResponse['status'], string> = {
 const PAYMENT_METHOD_LABEL: Record<TransactionResponse['payment_method'], string> = {
   cash: 'Cash',
   gcash: 'GCash',
+  maya: 'Maya',
+  other: 'Other',
 };
 
 interface DashboardTransactionsFeedProps {

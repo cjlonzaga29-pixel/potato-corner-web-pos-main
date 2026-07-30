@@ -2,16 +2,7 @@ import { reportsRepository } from './reports.repository.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { fraudRepository } from '../fraud/fraud.repository.js';
 import { dayBounds } from '../fraud/rules/fraud-rule.utils.js';
-
-/**
- * Same Manila offset dayBounds() applies internally (not exported from
- * fraud-rule.utils.ts) — dayStart is already shifted back by this amount
- * to land on a UTC instant, so adding it back recovers the Manila calendar
- * date for the report label. Using dayStart.toISOString() directly would
- * read as the day *before* the Manila business day for any hour before
- * 08:00 Manila.
- */
-const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+import { manilaDateKey } from '../../lib/manila-time.js';
 
 export interface EodBranchRevenue {
   branchId: string;
@@ -54,7 +45,7 @@ export async function buildEodSummary(evaluationDate: Date): Promise<EodSummaryP
   const transactionCount = dailySales.reduce((sum, row) => sum + row.completed_count, 0);
 
   return {
-    evaluationDate: new Date(dayStart.getTime() + MANILA_OFFSET_MS).toISOString().slice(0, 10),
+    evaluationDate: manilaDateKey(dayStart),
     totalRevenue,
     branchRevenue,
     transactionCount,

@@ -9,6 +9,7 @@ import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
+import { dayBounds } from '../../lib/manila-time.js';
 
 const router: Router = Router();
 
@@ -37,9 +38,22 @@ function handleReportError(error: unknown, res: Response, next: NextFunction): v
   next(error);
 }
 
+/**
+ * A bare `date_from`/`date_to` query value (e.g. "2026-07-30") names a
+ * Philippine business day, not a UTC one — `${value}T00:00:00.000Z` would
+ * anchor the window to Manila 8:00 AM (UTC midnight is 8 hours into the
+ * Manila day), silently dropping that morning's transactions and pulling in
+ * the next day's early-morning ones instead. Routing it through dayBounds()
+ * (noon UTC is always still inside the same Manila calendar date as the
+ * input, so it can't roll over) keeps this filter's day boundaries in
+ * agreement with the dashboard, EOD summary, and fraud rules.
+ */
 function toBoundaryDate(value: string | undefined, boundary: 'start' | 'end'): Date | undefined {
   if (!value) return undefined;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T${boundary === 'start' ? '00:00:00.000' : '23:59:59.999'}Z`);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const { dayStart, dayEnd } = dayBounds(new Date(`${value}T12:00:00.000Z`));
+    return boundary === 'start' ? dayStart : dayEnd;
+  }
   return new Date(value);
 }
 

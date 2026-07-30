@@ -1046,12 +1046,25 @@ describe('GET /api/branches/:branchId/stats — role guard', () => {
     vi.mocked(branchesService.getBranchStats).mockResolvedValue({
       activeShiftsCount: 0,
       todayTransactionCount: 0,
-      todayRevenue: 0,
       todayGrossSales: 0,
+      todayDiscountTotal: 0,
+      todayRefundTotal: 0,
+      todayNetSales: 0,
       todayVat: 0,
+      todayCogs: 0,
+      todayGrossProfit: 0,
       todayExpenses: 0,
       todayNetProfit: 0,
+      isNetProfitEstimated: false,
+      missingCostItemCount: 0,
+      paymentBreakdown: {
+        cash: { total: 0, count: 0 },
+        gcash: { total: 0, count: 0 },
+        maya: { total: 0, count: 0 },
+        other: { total: 0, count: 0 },
+      },
       activeStaffCount: 0,
+      staffTimedInCount: 0,
       lowStockIngredientCount: 0,
     });
 

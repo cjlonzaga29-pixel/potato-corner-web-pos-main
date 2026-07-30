@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi, beforeEach } from 'vitest';
+﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { transactionResponseSchema } from '@potato-corner/shared';
@@ -367,7 +367,7 @@ describe('transactionsService.createTransaction — payment validation', () => {
         { ...baseInput, paymentMethod: 'gcash', gcashReferenceNumber: '1234567890', gcashManuallyVerified: false },
         null,
       ),
-    ).rejects.toMatchObject({ code: 'GCASH_NOT_VERIFIED' });
+    ).rejects.toMatchObject({ code: 'PAYMENT_NOT_VERIFIED' });
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -1026,6 +1026,34 @@ describe('transactionsService.createTransaction — shadow BOM deduction hook (C
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(shadowBomDeductionService.runShadowComparison).not.toHaveBeenCalled();
+  });
+});
+
+describe('transactionsService.createTransaction — receipt number Manila date prefix', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('dates the receipt prefix by the Manila calendar day, not the UTC day, for a sale just before UTC midnight', async () => {
+    // 2026-07-16T18:00:00.000Z == 2026-07-17T02:00:00+08:00 -> already July 17
+    // in Manila, even though the UTC calendar date is still the 16th. The old
+    // `date.toISOString().slice(0, 10)` prefix would have read "20260716" here.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-16T18:00:00.000Z'));
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.countTransactionsWithPrefix).toHaveBeenCalledWith('MNL001-20260717-');
+  });
+
+  it('dates the receipt prefix by the same Manila day for a sale well inside the business day', async () => {
+    // 2026-07-17T04:00:00.000Z == 2026-07-17T12:00:00+08:00 -> noon in Manila, no rollover in either direction.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-17T04:00:00.000Z'));
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.countTransactionsWithPrefix).toHaveBeenCalledWith('MNL001-20260717-');
   });
 });
 
@@ -1919,6 +1947,8 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
               inventoryItemId: line.inventoryItemId,
               quantity: line.quantity,
               baseUnitId: line.baseUnitId,
+              componentUnitCost: null,
+              componentCost: null,
             })),
           }),
         ],

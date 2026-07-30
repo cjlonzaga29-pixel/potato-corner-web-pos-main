@@ -421,3 +421,43 @@ describe('TerminalPage — flavor slot selection', () => {
     expect(screen.getByText('Snack 2 Flavor: Potato Twister (Small) — BBQ')).toBeInTheDocument();
   });
 });
+
+// Simple Operational Audit §5 — Maya and Other must be reachable and usable
+// from the same terminal Charge flow as cash/GCash, not dead-end tabs.
+describe('TerminalPage — Maya and Other payment methods', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+  });
+
+  afterEach(() => cleanup());
+
+  it('shows a Maya reference field and proof capture, mirroring GCash, and keeps Charge disabled until reference/verification/proof are all present', () => {
+    render(<TerminalPage />);
+    // Radix TabsTrigger activates on mousedown, not click — fireEvent.click
+    // alone never fires it (see fireEvent.click's lack of a mousedown step).
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Maya' }));
+
+    expect(screen.getByPlaceholderText('Maya reference number')).toBeInTheDocument();
+    expect(screen.getByText('I manually verified this Maya payment')).toBeInTheDocument();
+    // No proof captured yet — Charge must stay disabled regardless of reference/verification.
+    fireEvent.change(screen.getByPlaceholderText('Maya reference number'), { target: { value: '1234567890' } });
+    fireEvent.click(screen.getByText('I manually verified this Maya payment'));
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
+
+  it('shows a short reference/note field for Other with no proof-capture UI, and gates Charge on the note alone', () => {
+    render(<TerminalPage />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Other' }));
+
+    expect(screen.getByPlaceholderText('Payment reference or note (e.g. bank transfer, voucher)')).toBeInTheDocument();
+    expect(screen.queryByText(/manually verified/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('Payment reference or note (e.g. bank transfer, voucher)'), {
+      target: { value: 'Bank transfer #445' },
+    });
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+  });
+});

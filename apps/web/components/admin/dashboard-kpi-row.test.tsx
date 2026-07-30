@@ -30,10 +30,13 @@ const BASE_PROPS = {
   flaggedShiftsCount: 0,
   transactionsCount: 10,
   activeCashiersCount: 4,
+  staffTimedInCount: 2,
   lowStockCount: 0,
   grossSales: 20000,
+  netSales: 18000,
   expenses: 3000,
   netProfit: 15000,
+  isNetProfitEstimated: false,
   isLoadingShifts: false,
   isLoadingRevenue: false,
   isLoadingFlagged: false,
@@ -46,7 +49,7 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders 9 KpiCards', () => {
+  it('renders every KPI card, including Net Sales and Staff Timed In', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
     expect(screen.getByText('Active Shifts')).toBeInTheDocument();
@@ -54,10 +57,19 @@ describe('DashboardKpiRow', () => {
     expect(screen.getByText('Flagged Shifts')).toBeInTheDocument();
     expect(screen.getByText('Transactions Today')).toBeInTheDocument();
     expect(screen.getByText('Active Cashiers')).toBeInTheDocument();
+    expect(screen.getByText('Staff Timed In')).toBeInTheDocument();
     expect(screen.getByText('Low Stock')).toBeInTheDocument();
     expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Net Sales')).toBeInTheDocument();
     expect(screen.getByText('Expenses')).toBeInTheDocument();
     expect(screen.getByText('Net Profit')).toBeInTheDocument();
+  });
+
+  it('renders "Estimated Net Profit" instead of "Net Profit" when isNetProfitEstimated is true', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} isNetProfitEstimated={true} />);
+
+    expect(screen.getByText('Estimated Net Profit')).toBeInTheDocument();
+    expect(screen.queryByText('Net Profit')).not.toBeInTheDocument();
   });
 
   it('renders the Gross Sales card with correct currency formatting', () => {

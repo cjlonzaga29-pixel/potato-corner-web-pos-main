@@ -163,7 +163,7 @@ function OverviewTab({ branchId, address, gpsLatitude, gpsLongitude, gpsRadiusMe
       </Card>
 
       <div className="grid grid-cols-2 gap-4">
-        <StatTile label="Today's Revenue" value={stats ? formatCurrency(stats.todayRevenue) : '—'} />
+        <StatTile label="Net Sales" value={stats ? formatCurrency(stats.todayNetSales) : '—'} />
         <StatTile label="Transactions Today" value={stats ? String(stats.todayTransactionCount) : '—'} />
         <StatTile label="Active Staff" value={stats ? String(stats.activeStaffCount) : '—'} />
         <StatTile label="Low Stock Items" value={stats ? String(stats.lowStockIngredientCount) : '—'} />
@@ -260,11 +260,16 @@ function StatisticsTab({ branchId }: { branchId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatTile label="Active Shifts" value={String(stats.activeShiftsCount)} />
         <StatTile label="Transactions Today" value={String(stats.todayTransactionCount)} />
-        <StatTile label="Today's Revenue" value={formatCurrency(stats.todayRevenue)} />
+        <StatTile label="Net Sales" value={formatCurrency(stats.todayNetSales)} />
+        <StatTile
+          label={stats.isNetProfitEstimated ? 'Estimated Net Profit' : 'Net Profit'}
+          value={formatCurrency(stats.todayNetProfit)}
+        />
         <StatTile label="Active Staff" value={String(stats.activeStaffCount)} />
+        <StatTile label="Staff Timed In" value={String(stats.staffTimedInCount)} />
         <StatTile label="Low Stock Items" value={String(stats.lowStockIngredientCount)} />
       </div>
       <Card>

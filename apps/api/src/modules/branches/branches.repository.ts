@@ -1,8 +1,18 @@
 import type { Prisma } from '@prisma/client';
+import { PAYMENT_METHOD, type PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
+import { dayBounds } from '../../lib/manila-time.js';
+import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
+import { computeCogsForItems } from '../../lib/cogs.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
+
+function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: number }> {
+  return Object.fromEntries(
+    Object.values(PAYMENT_METHOD).map((method) => [method, { total: 0, count: 0 }]),
+  ) as Record<PaymentMethod, { total: number; count: number }>;
+}
 
 const activeAssignmentsInclude = {
   userAssignments: {
@@ -180,21 +190,51 @@ export const branchesRepository = {
   },
 
   async branchStats(branchId: string) {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    const { dayStart, dayEnd } = dayBounds(new Date());
+    const todayRange = { gte: dayStart, lte: dayEnd };
 
-    const [activeShiftsCount, todayTransactions, activeStaffCount, todayExpenses, ingredients] = await Promise.all([
+    const [
+      activeShiftsCount,
+      todayTransactions,
+      todayRefunds,
+      paymentGroups,
+      todayTransactionItems,
+      activeStaffCount,
+      staffTimedInCount,
+      todayExpenses,
+      ingredients,
+    ] = await Promise.all([
       prisma.shift.count({ where: { branchId, status: 'active' } }),
       prisma.transaction.aggregate({
-        where: { branchId, createdAt: { gte: startOfDay }, status: 'completed' },
+        where: { branchId, createdAt: todayRange, status: 'completed' },
         _count: { _all: true },
-        _sum: { totalAmount: true, vatAmount: true },
+        _sum: { subtotal: true, discountAmount: true, vatAmount: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { branchId, createdAt: todayRange, status: 'refunded' },
+        _sum: { totalAmount: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ['paymentMethod'],
+        where: { branchId, createdAt: todayRange, status: 'completed' },
+        _sum: { totalAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.transactionItem.findMany({
+        where: { transaction: { branchId, createdAt: todayRange, status: 'completed' } },
+        select: { deductionSnapshot: true },
       }),
       prisma.userBranchAssignment.count({
         where: { branchId, removedAt: null, user: { role: 'staff' } },
       }),
+      // Currently timed-in staff (Simple Operational Audit §7) — a live
+      // "right now" count, deliberately not scoped to today's Manila window
+      // since a clock-in can span midnight.
+      prisma.attendanceRecord.count({
+        where: { branchId, clockOutServerTime: null, deletedAt: null },
+      }),
       prisma.expense.aggregate({
-        where: { branchId, deletedAt: null, incurredAt: { gte: startOfDay } },
+        where: { branchId, deletedAt: null, incurredAt: todayRange },
         _sum: { amount: true },
       }),
       // Prisma's filter API can't compare two columns of the same row
@@ -222,19 +262,43 @@ export const branchesRepository = {
       return currentStock <= ingredient.lowStockThreshold.toNumber();
     }).length;
 
-    const todayGrossSales = Number(todayTransactions._sum.totalAmount ?? 0);
-    const todayVat = Number(todayTransactions._sum.vatAmount ?? 0);
-    const todayExpensesTotal = Number(todayExpenses._sum.amount ?? 0);
+    const { cogs, isEstimated, missingCostItemCount } = await computeCogsForItems(
+      todayTransactionItems.map((item) => ({ branchId, deductionSnapshot: item.deductionSnapshot })),
+    );
+
+    const metrics = computeFinancialMetrics({
+      grossSales: Number(todayTransactions._sum.subtotal ?? 0),
+      discountTotal: Number(todayTransactions._sum.discountAmount ?? 0),
+      refundTotal: Number(todayRefunds._sum.totalAmount ?? 0),
+      cogs,
+      expenseTotal: Number(todayExpenses._sum.amount ?? 0),
+    });
+
+    const paymentBreakdown = emptyPaymentBreakdown();
+    for (const group of paymentGroups) {
+      paymentBreakdown[group.paymentMethod] = {
+        total: round2(Number(group._sum.totalAmount ?? 0)),
+        count: group._count._all,
+      };
+    }
 
     return {
       activeShiftsCount,
       todayTransactionCount: todayTransactions._count._all,
-      todayRevenue: todayGrossSales,
-      todayGrossSales,
-      todayVat,
-      todayExpenses: todayExpensesTotal,
-      todayNetProfit: round2(todayGrossSales - todayVat - todayExpensesTotal),
+      todayGrossSales: metrics.grossSales,
+      todayDiscountTotal: metrics.discountTotal,
+      todayRefundTotal: metrics.refundTotal,
+      todayNetSales: metrics.netSales,
+      todayVat: Number(todayTransactions._sum.vatAmount ?? 0),
+      todayCogs: metrics.cogs,
+      todayGrossProfit: metrics.grossProfit,
+      todayExpenses: metrics.expenseTotal,
+      todayNetProfit: metrics.netProfit,
+      isNetProfitEstimated: isEstimated,
+      missingCostItemCount,
+      paymentBreakdown,
       activeStaffCount,
+      staffTimedInCount,
       lowStockIngredientCount,
     };
   },
@@ -251,11 +315,29 @@ export const branchesRepository = {
     });
   },
 
+  /**
+   * Per-branch stats, one row per active branch, same formulas/Manila
+   * window as branchStats() — the admin dashboard sums these rows client
+   * side, so each field here must already be branch-scoped and non-
+   * overlapping (no branch's transactions/expenses/items counted under
+   * another branch) for that consolidation to avoid double counting.
+   */
   async findAllStatsGrouped() {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    const { dayStart, dayEnd } = dayBounds(new Date());
+    const todayRange = { gte: dayStart, lte: dayEnd };
 
-    const [branches, shiftGroups, staffGroups, txnGroups, expenseGroups, ingredients] = await Promise.all([
+    const [
+      branches,
+      shiftGroups,
+      staffGroups,
+      staffTimedInGroups,
+      txnGroups,
+      refundGroups,
+      paymentGroups,
+      todayTransactionItems,
+      expenseGroups,
+      ingredients,
+    ] = await Promise.all([
       prisma.branch.findMany({
         where: { status: 'active' },
         select: { id: true },
@@ -270,15 +352,35 @@ export const branchesRepository = {
         where: { removedAt: null, user: { role: 'staff' } },
         _count: { _all: true },
       }),
+      prisma.attendanceRecord.groupBy({
+        by: ['branchId'],
+        where: { clockOutServerTime: null, deletedAt: null },
+        _count: { _all: true },
+      }),
       prisma.transaction.groupBy({
         by: ['branchId'],
-        where: { status: 'completed', createdAt: { gte: startOfDay } },
-        _sum: { totalAmount: true, vatAmount: true },
+        where: { status: 'completed', createdAt: todayRange },
+        _sum: { subtotal: true, discountAmount: true, vatAmount: true },
         _count: { _all: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ['branchId'],
+        where: { status: 'refunded', createdAt: todayRange },
+        _sum: { totalAmount: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ['branchId', 'paymentMethod'],
+        where: { status: 'completed', createdAt: todayRange },
+        _sum: { totalAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.transactionItem.findMany({
+        where: { transaction: { status: 'completed', createdAt: todayRange } },
+        select: { deductionSnapshot: true, transaction: { select: { branchId: true } } },
       }),
       prisma.expense.groupBy({
         by: ['branchId'],
-        where: { deletedAt: null, incurredAt: { gte: startOfDay } },
+        where: { deletedAt: null, incurredAt: todayRange },
         _sum: { amount: true },
       }),
       prisma.ingredient.findMany({
@@ -296,22 +398,63 @@ export const branchesRepository = {
       }
     }
 
+    const itemsByBranch = new Map<string, { branchId: string; deductionSnapshot: Prisma.JsonValue | null }[]>();
+    for (const item of todayTransactionItems) {
+      const branchId = item.transaction.branchId;
+      const list = itemsByBranch.get(branchId) ?? [];
+      list.push({ branchId, deductionSnapshot: item.deductionSnapshot });
+      itemsByBranch.set(branchId, list);
+    }
+
+    const cogsByBranch = new Map<string, Awaited<ReturnType<typeof computeCogsForItems>>>();
+    await Promise.all(
+      branches.map(async (b) => {
+        cogsByBranch.set(b.id, await computeCogsForItems(itemsByBranch.get(b.id) ?? []));
+      }),
+    );
+
     return branches.map((b) => {
       const txnGroup = txnGroups.find((g) => g.branchId === b.id);
-      const todayGrossSales = Number(txnGroup?._sum.totalAmount ?? 0);
-      const todayVat = Number(txnGroup?._sum.vatAmount ?? 0);
-      const todayExpenses = Number(expenseGroups.find((g) => g.branchId === b.id)?._sum.amount ?? 0);
+      const { cogs, isEstimated, missingCostItemCount } = cogsByBranch.get(b.id) ?? {
+        cogs: 0,
+        isEstimated: false,
+        missingCostItemCount: 0,
+      };
+
+      const metrics = computeFinancialMetrics({
+        grossSales: Number(txnGroup?._sum.subtotal ?? 0),
+        discountTotal: Number(txnGroup?._sum.discountAmount ?? 0),
+        refundTotal: Number(refundGroups.find((g) => g.branchId === b.id)?._sum.totalAmount ?? 0),
+        cogs,
+        expenseTotal: Number(expenseGroups.find((g) => g.branchId === b.id)?._sum.amount ?? 0),
+      });
+
+      const paymentBreakdown = emptyPaymentBreakdown();
+      for (const group of paymentGroups.filter((g) => g.branchId === b.id)) {
+        paymentBreakdown[group.paymentMethod] = {
+          total: round2(Number(group._sum.totalAmount ?? 0)),
+          count: group._count._all,
+        };
+      }
 
       return {
         branchId: b.id,
         activeShiftsCount: shiftGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
         activeStaffCount: staffGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
-        todayRevenue: todayGrossSales,
-        todayGrossSales,
-        todayVat,
-        todayExpenses,
-        todayNetProfit: round2(todayGrossSales - todayVat - todayExpenses),
+        staffTimedInCount: staffTimedInGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
         todayTransactionCount: txnGroup?._count._all ?? 0,
+        todayGrossSales: metrics.grossSales,
+        todayDiscountTotal: metrics.discountTotal,
+        todayRefundTotal: metrics.refundTotal,
+        todayNetSales: metrics.netSales,
+        todayVat: Number(txnGroup?._sum.vatAmount ?? 0),
+        todayCogs: metrics.cogs,
+        todayGrossProfit: metrics.grossProfit,
+        todayExpenses: metrics.expenseTotal,
+        todayNetProfit: metrics.netProfit,
+        isNetProfitEstimated: isEstimated,
+        missingCostItemCount,
+        paymentBreakdown,
         lowStockIngredientCount: lowStockByBranch.get(b.id) ?? 0,
       };
     });

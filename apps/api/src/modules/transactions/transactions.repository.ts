@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import type { ImageProofType } from '@potato-corner/shared';
+import type { ImageProofType, PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import type { TransactionListFilters } from './transactions.types.js';
 import type { DiscountAuditFilters } from './transactions.types.js';
@@ -35,7 +35,7 @@ interface CreateTransactionRow {
   shiftId: string;
   cashierId: string;
   receiptNumber: string;
-  paymentMethod: 'cash' | 'gcash';
+  paymentMethod: PaymentMethod;
   subtotal: number;
   discountAmount: number;
   discountType: string | null;

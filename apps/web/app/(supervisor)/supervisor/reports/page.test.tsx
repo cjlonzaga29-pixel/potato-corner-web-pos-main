@@ -128,6 +128,7 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
     cash_tendered: 100,
     change_given: 0,
     gcash_reference_number: null,
+    payment_reference: null,
     gcash_manually_verified: null,
     has_payment_proof: false,
     payment_proof_type: null,

@@ -13,6 +13,7 @@ import {
   type CartItem,
   type OfflineTransactionItem,
   type ImageProofType,
+  type PaymentMethod,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
 import { TransactionError } from './transactions.types.js';
@@ -59,13 +60,14 @@ interface CreateTransactionBody {
   branch_id: string;
   shift_id: string;
   items: CartItem[];
-  payment_method: 'cash' | 'gcash';
+  payment_method: PaymentMethod;
   discount_type?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
   discount_id_reference?: string;
   discount_amount?: number;
   cash_tendered?: number;
   gcash_reference_number?: string;
   gcash_manually_verified?: boolean;
+  other_reference_note?: string;
   payment_proof_key?: string;
   payment_proof_type?: ImageProofType;
   is_offline_transaction: boolean;
@@ -122,6 +124,7 @@ router.post(
           cashTendered: body.cash_tendered,
           gcashReferenceNumber: body.gcash_reference_number,
           gcashManuallyVerified: body.gcash_manually_verified,
+          otherReferenceNote: body.other_reference_note,
           paymentProofKey: body.payment_proof_key,
           paymentProofType: body.payment_proof_type,
           isOfflineTransaction: body.is_offline_transaction,

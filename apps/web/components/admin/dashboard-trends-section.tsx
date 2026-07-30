@@ -8,6 +8,7 @@ import { AreaChart } from '@/components/shared/charts/area-chart';
 import { BarChart } from '@/components/shared/charts/bar-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
+import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import {
   useDashboardSalesTrendReport,
   useBranchComparisonReport,
@@ -22,16 +23,6 @@ const TOP_PRODUCT_COUNT = 6;
 
 function paletteColor(index: number): string {
   return CHART_PALETTE[index % CHART_PALETTE.length] ?? CHART_PALETTE[0] ?? '#000000';
-}
-
-function daysAgoDateString(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
-}
-
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 interface ChartCardProps {
@@ -72,7 +63,7 @@ interface DashboardTrendsSectionProps {
 export function DashboardTrendsSection({ branchFilter }: DashboardTrendsSectionProps) {
   useReportsTrendsRealtimeSync();
 
-  const dateFilters = { date_from: daysAgoDateString(TREND_RANGE_DAYS), date_to: todayDateString(), page: 1, limit: 100 };
+  const dateFilters = { date_from: manilaDaysAgo(TREND_RANGE_DAYS), date_to: manilaToday(), page: 1, limit: 100 };
 
   const salesTrend = useDashboardSalesTrendReport({ ...dateFilters, branch_id: branchFilter });
   const branchComparison = useBranchComparisonReport(undefined, branchFilter === undefined);

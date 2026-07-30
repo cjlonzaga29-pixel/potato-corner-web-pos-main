@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranches } from '@/hooks/queries/use-branches';
 import type { CreateExpenseInput, ExpenseCategory } from '@/hooks/queries/use-expenses';
+import { manilaToday } from '@/lib/manila-date';
 
 const CATEGORY_OPTIONS: { value: ExpenseCategory; label: string }[] = [
   { value: 'utilities', label: 'Utilities' },
@@ -30,10 +31,6 @@ type FormValues = z.input<typeof formSchema>;
 
 export type ExpenseFormValues = CreateExpenseInput;
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function toDefaultValues(initialValues?: Partial<ExpenseFormValues>): FormValues {
   return {
     branch_id: initialValues?.branch_id ?? '',
@@ -41,7 +38,7 @@ function toDefaultValues(initialValues?: Partial<ExpenseFormValues>): FormValues
     amount: initialValues?.amount ?? 0,
     vendor_name: initialValues?.vendor_name ?? '',
     description: initialValues?.description ?? '',
-    incurred_at: initialValues?.incurred_at ? initialValues.incurred_at.slice(0, 10) : today(),
+    incurred_at: initialValues?.incurred_at ? initialValues.incurred_at.slice(0, 10) : manilaToday(),
   };
 }
 

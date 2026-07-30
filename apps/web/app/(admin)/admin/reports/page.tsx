@@ -29,6 +29,7 @@ import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
 import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
 import { expenseColumns } from '@/components/admin/expense-columns';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
+import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
 import { useExpenses, useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
@@ -46,13 +47,6 @@ import {
 
 const REFRESH_COOLDOWN_SECONDS = 60;
 const DEFAULT_RANGE_DAYS = 7;
-
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function daysAgoDateString(days: number): string {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
 
 function humanize(value: string): string {
   return value
@@ -220,8 +214,8 @@ function AdminReportsPageContent() {
   useExpensesRealtimeSync();
 
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
-  const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
-  const [dateTo, setDateTo] = useState(() => todayDateString());
+  const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
+  const [dateTo, setDateTo] = useState(() => manilaToday());
   const [activeTab, setActiveTab] = useState(() => {
     const tabParam = searchParams.get('tab');
     return tabParam && VALID_TABS.has(tabParam) ? tabParam : 'DAILY_SALES';

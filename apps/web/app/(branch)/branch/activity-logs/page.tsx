@@ -8,15 +8,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { createAuditLogColumns } from '@/components/admin/audit-log-columns';
 import { useAuditLogs } from '@/hooks/queries/use-audit-logs';
+import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 
 const columns = createAuditLogColumns();
-
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function daysAgoDateString(days: number): string {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
 
 /**
  * GET /api/audit (CR-003) admits branch accounts alongside admin/supervisor
@@ -24,8 +18,8 @@ function daysAgoDateString(days: number): string {
  * accessible branch_ids, so this never passes a branch_id filter itself.
  */
 export default function BranchActivityLogsPage() {
-  const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(7));
-  const [dateTo, setDateTo] = useState(() => todayDateString());
+  const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(7));
+  const [dateTo, setDateTo] = useState(() => manilaToday());
   const { data, isLoading, isError, refetch } = useAuditLogs({ date_from: dateFrom, date_to: dateTo, limit: 50 });
 
   return (

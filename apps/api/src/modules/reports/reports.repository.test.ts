@@ -64,6 +64,22 @@ describe('reportsRepository.getDailySales', () => {
       expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }),
     );
   });
+
+  it('buckets a transaction just after UTC midnight into the Manila business day already in progress', async () => {
+    // 2026-07-01T00:30:00.000Z == 2026-07-01T08:30:00+08:00 -> still July 1 in Manila,
+    // but toISOString().slice(0, 10) on the raw UTC value would also read "2026-07-01"
+    // here — the regression this guards is the *other* direction, tested below.
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      { branchId: 'b1', status: 'completed', totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), createdAt: new Date('2026-06-30T20:00:00.000Z') },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
+
+    // 2026-06-30T20:00:00.000Z == 2026-07-01T04:00:00+08:00 -> Manila July 1,
+    // even though the UTC calendar date is still June 30.
+    expect(rows[0]?.report_date).toBe('2026-07-01');
+  });
 });
 
 describe('reportsRepository.getShiftSummary', () => {
@@ -511,10 +527,13 @@ describe('reportsRepository.getInventoryAnalytics', () => {
     expect(slowest?.days_since_last_movement).toBe(13);
   });
 
-  it('computes waste trends grouped by day', async () => {
+  it('computes waste trends grouped by Manila calendar day, not UTC day', async () => {
     mockPrismaCalls({
       waste: [
+        // 2026-07-10T08:00:00Z == 2026-07-10T16:00+08:00 -> Manila July 10
         { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z') },
+        // 2026-07-10T20:00:00Z == 2026-07-11T04:00+08:00 -> already Manila July 11,
+        // even though the UTC calendar date is still the 10th.
         { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-3), createdAt: new Date('2026-07-10T20:00:00.000Z') },
         { inventoryItemId: 'item-slow', branchId: 'b1', quantityChange: decimal(-1), createdAt: new Date('2026-07-11T08:00:00.000Z') },
       ],
@@ -523,8 +542,11 @@ describe('reportsRepository.getInventoryAnalytics', () => {
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
     expect(result.waste_trends).toEqual([
-      { date: '2026-07-10', total_waste_quantity: 5, total_waste_cost: 25 },
-      { date: '2026-07-11', total_waste_quantity: 1, total_waste_cost: 20 },
+      // item-fast unitCost 5: only the 08:00Z entry (qty 2) is Manila July 10.
+      { date: '2026-07-10', total_waste_quantity: 2, total_waste_cost: 10 },
+      // The 20:00Z item-fast entry (qty 3, cost 15) rolls into Manila July 11
+      // alongside item-slow's entry (qty 1, unitCost 20, cost 20).
+      { date: '2026-07-11', total_waste_quantity: 4, total_waste_cost: 35 },
     ]);
   });
 

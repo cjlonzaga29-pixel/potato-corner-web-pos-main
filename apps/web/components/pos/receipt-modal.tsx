@@ -86,8 +86,8 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
               </>
             ) : (
               <div className="flex justify-between text-xs text-muted-foreground">
-                <span>GCash Ref.</span>
-                <span>{transaction.gcash_reference_number}</span>
+                <span>{transaction.payment_method === 'other' ? 'Reference' : `${transaction.payment_method === 'gcash' ? 'GCash' : 'Maya'} Ref.`}</span>
+                <span>{transaction.payment_reference}</span>
               </div>
             )}
           </div>

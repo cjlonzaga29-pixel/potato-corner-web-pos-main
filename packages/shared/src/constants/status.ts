@@ -73,6 +73,8 @@ export type TransactionStatus = (typeof TRANSACTION_STATUS)[keyof typeof TRANSAC
 export const PAYMENT_METHOD = {
   CASH: 'cash',
   GCASH: 'gcash',
+  MAYA: 'maya',
+  OTHER: 'other',
 } as const;
 export type PaymentMethod = (typeof PAYMENT_METHOD)[keyof typeof PAYMENT_METHOD];
 

@@ -26,7 +26,14 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../cash/cash.repository.js', () => ({
+  cashRepository: {
+    findActiveShift: vi.fn(),
+  },
+}));
+
 const { attendanceRepository } = await import('./attendance.repository.js');
+const { cashRepository } = await import('../cash/cash.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { attendanceService } = await import('./attendance.service.js');
@@ -78,6 +85,9 @@ function branchRow(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no open POS shift — most clockOut tests aren't exercising the
+  // shift-link guard (§6), only the dedicated OPEN_SHIFT_EXISTS test overrides this.
+  vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
 });
 
 describe('attendanceService.clockIn', () => {
@@ -158,6 +168,19 @@ describe('attendanceService.clockIn', () => {
 });
 
 describe('attendanceService.clockOut', () => {
+  it('rejects with 409 OPEN_SHIFT_EXISTS when the employee has an open POS shift at their attendance branch (§6 attendance-shift link), and never auto-closes it', async () => {
+    const active = attendanceRow();
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(active as never);
+    vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: 'shift-1', status: 'active' } as never);
+
+    await expect(attendanceService.clockOut('employee-1', {}, STAFF)).rejects.toMatchObject({
+      code: 'OPEN_SHIFT_EXISTS',
+      statusCode: 409,
+    });
+    expect(attendanceRepository.clockOut).not.toHaveBeenCalled();
+    expect(cashRepository.findActiveShift).toHaveBeenCalledWith('employee-1', 'branch-1');
+  });
+
   it('updates the open record with computed work/overtime minutes', async () => {
     const active = attendanceRow({ clockInServerTime: new Date('2026-07-15T08:00:00.000Z'), breakMinutes: 60 });
     vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(active as never);

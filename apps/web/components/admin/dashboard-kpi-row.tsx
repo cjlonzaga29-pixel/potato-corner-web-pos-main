@@ -6,10 +6,13 @@ interface DashboardKpiRowProps {
   flaggedShiftsCount: number | undefined;
   transactionsCount: number | undefined;
   activeCashiersCount: number | undefined;
+  staffTimedInCount: number | undefined;
   lowStockCount: number | undefined;
   grossSales: number | undefined;
+  netSales: number | undefined;
   expenses: number | undefined;
   netProfit: number | undefined;
+  isNetProfitEstimated: boolean | undefined;
   isLoadingShifts: boolean;
   isLoadingRevenue: boolean;
   isLoadingFlagged: boolean;
@@ -27,15 +30,23 @@ export function DashboardKpiRow({
   flaggedShiftsCount,
   transactionsCount,
   activeCashiersCount,
+  staffTimedInCount,
   lowStockCount,
   grossSales,
+  netSales,
   expenses,
   netProfit,
+  isNetProfitEstimated,
   isLoadingShifts,
   isLoadingRevenue,
   isLoadingFlagged,
   isLoadingStats,
 }: DashboardKpiRowProps) {
+  const netProfitTitle = isNetProfitEstimated ? 'Estimated Net Profit' : 'Net Profit';
+  const netProfitTooltip = isNetProfitEstimated
+    ? 'Net Sales - COGS - Expenses. Estimated: cost data was missing for at least one sold item across accessible branches.'
+    : 'Net Sales - COGS - Expenses';
+
   return (
     <div className="space-y-8">
       <div>
@@ -43,14 +54,15 @@ export function DashboardKpiRow({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <KpiCard title="Live Revenue (Open Shifts)" value={liveRevenue ?? 0} prefix="₱" isLoading={isLoadingRevenue} emphasize />
           <KpiCard title="Gross Sales" value={grossSales ?? 0} prefix="₱" isLoading={isLoadingStats} emphasize />
+          <KpiCard title="Net Sales" value={netSales ?? 0} prefix="₱" isLoading={isLoadingStats} emphasize />
           <KpiCard title="Expenses" value={expenses ?? 0} prefix="₱" isLoading={isLoadingStats} emphasize />
           <KpiCard
-            title="Net Profit"
+            title={netProfitTitle}
             value={netProfit ?? 0}
             prefix="₱"
             isLoading={isLoadingStats}
             tone={(netProfit ?? 0) >= 0 ? 'positive' : 'negative'}
-            tooltip="Gross Sales - VAT - Expenses"
+            tooltip={netProfitTooltip}
             emphasize
           />
         </div>
@@ -68,6 +80,7 @@ export function DashboardKpiRow({
           />
           <KpiCard title="Transactions Today" value={transactionsCount ?? 0} isLoading={isLoadingStats} />
           <KpiCard title="Active Cashiers" value={activeCashiersCount ?? 0} isLoading={isLoadingStats} />
+          <KpiCard title="Staff Timed In" value={staffTimedInCount ?? 0} isLoading={isLoadingStats} />
           <KpiCard
             title="Low Stock"
             value={lowStockCount ?? 0}

@@ -3,6 +3,18 @@ import { BRANCH_STATUS, type BranchStatus } from '../constants/status.js';
 
 const branchStatusValues = Object.values(BRANCH_STATUS) as [BranchStatus, ...BranchStatus[]];
 
+const paymentBreakdownEntrySchema = z.object({
+  total: z.number(),
+  count: z.number().int(),
+});
+
+export const paymentBreakdownSchema = z.object({
+  cash: paymentBreakdownEntrySchema,
+  gcash: paymentBreakdownEntrySchema,
+  maya: paymentBreakdownEntrySchema,
+  other: paymentBreakdownEntrySchema,
+});
+
 /** PC-[CITY_SHORT]-[NUMBER] — CITY_SHORT is 2-5 uppercase letters, NUMBER is zero-padded to 3 digits. */
 export const branchCodeSchema = z
   .string()
@@ -85,11 +97,21 @@ export const branchAssignmentResponseSchema = z.object({
 export const branchStatsResponseSchema = z.object({
   activeShiftsCount: z.number().int(),
   todayTransactionCount: z.number().int(),
-  todayRevenue: z.number(),
   todayGrossSales: z.number(),
+  todayDiscountTotal: z.number(),
+  todayRefundTotal: z.number(),
+  todayNetSales: z.number(),
   todayVat: z.number(),
+  todayCogs: z.number(),
+  todayGrossProfit: z.number(),
   todayExpenses: z.number(),
   todayNetProfit: z.number(),
+  // True when any component's cost couldn't be resolved (no InventoryStock/InventoryItem
+  // unit cost captured or currently available) — the audit's "Estimated Net Profit" rule.
+  isNetProfitEstimated: z.boolean(),
+  missingCostItemCount: z.number().int(),
+  paymentBreakdown: paymentBreakdownSchema,
   activeStaffCount: z.number().int(),
+  staffTimedInCount: z.number().int(),
   lowStockIngredientCount: z.number().int(),
 });

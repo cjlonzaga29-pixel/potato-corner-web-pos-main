@@ -32,7 +32,14 @@ vi.mock('../../queues/notification.queue.js', () => ({
   enqueueNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../attendance/attendance.repository.js', () => ({
+  attendanceRepository: {
+    findActiveRecord: vi.fn(),
+  },
+}));
+
 const { cashRepository } = await import('./cash.repository.js');
+const { attendanceRepository } = await import('../attendance/attendance.repository.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { cashService } = await import('./cash.service.js');
@@ -95,6 +102,10 @@ function shiftRow(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: the cashier is already timed in at branch-1 — most openShift
+  // tests aren't exercising the attendance-link guard (§6), only the
+  // dedicated ATTENDANCE_REQUIRED test below overrides this.
+  vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-1' } as never);
 });
 
 describe('cashService.openShift', () => {
@@ -134,6 +145,31 @@ describe('cashService.openShift', () => {
     ).rejects.toMatchObject({ code: 'CASHIER_NOT_FOUND', statusCode: 404 });
   });
 
+  it('rejects with 409 ATTENDANCE_REQUIRED when the cashier has no active attendance record at this branch (§6 attendance-shift link)', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
+
+    await expect(
+      cashService.openShift(
+        { branchId: 'branch-1', cashierId: 'cashier-1', openedBy: 'supervisor-1', startingCash: 1000, denominations: [{ denomination: 1000, quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTENDANCE_REQUIRED', statusCode: 409 });
+    expect(cashRepository.createShift).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 409 ATTENDANCE_REQUIRED when the cashier is timed in at a different branch', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-2' } as never);
+
+    await expect(
+      cashService.openShift(
+        { branchId: 'branch-1', cashierId: 'cashier-1', openedBy: 'supervisor-1', startingCash: 1000, denominations: [{ denomination: 1000, quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'ATTENDANCE_REQUIRED', statusCode: 409 });
+  });
+
   it('creates the shift when there is no active shift, the totals match, and the cashier is active', async () => {
     vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
     vi.mocked(cashRepository.findUserById).mockResolvedValue({ id: 'cashier-1', isActive: true } as never);
@@ -154,6 +190,7 @@ describe('cashService.openShift', () => {
     const cashierId = randomUUID();
     const openedBy = randomUUID();
     vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId } as never);
     vi.mocked(cashRepository.findUserById).mockResolvedValue({ id: cashierId, isActive: true } as never);
     vi.mocked(cashRepository.createShift).mockResolvedValue(shiftRow({ id: shiftId, branchId, cashierId, openedBy }) as never);
 

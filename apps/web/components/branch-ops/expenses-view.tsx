@@ -13,6 +13,7 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useBranchStore } from '@/stores/branch.store';
 import { formatCurrency, formatDate } from '@/lib/utils';
+import { manilaToday } from '@/lib/manila-date';
 import {
   useExpenses,
   useCreateExpense,
@@ -34,7 +35,7 @@ function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onO
   const [amount, setAmount] = useState('');
   const [vendorName, setVendorName] = useState('');
   const [description, setDescription] = useState('');
-  const [incurredAt, setIncurredAt] = useState(() => new Date().toISOString().slice(0, 10));
+  const [incurredAt, setIncurredAt] = useState(() => manilaToday());
 
   async function handleCreate() {
     await createExpense.mutateAsync({

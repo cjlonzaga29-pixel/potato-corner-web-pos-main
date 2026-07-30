@@ -20,7 +20,9 @@ Layered backup strategy:
 | 3 — Manual/offsite | `pg_dump` logical backup | Engineering (manual or CI cron) | On-demand + pre-migration |
 | 4 — Validation | Restore drill to a disposable/staging target | Engineering | Quarterly (this runbook) — architecture doc states monthly as the target cadence; quarterly is the floor, see §9 |
 
-Current production status per `PROJECT_STATUS.md` §10: Supabase Postgres is **live** (project `potato-corner-pos`-adjacent backend, connected via Session Pooler — direct connection is IPv6-only), 14 migrations applied as of 2026-07-17. Whether Pro-tier PITR and the "automated daily backups" line from the architecture doc are actually **enabled** on this specific live project is **UNVERIFIED — requires dashboard confirmation** (Supabase Dashboard → Project → Database → Backups).
+Current production status per `PROJECT_STATUS.md` §10: Supabase Postgres is **live** (project `potato-corner-pos`-adjacent backend, connected via Session Pooler — direct connection is IPv6-only), 59 migrations applied as of 2026-07-30 (`prisma migrate status` reports the schema up to date, no pending migrations).
+
+**Verified 2026-07-30** via `supabase backups list --project-ref nliuhztaezaujzgtsrwp` (read-only Management API call, no data touched): `{"walg_enabled":true,"pitr_enabled":false,"backups":[]}`. In plain terms — **PITR is disabled** on this project, and the API currently returns no listed physical/snapshot backups either. `walg_enabled: true` means the platform's backup engine is available at this tier, but nothing is actually scheduled/retained right now. This directly contradicts the architecture doc's "automated daily backups with point-in-time recovery" assumption — until the project owner enables PITR (and confirms daily backups are actually running) in the Supabase Dashboard, **production has no platform-level backup coverage**, and a manual `pg_dump`/`supabase db dump` (§4) is the only backup that exists until that's fixed.
 
 ---
 
@@ -55,10 +57,9 @@ PITR allows restoring the database to any timestamp within the retained WAL wind
 - A bad migration that corrupted data (as opposed to schema) after `prisma migrate deploy`
 - Any incident where the exact "last known good" moment is known or can be bisected to
 
-**UNVERIFIED — requires dashboard confirmation:**
-- [ ] PITR is enabled (it is a paid add-on on some Supabase tiers, not automatically bundled with every Pro project — confirm entitlement, not just plan name)
-- [ ] Retention window in days (commonly 7 or 14 on Supabase Pro's PITR add-on — confirm the actual configured value)
-- [ ] Earliest recoverable timestamp currently available (visible in-dashboard)
+- [x] **Verified 2026-07-30 (`supabase backups list --project-ref nliuhztaezaujzgtsrwp`):** PITR is **disabled** (`pitr_enabled: false`). This is a confirmed gap, not an unknown — the project owner needs to enable the PITR add-on in the Dashboard before this section's restore procedure applies to production.
+- [ ] Retention window in days, once PITR is enabled (commonly 7 or 14 on Supabase Pro's PITR add-on — confirm the actual configured value) — **UNVERIFIED, not applicable until PITR is turned on**
+- [ ] Earliest recoverable timestamp currently available (visible in-dashboard) — **UNVERIFIED, not applicable until PITR is turned on**
 
 ### PITR restore procedure (high-level — confirm exact UI flow at time of use, Supabase's console changes)
 
@@ -74,11 +75,25 @@ This is a destructive, production-affecting operation. Do not execute against th
 
 ## 4. Manual Logical Backup (pg_dump)
 
-A `pg_dump` fallback is required for scenarios PITR doesn't cover well: pre-migration safety snapshots, exporting a subset for local debugging, or an offsite/portable copy independent of the Supabase platform.
+A `pg_dump` fallback is required for scenarios PITR doesn't cover well: pre-migration safety snapshots, exporting a subset for local debugging, or an offsite/portable copy independent of the Supabase platform. **Given §3's confirmed PITR-disabled status, this section is currently the only real backup mechanism for production — treat it as required, not optional, until PITR is enabled.**
+
+### 4.0 Supabase CLI (`supabase db dump`) — no local `pg_dump` install required
+
+Verified working 2026-07-30 via `supabase db dump --linked --dry-run` (dry-run only — prints the pg_dump script it would run, touches nothing). The Supabase CLI bundles its own Postgres client tools, so this works even on a machine without `pg_dump` installed locally:
+
+```bash
+# Schema + data, custom format (suitable for pg_restore -j), timestamped file.
+# --linked uses whichever project this repo is currently linked to — verify
+# with `supabase projects list` first that "linked": true points at the
+# project you actually intend (production vs. potato-corner-dev).
+supabase db dump --linked -f "backup-$(date +%Y%m%d-%H%M%S).dump"
+```
+
+This is the recommended default over raw `pg_dump` below when the Supabase CLI is already installed — it handles the connection string and `cli_login_postgres.*` role internally, so no `DIRECT_URL` password ever needs to be typed or scripted.
 
 ### Connection
 
-Per `TOOLING_SETUP.md` (referenced in `PROJECT_STATUS.md` §10), this project connects via **Session Pooler**, not the direct connection string, because the direct connection is IPv6-only and many local/CI networks are IPv4-only. Use the pooler connection string for `pg_dump` unless running from an IPv6-capable network.
+Per `TOOLING_SETUP.md` (referenced in `PROJECT_STATUS.md` §10), this project connects via **Session Pooler**, not the direct connection string, because the direct connection is IPv6-only and many local/CI networks are IPv4-only. Use the pooler connection string for `pg_dump` unless running from an IPv6-capable network. Per `.claude/CLAUDE.md`'s three-URL pattern, that Session Pooler connection is exactly what `DIRECT_URL` already points at (port 5432) — reuse it rather than typing a new connection string, and never substitute `DATABASE_URL` (the pgbouncer transaction-pooler URL, port 6543), which `pg_dump` does not work reliably against.
 
 ```bash
 # Example only — replace every placeholder, never commit real values.
@@ -103,6 +118,17 @@ pg_dump \
 Flags rationale:
 - `--format=custom`: enables selective restore and works with `pg_restore -j` (parallel restore) for large databases
 - `--no-owner --no-privileges`: avoids failing a restore into a target where the original Supabase-managed roles don't exist (e.g., a local or staging target)
+
+### Verifying a dump file without restoring it
+
+Confirms the dump completed and is structurally readable — run this immediately after any dump, before trusting it as a safety net:
+
+```bash
+pg_restore --list backup-<timestamp>.dump | head -50
+# A non-empty table-of-contents listing core tables (Transaction, Shift, User,
+# AuditLog, etc.) means the dump is structurally intact. An empty or error'd
+# listing means the dump is not usable — re-run it before relying on it.
+```
 
 ### When to run a manual dump (in addition to any scheduled job)
 

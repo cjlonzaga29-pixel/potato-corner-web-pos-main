@@ -9,6 +9,7 @@ import {
   PAYMENT_METHOD,
   type ImageProofType,
 } from '@potato-corner/shared';
+import { manilaDateKey } from '../../lib/manila-time.js';
 import { transactionsRepository } from './transactions.repository.js';
 import {
   TransactionError,
@@ -45,6 +46,7 @@ import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { attachCostToDeductionLines } from '../../lib/cogs.js';
 import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
 import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 
@@ -58,6 +60,8 @@ const EMPLOYEE_DISCOUNT_RATE = 0.2;
 const RECEIPT_SEQUENCE_RETRY_LIMIT = 5;
 
 const PAYMENT_PROOF_BUCKET = 'payment-proofs';
+/** GCash and Maya are the two reference-number + photo-proof e-wallet methods; "other" and "cash" are not. */
+const PROOF_REQUIRED_METHODS: readonly string[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA];
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -82,8 +86,9 @@ function round2(amount: number): number {
   return toCents(amount) / 100;
 }
 
+/** Compact Manila calendar date (YYYYMMDD) for the receipt-number prefix — the receipt date must be the Philippine transaction date, never the UTC date. */
 function isoDateCompact(date: Date): string {
-  return date.toISOString().slice(0, 10).replace(/-/g, '');
+  return manilaDateKey(date).replace(/-/g, '');
 }
 
 interface TransactionItemRow {
@@ -156,6 +161,9 @@ function toTransactionResponse(row: TransactionRow) {
     cash_tendered: row.amountTendered?.toNumber() ?? null,
     change_given: row.changeAmount?.toNumber() ?? null,
     gcash_reference_number: row.gcashReference,
+    // Generic alias — gcashReference is reused as the reference/note column
+    // for gcash, maya, and other alike (see createTransaction's referenceNote).
+    payment_reference: row.gcashReference,
     gcash_manually_verified: row.gcashManuallyVerified,
     has_payment_proof: row.paymentProofKey !== null,
     payment_proof_type: row.paymentProofType,
@@ -891,23 +899,33 @@ export const transactionsService = {
     }
 
     // Presence of cash_tendered (for cash) / gcash_reference_number (for
-    // gcash) is already guaranteed by createTransactionSchema's superRefine
-    // — only the business-logic checks below belong here.
-    if (data.paymentMethod === 'gcash' && data.gcashManuallyVerified !== true) {
+    // gcash/maya) / other_reference_note (for other) is already guaranteed
+    // by createTransactionSchema's superRefine — only the business-logic
+    // checks below belong here.
+    if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && data.gcashManuallyVerified !== true) {
       throw new TransactionError(
-        'GCASH_NOT_VERIFIED',
-        'GCash payments must be manually verified before the transaction can be recorded',
+        'PAYMENT_NOT_VERIFIED',
+        'GCash and Maya payments must be manually verified before the transaction can be recorded',
         422,
       );
     }
 
     // Belt: createTransactionSchema's superRefine already rejects a missing
     // key/type client-side; this is the server-side gate that actually makes
-    // "mandatory" hold regardless of what the client sends.
-    if (data.paymentMethod !== PAYMENT_METHOD.CASH && (!data.paymentProofKey || !data.paymentProofType)) {
+    // "mandatory" hold regardless of what the client sends. "other" is
+    // reference/note-based, not photo-proof-based (Simple Operational Audit
+    // §5), so it is deliberately excluded here.
+    if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && (!data.paymentProofKey || !data.paymentProofType)) {
       throw new TransactionError(
         'PAYMENT_PROOF_REQUIRED',
-        'A payment proof photo must be captured before a non-cash sale can be recorded',
+        'A payment proof photo must be captured before a GCash or Maya sale can be recorded',
+        422,
+      );
+    }
+    if (data.paymentMethod === PAYMENT_METHOD.OTHER && !data.otherReferenceNote) {
+      throw new TransactionError(
+        'PAYMENT_REFERENCE_REQUIRED',
+        'A short payment reference or note is required before an Other-method sale can be recorded',
         422,
       );
     }
@@ -949,6 +967,31 @@ export const transactionsService = {
     const discountCustomerIdEncrypted = data.discountIdReference ? encryptField(data.discountIdReference) : null;
     const discountCustomerIdHash = data.discountIdReference ? hashField(data.discountIdReference) : null;
 
+    // gcashReference is reused as the generic "reference/note" column for
+    // gcash, maya, and other — adding per-method columns would require a
+    // migration the audit's "no unnecessary migrations" constraint rules out.
+    const referenceNote =
+      data.paymentMethod === PAYMENT_METHOD.GCASH || data.paymentMethod === PAYMENT_METHOD.MAYA
+        ? (data.gcashReferenceNumber as string)
+        : data.paymentMethod === PAYMENT_METHOD.OTHER
+          ? (data.otherReferenceNote as string)
+          : null;
+    const requiresProof = PROOF_REQUIRED_METHODS.includes(data.paymentMethod);
+
+    // Cost is captured at checkout time (current InventoryStock/InventoryItem
+    // unit cost) so later COGS reads don't have to re-estimate from
+    // possibly-since-changed cost — see lib/cogs.ts.
+    const costedItems = await attachCostToDeductionLines(
+      data.branchId,
+      resolvedItems.flatMap((item) => item.deductionLines),
+    );
+    let costedLineCursor = 0;
+    const costedDeductionLinesByItem = resolvedItems.map((item) => {
+      const lines = costedItems.slice(costedLineCursor, costedLineCursor + item.deductionLines.length);
+      costedLineCursor += item.deductionLines.length;
+      return lines;
+    });
+
     let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>> | undefined;
     let postCommitEffects: Array<() => Promise<void>> = [];
     let lastError: unknown;
@@ -973,14 +1016,14 @@ export const transactionsService = {
               totalAmount,
               cashTendered: data.paymentMethod === 'cash' ? (data.cashTendered as number) : null,
               changeAmount: changeGiven,
-              gcashReference: data.paymentMethod === 'gcash' ? (data.gcashReferenceNumber as string) : null,
-              gcashManuallyVerified: data.paymentMethod === 'gcash' ? true : null,
-              paymentProofKey: data.paymentMethod !== PAYMENT_METHOD.CASH ? (data.paymentProofKey as string) : null,
-              paymentProofType: data.paymentMethod !== PAYMENT_METHOD.CASH ? (data.paymentProofType as ImageProofType) : null,
-              paymentProofUploadedAt: data.paymentMethod !== PAYMENT_METHOD.CASH ? new Date() : null,
+              gcashReference: referenceNote,
+              gcashManuallyVerified: requiresProof ? true : null,
+              paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
+              paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
+              paymentProofUploadedAt: requiresProof ? new Date() : null,
               isOfflineTransaction: data.isOfflineTransaction,
               offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
-              items: resolvedItems.map((item) => ({
+              items: resolvedItems.map((item, itemIndex) => ({
                 id: item.id,
                 productId: item.productId,
                 productVariantId: item.productVariantId,
@@ -994,10 +1037,16 @@ export const transactionsService = {
                 recipeVersion: item.recipeVersion,
                 // Written at creation, not patched in afterward —
                 // TransactionItem rows are immutable after creation (CR-004).
-                deductionSnapshot: item.deductionLines.map((line) => ({
+                // componentUnitCost/componentCost are additive fields on top
+                // of the original {inventoryItemId, quantity, baseUnitId}
+                // shape — safe for reverseInventoryForTransaction's
+                // 'inventoryItemId' in entry snapshot-shape discrimination.
+                deductionSnapshot: (costedDeductionLinesByItem[itemIndex] ?? []).map((line) => ({
                   inventoryItemId: line.inventoryItemId,
                   quantity: line.quantity,
                   baseUnitId: line.baseUnitId,
+                  componentUnitCost: line.componentUnitCost,
+                  componentCost: line.componentCost,
                 })),
                 selectedFlavors: item.selectedFlavors,
               })),

@@ -83,15 +83,35 @@ export function useBranchAccountsOverview() {
   });
 }
 
+export interface PaymentBreakdownEntry {
+  total: number;
+  count: number;
+}
+
+export interface PaymentBreakdown {
+  cash: PaymentBreakdownEntry;
+  gcash: PaymentBreakdownEntry;
+  maya: PaymentBreakdownEntry;
+  other: PaymentBreakdownEntry;
+}
+
 export interface BranchStatsOverview {
   branchId: string;
   activeShiftsCount: number;
   activeStaffCount: number;
-  todayRevenue: number;
+  staffTimedInCount: number;
   todayGrossSales: number;
+  todayDiscountTotal: number;
+  todayRefundTotal: number;
+  todayNetSales: number;
   todayVat: number;
+  todayCogs: number;
+  todayGrossProfit: number;
   todayExpenses: number;
   todayNetProfit: number;
+  isNetProfitEstimated: boolean;
+  missingCostItemCount: number;
+  paymentBreakdown: PaymentBreakdown;
   todayTransactionCount: number;
   lowStockIngredientCount: number;
 }

@@ -16,6 +16,13 @@ function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
+const PAYMENT_METHOD_LABEL: Record<TransactionResponse['payment_method'], string> = {
+  cash: 'Cash',
+  gcash: 'GCash',
+  maya: 'Maya',
+  other: 'Other',
+};
+
 /** Branch/staff-facing receipt lookup/reprint — the (branch) nav's "Receipts" item. Scoped to the cashier's own branch, most recent first. */
 export default function ReceiptsPage() {
   const { user } = useAuth();
@@ -34,7 +41,7 @@ export default function ReceiptsPage() {
   const columns: ColumnDef<TransactionResponse>[] = [
     { id: 'receipt_number', header: 'Receipt No.', cell: ({ row }) => row.original.receipt_number },
     { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-    { id: 'payment_method', header: 'Payment', cell: ({ row }) => (row.original.payment_method === 'cash' ? 'Cash' : 'GCash') },
+    { id: 'payment_method', header: 'Payment', cell: ({ row }) => PAYMENT_METHOD_LABEL[row.original.payment_method] },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatPeso(row.original.total_amount) },
     { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },
   ];

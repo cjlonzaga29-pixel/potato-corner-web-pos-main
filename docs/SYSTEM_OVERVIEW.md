@@ -314,6 +314,7 @@ Backend variables are validated at boot by a Zod schema in `apps/api/src/config/
 |---|---|---|---|
 | `NODE_ENV` | Optional, default `development` | `config/index.ts` | Enum: development/test/staging/production |
 | `API_PORT` | Optional, default `4000` | `config/index.ts` | Coerced to number |
+| `TZ` | Optional, not in Zod schema | Node process env | Defense-in-depth only — every Philippine business-date computation (dashboard windows, reports, EOD, fraud rules, receipt-number date prefixes) is computed explicitly against Asia/Manila in `lib/manila-time.ts` and does not depend on process TZ. Set `TZ=Asia/Manila` on the production Render service anyway, so any library or future code path that reads local time falls back correctly instead of to server-local/UTC. |
 | `DATABASE_URL` | **Required** | `config/index.ts`, `prisma/schema.prisma` | Transaction pooler, port 6543 — must include `?pgbouncer=true` or boot throws |
 | `DIRECT_URL` | Required by Prisma (not in Zod schema) | `prisma/schema.prisma` `directUrl` | Session pooler, port 5432 — used for migrations, not runtime queries |
 | `PRODUCTION_DATABASE_URL_DIRECT` | CI-only, per `CLAUDE.md` | CI migration step | Raw direct connection, port 5432 — **never** point local `prisma migrate dev` at this |

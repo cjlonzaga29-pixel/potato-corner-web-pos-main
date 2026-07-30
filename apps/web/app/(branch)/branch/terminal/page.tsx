@@ -93,22 +93,27 @@ export default function TerminalPage() {
     variant: PosCatalogProduct['variants'][number];
     selections: Record<number, { snackProductVariantId: string; flavorId: string }>;
   } | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash'>('cash');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'other'>('cash');
   const [discountType, setDiscountType] = useState<DiscountChoice>('none');
   const [discountIdReference, setDiscountIdReference] = useState('');
   const [promoAmount, setPromoAmount] = useState('');
   const [cashTendered, setCashTendered] = useState('');
+  // Shared by GCash and Maya — both are reference-number + photo-proof
+  // e-wallet payments with identical requirements (audit §5).
   const [gcashReferenceNumber, setGcashReferenceNumber] = useState('');
   const [gcashManuallyVerified, setGcashManuallyVerified] = useState(false);
   const [paymentProofKey, setPaymentProofKey] = useState<string | null>(null);
   const [paymentProofType, setPaymentProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
+  // "other" only — a short free-text reference/note, no photo proof required.
+  const [otherReferenceNote, setOtherReferenceNote] = useState('');
   const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
 
-  // Proof capture requires a live, confirmed upload before the sale exists —
-  // there's no offline blob queue for it (see lib/offline/db.ts), so a
-  // cashier can't start or continue a GCash sale while offline. Revert to
+  // GCash/Maya proof capture and Other's reference note both require a live
+  // connection (see createTransactionSchema's offline-must-be-cash rule) —
+  // there's no offline blob/note queue for them (see lib/offline/db.ts), so a
+  // cashier can't start or continue a non-cash sale while offline. Revert to
   // cash immediately if the connection drops mid-selection.
   useEffect(() => {
     if (!isOnline && paymentMethod !== 'cash') {
@@ -274,7 +279,9 @@ export default function TerminalPage() {
     (discountType !== 'pwd' && discountType !== 'senior_citizen' ? true : discountIdReference.trim().length > 0) &&
     (paymentMethod === 'cash'
       ? cashTendered !== '' && tenderedNumber >= totalAmount
-      : gcashReferenceNumber.trim().length > 0 && gcashManuallyVerified && paymentProofKey !== null);
+      : paymentMethod === 'other'
+        ? otherReferenceNote.trim().length > 0
+        : gcashReferenceNumber.trim().length > 0 && gcashManuallyVerified && paymentProofKey !== null);
 
   function resetPaymentFields() {
     setDiscountType('none');
@@ -285,6 +292,7 @@ export default function TerminalPage() {
     setGcashManuallyVerified(false);
     setPaymentProofKey(null);
     setPaymentProofType(null);
+    setOtherReferenceNote('');
   }
 
   async function handleCharge() {
@@ -300,10 +308,11 @@ export default function TerminalPage() {
       discount_id_reference: discountIdReference.trim() || undefined,
       discount_amount: discountType === 'promotional' ? Number(promoAmount) : undefined,
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
-      gcash_reference_number: paymentMethod === 'gcash' ? gcashReferenceNumber.trim() : undefined,
-      gcash_manually_verified: paymentMethod === 'gcash' ? gcashManuallyVerified : undefined,
-      payment_proof_key: paymentMethod !== 'cash' ? (paymentProofKey ?? undefined) : undefined,
-      payment_proof_type: paymentMethod !== 'cash' ? (paymentProofType ?? undefined) : undefined,
+      gcash_reference_number: paymentMethod === 'gcash' || paymentMethod === 'maya' ? gcashReferenceNumber.trim() : undefined,
+      gcash_manually_verified: paymentMethod === 'gcash' || paymentMethod === 'maya' ? gcashManuallyVerified : undefined,
+      other_reference_note: paymentMethod === 'other' ? otherReferenceNote.trim() : undefined,
+      payment_proof_key: paymentMethod === 'gcash' || paymentMethod === 'maya' ? (paymentProofKey ?? undefined) : undefined,
+      payment_proof_type: paymentMethod === 'gcash' || paymentMethod === 'maya' ? (paymentProofType ?? undefined) : undefined,
       is_offline_transaction: !isOnline,
     };
 
@@ -573,7 +582,7 @@ export default function TerminalPage() {
             <Input type="number" min={0} placeholder="Promo discount amount" value={promoAmount} onChange={(e) => setPromoAmount(e.target.value)} />
           )}
 
-          <Tabs value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as 'cash' | 'gcash')}>
+          <Tabs value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as 'cash' | 'gcash' | 'maya' | 'other')}>
             <TabsList className="w-full">
               <TabsTrigger value="cash" className="flex-1">
                 Cash
@@ -581,25 +590,35 @@ export default function TerminalPage() {
               <TabsTrigger value="gcash" className="flex-1" disabled={!isOnline}>
                 GCash
               </TabsTrigger>
+              <TabsTrigger value="maya" className="flex-1" disabled={!isOnline}>
+                Maya
+              </TabsTrigger>
+              <TabsTrigger value="other" className="flex-1" disabled={!isOnline}>
+                Other
+              </TabsTrigger>
             </TabsList>
           </Tabs>
-          {!isOnline && <p className="text-xs text-muted-foreground">GCash is unavailable offline — payment proof can only be captured while connected.</p>}
+          {!isOnline && paymentMethod === 'cash' && (
+            <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — proof/reference can only be captured while connected.</p>
+          )}
 
-          {paymentMethod === 'cash' ? (
+          {paymentMethod === 'cash' && (
             <div className="space-y-1">
               <Input type="number" min={0} placeholder="Cash tendered" value={cashTendered} onChange={(e) => setCashTendered(e.target.value)} />
               <p className="text-xs text-muted-foreground">Change: {formatPeso(change)}</p>
             </div>
-          ) : (
+          )}
+
+          {(paymentMethod === 'gcash' || paymentMethod === 'maya') && (
             <div className="space-y-2">
               <Input
-                placeholder="GCash reference number"
+                placeholder={paymentMethod === 'gcash' ? 'GCash reference number' : 'Maya reference number'}
                 value={gcashReferenceNumber}
                 onChange={(e) => setGcashReferenceNumber(e.target.value)}
               />
               <label className="flex items-center gap-2 text-xs">
                 <Checkbox checked={gcashManuallyVerified} onCheckedChange={(v) => setGcashManuallyVerified(v === true)} />
-                I manually verified this GCash payment
+                I manually verified this {paymentMethod === 'gcash' ? 'GCash' : 'Maya'} payment
               </label>
               {paymentProofKey ? (
                 <div className="flex items-center justify-between rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
@@ -632,6 +651,18 @@ export default function TerminalPage() {
                   }}
                 />
               )}
+            </div>
+          )}
+
+          {paymentMethod === 'other' && (
+            <div className="space-y-1">
+              <Input
+                placeholder="Payment reference or note (e.g. bank transfer, voucher)"
+                value={otherReferenceNote}
+                onChange={(e) => setOtherReferenceNote(e.target.value)}
+                maxLength={200}
+              />
+              <p className="text-xs text-muted-foreground">No photo proof required — just a short note identifying the payment.</p>
             </div>
           )}
 

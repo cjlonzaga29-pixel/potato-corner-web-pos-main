@@ -9,22 +9,16 @@ import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { createLoginAuditColumns } from '@/components/admin/login-audit-columns';
 import { useAuditLogReport } from '@/hooks/queries/use-audit-log-report';
 import { useRequestExport } from '@/hooks/queries/use-reports';
+import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 
 const DEFAULT_RANGE_DAYS = 7;
-
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function daysAgoDateString(days: number): string {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
 
 const columns = createLoginAuditColumns();
 
 export function LoginAuditPanel() {
   const [branchId, setBranchId] = useState<string | null>(null);
-  const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
-  const [dateTo, setDateTo] = useState(() => todayDateString());
+  const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
+  const [dateTo, setDateTo] = useState(() => manilaToday());
   const [isExporting, setIsExporting] = useState(false);
 
   const filters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };

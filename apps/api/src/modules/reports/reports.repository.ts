@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { manilaDateKey } from '../../lib/manila-time.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
 import type {
   ReportFilters,
@@ -56,7 +57,7 @@ export const reportsRepository = {
 
     const buckets = new Map<string, DailySalesReportRow>();
     for (const row of rows) {
-      const reportDate = row.createdAt.toISOString().slice(0, 10);
+      const reportDate = manilaDateKey(row.createdAt);
       const key = `${reportDate}_${row.branchId}`;
       const existing = buckets.get(key) ?? {
         report_date: reportDate,
@@ -679,7 +680,7 @@ export const reportsRepository = {
 
     const wasteByDay = new Map<string, { quantity: number; cost: number }>();
     for (const w of wasteMovements) {
-      const day = w.createdAt.toISOString().slice(0, 10);
+      const day = manilaDateKey(w.createdAt);
       const qty = Math.abs(w.quantityChange.toNumber());
       const unitCost = stockByKey.get(stockKey(w.branchId, w.inventoryItemId))?.unitCost ?? 0;
       const existing = wasteByDay.get(day) ?? { quantity: 0, cost: 0 };

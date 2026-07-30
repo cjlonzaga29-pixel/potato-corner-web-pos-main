@@ -84,6 +84,10 @@ export default function BranchDashboardPage() {
   const todayStats = branchStats?.[0];
   const averageOrderValue =
     todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
+  const netProfitLabel = todayStats?.isNetProfitEstimated ? 'Estimated Net Profit' : 'Net Profit';
+  const netProfitTooltip = todayStats?.isNetProfitEstimated
+    ? `Net Sales - COGS - Expenses. Cost data was missing for ${todayStats.missingCostItemCount} sold item(s), so this figure is an estimate.`
+    : 'Net Sales - COGS - Expenses';
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
 
@@ -104,11 +108,46 @@ export default function BranchDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
-        <KpiCard title="Today's Revenue" value={todayStats?.todayRevenue ?? 0} prefix="₱" isLoading={isLoadingStats} />
+        <KpiCard title="Net Sales" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} />
         <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} />
         <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} />
         <DashboardShiftCard shift={shift} isLoading={isShiftLoading} />
+        <KpiCard
+          title={netProfitLabel}
+          value={todayStats?.todayNetProfit ?? 0}
+          prefix="₱"
+          isLoading={isLoadingStats}
+          tone={(todayStats?.todayNetProfit ?? 0) < 0 ? 'negative' : 'default'}
+          tooltip={netProfitTooltip}
+        />
+        <KpiCard title="Expenses" value={todayStats?.todayExpenses ?? 0} prefix="₱" isLoading={isLoadingStats} />
+        <KpiCard
+          title="Low Stock Items"
+          value={todayStats?.lowStockIngredientCount ?? 0}
+          isLoading={isLoadingStats}
+          tone={(todayStats?.lowStockIngredientCount ?? 0) > 0 ? 'warning' : 'default'}
+        />
+        <KpiCard title="Staff Timed In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} />
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Payment Collections Today</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {(['cash', 'gcash', 'maya', 'other'] as const).map((method) => (
+            <div key={method} className="space-y-1">
+              <p className="text-xs capitalize text-muted-foreground">{method}</p>
+              <p className="text-lg font-semibold">
+                {isLoadingStats ? '—' : `₱${(todayStats?.paymentBreakdown[method].total ?? 0).toFixed(2)}`}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {isLoadingStats ? '' : `${todayStats?.paymentBreakdown[method].count ?? 0} txns`}
+              </p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

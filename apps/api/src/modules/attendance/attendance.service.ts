@@ -3,6 +3,7 @@ import { attendanceRepository } from './attendance.repository.js';
 import { AttendanceError, type AttendanceListFilters, type ClockInData, type ClockOutData, type ManualOverrideData } from './attendance.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
+import { cashRepository } from '../cash/cash.repository.js';
 
 type ActorContext = { id: string; role: string };
 type GpsStatus = 'within_radius' | 'outside_radius' | 'no_gps_data';
@@ -161,6 +162,14 @@ export const attendanceService = {
     const active = (await attendanceRepository.findActiveRecord(employeeId)) as AttendanceRow | null;
     if (!active) {
       throw new AttendanceError('RECORD_NOT_FOUND', 'No open attendance record found for this employee', 404);
+    }
+
+    // Simple Operational Audit §6 — an open POS shift must be closed before
+    // its cashier times out. This never auto-closes the shift; it only
+    // blocks the clock-out until the cashier (or a supervisor) closes it.
+    const openShift = await cashRepository.findActiveShift(employeeId, active.branchId);
+    if (openShift) {
+      throw new AttendanceError('OPEN_SHIFT_EXISTS', 'Close your POS shift before timing out.', 409);
     }
 
     const clockOutServerTime = new Date();

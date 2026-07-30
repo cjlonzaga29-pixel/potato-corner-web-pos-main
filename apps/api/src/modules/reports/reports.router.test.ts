@@ -225,6 +225,29 @@ describe('GET /daily-sales', () => {
 
     expect(res.status).toHaveBeenCalledWith(403);
   });
+
+  it('resolves a bare date_from/date_to pair to Manila day boundaries, not UTC midnight', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'get', '/daily-sales');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), query: { branch_id: BRANCH_1, date_from: '2026-07-01', date_to: '2026-07-01' } });
+    const res = mockRes();
+    vi.mocked(reportsService.getDailySalesReport).mockResolvedValue({ report_type: 'DAILY_SALES', data: [] } as never);
+
+    await runHandlers(handlers, req, res);
+
+    // Manila July 1 00:00:00.000 == UTC June 30 16:00:00.000; Manila July 1
+    // 23:59:59.999 == UTC July 1 15:59:59.999. The old
+    // `${value}T00:00:00.000Z` boundary would have used UTC July 1 00:00:00Z
+    // — 8 hours late relative to actual Manila midnight.
+    expect(reportsService.getDailySalesReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dateFrom: new Date('2026-06-30T16:00:00.000Z'),
+        dateTo: new Date('2026-07-01T15:59:59.999Z'),
+      }),
+      expect.any(String),
+      expect.any(String),
+    );
+  });
 });
 
 describe('GET /product-performance', () => {

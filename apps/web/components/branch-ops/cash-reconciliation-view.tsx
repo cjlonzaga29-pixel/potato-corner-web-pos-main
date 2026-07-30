@@ -15,13 +15,7 @@ import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { formatCurrency } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
 import { useCashReconciliationReport } from '@/hooks/queries/use-reports';
-
-function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function daysAgoDateString(days: number): string {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
+import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 
 const DEFAULT_RANGE_DAYS = 30;
 
@@ -59,8 +53,8 @@ const columns: ColumnDef<CashReconciliationReportRow>[] = [
 export function CashReconciliationView({ basePath }: { basePath: string }) {
   const router = useRouter();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const [dateFrom, setDateFrom] = useState(() => daysAgoDateString(DEFAULT_RANGE_DAYS));
-  const [dateTo, setDateTo] = useState(() => todayDateString());
+  const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
+  const [dateTo, setDateTo] = useState(() => manilaToday());
 
   const { data, isLoading, isError, refetch } = useCashReconciliationReport(
     { branch_id: activeBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },

@@ -1,18 +1,9 @@
 import { db } from './db';
 import { apiClient } from '../api-client';
+import { manilaDateString } from '../manila-date';
 import type { CreateTransactionInput } from '@potato-corner/shared';
 
-/**
- * YYYY-MM-DD in Asia/Manila local time, not UTC. Date.prototype.toISOString()
- * is always UTC and rolls the date over at 8am Manila time — using it here
- * would break the "resets to 1 at midnight" locked rule (CLAUDE.md's Offline
- * Receipt Numbers) for any transaction between local midnight and 8am, and
- * would disagree with this codebase's other explicit Asia/Manila business-day
- * conventions (apps/api/src/queues/eod.queue.ts, fraud.queue.ts).
- */
-export function manilaDateString(date: Date): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(date);
-}
+export { manilaDateString };
 
 async function nextOfflineSequence(branchCode: string): Promise<number> {
   const key = `${branchCode}:${manilaDateString(new Date())}`;

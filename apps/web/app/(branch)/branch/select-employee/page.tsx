@@ -46,7 +46,7 @@ export default function SelectEmployeePage() {
     setSelectingId(employeeId);
     try {
       await selectEmployee(employeeId);
-      router.push('/branch/dashboard');
+      router.push('/branch/clock-in');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not start employee session');
       setSelectingId(null);

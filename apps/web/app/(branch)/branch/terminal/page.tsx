@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -11,11 +12,13 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
-import { useCurrentShift } from '@/hooks/queries/use-shifts';
+import { useIsClockedIn } from '@/hooks/queries/use-attendance';
+import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof } from '@/hooks/queries/use-transactions';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
@@ -75,12 +78,15 @@ function previewAmounts(
 }
 
 export default function TerminalPage() {
+  const router = useRouter();
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
   const { items, addItem, removeItem, updateItemQuantity, clearCart } = useCart();
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
-  const { data: shift } = useCurrentShift(branchId);
+  const { isClockedIn, isLoading: isAttendanceLoading } = useIsClockedIn();
+  const { shift, belongsToAnother, isLoading: isShiftLoading } = useMyActiveShift(branchId);
+  useShiftsRealtimeSync();
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction();
   const uploadPaymentProof = useUploadPaymentProof();
@@ -120,6 +126,24 @@ export default function TerminalPage() {
       setPaymentMethod('cash');
     }
   }, [isOnline, paymentMethod]);
+
+  // Single clean cashier workflow: Clock In -> Open Shift once -> POS. No
+  // attendance sends the cashier back to clock in; clocked in with no active
+  // shift of their own sends them to open one — never a generic
+  // NO_ACTIVE_SHIFT toast when the app already knows where to send them. A
+  // shift that closes (or gets closed elsewhere) while this page is open
+  // falls through the same "no shift" branch and redirects back out.
+  const isGuardLoading = isAttendanceLoading || isShiftLoading;
+  const shouldRedirectToClockIn = !isGuardLoading && !isClockedIn;
+  const shouldRedirectToOpenShift = !isGuardLoading && isClockedIn && shift === null;
+
+  useEffect(() => {
+    if (shouldRedirectToClockIn) router.replace('/branch/clock-in');
+  }, [shouldRedirectToClockIn, router]);
+
+  useEffect(() => {
+    if (shouldRedirectToOpenShift) router.replace('/branch/shift/open');
+  }, [shouldRedirectToOpenShift, router]);
 
   // Refresh the offline cache whenever the live catalog loads — Architecture
   // doc §10.1: refreshed on connect and at least every 30 minutes.
@@ -338,6 +362,34 @@ export default function TerminalPage() {
 
   if (!branchId) {
     return <p className="p-6 text-sm text-destructive">No branch assigned.</p>;
+  }
+
+  if (isGuardLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
+
+  // Redirect in flight — render nothing rather than flashing the catalog/cart.
+  if (shouldRedirectToClockIn || shouldRedirectToOpenShift) {
+    return null;
+  }
+
+  if (belongsToAnother) {
+    return (
+      <div className="mx-auto max-w-md space-y-4 p-6 text-center">
+        <h1 className="text-xl font-bold">Shift mismatch</h1>
+        <p className="text-sm text-muted-foreground">
+          The active shift at this branch is open under a different cashier account. Checkout is blocked until this is
+          resolved — view the Current Shift page, or ask a supervisor/super_admin to close it.
+        </p>
+        <Button asChild variant="outline">
+          <Link href="/branch/shift">View Current Shift</Link>
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -667,14 +719,6 @@ export default function TerminalPage() {
           )}
 
           {chargeError && <p className="text-xs text-destructive">{chargeError}</p>}
-          {!shift && (
-            <div className="space-y-1.5">
-              <p className="text-xs text-destructive">No active shift — open a shift before charging.</p>
-              <Button variant="outline" size="sm" className="w-full" asChild>
-                <Link href="/branch/shift/open">Open Shift</Link>
-              </Button>
-            </div>
-          )}
 
           <Button variant="pos" className="w-full" disabled={!canCharge || createTransaction.isPending} onClick={() => void handleCharge()}>
             {createTransaction.isPending ? 'Charging…' : `Charge ${formatPeso(totalAmount)}`}

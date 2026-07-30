@@ -160,6 +160,21 @@ describe('POST / — happy path', () => {
     expect(transactionsService.createTransaction).toHaveBeenCalled();
   });
 
+  it('overrides a mismatched client-supplied shift_id with the shiftGuard-resolved active shift for staff', async () => {
+    const OTHER_SHIFT = randomUUID();
+    vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: SHIFT_1 } as never);
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: validCreateBody({ shift_id: OTHER_SHIFT }) });
+    const res = mockRes();
+    vi.mocked(transactionsService.createTransaction).mockResolvedValue({ id: TXN_1 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null);
+  });
+
   it('staff with no active shift is blocked by shiftGuard before reaching the service — 403 NO_ACTIVE_SHIFT', async () => {
     vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');

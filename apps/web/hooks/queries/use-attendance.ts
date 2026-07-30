@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type { AttendanceListResponse, AttendanceResponse, ClockInInput, ClockOutInput, ManualOverrideInput } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useAuth } from '@/hooks/use-auth';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 interface ApiErrorShape {
@@ -58,6 +59,21 @@ export function useAttendanceByEmployee(employeeId: string | null | undefined, f
     enabled: Boolean(employeeId),
     placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * Canonical "is the current authenticated cashier clocked in right now"
+ * check — same derivation clock-in/page.tsx uses for its own status card
+ * (latest attendance record with no clock-out yet), reusable by Open Shift
+ * and the POS route guard so they never disagree with the Clock In page
+ * about attendance state.
+ */
+export function useIsClockedIn() {
+  const { user } = useAuth();
+  const query = useAttendanceByEmployee(user?.id, { limit: 1 });
+  const latestRecord = query.data?.records[0] ?? null;
+  const isClockedIn = latestRecord !== null && latestRecord.clock_out_server_time === null;
+  return { isClockedIn, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
 }
 
 function invalidateAttendance(queryClient: ReturnType<typeof useQueryClient>) {

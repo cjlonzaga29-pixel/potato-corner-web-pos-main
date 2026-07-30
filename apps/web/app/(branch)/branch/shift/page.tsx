@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { useAuth } from '@/hooks/use-auth';
-import { useCurrentShift } from '@/hooks/queries/use-shifts';
+import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -39,7 +39,8 @@ export default function ShiftDashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
-  const { data: shift, isLoading, isError, refetch } = useCurrentShift(branchId);
+  const { shift, isLoading, isError, refetch, belongsToAnother } = useMyActiveShift(branchId);
+  useShiftsRealtimeSync();
   const now = useNow();
 
   if (!branchId) {
@@ -73,8 +74,10 @@ export default function ShiftDashboardPage() {
   // shiftGuard (POS checkout gate) matches on cashier_id, not opened_by —
   // if this branch's active shift belongs to a different cashier than the
   // account currently logged in, checkout will fail with NO_ACTIVE_SHIFT
-  // even though this page shows a shift as active.
-  const belongsToSomeoneElse = Boolean(user?.id) && shift.cashier_id !== user?.id;
+  // even though this page shows a shift as active. belongsToAnother comes
+  // from useMyActiveShift, the same cashier-identity comparison the POS
+  // route guard and Open Shift page use.
+  const belongsToSomeoneElse = belongsToAnother;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 overflow-y-auto p-6">

@@ -120,52 +120,40 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration', () => {
  * (transactionsService.createTransaction) against a real Postgres database,
  * proving two guarantees that can't be verified by mocking the repository:
  *
- *  1. Cross-branch stock isolation: ProductInventory mappings are branch-
- *     scoped (findByVariantForDeduction filters on the selling branch's own
- *     branchId) — a sale at branch B must deduct only branch B's own mapped
- *     Ingredient and never touch another branch's identically-named
- *     Ingredient (e.g. branch A's "Potato").
+ *  1. Cross-branch stock isolation: InventoryStock rows are branch-scoped
+ *     (unique on [branchId, inventoryItemId]) while the ProductComponent
+ *     recipe and the InventoryItem it points at are both global — a sale at
+ *     branch B must decrement only branch B's own InventoryStock row and
+ *     never touch branch A's InventoryStock row for that same shared
+ *     "Potato" InventoryItem.
  *  2. Rollback on insufficient stock: the sale, its line items, and its
  *     inventory deduction all happen inside one `prisma.$transaction` — a
- *     stock shortfall on any ingredient must roll back the entire write,
- *     leaving no Transaction row and no InventoryMovement row behind.
+ *     stock shortfall must roll back the entire write, leaving no
+ *     Transaction row and no InventoryStockMovement row behind.
  */
 describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 POS deduction integrity', () => {
   let cashierId: string;
+  let unitId: string;
+  let potatoId: string;
   let branchAId: string;
-  let potatoAId: string;
   let productId: string;
   let variantId: string;
 
-  async function createStockedBranch(potatoStock: number): Promise<{ branchId: string; potatoId: string; shiftId: string }> {
+  async function createStockedBranch(potatoStock: number): Promise<{ branchId: string; shiftId: string }> {
     const branch = await prisma.branch.create({
       data: { name: `Test Branch ${randomUUID()}`, code: `CR004-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
     });
     await prisma.branchProductAvailability.create({ data: { branchId: branch.id, productId, isAvailable: true } });
-    const potato = await prisma.ingredient.create({
-      data: { branchId: branch.id, name: 'Potato', unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
-    });
-    if (potatoStock > 0) {
-      await prisma.inventoryMovement.create({
-        data: {
-          branchId: branch.id,
-          ingredientId: potato.id,
-          movementType: 'stock_in',
-          quantityChange: potatoStock,
-          quantityBefore: 0,
-          quantityAfter: potatoStock,
-        },
-      });
-    }
-    // Deduction reads exclusively from ProductInventory (branch-scoped) —
-    // each selling branch needs its own mapping to its own Potato Ingredient.
-    await prisma.productInventory.create({
-      data: { branchId: branch.id, productVariantId: variantId, ingredientId: potato.id, flavorId: null, quantityRequired: 200, unit: 'g' },
+    // Deduction reads exclusively from InventoryStock (branch-scoped) —
+    // each selling branch needs its own row against the shared Potato
+    // InventoryItem; the ProductComponent recipe itself is not branch-scoped.
+    await prisma.inventoryStock.create({
+      data: { branchId: branch.id, inventoryItemId: potatoId, quantityOnHand: potatoStock },
     });
     const shift = await prisma.shift.create({
       data: { branchId: branch.id, cashierId, openedBy: cashierId, status: 'active', openingCashAmount: 0, startedAt: new Date() },
     });
-    return { branchId: branch.id, potatoId: potato.id, shiftId: shift.id };
+    return { branchId: branch.id, shiftId: shift.id };
   }
 
   beforeAll(async () => {
@@ -182,18 +170,15 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     });
     cashierId = user.id;
 
-    const branchA = await prisma.branch.create({
-      data: { name: 'CR-004 Branch A (recipe origin)', code: `CR004A-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+    const unit = await prisma.unitOfMeasure.create({
+      data: { code: `cr004-g-${randomUUID().slice(0, 8)}`, name: 'CR-004 Gram', dimension: 'WEIGHT', isBaseUnit: true },
     });
-    branchAId = branchA.id;
+    unitId = unit.id;
 
-    const potatoA = await prisma.ingredient.create({
-      data: { branchId: branchAId, name: 'Potato', unit: 'g', currentStock: 0, lowStockThreshold: 0, criticalThreshold: 0 },
+    const potato = await prisma.inventoryItem.create({
+      data: { name: `CR-004 Potato ${randomUUID()}`, baseUnitId: unitId },
     });
-    potatoAId = potatoA.id;
-    await prisma.inventoryMovement.create({
-      data: { branchId: branchAId, ingredientId: potatoAId, movementType: 'stock_in', quantityChange: 1000, quantityBefore: 0, quantityAfter: 1000 },
-    });
+    potatoId = potato.id;
 
     const product = await prisma.product.create({ data: { name: 'CR-004 Fries', status: 'active' } });
     productId = product.id;
@@ -202,31 +187,43 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     });
     variantId = variant.id;
 
-    // Branch A gets its own Potato Ingredient but deliberately NO
-    // ProductInventory mapping for variantId — it exists only so tests can
-    // assert its stock is never touched by a sale at another branch.
+    // The recipe itself is global (not branch-scoped) — 200g of Potato per unit sold.
+    await prisma.productComponent.create({
+      data: { productVariantId: variantId, inventoryItemId: potatoId, quantityRequired: 200 },
+    });
+
+    // Branch A gets its own InventoryStock row against the shared Potato
+    // item but never sells — it exists only so tests can assert its stock is
+    // never touched by a sale at another branch.
+    const branchA = await prisma.branch.create({
+      data: { name: 'CR-004 Branch A (recipe origin)', code: `CR004A-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
+    });
+    branchAId = branchA.id;
+    await prisma.inventoryStock.create({ data: { branchId: branchAId, inventoryItemId: potatoId, quantityOnHand: 1000 } });
   });
 
   afterAll(async () => {
-    // Transaction/TransactionItem/InventoryMovement are guarded against
+    // Transaction/TransactionItem/InventoryStockMovement are guarded against
     // application-level update/delete by lib/prisma-immutability.ts — raw
     // SQL bypasses that guard, which is exactly the escape hatch it's meant
     // to leave open for infrastructure-level test teardown.
     await prisma.$executeRaw`DELETE FROM "transaction_items" WHERE "transaction_id" IN (SELECT id FROM "transactions" WHERE "cashier_id" = ${cashierId})`;
     await prisma.$executeRaw`DELETE FROM "transactions" WHERE "cashier_id" = ${cashierId}`;
-    await prisma.$executeRaw`DELETE FROM "inventory_movements" WHERE "ingredient_id" IN (SELECT id FROM "ingredients" WHERE "name" = 'Potato')`;
+    await prisma.$executeRaw`DELETE FROM "inventory_stock_movements" WHERE "inventory_item_id" = ${potatoId}`;
     await prisma.branchProductAvailability.deleteMany({ where: { productId } });
     await prisma.shift.deleteMany({ where: { cashierId } });
-    await prisma.productInventory.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.productComponent.deleteMany({ where: { productVariantId: variantId } });
+    await prisma.inventoryStock.deleteMany({ where: { inventoryItemId: potatoId } });
     await prisma.productVariant.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
-    await prisma.ingredient.deleteMany({ where: { name: 'Potato' } });
     await prisma.branch.deleteMany({ where: { OR: [{ id: branchAId }, { name: { startsWith: 'Test Branch ' } }] } });
+    await prisma.inventoryItem.deleteMany({ where: { id: potatoId } });
+    await prisma.unitOfMeasure.deleteMany({ where: { id: unitId } });
     await prisma.user.deleteMany({ where: { id: cashierId } });
     await prisma.$disconnect();
   });
 
-  it('a sale at a different branch deducts that branch\'s own Potato, never branch A\'s pinned Potato', async () => {
+  it("a sale at a different branch deducts that branch's own Potato stock, never branch A's pinned stock", async () => {
     const branchB = await createStockedBranch(500);
 
     const result = await transactionsService.createTransaction(
@@ -244,21 +241,21 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
 
     expect(result.status).toBe('completed');
 
-    const [potatoA, potatoB] = await Promise.all([
-      prisma.inventoryMovement.aggregate({ where: { ingredientId: potatoAId }, _sum: { quantityChange: true } }),
-      prisma.inventoryMovement.aggregate({ where: { ingredientId: branchB.potatoId }, _sum: { quantityChange: true } }),
+    const [stockA, stockB] = await Promise.all([
+      prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId: branchAId, inventoryItemId: potatoId } } }),
+      prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId: branchB.branchId, inventoryItemId: potatoId } } }),
     ]);
-    expect(Number(potatoA._sum.quantityChange)).toBe(1000); // branch A untouched
-    expect(Number(potatoB._sum.quantityChange)).toBe(300); // 500 - 200
+    expect(stockA.quantityOnHand.toNumber()).toBe(1000); // branch A untouched
+    expect(stockB.quantityOnHand.toNumber()).toBe(300); // 500 - 200
 
-    const deductionMovement = await prisma.inventoryMovement.findFirst({
-      where: { referenceId: result.id, movementType: 'sale_deduction' },
+    const deductionMovement = await prisma.inventoryStockMovement.findFirst({
+      where: { referenceId: result.id, movementType: 'SALE' },
     });
     expect(deductionMovement?.branchId).toBe(branchB.branchId);
-    expect(deductionMovement?.ingredientId).toBe(branchB.potatoId);
+    expect(deductionMovement?.inventoryItemId).toBe(potatoId);
   });
 
-  it('rejects the sale and creates neither a Transaction nor an InventoryMovement row when stock is insufficient', async () => {
+  it('rejects the sale and creates neither a Transaction nor an InventoryStockMovement row when stock is insufficient', async () => {
     const branchC = await createStockedBranch(50); // needs 200g, only 50g on hand
 
     await expect(
@@ -276,12 +273,12 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
       ),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK', statusCode: 409 });
 
-    const [transactionCount, movementSum] = await Promise.all([
+    const [transactionCount, stockC] = await Promise.all([
       prisma.transaction.count({ where: { branchId: branchC.branchId } }),
-      prisma.inventoryMovement.aggregate({ where: { ingredientId: branchC.potatoId }, _sum: { quantityChange: true } }),
+      prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId: branchC.branchId, inventoryItemId: potatoId } } }),
     ]);
     expect(transactionCount).toBe(0);
-    expect(Number(movementSum._sum.quantityChange)).toBe(50); // unchanged — only the initial stock-in
+    expect(stockC.quantityOnHand.toNumber()).toBe(50); // unchanged — only the initial stock-in
   });
 
   it('rejects the whole sale with RECIPE_MISSING for a variant no one has configured a recipe for, at any branch', async () => {

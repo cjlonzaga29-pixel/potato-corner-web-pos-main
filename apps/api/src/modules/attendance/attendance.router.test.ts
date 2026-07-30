@@ -288,7 +288,11 @@ describe('GET /employee/:employeeId', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(attendanceService.getByEmployee).toHaveBeenCalledWith(EMPLOYEE_1, expect.objectContaining({ page: 1, limit: 25 }));
+    expect(attendanceService.getByEmployee).toHaveBeenCalledWith(
+      EMPLOYEE_1,
+      expect.objectContaining({ page: 1, limit: 25 }),
+      expect.objectContaining({ role: 'super_admin' }),
+    );
   });
 
   it('returns 200 for a staff member reading their own attendance status (Branch Clock In page)', async () => {
@@ -301,7 +305,28 @@ describe('GET /employee/:employeeId', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(attendanceService.getByEmployee).toHaveBeenCalledWith(EMPLOYEE_1, expect.objectContaining({ page: 1, limit: 1 }));
+    expect(attendanceService.getByEmployee).toHaveBeenCalledWith(
+      EMPLOYEE_1,
+      expect.objectContaining({ page: 1, limit: 1 }),
+      expect.objectContaining({ role: 'staff', user_id: EMPLOYEE_1 }),
+    );
+  });
+
+  it('passes through a 403 from the service (e.g. a staff member reading another employee) without leaking data', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'get', '/employee/:employeeId');
+    const otherEmployeeId = randomUUID();
+    const token = generateStaffToken(BRANCH_1, { userId: EMPLOYEE_1 });
+    const req = mockReq({ ...authHeader(token), params: { employeeId: otherEmployeeId } });
+    const res = mockRes();
+    const { AttendanceError } = await import('./attendance.types.js');
+    vi.mocked(attendanceService.getByEmployee).mockRejectedValue(
+      new AttendanceError('EMPLOYEE_ACCESS_DENIED', 'You may only view your own attendance', 403),
+    );
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: null, error: expect.objectContaining({ code: 'EMPLOYEE_ACCESS_DENIED' }) }));
   });
 });
 

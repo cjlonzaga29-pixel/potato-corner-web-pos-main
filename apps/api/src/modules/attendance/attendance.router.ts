@@ -140,7 +140,7 @@ router.get(
       if (!requireUser(req, res)) return;
       const filters = parseListQuery(req, res);
       if (!filters) return;
-      const result = await attendanceService.getByEmployee(req.params.employeeId as string, filters);
+      const result = await attendanceService.getByEmployee(req.params.employeeId as string, filters, req.user);
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleAttendanceError(error, res, next);

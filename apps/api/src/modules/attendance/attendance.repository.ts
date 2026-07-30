@@ -74,6 +74,13 @@ export const attendanceRepository = {
     });
   },
 
+  /** Same check as findBranchAssignment but against a set of branch ids — used to test an employee against a supervisor's (or branch's) full accessible-branch scope from lib/branch-access.ts in one query. */
+  findBranchAssignmentInBranches(employeeId: string, branchIds: string[]) {
+    return prisma.userBranchAssignment.findFirst({
+      where: { userId: employeeId, branchId: { in: branchIds }, removedAt: null },
+    });
+  },
+
   /** Used to read the branch's configured GPS center + radius for clock-in geofence validation. */
   findBranchById(branchId: string) {
     return prisma.branch.findUnique({ where: { id: branchId } });

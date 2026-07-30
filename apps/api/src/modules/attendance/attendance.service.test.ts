@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { attendanceResponseSchema } from '@potato-corner/shared';
+import { ROLES, attendanceResponseSchema } from '@potato-corner/shared';
 
 vi.mock('../../lib/notify.js', () => ({
   notifyBranch: vi.fn(),
@@ -10,6 +10,7 @@ vi.mock('../../lib/notify.js', () => ({
 vi.mock('./attendance.repository.js', () => ({
   attendanceRepository: {
     findBranchAssignment: vi.fn(),
+    findBranchAssignmentInBranches: vi.fn(),
     findActiveRecord: vi.fn(),
     findBranchById: vi.fn(),
     findById: vi.fn(),
@@ -32,14 +33,42 @@ vi.mock('../cash/cash.repository.js', () => ({
   },
 }));
 
+// getAccessibleBranchIds (lib/branch-access.js) resolves Supervisor's scope
+// from the database — mocked at the branchesRepository layer so the real
+// branch-access logic still runs, same technique as attendance.router.test.ts.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { attendanceRepository } = await import('./attendance.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { attendanceService } = await import('./attendance.service.js');
 
 const STAFF = { id: 'employee-1', role: 'staff' };
 const SUPERVISOR = { id: 'supervisor-1', role: 'supervisor' };
+
+const IAT_EXP = { iat: 0, exp: 9999999999 };
+
+function staffUser(userId: string, branchId: string) {
+  return { user_id: userId, role: ROLES.STAFF, email: null, branch_ids: [branchId], ...IAT_EXP };
+}
+
+function branchUser(branchId: string) {
+  return { user_id: randomUUID(), role: ROLES.BRANCH, email: 'branch@test.com', branch_ids: [branchId], ...IAT_EXP };
+}
+
+function supervisorUser(branchIds: string[] = []) {
+  return { user_id: randomUUID(), role: ROLES.SUPERVISOR, email: 'sup@test.com', branch_ids: branchIds, ...IAT_EXP };
+}
+
+function superAdminUser() {
+  return { user_id: randomUUID(), role: ROLES.SUPER_ADMIN, email: 'admin@test.com', ...IAT_EXP } as const;
+}
 
 function decimal(value: number): { toNumber(): number } {
   return { toNumber: () => value };
@@ -284,5 +313,145 @@ describe('attendanceService.manualOverride', () => {
       attendanceService.manualOverride('record-1', { correctionReason: 'Some correction reason' }, SUPERVISOR),
     ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
     expect(attendanceRepository.createOverride).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * GET /employee/:employeeId access scoping. The route itself is open to
+ * every role (allRoles), so every request's employeeId must be checked
+ * against the requester's own scope here, in the service — the router test
+ * mocks this service out entirely and only proves the role gate + error
+ * mapping, not the scoping decision itself.
+ */
+describe('attendanceService.getByEmployee', () => {
+  const EMPLOYEE_ID = randomUUID();
+  const BRANCH_1 = randomUUID();
+  const BRANCH_2 = randomUUID();
+  const FILTERS = { page: 1, limit: 25 };
+
+  function mockRecords(records: unknown[] = [], total = 0) {
+    vi.mocked(attendanceRepository.findByEmployee).mockResolvedValue({ records, total } as never);
+  }
+
+  describe('staff', () => {
+    it('reads their own attendance → 200', async () => {
+      mockRecords();
+      const result = await attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, staffUser(EMPLOYEE_ID, BRANCH_1));
+      expect(result).toEqual({ records: [], total: 0, page: 1, limit: 25 });
+      expect(attendanceRepository.findByEmployee).toHaveBeenCalledWith(EMPLOYEE_ID, FILTERS);
+    });
+
+    it('reads another employee → 403 EMPLOYEE_ACCESS_DENIED, no data fetched', async () => {
+      const otherEmployeeId = randomUUID();
+      await expect(
+        attendanceService.getByEmployee(otherEmployeeId, FILTERS, staffUser(EMPLOYEE_ID, BRANCH_1)),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+      expect(attendanceRepository.findByEmployee).not.toHaveBeenCalled();
+    });
+
+    it('reads an employee from another branch → 403 EMPLOYEE_ACCESS_DENIED, no data fetched', async () => {
+      const otherEmployeeId = randomUUID();
+      await expect(
+        attendanceService.getByEmployee(otherEmployeeId, FILTERS, staffUser(EMPLOYEE_ID, BRANCH_2)),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+      expect(attendanceRepository.findByEmployee).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('branch', () => {
+    it('reads an employee assigned to its active branch → 200', async () => {
+      vi.mocked(attendanceRepository.findBranchAssignmentInBranches).mockResolvedValue({ id: 'assignment-1' } as never);
+      mockRecords();
+
+      const result = await attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, branchUser(BRANCH_1));
+
+      expect(result).toEqual({ records: [], total: 0, page: 1, limit: 25 });
+      expect(attendanceRepository.findBranchAssignmentInBranches).toHaveBeenCalledWith(EMPLOYEE_ID, [BRANCH_1]);
+      expect(attendanceRepository.findByEmployee).toHaveBeenCalledWith(EMPLOYEE_ID, FILTERS);
+    });
+
+    it('reads an employee assigned to another branch → 403 BRANCH_ACCESS_DENIED, no data fetched', async () => {
+      vi.mocked(attendanceRepository.findBranchAssignmentInBranches).mockResolvedValue(null);
+
+      await expect(attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, branchUser(BRANCH_1))).rejects.toMatchObject({
+        code: 'BRANCH_ACCESS_DENIED',
+        statusCode: 403,
+      });
+      expect(attendanceRepository.findByEmployee).not.toHaveBeenCalled();
+    });
+
+    it('reads an employee whose only assignment at this branch is inactive (removed) → 403 BRANCH_ACCESS_DENIED', async () => {
+      // findBranchAssignmentInBranches already filters removedAt: null at the
+      // query layer (attendance.repository.ts), so a removed assignment
+      // surfaces here as no match, same as "another branch".
+      vi.mocked(attendanceRepository.findBranchAssignmentInBranches).mockResolvedValue(null);
+
+      await expect(attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, branchUser(BRANCH_1))).rejects.toMatchObject({
+        code: 'BRANCH_ACCESS_DENIED',
+        statusCode: 403,
+      });
+      expect(attendanceRepository.findByEmployee).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('supervisor', () => {
+    it('reads an employee in an authorized (active) branch → 200', async () => {
+      vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1, BRANCH_2]);
+      vi.mocked(attendanceRepository.findBranchAssignmentInBranches).mockResolvedValue({ id: 'assignment-1' } as never);
+      mockRecords();
+
+      const result = await attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, supervisorUser([]));
+
+      expect(result).toEqual({ records: [], total: 0, page: 1, limit: 25 });
+      expect(attendanceRepository.findBranchAssignmentInBranches).toHaveBeenCalledWith(EMPLOYEE_ID, [BRANCH_1, BRANCH_2]);
+    });
+
+    it('reads an employee outside every authorized branch → 403 BRANCH_ACCESS_DENIED, no data fetched', async () => {
+      vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_2]);
+      vi.mocked(attendanceRepository.findBranchAssignmentInBranches).mockResolvedValue(null);
+
+      await expect(attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, supervisorUser([]))).rejects.toMatchObject({
+        code: 'BRANCH_ACCESS_DENIED',
+        statusCode: 403,
+      });
+      expect(attendanceRepository.findByEmployee).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('super_admin', () => {
+    it('reads any employee → 200, without a branch-assignment lookup', async () => {
+      mockRecords();
+
+      const result = await attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, superAdminUser());
+
+      expect(result).toEqual({ records: [], total: 0, page: 1, limit: 25 });
+      expect(attendanceRepository.findBranchAssignmentInBranches).not.toHaveBeenCalled();
+      expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('empty state', () => {
+    it('an authorized request with no attendance records returns 200 with records: [] and total: 0', async () => {
+      mockRecords([], 0);
+
+      const result = await attendanceService.getByEmployee(EMPLOYEE_ID, FILTERS, staffUser(EMPLOYEE_ID, BRANCH_1));
+
+      expect(result).toEqual({ records: [], total: 0, page: 1, limit: 25 });
+    });
+  });
+
+  describe('security', () => {
+    it('a denied request never reaches the repository, so no GPS/attendance data can be returned in the response', async () => {
+      const gpsRecord = attendanceRow({ clockInGpsLat: decimal(14.5995), clockInGpsLng: decimal(120.9842) });
+      // Even if the repository *would* return GPS-bearing records, the
+      // authorization check must short-circuit before it's ever called.
+      mockRecords([gpsRecord], 1);
+
+      await expect(
+        attendanceService.getByEmployee(randomUUID(), FILTERS, staffUser(EMPLOYEE_ID, BRANCH_1)),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
+
+      expect(attendanceRepository.findByEmployee).not.toHaveBeenCalled();
+    });
   });
 });

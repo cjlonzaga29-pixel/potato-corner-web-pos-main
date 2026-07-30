@@ -290,6 +290,19 @@ describe('GET /employee/:employeeId', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(attendanceService.getByEmployee).toHaveBeenCalledWith(EMPLOYEE_1, expect.objectContaining({ page: 1, limit: 25 }));
   });
+
+  it('returns 200 for a staff member reading their own attendance status (Branch Clock In page)', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'get', '/employee/:employeeId');
+    const token = generateStaffToken(BRANCH_1, { userId: EMPLOYEE_1 });
+    const req = mockReq({ ...authHeader(token), params: { employeeId: EMPLOYEE_1 }, query: { limit: '1' } });
+    const res = mockRes();
+    vi.mocked(attendanceService.getByEmployee).mockResolvedValue({ records: [], total: 0, page: 1, limit: 1 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(attendanceService.getByEmployee).toHaveBeenCalledWith(EMPLOYEE_1, expect.objectContaining({ page: 1, limit: 1 }));
+  });
 });
 
 describe('POST /override', () => {

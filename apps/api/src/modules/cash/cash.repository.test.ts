@@ -20,6 +20,13 @@ vi.mock('../../lib/prisma.js', () => {
     shiftCashDenomination: {
       createMany: vi.fn(),
     },
+    shiftReview: {
+      createMany: vi.fn(),
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
+      update: vi.fn(),
+      count: vi.fn(),
+    },
     transaction: {
       groupBy: vi.fn(),
       count: vi.fn(),
@@ -103,7 +110,83 @@ describe('cashRepository.createShift', () => {
         { shiftId: 'shift-1', denomination: 100, count: 1, totalValue: 100, countType: 'opening' },
       ],
     });
+    expect(prisma.shiftReview.createMany).toHaveBeenCalledWith({
+      data: [
+        { shiftId: 'shift-1', phase: 'opening' },
+        { shiftId: 'shift-1', phase: 'closing' },
+      ],
+    });
     expect(prisma.shift.findUniqueOrThrow).toHaveBeenCalledWith({ where: { id: 'shift-1' }, include: { denominations: true } });
+  });
+});
+
+describe('cashRepository.listReviewsForShift', () => {
+  it('fetches both phase rows for a shift ordered by phase', async () => {
+    vi.mocked(prisma.shiftReview.findMany).mockResolvedValue([]);
+
+    await cashRepository.listReviewsForShift('shift-1');
+
+    expect(prisma.shiftReview.findMany).toHaveBeenCalledWith({ where: { shiftId: 'shift-1' }, orderBy: { phase: 'asc' } });
+  });
+});
+
+describe('cashRepository.findReview', () => {
+  it('looks up a single phase row via the shiftId_phase compound unique key', async () => {
+    vi.mocked(prisma.shiftReview.findUnique).mockResolvedValue(null);
+
+    await cashRepository.findReview('shift-1', 'opening');
+
+    expect(prisma.shiftReview.findUnique).toHaveBeenCalledWith({ where: { shiftId_phase: { shiftId: 'shift-1', phase: 'opening' } } });
+  });
+});
+
+describe('cashRepository.submitReview', () => {
+  it('records an approval with reviewer and timestamp', async () => {
+    vi.mocked(prisma.shiftReview.update).mockResolvedValue({ id: 'review-1' } as never);
+
+    await cashRepository.submitReview('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50), reviewedBy: 'admin-1' });
+
+    expect(prisma.shiftReview.update).toHaveBeenCalledWith({
+      where: { shiftId_phase: { shiftId: 'shift-1', phase: 'closing' } },
+      data: { status: 'approved', reviewedBy: 'admin-1', reviewedAt: expect.any(Date), notes: 'x'.repeat(50) },
+    });
+  });
+
+  it('records a rejection', async () => {
+    vi.mocked(prisma.shiftReview.update).mockResolvedValue({ id: 'review-1' } as never);
+
+    await cashRepository.submitReview('shift-1', 'opening', { approved: false, notes: 'x'.repeat(50), reviewedBy: 'admin-1' });
+
+    expect(prisma.shiftReview.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'rejected' }) }),
+    );
+  });
+});
+
+describe('cashRepository.listPendingReviews', () => {
+  it('filters to pending status, applies optional branch/phase filters, and paginates', async () => {
+    vi.mocked(prisma.shiftReview.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.shiftReview.count).mockResolvedValue(0);
+
+    await cashRepository.listPendingReviews({ branchId: 'branch-1', phase: 'opening', page: 2, limit: 10 });
+
+    expect(prisma.shiftReview.findMany).toHaveBeenCalledWith({
+      where: { status: 'pending', phase: 'opening', shift: { branchId: 'branch-1' } },
+      include: { shift: { select: { id: true, branchId: true, cashierId: true, status: true, startedAt: true, closedAt: true } } },
+      orderBy: { createdAt: 'asc' },
+      skip: 10,
+      take: 10,
+    });
+    expect(prisma.shiftReview.count).toHaveBeenCalledWith({ where: { status: 'pending', phase: 'opening', shift: { branchId: 'branch-1' } } });
+  });
+
+  it('omits branch/phase from the where clause when not provided', async () => {
+    vi.mocked(prisma.shiftReview.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.shiftReview.count).mockResolvedValue(0);
+
+    await cashRepository.listPendingReviews({ page: 1, limit: 25 });
+
+    expect(prisma.shiftReview.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'pending' } }));
   });
 });
 

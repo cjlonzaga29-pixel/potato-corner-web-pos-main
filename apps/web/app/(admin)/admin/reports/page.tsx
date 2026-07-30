@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
 import { toast } from 'sonner';
 import type {
@@ -27,6 +28,8 @@ import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
 import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
 import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
+import { FinancialSummaryPanel } from '@/components/reports/financial-summary-panel';
+import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { expenseColumns } from '@/components/admin/expense-columns';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
@@ -194,7 +197,9 @@ const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="attendance" /> },
 ];
 
-const VALID_TABS = new Set([
+const TOP_LEVEL_TABS = new Set(['FINANCIAL_SUMMARY', 'INVENTORY_ANALYTICS', 'DETAILED']);
+
+const VALID_DETAIL_TABS = new Set([
   'DAILY_SALES',
   'CASH_RECONCILIATION',
   'EXPENSES',
@@ -211,15 +216,24 @@ function AdminReportsPageContent() {
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSocketConnected = useSocketStore((s) => s.isConnected);
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
   useExpensesRealtimeSync();
 
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
   const [dateTo, setDateTo] = useState(() => manilaToday());
+
   const [activeTab, setActiveTab] = useState(() => {
     const tabParam = searchParams.get('tab');
-    return tabParam && VALID_TABS.has(tabParam) ? tabParam : 'DAILY_SALES';
+    if (tabParam && TOP_LEVEL_TABS.has(tabParam)) return tabParam;
+    if (tabParam && VALID_DETAIL_TABS.has(tabParam)) return 'DETAILED';
+    return 'FINANCIAL_SUMMARY';
   });
+  const [detailedSubTab, setDetailedSubTab] = useState(() => {
+    const tabParam = searchParams.get('tab');
+    return tabParam && VALID_DETAIL_TABS.has(tabParam) ? tabParam : 'DAILY_SALES';
+  });
+
   const [refreshDisabled, setRefreshDisabled] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
@@ -248,13 +262,13 @@ function AdminReportsPageContent() {
 
   const realtimeFilters = { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
 
-  const dailySales = useDailySalesReport(realtimeFilters, activeTab === 'DAILY_SALES');
-  const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeTab === 'CASH_RECONCILIATION');
-  const voidRefund = useVoidRefundReport(realtimeFilters, activeTab === 'VOID_REFUND');
-  const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeTab === 'FRAUD_ALERT_SUMMARY');
-  const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeTab === 'DISCOUNT_COMPLIANCE');
-  const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeTab === 'INVENTORY_MOVEMENT');
-  const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeTab === 'ATTENDANCE_SUMMARY');
+  const dailySales = useDailySalesReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'DAILY_SALES');
+  const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'CASH_RECONCILIATION');
+  const voidRefund = useVoidRefundReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'VOID_REFUND');
+  const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'FRAUD_ALERT_SUMMARY');
+  const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'DISCOUNT_COMPLIANCE');
+  const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'INVENTORY_MOVEMENT');
+  const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
     branch_id: selectedBranchId ?? undefined,
     date_from: dateFrom,
@@ -263,28 +277,28 @@ function AdminReportsPageContent() {
     limit: 100,
   });
 
-  const activeQueryByTab: Record<string, { refetch: () => void }> = {
-    DAILY_SALES: dailySales,
-    CASH_RECONCILIATION: cashReconciliation,
-    VOID_REFUND: voidRefund,
-    FRAUD_ALERT_SUMMARY: fraudAlertSummary,
-    DISCOUNT_COMPLIANCE: discountCompliance,
-    INVENTORY_MOVEMENT: inventoryMovement,
-    ATTENDANCE_SUMMARY: attendanceSummary,
-    EXPENSES: expenses,
-  };
-
+  /** Broad invalidate rather than a single per-tab refetch — Refresh now needs to cover Financial Summary and Inventory Analytics panels too, which own their queries internally. Already rate-limited by the cooldown below. */
   function handleRefresh() {
-    activeQueryByTab[activeTab]?.refetch();
+    void queryClient.invalidateQueries({ queryKey: ['reports'] });
+    void queryClient.invalidateQueries({ queryKey: ['expenses', 'list'] });
     setRefreshDisabled(true);
     setRefreshCooldown(REFRESH_COOLDOWN_SECONDS);
   }
 
+  /** Financial Summary exports as the DAILY_SALES report (its underlying data source); Inventory Analytics has no registered ReportType and isn't exportable via this endpoint. */
+  function exportableReportType(): ExportRequestInput['report_type'] | null {
+    if (activeTab === 'FINANCIAL_SUMMARY') return 'DAILY_SALES';
+    if (activeTab === 'INVENTORY_ANALYTICS') return null;
+    if (detailedSubTab === 'EXPENSES') return null;
+    return detailedSubTab as ExportRequestInput['report_type'];
+  }
+
   function handleExport(format: 'csv' | 'pdf') {
-    if (activeTab === 'EXPENSES') return;
+    const reportType = exportableReportType();
+    if (!reportType) return;
     setIsExporting(true);
     const input: ExportRequestInput = {
-      report_type: activeTab as ExportRequestInput['report_type'],
+      report_type: reportType,
       filters: { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },
       format,
     };
@@ -324,212 +338,242 @@ function AdminReportsPageContent() {
       />
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="flex-wrap">
-          <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
-          <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
-          <TabsTrigger value="EXPENSES">Expenses</TabsTrigger>
-          <TabsTrigger value="VOID_REFUND">Voided / Refund</TabsTrigger>
-          <TabsTrigger value="SHIFT_SUMMARY">Shift Reports</TabsTrigger>
-          <TabsTrigger value="FRAUD_ALERT_SUMMARY">Alerts</TabsTrigger>
-          <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
-          <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
-          <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
-          <TabsTrigger value="AUDIT_LOG">Audit Log</TabsTrigger>
+        <TabsList>
+          <TabsTrigger value="FINANCIAL_SUMMARY">Financial Summary</TabsTrigger>
+          <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="DAILY_SALES">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : dailySales.isError ? <ErrorState retry={() => dailySales.refetch()} /> : <>
-          <ReportLastUpdated timestamp={dailySales.data?.generated_at} isLoading={dailySales.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Gross Sales" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={dailySales.isLoading} />
-            <KpiCard title="Completed" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.completed_count, 0)} isLoading={dailySales.isLoading} />
-            <KpiCard title="Voided" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.voided_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
-            <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
-          </div>
-          <DataTable columns={dailySalesColumns} data={dailySales.data?.data ?? []} isLoading={dailySales.isLoading} emptyState={<EmptyState title="No sales in this range" />} />
-          </>}
+        <TabsContent value="FINANCIAL_SUMMARY">
+          <FinancialSummaryPanel branchId={selectedBranchId} dateFrom={dateFrom} dateTo={dateTo} />
         </TabsContent>
 
-        <TabsContent value="CASH_RECONCILIATION">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : cashReconciliation.isError ? <ErrorState retry={() => cashReconciliation.refetch()} /> : <>
-          <ReportLastUpdated timestamp={cashReconciliation.data?.generated_at} isLoading={cashReconciliation.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard title="Closed/Flagged Shifts" value={(cashReconciliation.data?.data ?? []).length} isLoading={cashReconciliation.isLoading} />
-            <KpiCard
-              title="Flagged"
-              value={(cashReconciliation.data?.data ?? []).filter((r) => r.status === 'flagged').length}
-              isLoading={cashReconciliation.isLoading}
-              tone="danger"
-            />
-            <KpiCard
-              title="Unapproved Variance"
-              value={(cashReconciliation.data?.data ?? []).filter((r) => r.cash_variance !== null && r.cash_variance !== 0 && !r.variance_approved).length}
-              isLoading={cashReconciliation.isLoading}
-              tone="warning"
-            />
-          </div>
-          <DataTable
-            columns={cashReconciliationColumns}
-            data={cashReconciliation.data?.data ?? []}
-            isLoading={cashReconciliation.isLoading}
-            emptyState={<EmptyState title="No closed or flagged shifts in this range" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="EXPENSES">
-          {expenses.isError ? <ErrorState retry={() => expenses.refetch()} /> : <>
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Expenses" value={expenses.data?.total ?? 0} isLoading={expenses.isLoading} />
-            <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
-          </div>
-          <DataTable
-            columns={expenseColumns}
-            data={expenses.data?.expenses ?? []}
-            isLoading={expenses.isLoading}
-            emptyState={
-              <EmptyState
-                title="No expenses recorded"
-                description="Expenses are submitted by branch supervisors and appear here automatically."
-              />
-            }
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="VOID_REFUND">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : voidRefund.isError ? <ErrorState retry={() => voidRefund.refetch()} /> : <>
-          <ReportLastUpdated timestamp={voidRefund.data?.generated_at} isLoading={voidRefund.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard title="Voided" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'voided').length} isLoading={voidRefund.isLoading} />
-            <KpiCard title="Refunded" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'refunded').length} isLoading={voidRefund.isLoading} />
-            <KpiCard title="Total Amount" value={(voidRefund.data?.data ?? []).reduce((sum, r) => sum + r.total_amount, 0)} isLoading={voidRefund.isLoading} tone="warning" />
-          </div>
-          <DataTable columns={voidRefundColumns} data={voidRefund.data?.data ?? []} isLoading={voidRefund.isLoading} emptyState={<EmptyState title="No voids or refunds in this range" />} />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="SHIFT_SUMMARY">
-          <ShiftLogPanel />
-        </TabsContent>
-
-        <TabsContent value="FRAUD_ALERT_SUMMARY">
-          {fraudAlertSummary.isError ? <ErrorState retry={() => fraudAlertSummary.refetch()} /> : <>
-          <ReportLastUpdated timestamp={fraudAlertSummary.data?.generated_at} isLoading={fraudAlertSummary.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Alerts" value={(fraudAlertSummary.data?.data ?? []).length} isLoading={fraudAlertSummary.isLoading} />
-            <KpiCard
-              title="Critical/High"
-              value={(fraudAlertSummary.data?.data ?? []).filter((r) => r.severity === 'critical' || r.severity === 'high').length}
-              isLoading={fraudAlertSummary.isLoading}
-              tone="danger"
-            />
-          </div>
-          <DataTable
-            columns={fraudAlertSummaryColumns}
-            data={fraudAlertSummary.data?.data ?? []}
-            isLoading={fraudAlertSummary.isLoading}
-            emptyState={<EmptyState title="No fraud alerts in this range" />}
-          />
-          <div className="mt-6 border-t pt-6">
-            <FraudAlertManagementPanel />
-          </div>
-          </>}
-        </TabsContent>
-
-        <TabsContent value="DISCOUNT_COMPLIANCE">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
-          <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard
-              title="Discounted Transactions"
-              value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)}
-              isLoading={discountCompliance.isLoading}
-            />
-            <KpiCard
-              title="Total Discount Amount"
-              value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_discount_amount, 0)}
-              isLoading={discountCompliance.isLoading}
-              tone="warning"
-            />
-            <KpiCard
-              title="Total VAT Exempt Amount"
-              value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_vat_exempt_amount, 0)}
-              isLoading={discountCompliance.isLoading}
-            />
-          </div>
-          <DataTable
-            columns={discountComplianceColumns}
-            data={discountCompliance.data?.data ?? []}
-            isLoading={discountCompliance.isLoading}
-            emptyState={<EmptyState title="No discounted transactions in this range" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="INVENTORY_MOVEMENT">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
-          <ReportLastUpdated timestamp={inventoryMovement.data?.generated_at} isLoading={inventoryMovement.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <KpiCard title="Total Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
-            <KpiCard
-              title="Stock In"
-              value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'stock_in').length}
-              isLoading={inventoryMovement.isLoading}
-            />
-            <KpiCard
-              title="Waste"
-              value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'waste').length}
-              isLoading={inventoryMovement.isLoading}
-              tone="warning"
-            />
-          </div>
-          <DataTable
-            columns={inventoryMovementColumns}
-            data={inventoryMovement.data?.data ?? []}
-            isLoading={inventoryMovement.isLoading}
-            emptyState={<EmptyState title="No inventory movements in this range" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="ATTENDANCE_SUMMARY">
-          {!selectedBranchId ? (
-            <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-          ) : attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
-          <ReportLastUpdated timestamp={attendanceSummary.data?.generated_at} isLoading={attendanceSummary.isLoading} />
-          <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Attendance Records" value={(attendanceSummary.data?.data ?? []).length} isLoading={attendanceSummary.isLoading} />
-            <KpiCard
-              title="Corrected"
-              value={(attendanceSummary.data?.data ?? []).filter((r) => r.status === 'corrected').length}
-              isLoading={attendanceSummary.isLoading}
-              tone="warning"
-            />
-          </div>
-          <DataTable
-            columns={attendanceSummaryColumns}
-            data={attendanceSummary.data?.data ?? []}
-            isLoading={attendanceSummary.isLoading}
-            emptyState={<EmptyState title="No attendance records in this range" />}
-          />
-          </>}
-        </TabsContent>
-
-        <TabsContent value="AUDIT_LOG">
-          <LoginAuditPanel />
+        <TabsContent value="INVENTORY_ANALYTICS">
+          <InventoryAnalyticsPanel branchId={selectedBranchId} />
         </TabsContent>
       </Tabs>
+
+      <div className="border-t pt-4">
+        <button
+          type="button"
+          aria-expanded={activeTab === 'DETAILED'}
+          onClick={() => setActiveTab(activeTab === 'DETAILED' ? 'FINANCIAL_SUMMARY' : 'DETAILED')}
+          className="text-muted-foreground hover:text-foreground text-sm font-medium underline-offset-4 hover:underline"
+        >
+          {activeTab === 'DETAILED' ? 'Hide legacy reports' : 'More Reports (legacy detailed breakdowns)'}
+        </button>
+
+        {activeTab === 'DETAILED' && (
+          <div className="mt-4">
+          <Tabs value={detailedSubTab} onValueChange={setDetailedSubTab}>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
+              <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
+              <TabsTrigger value="EXPENSES">Expenses</TabsTrigger>
+              <TabsTrigger value="VOID_REFUND">Voided / Refund</TabsTrigger>
+              <TabsTrigger value="SHIFT_SUMMARY">Shift Reports</TabsTrigger>
+              <TabsTrigger value="FRAUD_ALERT_SUMMARY">Alerts</TabsTrigger>
+              <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
+              <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
+              <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
+              <TabsTrigger value="AUDIT_LOG">Audit Log</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="DAILY_SALES">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : dailySales.isError ? <ErrorState retry={() => dailySales.refetch()} /> : <>
+              <ReportLastUpdated timestamp={dailySales.data?.generated_at} isLoading={dailySales.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-4">
+                <KpiCard title="Gross Sales" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={dailySales.isLoading} />
+                <KpiCard title="Completed" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.completed_count, 0)} isLoading={dailySales.isLoading} />
+                <KpiCard title="Voided" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.voided_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
+                <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
+              </div>
+              <DataTable columns={dailySalesColumns} data={dailySales.data?.data ?? []} isLoading={dailySales.isLoading} emptyState={<EmptyState title="No sales in this range" />} />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="CASH_RECONCILIATION">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : cashReconciliation.isError ? <ErrorState retry={() => cashReconciliation.refetch()} /> : <>
+              <ReportLastUpdated timestamp={cashReconciliation.data?.generated_at} isLoading={cashReconciliation.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <KpiCard title="Closed/Flagged Shifts" value={(cashReconciliation.data?.data ?? []).length} isLoading={cashReconciliation.isLoading} />
+                <KpiCard
+                  title="Flagged"
+                  value={(cashReconciliation.data?.data ?? []).filter((r) => r.status === 'flagged').length}
+                  isLoading={cashReconciliation.isLoading}
+                  tone="danger"
+                />
+                <KpiCard
+                  title="Unapproved Variance"
+                  value={(cashReconciliation.data?.data ?? []).filter((r) => r.cash_variance !== null && r.cash_variance !== 0 && !r.variance_approved).length}
+                  isLoading={cashReconciliation.isLoading}
+                  tone="warning"
+                />
+              </div>
+              <DataTable
+                columns={cashReconciliationColumns}
+                data={cashReconciliation.data?.data ?? []}
+                isLoading={cashReconciliation.isLoading}
+                emptyState={<EmptyState title="No closed or flagged shifts in this range" />}
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="EXPENSES">
+              {expenses.isError ? <ErrorState retry={() => expenses.refetch()} /> : <>
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Expenses" value={expenses.data?.total ?? 0} isLoading={expenses.isLoading} />
+                <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
+              </div>
+              <DataTable
+                columns={expenseColumns}
+                data={expenses.data?.expenses ?? []}
+                isLoading={expenses.isLoading}
+                emptyState={
+                  <EmptyState
+                    title="No expenses recorded"
+                    description="Expenses are submitted by branch supervisors and appear here automatically."
+                  />
+                }
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="VOID_REFUND">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : voidRefund.isError ? <ErrorState retry={() => voidRefund.refetch()} /> : <>
+              <ReportLastUpdated timestamp={voidRefund.data?.generated_at} isLoading={voidRefund.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <KpiCard title="Voided" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'voided').length} isLoading={voidRefund.isLoading} />
+                <KpiCard title="Refunded" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'refunded').length} isLoading={voidRefund.isLoading} />
+                <KpiCard title="Total Amount" value={(voidRefund.data?.data ?? []).reduce((sum, r) => sum + r.total_amount, 0)} isLoading={voidRefund.isLoading} tone="warning" />
+              </div>
+              <DataTable columns={voidRefundColumns} data={voidRefund.data?.data ?? []} isLoading={voidRefund.isLoading} emptyState={<EmptyState title="No voids or refunds in this range" />} />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="SHIFT_SUMMARY">
+              <ShiftLogPanel />
+            </TabsContent>
+
+            <TabsContent value="FRAUD_ALERT_SUMMARY">
+              {fraudAlertSummary.isError ? <ErrorState retry={() => fraudAlertSummary.refetch()} /> : <>
+              <ReportLastUpdated timestamp={fraudAlertSummary.data?.generated_at} isLoading={fraudAlertSummary.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Alerts" value={(fraudAlertSummary.data?.data ?? []).length} isLoading={fraudAlertSummary.isLoading} />
+                <KpiCard
+                  title="Critical/High"
+                  value={(fraudAlertSummary.data?.data ?? []).filter((r) => r.severity === 'critical' || r.severity === 'high').length}
+                  isLoading={fraudAlertSummary.isLoading}
+                  tone="danger"
+                />
+              </div>
+              <DataTable
+                columns={fraudAlertSummaryColumns}
+                data={fraudAlertSummary.data?.data ?? []}
+                isLoading={fraudAlertSummary.isLoading}
+                emptyState={<EmptyState title="No fraud alerts in this range" />}
+              />
+              <div className="mt-6 border-t pt-6">
+                <FraudAlertManagementPanel />
+              </div>
+              </>}
+            </TabsContent>
+
+            <TabsContent value="DISCOUNT_COMPLIANCE">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
+              <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <KpiCard
+                  title="Discounted Transactions"
+                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)}
+                  isLoading={discountCompliance.isLoading}
+                />
+                <KpiCard
+                  title="Total Discount Amount"
+                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_discount_amount, 0)}
+                  isLoading={discountCompliance.isLoading}
+                  tone="warning"
+                />
+                <KpiCard
+                  title="Total VAT Exempt Amount"
+                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_vat_exempt_amount, 0)}
+                  isLoading={discountCompliance.isLoading}
+                />
+              </div>
+              <DataTable
+                columns={discountComplianceColumns}
+                data={discountCompliance.data?.data ?? []}
+                isLoading={discountCompliance.isLoading}
+                emptyState={<EmptyState title="No discounted transactions in this range" />}
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="INVENTORY_MOVEMENT">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : inventoryMovement.isError ? <ErrorState retry={() => inventoryMovement.refetch()} /> : <>
+              <ReportLastUpdated timestamp={inventoryMovement.data?.generated_at} isLoading={inventoryMovement.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <KpiCard title="Total Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
+                <KpiCard
+                  title="Stock In"
+                  value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'stock_in').length}
+                  isLoading={inventoryMovement.isLoading}
+                />
+                <KpiCard
+                  title="Waste"
+                  value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'waste').length}
+                  isLoading={inventoryMovement.isLoading}
+                  tone="warning"
+                />
+              </div>
+              <DataTable
+                columns={inventoryMovementColumns}
+                data={inventoryMovement.data?.data ?? []}
+                isLoading={inventoryMovement.isLoading}
+                emptyState={<EmptyState title="No inventory movements in this range" />}
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="ATTENDANCE_SUMMARY">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : attendanceSummary.isError ? <ErrorState retry={() => attendanceSummary.refetch()} /> : <>
+              <ReportLastUpdated timestamp={attendanceSummary.data?.generated_at} isLoading={attendanceSummary.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Attendance Records" value={(attendanceSummary.data?.data ?? []).length} isLoading={attendanceSummary.isLoading} />
+                <KpiCard
+                  title="Corrected"
+                  value={(attendanceSummary.data?.data ?? []).filter((r) => r.status === 'corrected').length}
+                  isLoading={attendanceSummary.isLoading}
+                  tone="warning"
+                />
+              </div>
+              <DataTable
+                columns={attendanceSummaryColumns}
+                data={attendanceSummary.data?.data ?? []}
+                isLoading={attendanceSummary.isLoading}
+                emptyState={<EmptyState title="No attendance records in this range" />}
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="AUDIT_LOG">
+              <LoginAuditPanel />
+            </TabsContent>
+          </Tabs>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

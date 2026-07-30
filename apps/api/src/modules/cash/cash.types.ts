@@ -53,3 +53,15 @@ export interface ShiftCloseComputedCounts {
   totalDiscountAmount: number;
   pwdScTransactionCount: number;
 }
+
+export interface ReviewShiftData {
+  approved: boolean;
+  notes: string;
+}
+
+export interface PendingReviewFilters {
+  branchId?: string;
+  phase?: 'opening' | 'closing';
+  page: number;
+  limit: number;
+}

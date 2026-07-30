@@ -1,8 +1,21 @@
 // apps/api/src/lib/reports/csv.ts
 import type { ReportColumn } from '../../modules/reports/reports.types.js';
 
+const FORMULA_TRIGGER_CHARS = new Set(['=', '+', '-', '@']);
+
 function escapeCsvField(value: unknown): string {
-  const str = value === null || value === undefined ? '' : String(value);
+  const isString = typeof value === 'string';
+  let str = value === null || value === undefined ? '' : String(value);
+
+  // CSV/formula injection: a free-text field (void reason, review notes, etc.)
+  // that opens with =, +, -, or @ is interpreted as a formula by
+  // Excel/Sheets. Only string-typed values are neutralized — a genuine
+  // negative number (e.g. cash variance) is never attacker-controlled text,
+  // so it's left as a real number rather than quoted into a text cell.
+  if (isString && str.length > 0 && FORMULA_TRIGGER_CHARS.has(str.charAt(0))) {
+    str = `'${str}`;
+  }
+
   if (str.includes(',') || str.includes('"') || str.includes('\n')) {
     return `"${str.replace(/"/g, '""')}"`;
   }

@@ -6,6 +6,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyUser } from '../lib/notify.js';
 import { generateCsv } from '../lib/reports/csv.js';
 import { generatePdf } from '../lib/reports/pdf.js';
+import { buildExportFilename } from '../lib/reports/export-filename.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
 import { prisma } from '../lib/prisma.js';
 import { reportsRepository } from '../modules/reports/reports.repository.js';
@@ -77,7 +78,9 @@ export async function processGenerateExport(jobId: string, data: GenerateExportJ
   const { error: uploadError } = await supabaseAdmin.storage.from('report-exports').upload(path, buffer, { contentType, upsert: false });
   if (uploadError) throw new Error(`Failed to upload report export: ${uploadError.message}`);
 
-  const { data: signed, error: signError } = await supabaseAdmin.storage.from('report-exports').createSignedUrl(path, 86_400);
+  const { data: signed, error: signError } = await supabaseAdmin.storage
+    .from('report-exports')
+    .createSignedUrl(path, 86_400, { download: buildExportFilename(reportType, format, filters) });
   if (signError || !signed) throw new Error(`Failed to create signed URL for report export: ${signError?.message}`);
 
   const expiresAt = new Date(Date.now() + 86_400 * 1000).toISOString();

@@ -6,6 +6,7 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getReportRows, REPORT_COLUMNS } from './reports.columns.js';
 import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
+import { buildExportFilename } from '../../lib/reports/export-filename.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
 
@@ -247,7 +248,9 @@ export const reportsService = {
       const { error: uploadError } = await supabaseAdmin.storage.from('report-exports').upload(path, buffer, { contentType: 'text/csv', upsert: false });
       if (uploadError) throw new ReportError('EXPORT_UPLOAD_FAILED', 'Failed to upload the report export', 502);
 
-      const { data: signed, error: signError } = await supabaseAdmin.storage.from('report-exports').createSignedUrl(path, 86_400);
+      const { data: signed, error: signError } = await supabaseAdmin.storage
+        .from('report-exports')
+        .createSignedUrl(path, 86_400, { download: buildExportFilename(reportType, format, resolvedFilters) });
       if (signError || !signed) throw new ReportError('EXPORT_SIGN_FAILED', 'Failed to create a download link for the export', 502);
 
       const expiresAt = new Date(Date.now() + 86_400 * 1000).toISOString();

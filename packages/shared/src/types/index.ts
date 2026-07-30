@@ -164,6 +164,9 @@ export type ShiftSummary = z.infer<typeof schemas.shiftSummarySchema>;
 export type ShiftSummaryResponse = z.infer<typeof schemas.shiftSummaryResponseSchema>;
 export type ShiftCloseResponse = z.infer<typeof schemas.shiftCloseResponseSchema>;
 export type DenominationCountInput = z.infer<typeof schemas.denominationCountSchema>;
+export type ShiftReviewPhase = z.infer<typeof schemas.shiftReviewPhaseSchema>;
+export type ReviewShiftInput = z.infer<typeof schemas.reviewShiftSchema>;
+export type ShiftReviewResponse = z.infer<typeof schemas.shiftReviewResponseSchema>;
 
 export type ClockInInput = z.infer<typeof schemas.clockInSchema>;
 export type ClockOutInput = z.infer<typeof schemas.clockOutSchema>;

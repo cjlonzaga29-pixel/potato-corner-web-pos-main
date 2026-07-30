@@ -17,6 +17,8 @@ export const SOCKET_EVENTS = {
   // added here because openShift/closeShift had no event to wire into.
   SHIFT_OPENED: 'cash:shift_opened',
   SHIFT_CLOSED: 'cash:shift_closed',
+  // Production Stabilization sprint (2026-07) — opening/closing shift review approve/reject.
+  SHIFT_REVIEW_UPDATED: 'cash:shift_review_updated',
   VOID_REQUESTED: 'void:requested',
   VOID_APPROVED: 'void:approved',
   // Phase 20 — non-blocking toast trigger for hold-order expiry (architecture

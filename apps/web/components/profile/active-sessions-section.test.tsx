@@ -80,6 +80,30 @@ describe('ActiveSessionsSection', () => {
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeDisabled();
   });
 
+  it('shows only the first 5 sessions with a "View all" toggle when more than 5 exist', () => {
+    const sessions = Array.from({ length: 8 }, (_, i) => session({ id: `session-${i}`, deviceLabel: `Device ${i}` }));
+    mockUseActiveSessions.mockReturnValue({ data: sessions, isLoading: false, isError: false });
+    mockUseRevokeSession.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<ActiveSessionsSection />);
+
+    for (let i = 0; i < 5; i++) expect(screen.getByText(`Device ${i}`)).toBeInTheDocument();
+    for (let i = 5; i < 8; i++) expect(screen.queryByText(`Device ${i}`)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View all sessions (8)' }));
+    for (let i = 0; i < 8; i++) expect(screen.getByText(`Device ${i}`)).toBeInTheDocument();
+  });
+
+  it('does not show the "View all" toggle when there are 5 or fewer sessions', () => {
+    const sessions = Array.from({ length: 3 }, (_, i) => session({ id: `session-${i}`, deviceLabel: `Device ${i}` }));
+    mockUseActiveSessions.mockReturnValue({ data: sessions, isLoading: false, isError: false });
+    mockUseRevokeSession.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<ActiveSessionsSection />);
+
+    expect(screen.queryByText(/view all sessions/i)).not.toBeInTheDocument();
+  });
+
   it('opens a confirmation dialog when Sign out is clicked', () => {
     mockUseActiveSessions.mockReturnValue({
       data: [session({ id: 'session-1', deviceLabel: 'Device aaaaaaaa', isCurrent: false })],

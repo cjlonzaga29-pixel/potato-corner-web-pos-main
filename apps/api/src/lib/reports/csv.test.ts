@@ -29,4 +29,24 @@ describe('generateCsv', () => {
     const buffer = generateCsv([{ reason: null }], [{ key: 'reason', header: 'Reason' }]);
     expect(buffer.toString('utf-8')).toBe('Reason\n');
   });
+
+  it('neutralizes formula-injection payloads in free-text fields', () => {
+    const buffer = generateCsv(
+      [
+        { reason: '=SUM(A1:A9)' },
+        { reason: '+1+1' },
+        { reason: '-2+3+cmd' },
+        { reason: '@SUM(A1)' },
+        { reason: 'normal text' },
+      ],
+      [{ key: 'reason', header: 'Reason' }],
+    );
+    const rows = buffer.toString('utf-8').split('\n');
+    expect(rows).toEqual(['Reason', "'=SUM(A1:A9)", "'+1+1", "'-2+3+cmd", "'@SUM(A1)", 'normal text']);
+  });
+
+  it('does not neutralize a genuine negative number', () => {
+    const buffer = generateCsv([{ variance: -50.25 }], [{ key: 'variance', header: 'Variance' }]);
+    expect(buffer.toString('utf-8')).toBe('Variance\n-50.25');
+  });
 });

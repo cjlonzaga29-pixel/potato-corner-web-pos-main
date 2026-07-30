@@ -19,6 +19,9 @@ vi.mock('./cash.service.js', () => ({
     closeShift: vi.fn(),
     approveVariance: vi.fn(),
     voidShift: vi.fn(),
+    getShiftReviews: vi.fn(),
+    reviewShift: vi.fn(),
+    listPendingReviews: vi.fn(),
   },
 }));
 
@@ -110,6 +113,9 @@ describe('cash routes — authentication', () => {
     { method: 'post', path: '/:shiftId/close' },
     { method: 'post', path: '/:shiftId/approve-variance' },
     { method: 'post', path: '/:shiftId/void' },
+    { method: 'get', path: '/reviews/pending' },
+    { method: 'get', path: '/:shiftId/reviews' },
+    { method: 'post', path: '/:shiftId/review/:phase' },
   ];
 
   it.each(protectedRoutes)('$method $path returns 401 with no Authorization header', async ({ method, path }) => {
@@ -369,6 +375,125 @@ describe('GET /:shiftId/summary', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('GET /reviews/pending — role guard', () => {
+  it('staff cannot list pending reviews — 403', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/reviews/pending');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token) });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(cashService.listPendingReviews).not.toHaveBeenCalled();
+  });
+
+  it('supervisor can list pending reviews — 200 (adminOrSupervisor)', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/reviews/pending');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token) });
+    const res = mockRes();
+    vi.mocked(cashService.listPendingReviews).mockResolvedValue({ reviews: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(cashService.listPendingReviews).toHaveBeenCalled();
+  });
+
+  it('super_admin can list pending reviews — 200', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/reviews/pending');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token) });
+    const res = mockRes();
+    vi.mocked(cashService.listPendingReviews).mockResolvedValue({ reviews: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('GET /:shiftId/reviews — branch protection', () => {
+  it("blocks a supervisor from fetching another branch's shift reviews — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/:shiftId/reviews');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 } });
+    const res = mockRes();
+    vi.mocked(cashService.getShiftById).mockResolvedValue({ id: SHIFT_1, branch_id: BRANCH_2 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(cashService.getShiftReviews).not.toHaveBeenCalled();
+  });
+
+  it('allows a staff member to fetch reviews for a shift at their own branch — 200 (allRoles, self-service like GET /:shiftId)', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'get', '/:shiftId/reviews');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1 } });
+    const res = mockRes();
+    vi.mocked(cashService.getShiftById).mockResolvedValue({ id: SHIFT_1, branch_id: BRANCH_1 } as never);
+    vi.mocked(cashService.getShiftReviews).mockResolvedValue([] as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(cashService.getShiftReviews).toHaveBeenCalledWith(SHIFT_1);
+  });
+});
+
+describe('POST /:shiftId/review/:phase — role guard & validation', () => {
+  it('staff cannot submit a review decision — 403', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/review/:phase');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1, phase: 'opening' }, body: { approved: true, notes: 'x'.repeat(50) } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(cashService.reviewShift).not.toHaveBeenCalled();
+  });
+
+  it('supervisor can submit a review decision — 200 (adminOrSupervisor)', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/review/:phase');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1, phase: 'opening' }, body: { approved: true, notes: 'x'.repeat(50) } });
+    const res = mockRes();
+    vi.mocked(cashService.reviewShift).mockResolvedValue({ id: 'review-1', phase: 'opening', status: 'approved' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(cashService.reviewShift).toHaveBeenCalledWith(SHIFT_1, 'opening', { approved: true, notes: 'x'.repeat(50) }, expect.anything(), null);
+  });
+
+  it('rejects a notes field under 50 characters with 422 before reaching the service', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/review/:phase');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1, phase: 'opening' }, body: { approved: true, notes: 'too short' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(cashService.reviewShift).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid phase param with 422 before reaching the service', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/review/:phase');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), params: { shiftId: SHIFT_1, phase: 'midday' }, body: { approved: true, notes: 'x'.repeat(50) } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(cashService.reviewShift).not.toHaveBeenCalled();
   });
 });
 

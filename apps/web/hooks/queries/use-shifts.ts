@@ -7,9 +7,12 @@ import type {
   ApproveVarianceInput,
   CloseShiftInput,
   OpenShiftInput,
+  ReviewShiftInput,
   ShiftCloseResponse,
   ShiftListResponse,
   ShiftResponse,
+  ShiftReviewPhase,
+  ShiftReviewResponse,
   ShiftSummaryResponse,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
@@ -183,6 +186,83 @@ export function useCloseShift(branchId: string | null | undefined, shiftId: stri
     },
     onError: (error: Error) => toast.error(error.message),
   });
+}
+
+export function useShiftReviews(shiftId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['shift-reviews', shiftId],
+    queryFn: async () => {
+      const response = await apiClient<ShiftReviewResponse[]>(`/api/cash/${shiftId}/reviews`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load shift reviews'));
+      return response.data;
+    },
+    enabled: Boolean(shiftId),
+  });
+}
+
+export function useReviewShift(shiftId: string | null | undefined, phase: ShiftReviewPhase) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: ReviewShiftInput) => {
+      const response = await apiClient<ShiftReviewResponse>(`/api/cash/${shiftId}/review/${phase}`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to record the review decision'));
+      return response.data;
+    },
+    onSuccess: (review) => {
+      void queryClient.invalidateQueries({ queryKey: ['shift-reviews', shiftId] });
+      void queryClient.invalidateQueries({ queryKey: ['pending-shift-reviews'] });
+      toast.success(review.status === 'approved' ? `${phase === 'opening' ? 'Opening' : 'Closing'} review approved` : `${phase === 'opening' ? 'Opening' : 'Closing'} review rejected`);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export interface PendingReviewFilters {
+  branch_id?: string;
+  phase?: ShiftReviewPhase;
+  page?: number;
+  limit?: number;
+}
+
+export interface PendingReviewRow extends ShiftReviewResponse {
+  shift: { id: string; branch_id: string; cashier_id: string; status: string; started_at: string; closed_at: string | null };
+}
+
+export interface PendingReviewListResponse {
+  reviews: PendingReviewRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+function buildPendingReviewsQueryString(filters: PendingReviewFilters): string {
+  const params = new URLSearchParams();
+  if (filters.branch_id) params.set('branch_id', filters.branch_id);
+  if (filters.phase) params.set('phase', filters.phase);
+  params.set('page', String(filters.page ?? 1));
+  params.set('limit', String(filters.limit ?? 25));
+  return params.toString();
+}
+
+/** Cross-branch pending opening/closing review queue — Super Admin / Authorized Supervisor only. */
+export function usePendingShiftReviews(filters: PendingReviewFilters = {}) {
+  return useQuery({
+    queryKey: ['pending-shift-reviews', filters],
+    queryFn: async () => {
+      const response = await apiClient<PendingReviewListResponse>(`/api/cash/reviews/pending?${buildPendingReviewsQueryString(filters)}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load pending shift reviews'));
+      return response.data;
+    },
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Keeps the pending review queue and per-shift review panels in sync across sessions. */
+export function useShiftReviewsRealtimeSync(): void {
+  useRealtimeInvalidate([SOCKET_EVENTS.SHIFT_REVIEW_UPDATED], [['shift-reviews'], ['pending-shift-reviews']]);
 }
 
 export function useApproveVariance(shiftId: string | null | undefined) {

@@ -33,18 +33,19 @@ afterEach(() => {
 });
 
 interface NotificationsQueryOverrides {
-  data?: NotificationItem[];
+  items?: NotificationItem[];
   isLoading?: boolean;
   isError?: boolean;
 }
 
 function setup(overrides: NotificationsQueryOverrides = {}) {
+  const { items = [notification()], ...rest } = overrides;
   mockUseNotifications.mockReturnValue({
-    data: [notification()],
+    data: { items, total: items.length },
     isLoading: false,
     isError: false,
     refetch: vi.fn(),
-    ...overrides,
+    ...rest,
   });
   mockUseMarkNotificationRead.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseMarkAllNotificationsRead.mockReturnValue({ mutate: mockMarkAllMutate, isPending: false });
@@ -52,7 +53,7 @@ function setup(overrides: NotificationsQueryOverrides = {}) {
 
 describe('NotificationsPage', () => {
   it('renders a loading skeleton while notifications are loading', () => {
-    setup({ data: undefined, isLoading: true });
+    setup({ isLoading: true });
 
     const { container } = render(<NotificationsPage />);
 
@@ -60,7 +61,7 @@ describe('NotificationsPage', () => {
   });
 
   it('renders the empty state when there are no notifications', () => {
-    setup({ data: [] });
+    setup({ items: [] });
 
     render(<NotificationsPage />);
 
@@ -68,7 +69,7 @@ describe('NotificationsPage', () => {
   });
 
   it('renders the notification list when notifications are present', () => {
-    setup({ data: [notification({ message: 'An ingredient is running low on stock.' })] });
+    setup({ items: [notification({ message: 'An ingredient is running low on stock.' })] });
 
     render(<NotificationsPage />);
 
@@ -76,7 +77,7 @@ describe('NotificationsPage', () => {
   });
 
   it('disables "Mark all as read" when there are 0 unread notifications', () => {
-    setup({ data: [notification({ read: true })] });
+    setup({ items: [notification({ read: true })] });
 
     render(<NotificationsPage />);
 
@@ -84,7 +85,7 @@ describe('NotificationsPage', () => {
   });
 
   it('enables "Mark all as read" and triggers the mutation when there are unread notifications', () => {
-    setup({ data: [notification({ read: false })] });
+    setup({ items: [notification({ read: false })] });
 
     render(<NotificationsPage />);
 
@@ -92,5 +93,35 @@ describe('NotificationsPage', () => {
     expect(button).not.toBeDisabled();
     fireEvent.click(button);
     expect(mockMarkAllMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render pagination controls when everything fits on one page', () => {
+    setup({ items: [notification()] });
+
+    render(<NotificationsPage />);
+
+    expect(screen.queryByRole('button', { name: /next/i })).not.toBeInTheDocument();
+  });
+
+  it('shows pagination controls and requests the next page when there are more results than fit on one page', () => {
+    const items = Array.from({ length: 25 }, (_, i) => notification({ id: `notif-${i}` }));
+    mockUseNotifications.mockReturnValue({
+      data: { items, total: 30 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    mockUseMarkNotificationRead.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    mockUseMarkAllNotificationsRead.mockReturnValue({ mutate: mockMarkAllMutate, isPending: false });
+
+    render(<NotificationsPage />);
+
+    expect(screen.getByText(/page 1 of 2/i)).toBeInTheDocument();
+    const previousButton = screen.getByRole('button', { name: /previous/i });
+    expect(previousButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /next/i }));
+
+    expect(mockUseNotifications).toHaveBeenLastCalledWith(2, 25);
   });
 });

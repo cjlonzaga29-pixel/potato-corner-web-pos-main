@@ -27,3 +27,8 @@ export function manilaToday(): string {
 export function manilaDaysAgo(days: number): string {
   return manilaDateString(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
 }
+
+/** The first day of the current Asia/Manila calendar month, as YYYY-MM-DD. */
+export function manilaMonthStart(): string {
+  return `${manilaToday().slice(0, 7)}-01`;
+}

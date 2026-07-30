@@ -65,7 +65,9 @@ describe('processGenerateExport — CSV', () => {
       contentType: 'text/csv',
       upsert: false,
     });
-    expect(createSignedUrl).toHaveBeenCalledWith(expect.any(String), 86_400);
+    expect(createSignedUrl).toHaveBeenCalledWith(expect.any(String), 86_400, {
+      download: expect.stringMatching(/^DailySales_\d{4}-\d{2}-\d{2}\.csv$/),
+    });
     expect(notifyUser).toHaveBeenCalledWith('user-1', 'report:export_ready', expect.objectContaining({ download_url: 'https://signed.example/x.csv' }));
     expect(notifyUser).toHaveBeenCalledTimes(1);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'REPORT_EXPORTED' }));

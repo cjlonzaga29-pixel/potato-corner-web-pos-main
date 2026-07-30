@@ -13,12 +13,21 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { ShiftStatusBadge } from '@/components/admin/shifts/shift-status-badge';
+import { ShiftReviewStatusBadge } from '@/components/admin/shifts/shift-review-status-badge';
 import { ShiftDenominationTable } from '@/components/admin/shifts/shift-denomination-table';
 import { ReviewVarianceDialog } from '@/components/admin/shifts/review-variance-dialog';
+import { ReviewShiftDialog } from '@/components/admin/shifts/review-shift-dialog';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
-import { useShift, useShiftSummary, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
+import type { ShiftReviewPhase } from '@potato-corner/shared';
+import {
+  useShift,
+  useShiftSummary,
+  useShiftsRealtimeSync,
+  useShiftReviews,
+  useShiftReviewsRealtimeSync,
+} from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 
 const TRANSACTION_STATUS_VARIANT: Record<string, 'active' | 'critical' | 'warning'> = {
@@ -37,15 +46,18 @@ const TRANSACTION_STATUS_VARIANT: Record<string, 'active' | 'critical' | 'warnin
 export function ShiftDetailView() {
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
+  useShiftReviewsRealtimeSync();
   const params = useParams<{ shiftId: string }>();
   const shiftId = params.shiftId;
   const { user } = useAuth();
   const [reviewing, setReviewing] = useState(false);
+  const [reviewingPhase, setReviewingPhase] = useState<ShiftReviewPhase | null>(null);
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [viewingProofFor, setViewingProofFor] = useState<string | null>(null);
 
   const { data: shift, isLoading: shiftLoading, isError: shiftError, refetch: refetchShift } = useShift(shiftId);
   const { data: summaryData } = useShiftSummary(shiftId);
+  const { data: reviews } = useShiftReviews(shiftId);
   // useTransactions is `enabled: Boolean(filters.branch_id)` — passing shift.branch_id
   // once the parent shift has loaded also satisfies branchGuard for a supervisor caller.
   const { data: txData, isLoading: txLoading, isError: txError, refetch: refetchTx } = useTransactions({
@@ -97,7 +109,13 @@ export function ShiftDetailView() {
   }
 
   const summary = summaryData?.summary;
-  const canReview = shift.status === 'flagged' && user?.role === 'super_admin';
+  // adminOrSupervisor on the backend (/approve-variance, /review/:phase) allows both
+  // super_admin and supervisor — this gate was previously super_admin-only, which was
+  // a frontend/backend mismatch left over from before that role was added.
+  const isReviewer = user?.role === 'super_admin' || user?.role === 'supervisor';
+  const canReview = shift.status === 'flagged' && isReviewer;
+  const openingReview = reviews?.find((r) => r.phase === 'opening');
+  const closingReview = reviews?.find((r) => r.phase === 'closing');
 
   return (
     <div className="space-y-6">
@@ -156,7 +174,7 @@ export function ShiftDetailView() {
           </CardHeader>
           <CardContent className="space-y-1 text-sm">
             <p>Cashier&apos;s explanation: {shift.variance_explanation}</p>
-            {!canReview && <p className="text-xs text-muted-foreground">Only a super admin can approve or reject this variance.</p>}
+            {!isReviewer && <p className="text-xs text-muted-foreground">Only a super admin or authorized supervisor can approve or reject this variance.</p>}
           </CardContent>
         </Card>
       )}
@@ -171,6 +189,42 @@ export function ShiftDetailView() {
           <CardContent><ShiftDenominationTable denominations={shift.denominations ?? []} phase="closing" /></CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Shift Reviews</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {([
+            { phase: 'opening' as const, label: 'Opening Shift Review', review: openingReview },
+            { phase: 'closing' as const, label: 'Closing Shift Review', review: closingReview },
+          ]).map(({ phase, label, review }) => {
+            const closingNotReady = phase === 'closing' && shift.status === 'active';
+            return (
+              <div key={phase} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{label}</span>
+                    {review && <ShiftReviewStatusBadge status={review.status} />}
+                  </div>
+                  {review?.status !== 'pending' && review && (
+                    <p className="text-xs text-muted-foreground">
+                      Reviewer: {review.reviewed_by ?? '—'} · Reviewed: {review.reviewed_at ? new Date(review.reviewed_at).toLocaleString() : '—'}
+                    </p>
+                  )}
+                  {review?.notes && <p className="text-xs text-muted-foreground">Notes: {review.notes}</p>}
+                  {closingNotReady && <p className="text-xs text-muted-foreground">Available once the shift is closed.</p>}
+                </div>
+                {isReviewer && review?.status === 'pending' && !closingNotReady && (
+                  <Button size="sm" variant="outline" onClick={() => setReviewingPhase(phase)}>
+                    Review {phase === 'opening' ? 'Opening' : 'Closing'}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </CardContent>
+      </Card>
 
       <div>
         <h2 className="mb-2 text-lg font-semibold">Transactions</h2>
@@ -188,6 +242,14 @@ export function ShiftDetailView() {
       </div>
 
       {canReview && <ReviewVarianceDialog open={reviewing} onOpenChange={setReviewing} shift={shift} />}
+      {reviewingPhase && (
+        <ReviewShiftDialog
+          open={Boolean(reviewingPhase)}
+          onOpenChange={(open) => !open && setReviewingPhase(null)}
+          shiftId={shift.id}
+          phase={reviewingPhase}
+        />
+      )}
       <ViewPaymentProofDialog transactionId={viewingProofFor} onOpenChange={(open) => !open && setViewingProofFor(null)} />
     </div>
   );

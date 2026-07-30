@@ -18,10 +18,19 @@ import {
 } from '@/components/ui/alert-dialog';
 import { useActiveSessions, useRevokeSession, type SessionResponse } from '@/hooks/queries/use-sessions';
 
+const PREVIEW_COUNT = 5;
+
 export function ActiveSessionsSection() {
   const { data: sessions, isLoading, isError } = useActiveSessions();
   const revokeSession = useRevokeSession();
   const [sessionToRevoke, setSessionToRevoke] = useState<SessionResponse | null>(null);
+  // Bounded preview, not full pagination — this list is generally small
+  // (a handful of devices per user), so a plain expand/collapse toggle beats
+  // adding numbered pagination for something that rarely exceeds one page.
+  const [showAll, setShowAll] = useState(false);
+
+  const visibleSessions = showAll ? sessions : sessions?.slice(0, PREVIEW_COUNT);
+  const hiddenCount = sessions ? Math.max(0, sessions.length - PREVIEW_COUNT) : 0;
 
   async function handleConfirmRevoke() {
     if (!sessionToRevoke) return;
@@ -51,7 +60,7 @@ export function ActiveSessionsSection() {
 
         {!isLoading &&
           !isError &&
-          sessions?.map((session) => (
+          visibleSessions?.map((session) => (
             <div key={session.id} className="flex items-center justify-between gap-4 rounded-md border p-3">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
@@ -72,6 +81,18 @@ export function ActiveSessionsSection() {
               </Button>
             </div>
           ))}
+
+        {!isLoading && !isError && !showAll && hiddenCount > 0 && (
+          <Button variant="ghost" size="sm" className="w-full" onClick={() => setShowAll(true)}>
+            View all sessions ({sessions?.length})
+          </Button>
+        )}
+
+        {!isLoading && !isError && showAll && hiddenCount > 0 && (
+          <Button variant="ghost" size="sm" className="w-full" onClick={() => setShowAll(false)}>
+            Show fewer
+          </Button>
+        )}
       </CardContent>
 
       <AlertDialog open={sessionToRevoke !== null} onOpenChange={(open) => !open && setSessionToRevoke(null)}>

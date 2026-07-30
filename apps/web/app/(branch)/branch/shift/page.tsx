@@ -70,6 +70,11 @@ export default function ShiftDashboardPage() {
 
   const openingDenominations = shift.denominations?.filter((d) => d.phase === 'opening') ?? [];
   const openedByMe = shift.opened_by === user?.id;
+  // shiftGuard (POS checkout gate) matches on cashier_id, not opened_by —
+  // if this branch's active shift belongs to a different cashier than the
+  // account currently logged in, checkout will fail with NO_ACTIVE_SHIFT
+  // even though this page shows a shift as active.
+  const belongsToSomeoneElse = Boolean(user?.id) && shift.cashier_id !== user?.id;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 overflow-y-auto p-6">
@@ -79,6 +84,14 @@ export default function ShiftDashboardPage() {
           Close Shift
         </Button>
       </div>
+
+      {belongsToSomeoneElse && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+          This shift is open under a different cashier account. Checkout will be blocked with
+          &quot;No active shift&quot; until you log in as that cashier, or close this shift and open a new one under
+          your own account.
+        </div>
+      )}
 
       <Card>
         <CardContent className="grid grid-cols-2 gap-4 pt-6 text-sm sm:grid-cols-4">

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { FileSearch } from 'lucide-react';
+import type { PaginationState } from '@tanstack/react-table';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Input } from '@/components/ui/input';
@@ -20,7 +21,13 @@ const columns = createAuditLogColumns();
 export default function BranchActivityLogsPage() {
   const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(7));
   const [dateTo, setDateTo] = useState(() => manilaToday());
-  const { data, isLoading, isError, refetch } = useAuditLogs({ date_from: dateFrom, date_to: dateTo, limit: 50 });
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  const { data, isLoading, isError, refetch } = useAuditLogs({
+    date_from: dateFrom,
+    date_to: dateTo,
+    page: pagination.pageIndex + 1,
+    limit: pagination.pageSize,
+  });
 
   return (
     <div className="space-y-6">
@@ -46,6 +53,9 @@ export default function BranchActivityLogsPage() {
         isLoading={isLoading}
         isError={isError}
         onRetry={() => void refetch()}
+        pagination={pagination}
+        onPaginationChange={setPagination}
+        rowCount={data?.total ?? 0}
         emptyState={<EmptyState icon={FileSearch} title="No activity found" description="No actions have been recorded in this range." />}
       />
     </div>

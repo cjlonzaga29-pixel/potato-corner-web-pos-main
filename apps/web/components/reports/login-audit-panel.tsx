@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { FileSearch } from 'lucide-react';
+import type { PaginationState } from '@tanstack/react-table';
 import type { ExportRequestInput } from '@potato-corner/shared';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -20,14 +21,24 @@ export function LoginAuditPanel() {
   const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
   const [dateTo, setDateTo] = useState(() => manilaToday());
   const [isExporting, setIsExporting] = useState(false);
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
 
-  const filters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
+  const exportFilters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
+  const filters = {
+    branch_id: branchId ?? undefined,
+    date_from: dateFrom,
+    date_to: dateTo,
+    page: pagination.pageIndex + 1,
+    limit: pagination.pageSize,
+  };
   const { data, isLoading, isError, refetch } = useAuditLogReport(filters);
   const requestExport = useRequestExport();
 
   function handleExport(format: 'csv' | 'pdf') {
     setIsExporting(true);
-    const input: ExportRequestInput = { report_type: 'AUDIT_LOG', filters, format };
+    // Exports the full date/branch scope regardless of which on-screen page
+    // is currently displayed — matches every other report export in this module.
+    const input: ExportRequestInput = { report_type: 'AUDIT_LOG', filters: exportFilters, format };
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
   }
 
@@ -57,6 +68,9 @@ export function LoginAuditPanel() {
         isLoading={isLoading}
         isError={isError}
         onRetry={() => void refetch()}
+        pagination={pagination}
+        onPaginationChange={setPagination}
+        rowCount={data?.total ?? 0}
         emptyState={<EmptyState icon={FileSearch} title="No login events found" description="No login activity has been recorded in this range." />}
       />
     </div>

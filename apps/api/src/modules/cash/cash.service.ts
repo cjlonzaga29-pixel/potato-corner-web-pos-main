@@ -1,7 +1,16 @@
 import { Prisma } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
 import { cashRepository } from './cash.repository.js';
-import { CashError, type ApproveVarianceData, type CloseShiftData, type OpenShiftData, type ShiftListFilters, type ShiftCloseComputedCounts } from './cash.types.js';
+import {
+  CashError,
+  type ApproveVarianceData,
+  type CloseShiftData,
+  type OpenShiftData,
+  type ShiftListFilters,
+  type ShiftCloseComputedCounts,
+  type ReviewShiftData,
+  type PendingReviewFilters,
+} from './cash.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { enqueueNotification } from '../../queues/notification.queue.js';
@@ -106,6 +115,32 @@ function toShiftResponse(shift: ShiftRow) {
       subtotal: d.totalValue.toNumber(),
       phase: d.countType,
     })),
+  };
+}
+
+interface ShiftReviewRow {
+  id: string;
+  shiftId: string;
+  phase: string;
+  status: string;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+  notes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+function toShiftReviewResponse(review: ShiftReviewRow) {
+  return {
+    id: review.id,
+    shift_id: review.shiftId,
+    phase: review.phase,
+    status: review.status,
+    reviewed_by: review.reviewedBy,
+    reviewed_at: review.reviewedAt?.toISOString() ?? null,
+    notes: review.notes,
+    created_at: review.createdAt.toISOString(),
+    updated_at: review.updatedAt.toISOString(),
   };
 }
 
@@ -473,5 +508,80 @@ export const cashService = {
     });
 
     return response;
+  },
+
+  async getShiftReviews(shiftId: string) {
+    const shift = (await cashRepository.findShiftById(shiftId)) as ShiftRow | null;
+    if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'Shift not found', 404);
+
+    const reviews = (await cashRepository.listReviewsForShift(shiftId)) as ShiftReviewRow[];
+    return reviews.map(toShiftReviewResponse);
+  },
+
+  /**
+   * Approve/reject the opening or closing count for a shift — distinct from
+   * approveVariance above, which only covers the cash variance itself.
+   * Closing can't be reviewed before the shift has actually closed (nothing
+   * to review yet); opening has no such gate, since it's reviewable as soon
+   * as the shift is opened.
+   */
+  async reviewShift(shiftId: string, phase: 'opening' | 'closing', data: ReviewShiftData, actor: ActorContext, ipAddress: string | null) {
+    const shift = (await cashRepository.findShiftById(shiftId)) as ShiftRow | null;
+    if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'Shift not found', 404);
+
+    if (phase === 'closing' && shift.status === 'active') {
+      throw new CashError('SHIFT_NOT_CLOSED_YET', 'Cannot review the closing count before the shift is closed', 409);
+    }
+
+    const review = (await cashRepository.findReview(shiftId, phase)) as ShiftReviewRow | null;
+    if (!review) throw new CashError('SHIFT_REVIEW_NOT_FOUND', 'Review record not found for this shift and phase', 404);
+    if (review.status !== 'pending') {
+      throw new CashError('SHIFT_REVIEW_ALREADY_DECIDED', `This ${phase} review has already been ${review.status}`, 409);
+    }
+
+    const updated = (await cashRepository.submitReview(shiftId, phase, {
+      approved: data.approved,
+      notes: data.notes,
+      reviewedBy: actor.id,
+    })) as ShiftReviewRow;
+    const response = toShiftReviewResponse(updated);
+
+    await recordAuditLog({
+      action: data.approved ? 'SHIFT_REVIEW_APPROVED' : 'SHIFT_REVIEW_REJECTED',
+      entityType: 'shift_review',
+      entityId: updated.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: shift.branchId,
+      beforeState: toShiftReviewResponse(review),
+      afterState: response,
+      ipAddress,
+    });
+
+    const payload = { shiftId, phase, status: response.status, reviewedBy: actor.id };
+    notifyBranch(shift.branchId, SOCKET_EVENTS.SHIFT_REVIEW_UPDATED, payload);
+    notifySuperAdmin(SOCKET_EVENTS.SHIFT_REVIEW_UPDATED, payload);
+
+    return response;
+  },
+
+  async listPendingReviews(filters: PendingReviewFilters) {
+    const { reviews, total } = await cashRepository.listPendingReviews(filters);
+    return {
+      reviews: reviews.map((review) => ({
+        ...toShiftReviewResponse(review as ShiftReviewRow),
+        shift: {
+          id: review.shift.id,
+          branch_id: review.shift.branchId,
+          cashier_id: review.shift.cashierId,
+          status: review.shift.status,
+          started_at: review.shift.startedAt.toISOString(),
+          closed_at: review.shift.closedAt?.toISOString() ?? null,
+        },
+      })),
+      total,
+      page: filters.page,
+      limit: filters.limit,
+    };
   },
 };

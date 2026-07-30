@@ -50,6 +50,16 @@ export const cashRepository = {
         data: data.denominations.map((d) => denominationRow(shift.id, d, 'opening')),
       });
 
+      // Both review rows are created eagerly (Production Stabilization sprint,
+      // 2026-07) so "pending review" queues can be a plain WHERE status = 'pending'
+      // rather than an anti-join against shifts with no row yet.
+      await tx.shiftReview.createMany({
+        data: [
+          { shiftId: shift.id, phase: 'opening' },
+          { shiftId: shift.id, phase: 'closing' },
+        ],
+      });
+
       return tx.shift.findUniqueOrThrow({ where: { id: shift.id }, include: shiftInclude });
     });
   },
@@ -279,6 +289,49 @@ export const cashRepository = {
       take: n,
       select: { id: true, varianceApproved: true, closedAt: true },
     });
+  },
+
+  /** Both phase rows for one shift (createShift always creates exactly two — see the schema comment). */
+  listReviewsForShift(shiftId: string) {
+    return prisma.shiftReview.findMany({ where: { shiftId }, orderBy: { phase: 'asc' } });
+  },
+
+  findReview(shiftId: string, phase: 'opening' | 'closing') {
+    return prisma.shiftReview.findUnique({ where: { shiftId_phase: { shiftId, phase } } });
+  },
+
+  submitReview(shiftId: string, phase: 'opening' | 'closing', data: { approved: boolean; notes: string; reviewedBy: string }) {
+    return prisma.shiftReview.update({
+      where: { shiftId_phase: { shiftId, phase } },
+      data: {
+        status: data.approved ? 'approved' : 'rejected',
+        reviewedBy: data.reviewedBy,
+        reviewedAt: new Date(),
+        notes: data.notes,
+      },
+    });
+  },
+
+  /** Pending-review queue across branches — the list view backing the new Shift Approval UI. */
+  async listPendingReviews(filters: { branchId?: string; phase?: 'opening' | 'closing'; page: number; limit: number }) {
+    const where: Prisma.ShiftReviewWhereInput = {
+      status: 'pending',
+      ...(filters.phase && { phase: filters.phase }),
+      ...(filters.branchId && { shift: { branchId: filters.branchId } }),
+    };
+
+    const [reviews, total] = await Promise.all([
+      prisma.shiftReview.findMany({
+        where,
+        include: { shift: { select: { id: true, branchId: true, cashierId: true, status: true, startedAt: true, closedAt: true } } },
+        orderBy: { createdAt: 'asc' },
+        skip: (filters.page - 1) * filters.limit,
+        take: filters.limit,
+      }),
+      prisma.shiftReview.count({ where }),
+    ]);
+
+    return { reviews, total };
   },
 };
 

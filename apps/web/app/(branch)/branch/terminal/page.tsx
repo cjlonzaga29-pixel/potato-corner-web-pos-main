@@ -256,43 +256,53 @@ export default function TerminalPage() {
     setSlotPrompt(null);
   }
 
-  const cartLines = items.map((item, index) => {
-    const info = variantIndex.get(item.product_variant_id);
-    const flavor = info?.variant.flavors.find((f) => f.flavor_id === item.flavor_id);
-    const slotSelections = (item.selected_flavors ?? [])
-      .slice()
-      .sort((a, b) => a.slot_index - b.slot_index)
-      .map((sel) => {
-        const slot = info?.variant.flavor_slots.find((s) => s.slot_index === sel.slot_index);
-        const snackOption = slot?.snack_options.find((so) => so.product_variant_id === sel.snack_product_variant_id);
-        const slotFlavor = snackOption?.flavors.find((f) => f.flavor_id === sel.flavor_id);
+  // Memoized so it only recomputes when the cart or catalog actually change —
+  // without this, every keystroke in an unrelated field (cash tendered,
+  // discount ID, payment reference) re-derived every cart line from scratch.
+  const cartLines = useMemo(
+    () =>
+      items.map((item, index) => {
+        const info = variantIndex.get(item.product_variant_id);
+        const flavor = info?.variant.flavors.find((f) => f.flavor_id === item.flavor_id);
+        const slotSelections = (item.selected_flavors ?? [])
+          .slice()
+          .sort((a, b) => a.slot_index - b.slot_index)
+          .map((sel) => {
+            const slot = info?.variant.flavor_slots.find((s) => s.slot_index === sel.slot_index);
+            const snackOption = slot?.snack_options.find((so) => so.product_variant_id === sel.snack_product_variant_id);
+            const slotFlavor = snackOption?.flavors.find((f) => f.flavor_id === sel.flavor_id);
+            return {
+              label: slot?.label ?? `Slot ${sel.slot_index}`,
+              snackName: snackOption ? `${snackOption.product_name} (${snackOption.variant_name})` : 'Unknown snack',
+              flavorName: slotFlavor?.name ?? 'Unknown flavor',
+              pricePremium: slotFlavor?.price_premium ?? 0,
+            };
+          });
+        const unitPrice =
+          slotSelections.length > 0
+            ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0)
+            : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0);
         return {
-          label: slot?.label ?? `Slot ${sel.slot_index}`,
-          snackName: snackOption ? `${snackOption.product_name} (${snackOption.variant_name})` : 'Unknown snack',
-          flavorName: slotFlavor?.name ?? 'Unknown flavor',
-          pricePremium: slotFlavor?.price_premium ?? 0,
+          index,
+          item,
+          productName: info?.product.name ?? 'Unknown item',
+          variantName: info?.variant.name ?? '',
+          flavorName: flavor?.name ?? null,
+          slotSelections,
+          unitPrice,
+          quantity: item.quantity,
+          lineTotal: round2(unitPrice * item.quantity),
+          vatableCapAmount: info?.variant.vatable_cap_amount ?? null,
         };
-      });
-    const unitPrice =
-      slotSelections.length > 0
-        ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0)
-        : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0);
-    return {
-      index,
-      item,
-      productName: info?.product.name ?? 'Unknown item',
-      variantName: info?.variant.name ?? '',
-      flavorName: flavor?.name ?? null,
-      slotSelections,
-      unitPrice,
-      quantity: item.quantity,
-      lineTotal: round2(unitPrice * item.quantity),
-      vatableCapAmount: info?.variant.vatable_cap_amount ?? null,
-    };
-  });
+      }),
+    [items, variantIndex],
+  );
 
   const subtotal = round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0));
-  const { discountAmount, vatAmount, totalAmount } = previewAmounts(cartLines, discountType, Number(promoAmount));
+  const { discountAmount, vatAmount, totalAmount } = useMemo(
+    () => previewAmounts(cartLines, discountType, Number(promoAmount)),
+    [cartLines, discountType, promoAmount],
+  );
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
 
@@ -320,7 +330,11 @@ export default function TerminalPage() {
   }
 
   async function handleCharge() {
-    if (!branchId || !shift) return;
+    // Belt-and-suspenders alongside the button's disabled={..isPending} below —
+    // isPending flips synchronously on mutate, but guards here too in case a
+    // second click event is already queued (e.g. double-tap on a touchscreen)
+    // before React re-renders the disabled state.
+    if (!branchId || !shift || createTransaction.isPending) return;
     setChargeError(null);
 
     const payload: CreateTransactionInput = {
@@ -415,7 +429,7 @@ export default function TerminalPage() {
           </Tabs>
         </div>
 
-        <div className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="grid flex-1 grid-cols-3 gap-2 overflow-y-auto p-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
           {visibleProducts.map((product) =>
             product.variants.map((variant) => {
               const message = readinessMessage(variant);
@@ -428,17 +442,17 @@ export default function TerminalPage() {
                   }`}
                   onClick={() => handleProductTap(product, variant)}
                 >
-                  <CardContent className="flex h-full flex-col gap-1 p-3">
+                  <CardContent className="flex h-full flex-col gap-0.5 p-2">
                     {product.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={product.image_url} alt={product.name} className="mb-1 h-20 w-full rounded object-cover" />
+                      <img src={product.image_url} alt={product.name} className="mb-1 h-14 w-full rounded object-cover" />
                     ) : (
-                      <div className="mb-1 h-20 w-full rounded bg-muted" />
+                      <div className="mb-1 h-14 w-full rounded bg-muted" />
                     )}
-                    <p className="line-clamp-2 min-h-[2.5rem] text-sm font-medium leading-tight">{product.name}</p>
-                    <p className="text-xs text-muted-foreground">{variant.name}</p>
+                    <p className="line-clamp-2 min-h-[2rem] text-xs font-medium leading-tight">{product.name}</p>
+                    <p className="text-[11px] text-muted-foreground">{variant.name}</p>
                     <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
-                    {message && <p className="text-xs font-medium text-destructive">{message}</p>}
+                    {message && <p className="text-[11px] font-medium text-destructive">{message}</p>}
                   </CardContent>
                 </Card>
               );

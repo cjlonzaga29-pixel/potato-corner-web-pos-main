@@ -1,6 +1,7 @@
 'use client';
 
-import { Bell, Check } from 'lucide-react';
+import { useState } from 'react';
+import { Bell, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -13,10 +14,15 @@ import {
 import { cn, formatTimeAgo } from '@/lib/utils';
 
 const SKELETON_ROWS = 5;
+const PAGE_SIZE = 25;
 
 /** Shared body behind the top-level `/notifications` route and `/branch/notifications`. */
 export function NotificationsPageContent() {
-  const { data: notifications, isLoading, isError, refetch } = useNotifications();
+  const [page, setPage] = useState(1);
+  const { data, isLoading, isError, refetch } = useNotifications(page, PAGE_SIZE);
+  const notifications = data?.items;
+  const total = data?.total ?? 0;
+  const pageCount = Math.max(Math.ceil(total / PAGE_SIZE), 1);
   const markRead = useMarkNotificationRead();
   const markAllRead = useMarkAllNotificationsRead();
 
@@ -76,6 +82,34 @@ export function NotificationsPageContent() {
               )}
             </button>
           ))}
+        </div>
+      )}
+
+      {!isLoading && !isError && pageCount > 1 && (
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Page {page} of {pageCount} · {total} total
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(p - 1, 1))}
+              disabled={page <= 1}
+            >
+              <ChevronLeft className="mr-1 h-4 w-4" />
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(p + 1, pageCount))}
+              disabled={page >= pageCount}
+            >
+              Next
+              <ChevronRight className="ml-1 h-4 w-4" />
+            </Button>
+          </div>
         </div>
       )}
     </div>

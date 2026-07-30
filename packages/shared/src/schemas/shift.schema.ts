@@ -127,3 +127,27 @@ export const shiftSummaryResponseSchema = z.object({
 export const shiftCloseResponseSchema = shiftResponseSchema.extend({
   summary: shiftSummarySchema,
 });
+
+// ---------- Opening/Closing shift review (Production Stabilization sprint) ----------
+// Distinct from approveVarianceSchema/shift.varianceApproved above, which already
+// cover cash variance review end-to-end.
+
+export const shiftReviewPhaseSchema = z.enum(['opening', 'closing']);
+
+export const reviewShiftSchema = z.object({
+  approved: z.boolean(),
+  // Required for both approval and rejection — same written-justification rule as approveVarianceSchema.
+  notes: z.string().min(50),
+});
+
+export const shiftReviewResponseSchema = z.object({
+  id: z.uuid(),
+  shift_id: z.uuid(),
+  phase: shiftReviewPhaseSchema,
+  status: z.enum(['pending', 'approved', 'rejected']),
+  reviewed_by: z.uuid().nullable(),
+  reviewed_at: z.iso.datetime().nullable(),
+  notes: z.string().nullable(),
+  created_at: z.iso.datetime(),
+  updated_at: z.iso.datetime(),
+});

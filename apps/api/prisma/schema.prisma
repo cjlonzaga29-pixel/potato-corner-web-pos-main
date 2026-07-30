@@ -311,6 +311,7 @@ model User {
   branchAssignments                UserBranchAssignment[]
   shiftsAsCashier                  Shift[]                @relation("ShiftCashier")
   shiftsOpenedBy                   Shift[]                @relation("ShiftOpenedBy")
+  shiftReviewsReviewed             ShiftReview[]          @relation("ShiftReviewReviewer")
   attendanceRecords                AttendanceRecord[]     @relation("AttendanceEmployee")
   correctedAttendanceRecords       AttendanceRecord[]     @relation("AttendanceCorrector")
   auditLogs                        AuditLog[]
@@ -1537,6 +1538,7 @@ model Shift {
   denominations ShiftCashDenomination[]
   transactions  Transaction[]
   holdOrders    HoldOrder[]
+  reviews       ShiftReview[]
 
   startedAt DateTime  @map("started_at")
   closedAt  DateTime? @map("closed_at")
@@ -1546,6 +1548,48 @@ model Shift {
   @@index([cashierId])
   @@index([openedBy])
   @@map("shifts")
+}
+
+enum ShiftReviewPhase {
+  opening
+  closing
+}
+
+enum ShiftReviewStatus {
+  pending
+  approved
+  rejected
+}
+
+/// Opening/Closing shift review approval (Production Stabilization sprint,
+/// 2026-07) — deliberately distinct from Shift.varianceApproved/
+/// varianceApprovedBy/varianceApprovalReason above, which already cover cash
+/// variance review end-to-end. Exactly two rows per shift (one per phase,
+/// enforced by @@unique below), both created as 'pending' when the shift is
+/// opened — so a "pending reviews" queue is a plain status filter, never an
+/// anti-join against shifts with no row yet.
+model ShiftReview {
+  id         String            @id @default(uuid())
+  shiftId    String            @map("shift_id")
+  phase      ShiftReviewPhase
+  status     ShiftReviewStatus @default(pending)
+  reviewedBy String?           @map("reviewed_by")
+  reviewedAt DateTime?         @map("reviewed_at")
+  notes      String?
+
+  shift    Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("ShiftReviewReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([shiftId, phase])
+  @@index([shiftId])
+  @@index([status])
+  @@index([phase])
+  @@index([reviewedBy])
+  @@index([createdAt])
+  @@map("shift_reviews")
 }
 
 /// Architecture doc §Part 8 "Hold orders": max 3 per terminal, 15-min expiry,

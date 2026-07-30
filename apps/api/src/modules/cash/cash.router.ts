@@ -1,6 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSchema } from '@potato-corner/shared';
+import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSchema, reviewShiftSchema } from '@potato-corner/shared';
 import { cashService } from './cash.service.js';
 import { CashError } from './cash.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -108,6 +108,40 @@ router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, br
   }
 });
 
+const pendingReviewsQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+  phase: z.enum(['opening', 'closing']).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(25),
+});
+
+// Registered before the /:shiftId wildcard below so "reviews" in the path
+// isn't swallowed as a shiftId — same reason /open, /current, and / (list)
+// are all registered ahead of it too.
+router.get('/reviews/pending', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = pendingReviewsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const result = await cashService.listPendingReviews({
+      branchId: parsed.data.branch_id,
+      phase: parsed.data.phase,
+      page: parsed.data.page,
+      limit: parsed.data.limit,
+    });
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
 router.get('/:shiftId', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
@@ -187,6 +221,52 @@ router.post(
         req.ip ?? null,
       );
       res.status(200).json({ data: shift, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.get('/:shiftId/reviews', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const shift = await cashService.getShiftById(req.params.shiftId as string);
+    // Same inline branch-check pattern as GET /:shiftId — the branch is only known once the shift has been fetched.
+    if (!(await hasBranchAccess(req.user, shift.branch_id))) {
+      res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+      return;
+    }
+    const reviews = await cashService.getShiftReviews(req.params.shiftId as string);
+    res.status(200).json({ data: reviews, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.post(
+  '/:shiftId/review/:phase',
+  authenticate,
+  // Same "reviewer, not the reviewed operational role" rationale as /approve-variance.
+  adminOrSupervisor,
+  requirePasswordChange,
+  validate(reviewShiftSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const phase = req.params.phase;
+      if (phase !== 'opening' && phase !== 'closing') {
+        res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', fields: [{ field: 'phase', message: "must be 'opening' or 'closing'" }] }, meta: null });
+        return;
+      }
+      const body = req.body as { approved: boolean; notes: string };
+      const review = await cashService.reviewShift(
+        req.params.shiftId as string,
+        phase,
+        body,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: review, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

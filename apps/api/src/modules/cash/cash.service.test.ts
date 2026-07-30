@@ -21,6 +21,10 @@ vi.mock('./cash.repository.js', () => ({
     approveVariance: vi.fn(),
     voidShift: vi.fn(),
     listShifts: vi.fn(),
+    listReviewsForShift: vi.fn(),
+    findReview: vi.fn(),
+    submitReview: vi.fn(),
+    listPendingReviews: vi.fn(),
   },
 }));
 
@@ -805,5 +809,160 @@ describe('cashService.getShiftSummary', () => {
     const result = await cashService.getShiftSummary('shift-1');
 
     expect(result.summary.variance_status).toBe('PENDING_REVIEW');
+  });
+});
+
+function reviewRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'review-1',
+    shiftId: 'shift-1',
+    phase: 'opening',
+    status: 'pending',
+    reviewedBy: null,
+    reviewedAt: null,
+    notes: null,
+    createdAt: new Date('2026-01-01T08:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T08:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+describe('cashService.getShiftReviews', () => {
+  it('rejects with 404 SHIFT_NOT_FOUND when the shift does not exist', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(null);
+
+    await expect(cashService.getShiftReviews('missing')).rejects.toMatchObject({ code: 'SHIFT_NOT_FOUND', statusCode: 404 });
+  });
+
+  it('returns both opening and closing review rows for a shift', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow() as never);
+    vi.mocked(cashRepository.listReviewsForShift).mockResolvedValue([
+      reviewRow({ phase: 'opening' }),
+      reviewRow({ id: 'review-2', phase: 'closing' }),
+    ] as never);
+
+    const result = await cashService.getShiftReviews('shift-1');
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ phase: 'opening', status: 'pending' });
+    expect(result[1]).toMatchObject({ phase: 'closing', status: 'pending' });
+  });
+});
+
+describe('cashService.reviewShift', () => {
+  it('rejects with 404 SHIFT_NOT_FOUND when the shift does not exist', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(null);
+
+    await expect(
+      cashService.reviewShift('missing', 'opening', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'SHIFT_NOT_FOUND', statusCode: 404 });
+  });
+
+  it('rejects with 409 SHIFT_NOT_CLOSED_YET when reviewing the closing phase while the shift is still active', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active' }) as never);
+
+    await expect(
+      cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'SHIFT_NOT_CLOSED_YET', statusCode: 409 });
+    expect(cashRepository.submitReview).not.toHaveBeenCalled();
+  });
+
+  it('allows reviewing the opening phase while the shift is still active', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active' }) as never);
+    vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'opening' }) as never);
+    vi.mocked(cashRepository.submitReview).mockResolvedValue(
+      reviewRow({ phase: 'opening', status: 'approved', reviewedBy: SUPER_ADMIN.id, reviewedAt: new Date() }) as never,
+    );
+
+    const result = await cashService.reviewShift('shift-1', 'opening', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+
+    expect(result.status).toBe('approved');
+  });
+
+  it('rejects with 404 SHIFT_REVIEW_NOT_FOUND when no review row exists for this shift/phase', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
+    vi.mocked(cashRepository.findReview).mockResolvedValue(null);
+
+    await expect(
+      cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'SHIFT_REVIEW_NOT_FOUND', statusCode: 404 });
+  });
+
+  it('rejects with 409 SHIFT_REVIEW_ALREADY_DECIDED when the review is no longer pending', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
+    vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ status: 'approved' }) as never);
+
+    await expect(
+      cashService.reviewShift('shift-1', 'closing', { approved: false, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'SHIFT_REVIEW_ALREADY_DECIDED', statusCode: 409 });
+    expect(cashRepository.submitReview).not.toHaveBeenCalled();
+  });
+
+  it('approves a pending closing review once the shift is closed, and broadcasts SHIFT_REVIEW_UPDATED', async () => {
+    const branchId = randomUUID();
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId, status: 'closed' }) as never);
+    vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'closing' }) as never);
+    vi.mocked(cashRepository.submitReview).mockResolvedValue(
+      reviewRow({ phase: 'closing', status: 'approved', reviewedBy: SUPER_ADMIN.id, reviewedAt: new Date() }) as never,
+    );
+
+    const result = await cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+
+    expect(result.status).toBe('approved');
+    expect(cashRepository.submitReview).toHaveBeenCalledWith('shift-1', 'closing', {
+      approved: true,
+      notes: 'x'.repeat(50),
+      reviewedBy: SUPER_ADMIN.id,
+    });
+    expect(notifyBranch).toHaveBeenCalledWith(
+      branchId,
+      'cash:shift_review_updated',
+      expect.objectContaining({ shiftId: 'shift-1', phase: 'closing', status: 'approved', reviewedBy: SUPER_ADMIN.id }),
+    );
+    expect(notifySuperAdmin).toHaveBeenCalledWith('cash:shift_review_updated', expect.objectContaining({ shiftId: 'shift-1' }));
+  });
+
+  it('records a rejected decision with the actor as reviewer', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
+    vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'closing' }) as never);
+    vi.mocked(cashRepository.submitReview).mockResolvedValue(
+      reviewRow({ phase: 'closing', status: 'rejected', reviewedBy: SUPERVISOR.id, reviewedAt: new Date() }) as never,
+    );
+
+    const result = await cashService.reviewShift('shift-1', 'closing', { approved: false, notes: 'x'.repeat(50) }, SUPERVISOR, null);
+
+    expect(result.status).toBe('rejected');
+    expect(result.reviewed_by).toBe(SUPERVISOR.id);
+  });
+});
+
+describe('cashService.listPendingReviews', () => {
+  it('maps repository rows into the API shape, including the nested shift summary', async () => {
+    const branchId = randomUUID();
+    vi.mocked(cashRepository.listPendingReviews).mockResolvedValue({
+      reviews: [
+        {
+          ...reviewRow({ phase: 'opening' }),
+          shift: {
+            id: 'shift-1',
+            branchId,
+            cashierId: 'cashier-1',
+            status: 'active',
+            startedAt: new Date('2026-01-01T08:00:00.000Z'),
+            closedAt: null,
+          },
+        },
+      ],
+      total: 1,
+    } as never);
+
+    const result = await cashService.listPendingReviews({ page: 1, limit: 25 });
+
+    expect(result.total).toBe(1);
+    expect(result.reviews[0]).toMatchObject({
+      phase: 'opening',
+      status: 'pending',
+      shift: { id: 'shift-1', branch_id: branchId, status: 'active' },
+    });
   });
 });

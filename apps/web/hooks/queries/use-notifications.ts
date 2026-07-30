@@ -57,16 +57,21 @@ function toItem(row: NotificationRow): NotificationItem {
   };
 }
 
-export function useNotifications() {
+/**
+ * page/limit default to the bell dropdown's original fixed first-page-of-25
+ * behavior — only NotificationsPageContent's full list view passes explicit
+ * pagination state.
+ */
+export function useNotifications(page = 1, limit = 25) {
   const accessToken = useAuthStore((s) => s.accessToken);
   const isLoading = useAuthStore((s) => s.isLoading);
 
   return useQuery({
-    queryKey: ['notifications'],
+    queryKey: ['notifications', page, limit],
     queryFn: async () => {
-      const response = await apiClient<NotificationListResponse>('/api/notifications?page=1&limit=25');
+      const response = await apiClient<NotificationListResponse>(`/api/notifications?page=${page}&limit=${limit}`);
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load notifications'));
-      return response.data.notifications.map(toItem);
+      return { items: response.data.notifications.map(toItem), total: response.data.total };
     },
     staleTime: 15_000,
     enabled: !!accessToken && !isLoading,

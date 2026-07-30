@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
+import { ROLES } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Form, FormControl, FormItem, FormLabel, FormMessage, FormField } from '@/components/ui/form';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -24,11 +25,15 @@ export default function OpenShiftPage() {
   const [quantities, setQuantities] = useState<DenominationQuantities>({});
   const openShift = useOpenShift(branchId);
 
-  // Only a supervisor can open a shift on behalf of someone else — staff
-  // can only ever open their own (POST /open is supervisor/super_admin
-  // only anyway, so a staff member never reaches this page as themselves
-  // in the "open for a cashier" sense, but the form still defaults to self).
   const { data: staffList } = useEmployees({ role: 'staff', branchId, isActive: true });
+
+  // Only a supervisor/super_admin may open a shift on behalf of someone
+  // else. A `branch`/`staff` account is the one that will actually swipe
+  // the POS — the shift's cashier_id must match req.user.user_id or
+  // shiftGuard rejects checkout with NO_ACTIVE_SHIFT even though this
+  // branch-wide "is a shift open" page shows ACTIVE (findActiveShiftByBranch
+  // has no cashier filter, unlike shiftGuard's findActiveShift).
+  const canOpenForOthers = user?.role === ROLES.SUPERVISOR || user?.role === ROLES.SUPER_ADMIN;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -70,7 +75,7 @@ export default function OpenShiftPage() {
                 <FormLabel>
                   Cashier<span className="ml-0.5 text-destructive">*</span>
                 </FormLabel>
-                <Select value={field.value} onValueChange={field.onChange}>
+                <Select value={field.value} onValueChange={field.onChange} disabled={!canOpenForOthers}>
                   <FormControl>
                     <SelectTrigger>
                       <SelectValue placeholder="Select a cashier" />
@@ -82,15 +87,21 @@ export default function OpenShiftPage() {
                         {`${user.firstName} ${user.lastName}`.trim() || user.email} (me)
                       </SelectItem>
                     )}
-                    {staffList?.employees
-                      .filter((e) => e.id !== user?.id)
-                      .map((e) => (
-                        <SelectItem key={e.id} value={e.id}>
-                          {`${e.first_name} ${e.last_name}`.trim() || e.email}
-                        </SelectItem>
-                      ))}
+                    {canOpenForOthers &&
+                      staffList?.employees
+                        .filter((e) => e.id !== user?.id)
+                        .map((e) => (
+                          <SelectItem key={e.id} value={e.id}>
+                            {`${e.first_name} ${e.last_name}`.trim() || e.email}
+                          </SelectItem>
+                        ))}
                   </SelectContent>
                 </Select>
+                {!canOpenForOthers && (
+                  <p className="text-xs text-muted-foreground">
+                    Shifts must be opened under your own account — you&apos;ll be blocked from checkout otherwise.
+                  </p>
+                )}
                 <FormMessage />
               </FormItem>
             )}

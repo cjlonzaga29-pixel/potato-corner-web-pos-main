@@ -11,9 +11,9 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { useDashboardRecentTransactions } from '@/hooks/queries/use-transactions';
 import { useBranches } from '@/hooks/queries/use-branches';
+import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_ACTIVITY_LIMIT = 5;
-const BRANCH_LIST_LIMIT = 500;
 
 /**
  * Admin-dashboard-only — capped preview of the most recent transactions
@@ -26,7 +26,7 @@ export function DashboardRecentActivity({ branchId }: { branchId: string | undef
   const transactions = useDashboardRecentTransactions({ branch_id: branchId, limit: RECENT_ACTIVITY_LIMIT });
   // Same query key as the branch selector / branch-performance table elsewhere on this
   // dashboard — React Query dedupes, so this never issues a second network request.
-  const branchList = useBranches({ limit: BRANCH_LIST_LIMIT });
+  const branchList = useBranches({ limit: MAX_LIST_LIMIT });
 
   const branchNameById = useMemo(
     () => new Map(branchList.data?.branches.map((b) => [b.id, b.name])),

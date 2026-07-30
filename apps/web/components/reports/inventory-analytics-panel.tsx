@@ -10,7 +10,7 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DataTable } from '@/components/shared/data-table/data-table';
-import type { InventoryFastMover } from '@potato-corner/shared';
+import { MAX_LIST_LIMIT, type InventoryFastMover } from '@potato-corner/shared';
 import { useInventoryAnalytics, useInventoryMovementReport } from '@/hooks/queries/use-reports';
 import { manilaDaysAgo, manilaToday } from '@/lib/manila-date';
 
@@ -50,7 +50,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
       date_from: manilaDaysAgo(PERIOD_DAYS[period]),
       date_to: manilaToday(),
       page: 1,
-      limit: 1000,
+      limit: MAX_LIST_LIMIT,
     },
     Boolean(branchId),
   );

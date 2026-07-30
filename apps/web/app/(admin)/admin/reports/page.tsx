@@ -30,6 +30,7 @@ import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
 import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
 import { FinancialSummaryPanel } from '@/components/reports/financial-summary-panel';
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
+import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { expenseColumns } from '@/components/admin/expense-columns';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
@@ -348,11 +349,15 @@ function AdminReportsPageContent() {
         </TabsList>
 
         <TabsContent value="FINANCIAL_SUMMARY">
-          <FinancialSummaryPanel branchId={selectedBranchId} dateFrom={dateFrom} dateTo={dateTo} />
+          <WidgetErrorBoundary label="Financial Summary">
+            <FinancialSummaryPanel branchId={selectedBranchId} dateFrom={dateFrom} dateTo={dateTo} />
+          </WidgetErrorBoundary>
         </TabsContent>
 
         <TabsContent value="INVENTORY_ANALYTICS">
-          <InventoryAnalyticsPanel branchId={selectedBranchId} />
+          <WidgetErrorBoundary label="Inventory Analytics">
+            <InventoryAnalyticsPanel branchId={selectedBranchId} />
+          </WidgetErrorBoundary>
         </TabsContent>
       </Tabs>
 

@@ -12,6 +12,7 @@ import { DonutChart } from '@/components/shared/charts/donut-chart';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
 import { useExpenses } from '@/hooks/queries/use-expenses';
 import { useDashboardSalesTrendReport, usePaymentMethodMixReport } from '@/hooks/queries/use-reports';
+import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 type Granularity = 'daily' | 'weekly' | 'monthly';
 
@@ -54,7 +55,7 @@ function bucketKey(dateStr: string, granularity: Granularity): string {
 export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialSummaryPanelProps) {
   const [granularity, setGranularity] = useState<Granularity>('daily');
 
-  const filters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 1000 };
+  const filters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: MAX_LIST_LIMIT };
   const salesTrend = useDashboardSalesTrendReport(filters);
   const paymentMix = usePaymentMethodMixReport(filters);
   const expenses = useExpenses(filters);

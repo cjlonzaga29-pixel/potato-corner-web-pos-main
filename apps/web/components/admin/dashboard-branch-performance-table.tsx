@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import type { BranchComparisonReportRow, BranchResponse } from '@potato-corner/shared';
+import { MAX_LIST_LIMIT, type BranchComparisonReportRow, type BranchResponse } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -33,8 +33,6 @@ const columns: ColumnDef<BranchPerformanceRow>[] = [
   },
 ];
 
-const BRANCH_LIST_LIMIT = 500;
-
 interface DashboardBranchPerformanceTableProps {
   /** The dashboard's branch selector value — undefined ("All Branches") shows every branch; a specific id narrows the same underlying report to just that branch, keeping this table consistent with every other card on the page (spec: branch selector must affect branch performance too). */
   branchId?: string;
@@ -49,7 +47,7 @@ interface DashboardBranchPerformanceTableProps {
  */
 export function DashboardBranchPerformanceTable({ branchId }: DashboardBranchPerformanceTableProps) {
   const branchComparison = useBranchComparisonReport(undefined);
-  const branchList = useBranches({ limit: BRANCH_LIST_LIMIT });
+  const branchList = useBranches({ limit: MAX_LIST_LIMIT });
 
   const rows = useMemo(() => {
     const statusByBranchId = new Map(branchList.data?.branches.map((b) => [b.id, b.status]));

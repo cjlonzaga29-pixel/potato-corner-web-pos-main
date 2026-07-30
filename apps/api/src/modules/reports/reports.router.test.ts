@@ -42,6 +42,7 @@ const { reportsRouter } = await import('./reports.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
 const { ReportError } = await import('./reports.types.js');
+const { MAX_LIST_LIMIT } = await import('@potato-corner/shared');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
 
@@ -247,6 +248,35 @@ describe('GET /daily-sales', () => {
       expect.any(String),
       expect.any(String),
     );
+  });
+
+  it('accepts limit at exactly MAX_LIST_LIMIT', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'get', '/daily-sales');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), query: { branch_id: BRANCH_1, limit: String(MAX_LIST_LIMIT) } });
+    const res = mockRes();
+    vi.mocked(reportsService.getDailySalesReport).mockResolvedValue({ report_type: 'DAILY_SALES', data: [] } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(reportsService.getDailySalesReport).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: MAX_LIST_LIMIT }),
+      expect.any(String),
+      expect.any(String),
+    );
+  });
+
+  it('rejects a limit above MAX_LIST_LIMIT with 422 instead of silently truncating', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'get', '/daily-sales');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), query: { branch_id: BRANCH_1, limit: String(MAX_LIST_LIMIT + 1) } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(reportsService.getDailySalesReport).not.toHaveBeenCalled();
   });
 });
 

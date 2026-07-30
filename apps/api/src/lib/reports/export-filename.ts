@@ -1,5 +1,6 @@
 import type { ReportType } from '@potato-corner/shared';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
+import { manilaDateKey } from '../manila-time.js';
 
 /** DAILY_SALES -> DailySales */
 function pascalCase(reportType: ReportType): string {
@@ -9,8 +10,17 @@ function pascalCase(reportType: ReportType): string {
     .join('');
 }
 
+/**
+ * Manila calendar date, not date.toISOString().slice(0, 10) — that reads the
+ * UTC calendar day, which is a day early for a Manila day-*start* boundary
+ * (e.g. Manila 2026-07-30 00:00 is 2026-07-29T16:00:00.000Z; see
+ * lib/manila-time.ts's own warning against this exact pattern). Only bites
+ * when date_to is omitted and this falls back to date_from's start-of-day
+ * boundary — date_to's end-of-day boundary happens to land on the same UTC
+ * calendar date, so the common case was never visibly wrong.
+ */
 function toDateStamp(date: Date | undefined): string {
-  return (date ?? new Date()).toISOString().slice(0, 10);
+  return manilaDateKey(date ?? new Date());
 }
 
 /**

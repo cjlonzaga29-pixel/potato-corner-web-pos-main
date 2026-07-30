@@ -24,6 +24,8 @@ vi.mock('@/hooks/queries/use-reports', () => {
     useReportsRealtimeSync: vi.fn((cb: (payload: unknown) => void) => {
       realtimeSyncCallback = cb;
     }),
+    useReportsTrendsRealtimeSync: vi.fn(),
+    useInventoryAnalyticsRealtimeSync: vi.fn(),
   };
 });
 

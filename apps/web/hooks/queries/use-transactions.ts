@@ -53,6 +53,26 @@ export function useTransactions(filters: TransactionFilters = {}) {
   });
 }
 
+/**
+ * Same endpoint and query key as useTransactions, without its branch_id
+ * requirement — GET /api/transactions already lists org-wide when branch_id
+ * is omitted (branchGuard skips the check entirely for super_admin, and
+ * buildListWhere in transactions.repository.ts only filters on branchId when
+ * it's present). Used by the Admin Dashboard's Recent Activity preview,
+ * mirroring the useDashboardXxxReport override pattern in use-reports.ts.
+ */
+export function useDashboardRecentTransactions(filters: TransactionFilters = {}) {
+  return useQuery({
+    queryKey: ['transactions', filters],
+    queryFn: async () => {
+      const response = await apiClient<TransactionListResponse>(`/api/transactions?${buildQueryString(filters)}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load transactions'));
+      return response.data;
+    },
+    placeholderData: keepPreviousData,
+  });
+}
+
 export function useTransaction(transactionId: string | null | undefined) {
   return useQuery({
     queryKey: ['transaction', transactionId],

@@ -285,3 +285,23 @@ export function useReportsTrendsRealtimeSync(): void {
     ],
   );
 }
+
+/**
+ * Keeps the Inventory Analytics tab/panel fresh — same event set as
+ * useAdminInventoryRollupRealtimeSync (stock movements + the sale/refund/void
+ * events that trigger deduction reversal), since both derive from the same
+ * underlying InventoryStock/InventoryMovement writes.
+ */
+export function useInventoryAnalyticsRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [
+      SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED,
+      SOCKET_EVENTS.INVENTORY_LOW_STOCK,
+      SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK,
+      SOCKET_EVENTS.TRANSACTION_COMPLETED,
+      SOCKET_EVENTS.TRANSACTION_REFUNDED,
+      SOCKET_EVENTS.VOID_REQUESTED,
+    ],
+    [['reports', 'INVENTORY_ANALYTICS']],
+  );
+}

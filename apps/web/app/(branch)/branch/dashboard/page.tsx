@@ -13,6 +13,8 @@ import { DashboardShiftCard } from '@/components/supervisor/dashboard-shift-card
 import { DashboardInventoryAlerts } from '@/components/supervisor/dashboard-inventory-alerts';
 import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-attendance-overview';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
+import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
+import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
 import { formatDate } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import { useSocketStore } from '@/stores/socket.store';
@@ -165,11 +167,16 @@ export default function BranchDashboardPage() {
         </CardContent>
       </Card>
 
-      <DashboardTransactionsFeed
-        transactions={transactionsData?.transactions}
-        isLoading={isTransactionsLoading}
-        onRowClick={() => router.push('/branch/receipts')}
-      />
+      <SalesAnalyticsSection branchId={branchId} />
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <TopProductsPanel branchId={branchId} />
+        <DashboardTransactionsFeed
+          transactions={transactionsData?.transactions}
+          isLoading={isTransactionsLoading}
+          onRowClick={() => router.push('/branch/receipts')}
+        />
+      </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DashboardInventoryAlerts alerts={alertsData?.alerts} isLoading={isAlertsLoading} />

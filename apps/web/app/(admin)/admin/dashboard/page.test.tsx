@@ -39,6 +39,22 @@ vi.mock('@/components/admin/branch-selector', () => ({
   BranchSelector: () => <div>Branch Selector</div>,
 }));
 
+vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
+  SalesAnalyticsSection: () => <div>Sales Analytics Section</div>,
+}));
+
+vi.mock('@/components/admin/dashboard-branch-performance-table', () => ({
+  DashboardBranchPerformanceTable: () => <div>Branch Performance Table</div>,
+}));
+
+vi.mock('@/components/admin/dashboard-low-stock-summary', () => ({
+  DashboardLowStockSummary: () => <div>Low Stock Summary</div>,
+}));
+
+vi.mock('@/components/admin/dashboard-recent-activity', () => ({
+  DashboardRecentActivity: () => <div>Recent Activity</div>,
+}));
+
 vi.mock('next/link', () => ({
   default: ({ href, children }: { href: string; children: ReactNode }) => <a href={href}>{children}</a>,
 }));

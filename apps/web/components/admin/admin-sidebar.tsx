@@ -10,20 +10,13 @@ import {
   Users,
   ClipboardCheck,
   BarChart3,
-  Receipt,
   Settings,
   ChevronsLeft,
   ChevronsRight,
-  ChevronDown,
   LogOut,
   Loader2,
   Wallet,
-  ShieldAlert,
-  Clock,
-  Percent,
   Boxes,
-  CalendarCheck,
-  FileSearch,
   Tags,
   Ruler,
   ListTree,
@@ -61,20 +54,7 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Shadow BOM Deduction', href: '/admin/shadow-bom-deduction', icon: GitCompare },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
-  {
-    label: 'Reports',
-    icon: BarChart3,
-    children: [
-      { label: 'Financial', href: '/admin/reports', icon: BarChart3 },
-      { label: 'Expenses', href: '/admin/expenses', icon: Receipt },
-      { label: 'Shifts', href: '/admin/reports?tab=SHIFT_SUMMARY', icon: Clock },
-      { label: 'Fraud Alerts', href: '/admin/reports?tab=FRAUD_ALERT_SUMMARY', icon: ShieldAlert },
-      { label: 'Discount Compliance', href: '/admin/reports?tab=DISCOUNT_COMPLIANCE', icon: Percent },
-      { label: 'Inventory Movement', href: '/admin/reports?tab=INVENTORY_MOVEMENT', icon: Boxes },
-      { label: 'Attendance Summary', href: '/admin/reports?tab=ATTENDANCE_SUMMARY', icon: CalendarCheck },
-      { label: 'Audit Log', href: '/admin/reports?tab=AUDIT_LOG', icon: FileSearch },
-    ],
-  },
+  { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ] satisfies ReadonlyArray<NavItem>;
 
@@ -91,7 +71,6 @@ export function AdminSidebar() {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
   async function handleLogout() {
     setIsLoggingOut(true);
@@ -139,68 +118,6 @@ export function AdminSidebar() {
               {sectionLabel}
             </p>
           ) : null;
-
-          if (item.children) {
-            const childActive = item.children.some(
-              (child) => pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`),
-            );
-            const isOpen = openGroups[item.label] ?? childActive;
-            const groupButton = (
-              <button
-                type="button"
-                onClick={() => setOpenGroups((prev) => ({ ...prev, [item.label]: !isOpen }))}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
-                  childActive
-                    ? 'bg-primary/12 text-primary shadow-[inset_2px_0_0_0_hsl(var(--primary))]'
-                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-                )}
-              >
-                <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1 truncate text-left">{item.label}</span>
-                    <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', isOpen && 'rotate-180')} />
-                  </>
-                )}
-              </button>
-            );
-            return (
-              <div key={item.label}>
-                {sectionHeading}
-                {collapsed ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>{groupButton}</TooltipTrigger>
-                    <TooltipContent side="right">{item.label}</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  groupButton
-                )}
-                {isOpen && !collapsed && (
-                  <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-2">
-                    {item.children.map((child) => {
-                      const isActive = pathname === child.href || pathname?.startsWith(`${child.href.split('?')[0]}/`);
-                      return (
-                        <Link
-                          key={child.href}
-                          href={child.href}
-                          className={cn(
-                            'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
-                            isActive
-                              ? 'bg-primary text-primary-foreground shadow-glow'
-                              : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-                          )}
-                        >
-                          <NavLinkIcon icon={child.icon} className="h-4 w-4 shrink-0" />
-                          <span className="flex-1 truncate">{child.label}</span>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          }
 
           const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           const link = (

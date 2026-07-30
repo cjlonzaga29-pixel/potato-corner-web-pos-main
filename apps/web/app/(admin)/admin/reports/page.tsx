@@ -46,6 +46,8 @@ import {
   useFraudAlertSummaryReport,
   useRequestExport,
   useReportsRealtimeSync,
+  useReportsTrendsRealtimeSync,
+  useInventoryAnalyticsRealtimeSync,
 } from '@/hooks/queries/use-reports';
 
 const REFRESH_COOLDOWN_SECONDS = 60;
@@ -218,6 +220,8 @@ function AdminReportsPageContent() {
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   useExpensesRealtimeSync();
+  useReportsTrendsRealtimeSync();
+  useInventoryAnalyticsRealtimeSync();
 
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));

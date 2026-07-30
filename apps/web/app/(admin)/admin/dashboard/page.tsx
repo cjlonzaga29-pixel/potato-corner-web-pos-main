@@ -14,6 +14,10 @@ import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
 import { DashboardPaymentBreakdown } from '@/components/admin/dashboard-payment-breakdown';
 import { DashboardLowStockCard } from '@/components/admin/dashboard-low-stock-card';
 import { DashboardActiveBranchesCard } from '@/components/admin/dashboard-active-branches-card';
+import { DashboardBranchPerformanceTable } from '@/components/admin/dashboard-branch-performance-table';
+import { DashboardLowStockSummary } from '@/components/admin/dashboard-low-stock-summary';
+import { DashboardRecentActivity } from '@/components/admin/dashboard-recent-activity';
+import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 
 const BRANCH_LIST_LIMIT = 500;
 
@@ -92,6 +96,15 @@ function AdminDashboardPageContent() {
           isLoading={isLoadingBranchList}
         />
       </div>
+
+      <SalesAnalyticsSection branchId={branchFilter} />
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <DashboardBranchPerformanceTable branchId={branchFilter} />
+        <DashboardLowStockSummary branchId={branchFilter} />
+      </div>
+
+      <DashboardRecentActivity branchId={branchFilter} />
     </div>
   );
 }

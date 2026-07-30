@@ -69,6 +69,14 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
   useAttendanceRealtimeSync: mockUseAttendanceRealtimeSync,
 }));
 
+vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
+  SalesAnalyticsSection: () => <div>Sales Analytics Section</div>,
+}));
+
+vi.mock('@/components/shared/dashboard/top-products-panel', () => ({
+  TopProductsPanel: () => <div>Top Products Panel</div>,
+}));
+
 /** Same rationale as the supervisor dashboard test: NumberTicker never settles synchronously in jsdom. */
 vi.mock('@/components/shared/charts/kpi-card', () => ({
   KpiCard: ({

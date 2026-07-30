@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Loader2, MapPin } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -51,6 +52,7 @@ function formatElapsed(startedAt: string, now: Date | null): string {
 }
 
 export default function ClockInPage() {
+  const router = useRouter();
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
   const now = useNow();
@@ -76,6 +78,8 @@ export default function ClockInPage() {
         gps_lat: coords.lat,
         gps_lng: coords.lng,
       });
+      // Clock In is the gate before a shift can be opened (ATTENDANCE_REQUIRED) — continue straight into the Shift/POS step.
+      router.push('/branch/shift');
     } catch (error) {
       setGpsError(error instanceof Error ? error.message : 'Unable to read your location.');
     } finally {

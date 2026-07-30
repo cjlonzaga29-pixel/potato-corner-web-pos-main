@@ -4,16 +4,28 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import { ROLES } from '@potato-corner/shared';
 import OpenShiftPage from './page';
 
-const { mockPush, mockUseAuth, mockUseEmployees, mockUseOpenShift, mockMutateAsync } = vi.hoisted(() => ({
+const {
+  mockPush,
+  mockReplace,
+  mockUseAuth,
+  mockUseEmployees,
+  mockUseOpenShift,
+  mockMutateAsync,
+  mockUseIsClockedIn,
+  mockUseMyActiveShift,
+} = vi.hoisted(() => ({
   mockPush: vi.fn(),
+  mockReplace: vi.fn(),
   mockUseAuth: vi.fn(),
   mockUseEmployees: vi.fn(),
   mockUseOpenShift: vi.fn(),
   mockMutateAsync: vi.fn(),
+  mockUseIsClockedIn: vi.fn(),
+  mockUseMyActiveShift: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: mockPush, back: vi.fn() }),
+  useRouter: () => ({ push: mockPush, replace: mockReplace, back: vi.fn() }),
 }));
 
 vi.mock('@/hooks/use-auth', () => ({
@@ -24,8 +36,14 @@ vi.mock('@/hooks/queries/use-employees', () => ({
   useEmployees: mockUseEmployees,
 }));
 
+vi.mock('@/hooks/queries/use-attendance', () => ({
+  useIsClockedIn: mockUseIsClockedIn,
+}));
+
 vi.mock('@/hooks/queries/use-shifts', () => ({
   useOpenShift: mockUseOpenShift,
+  useMyActiveShift: mockUseMyActiveShift,
+  useShiftsRealtimeSync: () => undefined,
 }));
 
 // Radix Select doesn't render/interact reliably under jsdom (no pointer
@@ -96,6 +114,26 @@ function fillOneDenomination(container: HTMLElement) {
   fireEvent.change(input, { target: { value: '5' } });
 }
 
+function mockNotClockedIn() {
+  mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, isLoading: false });
+}
+
+function mockClockedIn() {
+  mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, isLoading: false });
+}
+
+function mockNoActiveShift() {
+  mockUseMyActiveShift.mockReturnValue({ shift: null, isMine: false, belongsToAnother: false, isLoading: false });
+}
+
+function mockMyActiveShift() {
+  mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isMine: true, belongsToAnother: false, isLoading: false });
+}
+
+function mockAnotherCashiersActiveShift() {
+  mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isMine: false, belongsToAnother: true, isLoading: false });
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -109,6 +147,8 @@ describe('OpenShiftPage', () => {
     mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
     mockMutateAsync.mockResolvedValue({ id: 'shift-1' });
     mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockClockedIn();
+    mockNoActiveShift();
 
     const { container } = render(<OpenShiftPage />);
     fillOneDenomination(container);
@@ -117,7 +157,79 @@ describe('OpenShiftPage', () => {
     await waitFor(() =>
       expect(mockMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ cashier_id: STAFF_1, branch_id: BRANCH_1 })),
     );
-    expect(mockPush).toHaveBeenCalledWith('/branch/shift');
+    expect(mockPush).toHaveBeenCalledWith('/branch/terminal');
+  });
+
+  it('does not submit a second open-shift request on a rapid double click', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: STAFF_1, role: ROLES.STAFF, branchIds: [BRANCH_1], firstName: 'Jane', lastName: 'Doe', email: 'jane@example.com' },
+    });
+    mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
+    // Never resolves — the assertion only cares how many times mutateAsync
+    // was invoked, not what happens after.
+    mockMutateAsync.mockReturnValue(new Promise(() => {}));
+    mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockClockedIn();
+    mockNoActiveShift();
+
+    const { container } = render(<OpenShiftPage />);
+    fillOneDenomination(container);
+    const submitButton = screen.getByRole('button', { name: /open shift/i });
+    fireEvent.click(submitButton);
+    fireEvent.click(submitButton);
+    fireEvent.click(submitButton);
+
+    // Flush react-hook-form's async validation/submit microtasks for all
+    // three clicks before asserting — waitFor would stop at the first
+    // passing check, which could be a false pass if click #2/#3 hadn't run yet.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('redirects to Clock In when the cashier has not clocked in — the opening form is never shown', () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: STAFF_1, role: ROLES.STAFF, branchIds: [BRANCH_1], firstName: 'Jane', lastName: 'Doe', email: 'jane@example.com' },
+    });
+    mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
+    mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockNotClockedIn();
+    mockNoActiveShift();
+
+    render(<OpenShiftPage />);
+
+    expect(mockReplace).toHaveBeenCalledWith('/branch/clock-in');
+    expect(screen.queryByText('Open Shift')).not.toBeInTheDocument();
+  });
+
+  it('redirects straight to POS when the cashier already has an active shift — no second opening form', () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: STAFF_1, role: ROLES.STAFF, branchIds: [BRANCH_1], firstName: 'Jane', lastName: 'Doe', email: 'jane@example.com' },
+    });
+    mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
+    mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockClockedIn();
+    mockMyActiveShift();
+
+    render(<OpenShiftPage />);
+
+    expect(mockReplace).toHaveBeenCalledWith('/branch/terminal');
+    expect(screen.queryByRole('button', { name: /^open shift$/i })).not.toBeInTheDocument();
+  });
+
+  it('blocks opening a second shift when the branch already has one active under a different cashier', () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: STAFF_1, role: ROLES.STAFF, branchIds: [BRANCH_1], firstName: 'Jane', lastName: 'Doe', email: 'jane@example.com' },
+    });
+    mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
+    mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockClockedIn();
+    mockAnotherCashiersActiveShift();
+
+    render(<OpenShiftPage />);
+
+    expect(screen.getByText(/already has an active shift open under a different cashier/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^open shift$/i })).not.toBeInTheDocument();
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 
   it('a staff member cannot select another cashier — the selector is locked and no other staff are offered', () => {
@@ -126,6 +238,8 @@ describe('OpenShiftPage', () => {
     });
     mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
     mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockClockedIn();
+    mockNoActiveShift();
 
     render(<OpenShiftPage />);
 
@@ -141,6 +255,8 @@ describe('OpenShiftPage', () => {
     mockUseEmployees.mockReturnValue({ data: { employees: [staffMember()] } });
     mockMutateAsync.mockResolvedValue({ id: 'shift-1' });
     mockUseOpenShift.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockClockedIn();
+    mockNoActiveShift();
 
     const { container } = render(<OpenShiftPage />);
 

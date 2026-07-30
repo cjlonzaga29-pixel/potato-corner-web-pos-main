@@ -13,6 +13,7 @@ import type {
   ShiftSummaryResponse,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useAuth } from '@/hooks/use-auth';
 import { useShiftStore } from '@/stores/shift.store';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
@@ -41,6 +42,31 @@ export function useCurrentShift(branchId: string | null | undefined) {
     staleTime: 10 * 1000,
     refetchInterval: 30 * 1000,
   });
+}
+
+/**
+ * Canonical "active shift for the current authenticated cashier at the
+ * current branch" — the one definition Open Shift, Current Shift, and the
+ * POS route guard must all agree on. useCurrentShift itself is a
+ * branch-wide "is anything open" lookup (mirrors findActiveShiftByBranch);
+ * this wraps it with the cashier-identity comparison that shiftGuard's
+ * checkout gate actually enforces (findActiveShift filters on cashier_id
+ * too), so no page can treat another cashier's open shift as its own.
+ */
+export function useMyActiveShift(branchId: string | null | undefined) {
+  const { user } = useAuth();
+  const query = useCurrentShift(branchId);
+  const shift = query.data ?? null;
+  const isMine = shift !== null && Boolean(user?.id) && shift.cashier_id === user?.id;
+  const belongsToAnother = shift !== null && Boolean(user?.id) && shift.cashier_id !== user?.id;
+  return {
+    shift,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+    isMine,
+    belongsToAnother,
+  };
 }
 
 export function useShift(shiftId: string | null | undefined) {

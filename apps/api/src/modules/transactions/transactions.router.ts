@@ -108,7 +108,13 @@ router.post(
       const transaction = await transactionsService.createTransaction(
         {
           branchId,
-          shiftId: body.shift_id,
+          // shiftGuard already resolved the authenticated cashier's own
+          // active shift onto req.activeShift (for staff/branch) — trust
+          // that over a client-supplied shift_id so checkout can never be
+          // pointed at a shift belonging to someone else. Only
+          // admin/supervisor (exempt from shiftGuard, so req.activeShift is
+          // unset) fall back to the body value.
+          shiftId: req.activeShift?.id ?? body.shift_id,
           cashierId: req.user.user_id,
           items: body.items.map((item) => ({
             productId: item.product_id,

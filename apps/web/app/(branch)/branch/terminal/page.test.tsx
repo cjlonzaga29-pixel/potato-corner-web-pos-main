@@ -4,9 +4,16 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import TerminalPage from './page';
 import type { PosCatalogProduct } from '@potato-corner/shared';
 
-const { mockAddItem, mockUseCatalog } = vi.hoisted(() => ({
+const { mockAddItem, mockUseCatalog, mockRouterReplace, mockUseMyActiveShift, mockUseIsClockedIn } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockUseCatalog: vi.fn(),
+  mockRouterReplace: vi.fn(),
+  mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isMine: true, belongsToAnother: false, isLoading: false })),
+  mockUseIsClockedIn: vi.fn(() => ({ isClockedIn: true, isLoading: false })),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: mockRouterReplace, push: vi.fn() }),
 }));
 
 /** Real Radix Select needs pointer-event interactions jsdom can't drive without @testing-library/user-event — swap in a plain, click-responsive stand-in (same pattern as reports/page.test.tsx). */
@@ -61,7 +68,12 @@ vi.mock('@/hooks/queries/use-products', () => ({
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
-  useCurrentShift: () => ({ data: { id: 'shift-1' } }),
+  useMyActiveShift: mockUseMyActiveShift,
+  useShiftsRealtimeSync: () => undefined,
+}));
+
+vi.mock('@/hooks/queries/use-attendance', () => ({
+  useIsClockedIn: mockUseIsClockedIn,
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
@@ -459,5 +471,75 @@ describe('TerminalPage — Maya and Other payment methods', () => {
       target: { value: 'Bank transfer #445' },
     });
     expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+  });
+});
+
+// Single clean cashier workflow: Clock In -> Open Shift once -> POS. The POS
+// route guard is the last checkpoint before checkout — it must agree with
+// Open Shift/Current Shift about what "active shift for the authenticated
+// cashier at this branch" means (useMyActiveShift), and never show a
+// generic NO_ACTIVE_SHIFT toast when it can redirect to the right page.
+describe('TerminalPage — attendance/shift routing guard', () => {
+  beforeEach(() => {
+    mockRouterReplace.mockClear();
+    mockCartItems.mockReturnValue([]);
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isMine: true, belongsToAnother: false, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, isLoading: false });
+  });
+
+  afterEach(() => cleanup());
+
+  it('redirects to Clock In when the cashier has no active attendance record', () => {
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, isLoading: false });
+
+    render(<TerminalPage />);
+
+    expect(mockRouterReplace).toHaveBeenCalledWith('/branch/clock-in');
+    expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
+  });
+
+  it('redirects to Open Shift when clocked in but no active shift exists yet', () => {
+    mockUseMyActiveShift.mockReturnValue({ shift: null, isMine: false, belongsToAnother: false, isLoading: false });
+
+    render(<TerminalPage />);
+
+    expect(mockRouterReplace).toHaveBeenCalledWith('/branch/shift/open');
+    expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
+  });
+
+  it('loads the catalog and allows charging when the cashier has a matching active shift', () => {
+    render(<TerminalPage />);
+
+    expect(mockRouterReplace).not.toHaveBeenCalled();
+    expect(screen.getByText('Mega Mix Fries')).toBeInTheDocument();
+  });
+
+  it('blocks checkout with a clear message — not a redirect — when the active shift belongs to another cashier', () => {
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isMine: false, belongsToAnother: true, isLoading: false });
+
+    render(<TerminalPage />);
+
+    expect(screen.getByText(/shift mismatch/i)).toBeInTheDocument();
+    expect(screen.getByText(/open under a different cashier account/i)).toBeInTheDocument();
+    expect(mockRouterReplace).not.toHaveBeenCalled();
+    expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
+  });
+
+  it('redirects back to Open Shift once the active shift closes while the POS page is open', () => {
+    mockUseMyActiveShift.mockReturnValue({ shift: null, isMine: false, belongsToAnother: false, isLoading: false });
+
+    render(<TerminalPage />);
+
+    expect(mockRouterReplace).toHaveBeenCalledWith('/branch/shift/open');
+  });
+
+  it('shows a loading state instead of the catalog while attendance/shift status is still resolving', () => {
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, isLoading: true });
+
+    render(<TerminalPage />);
+
+    expect(mockRouterReplace).not.toHaveBeenCalled();
+    expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
   });
 });

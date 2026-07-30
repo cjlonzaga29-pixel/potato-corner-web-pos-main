@@ -3,9 +3,9 @@ import { render, screen, cleanup } from '@testing-library/react';
 import type { ShiftResponse } from '@potato-corner/shared';
 import ShiftDashboardPage from './page';
 
-const { mockUseAuth, mockUseCurrentShift } = vi.hoisted(() => ({
+const { mockUseAuth, mockUseMyActiveShift } = vi.hoisted(() => ({
   mockUseAuth: vi.fn(),
-  mockUseCurrentShift: vi.fn(),
+  mockUseMyActiveShift: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -17,7 +17,8 @@ vi.mock('@/hooks/use-auth', () => ({
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
-  useCurrentShift: mockUseCurrentShift,
+  useMyActiveShift: mockUseMyActiveShift,
+  useShiftsRealtimeSync: () => undefined,
 }));
 
 function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
@@ -67,11 +68,13 @@ afterEach(() => {
 describe('ShiftDashboardPage — cashier mismatch warning', () => {
   it('shows no warning when the active shift belongs to the logged-in cashier', () => {
     mockUseAuth.mockReturnValue({ user: { id: 'staff-1', branchIds: ['branch-1'] } });
-    mockUseCurrentShift.mockReturnValue({
-      data: shift({ cashier_id: 'staff-1' }),
+    mockUseMyActiveShift.mockReturnValue({
+      shift: shift({ cashier_id: 'staff-1' }),
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
+      isMine: true,
+      belongsToAnother: false,
     });
 
     render(<ShiftDashboardPage />);
@@ -82,11 +85,13 @@ describe('ShiftDashboardPage — cashier mismatch warning', () => {
 
   it('shows a warning when the active shift belongs to a different cashier than the logged-in account', () => {
     mockUseAuth.mockReturnValue({ user: { id: 'staff-1', branchIds: ['branch-1'] } });
-    mockUseCurrentShift.mockReturnValue({
-      data: shift({ cashier_id: 'staff-2' }),
+    mockUseMyActiveShift.mockReturnValue({
+      shift: shift({ cashier_id: 'staff-2' }),
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
+      isMine: false,
+      belongsToAnother: true,
     });
 
     render(<ShiftDashboardPage />);

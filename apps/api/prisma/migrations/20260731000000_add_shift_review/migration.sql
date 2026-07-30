@@ -52,6 +52,6 @@ ALTER TABLE "shift_reviews" ADD CONSTRAINT "shift_reviews_reviewed_by_fkey" FORE
 -- before this migration. New shifts get both rows from cash.repository.ts's
 -- createShift going forward.
 INSERT INTO "shift_reviews" ("id", "shift_id", "phase", "status", "created_at", "updated_at")
-SELECT gen_random_uuid()::text, "id", 'opening', 'pending', now(), now() FROM "shifts"
+SELECT gen_random_uuid()::text, "id", 'opening'::"ShiftReviewPhase", 'pending'::"ShiftReviewStatus", now(), now() FROM "shifts"
 UNION ALL
-SELECT gen_random_uuid()::text, "id", 'closing', 'pending', now(), now() FROM "shifts";
+SELECT gen_random_uuid()::text, "id", 'closing'::"ShiftReviewPhase", 'pending'::"ShiftReviewStatus", now(), now() FROM "shifts";

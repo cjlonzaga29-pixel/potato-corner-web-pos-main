@@ -341,7 +341,32 @@ describe('transactionsRepository.listTransactions', () => {
 
     expect(prisma.transaction.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { createdAt: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-14T23:59:59.999Z') } },
+        // Widened to Manila day boundaries, not UTC midnight — see
+        // resolveDateRangeBoundary in apps/api/src/lib/manila-time.ts.
+        where: { createdAt: { gte: new Date('2026-06-30T16:00:00.000Z'), lte: new Date('2026-07-14T15:59:59.999Z') } },
+      }),
+    );
+  });
+});
+
+describe('transactionsRepository.findDiscountAuditTrail', () => {
+  it('widens a bare date_from/date_to range to Manila day boundaries, not UTC midnight', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.transaction.count).mockResolvedValue(0);
+
+    await transactionsRepository.findDiscountAuditTrail({
+      branchIds: 'all',
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-14',
+      page: 1,
+      limit: 25,
+    });
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          createdAt: { gte: new Date('2026-06-30T16:00:00.000Z'), lte: new Date('2026-07-14T15:59:59.999Z') },
+        }),
       }),
     );
   });

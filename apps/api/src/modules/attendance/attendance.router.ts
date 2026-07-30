@@ -7,6 +7,7 @@ import { adminSupervisorOrBranch, allRoles, branchOnly } from '../../middleware/
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 
 const router: Router = Router();
 
@@ -37,8 +38,8 @@ function parseListQuery(req: Request, res: Response): { from?: Date; to?: Date; 
     return null;
   }
   return {
-    from: parsed.data.from ? new Date(parsed.data.from) : undefined,
-    to: parsed.data.to ? new Date(parsed.data.to) : undefined,
+    from: parsed.data.from ? resolveDateRangeBoundary(parsed.data.from, 'start') : undefined,
+    to: parsed.data.to ? resolveDateRangeBoundary(parsed.data.to, 'end') : undefined,
     employeeId: parsed.data.employee_id,
     page: parsed.data.page,
     limit: parsed.data.limit,

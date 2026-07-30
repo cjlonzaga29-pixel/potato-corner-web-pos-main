@@ -104,7 +104,7 @@ describe('expensesService.createExpense', () => {
     vi.mocked(expensesRepository.create).mockResolvedValue(buildExpenseRow() as never);
 
     const result = await expensesService.createExpense(
-      { branch_id: 'branch-a', category: 'utilities', amount: 1500, incurred_at: '2026-07-01T00:00:00.000Z' },
+      { branch_id: 'branch-a', category: 'utilities', amount: 1500, incurred_at: '2026-07-01' },
       SUPERVISOR_JWT,
       null,
     );
@@ -124,7 +124,7 @@ describe('expensesService.createExpense', () => {
     vi.mocked(expensesRepository.findById).mockResolvedValue(buildExpenseRow() as never);
 
     const result = await expensesService.createExpense(
-      { branch_id: 'branch-a', category: 'utilities', amount: 1500, incurred_at: '2026-07-01T00:00:00.000Z' },
+      { branch_id: 'branch-a', category: 'utilities', amount: 1500, incurred_at: '2026-07-01' },
       SUPERVISOR_JWT,
       null,
       'dup-key',
@@ -137,7 +137,7 @@ describe('expensesService.createExpense', () => {
   it('supervisor without access to the branch throws 403', async () => {
     await expect(
       expensesService.createExpense(
-        { branch_id: 'branch-z', category: 'utilities', amount: 1500, incurred_at: '2026-07-01T00:00:00.000Z' },
+        { branch_id: 'branch-z', category: 'utilities', amount: 1500, incurred_at: '2026-07-01' },
         SUPERVISOR_JWT,
         null,
       ),

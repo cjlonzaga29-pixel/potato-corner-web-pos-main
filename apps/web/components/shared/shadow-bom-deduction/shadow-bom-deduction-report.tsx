@@ -69,8 +69,11 @@ function ShadowBomDeductionReportContent() {
   }
 
   const filters = {
-    since: since ? new Date(since).toISOString() : undefined,
-    until: until ? new Date(until).toISOString() : undefined,
+    // Send the bare Manila business date as-is — the API resolves it to that
+    // day's Manila start/end. `new Date(since).toISOString()` would parse it
+    // as UTC midnight (Manila 8:00 AM), shifting the filter window by 8h.
+    since: since || undefined,
+    until: until || undefined,
     branchId: branchId === ALL_BRANCHES ? undefined : branchId,
     productVariantId: productVariantId || undefined,
     classification: classification === ALL_CLASSIFICATIONS ? undefined : classification,

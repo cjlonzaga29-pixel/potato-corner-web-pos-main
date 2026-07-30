@@ -117,6 +117,31 @@ describe('GET /summary — admin-only', () => {
     expect(shadowBomDeductionService.getSummary).not.toHaveBeenCalled();
   });
 
+  it('widens a bare since/until date filter to Manila day boundaries, not UTC midnight', async () => {
+    const handlers = getRouteHandlers(shadowBomDeductionRouter, 'get', '/summary');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), query: { since: '2026-07-30', until: '2026-07-30' } });
+    const res = mockRes();
+    vi.mocked(shadowBomDeductionService.getSummary).mockResolvedValue({
+      total: 0,
+      matchCount: 0,
+      matchPercentage: 0,
+      countsByClassification: {},
+      affectedProductVariantIds: [],
+      affectedBranchIds: [],
+    });
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(shadowBomDeductionService.getSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        since: new Date('2026-07-29T16:00:00.000Z'),
+        until: new Date('2026-07-30T15:59:59.999Z'),
+      }),
+    );
+  });
+
   it('rejects an invalid classification filter with 422 VALIDATION_ERROR', async () => {
     const handlers = getRouteHandlers(shadowBomDeductionRouter, 'get', '/summary');
     const token = generateSuperAdminToken();

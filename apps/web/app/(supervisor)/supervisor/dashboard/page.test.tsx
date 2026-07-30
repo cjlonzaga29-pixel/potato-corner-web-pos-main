@@ -16,6 +16,7 @@ const {
   mockUseBranchStore,
   mockUseSocketStore,
   mockUseBranches,
+  mockUseAllBranchStats,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseCurrentShift: vi.fn(),
@@ -29,6 +30,7 @@ const {
   mockUseBranchStore: vi.fn(),
   mockUseSocketStore: vi.fn(),
   mockUseBranches: vi.fn(),
+  mockUseAllBranchStats: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -45,6 +47,7 @@ vi.mock('@/stores/socket.store', () => ({
 
 vi.mock('@/hooks/queries/use-branches', () => ({
   useBranches: mockUseBranches,
+  useAllBranchStats: mockUseAllBranchStats,
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
@@ -141,6 +144,23 @@ function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
   };
 }
 
+interface BranchStatsOverview {
+  branchId: string;
+  todayGrossSales: number;
+  todayTransactionCount: number;
+  todayDiscountTotal: number;
+}
+
+function branchStats(overrides: Partial<BranchStatsOverview> = {}): BranchStatsOverview {
+  return {
+    branchId: 'branch-1',
+    todayGrossSales: 0,
+    todayTransactionCount: 0,
+    todayDiscountTotal: 0,
+    ...overrides,
+  };
+}
+
 function transaction(overrides: Partial<TransactionResponse> = {}): TransactionResponse {
   return {
     id: 'txn-1',
@@ -225,6 +245,7 @@ beforeEach(() => {
   mockUseInventoryRealtimeSync.mockReturnValue(undefined);
   mockUseAttendanceRealtimeSync.mockReturnValue(undefined);
   mockUseCurrentShift.mockReturnValue({ data: null, isLoading: false });
+  mockUseAllBranchStats.mockReturnValue({ data: [branchStats()], isLoading: false });
   mockUseTransactions.mockReturnValue({ data: undefined, isLoading: false });
   mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: false });
   mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: false });
@@ -278,6 +299,7 @@ describe('SupervisorDashboardPage', () => {
 
   it('renders loading skeletons for all panels when every query is loading', () => {
     mockUseCurrentShift.mockReturnValue({ data: undefined, isLoading: true });
+    mockUseAllBranchStats.mockReturnValue({ data: undefined, isLoading: true });
     mockUseTransactions.mockReturnValue({ data: undefined, isLoading: true });
     mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: true });
     mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: true });
@@ -298,17 +320,43 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
   });
 
-  it('renders gross sales from gross_sales_total formatted as PHP currency', () => {
-    mockUseCurrentShift.mockReturnValue({ data: shift({ gross_sales_total: 4500.5 }), isLoading: false });
+  it('renders gross sales from the branch day-stats (todayGrossSales), not the shift, formatted as PHP currency', () => {
+    // gross_sales_total intentionally left at its default 0 on the shift to prove
+    // the KPI no longer reads from it.
+    mockUseCurrentShift.mockReturnValue({ data: shift(), isLoading: false });
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayGrossSales: 4500.5 })], isLoading: false });
     render(<SupervisorDashboardPage />);
     expect(screen.getByText('₱4500.50')).toBeInTheDocument();
   });
 
-  it('renders transaction_count, not total_transaction_count', () => {
-    mockUseCurrentShift.mockReturnValue({ data: shift({ transaction_count: 42, total_transaction_count: 99 }), isLoading: false });
+  it('renders todayTransactionCount from branch day-stats, not the shift transaction_count', () => {
+    mockUseCurrentShift.mockReturnValue({ data: shift({ transaction_count: 99 }), isLoading: false });
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayTransactionCount: 42 })], isLoading: false });
     render(<SupervisorDashboardPage />);
     expect(screen.getByText('42')).toBeInTheDocument();
     expect(screen.queryByText('99')).not.toBeInTheDocument();
+  });
+
+  it('keeps Gross Sales, Transactions, and Discounts non-zero from branch day-stats even when there is no active shift', () => {
+    // Regression test: a shift closing mid-day (useCurrentShift -> null) must not
+    // zero out KPIs for sales that already happened today. Previously these 3 cards
+    // read from the currently open shift and fell back to a hardcoded 0 whenever
+    // there was no open shift, even though completed transactions existed.
+    mockUseCurrentShift.mockReturnValue({ data: null, isLoading: false });
+    mockUseAllBranchStats.mockReturnValue({
+      data: [branchStats({ todayGrossSales: 84.5, todayTransactionCount: 2, todayDiscountTotal: 0 })],
+      isLoading: false,
+    });
+    render(<SupervisorDashboardPage />);
+    expect(screen.getByText('No active shift')).toBeInTheDocument();
+    expect(screen.getByText('₱84.50')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('renders discounts given from todayDiscountTotal', () => {
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayDiscountTotal: 250.5 })], isLoading: false });
+    render(<SupervisorDashboardPage />);
+    expect(screen.getByText('₱250.50')).toBeInTheDocument();
   });
 
   it('renders inventory alerts sorted critical-first', () => {

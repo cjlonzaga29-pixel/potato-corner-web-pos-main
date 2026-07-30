@@ -81,7 +81,9 @@ describe('expensesRepository.findAll', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           category: 'utilities',
-          incurredAt: { gte: new Date('2026-07-01'), lte: new Date('2026-07-31') },
+          // Widened to Manila day boundaries, not UTC midnight — see
+          // resolveDateRangeBoundary in apps/api/src/lib/manila-time.ts.
+          incurredAt: { gte: new Date('2026-06-30T16:00:00.000Z'), lte: new Date('2026-07-31T15:59:59.999Z') },
         }),
       }),
     );

@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import type { AuditLogFilters } from './audit.types.js';
 
 const auditLogInclude = {
@@ -19,8 +20,11 @@ function buildWhere(filters: AuditLogFilters): Prisma.AuditLogWhereInput {
     ...(filters.branchIds ? { branchId: { in: filters.branchIds } } : filters.branchId && { branchId: filters.branchId }),
     ...((filters.dateFrom || filters.dateTo) && {
       createdAt: {
-        ...(filters.dateFrom && { gte: new Date(`${filters.dateFrom}T00:00:00.000Z`) }),
-        ...(filters.dateTo && { lte: new Date(`${filters.dateTo}T23:59:59.999Z`) }),
+        // dateFrom/dateTo are bare Manila business dates (YYYY-MM-DD) —
+        // `${value}T00:00:00.000Z` anchors to Manila 8:00 AM, not Manila
+        // midnight, dropping that morning's audit log entries.
+        ...(filters.dateFrom && { gte: resolveDateRangeBoundary(filters.dateFrom, 'start') }),
+        ...(filters.dateTo && { lte: resolveDateRangeBoundary(filters.dateTo, 'end') }),
       },
     }),
   };

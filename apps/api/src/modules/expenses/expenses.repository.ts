@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import type { CreateExpenseData, ExpenseFilters, UpdateExpenseData } from './expenses.types.js';
 
 const detailInclude = {
@@ -15,8 +16,12 @@ function buildWhere(filters: ExpenseFilters): Prisma.ExpenseWhereInput {
     ...(filters.category && { category: filters.category as Prisma.EnumExpenseCategoryFilter['equals'] }),
     ...((filters.dateFrom || filters.dateTo) && {
       incurredAt: {
-        ...(filters.dateFrom && { gte: new Date(filters.dateFrom) }),
-        ...(filters.dateTo && { lte: new Date(filters.dateTo) }),
+        // dateFrom/dateTo are bare Manila business dates (YYYY-MM-DD) — widen
+        // to that day's Manila start/end rather than treating them as UTC
+        // midnight, or a same-day filter silently disagrees with incurredAt
+        // values written via manilaDateStringToUtc (see expenses.service.ts).
+        ...(filters.dateFrom && { gte: resolveDateRangeBoundary(filters.dateFrom, 'start') }),
+        ...(filters.dateTo && { lte: resolveDateRangeBoundary(filters.dateTo, 'end') }),
       },
     }),
   };

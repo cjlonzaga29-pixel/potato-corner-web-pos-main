@@ -229,6 +229,52 @@ describe('GET /branch/:branchId', () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(attendanceService.getByBranch).not.toHaveBeenCalled();
   });
+
+  it('widens a bare from/to date filter to Manila day boundaries, not UTC midnight', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'get', '/branch/:branchId');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { branchId: BRANCH_1 },
+      query: { from: '2026-07-30', to: '2026-07-30' },
+    });
+    const res = mockRes();
+    vi.mocked(attendanceService.getByBranch).mockResolvedValue({ records: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(attendanceService.getByBranch).toHaveBeenCalledWith(
+      BRANCH_1,
+      expect.objectContaining({
+        from: new Date('2026-07-29T16:00:00.000Z'),
+        to: new Date('2026-07-30T15:59:59.999Z'),
+      }),
+    );
+  });
+
+  it('accepts an already-precise ISO datetime for from/to and passes it through unchanged', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'get', '/branch/:branchId');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { branchId: BRANCH_1 },
+      query: { from: '2026-07-30T00:00:00.000Z', to: '2026-07-30T09:30:00.000Z' },
+    });
+    const res = mockRes();
+    vi.mocked(attendanceService.getByBranch).mockResolvedValue({ records: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(attendanceService.getByBranch).toHaveBeenCalledWith(
+      BRANCH_1,
+      expect.objectContaining({
+        from: new Date('2026-07-30T00:00:00.000Z'),
+        to: new Date('2026-07-30T09:30:00.000Z'),
+      }),
+    );
+  });
 });
 
 describe('GET /employee/:employeeId', () => {

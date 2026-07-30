@@ -16,6 +16,8 @@ const {
   useBranchComparisonReport,
   useRequestExport,
   useReportsRealtimeSync,
+  useReportsTrendsRealtimeSync,
+  useInventoryAnalyticsRealtimeSync,
 } = await import('./use-reports.js');
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -73,5 +75,23 @@ describe('useReportsRealtimeSync', () => {
     renderHook(() => useReportsRealtimeSync(), { wrapper });
     expect(mockOn).toHaveBeenCalledWith('report:export_ready', expect.any(Function));
     expect(mockOn).toHaveBeenCalledWith('report:export_failed', expect.any(Function));
+  });
+});
+
+describe('useReportsTrendsRealtimeSync', () => {
+  it('subscribes to the sale/refund/void events that should invalidate dashboard trend charts', () => {
+    renderHook(() => useReportsTrendsRealtimeSync(), { wrapper });
+    expect(mockOn).toHaveBeenCalledWith('transaction:completed', expect.any(Function));
+    expect(mockOn).toHaveBeenCalledWith('transaction:refunded', expect.any(Function));
+    expect(mockOn).toHaveBeenCalledWith('void:requested', expect.any(Function));
+  });
+});
+
+describe('useInventoryAnalyticsRealtimeSync', () => {
+  it('subscribes to inventory movement and low/out-of-stock events', () => {
+    renderHook(() => useInventoryAnalyticsRealtimeSync(), { wrapper });
+    expect(mockOn).toHaveBeenCalledWith('inventory:movement_recorded', expect.any(Function));
+    expect(mockOn).toHaveBeenCalledWith('inventory:low_stock', expect.any(Function));
+    expect(mockOn).toHaveBeenCalledWith('inventory:out_of_stock', expect.any(Function));
   });
 });

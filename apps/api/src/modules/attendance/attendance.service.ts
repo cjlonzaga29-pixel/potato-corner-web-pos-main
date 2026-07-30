@@ -1,9 +1,10 @@
-import { SOCKET_EVENTS } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, type JwtPayload } from '@potato-corner/shared';
 import { attendanceRepository } from './attendance.repository.js';
 import { AttendanceError, type AttendanceListFilters, type ClockInData, type ClockOutData, type ManualOverrideData } from './attendance.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { cashRepository } from '../cash/cash.repository.js';
+import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 
 type ActorContext = { id: string; role: string };
 type GpsStatus = 'within_radius' | 'outside_radius' | 'no_gps_data';
@@ -105,6 +106,40 @@ function toResponse(record: AttendanceRow) {
 
 function toListResponse(records: AttendanceRow[], total: number, page: number, limit: number) {
   return { records: records.map(toResponse), total, page, limit };
+}
+
+/**
+ * Resource-level scoping for GET /employee/:employeeId (and any future
+ * per-employee attendance read): the route itself is open to every role
+ * (allRoles — see attendance.router.ts's staff self-status fix), so the
+ * requested employeeId must be checked against the requester's own scope on
+ * every call, same as branchGuard does for the /branch/:branchId route.
+ * - staff: only its own employeeId (its JWT user_id IS the employee id —
+ *   see auth.service.ts's selectEmployee).
+ * - branch / supervisor: the employee must have an active
+ *   UserBranchAssignment in one of the requester's accessible branches,
+ *   resolved via lib/branch-access.ts (never duplicated here) — supervisor's
+ *   org-wide reach over every currently-active branch stays defined in one
+ *   place.
+ * - super_admin: unrestricted.
+ */
+async function assertEmployeeAccess(requestingUser: JwtPayload, employeeId: string): Promise<void> {
+  if (requestingUser.role === ROLES.SUPER_ADMIN) return;
+
+  if (requestingUser.role === ROLES.STAFF) {
+    if (requestingUser.user_id !== employeeId) {
+      throw new AttendanceError('EMPLOYEE_ACCESS_DENIED', 'You may only view your own attendance', 403);
+    }
+    return;
+  }
+
+  const accessibleBranchIds = await getAccessibleBranchIds(requestingUser);
+  if (accessibleBranchIds === 'all') return;
+
+  const assignment = await attendanceRepository.findBranchAssignmentInBranches(employeeId, accessibleBranchIds);
+  if (!assignment) {
+    throw new AttendanceError('BRANCH_ACCESS_DENIED', "You do not have access to this employee's attendance", 403);
+  }
 }
 
 /**
@@ -283,7 +318,8 @@ export const attendanceService = {
     return toListResponse(records as AttendanceRow[], total, filters.page, filters.limit);
   },
 
-  async getByEmployee(employeeId: string, filters: AttendanceListFilters) {
+  async getByEmployee(employeeId: string, filters: AttendanceListFilters, requestingUser: JwtPayload) {
+    await assertEmployeeAccess(requestingUser, employeeId);
     const { records, total } = await attendanceRepository.findByEmployee(employeeId, filters);
     return toListResponse(records as AttendanceRow[], total, filters.page, filters.limit);
   },

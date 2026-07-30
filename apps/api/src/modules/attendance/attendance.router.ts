@@ -130,7 +130,11 @@ router.get(
 router.get(
   '/employee/:employeeId',
   authenticate,
-  adminSupervisorOrBranch,
+  // allRoles (not adminSupervisorOrBranch): the Branch Clock In page runs as
+  // a staff session (use-auth.ts's selectEmployee) and calls this route to
+  // read its own status — same self-scoped resource /clock-in and
+  // /clock-out already allow staff to write to.
+  allRoles,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;

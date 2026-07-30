@@ -39,8 +39,12 @@ export function AttendanceView() {
 
   const { data, isLoading, isError, refetch } = useAttendanceByBranch(activeBranchId, {
     employee_id: employeeId === ALL_EMPLOYEES ? undefined : employeeId,
-    from: from ? new Date(from).toISOString() : undefined,
-    to: to ? new Date(to).toISOString() : undefined,
+    // Send the bare Manila business date as-is — the API resolves it to that
+    // day's Manila start/end (see resolveDateRangeBoundary). Constructing
+    // `new Date(from).toISOString()` here would parse it as UTC midnight
+    // (Manila 8:00 AM), dropping early-morning clock-ins on the start date.
+    from: from || undefined,
+    to: to || undefined,
     page: pagination.pageIndex + 1,
     limit: pagination.pageSize,
   });

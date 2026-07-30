@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranches } from '@/hooks/queries/use-branches';
 import type { CreateExpenseInput, ExpenseCategory } from '@/hooks/queries/use-expenses';
-import { manilaToday } from '@/lib/manila-date';
+import { manilaDateString, manilaToday } from '@/lib/manila-date';
 
 const CATEGORY_OPTIONS: { value: ExpenseCategory; label: string }[] = [
   { value: 'utilities', label: 'Utilities' },
@@ -38,7 +38,11 @@ function toDefaultValues(initialValues?: Partial<ExpenseFormValues>): FormValues
     amount: initialValues?.amount ?? 0,
     vendor_name: initialValues?.vendor_name ?? '',
     description: initialValues?.description ?? '',
-    incurred_at: initialValues?.incurred_at ? initialValues.incurred_at.slice(0, 10) : manilaToday(),
+    // initialValues.incurred_at (edit mode) is the full ISO instant the API
+    // returns — re-derive the Manila calendar date from it rather than
+    // slicing the first 10 chars, which reads the UTC date and is off by
+    // one near Manila midnight (see manilaDateStringToUtc on the API side).
+    incurred_at: initialValues?.incurred_at ? manilaDateString(new Date(initialValues.incurred_at)) : manilaToday(),
   };
 }
 
@@ -62,7 +66,7 @@ export function ExpenseForm({ mode, initialValues, onSubmit, isSubmitting, onCan
       amount: parsed.amount,
       vendor_name: parsed.vendor_name || undefined,
       description: parsed.description || undefined,
-      incurred_at: new Date(parsed.incurred_at).toISOString(),
+      incurred_at: parsed.incurred_at,
     });
   }
 

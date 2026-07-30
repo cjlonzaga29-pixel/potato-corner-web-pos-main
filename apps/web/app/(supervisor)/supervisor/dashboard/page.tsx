@@ -13,7 +13,7 @@ import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-tra
 import { formatDate } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
 import { useSocketStore } from '@/stores/socket.store';
-import { useBranches } from '@/hooks/queries/use-branches';
+import { useBranches, useAllBranchStats } from '@/hooks/queries/use-branches';
 import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
@@ -52,6 +52,7 @@ export default function SupervisorDashboardPage() {
   });
 
   const { data: shift, isLoading: isShiftLoading } = useCurrentShift(activeBranchId);
+  const { data: branchStats, isLoading: isStatsLoading } = useAllBranchStats(activeBranchId ?? undefined);
   const { data: transactionsData, isLoading: isTransactionsLoading } = useTransactions({
     branch_id: activeBranchId ?? undefined,
     limit: RECENT_TRANSACTIONS_LIMIT,
@@ -98,7 +99,13 @@ export default function SupervisorDashboardPage() {
     );
   }
 
-  const grossSales = shift ? shift.gross_sales_total : 0;
+  // Today's totals (Gross Sales / Transactions / Discounts) come from the
+  // branch's day-level stats, not the currently open shift — a shift that
+  // closes mid-day must not zero out sales that already happened today
+  // (matches the branch-role dashboard's todayGrossSales/todayTransactionCount
+  // sourcing). DashboardShiftCard above stays shift-scoped on purpose: it's
+  // reporting the open shift's cash drawer, not the day's sales total.
+  const todayStats = branchStats?.[0];
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
 
@@ -120,25 +127,9 @@ export default function SupervisorDashboardPage() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
         <DashboardShiftCard shift={shift} isLoading={isShiftLoading} />
-        {isShiftLoading ? (
-          <>
-            <KpiCard title="Gross Sales" value={0} isLoading />
-            <KpiCard title="Transactions" value={0} isLoading />
-            <KpiCard title="Discounts Given" value={0} isLoading />
-          </>
-        ) : shift ? (
-          <>
-            <KpiCard title="Gross Sales" value={grossSales} prefix="₱" />
-            <KpiCard title="Transactions" value={shift.transaction_count} />
-            <KpiCard title="Discounts Given" value={shift.total_discount_amount} prefix="₱" />
-          </>
-        ) : (
-          <>
-            <KpiCard title="Gross Sales" value={0} prefix="₱" />
-            <KpiCard title="Transactions" value={0} />
-            <KpiCard title="Discounts Given" value={0} prefix="₱" />
-          </>
-        )}
+        <KpiCard title="Gross Sales" value={todayStats?.todayGrossSales ?? 0} prefix="₱" isLoading={isStatsLoading} />
+        <KpiCard title="Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} />
+        <KpiCard title="Discounts Given" value={todayStats?.todayDiscountTotal ?? 0} prefix="₱" isLoading={isStatsLoading} />
       </div>
 
       <DashboardTransactionsFeed

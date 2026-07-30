@@ -37,9 +37,25 @@ export const manualOverrideSchema = z.object({
   break_minutes: z.number().int().nonnegative().optional(),
 });
 
+/**
+ * from/to accept either a bare Manila business date (YYYY-MM-DD, from a
+ * date-only filter input — widened to that day's Manila start/end server-
+ * side) or an already-precise ISO datetime (e.g. a dashboard widget's "since
+ * browser-local start of day to now" window). Same union as
+ * reports.schema.ts's ReportFiltersSchema — see resolveDateRangeBoundary in
+ * apps/api/src/lib/manila-time.ts for how the API resolves either shape.
+ */
 export const attendanceQuerySchema = z.object({
-  from: z.iso.datetime().optional(),
-  to: z.iso.datetime().optional(),
+  from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime())
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime())
+    .optional(),
   employee_id: z.uuid().optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),

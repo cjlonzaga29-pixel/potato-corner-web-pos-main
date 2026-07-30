@@ -5,12 +5,24 @@ import { shadowBomDeductionService } from './shadow-bom-deduction.service.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 
 const router: Router = Router();
 
+// since/until accept either a bare Manila business date (YYYY-MM-DD, widened
+// server-side via resolveDateRangeBoundary) or an already-precise ISO
+// datetime — same union as reports.schema.ts's ReportFiltersSchema.
 const filterQuerySchema = z.object({
-  since: z.iso.datetime({ offset: true }).optional(),
-  until: z.iso.datetime({ offset: true }).optional(),
+  since: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime({ offset: true }))
+    .optional(),
+  until: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime({ offset: true }))
+    .optional(),
   branch_id: z.uuid().optional(),
   product_variant_id: z.uuid().optional(),
   classification: z.enum(SHADOW_BOM_CLASSIFICATIONS).optional(),
@@ -31,8 +43,8 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
 
 function toFilters(parsed: z.infer<typeof filterQuerySchema>) {
   return {
-    since: parsed.since ? new Date(parsed.since) : undefined,
-    until: parsed.until ? new Date(parsed.until) : undefined,
+    since: parsed.since ? resolveDateRangeBoundary(parsed.since, 'start') : undefined,
+    until: parsed.until ? resolveDateRangeBoundary(parsed.until, 'end') : undefined,
     branchId: parsed.branch_id,
     productVariantId: parsed.product_variant_id,
     classification: parsed.classification,

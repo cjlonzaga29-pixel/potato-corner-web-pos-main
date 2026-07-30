@@ -80,8 +80,52 @@ describe('ExpenseForm', () => {
           amount: 150.5,
           vendor_name: 'Meralco',
           description: 'Monthly bill',
+          incurred_at: '2026-07-01',
         }),
       );
+    });
+  });
+
+  it('submits incurred_at as a bare Manila date (YYYY-MM-DD), not a browser-constructed ISO datetime', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ExpenseForm
+        mode="edit"
+        initialValues={{ branch_id: BRANCH_ID, category: 'utilities', amount: 100, incurred_at: '2026-07-01T00:00:00.000Z' }}
+        onSubmit={onSubmit}
+        isSubmitting={false}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      const [payload] = onSubmit.mock.calls[0] as [{ incurred_at: string }];
+      expect(payload.incurred_at).toBe('2026-07-01');
+      expect(payload.incurred_at).not.toContain('T');
+    });
+  });
+
+  it('derives the date field from the Manila calendar day, not the UTC calendar day, near midnight', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    // 2026-07-01T23:00:00.000Z is already 2026-07-02 07:00 in Manila (UTC+8) —
+    // a naive `.slice(0, 10)` off the raw ISO string would wrongly keep July 1.
+    render(
+      <ExpenseForm
+        mode="edit"
+        initialValues={{ branch_id: BRANCH_ID, category: 'utilities', amount: 100, incurred_at: '2026-07-01T23:00:00.000Z' }}
+        onSubmit={onSubmit}
+        isSubmitting={false}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      const [payload] = onSubmit.mock.calls[0] as [{ incurred_at: string }];
+      expect(payload.incurred_at).toBe('2026-07-02');
     });
   });
 

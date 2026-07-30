@@ -86,7 +86,9 @@ describe('auditRepository.findAll', () => {
 
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { createdAt: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-14T23:59:59.999Z') } },
+        // Widened to Manila day boundaries, not UTC midnight — see
+        // resolveDateRangeBoundary in apps/api/src/lib/manila-time.ts.
+        where: { createdAt: { gte: new Date('2026-06-30T16:00:00.000Z'), lte: new Date('2026-07-14T15:59:59.999Z') } },
       }),
     );
   });

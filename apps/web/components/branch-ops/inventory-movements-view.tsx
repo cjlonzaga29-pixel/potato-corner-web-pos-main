@@ -38,8 +38,12 @@ export function InventoryMovementsView() {
   const { data, isLoading, isError, refetch } = useInventoryStockMovements(activeBranchId, {
     inventory_item_id: inventoryItemId === 'all' ? undefined : inventoryItemId,
     movement_type: movementType === 'all' ? undefined : (movementType as InventoryStockMovementType),
-    from_date: fromDate ? new Date(fromDate).toISOString() : undefined,
-    to_date: toDate ? new Date(`${toDate}T23:59:59.999`).toISOString() : undefined,
+    // Send the bare Manila business date as-is — the API resolves it to that
+    // day's Manila start/end. `new Date(fromDate).toISOString()` would parse
+    // it as UTC midnight (Manila 8:00 AM), dropping early-morning movements;
+    // the previous to_date also relied on the browser's local timezone.
+    from_date: fromDate || undefined,
+    to_date: toDate || undefined,
     page: pagination.pageIndex + 1,
     limit: pagination.pageSize,
   });

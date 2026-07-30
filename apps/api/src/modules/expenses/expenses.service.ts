@@ -6,6 +6,7 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
+import { manilaDateStringToUtc } from '../../lib/manila-time.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -107,7 +108,7 @@ export const expensesService = {
       amount: data.amount,
       vendorName: data.vendor_name,
       description: data.description,
-      incurredAt: new Date(data.incurred_at),
+      incurredAt: manilaDateStringToUtc(data.incurred_at),
     };
 
     const created = (await expensesRepository.create(createData, actor.user_id)) as ExpenseRow;
@@ -144,7 +145,7 @@ export const expensesService = {
       ...(data.amount !== undefined && { amount: data.amount }),
       ...(data.vendor_name !== undefined && { vendorName: data.vendor_name }),
       ...(data.description !== undefined && { description: data.description }),
-      ...(data.incurred_at && { incurredAt: new Date(data.incurred_at) }),
+      ...(data.incurred_at && { incurredAt: manilaDateStringToUtc(data.incurred_at) }),
     };
 
     const updated = (await expensesRepository.update(id, updateData)) as ExpenseRow;

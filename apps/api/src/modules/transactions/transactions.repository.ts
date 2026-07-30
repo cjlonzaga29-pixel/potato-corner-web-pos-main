@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { ImageProofType, PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import type { TransactionListFilters } from './transactions.types.js';
 import type { DiscountAuditFilters } from './transactions.types.js';
 
@@ -81,8 +82,11 @@ function buildListWhere(filters: TransactionListFilters): Prisma.TransactionWher
     ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
     ...((filters.dateFrom || filters.dateTo) && {
       createdAt: {
-        ...(filters.dateFrom && { gte: new Date(`${filters.dateFrom}T00:00:00.000Z`) }),
-        ...(filters.dateTo && { lte: new Date(`${filters.dateTo}T23:59:59.999Z`) }),
+        // dateFrom/dateTo are bare Manila business dates (YYYY-MM-DD) —
+        // `${value}T00:00:00.000Z` anchors to Manila 8:00 AM, not Manila
+        // midnight, dropping that morning's transactions.
+        ...(filters.dateFrom && { gte: resolveDateRangeBoundary(filters.dateFrom, 'start') }),
+        ...(filters.dateTo && { lte: resolveDateRangeBoundary(filters.dateTo, 'end') }),
       },
     }),
   };
@@ -99,7 +103,12 @@ export const transactionsRepository = {
       ...(filters.branchIds !== 'all' ? { branchId: { in: filters.branchIds } } : {}),
       ...(filters.discountType ? { discountType: filters.discountType } : {}),
       ...(filters.dateFrom || filters.dateTo
-        ? { createdAt: { ...(filters.dateFrom ? { gte: new Date(filters.dateFrom) } : {}), ...(filters.dateTo ? { lte: new Date(filters.dateTo) } : {}) } }
+        ? {
+            createdAt: {
+              ...(filters.dateFrom ? { gte: resolveDateRangeBoundary(filters.dateFrom, 'start') } : {}),
+              ...(filters.dateTo ? { lte: resolveDateRangeBoundary(filters.dateTo, 'end') } : {}),
+            },
+          }
         : {}),
     };
     return Promise.all([

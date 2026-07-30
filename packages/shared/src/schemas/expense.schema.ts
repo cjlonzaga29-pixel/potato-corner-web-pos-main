@@ -9,7 +9,10 @@ export const createExpenseSchema = z.object({
   amount: z.coerce.number().positive().max(9999999999.99),
   vendor_name: z.string().max(200).optional(),
   description: z.string().max(500).optional(),
-  incurred_at: z.iso.datetime(),
+  // Manila business date, e.g. "2026-07-30" — a date-only field, never a
+  // full ISO timestamp. The API resolves it against Asia/Manila (see
+  // manilaDateStringToUtc) so it isn't misread as UTC midnight.
+  incurred_at: z.iso.date(),
 });
 
 export const updateExpenseSchema = createExpenseSchema.partial();

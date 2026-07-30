@@ -262,6 +262,54 @@ describe('GET /:branchId/inventory — branchGuard', () => {
   });
 });
 
+describe('GET /:branchId/inventory/movements — date filter boundary resolution', () => {
+  it('widens a bare from_date/to_date filter to Manila day boundaries, not UTC midnight', async () => {
+    const handlers = getRouteHandlers(inventoryBranchRouter, 'get', '/:branchId/inventory/movements');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { branchId: BRANCH_1 },
+      query: { from_date: '2026-07-30', to_date: '2026-07-30' },
+    });
+    const res = mockRes();
+    vi.mocked(inventoryService.getMovements).mockResolvedValue({ movements: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(inventoryService.getMovements).toHaveBeenCalledWith(
+      BRANCH_1,
+      expect.objectContaining({
+        fromDate: new Date('2026-07-29T16:00:00.000Z'),
+        toDate: new Date('2026-07-30T15:59:59.999Z'),
+      }),
+    );
+  });
+
+  it('accepts an already-precise ISO datetime for from_date/to_date and passes it through unchanged', async () => {
+    const handlers = getRouteHandlers(inventoryBranchRouter, 'get', '/:branchId/inventory/movements');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { branchId: BRANCH_1 },
+      query: { from_date: '2026-07-30T00:00:00.000Z', to_date: '2026-07-30T09:30:00.000Z' },
+    });
+    const res = mockRes();
+    vi.mocked(inventoryService.getMovements).mockResolvedValue({ movements: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(inventoryService.getMovements).toHaveBeenCalledWith(
+      BRANCH_1,
+      expect.objectContaining({
+        fromDate: new Date('2026-07-30T00:00:00.000Z'),
+        toDate: new Date('2026-07-30T09:30:00.000Z'),
+      }),
+    );
+  });
+});
+
 describe('GET /ingredients/:id — branch protection', () => {
   // branchGuard itself can't run on this route (no :branchId in the URL —
   // see the inline comment in inventory.router.ts), so this exercises the

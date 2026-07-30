@@ -19,6 +19,7 @@ import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 
 const movementTypeValues = Object.values(MOVEMENT_TYPE) as [MovementType, ...MovementType[]];
 
@@ -239,11 +240,22 @@ inventoryRouter.post(
 
 const inventoryBranchRouter: Router = Router();
 
+// from_date/to_date accept either a bare Manila business date (YYYY-MM-DD,
+// widened server-side via resolveDateRangeBoundary) or an already-precise
+// ISO datetime — same union as reports.schema.ts's ReportFiltersSchema.
 const movementsQuerySchema = z.object({
   ingredient_id: z.uuid().optional(),
   movement_type: z.enum(movementTypeValues).optional(),
-  from_date: z.iso.datetime().optional(),
-  to_date: z.iso.datetime().optional(),
+  from_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime())
+    .optional(),
+  to_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime())
+    .optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
@@ -303,8 +315,8 @@ inventoryBranchRouter.get(
       const result = await inventoryService.getMovements(req.params.branchId as string, {
         ingredientId: parsed.data.ingredient_id,
         movementType: parsed.data.movement_type,
-        fromDate: parsed.data.from_date ? new Date(parsed.data.from_date) : undefined,
-        toDate: parsed.data.to_date ? new Date(parsed.data.to_date) : undefined,
+        fromDate: parsed.data.from_date ? resolveDateRangeBoundary(parsed.data.from_date, 'start') : undefined,
+        toDate: parsed.data.to_date ? resolveDateRangeBoundary(parsed.data.to_date, 'end') : undefined,
         page: parsed.data.page,
         limit: parsed.data.limit,
       });

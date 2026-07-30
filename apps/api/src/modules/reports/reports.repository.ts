@@ -49,7 +49,7 @@ export const reportsRepository = {
     const [rows, branches] = await Promise.all([
       prisma.transaction.findMany({
         where,
-        select: { branchId: true, status: true, totalAmount: true, discountAmount: true, vatAmount: true, createdAt: true },
+        select: { branchId: true, status: true, subtotal: true, totalAmount: true, discountAmount: true, vatAmount: true, createdAt: true },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
@@ -72,7 +72,11 @@ export const reportsRepository = {
         refunded_count: 0,
       };
       if (row.status === 'completed') {
-        existing.gross_sales += row.totalAmount.toNumber();
+        // gross_sales is the pre-discount line-item total (Transaction.subtotal),
+        // matching lib/financial-metrics.ts's canonical grossSales definition —
+        // Transaction.totalAmount is post-discount and would silently understate
+        // gross sales for any discounted transaction (PWD/Senior, promos, etc.).
+        existing.gross_sales += row.subtotal.toNumber();
         existing.discount_total += row.discountAmount.toNumber();
         existing.vat_total += row.vatAmount.toNumber();
         existing.net_sales += row.totalAmount.toNumber() - row.vatAmount.toNumber();
@@ -376,7 +380,9 @@ export const reportsRepository = {
     const salesGrouped = await prisma.transaction.groupBy({
       by: ['cashierId', 'branchId'],
       where: { status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-      _sum: { totalAmount: true },
+      // _sum.subtotal (pre-discount) — matches lib/financial-metrics.ts's
+      // canonical grossSales definition, see getDailySales.
+      _sum: { subtotal: true },
       _count: { _all: true },
     });
     if (salesGrouped.length === 0) return [];
@@ -406,7 +412,7 @@ export const reportsRepository = {
           branch_id: g.branchId,
           branch_name: branchNameById.get(g.branchId) ?? 'Unknown Branch',
           transaction_count: g._count._all,
-          gross_sales: g._sum.totalAmount?.toNumber() ?? 0,
+          gross_sales: g._sum.subtotal?.toNumber() ?? 0,
           hours_worked: Math.round(((minutesByEmployee.get(g.cashierId) ?? 0) / 60) * 100) / 100,
         };
       })
@@ -550,7 +556,9 @@ export const reportsRepository = {
   async getBranchComparison(filters: ReportFilters): Promise<BranchComparisonReportRow[]> {
     const range = dateRangeFilter(filters);
     const [salesGrouped, activeShifts, stocks, branches] = await Promise.all([
-      prisma.transaction.groupBy({ by: ['branchId'], where: { status: 'completed', ...(range && { createdAt: range }) }, _sum: { totalAmount: true }, _count: { _all: true } }),
+      // _sum.subtotal (pre-discount), not totalAmount (post-discount) — matches
+      // lib/financial-metrics.ts's canonical grossSales definition, see getDailySales.
+      prisma.transaction.groupBy({ by: ['branchId'], where: { status: 'completed', ...(range && { createdAt: range }) }, _sum: { subtotal: true }, _count: { _all: true } }),
       prisma.shift.findMany({ where: { status: 'active' }, select: { branchId: true } }),
       prisma.inventoryStock.findMany({ where: { inventoryItem: { deletedAt: null } }, select: { branchId: true, quantityOnHand: true, lowStockThreshold: true } }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
@@ -574,7 +582,7 @@ export const reportsRepository = {
         return {
           branch_id: branch.id,
           branch_name: branch.name,
-          gross_sales: sales?._sum.totalAmount?.toNumber() ?? 0,
+          gross_sales: sales?._sum.subtotal?.toNumber() ?? 0,
           transaction_count: sales?._count._all ?? 0,
           active_shift_count: activeShiftCountByBranch.get(branch.id) ?? 0,
           low_stock_ingredient_count: lowStockCountByBranch.get(branch.id) ?? 0,

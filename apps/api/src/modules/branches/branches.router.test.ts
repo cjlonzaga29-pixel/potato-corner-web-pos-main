@@ -24,6 +24,7 @@ vi.mock('./branches.service.js', () => ({
     assignSupervisor: vi.fn(),
     removeSupervisor: vi.fn(),
     getBranchStats: vi.fn(),
+    getAllBranches: vi.fn(),
   },
 }));
 
@@ -48,6 +49,7 @@ const { branchesRouter } = await import('./branches.router.js');
 const { BranchError } = await import('./branches.types.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } =
   await import('../../test-utils/auth-tokens.js');
+const { MAX_LIST_LIMIT } = await import('@potato-corner/shared');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
 
@@ -219,6 +221,34 @@ describe('POST /api/branches/gcash-qr/bulk-assign — success', () => {
       },
       error: null,
     });
+  });
+});
+
+describe('GET /api/branches — limit ceiling', () => {
+  const ROUTE = '/';
+
+  it('accepts limit at exactly MAX_LIST_LIMIT', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
+    const token = generateSuperAdminToken();
+    vi.mocked(branchesService.getAllBranches).mockResolvedValue({ branches: [], total: 0, page: 1, limit: MAX_LIST_LIMIT });
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), query: { limit: String(MAX_LIST_LIMIT) } }), mockRes());
+
+    expect(branchesService.getAllBranches).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ limit: MAX_LIST_LIMIT }),
+    );
+  });
+
+  it('rejects a limit above MAX_LIST_LIMIT with 422 instead of silently truncating', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
+    const token = generateSuperAdminToken();
+    const res = mockRes();
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), query: { limit: String(MAX_LIST_LIMIT + 1) } }), res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(branchesService.getAllBranches).not.toHaveBeenCalled();
   });
 });
 

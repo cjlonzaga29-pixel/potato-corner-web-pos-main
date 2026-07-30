@@ -429,7 +429,7 @@ export default function TerminalPage() {
           </Tabs>
         </div>
 
-        <div className="grid flex-1 grid-cols-3 gap-2 overflow-y-auto p-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
+        <div className="grid flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
           {visibleProducts.map((product) =>
             product.variants.map((variant) => {
               const message = readinessMessage(variant);
@@ -445,14 +445,14 @@ export default function TerminalPage() {
                   <CardContent className="flex h-full flex-col gap-0.5 p-2">
                     {product.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={product.image_url} alt={product.name} className="mb-1 h-14 w-full rounded object-cover" />
+                      <img src={product.image_url} alt={product.name} className="mb-1 aspect-[4/3] w-full rounded object-cover" />
                     ) : (
-                      <div className="mb-1 h-14 w-full rounded bg-muted" />
+                      <div className="mb-1 aspect-[4/3] w-full rounded bg-muted" />
                     )}
                     <p className="line-clamp-2 min-h-[2rem] text-xs font-medium leading-tight">{product.name}</p>
-                    <p className="text-[11px] text-muted-foreground">{variant.name}</p>
+                    <p className="truncate text-[11px] text-muted-foreground">{variant.name}</p>
                     <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
-                    {message && <p className="text-[11px] font-medium text-destructive">{message}</p>}
+                    {message && <p className="line-clamp-2 text-[11px] font-medium text-destructive">{message}</p>}
                   </CardContent>
                 </Card>
               );
@@ -567,36 +567,43 @@ export default function TerminalPage() {
       <div className="flex w-1/3 flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto p-3">
           {cartLines.length === 0 && <p className="text-sm text-muted-foreground">Cart is empty — tap a product to add it.</p>}
-          <div className="space-y-2">
+          <div className="space-y-3">
             {cartLines.map((line) => (
-              <div key={line.index} className="flex items-center justify-between gap-2 border-b pb-2 text-sm">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
+              <div key={line.index} className="space-y-1.5 border-b pb-3 text-sm">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="line-clamp-2 min-w-0 flex-1 font-medium leading-snug">
                     {line.productName}
                     {line.flavorName ? ` — ${line.flavorName}` : ''}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {line.variantName} · {formatPeso(line.unitPrice)} each
+                  <Button
+                    variant="ghost"
+                    className="touch-target h-7 w-7 shrink-0 p-0 text-destructive"
+                    onClick={() => removeItem(line.index)}
+                    aria-label={`Remove ${line.productName} from cart`}
+                  >
+                    ×
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {line.variantName} · {formatPeso(line.unitPrice)} each
+                </p>
+                {line.slotSelections.map((sel, i) => (
+                  <p key={i} className="text-xs text-muted-foreground">
+                    {sel.label}: {sel.snackName} — {sel.flavorName}
                   </p>
-                  {line.slotSelections.map((sel, i) => (
-                    <p key={i} className="text-xs text-muted-foreground">
-                      {sel.label}: {sel.snackName} — {sel.flavorName}
-                    </p>
-                  ))}
+                ))}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity - 1)}>
+                      −
+                    </Button>
+                    <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
+                    <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity + 1)}>
+                      +
+                    </Button>
+                  </div>
+                  <p className="text-right font-semibold tabular-nums">{formatPeso(line.lineTotal)}</p>
                 </div>
-                <div className="flex items-center gap-1">
-                  <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity - 1)}>
-                    −
-                  </Button>
-                  <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
-                  <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity + 1)}>
-                    +
-                  </Button>
-                </div>
-                <p className="w-16 text-right tabular-nums">{formatPeso(line.lineTotal)}</p>
-                <Button variant="ghost" className="touch-target h-7 w-7 p-0 text-destructive" onClick={() => removeItem(line.index)}>
-                  ×
-                </Button>
               </div>
             ))}
           </div>

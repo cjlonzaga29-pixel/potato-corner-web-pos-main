@@ -88,6 +88,16 @@ router.post(
   shiftGuard,
   validate(createTransactionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
+    // Total request-to-response wall time for checkout — deliberately just
+    // one number logged around the existing call, not per-stage checkpoints
+    // inside transactionsService.createTransaction. That function is the
+    // single most financial-critical path in the app (recipe deduction,
+    // payment validation, receipt numbering); splicing timing checkpoints
+    // through its ~280 lines would risk the exact "altered validation
+    // order" the audit warns against for no proven bottleneck. No request
+    // body/payment data is logged — branchId only, same as this module's
+    // existing console.error calls.
+    const checkoutStartedAt = performance.now();
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as CreateTransactionBody;
@@ -138,6 +148,8 @@ router.post(
         },
         req.ip ?? null,
       );
+      // console.warn, not .log — this module's eslint config only allows warn/error.
+      console.warn('POS checkout completed', { branchId, durationMs: Math.round(performance.now() - checkoutStartedAt) });
       res.status(201).json({ data: transaction, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);

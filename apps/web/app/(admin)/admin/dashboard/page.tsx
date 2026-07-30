@@ -18,8 +18,8 @@ import { DashboardBranchPerformanceTable } from '@/components/admin/dashboard-br
 import { DashboardLowStockSummary } from '@/components/admin/dashboard-low-stock-summary';
 import { DashboardRecentActivity } from '@/components/admin/dashboard-recent-activity';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
-
-const BRANCH_LIST_LIMIT = 500;
+import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
+import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 function AdminDashboardPageContent() {
   const isConnected = useSocketStore((s) => s.isConnected);
@@ -34,13 +34,13 @@ function AdminDashboardPageContent() {
   useInventoryStockRealtimeSync(branchFilter);
 
   const { data: branchStats, isLoading: isLoadingBranchStats } = useAllBranchStats(branchFilter);
-  const { data: branchList, isLoading: isLoadingBranchList } = useBranches({ limit: BRANCH_LIST_LIMIT });
+  const { data: branchList, isLoading: isLoadingBranchList } = useBranches({ limit: MAX_LIST_LIMIT });
   const monthTrend = useDashboardSalesTrendReport({
     date_from: manilaMonthStart(),
     date_to: manilaToday(),
     branch_id: branchFilter,
     page: 1,
-    limit: 1000,
+    limit: MAX_LIST_LIMIT,
   });
 
   const grossSalesToday = branchStats?.reduce((sum, b) => sum + b.todayGrossSales, 0);
@@ -97,10 +97,14 @@ function AdminDashboardPageContent() {
         />
       </div>
 
-      <SalesAnalyticsSection branchId={branchFilter} />
+      <WidgetErrorBoundary label="Sales Trend">
+        <SalesAnalyticsSection branchId={branchFilter} />
+      </WidgetErrorBoundary>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <DashboardBranchPerformanceTable branchId={branchFilter} />
+        <WidgetErrorBoundary label="Branch Performance">
+          <DashboardBranchPerformanceTable branchId={branchFilter} />
+        </WidgetErrorBoundary>
         <DashboardLowStockSummary branchId={branchFilter} />
       </div>
 

@@ -15,6 +15,7 @@ import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-a
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
+import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { formatDate } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import { useSocketStore } from '@/stores/socket.store';
@@ -167,10 +168,14 @@ export default function BranchDashboardPage() {
         </CardContent>
       </Card>
 
-      <SalesAnalyticsSection branchId={branchId} />
+      <WidgetErrorBoundary label="Sales Trend">
+        <SalesAnalyticsSection branchId={branchId} />
+      </WidgetErrorBoundary>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TopProductsPanel branchId={branchId} />
+        <WidgetErrorBoundary label="Top Products">
+          <TopProductsPanel branchId={branchId} />
+        </WidgetErrorBoundary>
         <DashboardTransactionsFeed
           transactions={transactionsData?.transactions}
           isLoading={isTransactionsLoading}

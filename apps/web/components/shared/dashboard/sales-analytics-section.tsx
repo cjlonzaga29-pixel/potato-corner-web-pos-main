@@ -17,6 +17,7 @@ import {
   useInventoryAnalyticsRealtimeSync,
 } from '@/hooks/queries/use-reports';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
+import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 type Period = '7d' | '30d' | '90d';
 
@@ -51,7 +52,7 @@ export function SalesAnalyticsSection({ branchId, inventoryCostTooltip }: SalesA
     date_from: manilaDaysAgo(PERIOD_DAYS[period]),
     date_to: manilaToday(),
     page: 1,
-    limit: 1000,
+    limit: MAX_LIST_LIMIT,
   };
   const salesTrend = useDashboardSalesTrendReport(filters);
   const paymentMix = usePaymentMethodMixReport(filters);

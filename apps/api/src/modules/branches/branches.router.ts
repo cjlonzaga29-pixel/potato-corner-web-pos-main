@@ -8,6 +8,7 @@ import {
   assignSupervisorSchema,
   bulkAssignGcashQrSchema,
   BRANCH_STATUS,
+  MAX_LIST_LIMIT,
   type BranchStatus,
 } from '@potato-corner/shared';
 import { branchesService } from './branches.service.js';
@@ -39,7 +40,7 @@ const listQuerySchema = z.object({
   city: z.string().min(1).optional(),
   search: z.string().min(1).optional(),
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(25),
+  limit: z.coerce.number().int().positive().max(MAX_LIST_LIMIT).default(25),
 });
 
 const statsQuerySchema = z.object({

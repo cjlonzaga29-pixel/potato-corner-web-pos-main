@@ -39,8 +39,8 @@ beforeEach(() => {
 describe('reportsRepository.getDailySales', () => {
   it('buckets completed/voided/refunded transactions by report_date and branch', async () => {
     vi.mocked(prisma.transaction.findMany).mockResolvedValue([
-      { branchId: 'b1', status: 'completed', totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), createdAt: new Date('2026-07-01T10:00:00.000Z') },
-      { branchId: 'b1', status: 'voided', totalAmount: decimal(50), discountAmount: decimal(0), vatAmount: decimal(5), createdAt: new Date('2026-07-01T11:00:00.000Z') },
+      { branchId: 'b1', status: 'completed', subtotal: decimal(112), totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+      { branchId: 'b1', status: 'voided', subtotal: decimal(50), totalAmount: decimal(50), discountAmount: decimal(0), vatAmount: decimal(5), createdAt: new Date('2026-07-01T11:00:00.000Z') },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 
@@ -70,7 +70,7 @@ describe('reportsRepository.getDailySales', () => {
     // but toISOString().slice(0, 10) on the raw UTC value would also read "2026-07-01"
     // here — the regression this guards is the *other* direction, tested below.
     vi.mocked(prisma.transaction.findMany).mockResolvedValue([
-      { branchId: 'b1', status: 'completed', totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), createdAt: new Date('2026-06-30T20:00:00.000Z') },
+      { branchId: 'b1', status: 'completed', subtotal: decimal(112), totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), createdAt: new Date('2026-06-30T20:00:00.000Z') },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 
@@ -79,6 +79,23 @@ describe('reportsRepository.getDailySales', () => {
     // 2026-06-30T20:00:00.000Z == 2026-07-01T04:00:00+08:00 -> Manila July 1,
     // even though the UTC calendar date is still June 30.
     expect(rows[0]?.report_date).toBe('2026-07-01');
+  });
+
+  it('reports gross_sales as the pre-discount subtotal, not the post-discount totalAmount', async () => {
+    // A PWD/Senior sale: subtotal 200, 20% discount = 40, totalAmount 160.
+    // gross_sales must read 200 (matching lib/financial-metrics.ts's grossSales
+    // definition, which every dashboard KPI card is built from) — reporting 160
+    // here would silently understate Gross Sales on Reports/Sales Trend/Branch
+    // Comparison relative to the Admin/Supervisor/Branch dashboard KPI cards.
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      { branchId: 'b1', status: 'completed', subtotal: decimal(200), totalAmount: decimal(160), discountAmount: decimal(40), vatAmount: decimal(0), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(row?.gross_sales).toBe(200);
+    expect(row?.discount_total).toBe(40);
   });
 });
 
@@ -436,7 +453,7 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
 describe('reportsRepository.getBranchComparison', () => {
   it('derives low_stock_ingredient_count from InventoryStock, not the legacy Ingredient/InventoryMovement tables', async () => {
     vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
-      { branchId: 'b1', _sum: { totalAmount: decimal(500) }, _count: { _all: 5 } },
+      { branchId: 'b1', _sum: { subtotal: decimal(500) }, _count: { _all: 5 } },
     ] as never);
     vi.mocked(prisma.shift.findMany).mockResolvedValue([{ branchId: 'b1' }] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
@@ -454,6 +471,20 @@ describe('reportsRepository.getBranchComparison', () => {
     expect(prisma.inventoryMovement.groupBy).not.toHaveBeenCalled();
   });
 
+  it('reports gross_sales from _sum.subtotal, not _sum.totalAmount, so a discounted sale is not understated', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
+      { branchId: 'b1', _sum: { subtotal: decimal(200) }, _count: { _all: 1 } },
+    ] as never);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getBranchComparison(baseFilters);
+
+    expect(rows[0]?.gross_sales).toBe(200);
+    expect(prisma.transaction.groupBy).toHaveBeenCalledWith(expect.objectContaining({ _sum: { subtotal: true } }));
+  });
+
   it('ignores stock rows with no low_stock_threshold configured', async () => {
     vi.mocked(prisma.transaction.groupBy).mockResolvedValue([] as never);
     vi.mocked(prisma.shift.findMany).mockResolvedValue([] as never);
@@ -465,6 +496,22 @@ describe('reportsRepository.getBranchComparison', () => {
     const rows = await reportsRepository.getBranchComparison(baseFilters);
 
     expect(rows[0]?.low_stock_ingredient_count).toBe(0);
+  });
+});
+
+describe('reportsRepository.getEmployeePerformance', () => {
+  it('reports gross_sales from _sum.subtotal, not _sum.totalAmount, so a discounted sale is not understated', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
+      { cashierId: 'u1', branchId: 'b1', _sum: { subtotal: decimal(200) }, _count: { _all: 1 } },
+    ] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getEmployeePerformance(baseFilters);
+
+    expect(rows[0]?.gross_sales).toBe(200);
+    expect(prisma.transaction.groupBy).toHaveBeenCalledWith(expect.objectContaining({ _sum: { subtotal: true } }));
   });
 });
 

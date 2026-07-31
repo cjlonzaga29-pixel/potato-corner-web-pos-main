@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { startOfDay } from 'date-fns';
-import { ShoppingCart, Fingerprint, PackagePlus, Receipt } from 'lucide-react';
+import { ShoppingCart, PackagePlus, Receipt } from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Button } from '@/components/ui/button';
@@ -34,7 +34,6 @@ const ATTENDANCE_OVERVIEW_LIMIT = 100;
 
 const QUICK_ACTIONS = [
   { label: 'Open POS Terminal', href: '/branch/terminal', icon: ShoppingCart },
-  { label: 'Clock In / Out', href: '/branch/clock-in', icon: Fingerprint },
   { label: 'Receive Stock', href: '/branch/inventory/stock-in', icon: PackagePlus },
   { label: 'Log Expense', href: '/branch/expenses', icon: Receipt },
 ] as const;

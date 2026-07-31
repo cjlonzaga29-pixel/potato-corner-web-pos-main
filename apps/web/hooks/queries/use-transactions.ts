@@ -112,7 +112,8 @@ export function useCreateTransaction() {
 
 interface UploadPaymentProofInput {
   branchId: string;
-  shiftId: string;
+  /** Optional — the API resolves (and auto-opens) the cashier's own active shift server-side; this is only a fallback for shiftGuard-exempt roles. */
+  shiftId?: string;
   type: 'live_capture' | 'gallery_upload';
   file: File;
 }
@@ -123,7 +124,7 @@ export function useUploadPaymentProof() {
     mutationFn: async ({ branchId, shiftId, type, file }: UploadPaymentProofInput) => {
       const formData = new FormData();
       formData.set('branch_id', branchId);
-      formData.set('shift_id', shiftId);
+      if (shiftId) formData.set('shift_id', shiftId);
       formData.set('type', type);
       formData.set('proof', file);
       const response = await apiClient<PaymentProofUploadResponse>('/api/transactions/payment-proof', {

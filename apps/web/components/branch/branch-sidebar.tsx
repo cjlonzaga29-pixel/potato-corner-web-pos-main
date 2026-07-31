@@ -16,16 +16,11 @@ import {
   Truck,
   Users,
   Clock,
-  Fingerprint,
-  Banknote,
-  Calculator,
-  Receipt,
   BarChart3,
-  LineChart,
-  History,
   Bell,
   Settings,
   User,
+  Receipt,
   ChevronsLeft,
   ChevronsRight,
   LogOut,
@@ -43,44 +38,64 @@ import type { NavItem } from '@/components/shared/nav-types';
 interface BranchNavItem extends NavItem {
   /** Which roles see this item. Omitted (or `['branch']`) means branch-only; staff only ever sees the explicitly-listed subset. */
   roles?: Role[];
+  /** Sidebar section header this item renders under. */
+  group: 'Overview' | 'Inventory' | 'Products' | 'People' | 'Reports' | 'Settings';
 }
 
 /**
  * Full branch-role nav plus the narrow staff (cashier) subset. The POS
  * Terminal is not a separate app — it is just another item in this list,
  * same as every other branch-operations page (CR-003).
+ *
+ * Clock In / Out, Cash Management, Cash Reconciliation, Expenses, Analytics,
+ * and Activity Logs are deliberately NOT separate top-level items:
+ * - Clock In / Out lives inside POS Terminal itself (cashiers never need a
+ *   separate page for it — see terminal/page.tsx).
+ * - Expenses, Analytics, and Activity Logs are tabs inside Reports.
+ * - Cash Management and Cash Reconciliation's historical data is preserved
+ *   as the "Shift Summary" and "Cash Reconciliation" tabs inside Reports
+ *   (their standalone pages still exist for deep links, just unlinked here).
  */
 export const BRANCH_NAV_ITEMS = [
-  { label: 'Dashboard', href: '/branch/dashboard', icon: LayoutDashboard },
-  { label: 'POS Terminal', href: '/branch/terminal', icon: ShoppingCart, roles: ['branch', 'staff'] },
-  { label: 'Sales', href: '/branch/sales', icon: TrendingUp },
-  { label: 'Products', href: '/branch/products', icon: Package },
-  { label: 'Inventory', href: '/branch/inventory', icon: Boxes },
-  { label: 'Receiving', href: '/branch/inventory/stock-in', icon: PackagePlus },
-  { label: 'Stock Movement', href: '/branch/inventory/movements', icon: ArrowLeftRight },
-  { label: 'Stock Adjustments', href: '/branch/inventory/adjust', icon: SlidersHorizontal },
-  { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2 },
-  { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck },
-  { label: 'Clock In / Out', href: '/branch/clock-in', icon: Fingerprint, roles: ['branch', 'staff'] },
-  { label: 'Employees', href: '/branch/employees', icon: Users },
-  { label: 'Attendance', href: '/branch/attendance', icon: Clock },
-  { label: 'Cash Management', href: '/branch/cash', icon: Banknote },
-  { label: 'Cash Reconciliation', href: '/branch/cash/reconciliation', icon: Calculator },
-  { label: 'Expenses', href: '/branch/expenses', icon: Receipt },
-  { label: 'Reports', href: '/branch/reports', icon: BarChart3 },
-  { label: 'Analytics', href: '/branch/analytics', icon: LineChart },
-  { label: 'Activity Logs', href: '/branch/activity-logs', icon: History },
-  { label: 'Notifications', href: '/branch/notifications', icon: Bell, roles: ['branch', 'staff'] },
-  { label: 'Branch Settings', href: '/branch/settings', icon: Settings },
-  { label: 'Receipts', href: '/branch/receipts', icon: Receipt, roles: ['branch', 'staff'] },
-  { label: 'Profile', href: '/branch/profile', icon: User, roles: ['branch', 'staff'] },
+  { label: 'Dashboard', href: '/branch/dashboard', icon: LayoutDashboard, group: 'Overview' },
+  { label: 'POS Terminal', href: '/branch/terminal', icon: ShoppingCart, roles: ['branch', 'staff'], group: 'Overview' },
+  { label: 'Sales', href: '/branch/sales', icon: TrendingUp, group: 'Overview' },
+
+  { label: 'Inventory', href: '/branch/inventory', icon: Boxes, group: 'Inventory' },
+  { label: 'Receiving', href: '/branch/inventory/stock-in', icon: PackagePlus, group: 'Inventory' },
+  { label: 'Stock Movement', href: '/branch/inventory/movements', icon: ArrowLeftRight, group: 'Inventory' },
+  { label: 'Stock Adjustments', href: '/branch/inventory/adjust', icon: SlidersHorizontal, group: 'Inventory' },
+  { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2, group: 'Inventory' },
+  { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck, group: 'Inventory' },
+
+  { label: 'Products', href: '/branch/products', icon: Package, group: 'Products' },
+
+  { label: 'Employees', href: '/branch/employees', icon: Users, group: 'People' },
+  { label: 'Attendance', href: '/branch/attendance', icon: Clock, group: 'People' },
+
+  { label: 'Reports', href: '/branch/reports', icon: BarChart3, group: 'Reports' },
+
+  { label: 'Branch Settings', href: '/branch/settings', icon: Settings, group: 'Settings' },
+  { label: 'Notifications', href: '/branch/notifications', icon: Bell, roles: ['branch', 'staff'], group: 'Settings' },
+  { label: 'Receipts', href: '/branch/receipts', icon: Receipt, roles: ['branch', 'staff'], group: 'Settings' },
+  { label: 'Profile', href: '/branch/profile', icon: User, roles: ['branch', 'staff'], group: 'Settings' },
 ] satisfies ReadonlyArray<BranchNavItem>;
+
+const GROUP_ORDER: BranchNavItem['group'][] = ['Overview', 'Inventory', 'Products', 'People', 'Reports', 'Settings'];
 
 /** Items visible to the given role — undefined `roles` (or `roles: ['branch']`) means branch-only. */
 export function branchNavItemsForRole(role: Role | undefined): BranchNavItem[] {
   if (!role) return [];
   const BRANCH_ONLY: Role[] = ['branch'];
   return BRANCH_NAV_ITEMS.filter((item) => (item.roles ?? BRANCH_ONLY).includes(role));
+}
+
+/** Groups the role-visible items under their section headers, in display order, dropping empty sections. */
+export function branchNavGroupsForRole(role: Role | undefined): { group: string; items: BranchNavItem[] }[] {
+  const items = branchNavItemsForRole(role);
+  return GROUP_ORDER.map((group) => ({ group, items: items.filter((item) => item.group === group) })).filter(
+    (section) => section.items.length > 0,
+  );
 }
 
 export function BranchSidebar() {
@@ -98,7 +113,7 @@ export function BranchSidebar() {
     }
   }
 
-  const visibleItems = branchNavItemsForRole(user?.role);
+  const navGroups = branchNavGroupsForRole(user?.role);
 
   return (
     <aside
@@ -129,33 +144,40 @@ export function BranchSidebar() {
         </div>
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto p-2">
+      <nav className="flex-1 space-y-4 overflow-y-auto p-2">
         <TooltipProvider delayDuration={200}>
-          {visibleItems.map((item) => {
-            const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
-            const link = (
-              <Link
-                href={item.href ?? '#'}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
-                  isActive
-                    ? 'bg-primary text-primary-foreground shadow-glow'
-                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-                )}
-              >
-                <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
-                {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-              </Link>
-            );
-            return collapsed ? (
-              <Tooltip key={item.href}>
-                <TooltipTrigger asChild>{link}</TooltipTrigger>
-                <TooltipContent side="right">{item.label}</TooltipContent>
-              </Tooltip>
-            ) : (
-              <div key={item.href}>{link}</div>
-            );
-          })}
+          {navGroups.map(({ group, items }) => (
+            <div key={group} className="space-y-1">
+              {!collapsed && (
+                <p className="px-3 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">{group}</p>
+              )}
+              {items.map((item) => {
+                const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+                const link = (
+                  <Link
+                    href={item.href ?? '#'}
+                    className={cn(
+                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                      isActive
+                        ? 'bg-primary text-primary-foreground shadow-glow'
+                        : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                    )}
+                  >
+                    <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                    {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                  </Link>
+                );
+                return collapsed ? (
+                  <Tooltip key={item.href}>
+                    <TooltipTrigger asChild>{link}</TooltipTrigger>
+                    <TooltipContent side="right">{item.label}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <div key={item.href}>{link}</div>
+                );
+              })}
+            </div>
+          ))}
         </TooltipProvider>
       </nav>
 

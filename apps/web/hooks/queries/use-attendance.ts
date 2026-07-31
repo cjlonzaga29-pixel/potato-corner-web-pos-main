@@ -73,7 +73,7 @@ export function useIsClockedIn() {
   const query = useAttendanceByEmployee(user?.id, { limit: 1 });
   const latestRecord = query.data?.records[0] ?? null;
   const isClockedIn = latestRecord !== null && latestRecord.clock_out_server_time === null;
-  return { isClockedIn, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
+  return { isClockedIn, record: isClockedIn ? latestRecord : null, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
 }
 
 function invalidateAttendance(queryClient: ReturnType<typeof useQueryClient>) {

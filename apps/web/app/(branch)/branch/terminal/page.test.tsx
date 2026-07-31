@@ -4,16 +4,17 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import TerminalPage from './page';
 import type { PosCatalogProduct } from '@potato-corner/shared';
 
-const { mockAddItem, mockUseCatalog, mockRouterReplace, mockUseMyActiveShift, mockUseIsClockedIn } = vi.hoisted(() => ({
+const { mockAddItem, mockUseCatalog, mockUseMyActiveShift, mockUseIsClockedIn, mockClockInMutateAsync, mockClockOutMutateAsync } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockUseCatalog: vi.fn(),
-  mockRouterReplace: vi.fn(),
   mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isLoading: false })),
-  mockUseIsClockedIn: vi.fn(() => ({ isClockedIn: true, isLoading: false })),
-}));
-
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: mockRouterReplace, push: vi.fn() }),
+  mockUseIsClockedIn: vi.fn(() => ({
+    isClockedIn: true,
+    record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' } as { clock_in_server_time: string } | null,
+    isLoading: false,
+  })),
+  mockClockInMutateAsync: vi.fn(),
+  mockClockOutMutateAsync: vi.fn(),
 }));
 
 /** Real Radix Select needs pointer-event interactions jsdom can't drive without @testing-library/user-event — swap in a plain, click-responsive stand-in (same pattern as reports/page.test.tsx). */
@@ -43,7 +44,11 @@ vi.mock('@/components/ui/select', () => {
 });
 
 vi.mock('@/hooks/use-auth', () => ({
-  useAuth: () => ({ user: { branchIds: ['branch-1'] } }),
+  useAuth: () => ({ user: { id: 'user-1', branchIds: ['branch-1'], firstName: 'Jamie', lastName: 'Cruz', email: 'jamie@example.com' } }),
+}));
+
+vi.mock('@/lib/geolocation', () => ({
+  getCurrentPosition: vi.fn().mockResolvedValue({ lat: 14.5, lng: 121.0 }),
 }));
 
 const { mockCartItems } = vi.hoisted(() => ({ mockCartItems: vi.fn(() => [] as unknown[]) }));
@@ -74,6 +79,8 @@ vi.mock('@/hooks/queries/use-shifts', () => ({
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
   useIsClockedIn: mockUseIsClockedIn,
+  useClockIn: () => ({ mutateAsync: mockClockInMutateAsync, isPending: false }),
+  useClockOut: () => ({ mutateAsync: mockClockOutMutateAsync, isPending: false }),
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
@@ -474,54 +481,121 @@ describe('TerminalPage — Maya and Other payment methods', () => {
   });
 });
 
-// Single clean cashier workflow (Phase 4-9): Clock In -> Ready to Sell. The
-// shift is auto-managed (opened transparently on clock-in), so the POS route
-// guard only cares about attendance — it no longer redirects to a separate
-// Open Shift step or shows a shift-mismatch screen.
-describe('TerminalPage — attendance/shift routing guard', () => {
+// Single clean cashier workflow (Phase 4-9, finalized): Clock In -> Ready to
+// Sell, entirely inside POS Terminal — no separate Clock In page/redirect,
+// and no shift/shift-ownership requirement. The API auto-manages the shift
+// server-side (shiftGuard), so a not-yet-loaded client-side shift lookup
+// must never block Charge.
+describe('TerminalPage — attendance guard and inline Clock In', () => {
   beforeEach(() => {
-    mockRouterReplace.mockClear();
     mockCartItems.mockReturnValue([]);
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
     mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
-    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
   });
 
   afterEach(() => cleanup());
 
-  it('redirects to Clock In when the cashier has no active attendance record', () => {
-    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, isLoading: false });
+  it('shows an inline Clock In card (not the catalog) when the cashier has no active attendance record', () => {
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
 
     render(<TerminalPage />);
 
-    expect(mockRouterReplace).toHaveBeenCalledWith('/branch/clock-in');
+    expect(screen.getByRole('button', { name: 'Clock In' })).toBeInTheDocument();
     expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
   });
 
-  it('loads the catalog and allows charging when the cashier has a matching active shift', () => {
+  it('clocks in from inside POS and never navigates to a separate page', async () => {
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
     render(<TerminalPage />);
 
-    expect(mockRouterReplace).not.toHaveBeenCalled();
-    expect(screen.getByText('Mega Mix Fries')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clock In' }));
+    await vi.waitFor(() => expect(mockClockInMutateAsync).toHaveBeenCalledWith({ employee_id: 'user-1', branch_id: 'branch-1', gps_lat: 14.5, gps_lng: 121.0 }));
   });
 
-  it('still shows the catalog (no redirect) while the auto-opened shift briefly resolves, but disables Charge', () => {
+  it('loads the catalog and a Clock Out action when the cashier is clocked in', () => {
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Mega Mix Fries')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Clock Out/ })).toBeInTheDocument();
+  });
+
+  it('never blocks Charge on the active-shift lookup — the API auto-manages the shift server-side', () => {
     mockUseMyActiveShift.mockReturnValue({ shift: null, isLoading: false });
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
 
     render(<TerminalPage />);
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
 
-    expect(mockRouterReplace).not.toHaveBeenCalled();
     expect(screen.getAllByText('Mega Mix Fries').length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
   });
 
-  it('shows a loading state instead of the catalog while attendance/shift status is still resolving', () => {
-    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, isLoading: true });
+  it('shows a loading state instead of the catalog or the Clock In card while attendance status is still resolving', () => {
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: true });
 
     render(<TerminalPage />);
 
-    expect(mockRouterReplace).not.toHaveBeenCalled();
     expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clock In' })).not.toBeInTheDocument();
+  });
+});
+
+// Section 1 of the production fix: the Charge button must never be
+// silently disabled — a clear, specific reason always renders above it.
+describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
+  beforeEach(() => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+  });
+
+  afterEach(() => cleanup());
+
+  it('disables Charge with "Add items to the cart to start a sale." for an empty cart', () => {
+    mockCartItems.mockReturnValue([]);
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Add items to the cart to start a sale.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
+
+  it('disables Charge with "Enter cash tendered." when cash is selected and tendered is blank', () => {
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 13 }]);
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Enter cash tendered.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
+
+  it('disables Charge and shows the shortfall when cash tendered is below the total', () => {
+    // 13 x price 100 = 1300 total (no VAT-cap flavors involved here).
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 13 }]);
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+    expect(screen.getByText(/short\.$/)).toBeInTheDocument();
+  });
+
+  it('enables Charge and shows change once cash tendered covers the total exactly', () => {
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+    expect(screen.getByText('Change: ₱0.00')).toBeInTheDocument();
+  });
+
+  it('enables Charge and computes change when cash tendered exceeds the total', () => {
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '150' } });
+
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+    expect(screen.getByText('Change: ₱50.00')).toBeInTheDocument();
   });
 });

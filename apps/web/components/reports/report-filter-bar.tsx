@@ -19,7 +19,8 @@ export interface ReportFilterBarProps {
   onExportPdf: () => void;
   isRefreshDisabled: boolean;
   refreshCooldownSeconds: number;
-  isExporting: boolean;
+  isExportingCsv: boolean;
+  isExportingPdf: boolean;
   showBranchSelector: boolean;
 }
 
@@ -35,7 +36,8 @@ export function ReportFilterBar({
   onExportPdf,
   isRefreshDisabled,
   refreshCooldownSeconds,
-  isExporting,
+  isExportingCsv,
+  isExportingPdf,
   showBranchSelector,
 }: ReportFilterBarProps) {
   // useBranches(filters) takes a single filters argument (no `enabled` gate) — called
@@ -72,16 +74,16 @@ export function ReportFilterBar({
         <Label htmlFor="report-filter-to">To</Label>
         <Input id="report-filter-to" type="date" value={dateTo} onChange={(e) => onDateToChange(e.target.value)} />
       </div>
-      <Button variant="outline" onClick={onRefresh} disabled={isRefreshDisabled}>
+      <Button type="button" variant="outline" onClick={onRefresh} disabled={isRefreshDisabled}>
         <RotateCw className="mr-2 h-4 w-4" />
         {isRefreshDisabled ? `Refresh (${refreshCooldownSeconds}s)` : 'Refresh'}
       </Button>
-      <Button variant="outline" onClick={onExportCsv} disabled={isExporting}>
-        {isExporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+      <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv}>
+        {isExportingCsv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
         Export CSV
       </Button>
-      <Button variant="outline" onClick={onExportPdf} disabled={isExporting}>
-        {isExporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+      <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf}>
+        {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
         Export PDF
       </Button>
     </div>

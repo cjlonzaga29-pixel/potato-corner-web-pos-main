@@ -22,9 +22,11 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
+import { DailySalesDrilldown } from '@/components/reports/daily-sales-drilldown';
 import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
 import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
 import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
@@ -75,16 +77,27 @@ const VOID_REFUND_BADGE_VARIANT: Record<VoidRefundReportRow['status'], BadgeProp
   refunded: 'warning',
 };
 
-const dailySalesColumns: ColumnDef<DailySalesReportRow>[] = [
-  { accessorKey: 'report_date', header: 'Date' },
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'gross_sales', header: 'Gross Sales', cell: ({ row }) => formatCurrency(row.original.gross_sales) },
-  { accessorKey: 'discount_total', header: 'Discounts', cell: ({ row }) => formatCurrency(row.original.discount_total) },
-  { accessorKey: 'net_sales', header: 'Net Sales', cell: ({ row }) => formatCurrency(row.original.net_sales) },
-  { accessorKey: 'completed_count', header: 'Completed' },
-  { accessorKey: 'voided_count', header: 'Voided' },
-  { accessorKey: 'refunded_count', header: 'Refunded' },
-];
+function getDailySalesColumns(onViewTransactions: (row: DailySalesReportRow) => void): ColumnDef<DailySalesReportRow>[] {
+  return [
+    { accessorKey: 'report_date', header: 'Date' },
+    { accessorKey: 'branch_name', header: 'Branch' },
+    { accessorKey: 'gross_sales', header: 'Gross Sales', cell: ({ row }) => formatCurrency(row.original.gross_sales) },
+    { accessorKey: 'discount_total', header: 'Discounts', cell: ({ row }) => formatCurrency(row.original.discount_total) },
+    { accessorKey: 'net_sales', header: 'Net Sales', cell: ({ row }) => formatCurrency(row.original.net_sales) },
+    { accessorKey: 'completed_count', header: 'Completed' },
+    { accessorKey: 'voided_count', header: 'Voided' },
+    { accessorKey: 'refunded_count', header: 'Refunded' },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button type="button" variant="outline" size="sm" onClick={() => onViewTransactions(row.original)}>
+          View Transactions
+        </Button>
+      ),
+    },
+  ];
+}
 
 const cashReconciliationColumns: ColumnDef<CashReconciliationReportRow>[] = [
   { accessorKey: 'cashier_name', header: 'Cashier' },
@@ -200,20 +213,47 @@ const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="attendance" /> },
 ];
 
-const TOP_LEVEL_TABS = new Set(['FINANCIAL_SUMMARY', 'INVENTORY_ANALYTICS', 'DETAILED']);
+/** Grouped report navigation — every report lives directly in this page, organized into categories rather than a flat tab strip or a disclosure toggle. */
+const REPORT_GROUPS: { category: string; reports: { value: string; label: string }[] }[] = [
+  {
+    category: 'Finance',
+    reports: [
+      { value: 'FINANCIAL_SUMMARY', label: 'Financial Summary' },
+      { value: 'DAILY_SALES', label: 'Daily Sales' },
+      { value: 'CASH_RECONCILIATION', label: 'Cash Reconciliation' },
+      { value: 'EXPENSES', label: 'Expenses' },
+    ],
+  },
+  {
+    category: 'Inventory',
+    reports: [
+      { value: 'INVENTORY_ANALYTICS', label: 'Inventory Analytics' },
+      { value: 'INVENTORY_MOVEMENT', label: 'Inventory Movement' },
+    ],
+  },
+  {
+    category: 'Operations',
+    reports: [
+      { value: 'SHIFT_SUMMARY', label: 'Shift Reports' },
+      { value: 'ATTENDANCE_SUMMARY', label: 'Attendance Summary' },
+    ],
+  },
+  {
+    category: 'Compliance',
+    reports: [
+      { value: 'VOID_REFUND', label: 'Void / Refund' },
+      { value: 'FRAUD_ALERT_SUMMARY', label: 'Alerts' },
+      { value: 'DISCOUNT_COMPLIANCE', label: 'Discount Compliance' },
+      { value: 'AUDIT_LOG', label: 'Audit Log' },
+    ],
+  },
+];
 
-const VALID_DETAIL_TABS = new Set([
-  'DAILY_SALES',
-  'CASH_RECONCILIATION',
-  'EXPENSES',
-  'VOID_REFUND',
-  'SHIFT_SUMMARY',
-  'FRAUD_ALERT_SUMMARY',
-  'DISCOUNT_COMPLIANCE',
-  'INVENTORY_MOVEMENT',
-  'ATTENDANCE_SUMMARY',
-  'AUDIT_LOG',
-]);
+const ALL_REPORT_VALUES = new Set(REPORT_GROUPS.flatMap((g) => g.reports.map((r) => r.value)));
+
+function categoryFor(reportValue: string): string {
+  return REPORT_GROUPS.find((g) => g.reports.some((r) => r.value === reportValue))?.category ?? 'Finance';
+}
 
 function AdminReportsPageContent() {
   const currentUserId = useAuthStore((s) => s.user?.id);
@@ -228,20 +268,23 @@ function AdminReportsPageContent() {
   const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
   const [dateTo, setDateTo] = useState(() => manilaToday());
 
-  const [activeTab, setActiveTab] = useState(() => {
+  const [activeReport, setActiveReport] = useState(() => {
     const tabParam = searchParams.get('tab');
-    if (tabParam && TOP_LEVEL_TABS.has(tabParam)) return tabParam;
-    if (tabParam && VALID_DETAIL_TABS.has(tabParam)) return 'DETAILED';
-    return 'FINANCIAL_SUMMARY';
+    return tabParam && ALL_REPORT_VALUES.has(tabParam) ? tabParam : 'FINANCIAL_SUMMARY';
   });
-  const [detailedSubTab, setDetailedSubTab] = useState(() => {
-    const tabParam = searchParams.get('tab');
-    return tabParam && VALID_DETAIL_TABS.has(tabParam) ? tabParam : 'DAILY_SALES';
-  });
+  const [activeCategory, setActiveCategory] = useState(() => categoryFor(activeReport));
+
+  function selectCategory(category: string) {
+    setActiveCategory(category);
+    const firstReport = REPORT_GROUPS.find((g) => g.category === category)?.reports[0]?.value;
+    if (firstReport) setActiveReport(firstReport);
+  }
 
   const [refreshDisabled, setRefreshDisabled] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
-  const [isExporting, setIsExporting] = useState(false);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [drilldownRow, setDrilldownRow] = useState<DailySalesReportRow | null>(null);
 
   const requestExport = useRequestExport();
 
@@ -252,7 +295,8 @@ function AdminReportsPageContent() {
       action: { label: 'Download', onClick: () => window.open(payload.download_url, '_blank') },
       duration: 30_000,
     });
-    setIsExporting(false);
+    if (payload.format === 'csv') setIsExportingCsv(false);
+    else setIsExportingPdf(false);
   });
 
   useEffect(() => {
@@ -267,13 +311,13 @@ function AdminReportsPageContent() {
 
   const realtimeFilters = { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
 
-  const dailySales = useDailySalesReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'DAILY_SALES');
-  const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'CASH_RECONCILIATION');
-  const voidRefund = useVoidRefundReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'VOID_REFUND');
-  const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'FRAUD_ALERT_SUMMARY');
-  const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'DISCOUNT_COMPLIANCE');
-  const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'INVENTORY_MOVEMENT');
-  const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeTab === 'DETAILED' && detailedSubTab === 'ATTENDANCE_SUMMARY');
+  const dailySales = useDailySalesReport(realtimeFilters, activeReport === 'DAILY_SALES');
+  const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeReport === 'CASH_RECONCILIATION');
+  const voidRefund = useVoidRefundReport(realtimeFilters, activeReport === 'VOID_REFUND');
+  const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeReport === 'FRAUD_ALERT_SUMMARY');
+  const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeReport === 'DISCOUNT_COMPLIANCE');
+  const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
+  const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
     branch_id: selectedBranchId ?? undefined,
     date_from: dateFrom,
@@ -290,17 +334,18 @@ function AdminReportsPageContent() {
     setRefreshCooldown(REFRESH_COOLDOWN_SECONDS);
   }
 
-  /** Financial Summary exports as the DAILY_SALES report (its underlying data source); Inventory Analytics has no registered ReportType and isn't exportable via this endpoint. */
+  /** Financial Summary exports as the DAILY_SALES report (its underlying data source); Inventory Analytics and Expenses have no registered ReportType and aren't exportable via this endpoint. */
   function exportableReportType(): ExportRequestInput['report_type'] | null {
-    if (activeTab === 'FINANCIAL_SUMMARY') return 'DAILY_SALES';
-    if (activeTab === 'INVENTORY_ANALYTICS') return null;
-    if (detailedSubTab === 'EXPENSES') return null;
-    return detailedSubTab as ExportRequestInput['report_type'];
+    if (activeReport === 'FINANCIAL_SUMMARY') return 'DAILY_SALES';
+    if (activeReport === 'INVENTORY_ANALYTICS') return null;
+    if (activeReport === 'EXPENSES') return null;
+    return activeReport as ExportRequestInput['report_type'];
   }
 
   function handleExport(format: 'csv' | 'pdf') {
     const reportType = exportableReportType();
     if (!reportType) return;
+    const setIsExporting = format === 'csv' ? setIsExportingCsv : setIsExportingPdf;
     setIsExporting(true);
     const input: ExportRequestInput = {
       report_type: reportType,
@@ -338,14 +383,36 @@ function AdminReportsPageContent() {
         onExportPdf={() => handleExport('pdf')}
         isRefreshDisabled={refreshDisabled}
         refreshCooldownSeconds={refreshCooldown}
-        isExporting={isExporting}
+        isExportingCsv={isExportingCsv}
+        isExportingPdf={isExportingPdf}
         showBranchSelector
       />
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="FINANCIAL_SUMMARY">Financial Summary</TabsTrigger>
-          <TabsTrigger value="INVENTORY_ANALYTICS">Inventory Analytics</TabsTrigger>
+      <div role="group" aria-label="Report categories" className="flex flex-wrap gap-2 border-b pb-3">
+        {REPORT_GROUPS.map((group) => (
+          <button
+            key={group.category}
+            type="button"
+            aria-pressed={activeCategory === group.category}
+            onClick={() => selectCategory(group.category)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              activeCategory === group.category
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            }`}
+          >
+            {group.category}
+          </button>
+        ))}
+      </div>
+
+      <Tabs value={activeReport} onValueChange={setActiveReport}>
+        <TabsList className="flex-wrap">
+          {REPORT_GROUPS.find((g) => g.category === activeCategory)?.reports.map((r) => (
+            <TabsTrigger key={r.value} value={r.value}>
+              {r.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         <TabsContent value="FINANCIAL_SUMMARY">
@@ -359,33 +426,6 @@ function AdminReportsPageContent() {
             <InventoryAnalyticsPanel branchId={selectedBranchId} />
           </WidgetErrorBoundary>
         </TabsContent>
-      </Tabs>
-
-      <div className="border-t pt-4">
-        <button
-          type="button"
-          aria-expanded={activeTab === 'DETAILED'}
-          onClick={() => setActiveTab(activeTab === 'DETAILED' ? 'FINANCIAL_SUMMARY' : 'DETAILED')}
-          className="text-muted-foreground hover:text-foreground text-sm font-medium underline-offset-4 hover:underline"
-        >
-          {activeTab === 'DETAILED' ? 'Hide legacy reports' : 'More Reports (legacy detailed breakdowns)'}
-        </button>
-
-        {activeTab === 'DETAILED' && (
-          <div className="mt-4">
-          <Tabs value={detailedSubTab} onValueChange={setDetailedSubTab}>
-            <TabsList className="flex-wrap">
-              <TabsTrigger value="DAILY_SALES">Daily Sales</TabsTrigger>
-              <TabsTrigger value="CASH_RECONCILIATION">Cash Reconciliation</TabsTrigger>
-              <TabsTrigger value="EXPENSES">Expenses</TabsTrigger>
-              <TabsTrigger value="VOID_REFUND">Voided / Refund</TabsTrigger>
-              <TabsTrigger value="SHIFT_SUMMARY">Shift Reports</TabsTrigger>
-              <TabsTrigger value="FRAUD_ALERT_SUMMARY">Alerts</TabsTrigger>
-              <TabsTrigger value="DISCOUNT_COMPLIANCE">Discount Compliance</TabsTrigger>
-              <TabsTrigger value="INVENTORY_MOVEMENT">Inventory Movement</TabsTrigger>
-              <TabsTrigger value="ATTENDANCE_SUMMARY">Attendance Summary</TabsTrigger>
-              <TabsTrigger value="AUDIT_LOG">Audit Log</TabsTrigger>
-            </TabsList>
 
             <TabsContent value="DAILY_SALES">
               {!selectedBranchId ? (
@@ -398,7 +438,12 @@ function AdminReportsPageContent() {
                 <KpiCard title="Voided" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.voided_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
                 <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
               </div>
-              <DataTable columns={dailySalesColumns} data={dailySales.data?.data ?? []} isLoading={dailySales.isLoading} emptyState={<EmptyState title="No sales in this range" />} />
+              <DataTable
+                columns={getDailySalesColumns(setDrilldownRow)}
+                data={dailySales.data?.data ?? []}
+                isLoading={dailySales.isLoading}
+                emptyState={<EmptyState title="No sales in this range" />}
+              />
               </>}
             </TabsContent>
 
@@ -577,12 +622,17 @@ function AdminReportsPageContent() {
             </TabsContent>
 
             <TabsContent value="AUDIT_LOG">
-              <LoginAuditPanel />
-            </TabsContent>
-          </Tabs>
-          </div>
-        )}
-      </div>
+          <LoginAuditPanel />
+        </TabsContent>
+      </Tabs>
+
+      <DailySalesDrilldown
+        open={drilldownRow !== null}
+        onOpenChange={(o) => !o && setDrilldownRow(null)}
+        branchId={drilldownRow?.branch_id ?? null}
+        branchName={drilldownRow?.branch_name ?? ''}
+        reportDate={drilldownRow?.report_date ?? ''}
+      />
     </div>
   );
 }

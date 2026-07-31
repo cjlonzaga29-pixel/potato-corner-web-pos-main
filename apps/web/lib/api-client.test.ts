@@ -26,8 +26,22 @@ function jsonResponse(status: number, body: unknown) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
     json: async () => body,
+    text: async () => JSON.stringify(body),
   } as Response;
+}
+
+function htmlResponse(status: number, html: string) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+    json: async () => {
+      throw new SyntaxError(`Unexpected token '<', "${html.slice(0, 9)}"... is not valid JSON`);
+    },
+    text: async () => html,
+  } as unknown as Response;
 }
 
 describe('apiClient refresh race', () => {
@@ -135,5 +149,67 @@ describe('apiClient refresh race', () => {
     await apiClient('/api/products');
 
     expect(clearAuth).toHaveBeenCalled();
+  });
+});
+
+describe('apiClient safe response parsing', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('returns a cashier-safe structured error instead of throwing when the server returns HTML', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(htmlResponse(502, '<!DOCTYPE html><html><body>Bad Gateway</body></html>'));
+
+    const result = await apiClient('/api/transactions', { method: 'POST', body: '{}' });
+
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(
+      expect.objectContaining({ code: 'UNREADABLE_RESPONSE', message: expect.stringContaining('check Receipts') }),
+    );
+  });
+
+  it('never lets a SyntaxError from response.json() escape apiClient', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(htmlResponse(200, '<!DOCTYPE html>'));
+
+    await expect(apiClient('/api/transactions')).resolves.not.toThrow();
+  });
+
+  it('returns a structured network error when fetch itself rejects (offline/DNS/connection reset)', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    const result = await apiClient('/api/transactions', { method: 'POST', body: '{}' });
+
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(expect.objectContaining({ code: 'NETWORK_ERROR' }));
+  });
+
+  it('still parses a normal JSON success response correctly', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse(200, { data: { id: 'txn-1' }, error: null, meta: null }));
+
+    const result = await apiClient<{ id: string }>('/api/transactions');
+
+    expect(result.data).toEqual({ id: 'txn-1' });
+    expect(result.error).toBeNull();
+  });
+
+  it('treats a 204 No Content response as a clean success without reading the body', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 204,
+      headers: new Headers(),
+      json: async () => {
+        throw new Error('should not be called for 204');
+      },
+    } as unknown as Response);
+
+    const result = await apiClient('/api/transactions/txn-1', { method: 'DELETE' });
+
+    expect(result).toEqual({ data: null, error: null, meta: null });
   });
 });

@@ -20,7 +20,8 @@ export function LoginAuditPanel() {
   const [branchId, setBranchId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState(() => manilaDaysAgo(DEFAULT_RANGE_DAYS));
   const [dateTo, setDateTo] = useState(() => manilaToday());
-  const [isExporting, setIsExporting] = useState(false);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
 
   const exportFilters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
@@ -35,6 +36,7 @@ export function LoginAuditPanel() {
   const requestExport = useRequestExport();
 
   function handleExport(format: 'csv' | 'pdf') {
+    const setIsExporting = format === 'csv' ? setIsExportingCsv : setIsExportingPdf;
     setIsExporting(true);
     // Exports the full date/branch scope regardless of which on-screen page
     // is currently displayed — matches every other report export in this module.
@@ -58,7 +60,8 @@ export function LoginAuditPanel() {
         onExportPdf={() => handleExport('pdf')}
         isRefreshDisabled={false}
         refreshCooldownSeconds={0}
-        isExporting={isExporting}
+        isExportingCsv={isExportingCsv}
+        isExportingPdf={isExportingPdf}
         showBranchSelector
       />
 

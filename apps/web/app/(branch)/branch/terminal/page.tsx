@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Fingerprint, Loader2, LogOut, MapPin } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fingerprint, Loader2, LogOut, MapPin, User } from 'lucide-react';
+import { ROLES } from '@potato-corner/shared';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -14,11 +15,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ErrorState } from '@/components/shared/feedback/error-state';
+import { SearchInput } from '@/components/shared/forms/search-input';
 import { useAuth } from '@/hooks/use-auth';
+import { useAuthStore, type AuthUser } from '@/stores/auth.store';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
 import { useIsClockedIn, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
+import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof } from '@/hooks/queries/use-transactions';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
@@ -80,8 +86,9 @@ function previewAmounts(
 }
 
 export default function TerminalPage() {
-  const { user } = useAuth();
+  const { user, selectEmployee } = useAuth();
   const branchId = user?.branchIds[0];
+  const isBranchAccount = user?.role === ROLES.BRANCH;
   const { items, addItem, removeItem, updateItemQuantity, clearCart } = useCart();
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
@@ -99,6 +106,50 @@ export default function TerminalPage() {
   const clockOut = useClockOut();
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
+
+  // STATE 1 — "Who is working?" (Branch Employee Authorization). Only a
+  // `branch` (Branch Account) session ever sees this: a `staff` login is
+  // already bound to one Employee via its own JWT, same exemption
+  // select-employee/page.tsx has always applied. Selecting an employee here
+  // swaps the client session in place (selectEmployee -> setAuth) — no
+  // navigation, no separate route — so the very next render already has
+  // `user.role === 'staff'` and falls straight into STATE 2/3 below.
+  const [employeeSearch, setEmployeeSearch] = useState('');
+  const [selectingEmployeeId, setSelectingEmployeeId] = useState<string | null>(null);
+  const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
+  // Snapshot of the Branch Account session, captured right before handing
+  // off to the selected Employee — restored on Clock Out so the panel goes
+  // back to "Who is working?" instead of staying on this Employee's Clock In
+  // card. Only ever set when the hand-off actually came from a Branch
+  // Account; a genuine `staff` login has nothing to restore, so Clock Out
+  // for it correctly leaves the cashier on their own Clock In card.
+  const branchSessionRef = useRef<{ user: AuthUser; accessToken: string } | null>(null);
+  const {
+    data: employeesData,
+    isLoading: isEmployeesLoading,
+    isError: isEmployeesError,
+    refetch: refetchEmployees,
+  } = useEmployees(
+    { role: ROLES.STAFF, isActive: true, search: employeeSearch || undefined, limit: 100 },
+    { enabled: isBranchAccount },
+  );
+
+  async function handleSelectEmployee(employeeId: string) {
+    if (selectingEmployeeId) return;
+    const snapshot = useAuthStore.getState();
+    setSelectingEmployeeId(employeeId);
+    setSelectEmployeeError(null);
+    try {
+      await selectEmployee(employeeId);
+      if (snapshot.user && snapshot.accessToken) {
+        branchSessionRef.current = { user: snapshot.user, accessToken: snapshot.accessToken };
+      }
+    } catch (error) {
+      setSelectEmployeeError(error instanceof Error ? error.message : 'Could not start employee session');
+    } finally {
+      setSelectingEmployeeId(null);
+    }
+  }
 
   const [cachedProducts, setCachedProducts] = useState<PosCatalogProduct[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -167,6 +218,13 @@ export default function TerminalPage() {
     }
     setIsLocating(false);
     await clockOut.mutateAsync({ employee_id: user.id, branch_id: branchId, ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}) });
+    // Hand the panel back to the Branch Account that selected this Employee,
+    // if that's how this session started — same page, no navigation, back
+    // to STATE 1 ("Who is working?").
+    if (branchSessionRef.current) {
+      useAuthStore.getState().setAuth(branchSessionRef.current.user, branchSessionRef.current.accessToken);
+      branchSessionRef.current = null;
+    }
   }
 
   // Refresh the offline cache whenever the live catalog loads — Architecture
@@ -418,6 +476,66 @@ export default function TerminalPage() {
 
   if (!branchId) {
     return <p className="p-6 text-sm text-destructive">No branch assigned.</p>;
+  }
+
+  // STATE 1 — no Employee selected yet. Branch Employee Authorization:
+  // rendered right here instead of a separate /branch/select-employee route,
+  // so the Branch shell (sidebar/header) never unmounts and there is no
+  // in-between page to flash through.
+  if (isBranchAccount) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-6 overflow-y-auto p-6">
+        <div>
+          <h1 className="text-2xl font-bold">Who&apos;s working?</h1>
+          <p className="text-sm text-muted-foreground">Select the employee operating the POS Terminal right now.</p>
+        </div>
+
+        <SearchInput value={employeeSearch} onChange={setEmployeeSearch} placeholder="Search by name..." />
+
+        {selectEmployeeError && (
+          <Alert variant="destructive">
+            <AlertTitle>Could not start employee session</AlertTitle>
+            <AlertDescription>{selectEmployeeError}</AlertDescription>
+          </Alert>
+        )}
+
+        {isEmployeesLoading ? (
+          <div className="flex justify-center py-16">
+            <LoadingSpinner size="lg" />
+          </div>
+        ) : isEmployeesError ? (
+          <ErrorState title="Failed to load employees" retry={() => void refetchEmployees()} />
+        ) : (employeesData?.employees.length ?? 0) === 0 ? (
+          <EmptyState
+            icon={User}
+            title="No active employees"
+            description="No active employees are assigned to this branch yet. Create one from the Employees section."
+          />
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {employeesData?.employees.map((employee) => (
+              <Card
+                key={employee.id}
+                className="touch-target min-h-[120px] cursor-pointer transition-colors hover:border-primary"
+                onClick={() => selectingEmployeeId === null && void handleSelectEmployee(employee.id)}
+              >
+                <CardContent className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
+                  {selectingEmployeeId === employee.id ? (
+                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  ) : (
+                    <User className="h-8 w-8 text-muted-foreground" />
+                  )}
+                  <span className="text-lg font-medium">
+                    {employee.first_name} {employee.last_name}
+                  </span>
+                  {employee.position && <span className="text-sm text-muted-foreground">{employee.position}</span>}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   }
 
   if (isAttendanceLoading) {

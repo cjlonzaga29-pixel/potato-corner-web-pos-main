@@ -73,7 +73,7 @@ function buildQueryString(filters: EmployeeFilters): string {
  * (apps/web/components/admin/branches/assign-supervisor-dialog.tsx), which
  * filters `role: 'supervisor'` and reads `data.employees`.
  */
-export function useEmployees(filters: EmployeeFilters = {}) {
+export function useEmployees(filters: EmployeeFilters = {}, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['employees', filters],
     queryFn: async () => {
@@ -81,6 +81,7 @@ export function useEmployees(filters: EmployeeFilters = {}) {
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load employees'));
       return response.data;
     },
+    enabled: options.enabled ?? true,
     staleTime: 30 * 1000,
     placeholderData: keepPreviousData,
   });

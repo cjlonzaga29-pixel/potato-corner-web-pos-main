@@ -1,10 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import TerminalPage from './page';
 import type { PosCatalogProduct } from '@potato-corner/shared';
+import { useAuthStore } from '@/stores/auth.store';
 
-const { mockAddItem, mockUseCatalog, mockUseMyActiveShift, mockUseIsClockedIn, mockClockInMutateAsync, mockClockOutMutateAsync } = vi.hoisted(() => ({
+const {
+  mockAddItem,
+  mockUseCatalog,
+  mockUseMyActiveShift,
+  mockUseIsClockedIn,
+  mockClockInMutateAsync,
+  mockClockOutMutateAsync,
+  mockUseAuth,
+  mockSelectEmployee,
+  mockUseEmployees,
+} = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockUseCatalog: vi.fn(),
   mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isLoading: false })),
@@ -15,6 +26,9 @@ const { mockAddItem, mockUseCatalog, mockUseMyActiveShift, mockUseIsClockedIn, m
   })),
   mockClockInMutateAsync: vi.fn(),
   mockClockOutMutateAsync: vi.fn(),
+  mockUseAuth: vi.fn(),
+  mockSelectEmployee: vi.fn(),
+  mockUseEmployees: vi.fn(),
 }));
 
 /** Real Radix Select needs pointer-event interactions jsdom can't drive without @testing-library/user-event — swap in a plain, click-responsive stand-in (same pattern as reports/page.test.tsx). */
@@ -44,8 +58,15 @@ vi.mock('@/components/ui/select', () => {
 });
 
 vi.mock('@/hooks/use-auth', () => ({
-  useAuth: () => ({ user: { id: 'user-1', branchIds: ['branch-1'], firstName: 'Jamie', lastName: 'Cruz', email: 'jamie@example.com' } }),
+  useAuth: mockUseAuth,
 }));
+
+vi.mock('@/hooks/queries/use-employees', () => ({
+  useEmployees: mockUseEmployees,
+}));
+
+const STAFF_USER = { id: 'user-1', role: 'staff' as const, branchIds: ['branch-1'], firstName: 'Jamie', lastName: 'Cruz', email: 'jamie@example.com' };
+const BRANCH_USER = { id: 'branch-account-1', role: 'branch' as const, branchIds: ['branch-1'], firstName: 'Branch', lastName: 'Owner', email: 'owner@example.com' };
 
 vi.mock('@/lib/geolocation', () => ({
   getCurrentPosition: vi.fn().mockResolvedValue({ lat: 14.5, lng: 121.0 }),
@@ -157,6 +178,11 @@ function catalogWith(variants: PosCatalogProduct['variants'][number][]): { produ
     products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', image_url: null, variants }],
   };
 }
+
+beforeEach(() => {
+  mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+  mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
+});
 
 describe('TerminalPage — live POS readiness', () => {
   beforeEach(() => {
@@ -597,5 +623,84 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
 
     expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
     expect(screen.getByText('Change: ₱50.00')).toBeInTheDocument();
+  });
+});
+
+// Branch Employee Authorization, embedded (Section 3 of the routing fix):
+// a `branch` (Branch Account) session sees "Who is working?" right inside
+// POS Terminal — no separate /branch/select-employee route/redirect. A
+// `staff` session (already bound to one Employee) never sees this at all,
+// covered by the STAFF_USER default in the top-level beforeEach above.
+describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)', () => {
+  function employee(overrides: Record<string, unknown> = {}) {
+    return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
+  }
+
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
+    useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
+  });
+
+  afterEach(() => cleanup());
+
+  it('shows "Who\'s working?" and active employees instead of the catalog or Clock In card', () => {
+    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
+
+    render(<TerminalPage />);
+
+    expect(screen.getByText("Who's working?")).toBeInTheDocument();
+    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.getByText('Cashier')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clock In' })).not.toBeInTheDocument();
+  });
+
+  it('selects an employee inline (no navigation) and shows a specific error if selection fails', async () => {
+    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockSelectEmployee.mockRejectedValueOnce(new Error('This employee is not active'));
+
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Jane Doe'));
+
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+    expect(await screen.findByText('This employee is not active')).toBeInTheDocument();
+    // Still on the same page/component — no router navigation exists to assert against.
+    expect(screen.getByText("Who's working?")).toBeInTheDocument();
+  });
+
+  it('shows an empty state when no active employees are assigned to the branch', () => {
+    mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
+
+    render(<TerminalPage />);
+
+    expect(screen.getByText('No active employees')).toBeInTheDocument();
+  });
+
+  it('restores the Branch Account session on Clock Out, returning the panel to "Who is working?"', async () => {
+    const employees = { data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() };
+    mockUseEmployees.mockReturnValue(employees);
+    mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
+    mockCartItems.mockReturnValue([]);
+    mockSelectEmployee.mockResolvedValue({ id: 'employee-1' });
+    mockClockOutMutateAsync.mockResolvedValue({ id: 'attendance-1' });
+
+    const { rerender } = render(<TerminalPage />);
+
+    // STATE 1 -> employee selected, snapshotting the Branch Account session first.
+    fireEvent.click(screen.getByText('Jane Doe'));
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+
+    // Selection swaps the session client-side — simulate that by re-rendering as the now-active staff employee (STATE 3: already clocked in).
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    rerender(<TerminalPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Clock Out/ }));
+    await waitFor(() => expect(mockClockOutMutateAsync).toHaveBeenCalled());
+
+    // The Branch Account snapshot taken before hand-off is restored — same session that selected Jane Doe.
+    await waitFor(() => expect(useAuthStore.getState().user).toEqual(BRANCH_USER));
+    expect(useAuthStore.getState().accessToken).toBe('branch-token');
   });
 });

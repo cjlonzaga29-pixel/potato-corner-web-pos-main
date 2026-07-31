@@ -17,6 +17,7 @@ const {
   mockUseShifts,
   mockUseShiftsRealtimeSync,
   mockUseTransactions,
+  mockUseTransaction,
   mockUseTransactionsRealtimeSync,
   mockUseInventoryStockMovements,
   mockUseInventoryStockRealtimeSync,
@@ -33,6 +34,7 @@ const {
   mockUseShifts: vi.fn(),
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactions: vi.fn(),
+  mockUseTransaction: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
   mockUseInventoryStockMovements: vi.fn(),
   mockUseInventoryStockRealtimeSync: vi.fn(),
@@ -57,7 +59,14 @@ vi.mock('@/hooks/queries/use-shifts', () => ({
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactions: mockUseTransactions,
+  useTransaction: mockUseTransaction,
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
+  useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
+  usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
+}));
+
+vi.mock('@/hooks/use-auth', () => ({
+  useAuth: () => ({ user: { id: 'user-1', role: 'supervisor' } }),
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
@@ -74,6 +83,7 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
 
 vi.mock('@/hooks/queries/use-employees', () => ({
   useEmployees: mockUseEmployees,
+  useEmployee: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 
 vi.mock('@/stores/auth.store', () => ({
@@ -339,7 +349,10 @@ beforeEach(() => {
   mockUseInventoryItems.mockReturnValue({ data: [inventoryItem()], isLoading: false });
   mockUseAttendanceByBranch.mockReturnValue({ data: { records: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
   mockUseEmployees.mockReturnValue({ data: { employees: [], total: 0, page: 1, limit: 100 }, isLoading: false });
-  mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string } }) => unknown) => selector({ user: { id: 'user-1' } }));
+  mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+    selector({ user: { id: 'user-1', role: 'supervisor' } }),
+  );
+  mockUseTransaction.mockReturnValue({ data: undefined, isLoading: false });
   mockUseRequestExport.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseReportsRealtimeSync.mockReturnValue(undefined);
 });
@@ -379,12 +392,80 @@ describe('SupervisorReportsPage', () => {
 
     expect(screen.getByText('Total Transactions')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales — Selected Period')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();
     expect(screen.getByText('VAT Collected')).toBeInTheDocument();
     expect(screen.getByText('₱30')).toBeInTheDocument();
     expect(screen.getByText('Discounts Given')).toBeInTheDocument();
     expect(screen.getByText('₱5')).toBeInTheDocument();
+  });
+
+  // Phase 10-11: Supervisor oversight of receipts/payment proofs, via the
+  // shared ReportsView component's Daily Sales tab (gated on role — staff
+  // already have their own Receipts page and don't get these actions).
+  describe('Daily Sales — receipt and payment-proof viewing (Phase 10-11)', () => {
+    it('shows a View Receipt action and a Payment Proof column for the supervisor role', () => {
+      mockTransactionsByStatus({
+        completed: {
+          data: [transaction({ id: 't1', payment_method: 'gcash', has_payment_proof: true })],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+
+      expect(screen.getByRole('button', { name: 'View Receipt' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'View Proof' })).toBeInTheDocument();
+    });
+
+    it('opens the receipt modal with the fetched transaction when View Receipt is clicked', () => {
+      mockTransactionsByStatus({ completed: { data: [transaction({ id: 't1' })] } });
+      mockUseTransaction.mockImplementation((transactionId: string | null) =>
+        transactionId ? { data: transaction({ id: 't1' }), isLoading: false } : { data: undefined, isLoading: false },
+      );
+
+      render(<SupervisorReportsPage />);
+      expect(screen.queryByText('Receipt')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'View Receipt' }));
+
+      expect(screen.getByText('Receipt')).toBeInTheDocument();
+    });
+
+    it('shows "No proof uploaded" instead of a View Proof button when has_payment_proof is false', () => {
+      mockTransactionsByStatus({
+        completed: { data: [transaction({ id: 't1', payment_method: 'gcash', has_payment_proof: false })] },
+      });
+
+      render(<SupervisorReportsPage />);
+
+      expect(screen.getByText('No proof uploaded')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'View Proof' })).not.toBeInTheDocument();
+    });
+
+    it('shows a dash instead of any proof action for cash transactions', () => {
+      mockTransactionsByStatus({
+        completed: { data: [transaction({ id: 't1', payment_method: 'cash', has_payment_proof: false })] },
+      });
+
+      render(<SupervisorReportsPage />);
+
+      expect(screen.queryByText('No proof uploaded')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'View Proof' })).not.toBeInTheDocument();
+    });
+
+    it('does not show View Receipt/Payment Proof actions for a non-supervisor role', () => {
+      mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+        selector({ user: { id: 'user-1', role: 'branch' } }),
+      );
+      mockTransactionsByStatus({
+        completed: { data: [transaction({ id: 't1', payment_method: 'gcash', has_payment_proof: true })] },
+      });
+
+      render(<SupervisorReportsPage />);
+
+      expect(screen.queryByRole('button', { name: 'View Receipt' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
+    });
   });
 
   it('renders the shift list on the Shift Summary tab', () => {
@@ -557,7 +638,7 @@ describe('export controls', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
 
-    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'csv', report_type: 'DAILY_SALES' }));
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'csv', report_type: 'DAILY_SALES' }), expect.anything());
   });
 
   it('calls useRequestExport().mutate with format pdf on Export PDF click', () => {
@@ -567,7 +648,7 @@ describe('export controls', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
 
-    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }));
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }), expect.anything());
   });
 });
 

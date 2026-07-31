@@ -7,8 +7,8 @@ import { randomUUID } from 'node:crypto';
  * exists in this codebase, so the real middleware chain (authenticate,
  * authorize guards, branchGuard, shiftGuard, requirePasswordChange, validate)
  * is pulled straight off the Router instance and run against mock req/res
- * objects, with only the service layer (and shiftGuard's cashRepository
- * dependency) mocked.
+ * objects, with only the service layer (and shiftGuard's cashRepository,
+ * cashService, and attendanceRepository dependencies) mocked.
  */
 vi.mock('./transactions.service.js', () => ({
   transactionsService: {
@@ -26,6 +26,14 @@ vi.mock('./transactions.service.js', () => ({
 
 vi.mock('../cash/cash.repository.js', () => ({
   cashRepository: { findActiveShift: vi.fn() },
+}));
+
+vi.mock('../cash/cash.service.js', () => ({
+  cashService: { autoOpenShift: vi.fn() },
+}));
+
+vi.mock('../attendance/attendance.repository.js', () => ({
+  attendanceRepository: { findActiveRecord: vi.fn() },
 }));
 
 vi.mock('../../lib/prisma.js', () => ({
@@ -48,6 +56,8 @@ vi.mock('../branches/branches.repository.js', () => ({
 
 const { prisma } = await import('../../lib/prisma.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
+const { cashService } = await import('../cash/cash.service.js');
+const { attendanceRepository } = await import('../attendance/attendance.repository.js');
 const { transactionsService } = await import('./transactions.service.js');
 const { transactionsRouter } = await import('./transactions.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
@@ -116,6 +126,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
   vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: SHIFT_1 } as never);
+  vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ id: 'att-1', employeeId: 'ignored', branchId: BRANCH_1 } as never);
   // Default: BRANCH_1 is active — matches every supervisor test's "own
   // branch"; BRANCH_2 is deliberately excluded, matching the "outside
   // assigned scope" tests below.
@@ -175,8 +186,8 @@ describe('POST / — happy path', () => {
     expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null);
   });
 
-  it('staff with no active shift is blocked by shiftGuard before reaching the service — 403 NO_ACTIVE_SHIFT', async () => {
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
+  it('staff not clocked in at the branch is blocked by shiftGuard before reaching the service — 403 NOT_CLOCKED_IN', async () => {
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
     const token = generateStaffToken(BRANCH_1);
     const req = mockReq({ ...authHeader(token), body: validCreateBody() });
@@ -185,8 +196,25 @@ describe('POST / — happy path', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'NO_ACTIVE_SHIFT' } }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'NOT_CLOCKED_IN' } }));
     expect(transactionsService.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('staff clocked in but with no active shift yet gets one auto-opened by shiftGuard and still reaches the service', async () => {
+    const AUTO_SHIFT = randomUUID();
+    vi.mocked(cashRepository.findActiveShift).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: AUTO_SHIFT } as never);
+    vi.mocked(cashService.autoOpenShift).mockResolvedValue({ id: AUTO_SHIFT } as never);
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: validCreateBody() });
+    const res = mockRes();
+    vi.mocked(transactionsService.createTransaction).mockResolvedValue({ id: TXN_1 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(cashService.autoOpenShift).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: AUTO_SHIFT }), null);
   });
 
   it('supervisor/super_admin are exempt from shiftGuard', async () => {
@@ -340,8 +368,8 @@ describe('POST /sync-offline', () => {
     expect(transactionsService.syncOfflineTransactions).not.toHaveBeenCalled();
   });
 
-  it('staff with no active shift is blocked by shiftGuard before reaching the service — 403 NO_ACTIVE_SHIFT', async () => {
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
+  it('staff not clocked in at the branch is blocked by shiftGuard before reaching the service — 403 NOT_CLOCKED_IN', async () => {
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
     const token = generateStaffToken(BRANCH_1);
     const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody() });
@@ -350,6 +378,7 @@ describe('POST /sync-offline', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'NOT_CLOCKED_IN' } }));
     expect(transactionsService.syncOfflineTransactions).not.toHaveBeenCalled();
   });
 

@@ -19,6 +19,8 @@ vi.mock('@/hooks/queries/use-reports', () => {
     useFraudAlertSummaryReport: vi.fn(() => empty),
     useDiscountComplianceReport: vi.fn(() => empty),
     useInventoryMovementReport: vi.fn(() => empty),
+    useInventoryConsumptionSummaryReport: vi.fn(() => empty),
+    useInventorySummaryReport: vi.fn(() => empty),
     useAttendanceSummaryReport: vi.fn(() => empty),
     useRequestExport: vi.fn(() => mockUseRequestExport),
     useReportsRealtimeSync: vi.fn((cb: (payload: unknown) => void) => {
@@ -166,7 +168,7 @@ describe('AdminReportsPage', () => {
     render(<AdminReportsPage />);
     const categories: Record<string, string[]> = {
       Finance: ['Financial Summary', 'Daily Sales', 'Cash Reconciliation', 'Expenses'],
-      Inventory: ['Inventory Analytics', 'Inventory Movement'],
+      Inventory: ['Inventory Analytics', 'Inventory Movement', 'Consumption Summary', 'Inventory Summary'],
       Operations: ['Shift Reports', 'Attendance Summary'],
       Compliance: ['Void / Refund', 'Alerts', 'Discount Compliance', 'Audit Log'],
     };

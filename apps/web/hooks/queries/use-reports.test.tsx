@@ -60,6 +60,19 @@ describe('useRequestExport', () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
   });
 
+  it('shows a Download action on the toast when the export resolves synchronously with a download_url', async () => {
+    vi.mocked(apiClient).mockResolvedValue({
+      data: { download_url: 'https://signed.example/x.csv', expires_at: '2026-08-01T00:00:00.000Z' },
+      error: null,
+      meta: null,
+    });
+    const { result } = renderHook(() => useRequestExport(), { wrapper });
+
+    result.current.mutate({ report_type: 'DAILY_SALES', filters: { page: 1, limit: 25 }, format: 'csv' });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Export ready', expect.objectContaining({ action: expect.objectContaining({ label: 'Download' }) })));
+  });
+
   it('shows an error toast on mutation failure', async () => {
     vi.mocked(apiClient).mockResolvedValue({ data: null, error: { code: 'EXPORT_UPLOAD_FAILED', message: 'boom' }, meta: null });
     const { result } = renderHook(() => useRequestExport(), { wrapper });

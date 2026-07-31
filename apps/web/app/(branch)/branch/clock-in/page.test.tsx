@@ -75,7 +75,7 @@ describe('ClockInPage', () => {
     expect(screen.getByRole('button', { name: /clock out/i })).toBeInTheDocument();
   });
 
-  it('clocks in via the attendance API and redirects to the Shift page so the flow continues to Open Shift/POS', async () => {
+  it('clocks in via the attendance API and redirects straight to the POS Terminal (Phase 4-9: shift is auto-opened transparently, no separate Open Shift step)', async () => {
     mockUseAttendanceByEmployee.mockReturnValue({ data: { records: [] }, isLoading: false, isError: false, refetch: vi.fn() });
 
     render(<ClockInPage />);
@@ -89,7 +89,7 @@ describe('ClockInPage', () => {
         gps_lng: 121.0,
       }),
     );
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/shift'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/terminal'));
   });
 
   it('does not redirect when clock-in fails', async () => {

@@ -3,8 +3,8 @@
 import type { TransactionResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { useAuth } from '@/hooks/use-auth';
 import { useMarkReceiptPrinted } from '@/hooks/queries/use-transactions';
+import { useEmployee } from '@/hooks/queries/use-employees';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -17,8 +17,10 @@ interface ReceiptModalProps {
 
 /** Shown after a successful charge. print styles live in globals.css under @media print, scoped to #receipt-print-area. */
 export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
-  const { user } = useAuth();
   const markPrinted = useMarkReceiptPrinted(transaction?.id ?? '');
+  // The receipt's actual cashier, not the viewer — a supervisor/admin
+  // opening someone else's receipt must never see their own name here.
+  const { data: cashier } = useEmployee(transaction?.cashier_id);
 
   if (!transaction) return null;
 
@@ -39,7 +41,7 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
             <p className="font-semibold">Potato Corner</p>
             <p className="text-xs text-muted-foreground">{new Date(transaction.created_at).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground">Receipt No. {transaction.receipt_number}</p>
-            <p className="text-xs text-muted-foreground">Cashier: {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : ''}</p>
+            <p className="text-xs text-muted-foreground">Cashier: {cashier ? `${cashier.first_name} ${cashier.last_name}`.trim() : ''}</p>
           </div>
 
           <div className="space-y-1 border-y py-2">

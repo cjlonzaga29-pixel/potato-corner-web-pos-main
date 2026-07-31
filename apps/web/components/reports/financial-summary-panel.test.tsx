@@ -61,7 +61,7 @@ describe('FinancialSummaryPanel', () => {
     mockDefaults();
     render(<FinancialSummaryPanel branchId={null} dateFrom="2026-07-01" dateTo="2026-07-02" />);
 
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales — Selected Period')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
     expect(screen.getByText('Expenses')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();

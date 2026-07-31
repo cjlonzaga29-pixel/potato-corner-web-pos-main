@@ -32,6 +32,7 @@ vi.mock('./universal-inventory.repository.js', () => ({
     updateStockQuantity: vi.fn(),
     createStockMovement: vi.fn(),
     findBranchStockRows: vi.fn(),
+    getConsumedTodayByBranch: vi.fn(),
     findStock: vi.fn(),
     findStockMovements: vi.fn(),
   },
@@ -155,6 +156,7 @@ beforeEach(() => {
   vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1', code: 'MNL001', name: 'Manila' } as never);
   vi.mocked(repo.createStockRows).mockResolvedValue({ count: 0 } as never);
   vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
+  vi.mocked(repo.getConsumedTodayByBranch).mockResolvedValue(new Map());
   // Mirrors a real Prisma round-trip: Decimal-typed columns always come back
   // as Decimal instances on read, even when the write was given a plain
   // number (as adjustStock's quantityDelta and transferStock's quantity are).
@@ -372,6 +374,33 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       { id: 'item-low', status: 'low' },
       { id: 'item-critical', status: 'critical' },
       { id: 'item-no-threshold', status: 'healthy' },
+    ]);
+  });
+
+  it('attaches consumed_today from getConsumedTodayByBranch, defaulting to 0 for items with no sales today', async () => {
+    vi.mocked(repo.findBranchStockRows).mockResolvedValue([
+      {
+        inventoryItemId: 'item-sold',
+        quantityOnHand: decimal(50),
+        lowStockThreshold: decimal(10),
+        criticalThreshold: decimal(5),
+        inventoryItem: { name: 'Flour', sku: null, category: null, baseUnit: { code: 'kg' } },
+      },
+      {
+        inventoryItemId: 'item-unsold',
+        quantityOnHand: decimal(20),
+        lowStockThreshold: decimal(10),
+        criticalThreshold: decimal(5),
+        inventoryItem: { name: 'Sugar', sku: null, category: null, baseUnit: { code: 'kg' } },
+      },
+    ] as never);
+    vi.mocked(repo.getConsumedTodayByBranch).mockResolvedValue(new Map([['item-sold', 3.5]]));
+
+    const result = await universalInventoryService.getBranchStock('branch-1');
+
+    expect(result.items.map((i) => ({ id: i.inventory_item_id, consumed_today: i.consumed_today }))).toEqual([
+      { id: 'item-sold', consumed_today: 3.5 },
+      { id: 'item-unsold', consumed_today: 0 },
     ]);
   });
 });

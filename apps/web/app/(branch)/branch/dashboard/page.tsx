@@ -4,33 +4,37 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { startOfDay } from 'date-fns';
-import { ShoppingCart, Timer, PackagePlus, Receipt } from 'lucide-react';
+import { ShoppingCart, Fingerprint, PackagePlus, Receipt } from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { DashboardShiftCard } from '@/components/supervisor/dashboard-shift-card';
 import { DashboardInventoryAlerts } from '@/components/supervisor/dashboard-inventory-alerts';
 import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-attendance-overview';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
+import { InventoryConsumptionPanel } from '@/components/shared/dashboard/inventory-consumption-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { formatDate } from '@/lib/utils';
+import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { useAuth } from '@/hooks/use-auth';
 import { useSocketStore } from '@/stores/socket.store';
 import { useBranch, useAllBranchStats } from '@/hooks/queries/use-branches';
-import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
+import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
+import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
+import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
 const ATTENDANCE_OVERVIEW_LIMIT = 100;
 
 const QUICK_ACTIONS = [
   { label: 'Open POS Terminal', href: '/branch/terminal', icon: ShoppingCart },
-  { label: 'Open Shift', href: '/branch/shift/open', icon: Timer },
+  { label: 'Clock In / Out', href: '/branch/clock-in', icon: Fingerprint },
   { label: 'Receive Stock', href: '/branch/inventory/stock-in', icon: PackagePlus },
   { label: 'Log Expense', href: '/branch/expenses', icon: Receipt },
 ] as const;
@@ -52,7 +56,9 @@ export default function BranchDashboardPage() {
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
   useInventoryStockRealtimeSync(branchId);
+  useInventoryAnalyticsRealtimeSync();
   useAttendanceRealtimeSync();
+  useExpensesRealtimeSync();
 
   // Calendar-day boundary, computed once on mount — deliberately not
   // reactive to clock ticking, same as the supervisor dashboard's
@@ -63,7 +69,6 @@ export default function BranchDashboardPage() {
   });
 
   const { data: branch } = useBranch(branchId);
-  const { data: shift, isLoading: isShiftLoading } = useCurrentShift(branchId);
   const { data: branchStats, isLoading: isLoadingStats } = useAllBranchStats(branchId);
   const { data: transactionsData, isLoading: isTransactionsLoading } = useTransactions({
     branch_id: branchId,
@@ -75,6 +80,15 @@ export default function BranchDashboardPage() {
     to,
     limit: ATTENDANCE_OVERVIEW_LIMIT,
   });
+  const monthTrend = useDashboardSalesTrendReport({
+    date_from: manilaMonthStart(),
+    date_to: manilaToday(),
+    branch_id: branchId,
+    page: 1,
+    limit: MAX_LIST_LIMIT,
+  });
+  const grossSalesMonth = monthTrend.data?.data.reduce((sum, row) => sum + row.gross_sales, 0);
+
   if (!branchId) {
     return (
       <EmptyState
@@ -111,10 +125,23 @@ export default function BranchDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
+        <KpiCard
+          title="Daily Gross Sales"
+          value={todayStats?.todayGrossSales ?? 0}
+          prefix="₱"
+          isLoading={isLoadingStats}
+          tooltip="Completed sales for the selected Manila business day."
+        />
+        <KpiCard
+          title="Monthly Gross Sales"
+          value={grossSalesMonth ?? 0}
+          prefix="₱"
+          isLoading={monthTrend.isLoading}
+          tooltip="Completed sales for the current Manila calendar month."
+        />
         <KpiCard title="Net Sales" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} />
         <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} />
         <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} />
-        <DashboardShiftCard shift={shift} isLoading={isShiftLoading} />
         <KpiCard
           title={netProfitLabel}
           value={todayStats?.todayNetProfit ?? 0}
@@ -172,9 +199,12 @@ export default function BranchDashboardPage() {
         <SalesAnalyticsSection branchId={branchId} />
       </WidgetErrorBoundary>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <WidgetErrorBoundary label="Top Products">
           <TopProductsPanel branchId={branchId} />
+        </WidgetErrorBoundary>
+        <WidgetErrorBoundary label="Inventory Consumption">
+          <InventoryConsumptionPanel branchId={branchId} />
         </WidgetErrorBoundary>
         <DashboardTransactionsFeed
           transactions={transactionsData?.transactions}

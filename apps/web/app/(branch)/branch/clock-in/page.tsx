@@ -78,8 +78,9 @@ export default function ClockInPage() {
         gps_lat: coords.lat,
         gps_lng: coords.lng,
       });
-      // Clock In is the gate before a shift can be opened (ATTENDANCE_REQUIRED) — continue straight into the Shift/POS step.
-      router.push('/branch/shift');
+      // Shift is now auto-managed (opened transparently on clock-in) — go
+      // straight to the POS Terminal, no separate Open Shift step.
+      router.push('/branch/terminal');
     } catch (error) {
       setGpsError(error instanceof Error ? error.message : 'Unable to read your location.');
     } finally {

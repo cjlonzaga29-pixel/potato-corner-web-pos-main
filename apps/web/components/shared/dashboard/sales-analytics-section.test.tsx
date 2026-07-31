@@ -68,7 +68,7 @@ describe('SalesAnalyticsSection', () => {
     mockDefaults();
     render(<SalesAnalyticsSection branchId={undefined} />);
 
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales — Last 7 Days')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
     expect(screen.getByText('Inventory Cost Consumed')).toBeInTheDocument();
     expect(screen.getByText('₱400')).toBeInTheDocument();

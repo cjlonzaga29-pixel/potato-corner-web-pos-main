@@ -148,6 +148,43 @@ export const InventoryMovementReportRowSchema = z.object({
 });
 export type InventoryMovementReportRow = z.infer<typeof InventoryMovementReportRowSchema>;
 
+// Aggregated sale-driven consumption (movement_type SALE only) per ingredient/branch
+// over the filtered date range — distinct from InventoryMovementReportRow above, which
+// is the raw per-movement ledger across every movement type.
+export const InventoryConsumptionSummaryReportRowSchema = z.object({
+  ingredient_id: z.uuid(),
+  ingredient_name: z.string(),
+  branch_id: z.uuid(),
+  branch_name: z.string(),
+  unit: z.string(),
+  quantity_consumed: z.number(),
+  unit_cost: z.number().nullable(),
+  consumption_value: z.number(),
+  movement_count: z.number().int(),
+});
+export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsumptionSummaryReportRowSchema>;
+
+// Per-ingredient stock snapshot: opening balance for today, consumption
+// today/this-month (SALE movements only, matching the Branch Inventory
+// list's "Consumed Today" column), and the current remaining balance — with
+// grams/kilograms auto-conversion when the item's base unit is weight-based.
+// Distinct from InventoryConsumptionSummaryReportRow above, which is a
+// date-range consumption total with no stock-level or opening/remaining data.
+export const InventorySummaryReportRowSchema = z.object({
+  ingredient_id: z.uuid(),
+  ingredient_name: z.string(),
+  branch_id: z.uuid(),
+  branch_name: z.string(),
+  unit: z.string(),
+  opening_stock: z.number(),
+  consumed_today: z.number(),
+  consumed_this_month: z.number(),
+  remaining_stock: z.number(),
+  remaining_grams: z.number().nullable(),
+  remaining_kilograms: z.number().nullable(),
+});
+export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
+
 export const AttendanceSummaryReportRowSchema = z.object({
   employee_id: z.uuid(),
   employee_name: z.string(),

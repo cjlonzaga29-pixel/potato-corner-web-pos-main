@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { CloseShiftData, DenominationCountInput, OpenShiftData, ShiftListFilters, ShiftCloseComputedCounts } from './cash.types.js';
+import type { AutoOpenShiftData, CloseShiftData, DenominationCountInput, OpenShiftData, ShiftListFilters, ShiftCloseComputedCounts } from './cash.types.js';
 
 const shiftInclude = {
   denominations: true,
@@ -61,6 +61,81 @@ export const cashRepository = {
       });
 
       return tx.shift.findUniqueOrThrow({ where: { id: shift.id }, include: shiftInclude });
+    });
+  },
+
+  /**
+   * Auto-managed shift, created transparently on clock-in (Phase 4-9 shift
+   * removal) — no drawer count, no denomination rows, no ShiftReview rows.
+   * Unlike createShift, this is per-cashier, not per-branch: several
+   * cashiers can each hold their own concurrent active auto-shift at the
+   * same branch (one register/one-shift-at-a-time was the old manual-count
+   * model's rule, not a database constraint).
+   */
+  createAutoShift(data: AutoOpenShiftData) {
+    return prisma.shift.create({
+      data: {
+        branchId: data.branchId,
+        cashierId: data.cashierId,
+        openedBy: data.cashierId,
+        openingCashAmount: 0,
+        startedAt: new Date(),
+      },
+      include: shiftInclude,
+    });
+  },
+
+  /**
+   * Closes an auto-managed shift at clock-out — persists the same sales/count
+   * aggregates the manual closeShift flow computes, but skips denominations,
+   * variance, and status='flagged': there was never a drawer count to compare
+   * against, so cashVariance/closingCashAmount/expectedClosingCash all stay
+   * null and status goes straight to 'closed'.
+   */
+  closeAutoShift(
+    id: string,
+    computed: {
+      cashSalesTotal: number;
+      gcashSalesTotal: number;
+      mayaSalesTotal: number;
+      otherSalesTotal: number;
+      grossSalesTotal: number;
+      transactionCount: number;
+      cashSalesCount: number;
+      gcashSalesCount: number;
+      mayaSalesCount: number;
+      otherSalesCount: number;
+      voidedCount: number;
+      refundedCount: number;
+      totalTransactionCount: number;
+      totalDiscountAmount: number;
+      pwdScTransactionCount: number;
+      closedBy: string;
+    },
+  ) {
+    return prisma.shift.update({
+      where: { id },
+      data: {
+        cashSalesTotal: computed.cashSalesTotal,
+        gcashSalesTotal: computed.gcashSalesTotal,
+        mayaSalesTotal: computed.mayaSalesTotal,
+        otherSalesTotal: computed.otherSalesTotal,
+        grossSalesTotal: computed.grossSalesTotal,
+        transactionCount: computed.transactionCount,
+        cashSalesCount: computed.cashSalesCount,
+        gcashSalesCount: computed.gcashSalesCount,
+        mayaSalesCount: computed.mayaSalesCount,
+        otherSalesCount: computed.otherSalesCount,
+        voidedCount: computed.voidedCount,
+        refundedCount: computed.refundedCount,
+        totalTransactionCount: computed.totalTransactionCount,
+        totalDiscountAmount: computed.totalDiscountAmount,
+        pwdScTransactionCount: computed.pwdScTransactionCount,
+        status: 'closed',
+        closedBy: computed.closedBy,
+        closedAt: new Date(),
+      },
+      include: shiftInclude,
     });
   },
 

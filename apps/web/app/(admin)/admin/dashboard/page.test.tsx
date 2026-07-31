@@ -83,6 +83,15 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
 
 vi.mock('@/hooks/queries/use-reports', () => ({
   useDashboardSalesTrendReport: mockUseDashboardSalesTrendReport,
+  useInventoryAnalyticsRealtimeSync: vi.fn(),
+}));
+
+vi.mock('@/hooks/queries/use-expenses', () => ({
+  useExpensesRealtimeSync: vi.fn(),
+}));
+
+vi.mock('@/hooks/queries/use-attendance', () => ({
+  useAttendanceRealtimeSync: vi.fn(),
 }));
 
 /**
@@ -164,7 +173,7 @@ afterEach(() => {
 });
 
 describe('AdminDashboardPage', () => {
-  it('renders Gross Sales Today aggregated across branch stats', () => {
+  it('renders Daily Gross Sales aggregated across branch stats', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStat({ branchId: 'b1', todayGrossSales: 1000 }), branchStat({ branchId: 'b2', todayGrossSales: 500 })],
       isLoading: false,
@@ -173,11 +182,11 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
+    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
   });
 
-  it('renders Gross Sales This Month summed from the sales trend report', () => {
+  it('renders Monthly Gross Sales summed from the sales trend report', () => {
     mockUseDashboardSalesTrendReport.mockReturnValue({
       data: { data: [{ report_date: '2026-07-01', gross_sales: 10000 }, { report_date: '2026-07-15', gross_sales: 5000 }] },
       isLoading: false,
@@ -186,8 +195,29 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
+    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱15000')).toBeInTheDocument();
+  });
+
+  it('Daily Gross Sales and Monthly Gross Sales use different date ranges and can differ', () => {
+    mockUseAllBranchStats.mockReturnValue({
+      data: [branchStat({ branchId: 'b1', todayGrossSales: 1500 })],
+      isLoading: false,
+      isError: false,
+    });
+    mockUseDashboardSalesTrendReport.mockReturnValue({
+      data: { data: [{ report_date: '2026-07-01', gross_sales: 10000 }, { report_date: '2026-07-31', gross_sales: 1500 }] },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
+    // Daily reflects only today's branch stats (1500); Monthly sums the whole month (11500) — distinct periods, distinct values.
+    expect(screen.getByText('₱1500')).toBeInTheDocument();
+    expect(screen.getByText('₱11500')).toBeInTheDocument();
   });
 
   it('renders the payment breakdown aggregated across branches', () => {

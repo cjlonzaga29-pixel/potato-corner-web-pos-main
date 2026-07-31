@@ -7,7 +7,9 @@ import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats, useBranches, type PaymentBreakdown } from '@/hooks/queries/use-branches';
 import { useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
-import { useDashboardSalesTrendReport } from '@/hooks/queries/use-reports';
+import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
+import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
+import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
@@ -32,6 +34,9 @@ function AdminDashboardPageContent() {
   useTransactionsRealtimeSync();
   useBranchRealtimeSync();
   useInventoryStockRealtimeSync(branchFilter);
+  useInventoryAnalyticsRealtimeSync();
+  useAttendanceRealtimeSync();
+  useExpensesRealtimeSync();
 
   const { data: branchStats, isLoading: isLoadingBranchStats } = useAllBranchStats(branchFilter);
   const { data: branchList, isLoading: isLoadingBranchList } = useBranches({ limit: MAX_LIST_LIMIT });

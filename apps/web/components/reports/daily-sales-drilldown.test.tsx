@@ -15,6 +15,10 @@ vi.mock('@/hooks/use-auth', () => ({
   useAuth: () => ({ user: { firstName: 'CJ', lastName: 'Lonzaga', email: 'cj@example.com' } }),
 }));
 
+vi.mock('@/hooks/queries/use-employees', () => ({
+  useEmployee: () => ({ data: { first_name: 'Juan', last_name: 'Cruz' }, isLoading: false }),
+}));
+
 const { DailySalesDrilldown } = await import('./daily-sales-drilldown');
 
 const CASH_TXN = {

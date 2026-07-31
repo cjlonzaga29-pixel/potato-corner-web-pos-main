@@ -109,7 +109,14 @@ export function SalesAnalyticsSection({ branchId, inventoryCostTooltip }: SalesA
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <KpiCard title="Gross Sales" value={grossSales} prefix="₱" isLoading={isLoading} emphasize />
+        <KpiCard
+          title={`Gross Sales — ${PERIOD_LABEL[period]}`}
+          value={grossSales}
+          prefix="₱"
+          isLoading={isLoading}
+          emphasize
+          tooltip={`Completed sales for the ${PERIOD_LABEL[period].toLowerCase()}.`}
+        />
         <KpiCard
           title="Inventory Cost Consumed"
           value={inventoryCostConsumed}

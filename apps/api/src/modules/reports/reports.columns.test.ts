@@ -9,6 +9,8 @@ vi.mock('./reports.repository.js', () => ({
     getVoidRefund: vi.fn().mockResolvedValue([]),
     getDiscountCompliance: vi.fn().mockResolvedValue([]),
     getInventoryMovement: vi.fn().mockResolvedValue([]),
+    getInventoryConsumptionSummary: vi.fn().mockResolvedValue([]),
+    getInventorySummary: vi.fn().mockResolvedValue([]),
     getAttendanceSummary: vi.fn().mockResolvedValue([]),
     getFraudAlertSummary: vi.fn().mockResolvedValue([]),
     getProductPerformance: vi.fn().mockResolvedValue([]),

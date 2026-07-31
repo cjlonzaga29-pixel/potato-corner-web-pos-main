@@ -17,6 +17,7 @@ vi.mock('../../lib/prisma.js', () => {
     inventoryStock: { findMany: vi.fn() },
     inventoryItem: { count: vi.fn() },
     inventoryStockMovement: { findMany: vi.fn(), groupBy: vi.fn(), count: vi.fn() },
+    unitOfMeasure: { findUnique: vi.fn() },
     reportSnapshot: { create: vi.fn(), findFirst: vi.fn(), deleteMany: vi.fn() },
     auditLog: { findMany: vi.fn() },
   };
@@ -54,7 +55,7 @@ describe('reportsRepository.getDailySales', () => {
         gross_sales: 112,
         discount_total: 0,
         vat_total: 12,
-        net_sales: 100,
+        net_sales: 112,
         completed_count: 1,
         voided_count: 1,
         refunded_count: 0,
@@ -63,6 +64,22 @@ describe('reportsRepository.getDailySales', () => {
     expect(prisma.transaction.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }),
     );
+  });
+
+  it('computes net_sales via computeFinancialMetrics (gross - discounts - refunds, no VAT subtraction) to match branchStats.todayNetSales for the same branch/day', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      { branchId: 'b1', status: 'completed', subtotal: decimal(200), totalAmount: decimal(160), discountAmount: decimal(40), vatAmount: decimal(17.14), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+      { branchId: 'b1', status: 'refunded', subtotal: decimal(100), totalAmount: decimal(100), discountAmount: decimal(0), vatAmount: decimal(10.71), createdAt: new Date('2026-07-01T12:00:00.000Z') },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
+
+    // gross_sales(200) - discount_total(40) - refund_total(100) = 60 — the
+    // refunded transaction's totalAmount(100) is subtracted even though it
+    // never contributed to gross_sales/discount_total (only completed rows
+    // do), and VAT is never subtracted a second time (per financial-metrics.ts).
+    expect(row).toMatchObject({ gross_sales: 200, discount_total: 40, net_sales: 60, refunded_count: 1 });
   });
 
   it('buckets a transaction just after UTC midnight into the Manila business day already in progress', async () => {
@@ -301,6 +318,85 @@ describe('reportsRepository.getInventoryMovement', () => {
 
     expect(rows[0]?.recorded_by_name).toBeNull();
     expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('reportsRepository.getInventorySummary', () => {
+  it('returns [] without querying movements when the branch has no stock rows', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([]);
+
+    const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows).toEqual([]);
+    expect(prisma.inventoryStockMovement.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('derives opening_stock by subtracting today\'s net movement from the current balance, and sums SALE-only movements for consumed_today/consumed_this_month', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-1',
+        quantityOnHand: decimal(7),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Flour', baseUnitId: 'unit-kg', baseUnit: { code: 'kg', dimension: 'WEIGHT' } },
+      },
+    ] as never);
+    // Today: a stock_in of +2 and a sale of -5 net to -3 -> opening = 7 - (-3) = 10.
+    vi.mocked(prisma.inventoryStockMovement.groupBy)
+      .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-1', _sum: { quantityChange: decimal(-3) } }] as never)
+      .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-1', _sum: { quantityChange: decimal(-5) } }] as never)
+      .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-1', _sum: { quantityChange: decimal(-40) } }] as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique)
+      .mockResolvedValueOnce({ id: 'unit-g', code: 'g' } as never)
+      .mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
+
+    const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows).toEqual([
+      {
+        ingredient_id: 'item-1',
+        ingredient_name: 'Flour',
+        branch_id: 'b1',
+        branch_name: 'SM North',
+        unit: 'kg',
+        opening_stock: 10,
+        consumed_today: 5,
+        consumed_this_month: 40,
+        remaining_stock: 7,
+        remaining_grams: 7000,
+        remaining_kilograms: 7,
+      },
+    ]);
+  });
+
+  it('returns null grams/kilograms for a non-weight unit instead of fabricating a conversion', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-2',
+        quantityOnHand: decimal(12),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Cups', baseUnitId: 'unit-pc', baseUnit: { code: 'pc', dimension: 'COUNT' } },
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStockMovement.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique)
+      .mockResolvedValueOnce({ id: 'unit-g', code: 'g' } as never)
+      .mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
+
+    const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]).toMatchObject({ unit: 'pc', opening_stock: 12, consumed_today: 0, remaining_grams: null, remaining_kilograms: null });
+  });
+
+  it('scopes InventoryStock.findMany to the given branchId', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([]);
+
+    await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }),
+    );
   });
 });
 

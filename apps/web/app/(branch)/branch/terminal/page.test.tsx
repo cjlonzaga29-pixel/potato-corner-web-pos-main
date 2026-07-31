@@ -8,7 +8,7 @@ const { mockAddItem, mockUseCatalog, mockRouterReplace, mockUseMyActiveShift, mo
   mockAddItem: vi.fn(),
   mockUseCatalog: vi.fn(),
   mockRouterReplace: vi.fn(),
-  mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isMine: true, belongsToAnother: false, isLoading: false })),
+  mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isLoading: false })),
   mockUseIsClockedIn: vi.fn(() => ({ isClockedIn: true, isLoading: false })),
 }));
 
@@ -474,17 +474,16 @@ describe('TerminalPage — Maya and Other payment methods', () => {
   });
 });
 
-// Single clean cashier workflow: Clock In -> Open Shift once -> POS. The POS
-// route guard is the last checkpoint before checkout — it must agree with
-// Open Shift/Current Shift about what "active shift for the authenticated
-// cashier at this branch" means (useMyActiveShift), and never show a
-// generic NO_ACTIVE_SHIFT toast when it can redirect to the right page.
+// Single clean cashier workflow (Phase 4-9): Clock In -> Ready to Sell. The
+// shift is auto-managed (opened transparently on clock-in), so the POS route
+// guard only cares about attendance — it no longer redirects to a separate
+// Open Shift step or shows a shift-mismatch screen.
 describe('TerminalPage — attendance/shift routing guard', () => {
   beforeEach(() => {
     mockRouterReplace.mockClear();
     mockCartItems.mockReturnValue([]);
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
-    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isMine: true, belongsToAnother: false, isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, isLoading: false });
   });
 
@@ -499,15 +498,6 @@ describe('TerminalPage — attendance/shift routing guard', () => {
     expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
   });
 
-  it('redirects to Open Shift when clocked in but no active shift exists yet', () => {
-    mockUseMyActiveShift.mockReturnValue({ shift: null, isMine: false, belongsToAnother: false, isLoading: false });
-
-    render(<TerminalPage />);
-
-    expect(mockRouterReplace).toHaveBeenCalledWith('/branch/shift/open');
-    expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
-  });
-
   it('loads the catalog and allows charging when the cashier has a matching active shift', () => {
     render(<TerminalPage />);
 
@@ -515,23 +505,15 @@ describe('TerminalPage — attendance/shift routing guard', () => {
     expect(screen.getByText('Mega Mix Fries')).toBeInTheDocument();
   });
 
-  it('blocks checkout with a clear message — not a redirect — when the active shift belongs to another cashier', () => {
-    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isMine: false, belongsToAnother: true, isLoading: false });
+  it('still shows the catalog (no redirect) while the auto-opened shift briefly resolves, but disables Charge', () => {
+    mockUseMyActiveShift.mockReturnValue({ shift: null, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
 
     render(<TerminalPage />);
 
-    expect(screen.getByText(/shift mismatch/i)).toBeInTheDocument();
-    expect(screen.getByText(/open under a different cashier account/i)).toBeInTheDocument();
     expect(mockRouterReplace).not.toHaveBeenCalled();
-    expect(screen.queryByText('Mega Mix Fries')).not.toBeInTheDocument();
-  });
-
-  it('redirects back to Open Shift once the active shift closes while the POS page is open', () => {
-    mockUseMyActiveShift.mockReturnValue({ shift: null, isMine: false, belongsToAnother: false, isLoading: false });
-
-    render(<TerminalPage />);
-
-    expect(mockRouterReplace).toHaveBeenCalledWith('/branch/shift/open');
+    expect(screen.getAllByText('Mega Mix Fries').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
   });
 
   it('shows a loading state instead of the catalog while attendance/shift status is still resolving', () => {

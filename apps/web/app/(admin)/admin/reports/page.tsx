@@ -11,6 +11,8 @@ import type {
   VoidRefundReportRow,
   DiscountComplianceReportRow,
   InventoryMovementReportRow,
+  InventoryConsumptionSummaryReportRow,
+  InventorySummaryReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ExportReadyPayload,
@@ -45,6 +47,8 @@ import {
   useVoidRefundReport,
   useDiscountComplianceReport,
   useInventoryMovementReport,
+  useInventoryConsumptionSummaryReport,
+  useInventorySummaryReport,
   useAttendanceSummaryReport,
   useFraudAlertSummaryReport,
   useRequestExport,
@@ -195,6 +199,40 @@ const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
   { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
+const inventoryConsumptionSummaryColumns: ColumnDef<InventoryConsumptionSummaryReportRow>[] = [
+  { accessorKey: 'branch_name', header: 'Branch' },
+  { accessorKey: 'ingredient_name', header: 'Ingredient' },
+  {
+    id: 'quantity_consumed',
+    header: 'Consumed',
+    cell: ({ row }) => `${row.original.quantity_consumed} ${row.original.unit}`,
+  },
+  {
+    accessorKey: 'unit_cost',
+    header: 'Unit Cost',
+    cell: ({ row }) => (row.original.unit_cost !== null ? formatCurrency(row.original.unit_cost) : '—'),
+  },
+  { accessorKey: 'consumption_value', header: 'Consumption Value', cell: ({ row }) => formatCurrency(row.original.consumption_value) },
+  { accessorKey: 'movement_count', header: 'Sales Movements' },
+];
+
+const inventorySummaryColumns: ColumnDef<InventorySummaryReportRow>[] = [
+  { accessorKey: 'branch_name', header: 'Branch' },
+  { accessorKey: 'ingredient_name', header: 'Ingredient' },
+  { id: 'opening_stock', header: 'Opening Stock', cell: ({ row }) => `${row.original.opening_stock} ${row.original.unit}` },
+  { id: 'consumed_today', header: 'Consumed Today', cell: ({ row }) => `${row.original.consumed_today} ${row.original.unit}` },
+  { id: 'consumed_this_month', header: 'Consumed This Month', cell: ({ row }) => `${row.original.consumed_this_month} ${row.original.unit}` },
+  { id: 'remaining_stock', header: 'Remaining', cell: ({ row }) => `${row.original.remaining_stock} ${row.original.unit}` },
+  {
+    id: 'remaining_conversion',
+    header: 'Remaining (g / kg)',
+    cell: ({ row }) =>
+      row.original.remaining_grams !== null && row.original.remaining_kilograms !== null
+        ? `${row.original.remaining_grams} g / ${row.original.remaining_kilograms} kg`
+        : '—',
+  },
+];
+
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { accessorKey: 'employee_name', header: 'Employee' },
   { accessorKey: 'branch_name', header: 'Branch' },
@@ -229,6 +267,8 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
     reports: [
       { value: 'INVENTORY_ANALYTICS', label: 'Inventory Analytics' },
       { value: 'INVENTORY_MOVEMENT', label: 'Inventory Movement' },
+      { value: 'INVENTORY_CONSUMPTION_SUMMARY', label: 'Consumption Summary' },
+      { value: 'INVENTORY_SUMMARY', label: 'Inventory Summary' },
     ],
   },
   {
@@ -317,6 +357,8 @@ function AdminReportsPageContent() {
   const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeReport === 'FRAUD_ALERT_SUMMARY');
   const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeReport === 'DISCOUNT_COMPLIANCE');
   const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
+  const inventoryConsumptionSummary = useInventoryConsumptionSummaryReport(realtimeFilters, activeReport === 'INVENTORY_CONSUMPTION_SUMMARY');
+  const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
     branch_id: selectedBranchId ?? undefined,
@@ -433,7 +475,13 @@ function AdminReportsPageContent() {
               ) : dailySales.isError ? <ErrorState retry={() => dailySales.refetch()} /> : <>
               <ReportLastUpdated timestamp={dailySales.data?.generated_at} isLoading={dailySales.isLoading} />
               <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-4">
-                <KpiCard title="Gross Sales" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)} isLoading={dailySales.isLoading} />
+                <KpiCard
+                  title="Gross Sales — Selected Period"
+                  value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0)}
+                  prefix="₱"
+                  isLoading={dailySales.isLoading}
+                  tooltip={`Completed sales from ${dateFrom} to ${dateTo}.`}
+                />
                 <KpiCard title="Completed" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.completed_count, 0)} isLoading={dailySales.isLoading} />
                 <KpiCard title="Voided" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.voided_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
                 <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
@@ -594,6 +642,51 @@ function AdminReportsPageContent() {
                 data={inventoryMovement.data?.data ?? []}
                 isLoading={inventoryMovement.isLoading}
                 emptyState={<EmptyState title="No inventory movements in this range" />}
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="INVENTORY_CONSUMPTION_SUMMARY">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : inventoryConsumptionSummary.isError ? <ErrorState retry={() => inventoryConsumptionSummary.refetch()} /> : <>
+              <ReportLastUpdated timestamp={inventoryConsumptionSummary.data?.generated_at} isLoading={inventoryConsumptionSummary.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Ingredients Consumed" value={(inventoryConsumptionSummary.data?.data ?? []).length} isLoading={inventoryConsumptionSummary.isLoading} />
+                <KpiCard
+                  title="Total Consumption Value"
+                  value={(inventoryConsumptionSummary.data?.data ?? []).reduce((sum, r) => sum + r.consumption_value, 0)}
+                  prefix="₱"
+                  isLoading={inventoryConsumptionSummary.isLoading}
+                />
+              </div>
+              <DataTable
+                columns={inventoryConsumptionSummaryColumns}
+                data={inventoryConsumptionSummary.data?.data ?? []}
+                isLoading={inventoryConsumptionSummary.isLoading}
+                emptyState={<EmptyState title="No consumption recorded" description="No sale-driven inventory consumption in this range." />}
+              />
+              </>}
+            </TabsContent>
+
+            <TabsContent value="INVENTORY_SUMMARY">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : inventorySummary.isError ? <ErrorState retry={() => inventorySummary.refetch()} /> : <>
+              <ReportLastUpdated timestamp={inventorySummary.data?.generated_at} isLoading={inventorySummary.isLoading} />
+              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Ingredients Tracked" value={(inventorySummary.data?.data ?? []).length} isLoading={inventorySummary.isLoading} />
+                <KpiCard
+                  title="Consumed Today (all ingredients)"
+                  value={(inventorySummary.data?.data ?? []).reduce((sum, r) => sum + r.consumed_today, 0)}
+                  isLoading={inventorySummary.isLoading}
+                />
+              </div>
+              <DataTable
+                columns={inventorySummaryColumns}
+                data={inventorySummary.data?.data ?? []}
+                isLoading={inventorySummary.isLoading}
+                emptyState={<EmptyState title="No tracked inventory" description="No trackable inventory items at this branch." />}
               />
               </>}
             </TabsContent>

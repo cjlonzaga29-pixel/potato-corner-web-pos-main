@@ -25,20 +25,20 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders Gross Sales Today and Gross Sales This Month', () => {
+  it('renders Daily Gross Sales and Monthly Gross Sales', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
-    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
+    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱20000')).toBeInTheDocument();
-    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
+    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱450000')).toBeInTheDocument();
   });
 
   it('renders each card skeleton independently based on its own isLoading prop', () => {
     render(<DashboardKpiRow {...BASE_PROPS} isLoadingToday={true} isLoadingMonth={false} />);
 
-    expect(screen.getByText('Gross Sales Today').closest('div')?.textContent).toContain('loading');
-    expect(screen.getByText('Gross Sales This Month').closest('div')?.textContent).not.toContain('loading');
+    expect(screen.getByText('Daily Gross Sales').closest('div')?.textContent).toContain('loading');
+    expect(screen.getByText('Monthly Gross Sales').closest('div')?.textContent).not.toContain('loading');
   });
 
   it('defaults to 0 when values are undefined', () => {

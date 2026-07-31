@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { BranchSidebar, BRANCH_NAV_ITEMS } from '@/components/branch/branch-sidebar';
 import { BranchContextSync } from '@/components/branch/branch-context-sync';
-import { BranchSessionGuard } from '@/components/branch/branch-session-guard';
 import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
 
@@ -26,13 +25,18 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  * Clock In and closed on Clock Out, with no cashier-facing Open/Close Shift
  * step; the old PosHeader's End Shift button was already dead code before
  * that change (no onEndShift handler was ever wired to it).
+ *
+ * There used to be a BranchSessionGuard here that redirected a `branch`
+ * session away from /branch/terminal to a separate /branch/select-employee
+ * route. Employee selection ("Who is working?") is now rendered inline by
+ * the terminal page itself (STATE 1 of its state machine), so that redirect
+ * — and the extra page hop it caused — is gone entirely.
  */
 export default function BranchLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <SocketInitializer />
       <BranchContextSync />
-      <BranchSessionGuard />
       <BranchSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <DashboardHeader

@@ -250,9 +250,18 @@ router.post(
         res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A payment proof image file is required' }, meta: null });
         return;
       }
-      const body = req.body as { branch_id: string; shift_id: string; type: ImageProofType };
+      const body = req.body as { branch_id: string; shift_id?: string; type: ImageProofType };
+      // Same trust pattern as POST / above — shiftGuard already resolved
+      // (and auto-opened, if needed) the authenticated cashier's own active
+      // shift onto req.activeShift, so the cashier never needs to have a
+      // shift id loaded client-side before capturing payment proof.
+      const shiftId = req.activeShift?.id ?? body.shift_id;
+      if (!shiftId) {
+        res.status(422).json({ data: null, error: { code: 'INVALID_SHIFT', message: 'No active shift could be resolved for this upload' }, meta: null });
+        return;
+      }
       const result = await transactionsService.uploadPaymentProof(
-        { branchId: body.branch_id, shiftId: body.shift_id, type: body.type },
+        { branchId: body.branch_id, shiftId, type: body.type },
         { buffer: req.file.buffer, originalname: req.file.originalname },
         { id: req.user.user_id, role: req.user.role },
       );

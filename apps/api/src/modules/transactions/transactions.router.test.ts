@@ -186,6 +186,21 @@ describe('POST / — happy path', () => {
     expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null);
   });
 
+  it('a staff checkout with no shift_id in the body at all still succeeds — shiftGuard resolves it server-side', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
+    const token = generateStaffToken(BRANCH_1);
+    const body = validCreateBody();
+    delete (body as Record<string, unknown>).shift_id;
+    const req = mockReq({ ...authHeader(token), body });
+    const res = mockRes();
+    vi.mocked(transactionsService.createTransaction).mockResolvedValue({ id: TXN_1 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null);
+  });
+
   it('staff not clocked in at the branch is blocked by shiftGuard before reaching the service — 403 NOT_CLOCKED_IN', async () => {
     vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
@@ -478,6 +493,54 @@ describe('POST /payment-proof', () => {
       { branchId: BRANCH_1, shiftId: SHIFT_1, type: 'live_capture' },
       expect.objectContaining({ originalname: 'proof.jpg' }),
       expect.objectContaining({ role: expect.any(String) }),
+    );
+  });
+
+  it('resolves shiftId from shiftGuard even when the client omits shift_id entirely — proof capture never needs a client-known shift id', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/payment-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+    vi.mocked(transactionsService.uploadPaymentProof).mockResolvedValue({
+      payment_proof_key: 'branch-1/shift-1/user-1-123.webp',
+      payment_proof_type: 'live_capture',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.uploadPaymentProof).toHaveBeenCalledWith(
+      { branchId: BRANCH_1, shiftId: SHIFT_1, type: 'live_capture' },
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('overrides a mismatched client-supplied shift_id with the shiftGuard-resolved active shift, same as POST /', async () => {
+    const OTHER_SHIFT = randomUUID();
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/payment-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: OTHER_SHIFT, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+    vi.mocked(transactionsService.uploadPaymentProof).mockResolvedValue({
+      payment_proof_key: 'branch-1/shift-1/user-1-123.webp',
+      payment_proof_type: 'live_capture',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(transactionsService.uploadPaymentProof).toHaveBeenCalledWith(
+      expect.objectContaining({ shiftId: SHIFT_1 }),
+      expect.anything(),
+      expect.anything(),
     );
   });
 });

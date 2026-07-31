@@ -45,7 +45,12 @@ const PROOF_REQUIRED_METHODS: readonly PaymentMethod[] = [PAYMENT_METHOD.GCASH, 
 export const createTransactionSchema = z
   .object({
     branch_id: z.uuid(),
-    shift_id: z.uuid(),
+    // Optional — shiftGuard resolves (and auto-opens) the authenticated
+    // cashier's own active shift onto req.activeShift server-side, which the
+    // router trusts over this value for staff/branch. Only the
+    // shiftGuard-exempt admin/supervisor path falls back to it. The cashier
+    // is never blocked from checking out for want of a client-known shift id.
+    shift_id: z.uuid().optional(),
     items: z.array(cartItemSchema).min(1),
     payment_method: z.enum(paymentMethodValues),
     discount_type: z.enum(discountTypeValues).optional(),
@@ -318,7 +323,9 @@ export const holdOrderListResponseSchema = z.object({
  */
 export const paymentProofUploadRequestSchema = z.object({
   branch_id: z.uuid(),
-  shift_id: z.uuid(),
+  // Optional for the same reason as createTransactionSchema.shift_id above —
+  // shiftGuard resolves the active shift server-side for staff/branch.
+  shift_id: z.uuid().optional(),
   type: z.enum(imageProofTypeValues),
 });
 

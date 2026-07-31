@@ -1,26 +1,29 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Fingerprint, Loader2, LogOut, MapPin } from 'lucide-react';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
-import { useIsClockedIn } from '@/hooks/queries/use-attendance';
+import { useIsClockedIn, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof } from '@/hooks/queries/use-transactions';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
+import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 
 function formatPeso(amount: number): string {
@@ -77,18 +80,25 @@ function previewAmounts(
 }
 
 export default function TerminalPage() {
-  const router = useRouter();
   const { user } = useAuth();
   const branchId = user?.branchIds[0];
   const { items, addItem, removeItem, updateItemQuantity, clearCart } = useCart();
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
-  const { isClockedIn, isLoading: isAttendanceLoading } = useIsClockedIn();
-  const { shift, isLoading: isShiftLoading } = useMyActiveShift(branchId);
+  const { isClockedIn, record: attendanceRecord, isLoading: isAttendanceLoading } = useIsClockedIn();
+  // Informational only below (payment-proof storage path fallback) — never
+  // gates the Charge button. The API resolves and auto-opens the cashier's
+  // own active shift server-side via shiftGuard, so checkout is never
+  // blocked on this client-side lookup being loaded or fresh.
+  const { shift } = useMyActiveShift(branchId);
   useShiftsRealtimeSync();
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction();
   const uploadPaymentProof = useUploadPaymentProof();
+  const clockIn = useClockIn();
+  const clockOut = useClockOut();
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
 
   const [cachedProducts, setCachedProducts] = useState<PosCatalogProduct[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -126,18 +136,38 @@ export default function TerminalPage() {
     }
   }, [isOnline, paymentMethod]);
 
-  // Single clean cashier workflow: Clock In -> Ready to Sell. No attendance
-  // sends the cashier back to clock in; the shift itself is auto-managed
-  // (opened transparently on clock-in — see attendanceService.clockIn), so
-  // there is no separate "open a shift" step or redirect for it. A brief
-  // window where `shift` is still null right after clock-in resolves itself
-  // once the auto-open completes and this query refetches.
-  const isGuardLoading = isAttendanceLoading || isShiftLoading;
-  const shouldRedirectToClockIn = !isGuardLoading && !isClockedIn;
+  // Single clean cashier workflow: Clock In -> Ready to Sell, both inside
+  // this page. The shift itself is auto-managed (opened transparently on
+  // clock-in — see attendanceService.clockIn / shiftGuard), so there is no
+  // separate "open a shift" step and no redirect to another route — a
+  // clocked-out cashier sees the Clock In card below instead of the catalog.
+  async function handleClockIn() {
+    if (!user || !branchId) return;
+    setGpsError(null);
+    setIsLocating(true);
+    try {
+      const coords: GpsCoords = await getCurrentPosition();
+      await clockIn.mutateAsync({ employee_id: user.id, branch_id: branchId, gps_lat: coords.lat, gps_lng: coords.lng });
+    } catch (error) {
+      setGpsError(error instanceof Error ? error.message : 'Unable to read your location.');
+    } finally {
+      setIsLocating(false);
+    }
+  }
 
-  useEffect(() => {
-    if (shouldRedirectToClockIn) router.replace('/branch/clock-in');
-  }, [shouldRedirectToClockIn, router]);
+  async function handleClockOut() {
+    if (!user || !branchId || createTransaction.isPending) return;
+    setGpsError(null);
+    setIsLocating(true);
+    let coords: GpsCoords | null = null;
+    try {
+      coords = await getCurrentPosition();
+    } catch {
+      coords = null;
+    }
+    setIsLocating(false);
+    await clockOut.mutateAsync({ employee_id: user.id, branch_id: branchId, ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}) });
+  }
 
   // Refresh the offline cache whenever the live catalog loads — Architecture
   // doc §10.1: refreshed on connect and at least every 30 minutes.
@@ -300,16 +330,32 @@ export default function TerminalPage() {
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
 
-  const canCharge =
-    Boolean(branchId) &&
-    Boolean(shift) &&
-    cartLines.length > 0 &&
-    (discountType !== 'pwd' && discountType !== 'senior_citizen' ? true : discountIdReference.trim().length > 0) &&
-    (paymentMethod === 'cash'
-      ? cashTendered !== '' && tenderedNumber >= totalAmount
-      : paymentMethod === 'other'
-        ? otherReferenceNote.trim().length > 0
-        : gcashReferenceNumber.trim().length > 0 && gcashManuallyVerified && paymentProofKey !== null);
+  // Single clear reason shown above the Charge button — checkout only ever
+  // needs an authenticated cashier, active branch, clocked-in attendance, a
+  // valid cart, and valid payment details (no shift/shift-ownership check:
+  // the API auto-manages the shift server-side). Checked in the order a
+  // cashier would naturally fix them.
+  const chargeDisabledReason: string | null = (() => {
+    if (createTransaction.isPending) return 'Checkout is already processing.';
+    if (!isClockedIn) return 'Clock in before completing a sale.';
+    if (cartLines.length === 0) return 'Add items to the cart to start a sale.';
+    if ((discountType === 'pwd' || discountType === 'senior_citizen') && discountIdReference.trim().length === 0) {
+      return 'Enter the PWD/Senior Citizen ID number.';
+    }
+    if (paymentMethod === 'cash') {
+      if (cashTendered === '') return 'Enter cash tendered.';
+      if (tenderedNumber < totalAmount) return `Cash tendered is ${formatPeso(round2(totalAmount - tenderedNumber))} short.`;
+    } else if (paymentMethod === 'other') {
+      if (otherReferenceNote.trim().length === 0) return 'Enter a payment reference or note.';
+    } else {
+      if (gcashReferenceNumber.trim().length === 0) return 'Enter the reference number.';
+      if (!paymentProofKey) return 'Upload payment proof before continuing.';
+      if (!gcashManuallyVerified) return 'Confirm you manually verified the payment.';
+    }
+    return null;
+  })();
+
+  const canCharge = Boolean(branchId) && chargeDisabledReason === null;
 
   function resetPaymentFields() {
     setDiscountType('none');
@@ -328,12 +374,14 @@ export default function TerminalPage() {
     // isPending flips synchronously on mutate, but guards here too in case a
     // second click event is already queued (e.g. double-tap on a touchscreen)
     // before React re-renders the disabled state.
-    if (!branchId || !shift || createTransaction.isPending) return;
+    if (!branchId || createTransaction.isPending) return;
     setChargeError(null);
 
     const payload: CreateTransactionInput = {
       branch_id: branchId,
-      shift_id: shift.id,
+      // Optional — the API resolves/auto-opens the cashier's own active
+      // shift server-side (shiftGuard) and trusts that over this value.
+      shift_id: shift?.id,
       items,
       payment_method: paymentMethod,
       discount_type: discountType === 'none' ? undefined : discountType,
@@ -372,7 +420,7 @@ export default function TerminalPage() {
     return <p className="p-6 text-sm text-destructive">No branch assigned.</p>;
   }
 
-  if (isGuardLoading) {
+  if (isAttendanceLoading) {
     return (
       <div className="flex justify-center py-16">
         <LoadingSpinner size="lg" />
@@ -380,19 +428,68 @@ export default function TerminalPage() {
     );
   }
 
-  // Redirect in flight — render nothing rather than flashing the catalog/cart.
-  if (shouldRedirectToClockIn) {
-    return null;
+  // Not clocked in — POS owns the whole cashier workflow, so Clock In
+  // happens right here instead of a separate page/redirect. The product
+  // grid and cart never render until this succeeds.
+  if (!isClockedIn) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <Card className="w-full max-w-sm">
+          <CardContent className="space-y-4 p-6 text-center">
+            <Fingerprint className="mx-auto h-10 w-10 text-primary" />
+            <div>
+              <p className="text-lg font-semibold">Clock In to Start Selling</p>
+              <p className="text-sm text-muted-foreground">You need to clock in before you can use the POS Terminal.</p>
+            </div>
+            {gpsError && (
+              <Alert variant="destructive">
+                <MapPin className="h-4 w-4" />
+                <AlertTitle>Location error</AlertTitle>
+                <AlertDescription>{gpsError}</AlertDescription>
+              </Alert>
+            )}
+            <Button className="w-full touch-target" size="lg" onClick={() => void handleClockIn()} disabled={isLocating || clockIn.isPending}>
+              {(isLocating || clockIn.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Clock In
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full flex-col">
       {!isOnline && (
-        <div className="absolute inset-x-0 top-0 z-10 bg-warning px-4 py-1 text-center text-xs font-medium text-warning-foreground">
+        <div className="bg-warning px-4 py-1 text-center text-xs font-medium text-warning-foreground">
           Offline — sales will be queued and synced automatically once you reconnect.
         </div>
       )}
 
+      {/* Cashier attendance strip — Clock In happens above (the whole selling UI is hidden until then); this is Clock Out only. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card px-3 py-2">
+        <div className="flex items-center gap-2 text-sm">
+          <Badge variant="active">Clocked In</Badge>
+          <span className="font-medium">{user ? `${user.firstName} ${user.lastName}`.trim() || user.email : ''}</span>
+          {attendanceRecord && (
+            <span className="text-xs text-muted-foreground">
+              since {new Date(attendanceRecord.clock_in_server_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="touch-target gap-1.5"
+          onClick={() => void handleClockOut()}
+          disabled={isLocating || clockOut.isPending || createTransaction.isPending}
+        >
+          {isLocating || clockOut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+          Clock Out
+        </Button>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
       {/* LEFT PANEL — product catalog */}
       <div className="relative flex w-2/3 flex-col overflow-hidden border-r">
         <div className="border-b p-3">
@@ -594,16 +691,16 @@ export default function TerminalPage() {
               <span>Subtotal</span>
               <span className="tabular-nums">{formatPeso(subtotal)}</span>
             </div>
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>VAT (12%)</span>
+              <span className="tabular-nums">{formatPeso(vatAmount)}</span>
+            </div>
             {discountAmount > 0 && (
               <div className="flex justify-between text-destructive">
                 <span>Discount</span>
                 <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
               </div>
             )}
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>VAT (12%)</span>
-              <span className="tabular-nums">{formatPeso(vatAmount)}</span>
-            </div>
             <div className="flex justify-between text-base font-semibold">
               <span>Total</span>
               <span className="tabular-nums">{formatPeso(totalAmount)}</span>
@@ -693,9 +790,9 @@ export default function TerminalPage() {
                   label="Payment Proof"
                   required
                   onImageSelected={(file, type) => {
-                    if (!branchId || !shift) return;
+                    if (!branchId) return;
                     void uploadPaymentProof
-                      .mutateAsync({ branchId, shiftId: shift.id, type, file })
+                      .mutateAsync({ branchId, shiftId: shift?.id, type, file })
                       .then((result) => {
                         setPaymentProofKey(result.payment_proof_key);
                         setPaymentProofType(result.payment_proof_type);
@@ -720,10 +817,21 @@ export default function TerminalPage() {
 
           {chargeError && <p className="text-xs text-destructive">{chargeError}</p>}
 
-          <Button variant="pos" className="w-full" disabled={!canCharge || createTransaction.isPending} onClick={() => void handleCharge()}>
+          {chargeDisabledReason && (
+            <p className="rounded-md bg-muted px-3 py-2 text-sm font-medium text-foreground">{chargeDisabledReason}</p>
+          )}
+
+          <Button
+            variant="pos"
+            className="touch-target w-full"
+            size="lg"
+            disabled={!canCharge}
+            onClick={() => void handleCharge()}
+          >
             {createTransaction.isPending ? 'Processing sale…' : `Charge ${formatPeso(totalAmount)}`}
           </Button>
         </div>
+      </div>
       </div>
 
       <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />

@@ -23,7 +23,6 @@ import {
   ListTree,
   SlidersHorizontal,
   ClipboardList,
-  GitCompare,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -58,7 +57,6 @@ export const ADMIN_NAV_ITEMS = [
       { label: 'Recipe Readiness', href: '/admin/recipe-readiness', icon: ClipboardList },
     ],
   },
-  { label: 'Shadow BOM Deduction', href: '/admin/shadow-bom-deduction', icon: GitCompare },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },

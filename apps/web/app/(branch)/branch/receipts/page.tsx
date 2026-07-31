@@ -4,10 +4,12 @@ import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { Receipt as ReceiptIcon } from 'lucide-react';
 import type { TransactionResponse } from '@potato-corner/shared';
+import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
+import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { formatDateTime } from '@/lib/utils';
@@ -29,6 +31,7 @@ export default function ReceiptsPage() {
   const branchId = user?.branchIds[0];
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
 
   useTransactionsRealtimeSync();
   const { data, isLoading, isError, refetch } = useTransactions({
@@ -44,6 +47,28 @@ export default function ReceiptsPage() {
     { id: 'payment_method', header: 'Payment', cell: ({ row }) => PAYMENT_METHOD_LABEL[row.original.payment_method] },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatPeso(row.original.total_amount) },
     { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },
+    {
+      id: 'payment_proof',
+      header: 'Payment Proof',
+      cell: ({ row }) => {
+        const txn = row.original;
+        if (txn.payment_method === 'cash') return <span className="text-xs text-muted-foreground">—</span>;
+        if (!txn.has_payment_proof) return <span className="text-xs text-muted-foreground">No payment proof uploaded</span>;
+        return (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              setProofTransactionId(txn.id);
+            }}
+          >
+            View Proof
+          </Button>
+        );
+      },
+    },
   ];
 
   if (!branchId) {
@@ -71,6 +96,7 @@ export default function ReceiptsPage() {
       />
 
       <ReceiptModal transaction={selectedTransaction ?? null} onClose={() => setSelectedId(null)} />
+      <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
     </div>
   );
 }

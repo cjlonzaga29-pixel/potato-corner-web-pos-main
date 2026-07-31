@@ -1,13 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { ColumnDef } from '@tanstack/react-table';
+import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import type {
   AttendanceResponse,
   ExportReadyPayload,
   ExportRequestInput,
   InventoryStockMovementResponse,
-  ShiftResponse,
   TransactionResponse,
 } from '@potato-corner/shared';
 import { toast } from 'sonner';
@@ -17,18 +16,19 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
-import { ShiftStatusBadge } from '@/components/admin/shifts/shift-status-badge';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
+import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
+import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
 import { formatCurrency, formatDateTime, formatDuration, formatTimeAgo } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
-import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
@@ -41,8 +41,12 @@ const REFRESH_COOLDOWN_SECONDS = 60;
 
 const TAB_TO_REPORT_TYPE: Record<string, ExportRequestInput['report_type']> = {
   'daily-sales': 'DAILY_SALES',
-  'shift-summary': 'SHIFT_SUMMARY',
-  'cash-reconciliation': 'CASH_RECONCILIATION',
+  // No dedicated backend report type exists for the per-product breakdown
+  // (adding one means a Prisma-enum migration for ReportType, same class of
+  // change as AUDIT_LOG's 20260722021611 migration — not done without
+  // approval). DAILY_SALES is the closest existing transaction-based export
+  // and covers the same underlying rows.
+  'sold-product-transactions': 'DAILY_SALES',
   'void-refund': 'VOID_REFUND',
   'discount-compliance': 'DISCOUNT_COMPLIANCE',
   'inventory-movement': 'INVENTORY_MOVEMENT',
@@ -99,12 +103,6 @@ function humanizeSnake(value: string): string {
     .split('_')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
-}
-
-function varianceApprovalLabel(approved: boolean | null): { label: string; variant: 'active' | 'critical' | 'pending' } {
-  if (approved === true) return { label: 'Approved', variant: 'active' };
-  if (approved === false) return { label: 'Rejected', variant: 'critical' };
-  return { label: 'Pending', variant: 'pending' };
 }
 
 interface VoidRefundRow {
@@ -175,66 +173,92 @@ function getDailySalesColumns(
   ];
 }
 
-const shiftSummaryColumns: ColumnDef<ShiftResponse>[] = [
-  { id: 'started_at', header: 'Started', cell: ({ row }) => formatDateTime(row.original.started_at) },
-  {
-    id: 'closed_at',
-    header: 'Closed',
-    cell: ({ row }) => (row.original.closed_at ? formatDateTime(row.original.closed_at) : 'Still open'),
-  },
-  { id: 'status', header: 'Status', cell: ({ row }) => <ShiftStatusBadge status={row.original.status} /> },
-  { id: 'transaction_count', header: 'Transactions', accessorKey: 'transaction_count' },
-  { id: 'cash_sales_total', header: 'Cash Sales', cell: ({ row }) => formatCurrency(row.original.cash_sales_total) },
-  { id: 'gcash_sales_total', header: 'GCash Sales', cell: ({ row }) => formatCurrency(row.original.gcash_sales_total) },
-  { id: 'total_discount_amount', header: 'Discounts', cell: ({ row }) => formatCurrency(row.original.total_discount_amount) },
-  {
-    id: 'cash_variance',
-    header: 'Variance',
-    cell: ({ row }) => {
-      const variance = row.original.cash_variance;
-      if (variance === null) return '—';
-      return <span className={variance < 0 ? 'text-destructive' : ''}>{formatCurrency(variance)}</span>;
+/**
+ * Sold Product Transactions (Reports §10) — one row per transaction (never
+ * per product line, so Subtotal/VAT/Discount/Total are never duplicated);
+ * the Items cell opens ViewTransactionItemsDialog for the product/variant/
+ * quantity/unit-price breakdown, per the report's "expandable row OR a View
+ * Items action" allowance.
+ */
+function getSoldProductTransactionsColumns(
+  withActions: boolean,
+  employeeNames: Map<string, string>,
+  onViewItems: (transaction: TransactionResponse) => void,
+  onViewTransaction: (transaction: TransactionResponse) => void,
+  onViewReceipt: (transactionId: string) => void,
+  onViewProof: (transactionId: string) => void,
+): ColumnDef<TransactionResponse>[] {
+  const columns: ColumnDef<TransactionResponse>[] = [
+    { id: 'created_at', header: 'Date and Time', cell: ({ row }) => formatDateTime(row.original.created_at) },
+    { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
+    {
+      id: 'cashier',
+      header: 'Cashier',
+      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
     },
-  },
-];
-
-const cashReconciliationColumns: ColumnDef<ShiftResponse>[] = [
-  { id: 'started_at', header: 'Started', cell: ({ row }) => formatDateTime(row.original.started_at) },
-  {
-    id: 'closed_at',
-    header: 'Closed',
-    cell: ({ row }) => (row.original.closed_at ? formatDateTime(row.original.closed_at) : 'Still open'),
-  },
-  { id: 'opening_cash_amount', header: 'Opening Cash', cell: ({ row }) => formatCurrency(row.original.opening_cash_amount) },
-  {
-    id: 'expected_closing_cash',
-    header: 'Expected Closing',
-    cell: ({ row }) => (row.original.expected_closing_cash === null ? '—' : formatCurrency(row.original.expected_closing_cash)),
-  },
-  {
-    id: 'closing_cash_amount',
-    header: 'Actual Closing',
-    cell: ({ row }) => (row.original.closing_cash_amount === null ? '—' : formatCurrency(row.original.closing_cash_amount)),
-  },
-  {
-    id: 'cash_variance',
-    header: 'Variance',
-    cell: ({ row }) => {
-      const variance = row.original.cash_variance;
-      if (variance === null) return '—';
-      const tone = variance < 0 ? 'text-destructive' : variance === 0 ? 'text-success' : '';
-      return <span className={tone}>{formatCurrency(variance)}</span>;
+    {
+      id: 'items',
+      header: 'Items',
+      cell: ({ row }) => {
+        const items = row.original.items ?? [];
+        const firstItem = items[0];
+        const summary =
+          items.length === 0 || !firstItem
+            ? 'No items'
+            : items.length === 1
+              ? `${firstItem.quantity}x ${firstItem.product_name}`
+              : `${items.length} items`;
+        return (
+          <Button type="button" variant="ghost" size="sm" className="h-auto p-0 text-xs underline" onClick={() => onViewItems(row.original)}>
+            {summary}
+          </Button>
+        );
+      },
     },
-  },
-  {
-    id: 'variance_approved',
-    header: 'Approval',
-    cell: ({ row }) => {
-      const { label, variant } = varianceApprovalLabel(row.original.variance_approved);
-      return <Badge variant={variant}>{label}</Badge>;
+    { id: 'subtotal', header: 'Subtotal', cell: ({ row }) => formatCurrency(row.original.subtotal) },
+    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatCurrency(row.original.vat_amount) },
+    { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
+    { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
+    {
+      id: 'payment_method',
+      header: 'Payment Method',
+      cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
     },
-  },
-];
+    { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },
+  ];
+  if (!withActions) return columns;
+  return [
+    ...columns,
+    {
+      id: 'payment_proof',
+      header: 'Payment Proof',
+      cell: ({ row }) => {
+        const txn = row.original;
+        if (txn.payment_method === 'cash') return <span className="text-xs text-muted-foreground">—</span>;
+        if (!txn.has_payment_proof) return <span className="text-xs text-muted-foreground">No payment proof uploaded</span>;
+        return (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onViewProof(txn.id)}>
+            View Proof
+          </Button>
+        );
+      },
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => onViewTransaction(row.original)}>
+            View Transaction
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => onViewReceipt(row.original.id)}>
+            View Receipt
+          </Button>
+        </div>
+      ),
+    },
+  ];
+}
 
 const voidRefundColumns: ColumnDef<VoidRefundRow>[] = [
   { id: 'receipt_number', header: 'Receipt #', cell: ({ row }) => row.original.transaction.receipt_number },
@@ -362,14 +386,12 @@ function createAttendanceSummaryColumns(employeeNames: Map<string, string>): Col
  * aggregate over its most recent 100.
  *
  * The date range lives at the page level (not per-tab) so switching tabs
- * never resets it. GET /api/cash has no date_from/date_to filter, so the
- * Shift Summary and Cash Reconciliation tabs fetch up to 100 shifts and
- * filter by started_at client-side instead.
+ * never resets it.
  */
 export function ReportsView() {
-  useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
+  const activeBranch = useBranchStore((s) => s.activeBranch);
   useInventoryStockRealtimeSync(activeBranchId);
   useAttendanceRealtimeSync();
 
@@ -383,7 +405,19 @@ export function ReportsView() {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [receiptTransactionId, setReceiptTransactionId] = useState<string | null>(null);
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
+  const [viewItemsTransaction, setViewItemsTransaction] = useState<TransactionResponse | null>(null);
+  const [viewDetailTransaction, setViewDetailTransaction] = useState<TransactionResponse | null>(null);
   const { data: receiptTransaction } = useTransaction(receiptTransactionId);
+
+  // Sold Product Transactions filters (client-side over the fetched page —
+  // same known 100-row ceiling as every other tab in this view; none of
+  // these are supported query params on GET /api/transactions today).
+  const [soldReceiptSearch, setSoldReceiptSearch] = useState('');
+  const [soldCashierFilter, setSoldCashierFilter] = useState('all');
+  const [soldPaymentMethodFilter, setSoldPaymentMethodFilter] = useState('all');
+  const [soldStatusFilter, setSoldStatusFilter] = useState('all');
+  const [soldProductFilter, setSoldProductFilter] = useState('all');
+  const [soldPagination, setSoldPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
 
   useReportsRealtimeSync((payload: ExportReadyPayload) => {
     if (payload.requester_id !== currentUserId) return;
@@ -420,8 +454,15 @@ export function ReportsView() {
     date_to: dateRange.to,
     limit: QUERY_LIMIT,
   });
-  const allShiftsQuery = useShifts({ branch_id: activeBranchId ?? undefined, page: 1, limit: QUERY_LIMIT });
-  const closedShiftsQuery = useShifts({ branch_id: activeBranchId ?? undefined, status: 'closed', page: 1, limit: QUERY_LIMIT });
+  // Sold Product Transactions — deliberately not status-filtered (unlike
+  // completedQuery above) so the tab's own Status filter can show voided/
+  // refunded rows too.
+  const soldTransactionsQuery = useTransactions({
+    branch_id: activeBranchId ?? undefined,
+    date_from: dateRange.from,
+    date_to: dateRange.to,
+    limit: QUERY_LIMIT,
+  });
   const voidedQuery = useTransactions({
     branch_id: activeBranchId ?? undefined,
     status: 'voided',
@@ -470,21 +511,24 @@ export function ReportsView() {
   const vatCollected = completedTransactions.reduce((sum, t) => sum + t.vat_amount, 0);
   const discountsGiven = completedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
 
-  // Shift Summary
-  const shiftsInRange = (allShiftsQuery.data?.shifts ?? []).filter((s) => s.started_at >= rangeStartISO && s.started_at <= rangeEndISO);
-  const totalShifts = shiftsInRange.length;
-  const completedShifts = shiftsInRange.filter((s) => s.status === 'closed').length;
-  const flaggedShifts = shiftsInRange.filter((s) => s.status === 'flagged').length;
-  const shiftSummaryRevenue = shiftsInRange.reduce((sum, s) => sum + s.cash_sales_total + s.gcash_sales_total, 0);
-
-  // Cash Reconciliation
-  const closedShiftsInRange = (closedShiftsQuery.data?.shifts ?? []).filter(
-    (s) => s.started_at >= rangeStartISO && s.started_at <= rangeEndISO,
+  // Sold Product Transactions
+  const soldTransactionsAll = soldTransactionsQuery.data?.transactions ?? [];
+  const soldProductOptions = Array.from(
+    new Set(soldTransactionsAll.flatMap((t) => (t.items ?? []).map((i) => i.product_name))),
+  ).sort();
+  const filteredSoldTransactions = soldTransactionsAll.filter((t) => {
+    if (soldCashierFilter !== 'all' && t.cashier_id !== soldCashierFilter) return false;
+    if (soldPaymentMethodFilter !== 'all' && t.payment_method !== soldPaymentMethodFilter) return false;
+    if (soldStatusFilter !== 'all' && t.status !== soldStatusFilter) return false;
+    if (soldProductFilter !== 'all' && !(t.items ?? []).some((i) => i.product_name === soldProductFilter)) return false;
+    const search = soldReceiptSearch.trim().toLowerCase();
+    if (search && !t.receipt_number.toLowerCase().includes(search)) return false;
+    return true;
+  });
+  const soldTransactionsPageRows = filteredSoldTransactions.slice(
+    soldPagination.pageIndex * soldPagination.pageSize,
+    soldPagination.pageIndex * soldPagination.pageSize + soldPagination.pageSize,
   );
-  const closedShiftsCount = closedShiftsInRange.length;
-  const shiftsWithVariance = closedShiftsInRange.filter((s) => s.cash_variance !== null && s.cash_variance !== 0).length;
-  const totalVarianceAmount = closedShiftsInRange.reduce((sum, s) => sum + (s.cash_variance ?? 0), 0);
-  const autoApprovedVariances = closedShiftsInRange.filter((s) => s.variance_approved === true).length;
 
   // Void/Refund
   const voidedTransactions = voidedQuery.data?.transactions ?? [];
@@ -583,8 +627,7 @@ export function ReportsView() {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="daily-sales">Daily Sales</TabsTrigger>
-          <TabsTrigger value="shift-summary">Shift Summary</TabsTrigger>
-          <TabsTrigger value="cash-reconciliation">Cash Reconciliation</TabsTrigger>
+          <TabsTrigger value="sold-product-transactions">Sold Product Transactions</TabsTrigger>
           <TabsTrigger value="void-refund">Void/Refund</TabsTrigger>
           <TabsTrigger value="discount-compliance">Discount Compliance</TabsTrigger>
           <TabsTrigger value="inventory-movement">Inventory Movement</TabsTrigger>
@@ -619,45 +662,128 @@ export function ReportsView() {
           />
         </TabsContent>
 
-        <TabsContent value="shift-summary" className="space-y-4">
+        <TabsContent value="sold-product-transactions" className="space-y-4">
           <ReportLastUpdated
-            timestamp={allShiftsQuery.dataUpdatedAt ? new Date(allShiftsQuery.dataUpdatedAt).toISOString() : undefined}
-            isLoading={allShiftsQuery.isLoading}
+            timestamp={soldTransactionsQuery.dataUpdatedAt ? new Date(soldTransactionsQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={soldTransactionsQuery.isLoading}
           />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Shifts" value={totalShifts} isLoading={allShiftsQuery.isLoading} />
-            <KpiCard title="Completed Shifts" value={completedShifts} isLoading={allShiftsQuery.isLoading} />
-            <KpiCard title="Flagged Shifts" value={flaggedShifts} isLoading={allShiftsQuery.isLoading} tone={flaggedShifts > 0 ? 'warning' : 'default'} />
-            <KpiCard title="Total Revenue" value={shiftSummaryRevenue} prefix="₱" isLoading={allShiftsQuery.isLoading} />
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <Label htmlFor="sold-receipt-search">Receipt #</Label>
+              <Input
+                id="sold-receipt-search"
+                placeholder="Search receipt number"
+                className="w-[180px]"
+                value={soldReceiptSearch}
+                onChange={(e) => {
+                  setSoldReceiptSearch(e.target.value);
+                  setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              />
+            </div>
+            <div>
+              <Label>Cashier</Label>
+              <Select
+                value={soldCashierFilter}
+                onValueChange={(v) => {
+                  setSoldCashierFilter(v);
+                  setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              >
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All cashiers</SelectItem>
+                  {Array.from(employeeNames.entries()).map(([id, name]) => (
+                    <SelectItem key={id} value={id}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Payment Method</Label>
+              <Select
+                value={soldPaymentMethodFilter}
+                onValueChange={(v) => {
+                  setSoldPaymentMethodFilter(v);
+                  setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              >
+                <SelectTrigger className="w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All methods</SelectItem>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="gcash">GCash</SelectItem>
+                  <SelectItem value="maya">Maya</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Status</Label>
+              <Select
+                value={soldStatusFilter}
+                onValueChange={(v) => {
+                  setSoldStatusFilter(v);
+                  setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              >
+                <SelectTrigger className="w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="voided">Voided</SelectItem>
+                  <SelectItem value="refunded">Refunded</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Product</Label>
+              <Select
+                value={soldProductFilter}
+                onValueChange={(v) => {
+                  setSoldProductFilter(v);
+                  setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              >
+                <SelectTrigger className="w-[170px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All products</SelectItem>
+                  {soldProductOptions.map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DataTable
-            columns={shiftSummaryColumns}
-            data={shiftsInRange}
-            isLoading={allShiftsQuery.isLoading}
-            isError={allShiftsQuery.isError}
-            onRetry={() => void allShiftsQuery.refetch()}
-            emptyState={<EmptyState title="No shifts" description="No shifts started in this date range." />}
-          />
-        </TabsContent>
-
-        <TabsContent value="cash-reconciliation" className="space-y-4">
-          <ReportLastUpdated
-            timestamp={closedShiftsQuery.dataUpdatedAt ? new Date(closedShiftsQuery.dataUpdatedAt).toISOString() : undefined}
-            isLoading={closedShiftsQuery.isLoading}
-          />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Closed Shifts" value={closedShiftsCount} isLoading={closedShiftsQuery.isLoading} />
-            <KpiCard title="Shifts with Variance" value={shiftsWithVariance} isLoading={closedShiftsQuery.isLoading} />
-            <KpiCard title="Total Variance Amount" value={totalVarianceAmount} prefix="₱" isLoading={closedShiftsQuery.isLoading} />
-            <KpiCard title="Auto-Approved Variances" value={autoApprovedVariances} isLoading={closedShiftsQuery.isLoading} />
-          </div>
-          <DataTable
-            columns={cashReconciliationColumns}
-            data={closedShiftsInRange}
-            isLoading={closedShiftsQuery.isLoading}
-            isError={closedShiftsQuery.isError}
-            onRetry={() => void closedShiftsQuery.refetch()}
-            emptyState={<EmptyState title="No closed shifts" description="No closed shifts in this date range." />}
+            columns={getSoldProductTransactionsColumns(
+              isSupervisor,
+              employeeNames,
+              setViewItemsTransaction,
+              setViewDetailTransaction,
+              setReceiptTransactionId,
+              setProofTransactionId,
+            )}
+            data={soldTransactionsPageRows}
+            isLoading={soldTransactionsQuery.isLoading}
+            isError={soldTransactionsQuery.isError}
+            onRetry={() => void soldTransactionsQuery.refetch()}
+            pagination={soldPagination}
+            onPaginationChange={setSoldPagination}
+            rowCount={filteredSoldTransactions.length}
+            emptyState={<EmptyState title="No sold products" description="No product sales match these filters in this date range." />}
           />
         </TabsContent>
 
@@ -777,6 +903,14 @@ export function ReportsView() {
         <>
           <ReceiptModal transaction={receiptTransaction ?? null} onClose={() => setReceiptTransactionId(null)} />
           <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
+          <ViewTransactionItemsDialog transaction={viewItemsTransaction} onClose={() => setViewItemsTransaction(null)} />
+          <ViewTransactionDetailDialog
+            transaction={viewDetailTransaction}
+            onClose={() => setViewDetailTransaction(null)}
+            branchName={activeBranch?.name ?? null}
+            cashierName={viewDetailTransaction ? (employeeNames.get(viewDetailTransaction.cashier_id) ?? viewDetailTransaction.cashier_id) : ''}
+            attendanceRecords={attendanceRecords}
+          />
         </>
       )}
     </div>

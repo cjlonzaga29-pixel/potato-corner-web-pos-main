@@ -5,17 +5,13 @@ import type {
   EmployeeResponse,
   InventoryItemResponse,
   InventoryStockMovementResponse,
-  ShiftResponse,
   TransactionResponse,
   UnitOfMeasureResponse,
 } from '@potato-corner/shared';
-import { formatCurrency } from '@/lib/utils';
 import SupervisorReportsPage from './page';
 
 const {
   mockUseBranchStore,
-  mockUseShifts,
-  mockUseShiftsRealtimeSync,
   mockUseTransactions,
   mockUseTransaction,
   mockUseTransactionsRealtimeSync,
@@ -31,8 +27,6 @@ const {
   mockUseReportsRealtimeSync,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
-  mockUseShifts: vi.fn(),
-  mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactions: vi.fn(),
   mockUseTransaction: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
@@ -50,11 +44,6 @@ const {
 
 vi.mock('@/stores/branch.store', () => ({
   useBranchStore: mockUseBranchStore,
-}));
-
-vi.mock('@/hooks/queries/use-shifts', () => ({
-  useShifts: mockUseShifts,
-  useShiftsRealtimeSync: mockUseShiftsRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
@@ -156,44 +145,6 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
     refund_reason: null,
     created_at: '2026-07-16T02:00:00.000Z',
     updated_at: '2026-07-16T02:00:00.000Z',
-    ...overrides,
-  };
-}
-
-function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
-  return {
-    id: 'shift-1',
-    branch_id: 'branch-1',
-    cashier_id: 'cashier-1234-5678',
-    opened_by: 'supervisor-1',
-    closed_by: null,
-    status: 'active',
-    opening_cash_amount: 1500,
-    closing_cash_amount: null,
-    expected_closing_cash: null,
-    cash_variance: null,
-    variance_approved: null,
-    variance_explanation: null,
-    variance_approved_by: null,
-    variance_approval_reason: null,
-    cash_sales_total: 3000,
-    gcash_sales_total: 1500,
-    maya_sales_total: 0,
-    other_sales_total: 0,
-    gross_sales_total: 0,
-    transaction_count: 42,
-    cash_sales_count: 30,
-    gcash_sales_count: 12,
-    maya_sales_count: 0,
-    other_sales_count: 0,
-    voided_count: 0,
-    refunded_count: 0,
-    total_transaction_count: 42,
-    total_discount_amount: 250.5,
-    pwd_sc_transaction_count: 2,
-    shift_notes: null,
-    started_at: new Date().toISOString(),
-    closed_at: null,
     ...overrides,
   };
 }
@@ -319,31 +270,12 @@ function mockTransactionsByStatus(map: Partial<Record<'completed' | 'voided' | '
   });
 }
 
-interface ShiftFiltersArg {
-  status?: 'active' | 'closed' | 'flagged';
-}
-
-function mockShiftsByStatus(map: { all?: QueryState<ShiftResponse[]>; closed?: QueryState<ShiftResponse[]> }) {
-  mockUseShifts.mockImplementation((filters: ShiftFiltersArg) => {
-    const entry = filters.status === 'closed' ? map.closed : map.all;
-    const shifts = entry?.data ?? [];
-    return {
-      data: { shifts, total: shifts.length, page: 1, limit: 100 },
-      isLoading: entry?.isLoading ?? false,
-      isError: entry?.isError ?? false,
-      refetch: vi.fn(),
-    };
-  });
-}
-
 beforeEach(() => {
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
-  mockUseShiftsRealtimeSync.mockReturnValue(undefined);
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
   mockUseInventoryStockRealtimeSync.mockReturnValue(undefined);
   mockUseAttendanceRealtimeSync.mockReturnValue(undefined);
   mockTransactionsByStatus({});
-  mockShiftsByStatus({});
   mockUseInventoryStockMovements.mockReturnValue({ data: { movements: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
   mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure()], isLoading: false });
   mockUseInventoryItems.mockReturnValue({ data: [inventoryItem()], isLoading: false });
@@ -363,12 +295,11 @@ afterEach(() => {
 });
 
 describe('SupervisorReportsPage', () => {
-  it('renders all 7 report tabs', () => {
+  it('renders all report tabs, with no Shift Summary or Cash Reconciliation', () => {
     render(<SupervisorReportsPage />);
     for (const label of [
       'Daily Sales',
-      'Shift Summary',
-      'Cash Reconciliation',
+      'Sold Product Transactions',
       'Void/Refund',
       'Discount Compliance',
       'Inventory Movement',
@@ -376,6 +307,8 @@ describe('SupervisorReportsPage', () => {
     ]) {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('tab', { name: 'Shift Summary' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Cash Reconciliation' })).not.toBeInTheDocument();
   });
 
   it('renders Daily Sales KPI sums computed from completed transactions', () => {
@@ -468,16 +401,18 @@ describe('SupervisorReportsPage', () => {
     });
   });
 
-  it('renders the shift list on the Shift Summary tab', () => {
-    mockShiftsByStatus({
-      all: { data: [shift({ id: 's1', cash_sales_total: 1000, gcash_sales_total: 500 })] },
+  it('renders a transaction row on the Sold Product Transactions tab', () => {
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [transaction({ id: 't1', receipt_number: 'PC-SOLD-0001' })], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
     });
 
     render(<SupervisorReportsPage />);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Shift Summary' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
 
-    expect(screen.getByText(formatCurrency(1000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(500))).toBeInTheDocument();
+    expect(screen.getByText('PC-SOLD-0001')).toBeInTheDocument();
   });
 
   it('shows both voided and refunded transactions on the Void/Refund tab', () => {
@@ -576,13 +511,12 @@ describe('SupervisorReportsPage', () => {
   });
 
   it('renders each tab-scoped loading state independently', () => {
-    mockTransactionsByStatus({ completed: { data: [], isLoading: true } });
-    mockShiftsByStatus({ all: { data: [], isLoading: false } });
+    mockTransactionsByStatus({ completed: { data: [], isLoading: true }, voided: { data: [], isLoading: false }, refunded: { data: [], isLoading: false } });
 
     render(<SupervisorReportsPage />);
     expect(screen.getAllByText('loading').length).toBeGreaterThan(0);
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Shift Summary' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Void/Refund' }));
     expect(screen.queryAllByText('loading')).toHaveLength(0);
   });
 
@@ -590,11 +524,8 @@ describe('SupervisorReportsPage', () => {
     render(<SupervisorReportsPage />);
     expect(screen.getByText('No sales')).toBeInTheDocument();
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Shift Summary' }));
-    expect(screen.getByText('No shifts')).toBeInTheDocument();
-
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Cash Reconciliation' }));
-    expect(screen.getByText('No closed shifts')).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
+    expect(screen.getByText('No sold products')).toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Void/Refund' }));
     expect(screen.getByText('No voids or refunds')).toBeInTheDocument();
@@ -609,9 +540,8 @@ describe('SupervisorReportsPage', () => {
     expect(screen.getByText('No attendance records')).toBeInTheDocument();
   });
 
-  it('calls all 4 realtime sync hooks on mount', () => {
+  it('calls all 3 realtime sync hooks on mount', () => {
     render(<SupervisorReportsPage />);
-    expect(mockUseShiftsRealtimeSync).toHaveBeenCalled();
     expect(mockUseTransactionsRealtimeSync).toHaveBeenCalled();
     expect(mockUseInventoryStockRealtimeSync).toHaveBeenCalled();
     expect(mockUseAttendanceRealtimeSync).toHaveBeenCalled();

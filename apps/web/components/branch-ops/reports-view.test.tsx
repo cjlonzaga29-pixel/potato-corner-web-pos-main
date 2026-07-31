@@ -1,12 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, cleanup, fireEvent } from '@testing-library/react';
-import type { InventoryStockMovementResponse, UnitOfMeasureResponse, InventoryItemResponse } from '@potato-corner/shared';
+import type { InventoryStockMovementResponse, UnitOfMeasureResponse, InventoryItemResponse, TransactionResponse } from '@potato-corner/shared';
 import { ReportsView } from './reports-view';
 
 const {
   mockUseBranchStore,
-  mockUseShifts,
-  mockUseShiftsRealtimeSync,
   mockUseTransactions,
   mockUseTransaction,
   mockUseTransactionsRealtimeSync,
@@ -22,8 +20,6 @@ const {
   mockUseReportsRealtimeSync,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
-  mockUseShifts: vi.fn(),
-  mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactions: vi.fn(),
   mockUseTransaction: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
@@ -41,11 +37,6 @@ const {
 
 vi.mock('@/stores/branch.store', () => ({
   useBranchStore: mockUseBranchStore,
-}));
-
-vi.mock('@/hooks/queries/use-shifts', () => ({
-  useShifts: mockUseShifts,
-  useShiftsRealtimeSync: mockUseShiftsRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
@@ -162,11 +153,9 @@ function mockMovements(movements: InventoryStockMovementResponse[], overrides: P
 
 beforeEach(() => {
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
-  mockUseShiftsRealtimeSync.mockReturnValue(undefined);
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
   mockUseInventoryStockRealtimeSync.mockReturnValue(undefined);
   mockUseAttendanceRealtimeSync.mockReturnValue(undefined);
-  mockUseShifts.mockReturnValue({ data: { shifts: [], total: 0, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
   mockUseTransactions.mockReturnValue({
     data: { transactions: [], total: 0, page: 1, limit: 100 },
     isLoading: false,
@@ -278,5 +267,111 @@ describe('ReportsView — Inventory Movement tab (aligned InventoryStockMovement
     rerender(<ReportsView />);
 
     expect(mockUseInventoryStockMovements).toHaveBeenCalledWith('branch-2', expect.anything());
+  });
+});
+
+function transaction(overrides: Partial<TransactionResponse> = {}): TransactionResponse {
+  return {
+    id: 'txn-1',
+    receipt_number: 'PC-0001',
+    branch_id: 'branch-1',
+    shift_id: null,
+    cashier_id: 'employee-1',
+    status: 'completed',
+    payment_method: 'cash',
+    subtotal: 100,
+    discount_amount: 0,
+    discount_type: null,
+    vat_amount: 10.71,
+    vat_exempt_amount: 0,
+    total_amount: 100,
+    cash_tendered: 100,
+    change_given: 0,
+    gcash_reference_number: null,
+    gcash_manually_verified: null,
+    payment_reference: null,
+    has_payment_proof: false,
+    payment_proof_type: null,
+    payment_proof_uploaded_at: null,
+    receipt_printed: false,
+    inventory_deduction_status: 'completed',
+    is_offline_transaction: false,
+    offline_provisional_number: null,
+    synced_at: null,
+    voided_at: null,
+    voided_by_id: null,
+    void_reason: null,
+    refunded_at: null,
+    refunded_by_id: null,
+    refund_reason: null,
+    created_at: '2026-07-30T04:00:00.000Z',
+    updated_at: '2026-07-30T04:00:00.000Z',
+    items: [
+      {
+        id: 'item-1',
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        flavor_id: null,
+        product_name: 'Regular Fries',
+        variant_name: 'Regular',
+        flavor_name: null,
+        unit_price: 100,
+        quantity: 1,
+        line_total: 100,
+        recipe_version: 1,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe('ReportsView — Reports §8/§9/§10 (shift removal, Sold Product Transactions)', () => {
+  it('does not render a Shift Summary tab', () => {
+    render(<ReportsView />);
+    expect(screen.queryByRole('tab', { name: 'Shift Summary' })).not.toBeInTheDocument();
+  });
+
+  it('does not render a Cash Reconciliation tab', () => {
+    render(<ReportsView />);
+    expect(screen.queryByRole('tab', { name: 'Cash Reconciliation' })).not.toBeInTheDocument();
+  });
+
+  it('renders a Sold Product Transactions tab showing a real transaction row', () => {
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [transaction()], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
+
+    expect(screen.getByText('PC-0001')).toBeInTheDocument();
+    expect(screen.getByText('1x Regular Fries')).toBeInTheDocument();
+  });
+
+  it('filters Sold Product Transactions by receipt number', () => {
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [transaction({ id: 'txn-1', receipt_number: 'PC-0001' }), transaction({ id: 'txn-2', receipt_number: 'PC-0002' })],
+        total: 2,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
+    expect(screen.getByText('PC-0001')).toBeInTheDocument();
+    expect(screen.getByText('PC-0002')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search receipt number'), { target: { value: 'PC-0002' } });
+
+    expect(screen.queryByText('PC-0001')).not.toBeInTheDocument();
+    expect(screen.getByText('PC-0002')).toBeInTheDocument();
   });
 });

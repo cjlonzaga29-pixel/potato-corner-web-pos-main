@@ -52,9 +52,11 @@ interface BranchNavItem extends NavItem {
  * - Clock In / Out lives inside POS Terminal itself (cashiers never need a
  *   separate page for it — see terminal/page.tsx).
  * - Expenses, Analytics, and Activity Logs are tabs inside Reports.
- * - Cash Management and Cash Reconciliation's historical data is preserved
- *   as the "Shift Summary" and "Cash Reconciliation" tabs inside Reports
- *   (their standalone pages still exist for deep links, just unlinked here).
+ * - Shift Summary and Cash Reconciliation are no longer primary Reports tabs
+ *   (shifts are auto-managed server-side, not a branch operation — see
+ *   shift-guard.ts). Their historical data is preserved read-only under
+ *   Reports -> Activity Logs -> Historical Shift Records
+ *   (historical-shift-records.tsx), not part of normal branch operations.
  */
 export const BRANCH_NAV_ITEMS = [
   { label: 'Dashboard', href: '/branch/dashboard', icon: LayoutDashboard, group: 'Overview' },

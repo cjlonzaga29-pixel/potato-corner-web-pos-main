@@ -4,6 +4,7 @@ import { AttendanceError, type AttendanceListFilters, type ClockInData, type Clo
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { cashRepository } from '../cash/cash.repository.js';
+import { cashService } from '../cash/cash.service.js';
 import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 
 type ActorContext = { id: string; role: string };
@@ -190,6 +191,14 @@ export const attendanceService = {
     notifyBranch(data.branchId, SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN, response);
     notifySuperAdmin(SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN, response);
 
+    // Phase 4-9 shift removal: the cashier workflow is now Clock In -> Ready
+    // to Sell, with no manual "Open Shift" step. A Shift row is still opened
+    // transparently here so HoldOrder.shiftId's non-nullable FK stays
+    // satisfied without a migration — the cashier never sees it. shiftGuard
+    // also lazily creates the shift on first checkout/hold-order attempt as
+    // a safety net, in case this call is ever skipped (e.g. a legacy client).
+    await cashService.autoOpenShift({ branchId: data.branchId, cashierId: data.employeeId }, null);
+
     return response;
   },
 
@@ -199,12 +208,14 @@ export const attendanceService = {
       throw new AttendanceError('RECORD_NOT_FOUND', 'No open attendance record found for this employee', 404);
     }
 
-    // Simple Operational Audit §6 — an open POS shift must be closed before
-    // its cashier times out. This never auto-closes the shift; it only
-    // blocks the clock-out until the cashier (or a supervisor) closes it.
+    // Phase 4-9 shift removal: clocking out no longer requires closing a POS
+    // shift first (that was the old manual drawer-count workflow). The
+    // auto-managed shift opened at clock-in is closed transparently here
+    // instead — same "no dangling active Shift row" guarantee, no cashier
+    // action required.
     const openShift = await cashRepository.findActiveShift(employeeId, active.branchId);
     if (openShift) {
-      throw new AttendanceError('OPEN_SHIFT_EXISTS', 'Close your POS shift before timing out.', 409);
+      await cashService.autoCloseShift(openShift.id, requester, null);
     }
 
     const clockOutServerTime = new Date();

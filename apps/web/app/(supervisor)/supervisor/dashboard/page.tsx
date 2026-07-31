@@ -6,7 +6,6 @@ import { startOfDay } from 'date-fns';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
-import { DashboardShiftCard } from '@/components/supervisor/dashboard-shift-card';
 import { DashboardInventoryAlerts } from '@/components/supervisor/dashboard-inventory-alerts';
 import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-attendance-overview';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
@@ -14,13 +13,17 @@ import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analy
 import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { formatDate } from '@/lib/utils';
+import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { useBranchStore } from '@/stores/branch.store';
 import { useSocketStore } from '@/stores/socket.store';
 import { useBranches, useAllBranchStats } from '@/hooks/queries/use-branches';
-import { useCurrentShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
+import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
+import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
+import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
 const ATTENDANCE_OVERVIEW_LIMIT = 100;
@@ -44,7 +47,9 @@ export default function SupervisorDashboardPage() {
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
   useInventoryStockRealtimeSync(activeBranchId);
+  useInventoryAnalyticsRealtimeSync();
   useAttendanceRealtimeSync();
+  useExpensesRealtimeSync();
 
   // Calendar-day boundary, computed once on mount — deliberately not
   // reactive to clock ticking (the dashboard's attendance panel shows
@@ -54,7 +59,6 @@ export default function SupervisorDashboardPage() {
     return { from: startOfDay(now).toISOString(), to: now.toISOString() };
   });
 
-  const { data: shift, isLoading: isShiftLoading } = useCurrentShift(activeBranchId);
   const { data: branchStats, isLoading: isStatsLoading } = useAllBranchStats(activeBranchId ?? undefined);
   const { data: transactionsData, isLoading: isTransactionsLoading } = useTransactions({
     branch_id: activeBranchId ?? undefined,
@@ -66,6 +70,14 @@ export default function SupervisorDashboardPage() {
     to,
     limit: ATTENDANCE_OVERVIEW_LIMIT,
   });
+  const monthTrend = useDashboardSalesTrendReport({
+    date_from: manilaMonthStart(),
+    date_to: manilaToday(),
+    branch_id: activeBranchId ?? undefined,
+    page: 1,
+    limit: MAX_LIST_LIMIT,
+  });
+  const grossSalesMonth = monthTrend.data?.data.reduce((sum, row) => sum + row.gross_sales, 0);
 
   if (!activeBranchId) {
     if (isBranchesLoading) {
@@ -103,11 +115,11 @@ export default function SupervisorDashboardPage() {
   }
 
   // Today's totals (Gross Sales / Transactions / Discounts) come from the
-  // branch's day-level stats, not the currently open shift — a shift that
-  // closes mid-day must not zero out sales that already happened today
-  // (matches the branch-role dashboard's todayGrossSales/todayTransactionCount
-  // sourcing). DashboardShiftCard above stays shift-scoped on purpose: it's
-  // reporting the open shift's cash drawer, not the day's sales total.
+  // branch's day-level stats, not any individual shift — a shift that closes
+  // mid-day must not zero out sales that already happened today (matches the
+  // branch-role dashboard's todayGrossSales/todayTransactionCount sourcing).
+  // Shifts are auto-managed per cashier now (Phase 4-9), so there is no
+  // single "the branch's shift" left to show a dedicated card for.
   const todayStats = branchStats?.[0];
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
@@ -129,8 +141,20 @@ export default function SupervisorDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
-        <DashboardShiftCard shift={shift} isLoading={isShiftLoading} />
-        <KpiCard title="Gross Sales" value={todayStats?.todayGrossSales ?? 0} prefix="₱" isLoading={isStatsLoading} />
+        <KpiCard
+          title="Daily Gross Sales"
+          value={todayStats?.todayGrossSales ?? 0}
+          prefix="₱"
+          isLoading={isStatsLoading}
+          tooltip="Completed sales for the selected Manila business day."
+        />
+        <KpiCard
+          title="Monthly Gross Sales"
+          value={grossSalesMonth ?? 0}
+          prefix="₱"
+          isLoading={monthTrend.isLoading}
+          tooltip="Completed sales for the current Manila calendar month."
+        />
         <KpiCard title="Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} />
         <KpiCard title="Discounts Given" value={todayStats?.todayDiscountTotal ?? 0} prefix="₱" isLoading={isStatsLoading} />
       </div>

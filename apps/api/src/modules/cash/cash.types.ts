@@ -24,6 +24,12 @@ export interface OpenShiftData {
   denominations: DenominationCountInput[];
 }
 
+/** Auto-managed shift, opened by the system on clock-in — no drawer count, always self-opened. */
+export interface AutoOpenShiftData {
+  branchId: string;
+  cashierId: string;
+}
+
 export interface CloseShiftData {
   denominations: DenominationCountInput[];
   notes?: string;

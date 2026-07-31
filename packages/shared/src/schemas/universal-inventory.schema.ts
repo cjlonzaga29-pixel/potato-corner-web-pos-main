@@ -213,6 +213,7 @@ export const branchInventoryStockRowSchema = z.object({
   low_stock_threshold: z.number().nullable(),
   critical_threshold: z.number().nullable(),
   status: z.enum(['healthy', 'low', 'critical']),
+  consumed_today: z.number(),
 });
 
 export const branchInventoryStockListResponseSchema = z.object({

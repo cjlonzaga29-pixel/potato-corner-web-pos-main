@@ -30,6 +30,11 @@ vi.mock('../../middleware/audit-log.js', () => ({
 vi.mock('../cash/cash.repository.js', () => ({
   cashRepository: {
     findActiveShift: vi.fn(),
+    findShiftById: vi.fn(),
+    createAutoShift: vi.fn(),
+    closeAutoShift: vi.fn(),
+    sumTransactionsForShift: vi.fn(),
+    sumTransactionCountsForShift: vi.fn(),
   },
 }));
 
@@ -112,11 +117,71 @@ function branchRow(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+function shiftRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'auto-shift-1',
+    branchId: 'branch-1',
+    cashierId: 'employee-1',
+    openedBy: 'employee-1',
+    closedBy: null,
+    status: 'active',
+    openingCashAmount: decimal(0),
+    closingCashAmount: null,
+    expectedClosingCash: null,
+    cashVariance: null,
+    varianceApproved: null,
+    varianceExplanation: null,
+    varianceApprovedBy: null,
+    varianceApprovalReason: null,
+    cashSalesTotal: decimal(0),
+    gcashSalesTotal: decimal(0),
+    mayaSalesTotal: decimal(0),
+    otherSalesTotal: decimal(0),
+    grossSalesTotal: decimal(0),
+    transactionCount: 0,
+    shiftNotes: null,
+    startedAt: new Date('2026-07-15T08:00:00.000Z'),
+    closedAt: null,
+    cashSalesCount: 0,
+    gcashSalesCount: 0,
+    mayaSalesCount: 0,
+    otherSalesCount: 0,
+    voidedCount: 0,
+    refundedCount: 0,
+    totalTransactionCount: 0,
+    totalDiscountAmount: decimal(0),
+    pwdScTransactionCount: 0,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: no open POS shift — most clockOut tests aren't exercising the
-  // shift-link guard (§6), only the dedicated OPEN_SHIFT_EXISTS test overrides this.
+  // shift-link guard (§6), only the dedicated auto-close test overrides this.
   vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
+  // clockIn auto-opens a shift (Phase 4-9) — cashService.autoOpenShift runs
+  // for real against this mocked repository, so it needs a shift to create.
+  vi.mocked(cashRepository.createAutoShift).mockResolvedValue(shiftRow() as never);
+  vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+    cashSalesTotal: decimal(0),
+    gcashSalesTotal: decimal(0),
+    mayaSalesTotal: decimal(0),
+    otherSalesTotal: decimal(0),
+    grossSalesTotal: decimal(0),
+    transactionCount: 0,
+  } as never);
+  vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+    cashSalesCount: 0,
+    gcashSalesCount: 0,
+    mayaSalesCount: 0,
+    otherSalesCount: 0,
+    voidedCount: 0,
+    refundedCount: 0,
+    totalTransactionCount: 0,
+    totalDiscountAmount: 0,
+    pwdScTransactionCount: 0,
+  } as never);
 });
 
 describe('attendanceService.clockIn', () => {
@@ -197,17 +262,19 @@ describe('attendanceService.clockIn', () => {
 });
 
 describe('attendanceService.clockOut', () => {
-  it('rejects with 409 OPEN_SHIFT_EXISTS when the employee has an open POS shift at their attendance branch (§6 attendance-shift link), and never auto-closes it', async () => {
+  it('auto-closes the employee open POS shift at their attendance branch (§6 attendance-shift link) instead of blocking clock-out', async () => {
     const active = attendanceRow();
     vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(active as never);
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: 'shift-1', status: 'active' } as never);
+    vi.mocked(cashRepository.findActiveShift).mockResolvedValue(shiftRow() as never);
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow() as never);
+    vi.mocked(cashRepository.closeAutoShift).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
+    vi.mocked(attendanceRepository.clockOut).mockResolvedValue(attendanceRow({ clockOutServerTime: new Date() }) as never);
 
-    await expect(attendanceService.clockOut('employee-1', {}, STAFF)).rejects.toMatchObject({
-      code: 'OPEN_SHIFT_EXISTS',
-      statusCode: 409,
-    });
-    expect(attendanceRepository.clockOut).not.toHaveBeenCalled();
+    await attendanceService.clockOut('employee-1', {}, STAFF);
+
     expect(cashRepository.findActiveShift).toHaveBeenCalledWith('employee-1', 'branch-1');
+    expect(cashRepository.closeAutoShift).toHaveBeenCalledWith('auto-shift-1', expect.objectContaining({ closedBy: STAFF.id }));
+    expect(attendanceRepository.clockOut).toHaveBeenCalled();
   });
 
   it('updates the open record with computed work/overtime minutes', async () => {

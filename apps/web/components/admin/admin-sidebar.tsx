@@ -13,6 +13,7 @@ import {
   Settings,
   ChevronsLeft,
   ChevronsRight,
+  ChevronDown,
   LogOut,
   Loader2,
   Wallet,
@@ -44,13 +45,19 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
   { label: 'Payment Settings', href: '/admin/payments', icon: Wallet },
-  { label: 'Products', href: '/admin/products', icon: ShoppingBag },
-  { label: 'Product Categories', href: '/admin/product-categories', icon: ListTree },
-  { label: 'Product Options', href: '/admin/product-options', icon: SlidersHorizontal },
-  { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
-  { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
-  { label: 'Units', href: '/admin/inventory/units', icon: Ruler },
-  { label: 'Recipe Readiness', href: '/admin/recipe-readiness', icon: ClipboardList },
+  {
+    label: 'Product Creation',
+    icon: ShoppingBag,
+    children: [
+      { label: 'Products', href: '/admin/products', icon: ShoppingBag },
+      { label: 'Product Categories', href: '/admin/product-categories', icon: ListTree },
+      { label: 'Product Options', href: '/admin/product-options', icon: SlidersHorizontal },
+      { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
+      { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
+      { label: 'Units', href: '/admin/inventory/units', icon: Ruler },
+      { label: 'Recipe Readiness', href: '/admin/recipe-readiness', icon: ClipboardList },
+    ],
+  },
   { label: 'Shadow BOM Deduction', href: '/admin/shadow-bom-deduction', icon: GitCompare },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
@@ -71,6 +78,11 @@ export function AdminSidebar() {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  function isChildActive(children: ReadonlyArray<{ href: string }>) {
+    return children.some((child) => pathname === child.href || pathname?.startsWith(`${child.href}/`));
+  }
 
   async function handleLogout() {
     setIsLoggingOut(true);
@@ -119,10 +131,84 @@ export function AdminSidebar() {
             </p>
           ) : null;
 
+          if (item.children) {
+            const groupActive = isChildActive(item.children);
+            const expanded = expandedGroups[item.label] ?? groupActive;
+
+            if (collapsed) {
+              const firstChildHref = item.children[0]?.href ?? '#';
+              const collapsedLink = (
+                <Link
+                  href={firstChildHref}
+                  className={cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                    groupActive
+                      ? 'bg-primary text-primary-foreground shadow-glow'
+                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                  )}
+                >
+                  <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                </Link>
+              );
+              return (
+                <div key={item.label}>
+                  {sectionHeading}
+                  <Tooltip>
+                    <TooltipTrigger asChild>{collapsedLink}</TooltipTrigger>
+                    <TooltipContent side="right">{item.label}</TooltipContent>
+                  </Tooltip>
+                </div>
+              );
+            }
+
+            return (
+              <div key={item.label}>
+                {sectionHeading}
+                <button
+                  type="button"
+                  onClick={() => setExpandedGroups((prev) => ({ ...prev, [item.label]: !expanded }))}
+                  aria-expanded={expanded}
+                  className={cn(
+                    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                    groupActive
+                      ? 'text-foreground'
+                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                  )}
+                >
+                  <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 truncate text-left">{item.label}</span>
+                  <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform duration-150', expanded && 'rotate-180')} />
+                </button>
+                {expanded && (
+                  <div className="ml-4 space-y-1 border-l border-border/60 pl-3">
+                    {item.children.map((child) => {
+                      const childActive = pathname === child.href || pathname?.startsWith(`${child.href}/`);
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          className={cn(
+                            'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                            childActive
+                              ? 'bg-primary text-primary-foreground shadow-glow'
+                              : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                          )}
+                        >
+                          <NavLinkIcon icon={child.icon} className="h-4 w-4 shrink-0" />
+                          <span className="flex-1 truncate">{child.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           const link = (
             <Link
-              href={item.href}
+              href={item.href as string}
               className={cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                 isActive
@@ -135,7 +221,7 @@ export function AdminSidebar() {
             </Link>
           );
           return (
-            <div key={item.href}>
+            <div key={item.label}>
               {sectionHeading}
               {collapsed ? (
                 <Tooltip>

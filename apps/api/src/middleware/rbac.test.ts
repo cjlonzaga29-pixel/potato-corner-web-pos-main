@@ -17,6 +17,18 @@ vi.mock('../modules/cash/cash.repository.js', () => ({
   },
 }));
 
+vi.mock('../modules/cash/cash.service.js', () => ({
+  cashService: {
+    autoOpenShift: vi.fn(),
+  },
+}));
+
+vi.mock('../modules/attendance/attendance.repository.js', () => ({
+  attendanceRepository: {
+    findActiveRecord: vi.fn(),
+  },
+}));
+
 vi.mock('../modules/branches/branches.repository.js', () => ({
   branchesRepository: {
     findAllActiveBranchIds: vi.fn(),
@@ -25,6 +37,8 @@ vi.mock('../modules/branches/branches.repository.js', () => ({
 
 const { prisma } = await import('../lib/prisma.js');
 const { cashRepository } = await import('../modules/cash/cash.repository.js');
+const { cashService } = await import('../modules/cash/cash.service.js');
+const { attendanceRepository } = await import('../modules/attendance/attendance.repository.js');
 const { branchesRepository } = await import('../modules/branches/branches.repository.js');
 const { config } = await import('../config/index.js');
 const { authenticate, revokedTokenHash } = await import('./authenticate.js');
@@ -82,6 +96,8 @@ beforeEach(() => {
   vi.mocked(prisma.revokedToken.findFirst).mockReset();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
   vi.mocked(cashRepository.findActiveShift).mockReset();
+  vi.mocked(cashService.autoOpenShift).mockReset();
+  vi.mocked(attendanceRepository.findActiveRecord).mockReset();
   vi.mocked(branchesRepository.findAllActiveBranchIds).mockReset();
 });
 
@@ -385,6 +401,11 @@ describe('branch-guard middleware', () => {
 describe('shift-guard middleware', () => {
   it('staff with an active shift passes and attaches it to req.activeShift', async () => {
     const shift = { id: 'shift-1', cashierId: 't1', branchId: 'branch-1', status: 'active' };
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      id: 'att-1',
+      employeeId: 't1',
+      branchId: 'branch-1',
+    } as never);
     vi.mocked(cashRepository.findActiveShift).mockResolvedValue(shift as never);
     const req = mockReq({
       user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
@@ -395,10 +416,11 @@ describe('shift-guard middleware', () => {
     await shiftGuard(req, res, next);
     expect(next).toHaveBeenCalledOnce();
     expect(req.activeShift).toEqual(shift);
+    expect(cashService.autoOpenShift).not.toHaveBeenCalled();
   });
 
-  it('staff with no active shift returns 403 NO_ACTIVE_SHIFT', async () => {
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
+  it('staff not clocked in at the branch returns 403 NOT_CLOCKED_IN', async () => {
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
     const req = mockReq({
       user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
       params: { branchId: 'branch-1' },
@@ -406,7 +428,28 @@ describe('shift-guard middleware', () => {
     const res = mockRes();
     await shiftGuard(req, res, vi.fn());
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'NO_ACTIVE_SHIFT' } }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'NOT_CLOCKED_IN' } }));
+  });
+
+  it('staff clocked in with no active shift yet auto-opens one and attaches it', async () => {
+    const shift = { id: 'shift-2', cashierId: 't1', branchId: 'branch-1', status: 'active' };
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      id: 'att-1',
+      employeeId: 't1',
+      branchId: 'branch-1',
+    } as never);
+    vi.mocked(cashRepository.findActiveShift).mockResolvedValueOnce(null).mockResolvedValueOnce(shift as never);
+    vi.mocked(cashService.autoOpenShift).mockResolvedValue({ id: 'shift-2' } as never);
+    const req = mockReq({
+      user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
+      params: { branchId: 'branch-1' },
+    });
+    const res = mockRes();
+    const next = vi.fn();
+    await shiftGuard(req, res, next);
+    expect(cashService.autoOpenShift).toHaveBeenCalledWith({ branchId: 'branch-1', cashierId: 't1' }, null);
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.activeShift).toEqual(shift);
   });
 
   it('supervisor bypasses the shift check', async () => {

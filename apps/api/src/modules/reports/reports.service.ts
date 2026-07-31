@@ -1,5 +1,6 @@
 import { ROLES } from '@potato-corner/shared';
 import type { ReportType } from '@potato-corner/shared';
+import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
 import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -115,8 +116,11 @@ function precomputedWindowFilters(branchId: string | null): ReportFilters {
   return { branchId: branchId ?? undefined, dateFrom, dateTo, page: 1, limit: 100 };
 }
 
+// reportType is $Enums.ReportType (the Postgres-backed ReportSnapshot enum) —
+// narrower than the app-wide ReportType, matching PRECOMPUTED_TYPES below,
+// since every call site passes one of those five literals.
 async function precomputedReport<T>(
-  reportType: ReportType,
+  reportType: $Enums.ReportType,
   branchId: string | null,
   actorId: string,
   actorRole: string,
@@ -157,6 +161,10 @@ export const reportsService = {
     realtimeReport('DISCOUNT_COMPLIANCE', filters, actorId, actorRole, (f) => reportsRepository.getDiscountCompliance(f)),
   getInventoryMovementReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('INVENTORY_MOVEMENT', filters, actorId, actorRole, (f) => reportsRepository.getInventoryMovement(f)),
+  getInventoryConsumptionSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
+    realtimeReport('INVENTORY_CONSUMPTION_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventoryConsumptionSummary(f)),
+  getInventorySummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
+    realtimeReport('INVENTORY_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventorySummary(f)),
   getAttendanceSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('ATTENDANCE_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getAttendanceSummary(f)),
   getFraudAlertSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>

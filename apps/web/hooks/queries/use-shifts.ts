@@ -5,10 +5,7 @@ import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   ApproveVarianceInput,
-  CloseShiftInput,
-  OpenShiftInput,
   ReviewShiftInput,
-  ShiftCloseResponse,
   ShiftListResponse,
   ShiftResponse,
   ShiftReviewPhase,
@@ -16,8 +13,6 @@ import type {
   ShiftSummaryResponse,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
-import { useAuth } from '@/hooks/use-auth';
-import { useShiftStore } from '@/stores/shift.store';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 interface ApiErrorShape {
@@ -48,27 +43,36 @@ export function useCurrentShift(branchId: string | null | undefined) {
 }
 
 /**
- * Canonical "active shift for the current authenticated cashier at the
- * current branch" — the one definition Open Shift, Current Shift, and the
- * POS route guard must all agree on. useCurrentShift itself is a
- * branch-wide "is anything open" lookup (mirrors findActiveShiftByBranch);
- * this wraps it with the cashier-identity comparison that shiftGuard's
- * checkout gate actually enforces (findActiveShift filters on cashier_id
- * too), so no page can treat another cashier's open shift as its own.
+ * The current authenticated cashier's own active shift at the given branch
+ * (Phase 4-9 shift removal: auto-managed, opened on clock-in, no drawer
+ * count). Unlike useCurrentShift (branch-wide — a leftover of the old
+ * one-register-at-a-time model), this is cashier-scoped: several cashiers
+ * can each hold their own concurrent active shift at the same branch, so a
+ * branch-wide lookup could return someone else's shift. Backs the POS
+ * Terminal guard — the shift itself has no cashier-facing status page
+ * anymore (Phase 4-9 removed /branch/shift; auto-managed shifts are purely
+ * internal bookkeeping now).
  */
 export function useMyActiveShift(branchId: string | null | undefined) {
-  const { user } = useAuth();
-  const query = useCurrentShift(branchId);
-  const shift = query.data ?? null;
-  const isMine = shift !== null && Boolean(user?.id) && shift.cashier_id === user?.id;
-  const belongsToAnother = shift !== null && Boolean(user?.id) && shift.cashier_id !== user?.id;
+  const query = useQuery({
+    queryKey: ['current-shift', 'mine', branchId],
+    queryFn: async () => {
+      const response = await apiClient<ShiftResponse>(`/api/cash/current?branch_id=${branchId}&mine=true`);
+      if (!response.data) {
+        if (typeof response.error === 'object' && response.error?.code === 'SHIFT_NOT_FOUND') return null;
+        throw new Error(errorMessage(response, 'Failed to load your current shift'));
+      }
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 10 * 1000,
+    refetchInterval: 30 * 1000,
+  });
   return {
-    shift,
+    shift: query.data ?? null,
     isLoading: query.isLoading,
     isError: query.isError,
     refetch: query.refetch,
-    isMine,
-    belongsToAnother,
   };
 }
 
@@ -128,11 +132,6 @@ export function useShifts(filters: ShiftListFilters = {}) {
   });
 }
 
-function invalidateShifts(queryClient: ReturnType<typeof useQueryClient>, branchId: string | null | undefined) {
-  void queryClient.invalidateQueries({ queryKey: ['current-shift', branchId] });
-  void queryClient.invalidateQueries({ queryKey: ['shifts'] });
-}
-
 /** Keeps shift DataTables/dashboards in sync with opens/closes and variance flag/approval decisions recorded from any other terminal or session, without a manual refresh. */
 export function useShiftsRealtimeSync(): void {
   useRealtimeInvalidate(
@@ -144,48 +143,6 @@ export function useShiftsRealtimeSync(): void {
     ],
     [['current-shift'], ['shifts'], ['branches']],
   );
-}
-
-export function useOpenShift(branchId: string | null | undefined) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: OpenShiftInput) => {
-      const response = await apiClient<ShiftResponse>('/api/cash/open', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to open shift'));
-      return response.data;
-    },
-    onSuccess: (shift) => {
-      useShiftStore.getState().setCurrentShift(shift);
-      invalidateShifts(queryClient, branchId);
-      toast.success('Shift opened');
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-}
-
-export function useCloseShift(branchId: string | null | undefined, shiftId: string | null | undefined) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: CloseShiftInput) => {
-      const response = await apiClient<ShiftCloseResponse>(`/api/cash/${shiftId}/close`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to close shift'));
-      return response.data;
-    },
-    onSuccess: (shift) => {
-      useShiftStore.getState().clearShift();
-      invalidateShifts(queryClient, branchId);
-      queryClient.setQueryData(['shift', shiftId], shift);
-      void queryClient.invalidateQueries({ queryKey: ['shift-summary', shiftId] });
-      toast.success(shift.status === 'flagged' ? 'Shift closed — pending variance review' : 'Shift closed');
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
 }
 
 export function useShiftReviews(shiftId: string | null | undefined) {

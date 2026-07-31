@@ -4,6 +4,7 @@ import { cashRepository } from './cash.repository.js';
 import {
   CashError,
   type ApproveVarianceData,
+  type AutoOpenShiftData,
   type CloseShiftData,
   type OpenShiftData,
   type ShiftListFilters,
@@ -279,6 +280,107 @@ export const cashService = {
     const shift = (await cashRepository.findActiveShiftByBranch(branchId)) as ShiftRow | null;
     if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'No active shift for this branch', 404);
     return withLiveSalesTotals(shift);
+  },
+
+  /**
+   * Cashier-scoped "my current shift" — unlike getCurrentShift (branch-wide,
+   * a leftover of the old one-register-at-a-time model), this is the correct
+   * lookup once auto-managed shifts let several cashiers each hold their own
+   * concurrent active shift at the same branch. Backs the POS Terminal guard
+   * and the /branch/shift status page.
+   */
+  async getMyCurrentShift(cashierId: string, branchId: string) {
+    const shift = (await cashRepository.findActiveShift(cashierId, branchId)) as ShiftRow | null;
+    if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'No active shift for this cashier', 404);
+    return withLiveSalesTotals(shift);
+  },
+
+  /**
+   * Auto-managed shift, opened transparently on clock-in (Phase 4-9 shift
+   * removal — Architecture doc change) so HoldOrder.shiftId's non-nullable
+   * FK stays satisfied without a schema migration, while the cashier never
+   * sees an "Open Shift" step. Idempotent: if a shift is already active for
+   * this cashier at this branch (e.g. a retried clock-in), returns it as-is
+   * rather than erroring — unlike the manual openShift's 409, there is no
+   * "someone else already has the drawer" conflict to protect against here.
+   */
+  async autoOpenShift(data: AutoOpenShiftData, ipAddress: string | null) {
+    const existing = (await cashRepository.findActiveShift(data.cashierId, data.branchId)) as ShiftRow | null;
+    if (existing) return toShiftResponse(existing);
+
+    const shift = (await cashRepository.createAutoShift(data)) as ShiftRow;
+    const response = toShiftResponse(shift);
+
+    await recordAuditLog({
+      action: 'SHIFT_AUTO_OPENED',
+      entityType: 'shift',
+      entityId: shift.id,
+      actorId: data.cashierId,
+      actorRole: 'cashier',
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.branchId, SOCKET_EVENTS.SHIFT_OPENED, response);
+    notifySuperAdmin(SOCKET_EVENTS.SHIFT_OPENED, response);
+
+    return response;
+  },
+
+  /**
+   * Closes an auto-managed shift at clock-out. No drawer count ever
+   * happened, so this never computes a variance or flags for review — it
+   * just freezes the same sales/count aggregates the manual close flow
+   * would, then marks the shift 'closed'. A no-op (returns null) if the
+   * shift is already closed or missing, since clock-out should never fail
+   * because of shift bookkeeping.
+   */
+  async autoCloseShift(id: string, actor: ActorContext, ipAddress: string | null) {
+    const shift = (await cashRepository.findShiftById(id)) as ShiftRow | null;
+    if (!shift || shift.status !== 'active') return null;
+
+    const [sales, counts] = await Promise.all([
+      cashRepository.sumTransactionsForShift(id),
+      cashRepository.sumTransactionCountsForShift(id),
+    ]);
+
+    const updated = (await cashRepository.closeAutoShift(id, {
+      cashSalesTotal: sales.cashSalesTotal.toNumber(),
+      gcashSalesTotal: sales.gcashSalesTotal.toNumber(),
+      mayaSalesTotal: sales.mayaSalesTotal.toNumber(),
+      otherSalesTotal: sales.otherSalesTotal.toNumber(),
+      grossSalesTotal: sales.grossSalesTotal.toNumber(),
+      transactionCount: sales.transactionCount,
+      cashSalesCount: counts.cashSalesCount,
+      gcashSalesCount: counts.gcashSalesCount,
+      mayaSalesCount: counts.mayaSalesCount,
+      otherSalesCount: counts.otherSalesCount,
+      voidedCount: counts.voidedCount,
+      refundedCount: counts.refundedCount,
+      totalTransactionCount: counts.totalTransactionCount,
+      totalDiscountAmount: counts.totalDiscountAmount,
+      pwdScTransactionCount: counts.pwdScTransactionCount,
+      closedBy: actor.id,
+    })) as ShiftRow;
+    const response = toShiftResponse(updated);
+
+    await recordAuditLog({
+      action: 'SHIFT_AUTO_CLOSED',
+      entityType: 'shift',
+      entityId: id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: shift.branchId,
+      beforeState: toShiftResponse(shift),
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(shift.branchId, SOCKET_EVENTS.SHIFT_CLOSED, response);
+    notifySuperAdmin(SOCKET_EVENTS.SHIFT_CLOSED, response);
+
+    return response;
   },
 
   async getShiftById(id: string) {

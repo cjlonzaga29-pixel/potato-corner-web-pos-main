@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { AttendanceResponse, InventoryStockAlert, ShiftResponse, TransactionResponse } from '@potato-corner/shared';
+import type { AttendanceResponse, InventoryStockAlert, TransactionResponse } from '@potato-corner/shared';
 import SupervisorDashboardPage from './page';
 
 const {
   mockPush,
-  mockUseCurrentShift,
   mockUseShiftsRealtimeSync,
   mockUseTransactions,
   mockUseTransactionsRealtimeSync,
@@ -17,9 +16,9 @@ const {
   mockUseSocketStore,
   mockUseBranches,
   mockUseAllBranchStats,
+  mockUseDashboardSalesTrendReport,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
-  mockUseCurrentShift: vi.fn(),
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactions: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
@@ -31,6 +30,7 @@ const {
   mockUseSocketStore: vi.fn(),
   mockUseBranches: vi.fn(),
   mockUseAllBranchStats: vi.fn(),
+  mockUseDashboardSalesTrendReport: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -51,7 +51,6 @@ vi.mock('@/hooks/queries/use-branches', () => ({
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
-  useCurrentShift: mockUseCurrentShift,
   useShiftsRealtimeSync: mockUseShiftsRealtimeSync,
 }));
 
@@ -68,6 +67,15 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
 vi.mock('@/hooks/queries/use-attendance', () => ({
   useAttendanceByBranch: mockUseAttendanceByBranch,
   useAttendanceRealtimeSync: mockUseAttendanceRealtimeSync,
+}));
+
+vi.mock('@/hooks/queries/use-reports', () => ({
+  useDashboardSalesTrendReport: mockUseDashboardSalesTrendReport,
+  useInventoryAnalyticsRealtimeSync: vi.fn(),
+}));
+
+vi.mock('@/hooks/queries/use-expenses', () => ({
+  useExpensesRealtimeSync: vi.fn(),
 }));
 
 vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
@@ -112,44 +120,6 @@ function mockBranchState(state: BranchState) {
 
 function mockSocketState(state: SocketState) {
   mockUseSocketStore.mockImplementation((selector: (s: SocketState) => unknown) => selector(state));
-}
-
-function shift(overrides: Partial<ShiftResponse> = {}): ShiftResponse {
-  return {
-    id: 'shift-1',
-    branch_id: 'branch-1',
-    cashier_id: 'cashier-1234-5678',
-    opened_by: 'supervisor-1',
-    closed_by: null,
-    status: 'active',
-    opening_cash_amount: 1500,
-    closing_cash_amount: null,
-    expected_closing_cash: null,
-    cash_variance: null,
-    variance_approved: null,
-    variance_explanation: null,
-    variance_approved_by: null,
-    variance_approval_reason: null,
-    cash_sales_total: 3000,
-    gcash_sales_total: 1500,
-    maya_sales_total: 0,
-    other_sales_total: 0,
-    gross_sales_total: 0,
-    transaction_count: 42,
-    cash_sales_count: 30,
-    gcash_sales_count: 12,
-    maya_sales_count: 0,
-    other_sales_count: 0,
-    voided_count: 0,
-    refunded_count: 0,
-    total_transaction_count: 42,
-    total_discount_amount: 250.5,
-    pwd_sc_transaction_count: 2,
-    shift_notes: null,
-    started_at: '2026-07-16T02:32:00.000Z',
-    closed_at: null,
-    ...overrides,
-  };
 }
 
 interface BranchStatsOverview {
@@ -252,12 +222,12 @@ beforeEach(() => {
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
   mockUseInventoryRealtimeSync.mockReturnValue(undefined);
   mockUseAttendanceRealtimeSync.mockReturnValue(undefined);
-  mockUseCurrentShift.mockReturnValue({ data: null, isLoading: false });
   mockUseAllBranchStats.mockReturnValue({ data: [branchStats()], isLoading: false });
   mockUseTransactions.mockReturnValue({ data: undefined, isLoading: false });
   mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: false });
   mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: false });
   mockUseBranches.mockReturnValue({ data: { branches: [{ id: 'branch-1' }], total: 1 }, isLoading: false, isError: false });
+  mockUseDashboardSalesTrendReport.mockReturnValue({ data: { data: [] }, isLoading: false });
 });
 
 afterEach(() => {
@@ -272,7 +242,6 @@ describe('SupervisorDashboardPage', () => {
     render(<SupervisorDashboardPage />);
 
     expect(screen.getByText('No branch configured')).toBeInTheDocument();
-    expect(screen.queryByText('No active shift')).not.toBeInTheDocument();
   });
 
   it('shows a loading spinner, not the no-branch message, while the active-branch list is still loading', () => {
@@ -306,7 +275,6 @@ describe('SupervisorDashboardPage', () => {
   });
 
   it('renders loading skeletons for all panels when every query is loading', () => {
-    mockUseCurrentShift.mockReturnValue({ data: undefined, isLoading: true });
     mockUseAllBranchStats.mockReturnValue({ data: undefined, isLoading: true });
     mockUseTransactions.mockReturnValue({ data: undefined, isLoading: true });
     mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: true });
@@ -317,48 +285,27 @@ describe('SupervisorDashboardPage', () => {
     expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
   });
 
-  it('renders the no-active-shift empty state when useCurrentShift returns null', () => {
-    render(<SupervisorDashboardPage />);
-    expect(screen.getByText('No active shift')).toBeInTheDocument();
-  });
-
-  it('renders shift details when useCurrentShift returns a shift', () => {
-    mockUseCurrentShift.mockReturnValue({ data: shift(), isLoading: false });
-    render(<SupervisorDashboardPage />);
-    expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
-  });
-
-  it('renders gross sales from the branch day-stats (todayGrossSales), not the shift, formatted as PHP currency', () => {
-    // gross_sales_total intentionally left at its default 0 on the shift to prove
-    // the KPI no longer reads from it.
-    mockUseCurrentShift.mockReturnValue({ data: shift(), isLoading: false });
-    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayGrossSales: 4500.5 })], isLoading: false });
-    render(<SupervisorDashboardPage />);
-    expect(screen.getByText('₱4500.50')).toBeInTheDocument();
-  });
-
-  it('renders todayTransactionCount from branch day-stats, not the shift transaction_count', () => {
-    mockUseCurrentShift.mockReturnValue({ data: shift({ transaction_count: 99 }), isLoading: false });
-    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayTransactionCount: 42 })], isLoading: false });
-    render(<SupervisorDashboardPage />);
-    expect(screen.getByText('42')).toBeInTheDocument();
-    expect(screen.queryByText('99')).not.toBeInTheDocument();
-  });
-
-  it('keeps Gross Sales, Transactions, and Discounts non-zero from branch day-stats even when there is no active shift', () => {
-    // Regression test: a shift closing mid-day (useCurrentShift -> null) must not
-    // zero out KPIs for sales that already happened today. Previously these 3 cards
-    // read from the currently open shift and fell back to a hardcoded 0 whenever
-    // there was no open shift, even though completed transactions existed.
-    mockUseCurrentShift.mockReturnValue({ data: null, isLoading: false });
+  it('renders Gross Sales, Transactions, and Discounts from branch day-stats regardless of any individual cashier shift state (Phase 4-9: shifts are auto-managed per cashier, not branch-wide)', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStats({ todayGrossSales: 84.5, todayTransactionCount: 2, todayDiscountTotal: 0 })],
       isLoading: false,
     });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('No active shift')).toBeInTheDocument();
     expect(screen.getByText('₱84.50')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('renders Daily Gross Sales and Monthly Gross Sales as distinct KPI cards with independent values', () => {
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayGrossSales: 1500 })], isLoading: false });
+    mockUseDashboardSalesTrendReport.mockReturnValue({
+      data: { data: [{ gross_sales: 8000 }, { gross_sales: 3500 }] },
+      isLoading: false,
+    });
+    render(<SupervisorDashboardPage />);
+    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱1500')).toBeInTheDocument();
+    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱11500')).toBeInTheDocument();
   });
 
   it('renders discounts given from todayDiscountTotal', () => {

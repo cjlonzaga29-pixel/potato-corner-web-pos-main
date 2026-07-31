@@ -16,6 +16,7 @@ const {
   mockUseInventoryStockRealtimeSync,
   mockUseAttendanceByBranch,
   mockUseAttendanceRealtimeSync,
+  mockUseDashboardSalesTrendReport,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseAuth: vi.fn(),
@@ -30,6 +31,7 @@ const {
   mockUseInventoryStockRealtimeSync: vi.fn(),
   mockUseAttendanceByBranch: vi.fn(),
   mockUseAttendanceRealtimeSync: vi.fn(),
+  mockUseDashboardSalesTrendReport: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -69,12 +71,25 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
   useAttendanceRealtimeSync: mockUseAttendanceRealtimeSync,
 }));
 
+vi.mock('@/hooks/queries/use-reports', () => ({
+  useDashboardSalesTrendReport: mockUseDashboardSalesTrendReport,
+  useInventoryAnalyticsRealtimeSync: vi.fn(),
+}));
+
+vi.mock('@/hooks/queries/use-expenses', () => ({
+  useExpensesRealtimeSync: vi.fn(),
+}));
+
 vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
   SalesAnalyticsSection: () => <div>Sales Analytics Section</div>,
 }));
 
 vi.mock('@/components/shared/dashboard/top-products-panel', () => ({
   TopProductsPanel: () => <div>Top Products Panel</div>,
+}));
+
+vi.mock('@/components/shared/dashboard/inventory-consumption-panel', () => ({
+  InventoryConsumptionPanel: () => <div>Inventory Consumption Panel</div>,
 }));
 
 /** Same rationale as the supervisor dashboard test: NumberTicker never settles synchronously in jsdom. */
@@ -105,7 +120,7 @@ function statsRow(overrides: Record<string, unknown> = {}) {
     activeShiftsCount: 1,
     activeStaffCount: 3,
     staffTimedInCount: 2,
-    todayGrossSales: 1000,
+    todayGrossSales: 1200,
     todayDiscountTotal: 0,
     todayRefundTotal: 0,
     todayNetSales: 1000,
@@ -139,6 +154,7 @@ function setup(stats: ReturnType<typeof statsRow> | undefined, isLoadingStats = 
   mockUseTransactions.mockReturnValue({ data: { transactions: [] }, isLoading: false });
   mockUseBranchInventoryStockAlerts.mockReturnValue({ data: { alerts: [] }, isLoading: false });
   mockUseAttendanceByBranch.mockReturnValue({ data: { records: [] }, isLoading: false });
+  mockUseDashboardSalesTrendReport.mockReturnValue({ data: { data: [] }, isLoading: false });
 }
 
 afterEach(() => {
@@ -191,9 +207,24 @@ describe('BranchDashboardPage', () => {
     mockUseTransactions.mockReturnValue({ data: undefined, isLoading: false });
     mockUseBranchInventoryStockAlerts.mockReturnValue({ data: undefined, isLoading: false });
     mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: false });
+    mockUseDashboardSalesTrendReport.mockReturnValue({ data: undefined, isLoading: false });
 
     render(<BranchDashboardPage />);
 
     expect(screen.getByText('No branch assigned')).toBeInTheDocument();
+  });
+
+  it('renders Daily Gross Sales from branch day-stats and Monthly Gross Sales summed from the sales trend report', () => {
+    setup(statsRow({ todayGrossSales: 1500 }));
+    mockUseDashboardSalesTrendReport.mockReturnValue({
+      data: { data: [{ gross_sales: 8000 }, { gross_sales: 3500 }] },
+      isLoading: false,
+    });
+    render(<BranchDashboardPage />);
+
+    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱1500')).toBeInTheDocument();
+    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱11500')).toBeInTheDocument();
   });
 });

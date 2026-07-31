@@ -17,6 +17,8 @@ import {
   type DiscountComplianceReportRow,
   type PaymentMethodMixReportRow,
   type InventoryMovementReportRow,
+  type InventoryConsumptionSummaryReportRow,
+  type InventorySummaryReportRow,
   type AttendanceSummaryReportRow,
   type FraudAlertSummaryReportRow,
   type ProductPerformanceReportRow,
@@ -63,6 +65,8 @@ const REALTIME_ENDPOINTS: Record<string, string> = {
   VOID_REFUND: 'void-refund',
   DISCOUNT_COMPLIANCE: 'discount-compliance',
   INVENTORY_MOVEMENT: 'inventory-movement',
+  INVENTORY_CONSUMPTION_SUMMARY: 'inventory-consumption-summary',
+  INVENTORY_SUMMARY: 'inventory-summary',
   ATTENDANCE_SUMMARY: 'attendance-summary',
   FRAUD_ALERT_SUMMARY: 'fraud-alert-summary',
 };
@@ -112,6 +116,12 @@ export function useDashboardDiscountMixReport(filters: ReportQueryFilters, enabl
 }
 export function useInventoryMovementReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<InventoryMovementReportRow>('INVENTORY_MOVEMENT', filters, enabled && Boolean(filters.branch_id));
+}
+export function useInventoryConsumptionSummaryReport(filters: ReportQueryFilters, enabled = true) {
+  return useRealtimeReport<InventoryConsumptionSummaryReportRow>('INVENTORY_CONSUMPTION_SUMMARY', filters, enabled && Boolean(filters.branch_id));
+}
+export function useInventorySummaryReport(filters: ReportQueryFilters, enabled = true) {
+  return useRealtimeReport<InventorySummaryReportRow>('INVENTORY_SUMMARY', filters, enabled && Boolean(filters.branch_id));
 }
 export function useAttendanceSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<AttendanceSummaryReportRow>('ATTENDANCE_SUMMARY', filters, enabled && Boolean(filters.branch_id));
@@ -228,7 +238,12 @@ export function useRequestExport() {
     },
     onSuccess: (data) => {
       if (data.download_url) {
-        toast.success('Export ready', { description: 'Your download link is ready.' });
+        const url = data.download_url;
+        toast.success('Export ready', {
+          description: 'Your download link is ready.',
+          action: { label: 'Download', onClick: () => window.open(url, '_blank') },
+          duration: 30_000,
+        });
       } else {
         toast.success("Generating your report… you'll be notified when it's ready");
       }
@@ -302,6 +317,6 @@ export function useInventoryAnalyticsRealtimeSync(): void {
       SOCKET_EVENTS.TRANSACTION_REFUNDED,
       SOCKET_EVENTS.VOID_REQUESTED,
     ],
-    [['reports', 'INVENTORY_ANALYTICS']],
+    [['reports', 'INVENTORY_ANALYTICS'], ['reports', 'INVENTORY_CONSUMPTION_SUMMARY'], ['reports', 'INVENTORY_SUMMARY']],
   );
 }

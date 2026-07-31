@@ -11,6 +11,7 @@ import type {
   TransactionResponse,
 } from '@potato-corner/shared';
 import { toast } from 'sonner';
+import { ROLES } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -22,11 +23,13 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ShiftStatusBadge } from '@/components/admin/shifts/shift-status-badge';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
+import { ReceiptModal } from '@/components/pos/receipt-modal';
+import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { formatCurrency, formatDateTime, formatDuration, formatTimeAgo } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
 import { useShifts, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
-import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
+import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
@@ -43,8 +46,27 @@ const TAB_TO_REPORT_TYPE: Record<string, ExportRequestInput['report_type']> = {
   'void-refund': 'VOID_REFUND',
   'discount-compliance': 'DISCOUNT_COMPLIANCE',
   'inventory-movement': 'INVENTORY_MOVEMENT',
+  'consumption-summary': 'INVENTORY_CONSUMPTION_SUMMARY',
   'attendance-summary': 'ATTENDANCE_SUMMARY',
 };
+
+interface ConsumptionSummaryRow {
+  inventory_item_id: string;
+  inventory_item_name: string;
+  unit: string;
+  quantity_consumed: number;
+  movement_count: number;
+}
+
+const consumptionSummaryColumns: ColumnDef<ConsumptionSummaryRow>[] = [
+  { accessorKey: 'inventory_item_name', header: 'Ingredient' },
+  {
+    id: 'quantity_consumed',
+    header: 'Consumed',
+    cell: ({ row }) => `${row.original.quantity_consumed} ${row.original.unit}`,
+  },
+  { accessorKey: 'movement_count', header: 'Sales Movements' },
+];
 
 function pad(value: number): string {
   return String(value).padStart(2, '0');
@@ -90,23 +112,68 @@ interface VoidRefundRow {
   type: 'void' | 'refund';
 }
 
-const dailySalesColumns: ColumnDef<TransactionResponse>[] = [
-  { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
-  {
-    id: 'payment_method',
-    header: 'Payment',
-    cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
-  },
-  { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
-  { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatCurrency(row.original.vat_amount) },
-  { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
-  {
-    id: 'discount_type',
-    header: 'Discount Type',
-    cell: ({ row }) => (row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'),
-  },
-  { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-];
+/**
+ * Receipt/payment-proof viewing (Phase 10-11) is Supervisor/Super Admin
+ * oversight tooling, not a branch/staff feature — staff already have their
+ * own Receipts page. `withActions` gates the two extra columns so the
+ * branch role's Reports tab renders exactly as before.
+ */
+function getDailySalesColumns(
+  withActions: boolean,
+  onViewReceipt: (transactionId: string) => void,
+  onViewProof: (transactionId: string) => void,
+  employeeNames: Map<string, string>,
+): ColumnDef<TransactionResponse>[] {
+  const columns: ColumnDef<TransactionResponse>[] = [
+    { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
+    {
+      id: 'payment_method',
+      header: 'Payment',
+      cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
+    },
+    { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
+    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatCurrency(row.original.vat_amount) },
+    { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
+    {
+      id: 'discount_type',
+      header: 'Discount Type',
+      cell: ({ row }) => (row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'),
+    },
+    { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
+  ];
+  if (!withActions) return columns;
+  return [
+    ...columns,
+    {
+      id: 'cashier',
+      header: 'Cashier',
+      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+    },
+    {
+      id: 'payment_proof',
+      header: 'Payment Proof',
+      cell: ({ row }) => {
+        const txn = row.original;
+        if (txn.payment_method === 'cash') return <span className="text-xs text-muted-foreground">—</span>;
+        if (!txn.has_payment_proof) return <span className="text-xs text-muted-foreground">No proof uploaded</span>;
+        return (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onViewProof(txn.id)}>
+            View Proof
+          </Button>
+        );
+      },
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button type="button" variant="outline" size="sm" onClick={() => onViewReceipt(row.original.id)}>
+          View Receipt
+        </Button>
+      ),
+    },
+  ];
+}
 
 const shiftSummaryColumns: ColumnDef<ShiftResponse>[] = [
   { id: 'started_at', header: 'Started', cell: ({ row }) => formatDateTime(row.original.started_at) },
@@ -307,10 +374,16 @@ export function ReportsView() {
   useAttendanceRealtimeSync();
 
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const isSupervisor = useAuthStore((s) => s.user?.role === ROLES.SUPERVISOR);
   const requestExport = useRequestExport();
   const [activeTab, setActiveTab] = useState('daily-sales');
   const [refreshDisabled, setRefreshDisabled] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [receiptTransactionId, setReceiptTransactionId] = useState<string | null>(null);
+  const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
+  const { data: receiptTransaction } = useTransaction(receiptTransactionId);
 
   useReportsRealtimeSync((payload: ExportReadyPayload) => {
     if (payload.requester_id !== currentUserId) return;
@@ -319,6 +392,8 @@ export function ReportsView() {
       action: { label: 'Download', onClick: () => window.open(payload.download_url, '_blank') },
       duration: 30_000,
     });
+    if (payload.format === 'csv') setIsExportingCsv(false);
+    else setIsExportingPdf(false);
   });
 
   useEffect(() => {
@@ -378,12 +453,14 @@ export function ReportsView() {
   }
 
   function handleExport(format: 'csv' | 'pdf') {
+    const setIsExporting = format === 'csv' ? setIsExportingCsv : setIsExportingPdf;
+    setIsExporting(true);
     const input: ExportRequestInput = {
       report_type: TAB_TO_REPORT_TYPE[activeTab] ?? 'DAILY_SALES',
       filters: { branch_id: activeBranchId ?? undefined, date_from: dateRange.from, date_to: dateRange.to, page: 1, limit: QUERY_LIMIT },
       format,
     };
-    requestExport.mutate(input);
+    requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
   }
 
   // Daily Sales
@@ -439,6 +516,33 @@ export function ReportsView() {
   const unitCodes = new Map((unitsQuery.data ?? []).map((u) => [u.id, u.code]));
   const itemSkus = new Map((inventoryItemsQuery.data ?? []).map((i) => [i.id, i.sku]));
 
+  // Inventory Consumption Summary — aggregated client-side from the same
+  // movements fetch as Inventory Movement above (SALE type only), consistent
+  // with this view's client-composed tier. Export still goes through the
+  // real backend INVENTORY_CONSUMPTION_SUMMARY aggregate, same relationship
+  // Inventory Movement already has with its own export.
+  const consumptionByItem = new Map<string, ConsumptionSummaryRow>();
+  for (const m of movements) {
+    if (m.movement_type !== 'SALE') continue;
+    const consumed = Math.abs(m.quantity_change);
+    const existing = consumptionByItem.get(m.inventory_item_id);
+    if (existing) {
+      existing.quantity_consumed += consumed;
+      existing.movement_count += 1;
+    } else {
+      consumptionByItem.set(m.inventory_item_id, {
+        inventory_item_id: m.inventory_item_id,
+        inventory_item_name: m.inventory_item_name,
+        unit: m.unit_id ? (unitCodes.get(m.unit_id) ?? '—') : '—',
+        quantity_consumed: consumed,
+        movement_count: 1,
+      });
+    }
+  }
+  const consumptionRows = Array.from(consumptionByItem.values()).sort((a, b) => b.quantity_consumed - a.quantity_consumed);
+  const totalConsumedQuantity = consumptionRows.reduce((sum, r) => sum + r.quantity_consumed, 0);
+  const totalConsumptionMovements = consumptionRows.reduce((sum, r) => sum + r.movement_count, 0);
+
   // Attendance Summary
   const attendanceRecords = attendanceQuery.data?.records ?? [];
   const totalStaffToday = attendanceRecords.length;
@@ -468,11 +572,11 @@ export function ReportsView() {
         <Button onClick={handleRefresh} disabled={refreshDisabled}>
           {refreshDisabled ? `Refresh (${refreshCooldown}s)` : 'Refresh'}
         </Button>
-        <Button variant="outline" onClick={() => handleExport('csv')} disabled={requestExport.isPending}>
-          Export CSV
+        <Button variant="outline" onClick={() => handleExport('csv')} disabled={isExportingCsv}>
+          {isExportingCsv ? 'Exporting…' : 'Export CSV'}
         </Button>
-        <Button variant="outline" onClick={() => handleExport('pdf')} disabled={requestExport.isPending}>
-          Export PDF
+        <Button variant="outline" onClick={() => handleExport('pdf')} disabled={isExportingPdf}>
+          {isExportingPdf ? 'Exporting…' : 'Export PDF'}
         </Button>
       </div>
 
@@ -484,6 +588,7 @@ export function ReportsView() {
           <TabsTrigger value="void-refund">Void/Refund</TabsTrigger>
           <TabsTrigger value="discount-compliance">Discount Compliance</TabsTrigger>
           <TabsTrigger value="inventory-movement">Inventory Movement</TabsTrigger>
+          <TabsTrigger value="consumption-summary">Consumption Summary</TabsTrigger>
           <TabsTrigger value="attendance-summary">Attendance Summary</TabsTrigger>
         </TabsList>
 
@@ -494,12 +599,18 @@ export function ReportsView() {
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Transactions" value={totalTransactions} isLoading={completedQuery.isLoading} />
-            <KpiCard title="Gross Sales" value={grossSales} prefix="₱" isLoading={completedQuery.isLoading} />
+            <KpiCard
+              title="Gross Sales — Selected Period"
+              value={grossSales}
+              prefix="₱"
+              isLoading={completedQuery.isLoading}
+              tooltip={`Completed sales from ${fromInput} to ${toInput}.`}
+            />
             <KpiCard title="VAT Collected" value={vatCollected} prefix="₱" isLoading={completedQuery.isLoading} />
             <KpiCard title="Discounts Given" value={discountsGiven} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
           <DataTable
-            columns={dailySalesColumns}
+            columns={getDailySalesColumns(isSupervisor, setReceiptTransactionId, setProofTransactionId, employeeNames)}
             data={completedTransactions}
             isLoading={completedQuery.isLoading}
             isError={completedQuery.isError}
@@ -620,6 +731,26 @@ export function ReportsView() {
           />
         </TabsContent>
 
+        <TabsContent value="consumption-summary" className="space-y-4">
+          <ReportLastUpdated
+            timestamp={movementsQuery.dataUpdatedAt ? new Date(movementsQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={movementsQuery.isLoading}
+          />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <KpiCard title="Ingredients Consumed" value={consumptionRows.length} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Total Quantity Consumed" value={totalConsumedQuantity} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Sales Movements" value={totalConsumptionMovements} isLoading={movementsQuery.isLoading} />
+          </div>
+          <DataTable
+            columns={consumptionSummaryColumns}
+            data={consumptionRows}
+            isLoading={movementsQuery.isLoading}
+            isError={movementsQuery.isError}
+            onRetry={() => void movementsQuery.refetch()}
+            emptyState={<EmptyState title="No consumption recorded" description="No sale-driven inventory consumption in this date range." />}
+          />
+        </TabsContent>
+
         <TabsContent value="attendance-summary" className="space-y-4">
           <ReportLastUpdated
             timestamp={attendanceQuery.dataUpdatedAt ? new Date(attendanceQuery.dataUpdatedAt).toISOString() : undefined}
@@ -641,6 +772,13 @@ export function ReportsView() {
           />
         </TabsContent>
       </Tabs>
+
+      {isSupervisor && (
+        <>
+          <ReceiptModal transaction={receiptTransaction ?? null} onClose={() => setReceiptTransactionId(null)} />
+          <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
+        </>
+      )}
     </div>
   );
 }

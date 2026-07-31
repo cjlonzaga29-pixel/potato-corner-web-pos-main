@@ -77,6 +77,30 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'recorded_by_name', header: 'Recorded By' },
     { key: 'created_at', header: 'Date' },
   ],
+  INVENTORY_CONSUMPTION_SUMMARY: [
+    { key: 'ingredient_id', header: 'Ingredient ID', isAudit: true },
+    { key: 'ingredient_name', header: 'Ingredient' },
+    { key: 'branch_id', header: 'Branch ID', isAudit: true },
+    { key: 'branch_name', header: 'Branch' },
+    { key: 'unit', header: 'Unit' },
+    { key: 'quantity_consumed', header: 'Quantity Consumed' },
+    { key: 'unit_cost', header: 'Unit Cost' },
+    { key: 'consumption_value', header: 'Consumption Value' },
+    { key: 'movement_count', header: 'Sales Movements' },
+  ],
+  INVENTORY_SUMMARY: [
+    { key: 'ingredient_id', header: 'Ingredient ID', isAudit: true },
+    { key: 'ingredient_name', header: 'Ingredient' },
+    { key: 'branch_id', header: 'Branch ID', isAudit: true },
+    { key: 'branch_name', header: 'Branch' },
+    { key: 'unit', header: 'Unit' },
+    { key: 'opening_stock', header: 'Opening Stock' },
+    { key: 'consumed_today', header: 'Consumed Today' },
+    { key: 'consumed_this_month', header: 'Consumed This Month' },
+    { key: 'remaining_stock', header: 'Remaining' },
+    { key: 'remaining_grams', header: 'Remaining (g)' },
+    { key: 'remaining_kilograms', header: 'Remaining (kg)' },
+  ],
   ATTENDANCE_SUMMARY: [
     { key: 'employee_id', header: 'Employee ID', isAudit: true },
     { key: 'employee_name', header: 'Employee' },
@@ -159,6 +183,10 @@ export async function getReportRows(reportType: ReportType, filters: ReportFilte
       return reportsRepository.getDiscountCompliance(filters);
     case 'INVENTORY_MOVEMENT':
       return reportsRepository.getInventoryMovement(filters);
+    case 'INVENTORY_CONSUMPTION_SUMMARY':
+      return reportsRepository.getInventoryConsumptionSummary(filters);
+    case 'INVENTORY_SUMMARY':
+      return reportsRepository.getInventorySummary(filters);
     case 'ATTENDANCE_SUMMARY':
       return reportsRepository.getAttendanceSummary(filters);
     case 'FRAUD_ALERT_SUMMARY':

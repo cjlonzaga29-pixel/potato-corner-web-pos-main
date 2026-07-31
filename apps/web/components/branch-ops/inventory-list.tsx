@@ -49,6 +49,15 @@ export function InventoryList({ basePath }: { basePath: string }) {
       ),
     },
     {
+      id: 'consumed_today',
+      header: 'Consumed Today',
+      cell: ({ row }) => (
+        <span className="tabular-nums text-muted-foreground">
+          {row.original.consumed_today} {row.original.base_unit_code}
+        </span>
+      ),
+    },
+    {
       id: 'low_stock_threshold',
       header: 'Low / Critical',
       cell: ({ row }) => (

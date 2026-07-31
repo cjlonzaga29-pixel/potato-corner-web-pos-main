@@ -8,6 +8,7 @@ const {
   mockUseShifts,
   mockUseShiftsRealtimeSync,
   mockUseTransactions,
+  mockUseTransaction,
   mockUseTransactionsRealtimeSync,
   mockUseInventoryStockMovements,
   mockUseInventoryStockRealtimeSync,
@@ -24,6 +25,7 @@ const {
   mockUseShifts: vi.fn(),
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactions: vi.fn(),
+  mockUseTransaction: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
   mockUseInventoryStockMovements: vi.fn(),
   mockUseInventoryStockRealtimeSync: vi.fn(),
@@ -48,7 +50,10 @@ vi.mock('@/hooks/queries/use-shifts', () => ({
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactions: mockUseTransactions,
+  useTransaction: mockUseTransaction,
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
+  useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
+  usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
@@ -168,6 +173,7 @@ beforeEach(() => {
     isError: false,
     refetch: vi.fn(),
   });
+  mockUseTransaction.mockReturnValue({ data: undefined, isLoading: false });
   mockMovements([]);
   mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure()], isLoading: false });
   mockUseInventoryItems.mockReturnValue({ data: [inventoryItem()], isLoading: false });

@@ -260,6 +260,16 @@ export const universalInventoryRepository = {
     });
   },
 
+  /** SALE-movement quantity consumed per item today (Manila calendar day), for the Branch Inventory list's "Consumed Today" column. */
+  async getConsumedTodayByBranch(branchId: string, dayStart: Date, dayEnd: Date): Promise<Map<string, number>> {
+    const grouped = await prisma.inventoryStockMovement.groupBy({
+      by: ['inventoryItemId'],
+      where: { branchId, movementType: 'SALE', createdAt: { gte: dayStart, lte: dayEnd } },
+      _sum: { quantityChange: true },
+    });
+    return new Map(grouped.map((g) => [g.inventoryItemId, Math.abs(g._sum.quantityChange?.toNumber() ?? 0)]));
+  },
+
   findStock(branchId: string, inventoryItemId: string) {
     return prisma.inventoryStock.findUnique({
       where: { branchId_inventoryItemId: { branchId, inventoryItemId } },

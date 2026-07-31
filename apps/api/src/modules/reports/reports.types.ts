@@ -14,6 +14,8 @@ export type {
   DiscountComplianceReportRow,
   PaymentMethodMixReportRow,
   InventoryMovementReportRow,
+  InventoryConsumptionSummaryReportRow,
+  InventorySummaryReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ProductPerformanceReportRow,

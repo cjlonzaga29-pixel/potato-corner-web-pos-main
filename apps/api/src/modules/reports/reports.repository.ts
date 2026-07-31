@@ -1,7 +1,9 @@
-import type { Prisma } from '@prisma/client';
+import type { Prisma, $Enums } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { manilaDateKey } from '../../lib/manila-time.js';
+import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
+import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
+import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import type {
   ReportFilters,
   ReportType,
@@ -12,6 +14,8 @@ import type {
   DiscountComplianceReportRow,
   PaymentMethodMixReportRow,
   InventoryMovementReportRow,
+  InventoryConsumptionSummaryReportRow,
+  InventorySummaryReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ProductPerformanceReportRow,
@@ -55,42 +59,83 @@ export const reportsRepository = {
     ]);
     const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
 
-    const buckets = new Map<string, DailySalesReportRow>();
+    interface Bucket {
+      reportDate: string;
+      branchId: string;
+      branchName: string;
+      grossSales: number;
+      discountTotal: number;
+      vatTotal: number;
+      refundTotal: number;
+      completedCount: number;
+      voidedCount: number;
+      refundedCount: number;
+    }
+    const buckets = new Map<string, Bucket>();
     for (const row of rows) {
       const reportDate = manilaDateKey(row.createdAt);
       const key = `${reportDate}_${row.branchId}`;
       const existing = buckets.get(key) ?? {
-        report_date: reportDate,
-        branch_id: row.branchId,
-        branch_name: branchNameById.get(row.branchId) ?? 'Unknown Branch',
-        gross_sales: 0,
-        discount_total: 0,
-        vat_total: 0,
-        net_sales: 0,
-        completed_count: 0,
-        voided_count: 0,
-        refunded_count: 0,
+        reportDate,
+        branchId: row.branchId,
+        branchName: branchNameById.get(row.branchId) ?? 'Unknown Branch',
+        grossSales: 0,
+        discountTotal: 0,
+        vatTotal: 0,
+        refundTotal: 0,
+        completedCount: 0,
+        voidedCount: 0,
+        refundedCount: 0,
       };
       if (row.status === 'completed') {
         // gross_sales is the pre-discount line-item total (Transaction.subtotal),
         // matching lib/financial-metrics.ts's canonical grossSales definition —
         // Transaction.totalAmount is post-discount and would silently understate
         // gross sales for any discounted transaction (PWD/Senior, promos, etc.).
-        existing.gross_sales += row.subtotal.toNumber();
-        existing.discount_total += row.discountAmount.toNumber();
-        existing.vat_total += row.vatAmount.toNumber();
-        existing.net_sales += row.totalAmount.toNumber() - row.vatAmount.toNumber();
-        existing.completed_count += 1;
+        existing.grossSales += row.subtotal.toNumber();
+        existing.discountTotal += row.discountAmount.toNumber();
+        existing.vatTotal += row.vatAmount.toNumber();
+        existing.completedCount += 1;
       } else if (row.status === 'voided') {
-        existing.voided_count += 1;
+        existing.voidedCount += 1;
       } else if (row.status === 'refunded') {
-        existing.refunded_count += 1;
+        // net_sales below (via computeFinancialMetrics) must subtract this,
+        // the same way branchStats' todayNetSales does — otherwise a
+        // refunded sale's revenue would silently stay counted as net,
+        // diverging from the dashboard's figure for the same branch/day.
+        existing.refundTotal += row.totalAmount.toNumber();
+        existing.refundedCount += 1;
       }
       buckets.set(key, existing);
     }
-    return [...buckets.values()].sort(
-      (a, b) => a.report_date.localeCompare(b.report_date) || a.branch_name.localeCompare(b.branch_name),
-    );
+    return [...buckets.values()]
+      .map((b) => {
+        // computeFinancialMetrics is the one formula every dashboard/report
+        // reads from — reusing it here (rather than re-deriving net_sales as
+        // totalAmount - vatAmount) keeps this report's net_sales identical to
+        // the dashboard's todayNetSales/monthly-sum for the same branch/range,
+        // per the "zero calculation differences" reconciliation requirement.
+        const metrics = computeFinancialMetrics({
+          grossSales: b.grossSales,
+          discountTotal: b.discountTotal,
+          refundTotal: b.refundTotal,
+          cogs: 0,
+          expenseTotal: 0,
+        });
+        return {
+          report_date: b.reportDate,
+          branch_id: b.branchId,
+          branch_name: b.branchName,
+          gross_sales: metrics.grossSales,
+          discount_total: metrics.discountTotal,
+          vat_total: round2(b.vatTotal),
+          net_sales: metrics.netSales,
+          completed_count: b.completedCount,
+          voided_count: b.voidedCount,
+          refunded_count: b.refundedCount,
+        };
+      })
+      .sort((a, b) => a.report_date.localeCompare(b.report_date) || a.branch_name.localeCompare(b.branch_name));
   },
 
   async getShiftSummary(filters: ReportFilters): Promise<ShiftSummaryReportRow[]> {
@@ -261,6 +306,195 @@ export const reportsRepository = {
       recorded_by_name: m.performedByUserId ? (recorderNameById.get(m.performedByUserId) ?? null) : null,
       created_at: m.createdAt.toISOString(),
     }));
+  },
+
+  // Aggregated sale-driven consumption (movement_type SALE only), grouped by
+  // ingredient + branch over the filtered range. Distinct from
+  // getInventoryMovement above (the raw per-movement ledger, every movement
+  // type) — this rolls SALE deductions up into one row per ingredient/branch.
+  // unit_cost is InventoryItem-level (org-wide), not the branch InventoryStock
+  // override getInventoryValuation prefers, since this is a movement-log
+  // aggregate, not a point-in-time stock snapshot.
+  async getInventoryConsumptionSummary(filters: ReportFilters): Promise<InventoryConsumptionSummaryReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const movements = await prisma.inventoryStockMovement.findMany({
+      where: { movementType: 'SALE', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+      select: {
+        branchId: true,
+        inventoryItemId: true,
+        quantityChange: true,
+        branch: { select: { name: true } },
+        inventoryItem: { select: { name: true, unitCost: true, baseUnit: { select: { code: true } } } },
+      },
+    });
+
+    interface Bucket {
+      branchName: string;
+      ingredientName: string;
+      unit: string;
+      unitCost: number | null;
+      quantityConsumed: number;
+      movementCount: number;
+    }
+    const buckets = new Map<string, Bucket>();
+    for (const m of movements) {
+      const key = `${m.branchId}:${m.inventoryItemId}`;
+      const consumed = Math.abs(m.quantityChange.toNumber());
+      const existing = buckets.get(key);
+      if (existing) {
+        existing.quantityConsumed += consumed;
+        existing.movementCount += 1;
+      } else {
+        buckets.set(key, {
+          branchName: m.branch.name,
+          ingredientName: m.inventoryItem.name,
+          unit: m.inventoryItem.baseUnit.code,
+          unitCost: m.inventoryItem.unitCost?.toNumber() ?? null,
+          quantityConsumed: consumed,
+          movementCount: 1,
+        });
+      }
+    }
+
+    return Array.from(buckets.entries())
+      .map(([key, b]) => {
+        const [branchId, ingredientId] = key.split(':') as [string, string];
+        return {
+          ingredient_id: ingredientId,
+          ingredient_name: b.ingredientName,
+          branch_id: branchId,
+          branch_name: b.branchName,
+          unit: b.unit,
+          quantity_consumed: round2(b.quantityConsumed),
+          unit_cost: b.unitCost,
+          consumption_value: b.unitCost !== null ? round2(b.quantityConsumed * b.unitCost) : 0,
+          movement_count: b.movementCount,
+        };
+      })
+      .sort((a, b) => b.consumption_value - a.consumption_value);
+  },
+
+  // Per-ingredient live stock snapshot — deliberately ignores filters.dateFrom/
+  // dateTo (unlike every other realtime report here): "opening stock today",
+  // "consumed today/this month" and "remaining" are always anchored to *now*,
+  // not an arbitrary selected range. opening_stock is derived, not stored —
+  // current InventoryStock.quantityOnHand minus every movement (any type)
+  // recorded today, which algebraically reconstructs the balance as it stood
+  // at today's Manila midnight. consumed_today/consumed_this_month count only
+  // SALE movements, matching the Branch Inventory list's "Consumed Today"
+  // column (getConsumedTodayByBranch) for consistency across the app.
+  async getInventorySummary(filters: ReportFilters): Promise<InventorySummaryReportRow[]> {
+    const now = new Date();
+    const { dayStart, dayEnd } = dayBounds(now);
+    const { monthStart, monthEnd } = monthBounds(now);
+
+    const stocks = await prisma.inventoryStock.findMany({
+      where: {
+        ...(filters.branchId && { branchId: filters.branchId }),
+        inventoryItem: { deletedAt: null, trackInventory: true },
+      },
+      select: {
+        branchId: true,
+        inventoryItemId: true,
+        quantityOnHand: true,
+        branch: { select: { name: true } },
+        inventoryItem: { select: { name: true, baseUnitId: true, baseUnit: { select: { code: true, dimension: true } } } },
+      },
+      orderBy: { inventoryItem: { name: 'asc' } },
+    });
+    if (stocks.length === 0) return [];
+
+    const itemIds = Array.from(new Set(stocks.map((s) => s.inventoryItemId)));
+    const branchIds = Array.from(new Set(stocks.map((s) => s.branchId)));
+    const movementScope = { inventoryItemId: { in: itemIds }, branchId: { in: branchIds } };
+
+    const [todayNet, todaySales, monthSales, gramUnit, kilogramUnit] = await Promise.all([
+      prisma.inventoryStockMovement.groupBy({
+        by: ['branchId', 'inventoryItemId'],
+        where: { ...movementScope, createdAt: { gte: dayStart, lte: dayEnd } },
+        _sum: { quantityChange: true },
+      }),
+      prisma.inventoryStockMovement.groupBy({
+        by: ['branchId', 'inventoryItemId'],
+        where: { ...movementScope, movementType: 'SALE', createdAt: { gte: dayStart, lte: dayEnd } },
+        _sum: { quantityChange: true },
+      }),
+      prisma.inventoryStockMovement.groupBy({
+        by: ['branchId', 'inventoryItemId'],
+        where: { ...movementScope, movementType: 'SALE', createdAt: { gte: monthStart, lte: monthEnd } },
+        _sum: { quantityChange: true },
+      }),
+      prisma.unitOfMeasure.findUnique({ where: { code: 'g' } }),
+      prisma.unitOfMeasure.findUnique({ where: { code: 'kg' } }),
+    ]);
+
+    const toMap = (rows: typeof todayNet, abs: boolean) =>
+      new Map(rows.map((r) => [`${r.branchId}:${r.inventoryItemId}`, abs ? Math.abs(r._sum.quantityChange?.toNumber() ?? 0) : (r._sum.quantityChange?.toNumber() ?? 0)]));
+    const todayNetMap = toMap(todayNet, false);
+    const todaySalesMap = toMap(todaySales, true);
+    const monthSalesMap = toMap(monthSales, true);
+
+    // Weight (grams/kilograms) auto-conversion, cached per base unit so each
+    // distinct unit is resolved at most once regardless of row count. Only
+    // applies to WEIGHT-dimension units — a non-weight item (pieces, liters)
+    // reports null rather than a fabricated conversion.
+    const weightFactorCache = new Map<string, { toGrams: number; toKilograms: number } | null>();
+    async function resolveWeightFactors(baseUnitId: string, dimension: string, code: string) {
+      if (weightFactorCache.has(baseUnitId)) return weightFactorCache.get(baseUnitId) ?? null;
+      if (dimension !== 'WEIGHT' || !gramUnit || !kilogramUnit) {
+        weightFactorCache.set(baseUnitId, null);
+        return null;
+      }
+      if (code === gramUnit.code) {
+        const result = { toGrams: 1, toKilograms: 0.001 };
+        weightFactorCache.set(baseUnitId, result);
+        return result;
+      }
+      if (code === kilogramUnit.code) {
+        const result = { toGrams: 1000, toKilograms: 1 };
+        weightFactorCache.set(baseUnitId, result);
+        return result;
+      }
+      try {
+        const [toGrams, toKilograms] = await Promise.all([
+          convertQuantity(1, baseUnitId, gramUnit.id),
+          convertQuantity(1, baseUnitId, kilogramUnit.id),
+        ]);
+        const result = { toGrams: toGrams.toNumber(), toKilograms: toKilograms.toNumber() };
+        weightFactorCache.set(baseUnitId, result);
+        return result;
+      } catch (error) {
+        if (error instanceof UnitConversionError) {
+          weightFactorCache.set(baseUnitId, null);
+          return null;
+        }
+        throw error;
+      }
+    }
+
+    const rows: InventorySummaryReportRow[] = [];
+    for (const s of stocks) {
+      const key = `${s.branchId}:${s.inventoryItemId}`;
+      const remaining = s.quantityOnHand.toNumber();
+      const opening = remaining - (todayNetMap.get(key) ?? 0);
+      const factors = await resolveWeightFactors(s.inventoryItem.baseUnitId, s.inventoryItem.baseUnit.dimension, s.inventoryItem.baseUnit.code);
+
+      rows.push({
+        ingredient_id: s.inventoryItemId,
+        ingredient_name: s.inventoryItem.name,
+        branch_id: s.branchId,
+        branch_name: s.branch.name,
+        unit: s.inventoryItem.baseUnit.code,
+        opening_stock: round2(opening),
+        consumed_today: round2(todaySalesMap.get(key) ?? 0),
+        consumed_this_month: round2(monthSalesMap.get(key) ?? 0),
+        remaining_stock: round2(remaining),
+        remaining_grams: factors ? round2(remaining * factors.toGrams) : null,
+        remaining_kilograms: factors ? round2(remaining * factors.toKilograms) : null,
+      });
+    }
+
+    return rows;
   },
 
   async getAttendanceSummary(filters: ReportFilters): Promise<AttendanceSummaryReportRow[]> {
@@ -764,7 +998,12 @@ export const reportsRepository = {
     };
   },
 
-  async saveSnapshot(reportType: ReportType, branchId: string | null, data: unknown, parameters: unknown): Promise<void> {
+  // reportType here is $Enums.ReportType (the Postgres-backed enum on
+  // ReportSnapshot), a strict subset of the shared ReportType union — only
+  // PRECOMPUTED_TYPES in reports.service.ts ever reach this table. Realtime
+  // types like INVENTORY_CONSUMPTION_SUMMARY are never snapshotted, so this
+  // is intentionally narrower than the app-wide ReportType.
+  async saveSnapshot(reportType: $Enums.ReportType, branchId: string | null, data: unknown, parameters: unknown): Promise<void> {
     const created = await prisma.reportSnapshot.create({
       data: { reportType, branchId, payload: data as Prisma.InputJsonValue, parameters: parameters as Prisma.InputJsonValue },
     });
@@ -774,7 +1013,7 @@ export const reportsRepository = {
     await prisma.reportSnapshot.deleteMany({ where: { reportType, branchId, id: { not: created.id } } });
   },
 
-  async getLatestSnapshot(reportType: ReportType, branchId: string | null) {
+  async getLatestSnapshot(reportType: $Enums.ReportType, branchId: string | null) {
     return prisma.reportSnapshot.findFirst({ where: { reportType, branchId }, orderBy: { computedAt: 'desc' } });
   },
 
@@ -797,6 +1036,10 @@ export const reportsRepository = {
         return this.getDailySales(filters).then((rows) => rows.length);
       case 'DISCOUNT_COMPLIANCE':
         return this.getDiscountCompliance(filters).then((rows) => rows.length);
+      case 'INVENTORY_CONSUMPTION_SUMMARY':
+        return this.getInventoryConsumptionSummary(filters).then((rows) => rows.length);
+      case 'INVENTORY_SUMMARY':
+        return this.getInventorySummary(filters).then((rows) => rows.length);
       case 'PRODUCT_PERFORMANCE':
         return this.getProductPerformance(filters).then((rows) => rows.length);
       case 'FLAVOR_PERFORMANCE':

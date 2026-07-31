@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/node';
 import { randomUUID } from 'node:crypto';
 import { SOCKET_EVENTS, type ReportType } from '@potato-corner/shared';
+import type { $Enums } from '@prisma/client';
 import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyUser } from '../lib/notify.js';
@@ -30,8 +31,12 @@ export interface GenerateExportJobData {
   branchId: string | null;
 }
 
+// Only precomputed snapshot types ever refresh (see PRECOMPUTED_TYPES in
+// reports.service.ts) — this uses the Postgres-backed ReportSnapshot enum,
+// narrower than the app-wide ReportType, since realtime types are never
+// snapshotted.
 export interface RefreshSnapshotJobData {
-  reportType: ReportType;
+  reportType: $Enums.ReportType;
   branchId: string | null;
   filters: ReportFilters;
 }

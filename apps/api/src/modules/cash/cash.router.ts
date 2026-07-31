@@ -77,7 +77,13 @@ router.get('/current', authenticate, allRoles, requireActiveEmployee, requirePas
       res.status(400).json({ data: null, error: { code: 'BRANCH_ID_REQUIRED' }, meta: null });
       return;
     }
-    const shift = await cashService.getCurrentShift(branchId);
+    // mine=true scopes the lookup to the caller's own shift — the correct
+    // check now that auto-managed shifts let several cashiers each hold a
+    // concurrent active shift at the same branch (see getMyCurrentShift).
+    const shift =
+      req.query.mine === 'true'
+        ? await cashService.getMyCurrentShift(req.user.user_id, branchId)
+        : await cashService.getCurrentShift(branchId);
     res.status(200).json({ data: shift, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

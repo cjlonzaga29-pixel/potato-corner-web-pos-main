@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -85,7 +84,7 @@ export default function TerminalPage() {
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
   const { isClockedIn, isLoading: isAttendanceLoading } = useIsClockedIn();
-  const { shift, belongsToAnother, isLoading: isShiftLoading } = useMyActiveShift(branchId);
+  const { shift, isLoading: isShiftLoading } = useMyActiveShift(branchId);
   useShiftsRealtimeSync();
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction();
@@ -127,23 +126,18 @@ export default function TerminalPage() {
     }
   }, [isOnline, paymentMethod]);
 
-  // Single clean cashier workflow: Clock In -> Open Shift once -> POS. No
-  // attendance sends the cashier back to clock in; clocked in with no active
-  // shift of their own sends them to open one — never a generic
-  // NO_ACTIVE_SHIFT toast when the app already knows where to send them. A
-  // shift that closes (or gets closed elsewhere) while this page is open
-  // falls through the same "no shift" branch and redirects back out.
+  // Single clean cashier workflow: Clock In -> Ready to Sell. No attendance
+  // sends the cashier back to clock in; the shift itself is auto-managed
+  // (opened transparently on clock-in — see attendanceService.clockIn), so
+  // there is no separate "open a shift" step or redirect for it. A brief
+  // window where `shift` is still null right after clock-in resolves itself
+  // once the auto-open completes and this query refetches.
   const isGuardLoading = isAttendanceLoading || isShiftLoading;
   const shouldRedirectToClockIn = !isGuardLoading && !isClockedIn;
-  const shouldRedirectToOpenShift = !isGuardLoading && isClockedIn && shift === null;
 
   useEffect(() => {
     if (shouldRedirectToClockIn) router.replace('/branch/clock-in');
   }, [shouldRedirectToClockIn, router]);
-
-  useEffect(() => {
-    if (shouldRedirectToOpenShift) router.replace('/branch/shift/open');
-  }, [shouldRedirectToOpenShift, router]);
 
   // Refresh the offline cache whenever the live catalog loads — Architecture
   // doc §10.1: refreshed on connect and at least every 30 minutes.
@@ -387,23 +381,8 @@ export default function TerminalPage() {
   }
 
   // Redirect in flight — render nothing rather than flashing the catalog/cart.
-  if (shouldRedirectToClockIn || shouldRedirectToOpenShift) {
+  if (shouldRedirectToClockIn) {
     return null;
-  }
-
-  if (belongsToAnother) {
-    return (
-      <div className="mx-auto max-w-md space-y-4 p-6 text-center">
-        <h1 className="text-xl font-bold">Shift mismatch</h1>
-        <p className="text-sm text-muted-foreground">
-          The active shift at this branch is open under a different cashier account. Checkout is blocked until this is
-          resolved — view the Current Shift page, or ask a supervisor/super_admin to close it.
-        </p>
-        <Button asChild variant="outline">
-          <Link href="/branch/shift">View Current Shift</Link>
-        </Button>
-      </div>
-    );
   }
 
   return (

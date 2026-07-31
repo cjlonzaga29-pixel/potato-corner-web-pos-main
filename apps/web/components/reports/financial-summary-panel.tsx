@@ -101,7 +101,14 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <KpiCard title="Gross Sales" value={grossSales} prefix="₱" isLoading={isLoading} emphasize />
+        <KpiCard
+          title="Gross Sales — Selected Period"
+          value={grossSales}
+          prefix="₱"
+          isLoading={isLoading}
+          emphasize
+          tooltip={`Completed sales from ${dateFrom} to ${dateTo}.`}
+        />
         <KpiCard title="Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} emphasize />
         <KpiCard
           title="Net Income"

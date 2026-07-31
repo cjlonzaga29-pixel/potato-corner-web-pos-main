@@ -9,6 +9,7 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { convertQuantity } from '../product-components/unit-conversion.util.js';
+import { dayBounds } from '../../lib/manila-time.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -507,8 +508,18 @@ export const universalInventoryService = {
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 
-    const rows = await repo.findBranchStockRows(branchId);
-    return { branch_id: branchId, items: rows.map(toStockRowResponse) };
+    const { dayStart, dayEnd } = dayBounds(new Date());
+    const [rows, consumedTodayByItem] = await Promise.all([
+      repo.findBranchStockRows(branchId),
+      repo.getConsumedTodayByBranch(branchId, dayStart, dayEnd),
+    ]);
+    return {
+      branch_id: branchId,
+      items: rows.map((row) => ({
+        ...toStockRowResponse(row),
+        consumed_today: Math.round((consumedTodayByItem.get(row.inventoryItemId) ?? 0) * 100) / 100,
+      })),
+    };
   },
 
   async getBranchStockAlerts(branchId: string) {

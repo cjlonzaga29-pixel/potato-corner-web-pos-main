@@ -22,10 +22,10 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  * duplicating it here: SocketInitializer is still mounted once below;
  * offline detection is self-initializing (useOffline() registers its own
  * listeners wherever it's called, already called directly by the terminal
- * page); and the real "close out a shift" flow is the Shifts page's own
- * Close Shift button (/branch/shift -> /branch/shift/close), not the old
- * PosHeader's End Shift button, which was already dead code (no
- * onEndShift handler was ever wired to it).
+ * page). Shifts are auto-managed (Phase 4-9 shift removal) — opened on
+ * Clock In and closed on Clock Out, with no cashier-facing Open/Close Shift
+ * step; the old PosHeader's End Shift button was already dead code before
+ * that change (no onEndShift handler was ever wired to it).
  */
 export default function BranchLayout({ children }: { children: ReactNode }) {
   return (

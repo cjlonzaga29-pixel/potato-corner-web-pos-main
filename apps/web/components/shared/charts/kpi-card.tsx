@@ -1,6 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
 import { ArrowDown, ArrowUp, Info, Minus } from 'lucide-react';
-import { NumberTicker } from '@/components/ui/number-ticker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -52,11 +51,7 @@ const TONE_ICON_CHIP = {
   negative: 'bg-destructive/10 text-destructive',
 } as const;
 
-/**
- * Admin/supervisor dashboards only — animates via Magic UI's number ticker
- * on mount. Never used in the POS terminal (locked design system rule:
- * Magic UI is dashboard-only).
- */
+/** Renders the final KPI value immediately once loaded — no count-up animation. */
 export function KpiCard({
   title,
   value,
@@ -115,7 +110,12 @@ export function KpiCard({
       <CardContent>
         <div className={cn(emphasize ? 'text-3xl' : 'text-2xl', 'font-bold', TONE_TEXT[tone])}>
           {prefix}
-          <NumberTicker value={value} decimalPlaces={Number.isInteger(value) ? 0 : 2} className="text-inherit" />
+          <span className="tabular-nums">
+            {Intl.NumberFormat('en-US', {
+              minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+              maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+            }).format(value)}
+          </span>
           {suffix}
         </div>
         {resolvedTrend && TrendIcon && (

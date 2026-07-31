@@ -52,8 +52,9 @@ async function refreshAccessToken(): Promise<string | null> {
           body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
         });
         if (!response.ok) return null;
-        const body = (await response.json()) as ApiResponse<RefreshResponseData>;
-        return body.data?.access_token ?? null;
+        if (!(response.headers.get('content-type') ?? '').includes('application/json')) return null;
+        const body = (await response.json().catch(() => null)) as ApiResponse<RefreshResponseData> | null;
+        return body?.data?.access_token ?? null;
       } catch {
         return null;
       } finally {
@@ -63,6 +64,24 @@ async function refreshAccessToken(): Promise<string | null> {
   }
   return refreshInFlight;
 }
+
+/**
+ * A response body is only safe to hand to response.json() when the server
+ * actually says it sent JSON. Without this check, any non-JSON response on
+ * the way to the browser — a Cloudflare/Render gateway error page, a stale
+ * proxy hop, a crashed origin's default HTML error document — surfaces to
+ * the caller as an uncaught "Unexpected token '<', <!DOCTYPE... is not
+ * valid JSON" SyntaxError, even when the mutation it was reporting on
+ * (e.g. a POS checkout) already committed successfully server-side.
+ */
+function isJsonResponse(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').includes('application/json');
+}
+
+const UNREADABLE_RESPONSE_ERROR = {
+  code: 'UNREADABLE_RESPONSE',
+  message: 'Checkout could not be confirmed. Please check Receipts before trying again.',
+} as const;
 
 function buildHeaders(init?: RequestInit): Headers {
   const headers = new Headers(init?.headers);
@@ -110,11 +129,24 @@ export async function apiClient<T>(
     await refreshInFlight;
   }
 
-  const response = await fetch(`${API_URL}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers: buildHeaders(init),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: buildHeaders(init),
+    });
+  } catch (err) {
+    console.error('[apiClient] network error', { path, method: init?.method ?? 'GET', err });
+    return {
+      data: null,
+      error: {
+        code: 'NETWORK_ERROR',
+        message: 'Could not reach the server. Please check your connection before trying again.',
+      },
+      meta: null,
+    };
+  }
 
   if (response.status === 401 && !_isRetry && path !== '/api/auth/refresh' && path !== '/api/auth/login') {
     console.warn('[apiClient] 401, triggering refresh', path);
@@ -165,7 +197,26 @@ export async function apiClient<T>(
     return { data: null, error: null, meta: null };
   }
 
-  const body = (await response.json()) as ApiResponse<T>;
+  if (!isJsonResponse(response)) {
+    const preview = await response.text().then((t) => t.slice(0, 300)).catch(() => '');
+    console.error('[apiClient] non-JSON response', {
+      path,
+      method: init?.method ?? 'GET',
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      requestId: response.headers.get('x-request-id'),
+      preview,
+    });
+    return { data: null, error: UNREADABLE_RESPONSE_ERROR, meta: null };
+  }
+
+  let body: ApiResponse<T>;
+  try {
+    body = (await response.json()) as ApiResponse<T>;
+  } catch (err) {
+    console.error('[apiClient] JSON parse failure', { path, method: init?.method ?? 'GET', status: response.status, err });
+    return { data: null, error: UNREADABLE_RESPONSE_ERROR, meta: null };
+  }
 
   // Every non-exempt endpoint returns this when req.user.must_change_password
   // is true (see apps/api/src/middleware/require-password-change.ts). Stash

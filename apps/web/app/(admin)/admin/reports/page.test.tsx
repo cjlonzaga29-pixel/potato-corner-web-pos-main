@@ -34,6 +34,13 @@ vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpensesRealtimeSync: vi.fn(),
 }));
 
+// Backs the Daily Sales "View Transactions" drilldown (DailySalesDrilldown) — not under test
+// here, just needs to not explode when the sheet mounts (closed by default in every test).
+vi.mock('@/hooks/queries/use-transactions', () => ({
+  useTransaction: vi.fn(() => ({ data: undefined })),
+  useTransactions: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+}));
+
 vi.mock('@/hooks/queries/use-shifts', () => ({
   useShifts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
   useShiftsRealtimeSync: vi.fn(),
@@ -57,6 +64,16 @@ vi.mock('@/components/reports/financial-summary-panel', () => ({
 
 vi.mock('@/components/reports/inventory-analytics-panel', () => ({
   InventoryAnalyticsPanel: () => <div>Inventory Analytics Panel</div>,
+}));
+
+// The Daily Sales drilldown sheet is closed in every test here (no row click
+// triggers it) — these are mocked purely so their own hook chains (useAuth,
+// usePaymentProof) don't need full stubbing just to mount inertly.
+vi.mock('@/components/pos/receipt-modal', () => ({
+  ReceiptModal: () => null,
+}));
+vi.mock('@/components/shared/transactions/view-payment-proof-dialog', () => ({
+  ViewPaymentProofDialog: () => null,
 }));
 
 vi.mock('next/navigation', () => ({
@@ -89,8 +106,12 @@ const reportsHooks = await import('@/hooks/queries/use-reports');
 const { toast } = await import('sonner');
 const { default: AdminReportsPage } = await import('./page.js');
 
-function goToDetailedTab() {
-  fireEvent.click(screen.getByRole('button', { name: /more reports/i }));
+function selectCategory(name: string) {
+  fireEvent.click(screen.getByRole('button', { name }));
+}
+
+function selectReportTab(name: string) {
+  fireEvent.mouseDown(screen.getByRole('tab', { name }));
 }
 
 // NumberTicker (inside KpiCard) calls Framer Motion's useInView, which
@@ -112,50 +133,52 @@ afterEach(() => {
 });
 
 describe('AdminReportsPage', () => {
-  it('renders the two top-level tabs, defaulting to Financial Summary, with legacy reports collapsed', () => {
+  it('renders no legacy disclosure UI or terminology anywhere', () => {
     render(<AdminReportsPage />);
+    expect(screen.queryByText(/more reports/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hide legacy reports/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/legacy/i)).not.toBeInTheDocument();
+  });
+
+  it('defaults to the Finance category with Financial Summary active', () => {
+    render(<AdminReportsPage />);
+    expect(screen.getByRole('button', { name: 'Finance' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('tab', { name: 'Financial Summary' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Inventory Analytics' })).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Detailed Reports' })).not.toBeInTheDocument();
-    expect(screen.getByText('Financial Summary Panel')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /more reports/i })).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('tab', { name: 'Daily Sales' })).not.toBeInTheDocument();
-  });
-
-  it('expands the legacy detailed reports behind the "More Reports" disclosure', () => {
-    render(<AdminReportsPage />);
-    goToDetailedTab();
-    expect(screen.getByRole('button', { name: /hide legacy reports/i })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('tab', { name: 'Daily Sales' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Cash Reconciliation' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Expenses' })).toBeInTheDocument();
+    expect(screen.getByText('Financial Summary Panel')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Inventory Analytics' })).not.toBeInTheDocument();
   });
 
-  it('renders the Inventory Analytics panel when that tab is active', () => {
+  it('switches the visible report tabs when a different category is selected', () => {
     render(<AdminReportsPage />);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inventory Analytics' }));
+    selectCategory('Inventory');
+    expect(screen.getByRole('button', { name: 'Inventory' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('tab', { name: 'Inventory Analytics' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Inventory Movement' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Daily Sales' })).not.toBeInTheDocument();
+    // Selecting a category jumps to its first report.
     expect(screen.getByText('Inventory Analytics Panel')).toBeInTheDocument();
   });
 
-  it('renders the 10 detailed sub-report tabs once Detailed Reports is active', () => {
+  it('renders every report across all four categories', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
-    const tabLabels = [
-      'Daily Sales',
-      'Cash Reconciliation',
-      'Expenses',
-      'Voided / Refund',
-      'Shift Reports',
-      'Alerts',
-      'Discount Compliance',
-      'Inventory Movement',
-      'Attendance Summary',
-      'Audit Log',
-    ];
-    for (const label of tabLabels) expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
+    const categories: Record<string, string[]> = {
+      Finance: ['Financial Summary', 'Daily Sales', 'Cash Reconciliation', 'Expenses'],
+      Inventory: ['Inventory Analytics', 'Inventory Movement'],
+      Operations: ['Shift Reports', 'Attendance Summary'],
+      Compliance: ['Void / Refund', 'Alerts', 'Discount Compliance', 'Audit Log'],
+    };
+    for (const [category, tabs] of Object.entries(categories)) {
+      selectCategory(category);
+      for (const label of tabs) expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
+    }
   });
 
-  it('only enables the active detailed sub-tab\'s data hook', () => {
+  it('enables only the active tab\'s data hook', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
+    selectReportTab('Daily Sales');
     expect(reportsHooks.useDailySalesReport).toHaveBeenCalledWith(expect.anything(), true);
     expect(reportsHooks.useCashReconciliationReport).toHaveBeenCalledWith(expect.anything(), false);
     expect(reportsHooks.useVoidRefundReport).toHaveBeenCalledWith(expect.anything(), false);
@@ -185,16 +208,28 @@ describe('AdminReportsPage', () => {
 
   it('does not export when the Inventory Analytics tab is active', () => {
     render(<AdminReportsPage />);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inventory Analytics' }));
+    selectCategory('Inventory');
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
     expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
   });
 
-  it('exports the active detailed sub-tab\'s report type on Export PDF click', () => {
+  it('exports the active tab\'s report type on Export PDF click', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
+    selectReportTab('Daily Sales');
     fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
     expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf', report_type: 'DAILY_SALES' }), expect.anything());
+  });
+
+  it('tracks CSV and PDF export loading state independently', () => {
+    render(<AdminReportsPage />);
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+    fireEvent.click(csvButton);
+    // The mutate call above resolves synchronously in this mock (no onSettled invocation captured here),
+    // so assert the PDF button never reflects the CSV click's loading state.
+    expect(pdfButton).not.toBeDisabled();
+    fireEvent.click(pdfButton);
+    expect(mockUseRequestExport.mutate).toHaveBeenCalledTimes(2);
   });
 
   it('calls useReportsRealtimeSync on mount', () => {
@@ -204,57 +239,56 @@ describe('AdminReportsPage', () => {
 
   it('shows a download toast when an export-ready payload arrives for the current user', async () => {
     render(<AdminReportsPage />);
-    realtimeSyncCallback?.({ requester_id: 'admin-1', report_type: 'DAILY_SALES', download_url: 'https://signed.example/x.csv' });
+    realtimeSyncCallback?.({ requester_id: 'admin-1', report_type: 'DAILY_SALES', format: 'csv', download_url: 'https://signed.example/x.csv' });
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Export ready', expect.objectContaining({ description: expect.stringContaining('DAILY_SALES') })));
   });
 
   it('does not show a download toast for another user\'s export', () => {
     render(<AdminReportsPage />);
-    realtimeSyncCallback?.({ requester_id: 'someone-else', report_type: 'DAILY_SALES', download_url: 'https://signed.example/x.csv' });
+    realtimeSyncCallback?.({ requester_id: 'someone-else', report_type: 'DAILY_SALES', format: 'csv', download_url: 'https://signed.example/x.csv' });
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it('renders a "select a branch" empty state on Daily Sales by default', () => {
+  it('renders a "select a branch" empty state on Daily Sales', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
+    selectReportTab('Daily Sales');
     expect(screen.getByText(/select a branch/i)).toBeInTheDocument();
   });
 
-  it('renders an empty state for the active sub-tab when a branch is selected and data is empty', () => {
+  it('renders an empty state for the active tab when a branch is selected and data is empty', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
+    selectReportTab('Daily Sales');
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
     expect(screen.getByText(/no sales in this range/i)).toBeInTheDocument();
   });
 
-  it('renders a loading skeleton for the active sub-tab', () => {
+  it('renders a loading skeleton for the active tab', () => {
     vi.mocked(reportsHooks.useDailySalesReport).mockReturnValue({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() } as never);
     // ReportLastUpdated renders a plain Skeleton <div> with no accessible text while
     // isLoading — assert on its class instead of text.
     const { container } = render(<AdminReportsPage />);
-    goToDetailedTab();
+    selectReportTab('Daily Sales');
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
   });
 
   it('renders the Expenses tab empty state without requiring a branch selection', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Expenses' }));
+    selectReportTab('Expenses');
     expect(screen.getByText('No expenses recorded')).toBeInTheDocument();
   });
 
   it('renders the ShiftLogPanel when the Shift Reports tab is active', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Shift Reports' }));
+    selectCategory('Operations');
+    selectReportTab('Shift Reports');
     expect(screen.getByText('Every Shift, Every Branch')).toBeInTheDocument();
   });
 
   it('renders the FraudAlertManagementPanel when the Alerts tab is active', () => {
     render(<AdminReportsPage />);
-    goToDetailedTab();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Alerts' }));
+    selectCategory('Compliance');
+    selectReportTab('Alerts');
     expect(screen.getByText('Alert Management')).toBeInTheDocument();
   });
 });

@@ -742,7 +742,7 @@ export default function TerminalPage() {
           {chargeError && <p className="text-xs text-destructive">{chargeError}</p>}
 
           <Button variant="pos" className="w-full" disabled={!canCharge || createTransaction.isPending} onClick={() => void handleCharge()}>
-            {createTransaction.isPending ? 'Charging…' : `Charge ${formatPeso(totalAmount)}`}
+            {createTransaction.isPending ? 'Processing sale…' : `Charge ${formatPeso(totalAmount)}`}
           </Button>
         </div>
       </div>

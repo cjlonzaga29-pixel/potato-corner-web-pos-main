@@ -58,6 +58,13 @@ vi.mock('@/hooks/queries/use-fraud-alerts', () => ({
 
 vi.mock('@/hooks/queries/use-branches', () => ({
   useBranches: vi.fn(() => ({ data: { branches: [{ id: 'branch-1', name: 'Main Branch' }], total: 1, page: 1, limit: 100 }, isLoading: false })),
+  useBranch: vi.fn(() => ({ data: undefined, isLoading: false })),
+}));
+
+// Backs the Sold Product Transactions tab's cashier filter/name lookups — not
+// under test here, just needs to not explode when the tab mounts.
+vi.mock('@/hooks/queries/use-employees', () => ({
+  useEmployees: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
 }));
 
 vi.mock('@/components/reports/financial-summary-panel', () => ({
@@ -106,6 +113,8 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const reportsHooks = await import('@/hooks/queries/use-reports');
 const { toast } = await import('sonner');
+const { useTransactions } = await import('@/hooks/queries/use-transactions');
+const { useEmployees } = await import('@/hooks/queries/use-employees');
 const { default: AdminReportsPage } = await import('./page.js');
 
 function selectCategory(name: string) {
@@ -218,8 +227,109 @@ describe('AdminReportsPage', () => {
   it('exports the active tab\'s report type on Export PDF click', () => {
     render(<AdminReportsPage />);
     selectReportTab('Daily Sales');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
     fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
     expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf', report_type: 'DAILY_SALES' }), expect.anything());
+  });
+
+  it('exports the DISCOUNT_COMPLIANCE aggregate (not DAILY_SALES or the row-level DETAIL variant) with branch/date filters when the Discount Compliance tab is active', () => {
+    render(<AdminReportsPage />);
+    selectCategory('Compliance');
+    selectReportTab('Discount Compliance');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+    fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+
+    expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'pdf',
+        report_type: 'DISCOUNT_COMPLIANCE',
+        filters: expect.objectContaining({
+          branch_id: 'branch-1',
+          date_from: expect.any(String),
+          date_to: expect.any(String),
+        }),
+      }),
+      expect.anything(),
+    );
+    const [input] = mockUseRequestExport.mutate.mock.calls.at(-1) ?? [];
+    expect(input.report_type).not.toBe('DAILY_SALES');
+    expect(input.report_type).not.toBe('DISCOUNT_COMPLIANCE_DETAIL');
+    expect(input.report_type).not.toBe('FRAUD_ALERT_SUMMARY');
+  });
+
+  it('exports SOLD_PRODUCT_TRANSACTIONS (not DAILY_SALES) when the Sold Product Transactions tab is active', () => {
+    render(<AdminReportsPage />);
+    selectReportTab('Sold Product Transactions');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+    fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+    expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ format: 'pdf', report_type: 'SOLD_PRODUCT_TRANSACTIONS' }),
+      expect.anything(),
+    );
+  });
+
+  it('Export CSV on the Sold Product Transactions tab requests SOLD_PRODUCT_TRANSACTIONS (never DAILY_SALES), in csv format, carrying branch/date/receipt/cashier/payment/status/product filters', () => {
+    vi.mocked(useTransactions).mockReturnValue({
+      data: {
+        transactions: [
+          {
+            id: 'tx1',
+            receipt_number: 'PC-GMA-001',
+            cashier_id: 'emp-1',
+            payment_method: 'gcash',
+            status: 'completed',
+            items: [{ product_name: 'Regular Cheese Fries', quantity: 2 }],
+            subtotal: 100,
+            vat_amount: 10,
+            discount_amount: 0,
+            total_amount: 100,
+            created_at: '2026-07-31T10:00:00.000Z',
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+      dataUpdatedAt: Date.now(),
+    } as never);
+    vi.mocked(useEmployees).mockReturnValue({
+      data: { employees: [{ id: 'emp-1', first_name: 'Juan', last_name: 'Dela Cruz' }] },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<AdminReportsPage />);
+    selectReportTab('Sold Product Transactions');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    fireEvent.change(screen.getByLabelText('Receipt #'), { target: { value: 'PC-GMA' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Juan Dela Cruz' }));
+    fireEvent.click(screen.getByRole('button', { name: 'GCash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Completed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Regular Cheese Fries' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'csv',
+        report_type: 'SOLD_PRODUCT_TRANSACTIONS',
+        filters: expect.objectContaining({
+          branch_id: 'branch-1',
+          date_from: expect.any(String),
+          date_to: expect.any(String),
+          receipt_search: 'PC-GMA',
+          cashier_id: 'emp-1',
+          payment_method: 'gcash',
+          status: 'completed',
+          product_name: 'Regular Cheese Fries',
+        }),
+      }),
+      expect.anything(),
+    );
+    const [input] = mockUseRequestExport.mutate.mock.calls.at(-1) ?? [];
+    expect(input.report_type).not.toBe('DAILY_SALES');
   });
 
   it('tracks CSV and PDF export loading state independently', () => {
@@ -304,6 +414,45 @@ describe('AdminReportsPage', () => {
     render(<AdminReportsPage />);
     selectReportTab('Daily Sales');
     expect(screen.getByText(/select a branch/i)).toBeInTheDocument();
+  });
+
+  it('disables both export buttons on a branch-required tab when no branch is selected, so clicking sends no export request', () => {
+    render(<AdminReportsPage />);
+    selectReportTab('Daily Sales');
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+    expect(csvButton).toBeDisabled();
+    expect(pdfButton).toBeDisabled();
+
+    // Disabled buttons don't fire onClick in the DOM, but assert this defensively too —
+    // handleExport() has its own no-branch guard in case it's ever invoked programmatically.
+    fireEvent.click(csvButton);
+    fireEvent.click(pdfButton);
+    expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('enables both export buttons on a branch-required tab once a branch is selected, and export still carries branch_id', () => {
+    render(<AdminReportsPage />);
+    selectReportTab('Daily Sales');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+    expect(csvButton).toBeEnabled();
+    expect(pdfButton).toBeEnabled();
+
+    fireEvent.click(csvButton);
+    expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ report_type: 'DAILY_SALES', filters: expect.objectContaining({ branch_id: 'branch-1' }) }),
+      expect.anything(),
+    );
+  });
+
+  it('does not disable export on the default Financial Summary tab, which supports all-branch export', () => {
+    render(<AdminReportsPage />);
+    expect(screen.getByRole('button', { name: /export csv/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /export pdf/i })).toBeEnabled();
   });
 
   it('renders an empty state for the active tab when a branch is selected and data is empty', () => {

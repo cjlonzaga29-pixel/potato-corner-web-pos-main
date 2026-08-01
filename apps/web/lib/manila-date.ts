@@ -10,6 +10,7 @@
  * mirroring apps/api/src/lib/manila-time.ts's reasoning on the API side.
  */
 const MANILA_TIME_ZONE = 'Asia/Manila';
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 const manilaDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: MANILA_TIME_ZONE });
 
@@ -31,4 +32,22 @@ export function manilaDaysAgo(days: number): string {
 /** The first day of the current Asia/Manila calendar month, as YYYY-MM-DD. */
 export function manilaMonthStart(): string {
   return `${manilaToday().slice(0, 7)}-01`;
+}
+
+/**
+ * Start of `dateStr`'s Asia/Manila calendar day, as a UTC ISO instant.
+ * Mirrors apps/api/src/lib/manila-time.ts's resolveDateRangeBoundary('start')
+ * so a client-computed boundary (needed by endpoints that require a precise
+ * instant rather than a bare date) agrees with the server's canonical Manila
+ * day window regardless of the browser's local timezone.
+ */
+export function manilaStartOfDayISO(dateStr: string): string {
+  const utcMidnightMs = new Date(`${dateStr}T00:00:00.000Z`).getTime();
+  return new Date(utcMidnightMs - MANILA_OFFSET_MS).toISOString();
+}
+
+/** End of `dateStr`'s Asia/Manila calendar day, as a UTC ISO instant — see manilaStartOfDayISO. */
+export function manilaEndOfDayISO(dateStr: string): string {
+  const utcMidnightMs = new Date(`${dateStr}T00:00:00.000Z`).getTime();
+  return new Date(utcMidnightMs - MANILA_OFFSET_MS + 24 * 60 * 60 * 1000 - 1).toISOString();
 }

@@ -251,10 +251,14 @@ describe('reportsRepository.getInventoryMovement', () => {
         quantityChange: decimal(-2),
         quantityBefore: decimal(10),
         quantityAfter: decimal(8),
+        referenceType: 'delivery',
+        referenceId: 'ref-1',
+        notes: 'Received from supplier',
         performedByUserId: 'u1',
         createdAt: new Date('2026-07-01T10:00:00.000Z'),
         branch: { name: 'SM North' },
-        inventoryItem: { name: 'Potato', baseUnit: { code: 'kg' } },
+        inventoryItem: { name: 'Potato' },
+        unit: { code: 'kg' },
       },
     ] as never);
     vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
@@ -273,11 +277,30 @@ describe('reportsRepository.getInventoryMovement', () => {
         quantity_change: -2,
         quantity_before: 10,
         quantity_after: 8,
+        reference_type: 'delivery',
+        reference_id: 'ref-1',
+        notes: 'Received from supplier',
         recorded_by_name: 'Juan Cruz',
         created_at: '2026-07-01T10:00:00.000Z',
       },
     ]);
     expect(prisma.inventoryMovement.findMany).not.toHaveBeenCalled();
+  });
+
+  it('falls back to em-dash for unit when the movement has no unitId, mirroring the Inventory Movement screen', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        id: 'mv-2', branchId: 'b1', inventoryItemId: 'item-1', movementType: 'WASTE',
+        quantityChange: decimal(-1), quantityBefore: decimal(5), quantityAfter: decimal(4),
+        referenceType: null, referenceId: null, notes: null,
+        performedByUserId: null, createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato' }, unit: null,
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryMovement({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]?.unit).toBe('—');
   });
 
   it('respects the branchId filter, date range, pagination and createdAt desc ordering', async () => {
@@ -309,8 +332,9 @@ describe('reportsRepository.getInventoryMovement', () => {
       {
         id: 'mv-1', branchId: 'b1', inventoryItemId: 'item-1', movementType: 'PHYSICAL_COUNT',
         quantityChange: decimal(0), quantityBefore: decimal(10), quantityAfter: decimal(10),
+        referenceType: null, referenceId: null, notes: null,
         performedByUserId: null, createdAt: new Date('2026-07-01T10:00:00.000Z'),
-        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', baseUnit: { code: 'kg' } },
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato' }, unit: { code: 'kg' },
       },
     ] as never);
 

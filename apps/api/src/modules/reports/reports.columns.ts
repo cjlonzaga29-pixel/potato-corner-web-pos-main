@@ -1,7 +1,23 @@
 // apps/api/src/modules/reports/reports.columns.ts
 import { reportsRepository } from './reports.repository.js';
-import type { ReportColumn, ReportFilters } from './reports.types.js';
+import type { ReportColumn, ReportFilters, DailySalesTransactionRow } from './reports.types.js';
 import type { ReportType } from '@potato-corner/shared';
+
+/**
+ * Not part of REPORT_COLUMNS below — used only by reports.service.ts's
+ * DAILY_SALES PDF special-case for the Supervisor/Branch Reports page's
+ * Daily Sales tab. See DailySalesTransactionRow's doc comment.
+ */
+export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransactionRow>[] = [
+  { key: 'receipt_number', header: 'Receipt #' },
+  { key: 'payment_method', header: 'Payment' },
+  { key: 'total_amount', header: 'Total' },
+  { key: 'vat_amount', header: 'VAT' },
+  { key: 'discount_amount', header: 'Discount' },
+  { key: 'discount_type', header: 'Discount Type' },
+  { key: 'created_at', header: 'Date' },
+  { key: 'cashier_name', header: 'Cashier' },
+];
 
 export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unknown>>[]> = {
   DAILY_SALES: [
@@ -76,6 +92,13 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'quantity_after', header: 'After' },
     { key: 'recorded_by_name', header: 'Recorded By' },
     { key: 'created_at', header: 'Date' },
+    // isAudit: CSV-only (see generateCsv/generatePdf's shared visibleColumns
+    // filter) — these three exist on the Inventory Movement screen's table
+    // but not the PDF layout, so they're appended as audit columns rather
+    // than visible ones to keep the PDF's rendered columns unchanged.
+    { key: 'reference_type', header: 'Reference Type', isAudit: true },
+    { key: 'reference_id', header: 'Reference ID', isAudit: true },
+    { key: 'notes', header: 'Notes', isAudit: true },
   ],
   INVENTORY_CONSUMPTION_SUMMARY: [
     { key: 'ingredient_id', header: 'Ingredient ID', isAudit: true },

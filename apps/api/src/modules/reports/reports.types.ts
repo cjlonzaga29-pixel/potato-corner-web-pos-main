@@ -71,3 +71,21 @@ export interface ReportColumn<T> {
   /** Audit-only columns (e.g. raw ids) are appended after visible columns, headers prefixed with `_`. */
   isAudit?: boolean;
 }
+
+/**
+ * One row per completed transaction — matches the Supervisor/Branch Reports
+ * page's "Daily Sales" tab exactly (apps/web/components/branch-ops/reports-view.tsx's
+ * getDailySalesColumns), used only for that tab's PDF export. Distinct from
+ * DailySalesReportRow, which is the aggregated per-day/per-branch summary the
+ * Admin Daily Sales report and DAILY_SALES CSV export use.
+ */
+export type DailySalesTransactionRow = {
+  receipt_number: string;
+  payment_method: string;
+  total_amount: number;
+  vat_amount: number;
+  discount_amount: number;
+  discount_type: string | null;
+  created_at: string;
+  cashier_name: string;
+} & Record<string, unknown>;

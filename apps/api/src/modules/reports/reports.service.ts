@@ -4,7 +4,7 @@ import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
 import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { getReportRows, REPORT_COLUMNS } from './reports.columns.js';
+import { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS } from './reports.columns.js';
 import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
 import { generatePdf } from '../../lib/reports/pdf.js';
@@ -256,6 +256,125 @@ export const reportsService = {
   ): Promise<ExportResult> {
     if (SUPER_ADMIN_ONLY_TYPES.has(reportType) && requesterRole !== ROLES.SUPER_ADMIN) {
       throw new ReportError('FORBIDDEN_REPORT_TYPE', `${reportType} can only be exported by a super admin`, 403);
+    }
+
+    // The Supervisor/Branch Reports page's Daily Sales tab (branch-ops/
+    // reports-view.tsx) exports DAILY_SALES as its report_type but renders
+    // one row per completed transaction — not the aggregated per-day/branch
+    // summary DAILY_SALES returns everywhere else (Admin's Daily Sales
+    // report and Admin's DAILY_SALES CSV export, both unchanged below).
+    // Without this branch the exported CSV/PDF rows and totals can never
+    // match that screen, since they'd come from an unrelated aggregate.
+    if (reportType === 'DAILY_SALES' && requesterRole !== ROLES.SUPER_ADMIN) {
+      const resolvedFilters = defaultRealtimeFilters(filters);
+      const rows = await reportsRepository.getDailySalesTransactions(resolvedFilters);
+      const filename = buildExportFilename(reportType, format, resolvedFilters);
+
+      let buffer: Buffer;
+      let contentType: 'text/csv' | 'application/pdf';
+      if (format === 'csv') {
+        buffer = generateCsv(rows, DAILY_SALES_TRANSACTION_COLUMNS);
+        contentType = 'text/csv';
+      } else {
+        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+        buffer = await generatePdf(reportType, resolvedFilters, rows, DAILY_SALES_TRANSACTION_COLUMNS, branch?.name ?? null);
+        contentType = 'application/pdf';
+      }
+
+      await recordAuditLog({
+        action: 'REPORT_EXPORTED',
+        entityType: 'report',
+        entityId: reportType,
+        actorId: requesterId,
+        actorRole: requesterRole,
+        branchId,
+        afterState: { reportType, format, async: false, rowCount: rows.length },
+      });
+      return { kind: 'file', buffer, filename, contentType };
+    }
+
+    // The Supervisor/Branch Reports page's Void/Refund tab (branch-ops/
+    // reports-view.tsx) does not render getVoidRefund's output — it composes
+    // its table (and KPI totals) from two independent status-filtered
+    // transaction queries (voided, then refunded), each capped at the
+    // page's own limit. getVoidRefund instead returns every matching voided
+    // OR refunded row, interleaved together by date and re-sliced by
+    // page/limit below — a different row set, order, and count than the
+    // screen. Gated to non-super_admin: the Admin Reports page's Void/Refund
+    // tab (app/(admin)/admin/reports/page.tsx) uses useVoidRefundReport,
+    // which IS backed by getVoidRefund — its export already matches its
+    // screen via the generic path below, so it must not be redirected here.
+    // Both CSV and PDF are redirected to getVoidRefundForExport, which
+    // mirrors the Supervisor/Branch screen's exact composition (voided rows
+    // then refunded rows, each capped at the screen limit) so both exported
+    // formats match what the screen shows.
+    if (reportType === 'VOID_REFUND' && requesterRole !== ROLES.SUPER_ADMIN) {
+      const resolvedFilters = defaultRealtimeFilters(filters);
+      const rows = await reportsRepository.getVoidRefundForExport(resolvedFilters);
+      const filename = buildExportFilename(reportType, format, resolvedFilters);
+      const columns = REPORT_COLUMNS[reportType];
+
+      let buffer: Buffer;
+      let contentType: 'text/csv' | 'application/pdf';
+      if (format === 'csv') {
+        buffer = generateCsv(rows, columns);
+        contentType = 'text/csv';
+      } else {
+        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
+        contentType = 'application/pdf';
+      }
+
+      await recordAuditLog({
+        action: 'REPORT_EXPORTED',
+        entityType: 'report',
+        entityId: reportType,
+        actorId: requesterId,
+        actorRole: requesterRole,
+        branchId,
+        afterState: { reportType, format, async: false, rowCount: rows.length },
+      });
+      return { kind: 'file', buffer, filename, contentType };
+    }
+
+    // The Supervisor/Branch Reports page's Discount Compliance tab
+    // (branch-ops/reports-view.tsx) does not render getDiscountCompliance's
+    // output — it filters the same per-transaction rows the Daily Sales tab
+    // uses (completedTransactions.filter(t => t.discount_type !== null)) to
+    // one row per discounted transaction. getDiscountCompliance instead
+    // returns a groupBy aggregate (one row per branch+discount_type with
+    // summed totals) — a different grain than the screen entirely. Both CSV
+    // and PDF are redirected here: reuses getDailySalesTransactions (already
+    // powers the Daily Sales PDF/CSV above) and DAILY_SALES_TRANSACTION_COLUMNS,
+    // filtered to discounted rows, so no new repository query, report type, or
+    // column set is introduced. Gated to non-super_admin: Admin's Discount
+    // Compliance CSV/PDF stay on the generic aggregate path below/unchanged.
+    if (reportType === 'DISCOUNT_COMPLIANCE' && requesterRole !== ROLES.SUPER_ADMIN) {
+      const resolvedFilters = defaultRealtimeFilters(filters);
+      const rows = (await reportsRepository.getDailySalesTransactions(resolvedFilters)).filter((row) => row.discount_type !== null);
+      const filename = buildExportFilename(reportType, format, resolvedFilters);
+
+      let buffer: Buffer;
+      let contentType: 'text/csv' | 'application/pdf';
+      if (format === 'csv') {
+        buffer = generateCsv(rows, DAILY_SALES_TRANSACTION_COLUMNS);
+        contentType = 'text/csv';
+      } else {
+        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+        buffer = await generatePdf(reportType, resolvedFilters, rows, DAILY_SALES_TRANSACTION_COLUMNS, branch?.name ?? null);
+        contentType = 'application/pdf';
+      }
+
+      await recordAuditLog({
+        action: 'REPORT_EXPORTED',
+        entityType: 'report',
+        entityId: reportType,
+        actorId: requesterId,
+        actorRole: requesterRole,
+        branchId,
+        afterState: { reportType, format, async: false, rowCount: rows.length },
+      });
+      return { kind: 'file', buffer, filename, contentType };
     }
 
     const resolvedFilters = PRECOMPUTED_TYPES.has(reportType) ? precomputedWindowFilters(branchId) : defaultRealtimeFilters(filters);

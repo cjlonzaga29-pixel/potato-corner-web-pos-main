@@ -27,6 +27,7 @@ import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-pa
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
 import { formatCurrency, formatDateTime, formatDuration, formatTimeAgo } from '@/lib/utils';
+import { manilaEndOfDayISO, manilaStartOfDayISO } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
 import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
@@ -446,6 +447,15 @@ export function ReportsView() {
 
   const rangeStartISO = startOfDayISO(dateRange.from);
   const rangeEndISO = endOfDayISO(dateRange.to);
+  // Inventory Movement's screen data and its PDF export must cover the same
+  // window: the export sends a bare date to /api/reports/export, which the
+  // backend resolves to a Manila calendar-day boundary (manila-time.ts).
+  // This endpoint requires a precise ISO instant, so it's computed the same
+  // way client-side instead of via rangeStartISO/rangeEndISO's browser-local
+  // midnight, which drifts from Manila whenever the browser isn't on that
+  // timezone and desynced the two views.
+  const movementRangeStartISO = manilaStartOfDayISO(dateRange.from);
+  const movementRangeEndISO = manilaEndOfDayISO(dateRange.to);
 
   const completedQuery = useTransactions({
     branch_id: activeBranchId ?? undefined,
@@ -477,7 +487,7 @@ export function ReportsView() {
     date_to: dateRange.to,
     limit: QUERY_LIMIT,
   });
-  const movementsQuery = useInventoryStockMovements(activeBranchId, { from_date: rangeStartISO, to_date: rangeEndISO, page: 1, limit: QUERY_LIMIT });
+  const movementsQuery = useInventoryStockMovements(activeBranchId, { from_date: movementRangeStartISO, to_date: movementRangeEndISO, page: 1, limit: QUERY_LIMIT });
   const attendanceQuery = useAttendanceByBranch(activeBranchId, { from: rangeStartISO, to: rangeEndISO, page: 1, limit: QUERY_LIMIT });
   const employeesQuery = useEmployees({ branchId: activeBranchId ?? undefined, limit: QUERY_LIMIT });
   const unitsQuery = useUnitsOfMeasure();

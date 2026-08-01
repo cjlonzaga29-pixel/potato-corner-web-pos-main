@@ -8,6 +8,7 @@ import type {
   ReportFilters,
   ReportType,
   DailySalesReportRow,
+  DailySalesTransactionRow,
   ShiftSummaryReportRow,
   CashReconciliationReportRow,
   VoidRefundReportRow,
@@ -40,6 +41,32 @@ function dateRangeFilter(filters: ReportFilters): { gte?: Date; lte?: Date } | u
   return {
     ...(filters.dateFrom && { gte: filters.dateFrom }),
     ...(filters.dateTo && { lte: filters.dateTo }),
+  };
+}
+
+type VoidRefundTransaction = Prisma.TransactionGetPayload<{
+  include: {
+    branch: { select: { name: true } };
+    cashier: { select: { firstName: true; lastName: true } };
+    voidedBy: { select: { firstName: true; lastName: true } };
+    refundedBy: { select: { firstName: true; lastName: true } };
+  };
+}>;
+
+function mapVoidRefundRow(tx: VoidRefundTransaction): VoidRefundReportRow {
+  const isVoided = tx.status === 'voided';
+  const actionedBy = isVoided ? tx.voidedBy : tx.refundedBy;
+  return {
+    transaction_id: tx.id,
+    transaction_number: tx.transactionNumber,
+    branch_id: tx.branchId,
+    branch_name: tx.branch.name,
+    cashier_name: `${tx.cashier.firstName} ${tx.cashier.lastName}`,
+    status: tx.status as 'voided' | 'refunded',
+    total_amount: tx.totalAmount.toNumber(),
+    reason: isVoided ? tx.voidReason : tx.refundReason,
+    actioned_by_name: actionedBy ? `${actionedBy.firstName} ${actionedBy.lastName}` : null,
+    actioned_at: (isVoided ? tx.voidedAt : tx.refundedAt)?.toISOString() ?? null,
   };
 }
 
@@ -138,6 +165,46 @@ export const reportsRepository = {
       .sort((a, b) => a.report_date.localeCompare(b.report_date) || a.branch_name.localeCompare(b.branch_name));
   },
 
+  /**
+   * One row per completed transaction, same where-clause shape as
+   * transactions.repository.ts's buildListWhere with status: 'completed' —
+   * matches exactly what the Supervisor/Branch Reports page's Daily Sales
+   * tab renders (see reports.types.ts's DailySalesTransactionRow doc
+   * comment). Used only by DAILY_SALES's PDF export for that tab.
+   */
+  async getDailySalesTransactions(filters: ReportFilters): Promise<DailySalesTransactionRow[]> {
+    const createdAt = dateRangeFilter(filters);
+    const rows = await prisma.transaction.findMany({
+      where: {
+        status: 'completed',
+        ...(filters.branchId && { branchId: filters.branchId }),
+        ...(createdAt && { createdAt }),
+      },
+      select: {
+        transactionNumber: true,
+        paymentMethod: true,
+        totalAmount: true,
+        vatAmount: true,
+        discountAmount: true,
+        discountType: true,
+        createdAt: true,
+        cashier: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: filters.limit,
+    });
+    return rows.map((row) => ({
+      receipt_number: row.transactionNumber,
+      payment_method: row.paymentMethod,
+      total_amount: row.totalAmount.toNumber(),
+      vat_amount: row.vatAmount.toNumber(),
+      discount_amount: row.discountAmount.toNumber(),
+      discount_type: row.discountType,
+      created_at: row.createdAt.toISOString(),
+      cashier_name: `${row.cashier.firstName} ${row.cashier.lastName}`,
+    }));
+  },
+
   async getShiftSummary(filters: ReportFilters): Promise<ShiftSummaryReportRow[]> {
     const startedAt = dateRangeFilter(filters);
     const shifts = await prisma.shift.findMany({
@@ -217,22 +284,42 @@ export const reportsRepository = {
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });
-    return transactions.map((tx) => {
-      const isVoided = tx.status === 'voided';
-      const actionedBy = isVoided ? tx.voidedBy : tx.refundedBy;
-      return {
-        transaction_id: tx.id,
-        transaction_number: tx.transactionNumber,
-        branch_id: tx.branchId,
-        branch_name: tx.branch.name,
-        cashier_name: `${tx.cashier.firstName} ${tx.cashier.lastName}`,
-        status: tx.status as 'voided' | 'refunded',
-        total_amount: tx.totalAmount.toNumber(),
-        reason: isVoided ? tx.voidReason : tx.refundReason,
-        actioned_by_name: actionedBy ? `${actionedBy.firstName} ${actionedBy.lastName}` : null,
-        actioned_at: (isVoided ? tx.voidedAt : tx.refundedAt)?.toISOString() ?? null,
-      };
-    });
+    return transactions.map(mapVoidRefundRow);
+  },
+
+  // PDF-export-only counterpart to getVoidRefund, used exclusively by
+  // reports.service.ts's VOID_REFUND PDF branch. The Supervisor/Branch
+  // Reports page's Void/Refund tab (branch-ops/reports-view.tsx) does NOT
+  // render getVoidRefund's combined, interleaved-by-date rows — it composes
+  // its table from two independent status-filtered transaction queries
+  // (voided, then refunded), each capped at the page's own limit. Mirrors
+  // that exact composition (two separate queries, voided rows first, each
+  // ordered desc by createdAt and capped at filters.limit) so the exported
+  // PDF's rows, order, and row count match what the screen and its KPI
+  // totals (Total Voided/Refunded, Voided/Refunded Amount) actually show.
+  async getVoidRefundForExport(filters: ReportFilters): Promise<VoidRefundReportRow[]> {
+    const range = dateRangeFilter(filters);
+    const include = {
+      branch: { select: { name: true } },
+      cashier: { select: { firstName: true, lastName: true } },
+      voidedBy: { select: { firstName: true, lastName: true } },
+      refundedBy: { select: { firstName: true, lastName: true } },
+    } as const;
+    const [voided, refunded] = await Promise.all([
+      prisma.transaction.findMany({
+        where: { status: 'voided', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+        include,
+        orderBy: { createdAt: 'desc' },
+        take: filters.limit,
+      }),
+      prisma.transaction.findMany({
+        where: { status: 'refunded', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+        include,
+        orderBy: { createdAt: 'desc' },
+        take: filters.limit,
+      }),
+    ]);
+    return [...voided.map(mapVoidRefundRow), ...refunded.map(mapVoidRefundRow)];
   },
 
   async getDiscountCompliance(filters: ReportFilters): Promise<DiscountComplianceReportRow[]> {
@@ -282,7 +369,7 @@ export const reportsRepository = {
     const range = dateRangeFilter(filters);
     const movements = await prisma.inventoryStockMovement.findMany({
       where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-      include: { branch: { select: { name: true } }, inventoryItem: { select: { name: true, baseUnit: { select: { code: true } } } } },
+      include: { branch: { select: { name: true } }, inventoryItem: { select: { name: true } }, unit: { select: { code: true } } },
       orderBy: { createdAt: 'desc' },
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
@@ -298,11 +385,18 @@ export const reportsRepository = {
       branch_name: m.branch.name,
       ingredient_id: m.inventoryItemId,
       ingredient_name: m.inventoryItem.name,
-      unit: m.inventoryItem.baseUnit.code,
+      // The movement's own recorded unit (e.g. a delivery logged in boxes),
+      // not the ingredient's base unit — those can differ, and the
+      // Inventory Movement screen (reports-view.tsx) reads unit_id off the
+      // movement itself, so the CSV must match it row-for-row.
+      unit: m.unit ? m.unit.code : '—',
       movement_type: m.movementType,
       quantity_change: m.quantityChange.toNumber(),
       quantity_before: m.quantityBefore.toNumber(),
       quantity_after: m.quantityAfter.toNumber(),
+      reference_type: m.referenceType,
+      reference_id: m.referenceId,
+      notes: m.notes,
       recorded_by_name: m.performedByUserId ? (recorderNameById.get(m.performedByUserId) ?? null) : null,
       created_at: m.createdAt.toISOString(),
     }));

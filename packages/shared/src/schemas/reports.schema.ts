@@ -143,6 +143,9 @@ export const InventoryMovementReportRowSchema = z.object({
   quantity_change: z.number(),
   quantity_before: z.number(),
   quantity_after: z.number(),
+  reference_type: z.string().nullable(),
+  reference_id: z.string().nullable(),
+  notes: z.string().nullable(),
   recorded_by_name: z.string().nullable(),
   created_at: z.iso.datetime(),
 });

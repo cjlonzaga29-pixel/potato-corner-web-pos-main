@@ -29,6 +29,8 @@ import {
   type InventoryAnalyticsReport,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { requestReportExport, type ExportOutcome } from '@/lib/report-export-client';
+import { triggerBrowserDownload } from '@/lib/trigger-download';
 import { useSocket } from '@/hooks/use-socket';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
@@ -221,34 +223,37 @@ export function useBranchComparisonReport(branchId: string | undefined, enabled 
   return usePrecomputedReport<BranchComparisonReportRow>('BRANCH_COMPARISON', branchId, enabled);
 }
 
-interface ExportResult {
-  download_url?: string;
-  expires_at?: string;
-  job_id?: string;
-  message?: string;
-  estimated_seconds?: number;
+function formatLabel(format: ExportRequestInput['format']): string {
+  return format.toUpperCase();
 }
 
+/**
+ * POST /api/reports/export now returns one of two genuinely different
+ * shapes (see report-export-client.ts): raw file bytes for the common case
+ * (both csv and pdf, most of the time), or a JSON job descriptor for the
+ * rare oversized-report case that finishes asynchronously via
+ * useReportsRealtimeSync below. requestReportExport() tells them apart by
+ * Content-Type rather than this hook ever touching response.json() itself.
+ */
 export function useRequestExport() {
   return useMutation({
-    mutationFn: async (input: ExportRequestInput) => {
-      const response = await apiClient<ExportResult>('/api/reports/export', { method: 'POST', body: JSON.stringify(input) });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to request report export'));
-      return response.data;
-    },
-    onSuccess: (data) => {
-      if (data.download_url) {
-        const url = data.download_url;
-        toast.success('Export ready', {
-          description: 'Your download link is ready.',
-          action: { label: 'Download', onClick: () => window.open(url, '_blank') },
-          duration: 30_000,
-        });
+    mutationFn: (input: ExportRequestInput): Promise<ExportOutcome> => requestReportExport(input),
+    onSuccess: (outcome: ExportOutcome, variables: ExportRequestInput) => {
+      if (outcome.kind === 'file') {
+        // Trigger the actual browser download before announcing success —
+        // a toast that fires first and a download that silently fails
+        // would tell the user something happened when nothing did.
+        triggerBrowserDownload(outcome.file.blob, outcome.file.filename);
+        toast.success(`${formatLabel(variables.format)} downloaded`);
       } else {
-        toast.success("Generating your report… you'll be notified when it's ready");
+        toast.success(outcome.message || "Generating your report… you'll be notified when it's ready");
       }
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error, variables: ExportRequestInput) => {
+      toast.error(`${formatLabel(variables.format)} export failed`, {
+        description: error.message,
+      });
+    },
   });
 }
 

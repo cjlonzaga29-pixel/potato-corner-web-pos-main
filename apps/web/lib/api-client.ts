@@ -112,12 +112,14 @@ function buildHeaders(init?: RequestInit): Headers {
  * before retrying the original request once. If refresh fails, clears the
  * auth store and redirects to /login — callers never see a 401 from an
  * expired (as opposed to genuinely invalid) session.
+ *
+ * Returns the raw `Response` — callers that need the parsed `ApiResponse<T>`
+ * envelope should go through `apiClient()` below, which wraps this. Binary/
+ * non-JSON endpoints (e.g. report file downloads) can call this directly to
+ * get the same auth/refresh/retry behavior without `apiClient`'s `.json()`
+ * parsing.
  */
-export async function apiClient<T>(
-  path: string,
-  init?: RequestInit,
-  _isRetry = false,
-): Promise<ApiResponse<T>> {
+export async function fetchAuthenticated(path: string, init?: RequestInit, _isRetry = false): Promise<Response> {
   const isAuthPath = path === '/api/auth/refresh' || path === '/api/auth/login';
   if (refreshInFlight && !_isRetry && !isAuthPath) {
     // A refresh is already resolving elsewhere (e.g. another mutation's 401
@@ -138,14 +140,7 @@ export async function apiClient<T>(
     });
   } catch (err) {
     console.error('[apiClient] network error', { path, method: init?.method ?? 'GET', err });
-    return {
-      data: null,
-      error: {
-        code: 'NETWORK_ERROR',
-        message: 'Could not reach the server. Please check your connection before trying again.',
-      },
-      meta: null,
-    };
+    throw err;
   }
 
   if (response.status === 401 && !_isRetry && path !== '/api/auth/refresh' && path !== '/api/auth/login') {
@@ -175,7 +170,7 @@ export async function apiClient<T>(
             }
           : previousUser;
         useAuthStore.getState().setAuth(updatedUser, newToken);
-        return apiClient<T>(path, init, true);
+        return fetchAuthenticated(path, init, true);
       }
     }
 
@@ -189,6 +184,29 @@ export async function apiClient<T>(
     if (typeof window !== 'undefined') {
       broadcastLogout();
     }
+  }
+
+  return response;
+}
+
+/**
+ * JSON-parsing wrapper around `fetchAuthenticated` — every existing caller
+ * in the app goes through this. Handles the 204-no-body case, the non-JSON-
+ * response guard, JSON parse failures, and the MUST_CHANGE_PASSWORD redirect.
+ */
+export async function apiClient<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
+  let response: Response;
+  try {
+    response = await fetchAuthenticated(path, init);
+  } catch {
+    return {
+      data: null,
+      error: {
+        code: 'NETWORK_ERROR',
+        message: 'Could not reach the server. Please check your connection before trying again.',
+      },
+      meta: null,
+    };
   }
 
   // 204 No Content (e.g. DELETE endpoints) has no body — calling .json() on

@@ -80,11 +80,11 @@ export function ReportFilterBar({
       </Button>
       <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv}>
         {isExportingCsv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-        Export CSV
+        {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
       </Button>
       <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf}>
         {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-        Export PDF
+        {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
       </Button>
     </div>
   );

@@ -24,11 +24,20 @@ function toDateStamp(date: Date | undefined): string {
 }
 
 /**
- * User-facing download filename for a report export — e.g. `DailySales_2026-07-30.csv`.
- * Distinct from the Supabase Storage object path (`reports/{userId}/{timestamp}-{type}.{ext}`),
- * which only needs to be unique, not readable.
+ * User-facing download filename for a report export — e.g.
+ * `DailySales_2026-07-24_to_2026-07-30.csv` when both bounds of the range are
+ * known, falling back to a single date stamp (or today) when one or both are
+ * missing. Distinct from the Supabase Storage object path
+ * (`reports/{userId}/{timestamp}-{type}.{ext}`, still used by the async/
+ * large-report path), which only needs to be unique, not readable.
  */
 export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters): string {
+  const name = pascalCase(reportType);
+  if (filters.dateFrom && filters.dateTo) {
+    const from = toDateStamp(filters.dateFrom);
+    const to = toDateStamp(filters.dateTo);
+    return from === to ? `${name}_${from}.${format}` : `${name}_${from}_to_${to}.${format}`;
+  }
   const dateStamp = toDateStamp(filters.dateTo ?? filters.dateFrom);
-  return `${pascalCase(reportType)}_${dateStamp}.${format}`;
+  return `${name}_${dateStamp}.${format}`;
 }

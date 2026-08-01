@@ -617,10 +617,10 @@ export function ReportsView() {
           {refreshDisabled ? `Refresh (${refreshCooldown}s)` : 'Refresh'}
         </Button>
         <Button type="button" variant="outline" onClick={() => handleExport('csv')} disabled={isExportingCsv}>
-          {isExportingCsv ? 'Exporting…' : 'Export CSV'}
+          {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
         </Button>
         <Button type="button" variant="outline" onClick={() => handleExport('pdf')} disabled={isExportingPdf}>
-          {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+          {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
         </Button>
       </div>
 

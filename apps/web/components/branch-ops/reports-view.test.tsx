@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, within, cleanup, fireEvent, act } from '@testing-library/react';
 import type { InventoryStockMovementResponse, UnitOfMeasureResponse, InventoryItemResponse, TransactionResponse } from '@potato-corner/shared';
 import { ReportsView } from './reports-view';
 
@@ -373,5 +373,74 @@ describe('ReportsView — Reports §8/§9/§10 (shift removal, Sold Product Tran
 
     expect(screen.queryByText('PC-0001')).not.toBeInTheDocument();
     expect(screen.getByText('PC-0002')).toBeInTheDocument();
+  });
+});
+
+describe('ReportsView — export controls (CSV/PDF download fix)', () => {
+  it('renders both export buttons with type="button", outside any form', () => {
+    render(<ReportsView />);
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+    expect(csvButton).toHaveAttribute('type', 'button');
+    expect(pdfButton).toHaveAttribute('type', 'button');
+    expect(csvButton.closest('form')).toBeNull();
+    expect(pdfButton.closest('form')).toBeNull();
+  });
+
+  it('calls mutate with only format csv and does not change the PDF button state', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<ReportsView />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'csv' }), expect.anything());
+    expect(screen.getByRole('button', { name: 'Export PDF' })).toBeEnabled();
+  });
+
+  it('calls mutate with only format pdf and does not change the CSV button state', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<ReportsView />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }), expect.anything());
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled();
+  });
+
+  it('shows "Exporting CSV…" while pending and disables the button so a rapid second click sends only one request', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<ReportsView />);
+
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    fireEvent.click(csvButton);
+    expect(screen.getByRole('button', { name: 'Exporting CSV…' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Exporting CSV…' }));
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not touch the Refresh cooldown when exporting', () => {
+    render(<ReportsView />);
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+    expect(screen.getByRole('button', { name: /^refresh$/i })).not.toBeDisabled();
+  });
+
+  it('resets to idle "Export CSV" (enabled) once the mutation settles', async () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<ReportsView />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+    const onSettled = mutate.mock.calls.at(-1)?.[1]?.onSettled;
+    expect(typeof onSettled).toBe('function');
+
+    await act(async () => {
+      onSettled();
+    });
+
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import type {
   AttendanceResponse,
   EmployeeResponse,
@@ -579,6 +579,63 @@ describe('export controls', () => {
     fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
 
     expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }), expect.anything());
+  });
+
+  it('renders both export buttons with type="button" and outside any form', () => {
+    render(<SupervisorReportsPage />);
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+    expect(csvButton).toHaveAttribute('type', 'button');
+    expect(pdfButton).toHaveAttribute('type', 'button');
+    expect(csvButton.closest('form')).toBeNull();
+    expect(pdfButton.closest('form')).toBeNull();
+  });
+
+  it('does not disable/change the Refresh button when Export CSV is clicked', () => {
+    render(<SupervisorReportsPage />);
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+    expect(screen.getByRole('button', { name: /^refresh$/i })).not.toBeDisabled();
+  });
+
+  it('shows the CSV loading label while exporting and does not affect the PDF button', () => {
+    const mutate = vi.fn(); // never resolves/settles in this test — loading state stays on
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<SupervisorReportsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    expect(screen.getByRole('button', { name: /exporting csv/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Export PDF' })).toBeEnabled();
+  });
+
+  it('disables the CSV button after one click so a rapid second click sends only one request', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<SupervisorReportsPage />);
+
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    fireEvent.click(csvButton);
+    // The button is now disabled (isExportingCsv=true) — a second rapid click
+    // on a disabled element does not fire onClick.
+    fireEvent.click(screen.getByRole('button', { name: /exporting csv/i }));
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets the CSV button to idle and enabled once the mutation settles (success or failure)', async () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    render(<SupervisorReportsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+    const onSettled = mutate.mock.calls.at(-1)?.[1]?.onSettled;
+    expect(typeof onSettled).toBe('function');
+
+    await act(async () => {
+      onSettled();
+    });
+
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled();
   });
 });
 

@@ -772,6 +772,7 @@ model ProductOption {
   optionGroup           ProductOptionGroup                @relation(fields: [optionGroupId], references: [id])
   creator               User?                             @relation(fields: [createdBy], references: [id])
   variantAllowedOptions ProductVariantOptionGroupOption[]
+  components            ProductComponent[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1294,6 +1295,11 @@ model ProductComponent {
   // legacy modeled via Flavor.ingredientName/ingredientUnit instead.
   flavorId String? @map("flavor_id")
 
+  // Nullable: NULL means this component is a base component, not dependent
+  // on a Product Option. Set means it only deducts when that Product Option
+  // is selected -- same nullable-scope pattern as flavorId above.
+  productOptionId String? @map("product_option_id")
+
   // Soft-delete + audit metadata, matching ProductInventory's shape.
   deletedAt DateTime? @map("deleted_at")
   isActive  Boolean   @default(true) @map("is_active")
@@ -1305,6 +1311,7 @@ model ProductComponent {
   inventoryItem  InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   recipeUnit     UnitOfMeasure? @relation(fields: [recipeUnitId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id], onDelete: Cascade)
+  productOption  ProductOption? @relation(fields: [productOptionId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1317,6 +1324,7 @@ model ProductComponent {
   @@index([productVariantId])
   @@index([inventoryItemId])
   @@index([recipeUnitId])
+  @@index([productOptionId])
   @@map("product_components")
 }
 

@@ -262,11 +262,20 @@ export const posCatalogFlavorSchema = z.object({
 
 // CR-008 — read-only surface of a variant's assigned Option Groups (R11/R12:
 // additive read adapter only, no pricing/deduction logic reads this field).
+export const posCatalogOptionSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  price_adjustment: z.number(),
+  sort_order: z.number().int().nullable(),
+  is_active: z.boolean(),
+});
+
 export const posCatalogOptionGroupSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   selection_type: z.enum(['SINGLE', 'MULTIPLE']),
   required: z.boolean(),
+  options: z.array(posCatalogOptionSchema),
 });
 
 // Mix & Max — one flavor selector per ProductFlavorSlot row, ordered by

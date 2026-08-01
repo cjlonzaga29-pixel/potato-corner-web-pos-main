@@ -315,7 +315,17 @@ export const productsRepository = {
             // surfaced to the branch catalog view. Not consumed by pricing
             // or inventory deduction.
             optionGroupAssignments: {
-              include: { optionGroup: { select: { id: true, name: true, selectionType: true, required: true, isActive: true } } },
+              include: {
+                optionGroup: { select: { id: true, name: true, selectionType: true, required: true, isActive: true } },
+                allowedOptions: {
+                  orderBy: { sortOrder: 'asc' },
+                  include: {
+                    productOption: {
+                      select: { id: true, name: true, priceAdjustment: true, sortOrder: true, isActive: true },
+                    },
+                  },
+                },
+              },
             },
             // Mix & Max flavor slots — one selector per row in the POS UI.
             flavorSlots: {

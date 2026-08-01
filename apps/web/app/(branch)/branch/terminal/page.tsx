@@ -9,6 +9,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -21,6 +23,7 @@ import { SearchInput } from '@/components/shared/forms/search-input';
 import { useAuth } from '@/hooks/use-auth';
 import { useAuthStore, type AuthUser } from '@/stores/auth.store';
 import { useCart } from '@/hooks/use-cart';
+import type { PosCartSelectedOption } from '@/stores/cart.store';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
 import { useIsClockedIn, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
@@ -34,6 +37,13 @@ import { ReceiptModal } from '@/components/pos/receipt-modal';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
+}
+
+// Signed display for a price adjustment, e.g. "(+₱5.00)" or "(-₱5.00)" —
+// formatPeso alone can't express the sign since toFixed already carries a
+// leading "-" for negative amounts.
+function formatAdjustment(amount: number): string {
+  return amount >= 0 ? ` (+${formatPeso(amount)})` : ` (-${formatPeso(Math.abs(amount))})`;
 }
 
 function round2(amount: number): number {
@@ -158,6 +168,15 @@ export default function TerminalPage() {
     product: PosCatalogProduct;
     variant: PosCatalogProduct['variants'][number];
     selections: Record<number, { snackProductVariantId: string; flavorId: string }>;
+  } | null>(null);
+  // CR-008 Product Option Groups (Task 21) — `groups` is pre-filtered to
+  // groups that actually have at least one active option, so every group
+  // rendered here is guaranteed non-empty.
+  const [optionPrompt, setOptionPrompt] = useState<{
+    product: PosCatalogProduct;
+    variant: PosCatalogProduct['variants'][number];
+    groups: PosCatalogProduct['variants'][number]['option_groups'];
+    selections: Record<string, string[]>;
   } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'other'>('cash');
   const [discountType, setDiscountType] = useState<DiscountChoice>('none');
@@ -292,7 +311,55 @@ export default function TerminalPage() {
       setFlavorPrompt({ product, variant });
       return;
     }
+    const groupsWithActiveOptions = variant.option_groups
+      .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
+      .filter((group) => group.options.length > 0);
+    if (groupsWithActiveOptions.length > 0) {
+      setOptionPrompt({ product, variant, groups: groupsWithActiveOptions, selections: {} });
+      return;
+    }
     addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
+  }
+
+  function handleOptionSelect(groupId: string, optionId: string, selectionType: 'SINGLE' | 'MULTIPLE') {
+    setOptionPrompt((prev) => {
+      if (!prev) return prev;
+      const current = prev.selections[groupId] ?? [];
+      const next =
+        selectionType === 'SINGLE'
+          ? [optionId]
+          : current.includes(optionId)
+            ? current.filter((id) => id !== optionId)
+            : [...current, optionId];
+      return { ...prev, selections: { ...prev.selections, [groupId]: next } };
+    });
+  }
+
+  const optionPromptValid = optionPrompt
+    ? optionPrompt.groups.every((group) => !group.required || (optionPrompt.selections[group.id]?.length ?? 0) > 0)
+    : false;
+
+  function handleOptionAddToCart() {
+    if (!optionPrompt || !optionPromptValid) return;
+    const selected_options: PosCartSelectedOption[] = optionPrompt.groups.flatMap((group) =>
+      (optionPrompt.selections[group.id] ?? []).map((optionId) => {
+        const option = group.options.find((o) => o.id === optionId);
+        return {
+          option_group_id: group.id,
+          option_group_name: group.name,
+          option_id: optionId,
+          option_name: option?.name ?? 'Unknown option',
+          price_adjustment: option?.price_adjustment ?? 0,
+        };
+      }),
+    );
+    addItem({
+      product_id: optionPrompt.product.id,
+      product_variant_id: optionPrompt.variant.id,
+      selected_options,
+      quantity: 1,
+    });
+    setOptionPrompt(null);
   }
 
   function handleFlavorPick(flavorId: string) {
@@ -360,10 +427,12 @@ export default function TerminalPage() {
               pricePremium: slotFlavor?.price_premium ?? 0,
             };
           });
+        const optionSelections = item.selected_options ?? [];
+        const optionsAdjustment = optionSelections.reduce((sum, o) => sum + o.price_adjustment, 0);
         const unitPrice =
           slotSelections.length > 0
-            ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0)
-            : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0);
+            ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0) + optionsAdjustment
+            : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0) + optionsAdjustment;
         return {
           index,
           item,
@@ -371,6 +440,7 @@ export default function TerminalPage() {
           variantName: info?.variant.name ?? '',
           flavorName: flavor?.name ?? null,
           slotSelections,
+          optionSelections,
           unitPrice,
           quantity: item.quantity,
           lineTotal: round2(unitPrice * item.quantity),
@@ -440,7 +510,19 @@ export default function TerminalPage() {
       // Optional — the API resolves/auto-opens the cashier's own active
       // shift server-side (shiftGuard) and trusts that over this value.
       shift_id: shift?.id,
-      items,
+      // selected_options display metadata (names, price_adjustment) is
+      // frontend-only and never sent as trusted backend fields (Task 21) —
+      // only option_id is forwarded, as selected_option_ids (Task 26).
+      items: items.map((item) => ({
+        product_id: item.product_id,
+        product_variant_id: item.product_variant_id,
+        flavor_id: item.flavor_id,
+        selected_flavors: item.selected_flavors,
+        ...(item.selected_options?.length
+          ? { selected_option_ids: item.selected_options.map((option) => option.option_id) }
+          : {}),
+        quantity: item.quantity,
+      })),
       payment_method: paymentMethod,
       discount_type: discountType === 'none' ? undefined : discountType,
       discount_id_reference: discountIdReference.trim() || undefined,
@@ -755,6 +837,63 @@ export default function TerminalPage() {
             </Card>
           </div>
         )}
+
+        <Dialog open={optionPrompt !== null} onOpenChange={(open) => !open && setOptionPrompt(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {optionPrompt ? `${optionPrompt.product.name} (${optionPrompt.variant.name})` : ''}
+              </DialogTitle>
+            </DialogHeader>
+            {optionPrompt && (
+              <div className="space-y-4">
+                {optionPrompt.groups.map((group) => {
+                  const selected = optionPrompt.selections[group.id] ?? [];
+                  return (
+                    <div key={group.id} className="space-y-2">
+                      <p className="text-sm font-medium">
+                        {group.name}
+                        {group.required && <span className="text-destructive"> *</span>}
+                      </p>
+                      {group.selection_type === 'SINGLE' ? (
+                        <RadioGroup
+                          value={selected[0] ?? ''}
+                          onValueChange={(value) => handleOptionSelect(group.id, value, 'SINGLE')}
+                        >
+                          {group.options.map((option) => (
+                            <label key={option.id} className="flex items-center gap-2 text-sm">
+                              <RadioGroupItem value={option.id} />
+                              {option.name}
+                              {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                            </label>
+                          ))}
+                        </RadioGroup>
+                      ) : (
+                        <div className="space-y-1">
+                          {group.options.map((option) => (
+                            <label key={option.id} className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={selected.includes(option.id)}
+                                onCheckedChange={() => handleOptionSelect(group.id, option.id, 'MULTIPLE')}
+                              />
+                              {option.name}
+                              {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <DialogFooter>
+              <Button className="w-full" disabled={!optionPromptValid} onClick={handleOptionAddToCart}>
+                Add to Cart
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* RIGHT PANEL — cart + payment */}
@@ -784,6 +923,12 @@ export default function TerminalPage() {
                 {line.slotSelections.map((sel, i) => (
                   <p key={i} className="text-xs text-muted-foreground">
                     {sel.label}: {sel.snackName} — {sel.flavorName}
+                  </p>
+                ))}
+                {line.optionSelections.map((opt) => (
+                  <p key={opt.option_id} className="text-xs text-muted-foreground">
+                    {opt.option_group_name}: {opt.option_name}
+                    {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
                   </p>
                 ))}
                 <div className="flex items-center justify-between gap-2">

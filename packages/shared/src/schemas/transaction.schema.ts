@@ -36,6 +36,11 @@ export const cartItemSchema = z.object({
       }),
     )
     .optional(),
+  // CR-008 Product Options (Task 26) — IDs only, transported from the POS cart
+  // to checkout. Display metadata (names, price_adjustment) is frontend-only
+  // and never trusted as a backend field. Selected Product Option IDs used
+  // for server-side validation, pricing, and inventory deduction.
+  selected_option_ids: z.array(z.uuid()).optional(),
   quantity: z.number().int().positive(),
 });
 

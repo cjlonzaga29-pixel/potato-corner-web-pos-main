@@ -19,6 +19,8 @@ export interface CartItemInput {
   flavorId?: string;
   /** Mix & Max slot selections — required instead of flavorId when the variant has ProductFlavorSlot rows. */
   selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[];
+  /** CR-008 Product Options (Task 27) — IDs only, forwarded to computeBomDeduction for option-scoped ProductComponent rows. */
+  selectedOptionIds?: string[];
   quantity: number;
 }
 

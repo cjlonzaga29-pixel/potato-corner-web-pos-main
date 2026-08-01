@@ -41,6 +41,7 @@ export const productComponentsRepository = {
         quantityRequired: data.quantityRequired,
         ...(data.recipeUnitId !== undefined && { recipeUnitId: data.recipeUnitId }),
         ...(data.createdBy !== undefined && { createdBy: data.createdBy }),
+        ...(data.productOptionId !== undefined && { productOptionId: data.productOptionId }),
       },
       include: productComponentInclude,
     });
@@ -60,6 +61,7 @@ export const productComponentsRepository = {
         ...(data.quantityRequired !== undefined && { quantityRequired: data.quantityRequired }),
         ...(data.recipeUnitId !== undefined && { recipeUnitId: data.recipeUnitId }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
+        ...(data.productOptionId !== undefined && { productOptionId: data.productOptionId }),
         version: { increment: 1 },
       },
       include: productComponentInclude,

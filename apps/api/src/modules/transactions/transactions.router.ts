@@ -131,6 +131,7 @@ router.post(
             productVariantId: item.product_variant_id,
             flavorId: item.flavor_id,
             selectedFlavors: item.selected_flavors?.map((sf) => ({ slotIndex: sf.slot_index, snackProductVariantId: sf.snack_product_variant_id, flavorId: sf.flavor_id })),
+            selectedOptionIds: item.selected_option_ids,
             quantity: item.quantity,
           })),
           paymentMethod: body.payment_method,

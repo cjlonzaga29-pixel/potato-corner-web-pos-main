@@ -322,6 +322,44 @@ function readinessRejection(variantName: string, result: ProductVariantReadiness
 }
 
 /**
+ * CR-008 Product Options server-side pricing (Task 32). Sums the trusted
+ * DB priceAdjustment for each selectedOptionIds entry — never the
+ * frontend-provided display price — rejecting the whole transaction if any
+ * selected option doesn't exist, isn't active, or isn't actually assigned
+ * to this variant (variant.optionGroupAssignments is the same
+ * ProductVariantOptionGroupOption-scoped "allowed options" set the Product
+ * Builder UI enforces, so pricing can never disagree with what was offered).
+ */
+function resolveSelectedOptionsPremium(
+  variant: {
+    name: string;
+    optionGroupAssignments?: { allowedOptions: { productOptionId: string; productOption: { isActive: boolean; priceAdjustment: { toNumber(): number } } }[] }[];
+  },
+  selectedOptionIds: string[] | undefined,
+): number {
+  if (!selectedOptionIds || selectedOptionIds.length === 0) return 0;
+
+  const allowedOptions = new Map<string, number>();
+  for (const assignment of variant.optionGroupAssignments ?? []) {
+    for (const allowed of assignment.allowedOptions) {
+      if (allowed.productOption.isActive) {
+        allowedOptions.set(allowed.productOptionId, allowed.productOption.priceAdjustment.toNumber());
+      }
+    }
+  }
+
+  let premium = 0;
+  for (const optionId of selectedOptionIds) {
+    const priceAdjustment = allowedOptions.get(optionId);
+    if (priceAdjustment === undefined) {
+      throw new TransactionError('PRODUCT_OPTION_NOT_AVAILABLE', `Selected product option is not available for ${variant.name}`, 422);
+    }
+    premium += priceAdjustment;
+  }
+  return premium;
+}
+
+/**
  * Resolves and prices every cart line against the live catalog — never
  * trusts a client-submitted price. Rejects the whole transaction if any
  * item references a variant/flavor that isn't active, sellable at this
@@ -458,11 +496,12 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       }
 
       recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
-      deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null);
+      deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null, item.selectedOptionIds);
     }
 
+    const optionsPremium = resolveSelectedOptionsPremium(variant, item.selectedOptionIds);
     const basePrice = variant.basePrice.toNumber();
-    const unitPrice = round2(basePrice + pricePremium);
+    const unitPrice = round2(basePrice + pricePremium + optionsPremium);
     const lineTotal = round2(unitPrice * item.quantity);
 
     resolved.push({

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import TerminalPage from './page';
-import type { PosCatalogProduct } from '@potato-corner/shared';
+import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
 import { useAuthStore } from '@/stores/auth.store';
 
 const {
@@ -15,9 +15,11 @@ const {
   mockUseAuth,
   mockSelectEmployee,
   mockUseEmployees,
+  mockCreateTransactionMutateAsync,
 } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockUseCatalog: vi.fn(),
+  mockCreateTransactionMutateAsync: vi.fn().mockResolvedValue({}),
   mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isLoading: false })),
   mockUseIsClockedIn: vi.fn(() => ({
     isClockedIn: true,
@@ -105,7 +107,7 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
-  useCreateTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useCreateTransaction: () => ({ mutateAsync: mockCreateTransactionMutateAsync, isPending: false }),
   useUploadPaymentProof: () => ({ mutateAsync: vi.fn() }),
 }));
 
@@ -467,6 +469,182 @@ describe('TerminalPage — flavor slot selection', () => {
   });
 });
 
+// CR-008 Product Option Groups (Task 21) — generic Option Group/Option
+// selector, distinct from the legacy standalone Flavor system exercised
+// above.
+type OptionGroup = PosCatalogProduct['variants'][number]['option_groups'][number];
+
+function optionGroup(overrides: Partial<OptionGroup> = {}): OptionGroup {
+  return {
+    id: 'group-1',
+    name: 'Size',
+    selection_type: 'SINGLE',
+    required: true,
+    options: [
+      { id: 'opt-1', name: 'Small', price_adjustment: 0, sort_order: 1, is_active: true },
+      { id: 'opt-2', name: 'Large', price_adjustment: 20, sort_order: 2, is_active: true },
+    ],
+    ...overrides,
+  };
+}
+
+function optionVariant(overrides: Partial<PosCatalogProduct['variants'][number]> = {}): PosCatalogProduct['variants'][number] {
+  return {
+    id: 'variant-1',
+    name: 'Regular',
+    size_label: 'Regular',
+    price: 80,
+    vatable_cap_amount: null,
+    live_ready: true,
+    readiness_code: 'READY',
+    missing_flavor_ids: [],
+    readiness_status: 'READY',
+    completion_percentage: 100,
+    blocking_issues: [],
+    readiness_warnings: [],
+    flavors: [],
+    flavor_slots: [],
+    option_groups: [optionGroup()],
+    ...overrides,
+  };
+}
+
+describe('TerminalPage — product option groups (CR-008)', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockCartItems.mockReturnValue([]);
+  });
+
+  afterEach(() => cleanup());
+
+  it('adds normally with no dialog when the variant has no option groups', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('opens the selector for a required SINGLE option group and enforces a selection before Add to Cart', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.getByText('Size')).toBeInTheDocument();
+    expect(screen.getByText('Small')).toBeInTheDocument();
+    expect(screen.getByText('Large (+₱20.00)')).toBeInTheDocument();
+    expect(mockAddItem).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Add to Cart' })).toBeDisabled();
+  });
+
+  it('enables Add to Cart once the required option is picked and submits the option_group_id/option_id selection', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    fireEvent.click(screen.getByText('Large (+₱20.00)'));
+    const addButton = screen.getByRole('button', { name: 'Add to Cart' });
+    expect(addButton).not.toBeDisabled();
+    fireEvent.click(addButton);
+
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
+      ],
+      quantity: 1,
+    });
+  });
+
+  it('completes a required SINGLE group and an optional MULTIPLE group together, in order', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        optionVariant({
+          option_groups: [
+            optionGroup(),
+            {
+              id: 'group-2',
+              name: 'Add-ons',
+              selection_type: 'MULTIPLE',
+              required: false,
+              options: [
+                { id: 'opt-3', name: 'Extra Cheese', price_adjustment: 15, sort_order: 1, is_active: true },
+                { id: 'opt-4', name: 'Bacon Bits', price_adjustment: 10, sort_order: 2, is_active: true },
+              ],
+            },
+          ],
+        }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    fireEvent.click(screen.getByText('Small'));
+    fireEvent.click(screen.getByText('Extra Cheese (+₱15.00)'));
+    fireEvent.click(screen.getByText('Bacon Bits (+₱10.00)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Cart' }));
+
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-1', option_name: 'Small', price_adjustment: 0 },
+        { option_group_id: 'group-2', option_group_name: 'Add-ons', option_id: 'opt-3', option_name: 'Extra Cheese', price_adjustment: 15 },
+        { option_group_id: 'group-2', option_group_name: 'Add-ons', option_id: 'opt-4', option_name: 'Bacon Bits', price_adjustment: 10 },
+      ],
+      quantity: 1,
+    });
+  });
+
+  it('skips groups whose options are all inactive — the dialog never opens and the product adds normally', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        optionVariant({
+          option_groups: [
+            {
+              id: 'group-3',
+              name: 'Empty Group',
+              selection_type: 'SINGLE',
+              required: false,
+              options: [{ id: 'opt-9', name: 'Inactive', price_adjustment: 0, sort_order: 1, is_active: false }],
+            },
+          ],
+        }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.queryByText('Empty Group')).not.toBeInTheDocument();
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('shows the selected option name and price adjustment in the cart, and folds the adjustment into the cart line total', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
+        ],
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+
+    expect(screen.getByText('Size: Large (+₱20.00)')).toBeInTheDocument();
+
+    // Base variant price is 80 — tendering exactly that (ignoring the +20
+    // option adjustment) must still come up short by the adjustment amount,
+    // proving the adjustment is folded into the line/charge total.
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '80' } });
+    expect(screen.getByText('Cash tendered is ₱20.00 short.')).toBeInTheDocument();
+  });
+});
+
 // Simple Operational Audit §5 — Maya and Other must be reachable and usable
 // from the same terminal Charge flow as cash/GCash, not dead-end tabs.
 describe('TerminalPage — Maya and Other payment methods', () => {
@@ -623,6 +801,97 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
 
     expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
     expect(screen.getByText('Change: ₱50.00')).toBeInTheDocument();
+  });
+});
+
+// Task 26 — selected Product Option IDs are transported from the POS cart to
+// the checkout payload as selected_option_ids, ID-only (display metadata
+// stays frontend-only, per Task 21's cart.store.ts comment).
+/** Convention shared with apps/api's test suite: a throwing helper instead of `!` under noUncheckedIndexedAccess. */
+function firstOf<T>(arr: readonly T[]): T {
+  const [head] = arr;
+  if (head === undefined) throw new Error('expected a non-empty array');
+  return head;
+}
+
+/** First argument of a mock's first call — combines two firstOf lookups (call, then arg). */
+function firstCallArg(mockFn: { mock: { calls: unknown[][] } }): CreateTransactionInput {
+  return firstOf(firstOf(mockFn.mock.calls)) as CreateTransactionInput;
+}
+
+describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () => {
+  beforeEach(() => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCreateTransactionMutateAsync.mockClear();
+  });
+
+  afterEach(() => cleanup());
+
+  it('includes selected_option_ids (IDs only) for a cart item carrying selected_options', async () => {
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
+        ],
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '120' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync);
+    expect(payload.items).toEqual([
+      expect.objectContaining({
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_option_ids: ['opt-2'],
+      }),
+    ]);
+    // Display metadata/price adjustments must never be forwarded as trusted fields.
+    const item = firstOf(payload.items);
+    expect(item).not.toHaveProperty('selected_options');
+    expect(item).not.toHaveProperty('option_name');
+    expect(item).not.toHaveProperty('price_adjustment');
+  });
+
+  it('omits selected_option_ids for a cart item with no options selected', async () => {
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync);
+    expect(firstOf(payload.items)).not.toHaveProperty('selected_option_ids');
+  });
+
+  it('leaves the existing selected_flavors payload behavior unchanged', async () => {
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        flavor_id: 'flavor-1',
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync);
+    expect(firstOf(payload.items)).toEqual(
+      expect.objectContaining({ product_id: 'product-1', product_variant_id: 'variant-1', flavor_id: 'flavor-1' }),
+    );
   });
 });
 

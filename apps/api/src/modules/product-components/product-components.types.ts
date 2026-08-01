@@ -20,10 +20,14 @@ export interface CreateProductComponentData {
   recipeUnitId?: string;
   /** Set by the legacy backfill to mark rows it created, so a re-run can tell them apart from manually created rows. Omitted (null) for API-created rows. */
   createdBy?: string;
+  /** null/omitted = Base Recipe component; a ProductOption id = option-scoped component. */
+  productOptionId?: string | null;
 }
 
 export interface UpdateProductComponentData {
   quantityRequired?: number;
   recipeUnitId?: string;
   isActive?: boolean;
+  /** undefined = leave unchanged; null = clear back to Base Recipe. */
+  productOptionId?: string | null;
 }

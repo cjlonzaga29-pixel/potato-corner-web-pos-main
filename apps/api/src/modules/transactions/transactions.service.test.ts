@@ -195,8 +195,14 @@ function variantRow(overrides: Record<string, unknown> = {}) {
     lifecycleStatus: 'ACTIVE',
     product: { id: 'product-1', name: 'Original', status: 'active' },
     variantFlavors: [],
+    optionGroupAssignments: [],
     ...overrides,
   };
+}
+
+/** Task 32 — one ProductVariantOptionGroup assignment row exposing a single allowed ProductOption, in the shape findVariantsForSale's optionGroupAssignments include returns. */
+function optionAssignment(productOptionId: string, priceAdjustment: number, isActive = true) {
+  return { allowedOptions: [{ productOptionId, productOption: { isActive, priceAdjustment: decimal(priceAdjustment) } }] };
 }
 
 function transactionRow(overrides: Record<string, unknown> = {}) {
@@ -2002,5 +2008,361 @@ describe('transactionsService.createTransaction — forced transaction-timeout h
       code: 'INSUFFICIENT_STOCK',
       statusCode: 409,
     });
+  });
+});
+
+// Task 27 — CR-008 Product Options: resolveCartItems now forwards each cart
+// item's selectedOptionIds into computeBomDeduction's new final parameter, so
+// option-scoped ProductComponent rows participate in live checkout
+// deduction. Only the base (non-Mix&Max) branch is touched — this suite does
+// not exercise computeComponentDeductionForSlots.
+describe('transactionsService.createTransaction — Product Option IDs forwarded to computeBomDeduction', () => {
+  const flavoredVariant = () =>
+    variantRow({
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      optionGroupAssignments: [optionAssignment('option-1', 0)],
+    });
+
+  it('forwards selectedOptionIds as the 5th argument for a base (no-flavor) cart item', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-1', 0)] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-1'] }] },
+      null,
+    );
+
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, ['option-1']);
+  });
+
+  it('forwards undefined — not the empty-array convention — when the cart item has no selectedOptionIds', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, undefined);
+  });
+
+  it('leaves base-only deduction unchanged when selectedOptionIds is absent', async () => {
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, undefined);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('leaves flavor-only deduction unchanged when selectedOptionIds is absent', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+      null,
+    );
+
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, 'flavor-1', undefined);
+  });
+
+  it('forwards flavorId and selectedOptionIds together', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1, selectedOptionIds: ['option-1'] }],
+      },
+      null,
+    );
+
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, 'flavor-1', ['option-1']);
+  });
+
+  it('supports multiple selected option IDs', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        optionGroupAssignments: [optionAssignment('option-1', 0), optionAssignment('option-2', 0), optionAssignment('option-3', 0)],
+      }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-1', 'option-2', 'option-3'] }],
+      },
+      null,
+    );
+
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, ['option-1', 'option-2', 'option-3']);
+  });
+
+  it('includes the resulting option-scoped deduction lines in deductionSnapshot', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
+      { inventoryItemId: 'item-cheese-topping', quantity: 1, baseUnitId: 'unit-g' },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: [
+              { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null },
+              { inventoryItemId: 'item-cheese-topping', quantity: 1, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null },
+            ],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('preserves existing stock validation and movement behavior for option-scoped deduction lines', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-cheese-topping', quantity: 3, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(1) } as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+    expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovement).not.toHaveBeenCalled();
+  });
+});
+
+// Task 32 — server-side pricing bug fix: selected Product Options'
+// price_adjustment was applied client-side and used for inventory deduction
+// (Task 27), but never added to the server-computed unitPrice/lineTotal, so
+// the recorded transaction undercharged relative to the POS screen. These
+// tests cover only pricing (unitPrice/lineTotal/subtotal/totalAmount) and
+// selected-option validation — deduction forwarding is covered above.
+describe('transactionsService.createTransaction — Product Option price adjustments (server-side pricing)', () => {
+  function itemsCall() {
+    // Safe: every test in this suite calls createTransaction exactly once
+    // before reading this, so mock.calls[0] is always populated.
+    return vi.mocked(transactionsRepository.createTransaction).mock.calls[0]![0];
+  }
+
+  it('adds a single valid priced option to unitPrice, and multiplies the adjusted unit price by quantity for lineTotal', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ basePrice: decimal(59), optionGroupAssignments: [optionAssignment('option-cheese', 15)] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 2, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 74, quantity: 2, lineTotal: 148 });
+  });
+
+  it('sums multiple valid priced options into unitPrice', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        optionGroupAssignments: [optionAssignment('option-cheese', 15), optionAssignment('option-bacon', 20)],
+      }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese', 'option-bacon'] }],
+      },
+      null,
+    );
+
+    // basePrice 100 + 15 + 20
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 135, lineTotal: 135 });
+  });
+
+  it('does not change unitPrice or totalAmount for a zero-price option', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-no-charge', 0)] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 3, selectedOptionIds: ['option-no-charge'] }] },
+      null,
+    );
+
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 100, lineTotal: 300 });
+  });
+
+  it('combines an existing flavor premium with Product Option pricing', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+        optionGroupAssignments: [optionAssignment('option-cheese', 15)],
+      }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1, selectedOptionIds: ['option-cheese'] }],
+      },
+      null,
+    );
+
+    // basePrice 100 + flavor premium 5 + option adjustment 15
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 120, lineTotal: 120 });
+  });
+
+  it('leaves Mix & Max slot pricing unchanged when no Product Options are selected', async () => {
+    const slotVariant = variantRow({
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } }],
+      flavorSlots: [
+        {
+          id: 'slot-1',
+          productVariantId: 'variant-1',
+          slotIndex: 1,
+          label: 'Flavor 1',
+          unit: 'scoop',
+          snackOptions: [
+            {
+              snackProductVariantId: 'snack-1',
+              snackProductVariant: {
+                id: 'snack-1',
+                isActive: true,
+                product: { id: 'product-1', status: 'active' },
+                variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([slotVariant] as never);
+    // Deduction is out of scope for this pricing test — pin it to empty so
+    // this test doesn't depend on whatever computeBomDeduction/inventoryStock
+    // fixture a preceding test in the file happened to leave behind.
+    vi.mocked(computeBomDeduction).mockResolvedValue([]);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [
+          {
+            productId: 'product-1',
+            productVariantId: 'variant-1',
+            quantity: 2,
+            selectedFlavors: [{ slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' }],
+          },
+        ],
+      },
+      null,
+    );
+
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 100, lineTotal: 200 });
+  });
+
+  it('rejects a selected option ID that does not exist for this variant', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ optionGroupAssignments: [] })] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-does-not-exist'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inactive option even though it is assigned to the variant', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 15, false)] }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an active option that exists but is not assigned to the selected variant', async () => {
+    // option-cheese is active and real, but this variant's allowed-options
+    // set (optionGroupAssignments) does not include it — e.g. it belongs to
+    // a different variant's option group assignment.
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-fries-only', 10)] }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('ignores frontend-provided display price metadata and prices strictly from the trusted DB priceAdjustment', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 15)] }),
+    ] as never);
+
+    // A malicious/stale client could send extra display fields alongside the
+    // trusted option ID — the server must price from the DB row it looked up
+    // by ID, never from anything else in the request payload.
+    const spoofedItem = {
+      productId: 'product-1',
+      productVariantId: 'variant-1',
+      quantity: 1,
+      selectedOptionIds: ['option-cheese'],
+      selectedOptionsDisplay: [{ id: 'option-cheese', name: 'Extra Cheese', price: 999 }],
+    };
+
+    await transactionsService.createTransaction({ ...baseInput, items: [spoofedItem as never] }, null);
+
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 115, lineTotal: 115 });
+  });
+
+  it('persists a recorded transaction subtotal/totalAmount matching the option-adjusted server price, not the pre-adjustment base price', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ basePrice: decimal(59), optionGroupAssignments: [optionAssignment('option-cheese', 15)] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 2, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    // No discount: totalAmount equals the VAT-inclusive subtotal (148), not
+    // the un-adjusted 59 * 2 = 118 the pre-fix server would have charged.
+    expect(itemsCall()).toMatchObject({ subtotal: 148, totalAmount: 148 });
+  });
+
+  it('leaves existing no-option checkout pricing unchanged', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 100, lineTotal: 100 });
+    expect(itemsCall()).toMatchObject({ subtotal: 100, totalAmount: 100 });
   });
 });

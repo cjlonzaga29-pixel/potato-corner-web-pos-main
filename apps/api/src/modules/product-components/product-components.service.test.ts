@@ -26,6 +26,12 @@ vi.mock('../products/products.repository.js', () => ({
   },
 }));
 
+vi.mock('../product-options/product-options.repository.js', () => ({
+  productOptionsRepository: {
+    findOptionById: vi.fn(),
+  },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -33,6 +39,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 const { productComponentsRepository: repo } = await import('./product-components.repository.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { productsRepository } = await import('../products/products.repository.js');
+const { productOptionsRepository } = await import('../product-options/product-options.repository.js');
 const { productComponentsService } = await import('./product-components.service.js');
 
 const ACTOR = { id: 'admin-1', role: 'super_admin' };
@@ -49,6 +56,7 @@ function buildComponent(overrides: Partial<Record<string, unknown>> = {}) {
     quantityRequired: decimal(2),
     recipeUnitId: 'unit-kg',
     isActive: true,
+    productOptionId: null,
     version: 1,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -221,6 +229,57 @@ describe('productComponentsService.createMapping', () => {
     ).rejects.toMatchObject({ code: 'RECIPE_UNIT_NOT_FOUND' });
     expect(repo.create).not.toHaveBeenCalled();
   });
+
+  it('creates an option-scoped component when product_option_id references an existing option', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(productOptionsRepository.findOptionById).mockResolvedValue({ id: 'option-1' } as never);
+    vi.mocked(repo.create).mockResolvedValue(buildComponent({ productOptionId: 'option-1' }) as never);
+
+    const result = await productComponentsService.createMapping(
+      { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 2, product_option_id: 'option-1' },
+      ACTOR,
+      null,
+    );
+
+    expect(productOptionsRepository.findOptionById).toHaveBeenCalledWith('option-1');
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ productOptionId: 'option-1' }));
+    expect(result.product_option_id).toBe('option-1');
+  });
+
+  it('rejects a create when product_option_id does not reference an existing option', async () => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(productOptionsRepository.findOptionById).mockResolvedValue(null);
+
+    await expect(
+      productComponentsService.createMapping(
+        { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 2, product_option_id: 'missing-option' },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_FOUND' });
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['explicit null', null],
+  ])('defaults product_option_id to null (Base Recipe) when %s, without looking up an option', async (_label, value) => {
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
+    vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
+    vi.mocked(repo.create).mockResolvedValue(buildComponent() as never);
+
+    const result = await productComponentsService.createMapping(
+      { product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 2, product_option_id: value },
+      ACTOR,
+      null,
+    );
+
+    expect(productOptionsRepository.findOptionById).not.toHaveBeenCalled();
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ productOptionId: null }));
+    expect(result.product_option_id).toBeNull();
+  });
 });
 
 describe('productComponentsService.updateMapping', () => {
@@ -260,6 +319,64 @@ describe('productComponentsService.updateMapping', () => {
 
     expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 100, recipeUnitId: 'unit-g' });
     expect(result.recipe_unit_code).toBe('g');
+  });
+
+  it('changes product_option_id to a valid option', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(productOptionsRepository.findOptionById).mockResolvedValue({ id: 'option-2' } as never);
+    vi.mocked(repo.update).mockResolvedValue(buildComponent({ productOptionId: 'option-2', version: 2 }) as never);
+
+    const result = await productComponentsService.updateMapping('component-1', { product_option_id: 'option-2' }, ACTOR, null);
+
+    expect(productOptionsRepository.findOptionById).toHaveBeenCalledWith('option-2');
+    expect(repo.update).toHaveBeenCalledWith('component-1', { productOptionId: 'option-2' });
+    expect(result.product_option_id).toBe('option-2');
+  });
+
+  it('clears product_option_id back to null (Base Recipe) without looking up an option', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent({ productOptionId: 'option-1' }) as never);
+    vi.mocked(repo.update).mockResolvedValue(buildComponent({ productOptionId: null, version: 2 }) as never);
+
+    const result = await productComponentsService.updateMapping('component-1', { product_option_id: null }, ACTOR, null);
+
+    expect(productOptionsRepository.findOptionById).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalledWith('component-1', { productOptionId: null });
+    expect(result.product_option_id).toBeNull();
+  });
+
+  it('rejects updating to a product_option_id that does not reference an existing option', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(productOptionsRepository.findOptionById).mockResolvedValue(null);
+
+    await expect(
+      productComponentsService.updateMapping('component-1', { product_option_id: 'missing-option' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_FOUND' });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves product_option_id untouched when omitted — existing requests without it keep working', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent({ productOptionId: 'option-1' }) as never);
+    vi.mocked(repo.update).mockResolvedValue(buildComponent({ productOptionId: 'option-1', quantityRequired: decimal(5), version: 2 }) as never);
+
+    const result = await productComponentsService.updateMapping('component-1', { quantity_required: 5 }, ACTOR, null);
+
+    expect(productOptionsRepository.findOptionById).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 5 });
+    expect(result.product_option_id).toBe('option-1');
+  });
+});
+
+describe('productComponentsService.listByVariant', () => {
+  it('returns product_option_id for each component (Base Recipe and option-scoped)', async () => {
+    vi.mocked(repo.findByVariant).mockResolvedValue([
+      buildComponent({ id: 'base-component', productOptionId: null }),
+      buildComponent({ id: 'option-component', productOptionId: 'option-1' }),
+    ] as never);
+
+    const result = await productComponentsService.listByVariant('variant-1');
+
+    expect(result.find((c) => c.id === 'base-component')?.product_option_id).toBeNull();
+    expect(result.find((c) => c.id === 'option-component')?.product_option_id).toBe('option-1');
   });
 });
 

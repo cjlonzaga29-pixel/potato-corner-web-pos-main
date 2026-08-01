@@ -1,6 +1,20 @@
 import { create } from 'zustand';
 import type { CartItem } from '@potato-corner/shared';
 
+// CR-008 Product Option selection (Task 21) — display-only, frontend cart
+// state. Deliberately NOT part of the shared cartItemSchema/CreateTransactionInput
+// contract: checkout persistence for options is a separate, later task, so
+// this field is stripped back out before a cart item is sent to checkout.
+export interface PosCartSelectedOption {
+  option_group_id: string;
+  option_group_name: string;
+  option_id: string;
+  option_name: string;
+  price_adjustment: number;
+}
+
+export type PosCartItem = CartItem & { selected_options?: PosCartSelectedOption[] };
+
 function sameSelectedFlavors(a: CartItem['selected_flavors'], b: CartItem['selected_flavors']): boolean {
   const aList = a ?? [];
   const bList = b ?? [];
@@ -15,16 +29,25 @@ function sameSelectedFlavors(a: CartItem['selected_flavors'], b: CartItem['selec
   );
 }
 
+function sameSelectedOptions(a: PosCartSelectedOption[] | undefined, b: PosCartSelectedOption[] | undefined): boolean {
+  const aList = a ?? [];
+  const bList = b ?? [];
+  if (aList.length !== bList.length) return false;
+  const sortedA = [...aList].map((o) => o.option_id).sort();
+  const sortedB = [...bList].map((o) => o.option_id).sort();
+  return sortedA.every((id, i) => id === sortedB[i]);
+}
+
 interface HeldOrder {
   id: string;
-  items: CartItem[];
+  items: PosCartItem[];
   heldAt: number;
 }
 
 interface CartState {
-  items: CartItem[];
+  items: PosCartItem[];
   heldOrders: HeldOrder[];
-  addItem: (item: CartItem) => void;
+  addItem: (item: PosCartItem) => void;
   removeItem: (index: number) => void;
   updateItemQuantity: (index: number, quantity: number) => void;
   clearCart: () => void;
@@ -48,7 +71,8 @@ export const useCartStore = create<CartState>((set, get) => ({
         (i) =>
           i.product_variant_id === item.product_variant_id &&
           i.flavor_id === item.flavor_id &&
-          sameSelectedFlavors(i.selected_flavors, item.selected_flavors),
+          sameSelectedFlavors(i.selected_flavors, item.selected_flavors) &&
+          sameSelectedOptions(i.selected_options, item.selected_options),
       );
       if (!existing) return { items: [...state.items, item] };
       return {

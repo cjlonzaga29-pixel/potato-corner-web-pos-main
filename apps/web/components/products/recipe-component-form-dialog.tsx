@@ -11,6 +11,10 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useCreateProductComponent, useUpdateProductComponent } from '@/hooks/queries/use-product-components';
+import { useAllActiveProductOptions } from '@/hooks/queries/use-product-options';
+
+/** Sentinel Select value standing in for product_option_id = null (Base Recipe) — Radix Select disallows an empty-string item value. */
+const BASE_RECIPE_VALUE = '__base_recipe__';
 
 interface RecipeComponentFormDialogProps {
   open: boolean;
@@ -59,6 +63,7 @@ export function RecipeComponentFormDialog({
   const [quantityRequired, setQuantityRequired] = useState('');
   const [recipeUnitId, setRecipeUnitId] = useState('');
   const [isActive, setIsActive] = useState(true);
+  const [productOptionId, setProductOptionId] = useState<string | null>(null);
 
   const createComponent = useCreateProductComponent(productVariantId);
   const updateComponent = useUpdateProductComponent(productVariantId, editingComponent?.id ?? '');
@@ -66,6 +71,7 @@ export function RecipeComponentFormDialog({
 
   const { data: inventoryItems, isLoading: itemsLoading } = useInventoryItems(false);
   const { data: units, isLoading: unitsLoading } = useUnitsOfMeasure(false);
+  const { data: productOptions, isLoading: productOptionsLoading } = useAllActiveProductOptions();
 
   const selectedItem = inventoryItems?.find((item) => item.id === inventoryItemId);
   const baseUnitCode = isEdit ? editingComponent?.base_unit_code : selectedItem?.base_unit_code;
@@ -79,11 +85,13 @@ export function RecipeComponentFormDialog({
       setQuantityRequired(String(editingComponent.quantity_required));
       setRecipeUnitId(editingComponent.recipe_unit_id);
       setIsActive(editingComponent.is_active);
+      setProductOptionId(editingComponent.product_option_id);
     } else {
       setInventoryItemId('');
       setQuantityRequired('');
       setRecipeUnitId('');
       setIsActive(true);
+      setProductOptionId(null);
     }
   }, [open, editingComponent]);
 
@@ -110,7 +118,12 @@ export function RecipeComponentFormDialog({
   async function handleSubmit() {
     const numericQuantity = Number(quantityRequired);
     if (isEdit) {
-      await updateComponent.mutateAsync({ quantity_required: numericQuantity, recipe_unit_id: recipeUnitId, is_active: isActive });
+      await updateComponent.mutateAsync({
+        quantity_required: numericQuantity,
+        recipe_unit_id: recipeUnitId,
+        is_active: isActive,
+        product_option_id: productOptionId,
+      });
     } else {
       if (!inventoryItemId) return;
       await createComponent.mutateAsync({
@@ -118,6 +131,7 @@ export function RecipeComponentFormDialog({
         inventory_item_id: inventoryItemId,
         quantity_required: numericQuantity,
         recipe_unit_id: recipeUnitId || undefined,
+        product_option_id: productOptionId,
       });
     }
     handleOpenChange(false);
@@ -193,6 +207,27 @@ export function RecipeComponentFormDialog({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="recipe-component-option">Product Option</Label>
+            <Select
+              value={productOptionId ?? BASE_RECIPE_VALUE}
+              onValueChange={(next) => setProductOptionId(next === BASE_RECIPE_VALUE ? null : next)}
+              disabled={productOptionsLoading}
+            >
+              <SelectTrigger id="recipe-component-option">
+                <SelectValue placeholder={productOptionsLoading ? 'Loading…' : 'Base Recipe'} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={BASE_RECIPE_VALUE}>Base Recipe</SelectItem>
+                {(productOptions ?? []).map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {option.option_group_name}: {option.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {isEdit && (

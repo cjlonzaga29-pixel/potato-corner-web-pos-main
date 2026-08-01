@@ -72,6 +72,45 @@ export function useProductOptionGroup(groupId: string | null | undefined) {
   });
 }
 
+export interface FlatProductOptionResponse extends ProductOptionResponse {
+  option_group_name: string;
+}
+
+/**
+ * Flattens every active ProductOption across all active option groups —
+ * used by pickers (e.g. the Product Component editor) that need a single
+ * "which option" dropdown rather than a group-then-option drilldown.
+ */
+export function useAllActiveProductOptions() {
+  return useQuery({
+    queryKey: ['product-options', 'all-active'],
+    queryFn: async () => {
+      const groupsResponse = await apiClient<ProductOptionGroupListResponse>(
+        `/api/product-options?${buildQueryString({ isActive: true, limit: 100 })}`,
+      );
+      if (!groupsResponse.data) throw new Error(errorMessage(groupsResponse, 'Failed to load option groups'));
+
+      const groups = groupsResponse.data.option_groups;
+      const detailsByGroup = await Promise.all(
+        groups.map(async (group) => ({
+          groupName: group.name,
+          detail: await apiClient<ProductOptionGroupDetailResponse>(`/api/product-options/${group.id}`),
+        })),
+      );
+
+      const options: FlatProductOptionResponse[] = [];
+      for (const { groupName, detail } of detailsByGroup) {
+        if (!detail.data) continue;
+        for (const option of detail.data.options) {
+          if (option.is_active) options.push({ ...option, option_group_name: groupName });
+        }
+      }
+      return options;
+    },
+    staleTime: 30 * 1000,
+  });
+}
+
 export function useCreateProductOptionGroup() {
   const queryClient = useQueryClient();
   return useMutation({

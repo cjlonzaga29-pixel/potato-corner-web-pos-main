@@ -143,6 +143,17 @@ export const transactionsRepository = {
       include: {
         product: { select: { id: true, name: true, status: true } },
         variantFlavors: { include: { flavor: { select: { id: true, name: true, isActive: true } } } },
+        // CR-008 Product Options (Task 32) — the trusted, DB-sourced set of
+        // options this variant is actually allowed to sell, used to price
+        // and validate selectedOptionIds server-side. Never trust a
+        // frontend-provided option name/price for this.
+        optionGroupAssignments: {
+          include: {
+            allowedOptions: {
+              include: { productOption: { select: { id: true, isActive: true, priceAdjustment: true } } },
+            },
+          },
+        },
         flavorSlots: {
           orderBy: { slotIndex: 'asc' },
           include: {

@@ -1427,6 +1427,15 @@ export const productsService = {
             name: assignment.optionGroup.name,
             selection_type: assignment.optionGroup.selectionType,
             required: assignment.required ?? assignment.optionGroup.required,
+            options: assignment.allowedOptions
+              .filter((allowed) => allowed.productOption.isActive)
+              .map((allowed) => ({
+                id: allowed.productOption.id,
+                name: allowed.productOption.name,
+                price_adjustment: allowed.productOption.priceAdjustment.toNumber(),
+                sort_order: allowed.productOption.sortOrder,
+                is_active: allowed.productOption.isActive,
+              })),
           })),
         flavor_slots: variant.flavorSlots
           .slice()

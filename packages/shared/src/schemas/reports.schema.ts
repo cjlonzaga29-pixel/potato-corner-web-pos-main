@@ -180,22 +180,8 @@ export const InventorySummaryReportRowSchema = z.object({
   consumed_today: z.number(),
   consumed_this_month: z.number(),
   remaining_stock: z.number(),
-  // Which of the two Inventory Summary tables this row belongs in. Classified
-  // purely by unit code (not InventoryCategory) — see reports.repository.ts's
-  // classifyReportGroup. null when the unit code matches neither the
-  // ingredient nor packaging list (row is excluded from both tables).
-  report_group: z.enum(['INGREDIENT', 'PACKAGING']).nullable(),
-  // Weight items convert to kg, volume items convert to L. Populated only for
-  // INGREDIENT rows with a resolvable conversion; always null for PACKAGING.
-  converted_opening_stock: z.number().nullable(),
-  converted_consumed_today: z.number().nullable(),
-  converted_consumed_this_month: z.number().nullable(),
-  converted_remaining_stock: z.number().nullable(),
-  converted_unit: z.enum(['kg', 'L']).nullable(),
-  // 'Conversion Not Configured' happens for an ingredient-classified unit
-  // (chiefly tbsp) with no resolvable weight/volume conversion — the UI must
-  // show this text verbatim rather than a blank cell or a guessed value.
-  conversion_status: z.enum(['Converted', 'Not Applicable', 'Conversion Not Configured']),
+  remaining_grams: z.number().nullable(),
+  remaining_kilograms: z.number().nullable(),
 });
 export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
 

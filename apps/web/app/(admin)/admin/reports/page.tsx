@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ColumnDef } from '@tanstack/react-table';
+import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { toast } from 'sonner';
 import type {
   DailySalesReportRow,
@@ -15,6 +15,7 @@ import type {
   InventorySummaryReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
+  TransactionResponse,
   ExportReadyPayload,
   ExportRequestInput,
 } from '@potato-corner/shared';
@@ -25,6 +26,9 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
@@ -36,11 +40,18 @@ import { FinancialSummaryPanel } from '@/components/reports/financial-summary-pa
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { expenseColumns } from '@/components/admin/expense-columns';
+import { ReceiptModal } from '@/components/pos/receipt-modal';
+import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
+import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
+import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
 import { useExpenses, useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { useTransactions, useTransaction } from '@/hooks/queries/use-transactions';
+import { useEmployees } from '@/hooks/queries/use-employees';
+import { useBranch } from '@/hooks/queries/use-branches';
 import {
   useDailySalesReport,
   useCashReconciliationReport,
@@ -233,6 +244,84 @@ const inventorySummaryColumns: ColumnDef<InventorySummaryReportRow>[] = [
   },
 ];
 
+/** Mirrors reports-view.tsx's getSoldProductTransactionsColumns (Branch/Supervisor) — one row per transaction, not per product line, so Subtotal/VAT/Discount/Total are never duplicated. */
+function getSoldProductTransactionsColumns(
+  branchName: string,
+  employeeNames: Map<string, string>,
+  onViewItems: (transaction: TransactionResponse) => void,
+  onViewTransaction: (transaction: TransactionResponse) => void,
+  onViewReceipt: (transactionId: string) => void,
+  onViewProof: (transactionId: string) => void,
+): ColumnDef<TransactionResponse>[] {
+  return [
+    { id: 'created_at', header: 'Date and Time', cell: ({ row }) => formatDateTime(row.original.created_at) },
+    { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
+    { id: 'branch', header: 'Branch', cell: () => branchName },
+    {
+      id: 'cashier',
+      header: 'Cashier',
+      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+    },
+    {
+      id: 'items',
+      header: 'Products',
+      cell: ({ row }) => {
+        const items = row.original.items ?? [];
+        const firstItem = items[0];
+        const summary =
+          items.length === 0 || !firstItem
+            ? 'No items'
+            : items.length === 1
+              ? `${firstItem.quantity}x ${firstItem.product_name}`
+              : `${items.length} items`;
+        return (
+          <Button type="button" variant="ghost" size="sm" className="h-auto p-0 text-xs underline" onClick={() => onViewItems(row.original)}>
+            {summary}
+          </Button>
+        );
+      },
+    },
+    { id: 'subtotal', header: 'Subtotal', cell: ({ row }) => formatCurrency(row.original.subtotal) },
+    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatCurrency(row.original.vat_amount) },
+    { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
+    { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
+    {
+      id: 'payment_method',
+      header: 'Payment Method',
+      cell: ({ row }) => <Badge variant="outline">{humanize(row.original.payment_method)}</Badge>,
+    },
+    { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },
+    {
+      id: 'payment_proof',
+      header: 'Payment Proof',
+      cell: ({ row }) => {
+        const txn = row.original;
+        if (txn.payment_method === 'cash') return <span className="text-xs text-muted-foreground">Not required</span>;
+        if (!txn.has_payment_proof) return <span className="text-xs text-muted-foreground">Missing</span>;
+        return (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onViewProof(txn.id)}>
+            Available
+          </Button>
+        );
+      },
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => onViewTransaction(row.original)}>
+            View Transaction
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => onViewReceipt(row.original.id)}>
+            View Receipt
+          </Button>
+        </div>
+      ),
+    },
+  ];
+}
+
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { accessorKey: 'employee_name', header: 'Employee' },
   { accessorKey: 'branch_name', header: 'Branch' },
@@ -258,6 +347,7 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
     reports: [
       { value: 'FINANCIAL_SUMMARY', label: 'Financial Summary' },
       { value: 'DAILY_SALES', label: 'Daily Sales' },
+      { value: 'SOLD_PRODUCT_TRANSACTIONS', label: 'Sold Product Transactions' },
       { value: 'CASH_RECONCILIATION', label: 'Cash Reconciliation' },
       { value: 'EXPENSES', label: 'Expenses' },
     ],
@@ -290,6 +380,19 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
 ];
 
 const ALL_REPORT_VALUES = new Set(REPORT_GROUPS.flatMap((g) => g.reports.map((r) => r.value)));
+
+/** Mirrors the `!selectedBranchId` gate already on each of these tabs' "Select a branch" empty state below — kept as one set so the export controls stay in sync with the on-screen gate instead of drifting from it. */
+const BRANCH_REQUIRED_REPORTS = new Set([
+  'DAILY_SALES',
+  'SOLD_PRODUCT_TRANSACTIONS',
+  'CASH_RECONCILIATION',
+  'VOID_REFUND',
+  'DISCOUNT_COMPLIANCE',
+  'INVENTORY_MOVEMENT',
+  'INVENTORY_CONSUMPTION_SUMMARY',
+  'INVENTORY_SUMMARY',
+  'ATTENDANCE_SUMMARY',
+]);
 
 function categoryFor(reportValue: string): string {
   return REPORT_GROUPS.find((g) => g.reports.some((r) => r.value === reportValue))?.category ?? 'Finance';
@@ -326,6 +429,20 @@ function AdminReportsPageContent() {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [drilldownRow, setDrilldownRow] = useState<DailySalesReportRow | null>(null);
 
+  // Sold Product Transactions filters (client-side over the fetched page) —
+  // mirrors reports-view.tsx's (Branch/Supervisor) same-named state.
+  const [soldReceiptSearch, setSoldReceiptSearch] = useState('');
+  const [soldCashierFilter, setSoldCashierFilter] = useState('all');
+  const [soldPaymentMethodFilter, setSoldPaymentMethodFilter] = useState('all');
+  const [soldStatusFilter, setSoldStatusFilter] = useState('all');
+  const [soldProductFilter, setSoldProductFilter] = useState('all');
+  const [soldPagination, setSoldPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  const [receiptTransactionId, setReceiptTransactionId] = useState<string | null>(null);
+  const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
+  const [viewItemsTransaction, setViewItemsTransaction] = useState<TransactionResponse | null>(null);
+  const [viewDetailTransaction, setViewDetailTransaction] = useState<TransactionResponse | null>(null);
+  const { data: receiptTransaction } = useTransaction(receiptTransactionId);
+
   const requestExport = useRequestExport();
 
   useReportsRealtimeSync((payload: ExportReadyPayload) => {
@@ -360,6 +477,21 @@ function AdminReportsPageContent() {
   const inventoryConsumptionSummary = useInventoryConsumptionSummaryReport(realtimeFilters, activeReport === 'INVENTORY_CONSUMPTION_SUMMARY');
   const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
+  // Sold Product Transactions — no realtime report endpoint exists for this
+  // type (only the export pipeline's reportsRepository.getSoldProductTransactions),
+  // so the on-screen table reuses the existing transactions list, same as
+  // reports-view.tsx (Branch/Supervisor). Not status-filtered so the tab's
+  // own Status filter can show voided/refunded rows too.
+  const soldProductTransactionsQuery = useTransactions(
+    activeReport === 'SOLD_PRODUCT_TRANSACTIONS' && selectedBranchId
+      ? { branch_id: selectedBranchId, date_from: dateFrom, date_to: dateTo, limit: 100 }
+      : {},
+  );
+  const soldProductEmployees = useEmployees(
+    { branchId: selectedBranchId ?? undefined, limit: 100 },
+    { enabled: activeReport === 'SOLD_PRODUCT_TRANSACTIONS' && Boolean(selectedBranchId) },
+  );
+  const soldProductBranch = useBranch(activeReport === 'SOLD_PRODUCT_TRANSACTIONS' ? selectedBranchId : null);
   const expenses = useExpenses({
     branch_id: selectedBranchId ?? undefined,
     date_from: dateFrom,
@@ -367,6 +499,28 @@ function AdminReportsPageContent() {
     page: 1,
     limit: 100,
   });
+
+  // Sold Product Transactions — client-side filtering/pagination over the
+  // fetched page, same known 100-row ceiling as reports-view.tsx (none of
+  // these are supported query params on GET /api/transactions today).
+  const soldProductEmployeeNames = new Map((soldProductEmployees.data?.employees ?? []).map((e) => [e.id, `${e.first_name} ${e.last_name}`]));
+  const soldProductTransactionsAll = soldProductTransactionsQuery.data?.transactions ?? [];
+  const soldProductOptions = Array.from(
+    new Set(soldProductTransactionsAll.flatMap((t) => (t.items ?? []).map((i) => i.product_name))),
+  ).sort();
+  const filteredSoldProductTransactions = soldProductTransactionsAll.filter((t) => {
+    if (soldCashierFilter !== 'all' && t.cashier_id !== soldCashierFilter) return false;
+    if (soldPaymentMethodFilter !== 'all' && t.payment_method !== soldPaymentMethodFilter) return false;
+    if (soldStatusFilter !== 'all' && t.status !== soldStatusFilter) return false;
+    if (soldProductFilter !== 'all' && !(t.items ?? []).some((i) => i.product_name === soldProductFilter)) return false;
+    const search = soldReceiptSearch.trim().toLowerCase();
+    if (search && !t.receipt_number.toLowerCase().includes(search)) return false;
+    return true;
+  });
+  const soldProductTransactionsPageRows = filteredSoldProductTransactions.slice(
+    soldPagination.pageIndex * soldPagination.pageSize,
+    soldPagination.pageIndex * soldPagination.pageSize + soldPagination.pageSize,
+  );
 
   /** Broad invalidate rather than a single per-tab refetch — Refresh now needs to cover Financial Summary and Inventory Analytics panels too, which own their queries internally. Already rate-limited by the cooldown below. */
   function handleRefresh() {
@@ -384,14 +538,35 @@ function AdminReportsPageContent() {
     return activeReport as ExportRequestInput['report_type'];
   }
 
+  const exportBranchRequired = BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId;
+
   function handleExport(format: 'csv' | 'pdf') {
+    if (BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId) {
+      toast.error('Select a branch before exporting');
+      return;
+    }
     const reportType = exportableReportType();
     if (!reportType) return;
     const setIsExporting = format === 'csv' ? setIsExportingCsv : setIsExportingPdf;
     setIsExporting(true);
+    const baseFilters: ExportRequestInput['filters'] = { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
+    // Only the Sold Product Transactions tab has its own sub-filters —
+    // forwarding them regardless of activeReport would silently narrow every
+    // other tab's export by whatever was last typed into these controls.
+    const filters: ExportRequestInput['filters'] =
+      activeReport === 'SOLD_PRODUCT_TRANSACTIONS'
+        ? {
+            ...baseFilters,
+            ...(soldCashierFilter !== 'all' && { cashier_id: soldCashierFilter }),
+            ...(soldPaymentMethodFilter !== 'all' && { payment_method: soldPaymentMethodFilter as ExportRequestInput['filters']['payment_method'] }),
+            ...(soldStatusFilter !== 'all' && { status: soldStatusFilter as ExportRequestInput['filters']['status'] }),
+            ...(soldProductFilter !== 'all' && { product_name: soldProductFilter }),
+            ...(soldReceiptSearch.trim() && { receipt_search: soldReceiptSearch.trim() }),
+          }
+        : baseFilters;
     const input: ExportRequestInput = {
       report_type: reportType,
-      filters: { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },
+      filters,
       format,
     };
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
@@ -427,6 +602,7 @@ function AdminReportsPageContent() {
         refreshCooldownSeconds={refreshCooldown}
         isExportingCsv={isExportingCsv}
         isExportingPdf={isExportingPdf}
+        exportDisabled={exportBranchRequired}
         showBranchSelector
       />
 
@@ -493,6 +669,137 @@ function AdminReportsPageContent() {
                 emptyState={<EmptyState title="No sales in this range" />}
               />
               </>}
+            </TabsContent>
+
+            <TabsContent value="SOLD_PRODUCT_TRANSACTIONS">
+              {!selectedBranchId ? (
+                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
+              ) : soldProductTransactionsQuery.isError ? (
+                <ErrorState retry={() => soldProductTransactionsQuery.refetch()} />
+              ) : (
+                <>
+                  <ReportLastUpdated
+                    timestamp={soldProductTransactionsQuery.dataUpdatedAt ? new Date(soldProductTransactionsQuery.dataUpdatedAt).toISOString() : undefined}
+                    isLoading={soldProductTransactionsQuery.isLoading}
+                  />
+                  <div className="my-4 flex flex-wrap items-end gap-3">
+                    <div>
+                      <Label htmlFor="sold-receipt-search">Receipt #</Label>
+                      <Input
+                        id="sold-receipt-search"
+                        placeholder="Search receipt number"
+                        className="w-[180px]"
+                        value={soldReceiptSearch}
+                        onChange={(e) => {
+                          setSoldReceiptSearch(e.target.value);
+                          setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <Label>Cashier</Label>
+                      <Select
+                        value={soldCashierFilter}
+                        onValueChange={(v) => {
+                          setSoldCashierFilter(v);
+                          setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                        }}
+                      >
+                        <SelectTrigger className="w-[160px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All cashiers</SelectItem>
+                          {Array.from(soldProductEmployeeNames.entries()).map(([id, name]) => (
+                            <SelectItem key={id} value={id}>
+                              {name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Payment Method</Label>
+                      <Select
+                        value={soldPaymentMethodFilter}
+                        onValueChange={(v) => {
+                          setSoldPaymentMethodFilter(v);
+                          setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                        }}
+                      >
+                        <SelectTrigger className="w-[150px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All methods</SelectItem>
+                          <SelectItem value="cash">Cash</SelectItem>
+                          <SelectItem value="gcash">GCash</SelectItem>
+                          <SelectItem value="maya">Maya</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Status</Label>
+                      <Select
+                        value={soldStatusFilter}
+                        onValueChange={(v) => {
+                          setSoldStatusFilter(v);
+                          setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                        }}
+                      >
+                        <SelectTrigger className="w-[150px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All statuses</SelectItem>
+                          <SelectItem value="completed">Completed</SelectItem>
+                          <SelectItem value="voided">Voided</SelectItem>
+                          <SelectItem value="refunded">Refunded</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Product</Label>
+                      <Select
+                        value={soldProductFilter}
+                        onValueChange={(v) => {
+                          setSoldProductFilter(v);
+                          setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
+                        }}
+                      >
+                        <SelectTrigger className="w-[170px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All products</SelectItem>
+                          {soldProductOptions.map((name) => (
+                            <SelectItem key={name} value={name}>
+                              {name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <DataTable
+                    columns={getSoldProductTransactionsColumns(
+                      soldProductBranch.data?.name ?? '—',
+                      soldProductEmployeeNames,
+                      setViewItemsTransaction,
+                      setViewDetailTransaction,
+                      setReceiptTransactionId,
+                      setProofTransactionId,
+                    )}
+                    data={soldProductTransactionsPageRows}
+                    isLoading={soldProductTransactionsQuery.isLoading}
+                    pagination={soldPagination}
+                    onPaginationChange={setSoldPagination}
+                    rowCount={filteredSoldProductTransactions.length}
+                    emptyState={<EmptyState title="No sold products" description="No product sales match these filters in this date range." />}
+                  />
+                </>
+              )}
             </TabsContent>
 
             <TabsContent value="CASH_RECONCILIATION">
@@ -725,6 +1032,17 @@ function AdminReportsPageContent() {
         branchId={drilldownRow?.branch_id ?? null}
         branchName={drilldownRow?.branch_name ?? ''}
         reportDate={drilldownRow?.report_date ?? ''}
+      />
+
+      <ReceiptModal transaction={receiptTransaction ?? null} onClose={() => setReceiptTransactionId(null)} />
+      <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
+      <ViewTransactionItemsDialog transaction={viewItemsTransaction} onClose={() => setViewItemsTransaction(null)} />
+      <ViewTransactionDetailDialog
+        transaction={viewDetailTransaction}
+        onClose={() => setViewDetailTransaction(null)}
+        branchName={soldProductBranch.data?.name ?? null}
+        cashierName={viewDetailTransaction ? (soldProductEmployeeNames.get(viewDetailTransaction.cashier_id) ?? viewDetailTransaction.cashier_id) : ''}
+        attendanceRecords={[]}
       />
     </div>
   );

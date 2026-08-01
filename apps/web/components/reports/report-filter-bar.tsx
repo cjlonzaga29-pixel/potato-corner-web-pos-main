@@ -21,6 +21,8 @@ export interface ReportFilterBarProps {
   refreshCooldownSeconds: number;
   isExportingCsv: boolean;
   isExportingPdf: boolean;
+  /** True when the active report requires a branch and none is selected — disables both export buttons without affecting the exporting spinner/label state. */
+  exportDisabled?: boolean;
   showBranchSelector: boolean;
 }
 
@@ -38,6 +40,7 @@ export function ReportFilterBar({
   refreshCooldownSeconds,
   isExportingCsv,
   isExportingPdf,
+  exportDisabled = false,
   showBranchSelector,
 }: ReportFilterBarProps) {
   // useBranches(filters) takes a single filters argument (no `enabled` gate) — called
@@ -78,11 +81,11 @@ export function ReportFilterBar({
         <RotateCw className="mr-2 h-4 w-4" />
         {isRefreshDisabled ? `Refresh (${refreshCooldownSeconds}s)` : 'Refresh'}
       </Button>
-      <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv}>
+      <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv || exportDisabled}>
         {isExportingCsv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
         {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
       </Button>
-      <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf}>
+      <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf || exportDisabled}>
         {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
         {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
       </Button>

@@ -5,10 +5,23 @@ import { manilaDateKey } from '../manila-time.js';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 
 describe('buildExportFilename', () => {
-  it('builds a PascalCase report name with the date_to stamp', () => {
+  it('builds a PascalCase report name with a from_to date range stamp when both bounds are known', () => {
     const filters: ReportFilters = { dateFrom: new Date('2026-07-24'), dateTo: new Date('2026-07-30'), page: 1, limit: 100 };
-    expect(buildExportFilename('DAILY_SALES', 'csv', filters)).toBe('DailySales_2026-07-30.csv');
-    expect(buildExportFilename('CASH_RECONCILIATION', 'pdf', filters)).toBe('CashReconciliation_2026-07-30.pdf');
+    expect(buildExportFilename('DAILY_SALES', 'csv', filters)).toBe('DailySales_2026-07-24_to_2026-07-30.csv');
+    expect(buildExportFilename('CASH_RECONCILIATION', 'pdf', filters)).toBe('CashReconciliation_2026-07-24_to_2026-07-30.pdf');
+  });
+
+  it('collapses to the single-date form when date_from and date_to resolve to the same Manila calendar day', () => {
+    // Same Manila day-start/day-end boundary pair a real request produces for
+    // a single-day filter (see reports.router.ts's toBoundaryDate) — must NOT
+    // render as "..._2026-07-24_to_2026-07-24...".
+    const filters: ReportFilters = {
+      dateFrom: new Date('2026-07-24T00:00:00.000+08:00'),
+      dateTo: new Date('2026-07-24T23:59:59.999+08:00'),
+      page: 1,
+      limit: 100,
+    };
+    expect(buildExportFilename('DAILY_SALES', 'csv', filters)).toBe('DailySales_2026-07-24.csv');
   });
 
   it('falls back to date_from when date_to is missing, and to today when both are missing', () => {

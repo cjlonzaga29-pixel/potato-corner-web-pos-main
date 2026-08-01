@@ -35,6 +35,12 @@ vi.mock('../../queues/report.queue.js', () => ({
   enqueueGenerateExport: vi.fn(),
   enqueueRefreshSnapshot: vi.fn(),
 }));
+vi.mock('../../lib/reports/pdf.js', () => ({
+  generatePdf: vi.fn(),
+}));
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: { branch: { findUnique: vi.fn() } },
+}));
 
 const { reportsRepository } = await import('./reports.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
@@ -225,20 +231,51 @@ describe('reportsService.getInventoryAnalyticsReport', () => {
 });
 
 describe('reportsService.requestExport', () => {
-  it('CSV sync path: uploads to storage and returns a signed download_url when count < 10,000', async () => {
+  it('CSV sync path: builds an in-memory buffer and returns it directly when count < 10,000', async () => {
     vi.mocked(reportsRepository.countRows).mockResolvedValue(5);
     const { getReportRows } = await import('./reports.columns.js');
     vi.mocked(getReportRows).mockResolvedValue([{ report_date: '2026-07-01' } as never]);
     const { supabaseAdmin } = await import('../../lib/supabase.js');
-    const upload = vi.fn().mockResolvedValue({ error: null });
-    const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/report.csv' }, error: null });
-    vi.mocked(supabaseAdmin.storage.from).mockReturnValue({ upload, createSignedUrl } as never);
 
     const result = await reportsService.requestExport('DAILY_SALES', { page: 1, limit: 25 }, 'csv', 'user-1', 'supervisor', 'b1');
 
-    expect(upload).toHaveBeenCalledWith(expect.stringMatching(/^reports\/user-1\/\d+-DAILY_SALES\.csv$/), expect.any(Buffer), { contentType: 'text/csv', upsert: false });
-    expect(result).toEqual({ download_url: 'https://signed.example/report.csv', expires_at: expect.any(String) });
-    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'REPORT_EXPORTED' }));
+    expect(result).toEqual({
+      kind: 'file',
+      buffer: expect.any(Buffer),
+      filename: expect.stringMatching(/\.csv$/),
+      contentType: 'text/csv',
+    });
+    expect(supabaseAdmin.storage.from).not.toHaveBeenCalled();
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 1 }) }),
+    );
+  });
+
+  it('PDF sync path: looks up the branch name and builds an in-memory buffer when count < 2,000', async () => {
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(3);
+    const { getReportRows } = await import('./reports.columns.js');
+    const rows = [{ report_date: '2026-07-01' }, { report_date: '2026-07-02' }, { report_date: '2026-07-03' }];
+    vi.mocked(getReportRows).mockResolvedValue(rows as never);
+    const { generatePdf } = await import('../../lib/reports/pdf.js');
+    const pdfBuffer = Buffer.from('%PDF-1.4 fake');
+    vi.mocked(generatePdf).mockResolvedValue(pdfBuffer);
+    const { prisma } = await import('../../lib/prisma.js');
+    vi.mocked(prisma.branch.findUnique).mockResolvedValue({ name: 'SM North' } as never);
+
+    const result = await reportsService.requestExport('DAILY_SALES', { page: 1, limit: 25 }, 'pdf', 'user-1', 'supervisor', 'b1');
+
+    expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
+    expect(prisma.branch.findUnique).toHaveBeenCalledWith({ where: { id: 'b1' }, select: { name: true } });
+    expect(generatePdf).toHaveBeenCalledWith(
+      'DAILY_SALES',
+      expect.any(Object),
+      rows,
+      expect.anything(),
+      'SM North',
+    );
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 3 }) }),
+    );
   });
 
   it('CSV async path: enqueues a job and returns job_id when count >= 10,000', async () => {
@@ -249,18 +286,20 @@ describe('reportsService.requestExport', () => {
     const result = await reportsService.requestExport('VOID_REFUND', { page: 1, limit: 25 }, 'csv', 'user-1', 'supervisor', 'b1');
 
     expect(enqueueGenerateExport).toHaveBeenCalled();
-    expect(result).toEqual({ job_id: 'job-1', message: expect.any(String), estimated_seconds: 120 });
+    expect(result).toEqual({ kind: 'job', job_id: 'job-1', message: expect.any(String), estimated_seconds: 120 });
   });
 
-  it('PDF always enqueues a job, regardless of row count', async () => {
-    vi.mocked(reportsRepository.countRows).mockResolvedValue(3);
+  it('PDF async path: enqueues a job when count >= 2,000, even below the CSV threshold of 10,000', async () => {
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(2_500);
     const { enqueueGenerateExport } = await import('../../queues/report.queue.js');
     vi.mocked(enqueueGenerateExport).mockResolvedValue({ id: 'job-2' } as never);
+    const { generatePdf } = await import('../../lib/reports/pdf.js');
 
     const result = await reportsService.requestExport('DAILY_SALES', { page: 1, limit: 25 }, 'pdf', 'user-1', 'supervisor', 'b1');
 
     expect(enqueueGenerateExport).toHaveBeenCalled();
-    expect('job_id' in result && result.job_id).toBe('job-2');
+    expect(generatePdf).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: 'job', job_id: 'job-2', message: expect.any(String), estimated_seconds: 30 });
   });
 
   it('rejects a supervisor exporting a super-admin-only report type with 403', async () => {

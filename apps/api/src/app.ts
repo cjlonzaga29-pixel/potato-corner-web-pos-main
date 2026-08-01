@@ -43,7 +43,7 @@ export const app: Express = express();
 app.set('trust proxy', 1);
 
 app.use(helmet());
-app.use(cors({ origin: config.frontendUrl, credentials: true }));
+app.use(cors({ origin: config.frontendUrl, credentials: true, exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'] }));
 app.use(express.json());
 app.use(cookieParser());
 app.use(morgan(config.isProduction ? 'combined' : 'dev'));

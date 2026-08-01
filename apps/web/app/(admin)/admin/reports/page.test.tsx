@@ -234,6 +234,55 @@ describe('AdminReportsPage', () => {
     expect(mockUseRequestExport.mutate).toHaveBeenCalledTimes(2);
   });
 
+  it('renders both export buttons with type="button"', () => {
+    render(<AdminReportsPage />);
+    expect(screen.getByRole('button', { name: /export csv/i })).toHaveAttribute('type', 'button');
+    expect(screen.getByRole('button', { name: /export pdf/i })).toHaveAttribute('type', 'button');
+  });
+
+  it('does not wrap either export button in a form that could submit/reload on click', () => {
+    render(<AdminReportsPage />);
+    expect(screen.getByRole('button', { name: /export csv/i }).closest('form')).toBeNull();
+    expect(screen.getByRole('button', { name: /export pdf/i }).closest('form')).toBeNull();
+  });
+
+  it('clicking Export CSV never triggers the Refresh cooldown/handler', () => {
+    render(<AdminReportsPage />);
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+    expect(screen.getByRole('button', { name: /^refresh$/i })).not.toBeDisabled();
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('shows the idle "Export CSV" label immediately (page-level loading text lives on isExportingCsv, driven by onSettled)', async () => {
+    render(<AdminReportsPage />);
+    const csvButton = screen.getByRole('button', { name: /export csv/i });
+    fireEvent.click(csvButton);
+
+    // handleExport passes { onSettled } as mutate's second argument — invoking it
+    // (as react-query would once the mutation resolves, success or failure) must
+    // flip the button back to idle and re-enabled.
+    const onSettled = mockUseRequestExport.mutate.mock.calls.at(-1)?.[1]?.onSettled;
+    expect(typeof onSettled).toBe('function');
+    await act(async () => {
+      onSettled();
+    });
+
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled();
+  });
+
+  it('resets to the idle, enabled state after a failed export too', async () => {
+    render(<AdminReportsPage />);
+    const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+    fireEvent.click(pdfButton);
+
+    const onSettled = mockUseRequestExport.mutate.mock.calls.at(-1)?.[1]?.onSettled;
+    await act(async () => {
+      onSettled();
+    });
+
+    expect(screen.getByRole('button', { name: 'Export PDF' })).toBeEnabled();
+  });
+
   it('calls useReportsRealtimeSync on mount', () => {
     render(<AdminReportsPage />);
     expect(reportsHooks.useReportsRealtimeSync).toHaveBeenCalled();

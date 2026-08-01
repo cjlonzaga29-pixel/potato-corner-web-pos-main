@@ -61,6 +61,7 @@ function mockRes(): Response {
     return res;
   }) as unknown as Response['json'];
   res.send = vi.fn(() => res) as unknown as Response['send'];
+  res.setHeader = vi.fn(() => res) as unknown as Response['setHeader'];
   return res;
 }
 
@@ -318,7 +319,7 @@ describe('POST /export', () => {
     expect(res.status).toHaveBeenCalledWith(422);
   });
 
-  it('returns 200 for a valid supervisor export request', async () => {
+  it('returns 200 for a valid supervisor export request and streams the CSV file bytes', async () => {
     const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({
@@ -326,12 +327,71 @@ describe('POST /export', () => {
       body: { report_type: 'DAILY_SALES', filters: { branch_id: BRANCH_1, page: 1, limit: 25 }, format: 'csv' },
     });
     const res = mockRes();
-    vi.mocked(reportsService.requestExport).mockResolvedValue({ download_url: 'https://signed.example/x.csv', expires_at: '2026-07-17T00:00:00.000Z' });
+    const buffer = Buffer.from('a,b\n1,2');
+    vi.mocked(reportsService.requestExport).mockResolvedValue({
+      kind: 'file',
+      buffer,
+      filename: 'DailySales_2026-07-24_to_2026-07-31.csv',
+      contentType: 'text/csv',
+    });
 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(reportsService.requestExport).toHaveBeenCalledWith('DAILY_SALES', expect.any(Object), 'csv', expect.any(String), 'supervisor', BRANCH_1);
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/csv; charset=utf-8');
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Disposition', 'attachment; filename="DailySales_2026-07-24_to_2026-07-31.csv"');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(res.send).toHaveBeenCalledWith(buffer);
+  });
+
+  it('returns 200 with a JSON job envelope (no kind field) when the service enqueues an async export', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      body: { report_type: 'DAILY_SALES', filters: { branch_id: BRANCH_1, page: 1, limit: 25 }, format: 'csv' },
+    });
+    const res = mockRes();
+    vi.mocked(reportsService.requestExport).mockResolvedValue({
+      kind: 'job',
+      job_id: 'job-9',
+      message: 'queued',
+      estimated_seconds: 30,
+    });
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      data: { job_id: 'job-9', message: 'queued', estimated_seconds: 30 },
+      error: null,
+      meta: null,
+    });
+  });
+
+  it('sets application/pdf (no charset) and the matching filename for a PDF file result', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({
+      ...authHeader(token),
+      body: { report_type: 'DAILY_SALES', filters: { branch_id: BRANCH_1, page: 1, limit: 25 }, format: 'pdf' },
+    });
+    const res = mockRes();
+    const buffer = Buffer.from('%PDF-1.4 fake');
+    vi.mocked(reportsService.requestExport).mockResolvedValue({
+      kind: 'file',
+      buffer,
+      filename: 'DailySales_2026-07-24_to_2026-07-31.pdf',
+      contentType: 'application/pdf',
+    });
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/pdf');
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Disposition', 'attachment; filename="DailySales_2026-07-24_to_2026-07-31.pdf"');
+    expect(res.send).toHaveBeenCalledWith(buffer);
   });
 
   it('propagates a 403 ReportError from the service (super-admin-only report type)', async () => {

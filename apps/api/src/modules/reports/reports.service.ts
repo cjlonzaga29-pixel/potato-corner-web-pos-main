@@ -7,8 +7,9 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getReportRows, REPORT_COLUMNS } from './reports.columns.js';
 import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
+import { generatePdf } from '../../lib/reports/pdf.js';
 import { buildExportFilename } from '../../lib/reports/export-filename.js';
-import { supabaseAdmin } from '../../lib/supabase.js';
+import { prisma } from '../../lib/prisma.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
 
 const DEFAULT_REALTIME_RANGE_DAYS = 7;
@@ -144,9 +145,22 @@ async function precomputedReport<T>(
   return { report_type: reportType, computed_at: existing.computedAt.toISOString(), branch_id: branchId, data: existing.payload as T[] };
 }
 
-const SYNC_CSV_ROW_LIMIT = 10_000;
+// Reports under this row count are generated and returned synchronously (the
+// browser gets real CSV/PDF bytes in the same response, no job/notification
+// round-trip). PDF's limit is far lower than CSV's — react-pdf's
+// renderToBuffer is much more expensive per row than string-joining CSV
+// lines, and it runs synchronously inside the request handler, so a huge PDF
+// would block the event loop for other requests. Reports at or above the
+// limit fall back to the existing async job + Supabase signed URL +
+// Socket.io notification flow — that path is for oversized exports only, not
+// the normal Export CSV/PDF buttons a user hits from the Reports page.
+const SYNC_ROW_LIMIT: Record<'csv' | 'pdf', number> = { csv: 10_000, pdf: 2_000 };
 const SUPER_ADMIN_ONLY_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON', 'AUDIT_LOG']);
 const PRECOMPUTED_TYPES = new Set<ReportType>(['PRODUCT_PERFORMANCE', 'FLAVOR_PERFORMANCE', 'EMPLOYEE_PERFORMANCE', 'INVENTORY_VALUATION', 'BRANCH_COMPARISON']);
+
+export type ExportResult =
+  | { kind: 'file'; buffer: Buffer; filename: string; contentType: 'text/csv' | 'application/pdf' }
+  | { kind: 'job'; job_id: string; message: string; estimated_seconds: number };
 
 export const reportsService = {
   getDailySalesReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
@@ -239,7 +253,7 @@ export const reportsService = {
     requesterId: string,
     requesterRole: string,
     branchId: string | null,
-  ): Promise<{ download_url: string; expires_at: string } | { job_id: string; message: string; estimated_seconds: number }> {
+  ): Promise<ExportResult> {
     if (SUPER_ADMIN_ONLY_TYPES.has(reportType) && requesterRole !== ROLES.SUPER_ADMIN) {
       throw new ReportError('FORBIDDEN_REPORT_TYPE', `${reportType} can only be exported by a super admin`, 403);
     }
@@ -247,21 +261,22 @@ export const reportsService = {
     const resolvedFilters = PRECOMPUTED_TYPES.has(reportType) ? precomputedWindowFilters(branchId) : defaultRealtimeFilters(filters);
     const count = await reportsRepository.countRows(reportType, resolvedFilters);
 
-    if (format === 'csv' && count < SYNC_CSV_ROW_LIMIT) {
+    if (count < SYNC_ROW_LIMIT[format]) {
       const rows = await getReportRows(reportType, { ...resolvedFilters, page: 1, limit: count || 1 });
       const columns = REPORT_COLUMNS[reportType];
-      const buffer = generateCsv(rows, columns);
-      const path = `reports/${requesterId}/${Date.now()}-${reportType}.csv`;
+      const filename = buildExportFilename(reportType, format, resolvedFilters);
 
-      const { error: uploadError } = await supabaseAdmin.storage.from('report-exports').upload(path, buffer, { contentType: 'text/csv', upsert: false });
-      if (uploadError) throw new ReportError('EXPORT_UPLOAD_FAILED', 'Failed to upload the report export', 502);
+      let buffer: Buffer;
+      let contentType: 'text/csv' | 'application/pdf';
+      if (format === 'csv') {
+        buffer = generateCsv(rows, columns);
+        contentType = 'text/csv';
+      } else {
+        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
+        contentType = 'application/pdf';
+      }
 
-      const { data: signed, error: signError } = await supabaseAdmin.storage
-        .from('report-exports')
-        .createSignedUrl(path, 86_400, { download: buildExportFilename(reportType, format, resolvedFilters) });
-      if (signError || !signed) throw new ReportError('EXPORT_SIGN_FAILED', 'Failed to create a download link for the export', 502);
-
-      const expiresAt = new Date(Date.now() + 86_400 * 1000).toISOString();
       await recordAuditLog({
         action: 'REPORT_EXPORTED',
         entityType: 'report',
@@ -269,9 +284,9 @@ export const reportsService = {
         actorId: requesterId,
         actorRole: requesterRole,
         branchId,
-        afterState: { reportType, format, path, async: false, rowCount: rows.length },
+        afterState: { reportType, format, async: false, rowCount: rows.length },
       });
-      return { download_url: signed.signedUrl, expires_at: expiresAt };
+      return { kind: 'file', buffer, filename, contentType };
     }
 
     const job = await enqueueGenerateExport({ reportType, filters: resolvedFilters, format, requesterId, branchId });
@@ -285,6 +300,7 @@ export const reportsService = {
       afterState: { reportType, format, async: true, jobId: job.id, rowCount: count },
     });
     return {
+      kind: 'job',
       job_id: job.id ?? '',
       message: "Export queued — you'll be notified when it's ready",
       estimated_seconds: count < 1000 ? 10 : count < 10_000 ? 30 : 120,

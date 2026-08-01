@@ -222,7 +222,16 @@ router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordCha
     };
     const branchId = filters.branchId ?? null;
     const result = await reportsService.requestExport(body.report_type as ReportType, filters, body.format, req.user.user_id, req.user.role, branchId);
-    res.status(200).json({ data: result, error: null, meta: null });
+
+    if (result.kind === 'file') {
+      res.setHeader('Content-Type', result.contentType === 'text/csv' ? 'text/csv; charset=utf-8' : 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).send(result.buffer);
+      return;
+    }
+
+    res.status(200).json({ data: { job_id: result.job_id, message: result.message, estimated_seconds: result.estimated_seconds }, error: null, meta: null });
   } catch (error) {
     handleReportError(error, res, next);
   }

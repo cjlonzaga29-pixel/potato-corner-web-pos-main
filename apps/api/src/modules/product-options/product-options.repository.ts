@@ -82,6 +82,7 @@ export const productOptionsRepository = {
         code: data.code,
         name: data.name,
         description: data.description,
+        posButtonLabel: data.posButtonLabel,
         selectionType: data.selectionType,
         minSelections: data.minSelections,
         maxSelections: data.maxSelections,
@@ -100,6 +101,7 @@ export const productOptionsRepository = {
       data: {
         name: data.name,
         description: data.description,
+        posButtonLabel: data.posButtonLabel,
         selectionType: data.selectionType,
         minSelections: data.minSelections,
         maxSelections: data.maxSelections,

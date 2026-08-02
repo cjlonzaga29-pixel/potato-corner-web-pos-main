@@ -324,7 +324,9 @@ export const productsRepository = {
             // or inventory deduction.
             optionGroupAssignments: {
               include: {
-                optionGroup: { select: { id: true, name: true, selectionType: true, required: true, isActive: true } },
+                optionGroup: {
+                  select: { id: true, name: true, posButtonLabel: true, selectionType: true, minSelections: true, maxSelections: true, required: true, isActive: true },
+                },
                 allowedOptions: {
                   orderBy: { sortOrder: 'asc' },
                   include: {

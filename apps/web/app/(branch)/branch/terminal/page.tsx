@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Separator } from '@/components/ui/separator';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -48,6 +49,26 @@ function formatAdjustment(amount: number): string {
 
 function round2(amount: number): number {
   return Math.round(amount * 100) / 100;
+}
+
+// Cashier-facing label for a Product Option Group — pos_button_label is the
+// admin-configured override; falls back to the internal name when unset or
+// blank. Never touches the internal name itself (admin/API/DB unaffected).
+function resolveGroupLabel(group: { name: string; pos_button_label: string | null }): string {
+  return group.pos_button_label?.trim() || group.name;
+}
+
+// Cashier-facing label for the "skip this optional group" choice, e.g.
+// "No Fries Add-ons" for a group labeled "Fries Add-ons". Falls back to the
+// generic "No Add-ons" when the resolved label already starts with
+// "Add-ons"/"No " (would read awkwardly, e.g. "No Add-ons Add-ons") or is
+// empty. UI text only — never touches selection/clear logic.
+function resolveNoOptionLabel(group: { name: string; pos_button_label: string | null }): string {
+  const label = resolveGroupLabel(group);
+  if (!label || /^(add-?ons?|no)\b/i.test(label)) {
+    return 'No Add-ons';
+  }
+  return `No ${label}`;
 }
 
 type DiscountChoice = 'none' | 'pwd' | 'senior_citizen' | 'employee' | 'promotional';
@@ -321,23 +342,48 @@ export default function TerminalPage() {
     addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
   }
 
-  function handleOptionSelect(groupId: string, optionId: string, selectionType: 'SINGLE' | 'MULTIPLE') {
+  function handleOptionSelect(groupId: string, optionId: string, selectionType: 'SINGLE' | 'MULTIPLE', maxSelections: number | null) {
     setOptionPrompt((prev) => {
       if (!prev) return prev;
       const current = prev.selections[groupId] ?? [];
-      const next =
-        selectionType === 'SINGLE'
-          ? [optionId]
-          : current.includes(optionId)
-            ? current.filter((id) => id !== optionId)
-            : [...current, optionId];
-      return { ...prev, selections: { ...prev.selections, [groupId]: next } };
+      if (selectionType === 'SINGLE') {
+        return { ...prev, selections: { ...prev.selections, [groupId]: [optionId] } };
+      }
+      if (current.includes(optionId)) {
+        return { ...prev, selections: { ...prev.selections, [groupId]: current.filter((id) => id !== optionId) } };
+      }
+      if (maxSelections !== null && current.length >= maxSelections) {
+        return prev;
+      }
+      return { ...prev, selections: { ...prev.selections, [groupId]: [...current, optionId] } };
     });
   }
 
+  function handleOptionClear(groupId: string) {
+    setOptionPrompt((prev) => (prev ? { ...prev, selections: { ...prev.selections, [groupId]: [] } } : prev));
+  }
+
+  function optionGroupHelperText(minSelections: number, maxSelections: number | null): string {
+    if (maxSelections !== null && minSelections === maxSelections) return `Choose exactly ${minSelections}`;
+    if (maxSelections !== null && minSelections === 0) return `Choose up to ${maxSelections}`;
+    if (maxSelections === null && minSelections > 0) return `Choose at least ${minSelections}`;
+    if (maxSelections !== null && minSelections > 0) return `Choose between ${minSelections} and ${maxSelections}`;
+    return 'Choose any number';
+  }
+
   const optionPromptValid = optionPrompt
-    ? optionPrompt.groups.every((group) => !group.required || (optionPrompt.selections[group.id]?.length ?? 0) > 0)
+    ? optionPrompt.groups.every((group) => {
+        const count = optionPrompt.selections[group.id]?.length ?? 0;
+        return count >= group.min_selections && (group.max_selections === null || count <= group.max_selections);
+      })
     : false;
+
+  // This dialog always renders every applicable group together (no separate
+  // per-group modal exists in this UI), so the title stays the
+  // product/variant name in all cases — including the single-group case —
+  // to avoid duplicating the resolved label already shown as that group's
+  // section heading below.
+  const optionPromptTitle = optionPrompt ? `${optionPrompt.product.name} (${optionPrompt.variant.name})` : '';
 
   function handleOptionAddToCart() {
     if (!optionPrompt || !optionPromptValid) return;
@@ -346,7 +392,7 @@ export default function TerminalPage() {
         const option = group.options.find((o) => o.id === optionId);
         return {
           option_group_id: group.id,
-          option_group_name: group.name,
+          option_group_name: resolveGroupLabel(group),
           option_id: optionId,
           option_name: option?.name ?? 'Unknown option',
           price_adjustment: option?.price_adjustment ?? 0,
@@ -841,25 +887,36 @@ export default function TerminalPage() {
         <Dialog open={optionPrompt !== null} onOpenChange={(open) => !open && setOptionPrompt(null)}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>
-                {optionPrompt ? `${optionPrompt.product.name} (${optionPrompt.variant.name})` : ''}
-              </DialogTitle>
+              <DialogTitle>{optionPromptTitle}</DialogTitle>
             </DialogHeader>
             {optionPrompt && (
               <div className="space-y-4">
-                {optionPrompt.groups.map((group) => {
+                {optionPrompt.groups.map((group, groupIndex) => {
                   const selected = optionPrompt.selections[group.id] ?? [];
+                  const atMax = group.max_selections !== null && selected.length >= group.max_selections;
                   return (
                     <div key={group.id} className="space-y-2">
+                      {groupIndex > 0 && <Separator />}
                       <p className="text-sm font-medium">
-                        {group.name}
+                        {resolveGroupLabel(group)}
                         {group.required && <span className="text-destructive"> *</span>}
                       </p>
+                      <p className="text-xs text-muted-foreground">{optionGroupHelperText(group.min_selections, group.max_selections)}</p>
                       {group.selection_type === 'SINGLE' ? (
                         <RadioGroup
                           value={selected[0] ?? ''}
-                          onValueChange={(value) => handleOptionSelect(group.id, value, 'SINGLE')}
+                          onValueChange={(value) =>
+                            value === '__none__'
+                              ? handleOptionClear(group.id)
+                              : handleOptionSelect(group.id, value, 'SINGLE', group.max_selections)
+                          }
                         >
+                          {group.min_selections === 0 && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <RadioGroupItem value="__none__" />
+                              {resolveNoOptionLabel(group)}
+                            </label>
+                          )}
                           {group.options.map((option) => (
                             <label key={option.id} className="flex items-center gap-2 text-sm">
                               <RadioGroupItem value={option.id} />
@@ -870,16 +927,23 @@ export default function TerminalPage() {
                         </RadioGroup>
                       ) : (
                         <div className="space-y-1">
-                          {group.options.map((option) => (
-                            <label key={option.id} className="flex items-center gap-2 text-sm">
-                              <Checkbox
-                                checked={selected.includes(option.id)}
-                                onCheckedChange={() => handleOptionSelect(group.id, option.id, 'MULTIPLE')}
-                              />
-                              {option.name}
-                              {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
-                            </label>
-                          ))}
+                          {group.options.map((option) => {
+                            const isChecked = selected.includes(option.id);
+                            return (
+                              <label
+                                key={option.id}
+                                className={`flex items-center gap-2 text-sm ${!isChecked && atMax ? 'opacity-50' : ''}`}
+                              >
+                                <Checkbox
+                                  checked={isChecked}
+                                  disabled={!isChecked && atMax}
+                                  onCheckedChange={() => handleOptionSelect(group.id, option.id, 'MULTIPLE', group.max_selections)}
+                                />
+                                {option.name}
+                                {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                              </label>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -888,7 +952,10 @@ export default function TerminalPage() {
               </div>
             )}
             <DialogFooter>
-              <Button className="w-full" disabled={!optionPromptValid} onClick={handleOptionAddToCart}>
+              <Button variant="outline" onClick={() => setOptionPrompt(null)}>
+                Cancel
+              </Button>
+              <Button disabled={!optionPromptValid} onClick={handleOptionAddToCart}>
                 Add to Cart
               </Button>
             </DialogFooter>

@@ -1440,7 +1440,10 @@ export const productsService = {
           .map((assignment) => ({
             id: assignment.optionGroup.id,
             name: assignment.optionGroup.name,
+            pos_button_label: assignment.optionGroup.posButtonLabel,
             selection_type: assignment.optionGroup.selectionType,
+            min_selections: assignment.optionGroup.minSelections,
+            max_selections: assignment.optionGroup.maxSelections,
             required: assignment.required ?? assignment.optionGroup.required,
             options: assignment.allowedOptions
               .filter((allowed) => allowed.productOption.isActive)

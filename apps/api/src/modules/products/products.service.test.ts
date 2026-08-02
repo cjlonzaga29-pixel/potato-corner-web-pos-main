@@ -1699,6 +1699,121 @@ describe('productsService.getPosCatalog — Mix & Max snack options', () => {
   });
 });
 
+describe('productsService.getPosCatalog — option group pos_button_label (Task 69)', () => {
+  function optionGroupVariant(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'variant-1',
+      name: 'Regular',
+      sizeLabel: 'Regular',
+      basePrice: { toNumber: () => 100 },
+      vatableCapAmount: null,
+      variantFlavors: [],
+      optionGroupAssignments: [],
+      flavorSlots: [],
+      ...overrides,
+    };
+  }
+
+  function optionGroupProduct(variant: Record<string, unknown>) {
+    return {
+      id: 'product-1',
+      name: 'Mega Mix',
+      category: 'Snacks',
+      imageUrl: null,
+      variants: [variant],
+    };
+  }
+
+  function assignment(optionGroupOverrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      required: null,
+      optionGroup: {
+        id: 'group-1',
+        name: 'Add-ons',
+        posButtonLabel: null,
+        selectionType: 'MULTIPLE',
+        minSelections: 0,
+        maxSelections: 3,
+        required: false,
+        isActive: true,
+        ...optionGroupOverrides,
+      },
+      allowedOptions: [
+        {
+          productOption: {
+            id: 'option-1',
+            name: 'Cheese Sauce',
+            priceAdjustment: { toNumber: () => 15 },
+            sortOrder: 1,
+            isActive: true,
+          },
+        },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+  });
+
+  it('returns the configured pos_button_label for an option group', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment({ posButtonLabel: 'ADD-ONS' })] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups[0]?.pos_button_label).toBe('ADD-ONS');
+  });
+
+  it('returns null pos_button_label when not configured', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment({ posButtonLabel: null })] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups[0]?.pos_button_label).toBeNull();
+  });
+
+  it('preserves existing option-group fields and options[] alongside pos_button_label', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment({ posButtonLabel: 'ADD-ONS' })] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups[0]).toEqual({
+      id: 'group-1',
+      name: 'Add-ons',
+      pos_button_label: 'ADD-ONS',
+      selection_type: 'MULTIPLE',
+      min_selections: 0,
+      max_selections: 3,
+      required: false,
+      options: [
+        {
+          id: 'option-1',
+          name: 'Cheese Sauce',
+          price_adjustment: 15,
+          sort_order: 1,
+          is_active: true,
+        },
+      ],
+    });
+  });
+
+  it('returns an empty option_groups array when a variant has no option group assignments', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups).toEqual([]);
+  });
+});
+
 describe('productsService.getPosCatalog — live POS readiness (Phase B, delegated to productReadinessService)', () => {
   function readinessVariant(overrides: Partial<Record<string, unknown>> = {}) {
     return {

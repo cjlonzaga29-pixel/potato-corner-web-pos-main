@@ -61,6 +61,7 @@ export const createProductOptionGroupSchema = z
     code: codeSchema,
     name: z.string().min(2).max(100),
     description: z.string().max(500).optional(),
+    pos_button_label: z.string().trim().max(100).nullable().optional(),
     selection_type: z.enum(PRODUCT_OPTION_SELECTION_TYPES),
     min_selections: z.number().int().nonnegative().default(0),
     max_selections: z.number().int().positive().optional(),
@@ -81,6 +82,7 @@ export const updateProductOptionGroupSchema = z
   .object({
     name: z.string().min(2).max(100).optional(),
     description: z.string().max(500).optional(),
+    pos_button_label: z.string().trim().max(100).nullable().optional(),
     selection_type: z.enum(PRODUCT_OPTION_SELECTION_TYPES).optional(),
     min_selections: z.number().int().nonnegative().optional(),
     max_selections: z.number().int().positive().nullable().optional(),
@@ -112,6 +114,7 @@ export const productOptionGroupResponseSchema = z.object({
   code: z.string(),
   name: z.string(),
   description: z.string().nullable(),
+  pos_button_label: z.string().nullable(),
   selection_type: z.enum(PRODUCT_OPTION_SELECTION_TYPES),
   min_selections: z.number().int(),
   max_selections: z.number().int().nullable(),

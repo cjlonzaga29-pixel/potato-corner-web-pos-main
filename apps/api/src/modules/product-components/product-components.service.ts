@@ -4,7 +4,6 @@ import { productComponentsRepository as repo } from './product-components.reposi
 import { ProductComponentError } from './product-components.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { productsRepository } from '../products/products.repository.js';
-import { productOptionsRepository } from '../product-options/product-options.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 type ActorContext = { id: string; role: string };
@@ -16,7 +15,6 @@ function toResponse(component: {
   quantityRequired: { toNumber(): number };
   recipeUnitId: string | null;
   isActive: boolean;
-  productOptionId: string | null;
   version: number;
   createdAt: Date;
   updatedAt: Date;
@@ -37,7 +35,6 @@ function toResponse(component: {
     recipe_unit_code: component.recipeUnit?.code ?? component.inventoryItem.baseUnit.code,
     quantity_required: component.quantityRequired.toNumber(),
     is_active: component.isActive,
-    product_option_id: component.productOptionId,
     version: component.version,
     created_at: component.createdAt.toISOString(),
     updated_at: component.updatedAt.toISOString(),
@@ -106,11 +103,6 @@ export const productComponentsService = {
     const existing = await repo.findByVariantAndItem(data.product_variant_id, data.inventory_item_id);
     if (existing) throw new ProductComponentError('MAPPING_ALREADY_EXISTS', 'This inventory item is already mapped to this variant', 409);
 
-    if (data.product_option_id) {
-      const option = await productOptionsRepository.findOptionById(data.product_option_id);
-      if (!option) throw new ProductComponentError('PRODUCT_OPTION_NOT_FOUND', 'product_option_id does not exist', 404);
-    }
-
     const recipeUnitId = await resolveRecipeUnitId(item.baseUnitId, data.recipe_unit_id);
 
     let component;
@@ -120,7 +112,6 @@ export const productComponentsService = {
         inventoryItemId: data.inventory_item_id,
         quantityRequired: data.quantity_required,
         recipeUnitId,
-        productOptionId: data.product_option_id ?? null,
       });
     } catch (error) {
       // Defense-in-depth against the findByVariantAndItem check above racing
@@ -151,19 +142,12 @@ export const productComponentsService = {
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
     await assertParentProductNotArchived(before.productVariantId);
 
-    const updateData: { quantityRequired?: number; recipeUnitId?: string; isActive?: boolean; productOptionId?: string | null } = {};
+    const updateData: { quantityRequired?: number; recipeUnitId?: string; isActive?: boolean } = {};
     if (data.quantity_required !== undefined) updateData.quantityRequired = data.quantity_required;
     if (data.recipe_unit_id !== undefined) {
       updateData.recipeUnitId = await resolveRecipeUnitId(before.inventoryItem.baseUnitId, data.recipe_unit_id);
     }
     if (data.is_active !== undefined) updateData.isActive = data.is_active;
-    if (data.product_option_id !== undefined) {
-      if (data.product_option_id !== null) {
-        const option = await productOptionsRepository.findOptionById(data.product_option_id);
-        if (!option) throw new ProductComponentError('PRODUCT_OPTION_NOT_FOUND', 'product_option_id does not exist', 404);
-      }
-      updateData.productOptionId = data.product_option_id;
-    }
 
     const component = await repo.update(id, updateData);
     const response = toResponse(component);

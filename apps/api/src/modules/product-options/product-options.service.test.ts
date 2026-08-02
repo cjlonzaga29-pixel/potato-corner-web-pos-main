@@ -27,12 +27,20 @@ vi.mock('../products/products.repository.js', () => ({
   },
 }));
 
+vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
+  universalInventoryRepository: {
+    findItemById: vi.fn(),
+    findUnitById: vi.fn(),
+  },
+}));
+
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { productOptionsRepository: repo } = await import('./product-options.repository.js');
 const { productsRepository } = await import('../products/products.repository.js');
+const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { productOptionsService } = await import('./product-options.service.js');
 
 const ACTOR = { id: 'admin-1', role: 'super_admin' };
@@ -74,6 +82,43 @@ function buildOption(overrides: Partial<Record<string, unknown>> = {}) {
     sortOrder: 1,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
+    ...overrides,
+  };
+}
+
+function buildItem(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'item-1',
+    name: 'Cheese Powder',
+    baseUnitId: 'unit-g',
+    category: { id: 'cat-1', name: 'Toppings' },
+    baseUnit: { id: 'unit-g', code: 'g', name: 'Gram' },
+    ...overrides,
+  };
+}
+
+function buildUnit(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'unit-g',
+    code: 'g',
+    name: 'Gram',
+    dimension: 'WEIGHT',
+    isBaseUnit: true,
+    isActive: true,
+    ...overrides,
+  };
+}
+
+function buildMapping(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    quantityRequired: decimal(10),
+    deductionUnit: { id: 'unit-g', code: 'g', name: 'Gram' },
+    inventoryItem: {
+      id: 'item-1',
+      name: 'Cheese Powder',
+      category: { id: 'cat-1', name: 'Toppings' },
+      baseUnit: { id: 'unit-g', code: 'g', name: 'Gram' },
+    },
     ...overrides,
   };
 }
@@ -141,6 +186,181 @@ describe('productOptionsService.createOption', () => {
       null,
     );
     expect(result.option_group_id).toBe('group-2');
+  });
+});
+
+describe('productOptionsService.createOption — inventory_deduction (TASK 75)', () => {
+  it('creates the option without a mapping when inventory_deduction is omitted', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findOptionByCode).mockResolvedValue(null);
+    vi.mocked(repo.createOption).mockResolvedValue(buildOption() as never);
+
+    const result = await productOptionsService.createOption(
+      'group-1',
+      { code: 'cheese', name: 'Cheese', price_adjustment: 0, is_active: true },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.createOption).toHaveBeenCalledWith(expect.objectContaining({ inventoryDeduction: undefined }));
+    expect(result.inventory_deduction).toBeNull();
+  });
+
+  it('404s when inventory_item_id does not exist', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findOptionByCode).mockResolvedValue(null);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(null);
+
+    await expect(
+      productOptionsService.createOption(
+        'group-1',
+        {
+          code: 'cheese',
+          name: 'Cheese',
+          price_adjustment: 0,
+          is_active: true,
+          inventory_deduction: { inventory_item_id: 'missing-item', deduction_unit_id: 'unit-g', quantity_required: 10 },
+        },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
+    expect(repo.createOption).not.toHaveBeenCalled();
+  });
+
+  it('404s when deduction_unit_id does not exist or is inactive', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findOptionByCode).mockResolvedValue(null);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(universalInventoryRepository.findUnitById).mockResolvedValue(null);
+
+    await expect(
+      productOptionsService.createOption(
+        'group-1',
+        {
+          code: 'cheese',
+          name: 'Cheese',
+          price_adjustment: 0,
+          is_active: true,
+          inventory_deduction: { inventory_item_id: 'item-1', deduction_unit_id: 'missing-unit', quantity_required: 10 },
+        },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'DEDUCTION_UNIT_NOT_FOUND' });
+    expect(repo.createOption).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deduction unit whose dimension does not match the item base unit', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findOptionByCode).mockResolvedValue(null);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(universalInventoryRepository.findUnitById).mockImplementation(((id: string) => {
+      if (id === 'unit-ml') return Promise.resolve(buildUnit({ id: 'unit-ml', code: 'ml', dimension: 'VOLUME' }));
+      if (id === 'unit-g') return Promise.resolve(buildUnit()); // base unit lookup
+      return Promise.resolve(null);
+    }) as never);
+
+    await expect(
+      productOptionsService.createOption(
+        'group-1',
+        {
+          code: 'cheese',
+          name: 'Cheese',
+          price_adjustment: 0,
+          is_active: true,
+          inventory_deduction: { inventory_item_id: 'item-1', deduction_unit_id: 'unit-ml', quantity_required: 10 },
+        },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'DEDUCTION_UNIT_DIMENSION_MISMATCH' });
+    expect(repo.createOption).not.toHaveBeenCalled();
+  });
+
+  it('creates the mapping when the deduction unit is compatible with the item base unit', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findOptionByCode).mockResolvedValue(null);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(universalInventoryRepository.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.createOption).mockResolvedValue(buildOption({ inventoryMapping: buildMapping() }) as never);
+
+    const result = await productOptionsService.createOption(
+      'group-1',
+      {
+        code: 'cheese',
+        name: 'Cheese',
+        price_adjustment: 0,
+        is_active: true,
+        inventory_deduction: { inventory_item_id: 'item-1', deduction_unit_id: 'unit-g', quantity_required: 10 },
+      },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.createOption).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inventoryDeduction: { inventoryItemId: 'item-1', deductionUnitId: 'unit-g', quantityRequired: 10 },
+      }),
+    );
+    expect(result.inventory_deduction).toMatchObject({
+      inventory_item_id: 'item-1',
+      inventory_category_id: 'cat-1',
+      base_unit_code: 'g',
+      deduction_unit_code: 'g',
+      quantity_required: 10,
+    });
+  });
+});
+
+describe('productOptionsService.updateOption — inventory_deduction (TASK 75)', () => {
+  it('preserves the existing mapping when inventory_deduction is omitted', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ inventoryMapping: buildMapping() }) as never);
+    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ inventoryMapping: buildMapping() }) as never);
+
+    await productOptionsService.updateOption('group-1', 'option-1', { name: 'Cheese v2' }, ACTOR, null);
+
+    expect(repo.updateOption).toHaveBeenCalledWith('option-1', expect.objectContaining({ inventoryDeduction: undefined }));
+  });
+
+  it('removes the mapping when inventory_deduction is explicitly null', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ inventoryMapping: buildMapping() }) as never);
+    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ inventoryMapping: null }) as never);
+
+    const result = await productOptionsService.updateOption('group-1', 'option-1', { inventory_deduction: null }, ACTOR, null);
+
+    expect(repo.updateOption).toHaveBeenCalledWith('option-1', expect.objectContaining({ inventoryDeduction: null }));
+    expect(result.inventory_deduction).toBeNull();
+  });
+
+  it('is a no-op (no delete dispatched) when removing a mapping that does not exist', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ inventoryMapping: null }) as never);
+    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ inventoryMapping: null }) as never);
+
+    await productOptionsService.updateOption('group-1', 'option-1', { inventory_deduction: null }, ACTOR, null);
+
+    expect(repo.updateOption).toHaveBeenCalledWith('option-1', expect.objectContaining({ inventoryDeduction: undefined }));
+  });
+
+  it('creates or updates the mapping when inventory_deduction is an object', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ inventoryMapping: null }) as never);
+    vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(universalInventoryRepository.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ inventoryMapping: buildMapping() }) as never);
+
+    const result = await productOptionsService.updateOption(
+      'group-1',
+      'option-1',
+      { inventory_deduction: { inventory_item_id: 'item-1', deduction_unit_id: 'unit-g', quantity_required: 10 } },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.updateOption).toHaveBeenCalledWith(
+      'option-1',
+      expect.objectContaining({ inventoryDeduction: { inventoryItemId: 'item-1', deductionUnitId: 'unit-g', quantityRequired: 10 } }),
+    );
+    expect(result.inventory_deduction).not.toBeNull();
   });
 });
 

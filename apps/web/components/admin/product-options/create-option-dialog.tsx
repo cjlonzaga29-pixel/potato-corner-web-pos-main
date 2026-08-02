@@ -8,9 +8,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useCreateProductOption } from '@/hooks/queries/use-product-options';
+import { useInventoryCategories, useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
+import { useOptionDeductionState } from './use-option-deduction-state';
 
 function optionalCoercedNumber(min: number) {
   return z.preprocess(
@@ -45,6 +49,11 @@ export function CreateOptionDialog({ groupId, open, onOpenChange }: CreateOption
   const createOption = useCreateProductOption(groupId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
 
+  const { data: categories } = useInventoryCategories();
+  const { data: inventoryItems } = useInventoryItems();
+  const { data: units } = useUnitsOfMeasure();
+  const deduction = useOptionDeductionState({ open, option: null, inventoryItems, units });
+
   function handleOpenChange(next: boolean) {
     if (!next) form.reset(DEFAULT_VALUES);
     onOpenChange(next);
@@ -52,12 +61,14 @@ export function CreateOptionDialog({ groupId, open, onOpenChange }: CreateOption
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
+    const inventoryDeduction = deduction.toPayload();
     await createOption.mutateAsync({
       code: parsed.code,
       name: parsed.name,
       price_adjustment: parsed.price_adjustment,
       sort_order: parsed.sort_order,
       is_active: parsed.is_active,
+      ...(inventoryDeduction ? { inventory_deduction: inventoryDeduction } : {}),
     });
     handleOpenChange(false);
   }
@@ -83,6 +94,82 @@ export function CreateOptionDialog({ groupId, open, onOpenChange }: CreateOption
             <FormFieldWrapper<FormValues> name="price_adjustment" label="Price Adjustment" description="Added to the base price when selected">
               <Input inputMode="decimal" placeholder="0" />
             </FormFieldWrapper>
+
+            <div className="space-y-3 rounded-md border p-3">
+              <p className="text-sm font-medium">Inventory Deduction</p>
+
+              <div className="space-y-2">
+                <Label htmlFor="create-option-deduction-category">Inventory Category</Label>
+                <Select value={deduction.categoryId} onValueChange={deduction.setCategoryId}>
+                  <SelectTrigger id="create-option-deduction-category">
+                    <SelectValue placeholder="Select a category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(categories ?? []).map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="create-option-deduction-item">Inventory Item</Label>
+                <Select value={deduction.inventoryItemId} onValueChange={deduction.setInventoryItemId} disabled={!deduction.categoryId}>
+                  <SelectTrigger id="create-option-deduction-item">
+                    <SelectValue placeholder={deduction.categoryId ? 'Select an item' : 'Select a category first'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {deduction.itemsInCategory.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Base Unit</Label>
+                  <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                    {deduction.baseUnit ? `${deduction.baseUnit.code} — ${deduction.baseUnit.name}` : '—'}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="create-option-deduction-quantity">Quantity Required</Label>
+                  <Input
+                    id="create-option-deduction-quantity"
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    value={deduction.quantityRequired}
+                    onChange={(event) => deduction.setQuantityRequired(event.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="create-option-deduction-unit">Deduction Unit</Label>
+                <Select
+                  value={deduction.deductionUnitId}
+                  onValueChange={deduction.setDeductionUnitId}
+                  disabled={!deduction.selectedItem || deduction.compatibleDeductionUnits.length === 0}
+                >
+                  <SelectTrigger id="create-option-deduction-unit">
+                    <SelectValue placeholder="Select a unit" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {deduction.compatibleDeductionUnits.map((unit) => (
+                      <SelectItem key={unit.id} value={unit.id}>
+                        {unit.code} — {unit.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
 
             <FormFieldWrapper<FormValues> name="sort_order" label="Sort Order">
               <Input inputMode="numeric" placeholder="0" />

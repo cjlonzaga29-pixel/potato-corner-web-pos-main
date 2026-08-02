@@ -48,6 +48,15 @@ export interface UpdateOptionGroupData {
   sortOrder?: number;
 }
 
+// TASK 75 — resolved (camelCase, ID-validated) inventory deduction ready to
+// persist. Category/base unit are never part of this shape — they're derived
+// from InventoryItem at read time, never stored on the mapping.
+export interface ResolvedInventoryDeduction {
+  inventoryItemId: string;
+  deductionUnitId: string;
+  quantityRequired: number;
+}
+
 export interface CreateOptionData {
   optionGroupId: string;
   code: string;
@@ -57,6 +66,7 @@ export interface CreateOptionData {
   isActive: boolean;
   sortOrder?: number;
   createdBy: string;
+  inventoryDeduction?: ResolvedInventoryDeduction;
 }
 
 export interface UpdateOptionData {
@@ -65,6 +75,8 @@ export interface UpdateOptionData {
   imageUrl?: string | null;
   isActive?: boolean;
   sortOrder?: number;
+  // undefined = leave mapping untouched; null = delete it; object = upsert it.
+  inventoryDeduction?: ResolvedInventoryDeduction | null;
 }
 
 export interface AssignVariantOptionGroupData {

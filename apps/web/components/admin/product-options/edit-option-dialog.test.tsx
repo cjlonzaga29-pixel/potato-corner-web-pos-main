@@ -1,47 +1,24 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as React from 'react';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
-import type { InventoryCategoryResponse, InventoryItemResponse, ProductOptionAssignedVariantResponse, ProductOptionResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
+import type { InventoryCategoryResponse, InventoryItemResponse, ProductOptionResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
 import { EditOptionDialog } from './edit-option-dialog';
 
-const {
-  mockUseUpdateProductOption,
-  mockUseProductOptionAssignedVariants,
-  mockUseInventoryCategories,
-  mockUseInventoryItems,
-  mockUseUnitsOfMeasure,
-  mockUseProductComponents,
-  mockUseCreateProductComponent,
-  mockUseUpdateProductComponent,
-  mockUseDeleteProductComponent,
-} = vi.hoisted(() => ({
+const { mockUseUpdateProductOption, mockUseInventoryCategories, mockUseInventoryItems, mockUseUnitsOfMeasure } = vi.hoisted(() => ({
   mockUseUpdateProductOption: vi.fn(),
-  mockUseProductOptionAssignedVariants: vi.fn(),
   mockUseInventoryCategories: vi.fn(),
   mockUseInventoryItems: vi.fn(),
   mockUseUnitsOfMeasure: vi.fn(),
-  mockUseProductComponents: vi.fn(),
-  mockUseCreateProductComponent: vi.fn(),
-  mockUseUpdateProductComponent: vi.fn(),
-  mockUseDeleteProductComponent: vi.fn(),
 }));
 
 vi.mock('@/hooks/queries/use-product-options', () => ({
   useUpdateProductOption: mockUseUpdateProductOption,
-  useProductOptionAssignedVariants: mockUseProductOptionAssignedVariants,
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useInventoryCategories: mockUseInventoryCategories,
   useInventoryItems: mockUseInventoryItems,
   useUnitsOfMeasure: mockUseUnitsOfMeasure,
-}));
-
-vi.mock('@/hooks/queries/use-product-components', () => ({
-  useProductComponents: mockUseProductComponents,
-  useCreateProductComponent: mockUseCreateProductComponent,
-  useUpdateProductComponent: mockUseUpdateProductComponent,
-  useDeleteProductComponent: mockUseDeleteProductComponent,
 }));
 
 /** Flat, always-rendered list — same approach as recipe-component-form-dialog.test.tsx for the real Radix Select. */
@@ -80,15 +57,26 @@ const OPTION: ProductOptionResponse = {
   image_url: null,
   is_active: true,
   sort_order: 1,
+  inventory_deduction: null,
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
 };
 
-const VARIANT: ProductOptionAssignedVariantResponse = {
-  product_variant_id: 'variant-1',
-  variant_name: 'Regular',
-  product_id: 'product-1',
-  product_name: 'Fries',
+const OPTION_WITH_MAPPING: ProductOptionResponse = {
+  ...OPTION,
+  inventory_deduction: {
+    inventory_item_id: 'item-1',
+    inventory_item_name: 'BBQ Flavor Powder',
+    inventory_category_id: 'category-1',
+    inventory_category_name: 'Flavor Powders',
+    base_unit_id: 'unit-tbsp',
+    base_unit_code: 'tbsp',
+    base_unit_name: 'Tablespoon',
+    deduction_unit_id: 'unit-tsp',
+    deduction_unit_code: 'tsp',
+    deduction_unit_name: 'Teaspoon',
+    quantity_required: 1.5,
+  },
 };
 
 const CATEGORIES: InventoryCategoryResponse[] = [
@@ -126,20 +114,18 @@ const OTHER_CATEGORY_ITEM: InventoryItemResponse = {
 
 const UNITS: UnitOfMeasureResponse[] = [
   { id: 'unit-tbsp', code: 'tbsp', name: 'Tablespoon', dimension: 'VOLUME', is_base_unit: true, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+  { id: 'unit-tsp', code: 'tsp', name: 'Teaspoon', dimension: 'VOLUME', is_base_unit: false, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+  { id: 'unit-ml', code: 'ml', name: 'Milliliter', dimension: 'VOLUME', is_base_unit: false, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
   { id: 'unit-pc', code: 'pc', name: 'Piece', dimension: 'COUNT', is_base_unit: true, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+  { id: 'unit-kg', code: 'kg', name: 'Kilogram', dimension: 'WEIGHT', is_base_unit: true, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
 ];
 
-function setupMocks({ updateOptionMutate = vi.fn().mockResolvedValue(undefined), createComponentMutate = vi.fn().mockResolvedValue(undefined), updateComponentMutate = vi.fn().mockResolvedValue(undefined), deleteComponentMutate = vi.fn().mockResolvedValue(undefined), variants = [VARIANT], components = [] as unknown[] } = {}) {
+function setupMocks({ updateOptionMutate = vi.fn().mockResolvedValue(undefined) } = {}) {
   mockUseUpdateProductOption.mockReturnValue({ mutateAsync: updateOptionMutate, isPending: false });
-  mockUseProductOptionAssignedVariants.mockReturnValue({ data: variants, isLoading: false });
   mockUseInventoryCategories.mockReturnValue({ data: CATEGORIES });
   mockUseInventoryItems.mockReturnValue({ data: [ITEM, OTHER_CATEGORY_ITEM] });
   mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS });
-  mockUseProductComponents.mockReturnValue({ data: components });
-  mockUseCreateProductComponent.mockReturnValue({ mutateAsync: createComponentMutate, isPending: false });
-  mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: updateComponentMutate, isPending: false });
-  mockUseDeleteProductComponent.mockReturnValue({ mutateAsync: deleteComponentMutate, isPending: false });
-  return { updateOptionMutate, createComponentMutate, updateComponentMutate, deleteComponentMutate };
+  return { updateOptionMutate };
 }
 
 afterEach(() => {
@@ -148,13 +134,12 @@ afterEach(() => {
 });
 
 describe('EditOptionDialog — Inventory Deduction', () => {
-  it('shows the Inventory Deduction section with no Manage Deduction button anywhere', () => {
+  it('shows the Inventory Deduction section', () => {
     setupMocks();
     render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
 
     expect(screen.getByText('Inventory Deduction')).toBeInTheDocument();
-    expect(screen.queryByText(/Manage Deduction/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Not Configured/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Inventory Category')).toBeInTheDocument();
   });
 
   it('filters Inventory Item choices by the selected Inventory Category', () => {
@@ -166,17 +151,21 @@ describe('EditOptionDialog — Inventory Deduction', () => {
     expect(screen.queryByText('Regular Cup')).not.toBeInTheDocument();
   });
 
-  it('auto-populates the read-only Base Unit from the selected inventory item', () => {
+  it('auto-populates the read-only Base Unit and filters Deduction Unit choices to the same dimension, excluding other-dimension units', () => {
     setupMocks();
     render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
 
     fireEvent.click(screen.getByText('Flavor Powders'));
     fireEvent.click(screen.getByText('BBQ Flavor Powder'));
 
-    expect(screen.getByText('tbsp — Tablespoon')).toBeInTheDocument();
+    expect(screen.getAllByText('tbsp — Tablespoon').some((el) => el.tagName === 'DIV')).toBe(true);
+    expect(screen.getByText('tsp — Teaspoon')).toBeInTheDocument();
+    expect(screen.getByText('ml — Milliliter')).toBeInTheDocument();
+    expect(screen.queryByText('pc — Piece')).not.toBeInTheDocument();
+    expect(screen.queryByText('kg — Kilogram')).not.toBeInTheDocument();
   });
 
-  it('accepts a decimal Quantity Required and shows a live Deduction Preview', () => {
+  it('accepts a decimal Quantity Required', () => {
     setupMocks();
     render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
 
@@ -184,66 +173,73 @@ describe('EditOptionDialog — Inventory Deduction', () => {
     fireEvent.click(screen.getByText('BBQ Flavor Powder'));
     fireEvent.change(screen.getByLabelText('Quantity Required'), { target: { value: '0.5' } });
 
-    expect(screen.getByText('Deduction Preview')).toBeInTheDocument();
-    expect(screen.getByText('0.5 tbsp')).toBeInTheDocument();
-    expect(screen.getByText('from Flavor Powders')).toBeInTheDocument();
-    expect(screen.getByText('per item sold')).toBeInTheDocument();
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(0.5);
   });
 
-  it('saves both the option fields and a new deduction component on submit', async () => {
-    const { updateOptionMutate, createComponentMutate } = setupMocks();
+  it('preloads an existing mapping when the option already has one', () => {
+    setupMocks();
+    render(<EditOptionDialog groupId="group-1" option={OPTION_WITH_MAPPING} open onOpenChange={vi.fn()} />);
+
+    expect(screen.getByText('BBQ Flavor Powder')).toBeInTheDocument();
+    expect(screen.getAllByText('tbsp — Tablespoon').some((el) => el.tagName === 'DIV')).toBe(true);
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(1.5);
+    expect(screen.getByText('tsp — Teaspoon').closest('button')).toHaveAttribute('data-selected', 'true');
+  });
+
+  it('shows empty controls when the option has no mapping', () => {
+    setupMocks();
+    render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
+
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(null);
+  });
+
+  it('sends inventory_deduction on save when a full mapping is entered', async () => {
+    const { updateOptionMutate } = setupMocks();
     render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
 
     fireEvent.click(screen.getByText('Flavor Powders'));
     fireEvent.click(screen.getByText('BBQ Flavor Powder'));
     fireEvent.change(screen.getByLabelText('Quantity Required'), { target: { value: '0.5' } });
+    fireEvent.click(screen.getByText('tsp — Teaspoon'));
     fireEvent.click(screen.getByText('Save Changes'));
 
-    await waitFor(() => expect(updateOptionMutate).toHaveBeenCalledWith({ name: 'BBQ', price_adjustment: 0, sort_order: 1, is_active: true }));
     await waitFor(() =>
-      expect(createComponentMutate).toHaveBeenCalledWith({
-        product_variant_id: 'variant-1',
-        inventory_item_id: 'item-1',
-        quantity_required: 0.5,
-        recipe_unit_id: 'unit-tbsp',
-        product_option_id: 'option-1',
+      expect(updateOptionMutate).toHaveBeenCalledWith({
+        name: 'BBQ',
+        price_adjustment: 0,
+        sort_order: 1,
+        is_active: true,
+        inventory_deduction: { inventory_item_id: 'item-1', deduction_unit_id: 'unit-tsp', quantity_required: 0.5 },
       }),
     );
   });
 
-  it('updates an existing deduction component in place when the item is unchanged', async () => {
-    const existingComponent = {
-      id: 'component-1',
-      product_variant_id: 'variant-1',
-      inventory_item_id: 'item-1',
-      inventory_item_name: 'BBQ Flavor Powder',
-      inventory_item_sku: null,
-      base_unit_code: 'tbsp',
-      recipe_unit_id: 'unit-tbsp',
-      recipe_unit_code: 'tbsp',
-      quantity_required: 0.5,
-      is_active: true,
-      product_option_id: 'option-1',
-      version: 1,
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-    };
-    const { updateComponentMutate } = setupMocks({ components: [existingComponent] });
+  it('omits inventory_deduction on save when the option never had a mapping and nothing was entered', async () => {
+    const { updateOptionMutate } = setupMocks();
     render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
 
-    expect(screen.getByLabelText('Quantity Required')).toHaveValue(0.5);
-
-    fireEvent.change(screen.getByLabelText('Quantity Required'), { target: { value: '1' } });
     fireEvent.click(screen.getByText('Save Changes'));
 
-    await waitFor(() => expect(updateComponentMutate).toHaveBeenCalledWith({ quantity_required: 1, recipe_unit_id: 'unit-tbsp' }));
+    await waitFor(() =>
+      expect(updateOptionMutate).toHaveBeenCalledWith({ name: 'BBQ', price_adjustment: 0, sort_order: 1, is_active: true }),
+    );
   });
 
-  it('shows guidance instead of deduction fields when the option has no assigned variants', () => {
-    setupMocks({ variants: [] });
-    render(<EditOptionDialog groupId="group-1" option={OPTION} open onOpenChange={vi.fn()} />);
+  it('sends inventory_deduction: null on save when Remove is clicked on an option that had a mapping', async () => {
+    const { updateOptionMutate } = setupMocks();
+    render(<EditOptionDialog groupId="group-1" option={OPTION_WITH_MAPPING} open onOpenChange={vi.fn()} />);
 
-    expect(screen.getByText(/Assign this option's group to a variant/)).toBeInTheDocument();
-    expect(screen.queryByLabelText('Quantity Required')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Remove Inventory Deduction'));
+    fireEvent.click(screen.getByText('Save Changes'));
+
+    await waitFor(() =>
+      expect(updateOptionMutate).toHaveBeenCalledWith({
+        name: 'BBQ',
+        price_adjustment: 0,
+        sort_order: 1,
+        is_active: true,
+        inventory_deduction: null,
+      }),
+    );
   });
 });

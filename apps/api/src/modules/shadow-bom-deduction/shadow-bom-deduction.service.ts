@@ -84,9 +84,8 @@ export async function computeBomDeduction(
   _branchId: string,
   quantitySold: number,
   flavorId?: string | null,
-  selectedOptionIds?: string[],
 ): Promise<BomDeductionLine[]> {
-  const components = await shadowBomDeductionRepository.findActiveComponentsForVariant(productVariantId, flavorId, selectedOptionIds);
+  const components = await shadowBomDeductionRepository.findActiveComponentsForVariant(productVariantId, flavorId);
   const map = new Map<string, BomDeductionLine>();
   for (const component of components) {
     // Null recipeUnitId (pre-CR-011.2 or backfill-created rows) is treated as

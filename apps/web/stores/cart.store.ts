@@ -50,6 +50,7 @@ interface CartState {
   addItem: (item: PosCartItem) => void;
   removeItem: (index: number) => void;
   updateItemQuantity: (index: number, quantity: number) => void;
+  updateItemOptions: (index: number, selected_options: PosCartSelectedOption[]) => void;
   clearCart: () => void;
   holdCurrentOrder: () => void;
   resumeHeldOrder: (id: string) => void;
@@ -86,6 +87,12 @@ export const useCartStore = create<CartState>((set, get) => ({
       if (quantity <= 0) return { items: state.items.filter((_, i) => i !== index) };
       return { items: state.items.map((item, i) => (i === index ? { ...item, quantity } : item)) };
     }),
+  // Edits add-ons on an existing cart line in place — never merges into or
+  // creates another line, unlike addItem's same-line-detection logic.
+  updateItemOptions: (index, selected_options) =>
+    set((state) => ({
+      items: state.items.map((item, i) => (i === index ? { ...item, selected_options } : item)),
+    })),
   clearCart: () => set({ items: [] }),
   holdCurrentOrder: () => {
     const { items, heldOrders } = get();

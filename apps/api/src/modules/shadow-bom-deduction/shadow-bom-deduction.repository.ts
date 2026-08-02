@@ -89,19 +89,14 @@ export const shadowBomDeductionRepository = {
   async findActiveComponentsForVariant(
     productVariantId: string,
     flavorId?: string | null,
-    selectedOptionIds?: string[],
   ): Promise<ActiveComponentRow[]> {
     const rows = await prisma.productComponent.findMany({
       where: {
         productVariantId,
         deletedAt: null,
         isActive: true,
-        AND: [
-          flavorId ? { OR: [{ flavorId: null }, { flavorId }] } : { flavorId: null },
-          selectedOptionIds && selectedOptionIds.length > 0
-            ? { OR: [{ productOptionId: null }, { productOptionId: { in: selectedOptionIds } }] }
-            : { productOptionId: null },
-        ],
+        productOptionId: null,
+        ...(flavorId ? { OR: [{ flavorId: null }, { flavorId }] } : { flavorId: null }),
       },
       select: { inventoryItemId: true, quantityRequired: true, recipeUnitId: true, inventoryItem: { select: { baseUnitId: true } } },
     });

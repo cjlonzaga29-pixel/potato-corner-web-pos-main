@@ -32,7 +32,6 @@ vi.mock('./recipe-component-form-dialog', () => ({
 const COMPONENT: ProductComponentResponse = {
   id: 'component-1',
   product_variant_id: 'variant-1',
-  product_option_id: null,
   inventory_item_id: 'item-1',
   inventory_item_name: 'Cheese Powder',
   inventory_item_sku: 'CHZ-1',

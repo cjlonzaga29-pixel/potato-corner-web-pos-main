@@ -1,12 +1,24 @@
 import type { JwtPayload } from '@potato-corner/shared';
 import { productOptionsRepository as repo } from './product-options.repository.js';
-import { ProductOptionError, type OptionGroupListFilters, type SelectionType } from './product-options.types.js';
+import {
+  ProductOptionError,
+  type OptionGroupListFilters,
+  type ResolvedInventoryDeduction,
+  type SelectionType,
+} from './product-options.types.js';
 import { productsRepository } from '../products/products.repository.js';
 import { ProductError } from '../products/products.types.js';
+import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 
 type ActorContext = { id: string; role: string };
 type Decimalish = { toNumber(): number };
+
+interface InventoryDeductionInput {
+  inventory_item_id: string;
+  deduction_unit_id: string;
+  quantity_required: number;
+}
 
 function toGroupResponse(group: {
   id: string;
@@ -42,6 +54,34 @@ function toGroupResponse(group: {
   };
 }
 
+function toInventoryDeductionResponse(
+  mapping: {
+    quantityRequired: Decimalish;
+    deductionUnit: { id: string; code: string; name: string };
+    inventoryItem: {
+      id: string;
+      name: string;
+      category: { id: string; name: string } | null;
+      baseUnit: { id: string; code: string; name: string };
+    };
+  } | null,
+) {
+  if (!mapping) return null;
+  return {
+    inventory_item_id: mapping.inventoryItem.id,
+    inventory_item_name: mapping.inventoryItem.name,
+    inventory_category_id: mapping.inventoryItem.category?.id ?? null,
+    inventory_category_name: mapping.inventoryItem.category?.name ?? null,
+    base_unit_id: mapping.inventoryItem.baseUnit.id,
+    base_unit_code: mapping.inventoryItem.baseUnit.code,
+    base_unit_name: mapping.inventoryItem.baseUnit.name,
+    deduction_unit_id: mapping.deductionUnit.id,
+    deduction_unit_code: mapping.deductionUnit.code,
+    deduction_unit_name: mapping.deductionUnit.name,
+    quantity_required: mapping.quantityRequired.toNumber(),
+  };
+}
+
 function toOptionResponse(option: {
   id: string;
   optionGroupId: string;
@@ -53,6 +93,16 @@ function toOptionResponse(option: {
   sortOrder: number | null;
   createdAt: Date;
   updatedAt: Date;
+  inventoryMapping?: {
+    quantityRequired: Decimalish;
+    deductionUnit: { id: string; code: string; name: string };
+    inventoryItem: {
+      id: string;
+      name: string;
+      category: { id: string; name: string } | null;
+      baseUnit: { id: string; code: string; name: string };
+    };
+  } | null;
 }) {
   return {
     id: option.id,
@@ -63,8 +113,44 @@ function toOptionResponse(option: {
     image_url: option.imageUrl,
     is_active: option.isActive,
     sort_order: option.sortOrder,
+    inventory_deduction: toInventoryDeductionResponse(option.inventoryMapping ?? null),
     created_at: option.createdAt.toISOString(),
     updated_at: option.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Validates an inventory_deduction payload and resolves it to a persistable
+ * shape. Category and base unit are never trusted from the caller — only
+ * inventory_item_id, deduction_unit_id, and quantity_required are read here;
+ * category/base unit always come from InventoryItem at response time.
+ */
+async function resolveInventoryDeduction(input: InventoryDeductionInput): Promise<ResolvedInventoryDeduction> {
+  const item = await universalInventoryRepository.findItemById(input.inventory_item_id);
+  if (!item) {
+    throw new ProductOptionError('INVENTORY_ITEM_NOT_FOUND', 'inventory_item_id does not exist or is inactive', 404);
+  }
+
+  const deductionUnit = await universalInventoryRepository.findUnitById(input.deduction_unit_id);
+  if (!deductionUnit || !deductionUnit.isActive) {
+    throw new ProductOptionError('DEDUCTION_UNIT_NOT_FOUND', 'deduction_unit_id does not exist or is inactive', 404);
+  }
+
+  if (deductionUnit.id !== item.baseUnitId) {
+    const baseUnit = await universalInventoryRepository.findUnitById(item.baseUnitId);
+    if (!baseUnit || deductionUnit.dimension !== baseUnit.dimension) {
+      throw new ProductOptionError(
+        'DEDUCTION_UNIT_DIMENSION_MISMATCH',
+        "deduction_unit_id must have the same dimension as the inventory item's base unit",
+        400,
+      );
+    }
+  }
+
+  return {
+    inventoryItemId: item.id,
+    deductionUnitId: deductionUnit.id,
+    quantityRequired: input.quantity_required,
   };
 }
 
@@ -147,6 +233,7 @@ interface CreateOptionInput {
   image_url?: string;
   is_active: boolean;
   sort_order?: number;
+  inventory_deduction?: InventoryDeductionInput;
 }
 
 interface UpdateOptionInput {
@@ -155,6 +242,8 @@ interface UpdateOptionInput {
   image_url?: string | null;
   is_active?: boolean;
   sort_order?: number;
+  // undefined (omitted) = preserve existing mapping; null = remove it; object = create/update it.
+  inventory_deduction?: InventoryDeductionInput | null;
 }
 
 interface AssignVariantOptionGroupInput {
@@ -272,6 +361,8 @@ export const productOptionsService = {
       throw new ProductOptionError('OPTION_CODE_CONFLICT', `An option with code "${data.code}" already exists in this group`, 409);
     }
 
+    const inventoryDeduction = data.inventory_deduction ? await resolveInventoryDeduction(data.inventory_deduction) : undefined;
+
     const option = await repo.createOption({
       optionGroupId,
       code: data.code,
@@ -281,6 +372,7 @@ export const productOptionsService = {
       isActive: data.is_active,
       sortOrder: data.sort_order,
       createdBy: actor.id,
+      inventoryDeduction,
     });
     const response = toOptionResponse(option);
 
@@ -303,12 +395,23 @@ export const productOptionsService = {
       throw new ProductOptionError('OPTION_NOT_FOUND', 'Product option not found', 404);
     }
 
+    let inventoryDeduction: ResolvedInventoryDeduction | null | undefined;
+    if (data.inventory_deduction === null) {
+      // Removing a mapping that doesn't exist is a no-op, not an error —
+      // pass undefined so the repository never issues a `delete` against a
+      // nonexistent relation.
+      inventoryDeduction = before.inventoryMapping ? null : undefined;
+    } else if (data.inventory_deduction !== undefined) {
+      inventoryDeduction = await resolveInventoryDeduction(data.inventory_deduction);
+    }
+
     const option = await repo.updateOption(optionId, {
       name: data.name,
       priceAdjustment: data.price_adjustment,
       imageUrl: data.image_url,
       isActive: data.is_active,
       sortOrder: data.sort_order,
+      inventoryDeduction,
     });
     const response = toOptionResponse(option);
 

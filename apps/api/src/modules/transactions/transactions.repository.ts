@@ -189,6 +189,25 @@ export const transactionsRepository = {
     });
   },
 
+  /**
+   * Product Option inventory deduction (Task 79) — ProductOptionInventoryMapping
+   * is the source of truth, replacing the legacy ProductComponent.productOptionId
+   * rows. One mapping per option (productOptionId is @unique on the mapping),
+   * so an option with no row here simply has nothing to deduct.
+   */
+  findOptionInventoryMappings(optionIds: string[]) {
+    return prisma.productOptionInventoryMapping.findMany({
+      where: { productOptionId: { in: optionIds } },
+      select: {
+        productOptionId: true,
+        inventoryItemId: true,
+        quantityRequired: true,
+        deductionUnitId: true,
+        inventoryItem: { select: { baseUnitId: true, deletedAt: true } },
+      },
+    });
+  },
+
   /** Sequence source for the BIR receipt number — resets daily per branch because the prefix embeds the date. */
   countTransactionsWithPrefix(prefix: string) {
     return prisma.transaction.count({ where: { transactionNumber: { startsWith: prefix } } });

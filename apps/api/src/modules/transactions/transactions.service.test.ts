@@ -31,6 +31,10 @@ vi.mock('./transactions.repository.js', () => ({
     countGcashTransactionsForBranchWindow: vi.fn().mockResolvedValue(0),
     findGcashCountsByCashierForDate: vi.fn().mockResolvedValue([]),
     findStatutoryDiscountsInWindow: vi.fn().mockResolvedValue([]),
+    // Task 79 — ProductOptionInventoryMapping lookup for selected Product
+    // Options. Empty by default so every pre-existing test (none of which
+    // exercise option inventory deduction) sees "no mapping for any option".
+    findOptionInventoryMappings: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -142,6 +146,11 @@ vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
 vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
   universalInventoryRepository: {
     createStockMovement: vi.fn().mockResolvedValue({ id: 'movement-1' }),
+    // Read by convertQuantity (unit-conversion.util.js) for Product Option
+    // inventory deduction (Task 79) whenever a mapping's deductionUnitId
+    // differs from the mapped InventoryItem's baseUnitId. No conversion row
+    // by default — tests that need one mock a resolved value per-case.
+    findConversion: vi.fn().mockResolvedValue(null),
   },
 }));
 
@@ -2011,19 +2020,26 @@ describe('transactionsService.createTransaction — forced transaction-timeout h
   });
 });
 
-// Task 27 — CR-008 Product Options: resolveCartItems now forwards each cart
-// item's selectedOptionIds into computeBomDeduction's new final parameter, so
-// option-scoped ProductComponent rows participate in live checkout
-// deduction. Only the base (non-Mix&Max) branch is touched — this suite does
-// not exercise computeComponentDeductionForSlots.
-describe('transactionsService.createTransaction — Product Option IDs forwarded to computeBomDeduction', () => {
-  const flavoredVariant = () =>
-    variantRow({
-      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
-      optionGroupAssignments: [optionAssignment('option-1', 0)],
-    });
+// Task 79 — Product Option inventory deduction now reads
+// ProductOptionInventoryMapping (transactionsRepository.findOptionInventoryMappings),
+// replacing the legacy ProductComponent.productOptionId rows Task 27/32
+// wired into computeBomDeduction. computeBomDeduction no longer receives
+// selectedOptionIds at all — only flavor-scoped base ProductComponent rows
+// participate in it now, so legacy option-scoped rows can never double-deduct
+// against the new mapping.
+describe('transactionsService.createTransaction — Product Option inventory deduction (ProductOptionInventoryMapping)', () => {
+  function inventoryMappingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      productOptionId: 'option-cheese',
+      inventoryItemId: 'item-cheese-topping',
+      quantityRequired: 0.5,
+      deductionUnitId: 'unit-tbsp',
+      inventoryItem: { baseUnitId: 'unit-tbsp', deletedAt: null },
+      ...overrides,
+    };
+  }
 
-  it('forwards selectedOptionIds as the 5th argument for a base (no-flavor) cart item', async () => {
+  it('no longer forwards selectedOptionIds into computeBomDeduction', async () => {
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
       variantRow({ optionGroupAssignments: [optionAssignment('option-1', 0)] }),
     ] as never);
@@ -2033,62 +2049,10 @@ describe('transactionsService.createTransaction — Product Option IDs forwarded
       null,
     );
 
-    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, ['option-1']);
+    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null);
   });
 
-  it('forwards undefined — not the empty-array convention — when the cart item has no selectedOptionIds', async () => {
-    await transactionsService.createTransaction(baseInput, null);
-
-    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, undefined);
-  });
-
-  it('leaves base-only deduction unchanged when selectedOptionIds is absent', async () => {
-    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(10) } as never);
-
-    await transactionsService.createTransaction(baseInput, null);
-
-    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, undefined);
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        items: [
-          expect.objectContaining({
-            deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
-          }),
-        ],
-      }),
-      expect.anything(),
-    );
-  });
-
-  it('leaves flavor-only deduction unchanged when selectedOptionIds is absent', async () => {
-    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
-    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(10) } as never);
-
-    await transactionsService.createTransaction(
-      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
-      null,
-    );
-
-    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, 'flavor-1', undefined);
-  });
-
-  it('forwards flavorId and selectedOptionIds together', async () => {
-    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([flavoredVariant()] as never);
-
-    await transactionsService.createTransaction(
-      {
-        ...baseInput,
-        items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1, selectedOptionIds: ['option-1'] }],
-      },
-      null,
-    );
-
-    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, 'flavor-1', ['option-1']);
-  });
-
-  it('supports multiple selected option IDs', async () => {
+  it('looks up mappings only for the selected option IDs', async () => {
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
       variantRow({
         optionGroupAssignments: [optionAssignment('option-1', 0), optionAssignment('option-2', 0), optionAssignment('option-3', 0)],
@@ -2103,16 +2067,102 @@ describe('transactionsService.createTransaction — Product Option IDs forwarded
       null,
     );
 
-    expect(computeBomDeduction).toHaveBeenCalledWith('variant-1', 'branch-1', 1, null, ['option-1', 'option-2', 'option-3']);
+    expect(transactionsRepository.findOptionInventoryMappings).toHaveBeenCalledWith(['option-1', 'option-2', 'option-3']);
   });
 
-  it('includes the resulting option-scoped deduction lines in deductionSnapshot', async () => {
+  it('does not call findOptionInventoryMappings when the cart item has no selectedOptionIds', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.findOptionInventoryMappings).not.toHaveBeenCalled();
+  });
+
+  it('skips inventory deduction for a selected option with no mapping row, without failing pricing', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 15)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([]);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('merges the mapped option deduction line into deductionSnapshot alongside the base BOM lines', async () => {
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
       variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
     ] as never);
-    vi.mocked(computeBomDeduction).mockResolvedValueOnce([
-      { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
-      { inventoryItemId: 'item-cheese-topping', quantity: 1, baseUnitId: 'unit-g' },
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([inventoryMappingRow()] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: expect.arrayContaining([
+              { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null },
+              { inventoryItemId: 'item-cheese-topping', quantity: 0.5, baseUnitId: 'unit-tbsp', componentUnitCost: null, componentCost: null },
+            ]),
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('multiplies the mapped quantity by cart quantity (Regular Fries x2, BBQ 0.5 tbsp -> 1 tbsp)', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-bbq', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({ productOptionId: 'option-bbq', inventoryItemId: 'item-bbq-seasoning' }),
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 2, selectedOptionIds: ['option-bbq'] }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: [{ inventoryItemId: 'item-bbq-seasoning', quantity: 1, baseUnitId: 'unit-tbsp', componentUnitCost: null, componentCost: null }],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('sums quantities when the mapped inventory item is the same one the base BOM already deducts', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-cheese', quantity: 2, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({ inventoryItemId: 'item-cheese', quantityRequired: 3, deductionUnitId: 'unit-g', inventoryItem: { baseUnitId: 'unit-g', deletedAt: null } }),
     ] as never);
     vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
 
@@ -2125,10 +2175,7 @@ describe('transactionsService.createTransaction — Product Option IDs forwarded
       expect.objectContaining({
         items: [
           expect.objectContaining({
-            deductionSnapshot: [
-              { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null },
-              { inventoryItemId: 'item-cheese-topping', quantity: 1, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null },
-            ],
+            deductionSnapshot: [{ inventoryItemId: 'item-cheese', quantity: 5, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
           }),
         ],
       }),
@@ -2136,11 +2183,70 @@ describe('transactionsService.createTransaction — Product Option IDs forwarded
     );
   });
 
-  it('preserves existing stock validation and movement behavior for option-scoped deduction lines', async () => {
+  it('converts the mapped quantity into the inventory item base unit when they differ, reusing convertQuantity', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-bbq', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({
+        inventoryItemId: 'item-bbq-seasoning',
+        quantityRequired: 1,
+        deductionUnitId: 'unit-tbsp',
+        inventoryItem: { baseUnitId: 'unit-g', deletedAt: null },
+      }),
+    ] as never);
+    vi.mocked(universalInventoryRepository.findConversion).mockResolvedValueOnce({ factor: 15 } as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(100) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
+      null,
+    );
+
+    expect(universalInventoryRepository.findConversion).toHaveBeenCalledWith('unit-tbsp', 'unit-g');
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: [{ inventoryItemId: 'item-bbq-seasoning', quantity: 15, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('rejects the whole checkout when the mapped inventory item has been soft-deleted', async () => {
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
       variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
     ] as never);
-    vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-cheese-topping', quantity: 3, baseUnitId: 'unit-g' }] as never);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({ inventoryItem: { baseUnitId: 'unit-tbsp', deletedAt: new Date() } }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_INVENTORY_INACTIVE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('preserves existing stock validation and movement behavior for option-mapped deduction lines', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({
+        inventoryItemId: 'item-cheese-topping',
+        quantityRequired: 3,
+        deductionUnitId: 'unit-g',
+        inventoryItem: { baseUnitId: 'unit-g', deletedAt: null },
+      }),
+    ] as never);
     vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(1) } as never);
 
     await expect(

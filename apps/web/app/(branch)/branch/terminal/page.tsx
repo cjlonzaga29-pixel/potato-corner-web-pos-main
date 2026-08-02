@@ -10,7 +10,6 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Separator } from '@/components/ui/separator';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -120,7 +119,7 @@ export default function TerminalPage() {
   const { user, selectEmployee } = useAuth();
   const branchId = user?.branchIds[0];
   const isBranchAccount = user?.role === ROLES.BRANCH;
-  const { items, addItem, removeItem, updateItemQuantity, clearCart } = useCart();
+  const { items, addItem, removeItem, updateItemQuantity, updateItemOptions, clearCart } = useCart();
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
   const { isClockedIn, record: attendanceRecord, isLoading: isAttendanceLoading } = useIsClockedIn();
@@ -190,14 +189,16 @@ export default function TerminalPage() {
     variant: PosCatalogProduct['variants'][number];
     selections: Record<number, { snackProductVariantId: string; flavorId: string }>;
   } | null>(null);
-  // CR-008 Product Option Groups (Task 21) — `groups` is pre-filtered to
-  // groups that actually have at least one active option, so every group
-  // rendered here is guaranteed non-empty.
+  // Task 82 — Product Option Groups are no longer an add-time modal; each
+  // group is its own POS button under the selected cart line, edited one
+  // group at a time and merged back into that line's selected_options.
+  const [selectedLineIndex, setSelectedLineIndex] = useState<number | null>(null);
   const [optionPrompt, setOptionPrompt] = useState<{
-    product: PosCatalogProduct;
-    variant: PosCatalogProduct['variants'][number];
-    groups: PosCatalogProduct['variants'][number]['option_groups'];
-    selections: Record<string, string[]>;
+    lineIndex: number;
+    productName: string;
+    variantName: string;
+    group: PosCatalogProduct['variants'][number]['option_groups'][number];
+    selection: string[];
   } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'other'>('cash');
   const [discountType, setDiscountType] = useState<DiscountChoice>('none');
@@ -332,35 +333,51 @@ export default function TerminalPage() {
       setFlavorPrompt({ product, variant });
       return;
     }
-    const groupsWithActiveOptions = variant.option_groups
-      .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
-      .filter((group) => group.options.length > 0);
-    if (groupsWithActiveOptions.length > 0) {
-      setOptionPrompt({ product, variant, groups: groupsWithActiveOptions, selections: {} });
-      return;
-    }
     addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
   }
 
-  function handleOptionSelect(groupId: string, optionId: string, selectionType: 'SINGLE' | 'MULTIPLE', maxSelections: number | null) {
-    setOptionPrompt((prev) => {
-      if (!prev) return prev;
-      const current = prev.selections[groupId] ?? [];
-      if (selectionType === 'SINGLE') {
-        return { ...prev, selections: { ...prev.selections, [groupId]: [optionId] } };
-      }
-      if (current.includes(optionId)) {
-        return { ...prev, selections: { ...prev.selections, [groupId]: current.filter((id) => id !== optionId) } };
-      }
-      if (maxSelections !== null && current.length >= maxSelections) {
-        return prev;
-      }
-      return { ...prev, selections: { ...prev.selections, [groupId]: [...current, optionId] } };
+  // Task 82 — opens a single Product Option Group's selector for one cart
+  // line, preloaded with that line's existing selections for this group only.
+  function openGroupPromptForLine(lineIndex: number, groupId: string) {
+    const item = items[lineIndex];
+    if (!item) return;
+    const info = variantIndex.get(item.product_variant_id);
+    if (!info) return;
+    const group = info.variant.option_groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const options = group.options.filter((option) => option.is_active);
+    if (options.length === 0) return;
+    const selection = (item.selected_options ?? [])
+      .filter((option) => option.option_group_id === groupId)
+      .map((option) => option.option_id);
+    setOptionPrompt({
+      lineIndex,
+      productName: info.product.name,
+      variantName: info.variant.name,
+      group: { ...group, options },
+      selection,
     });
   }
 
-  function handleOptionClear(groupId: string) {
-    setOptionPrompt((prev) => (prev ? { ...prev, selections: { ...prev.selections, [groupId]: [] } } : prev));
+  function handleOptionSelect(optionId: string) {
+    setOptionPrompt((prev) => {
+      if (!prev) return prev;
+      const { group, selection } = prev;
+      if (group.selection_type === 'SINGLE') {
+        return { ...prev, selection: [optionId] };
+      }
+      if (selection.includes(optionId)) {
+        return { ...prev, selection: selection.filter((id) => id !== optionId) };
+      }
+      if (group.max_selections !== null && selection.length >= group.max_selections) {
+        return prev;
+      }
+      return { ...prev, selection: [...selection, optionId] };
+    });
+  }
+
+  function handleOptionClear() {
+    setOptionPrompt((prev) => (prev ? { ...prev, selection: [] } : prev));
   }
 
   function optionGroupHelperText(minSelections: number, maxSelections: number | null): string {
@@ -372,40 +389,48 @@ export default function TerminalPage() {
   }
 
   const optionPromptValid = optionPrompt
-    ? optionPrompt.groups.every((group) => {
-        const count = optionPrompt.selections[group.id]?.length ?? 0;
-        return count >= group.min_selections && (group.max_selections === null || count <= group.max_selections);
-      })
+    ? optionPrompt.selection.length >= optionPrompt.group.min_selections &&
+      (optionPrompt.group.max_selections === null || optionPrompt.selection.length <= optionPrompt.group.max_selections)
     : false;
 
-  // This dialog always renders every applicable group together (no separate
-  // per-group modal exists in this UI), so the title stays the
-  // product/variant name in all cases — including the single-group case —
-  // to avoid duplicating the resolved label already shown as that group's
-  // section heading below.
-  const optionPromptTitle = optionPrompt ? `${optionPrompt.product.name} (${optionPrompt.variant.name})` : '';
+  const optionPromptTitle = optionPrompt
+    ? `${optionPrompt.productName} (${optionPrompt.variantName}) — ${resolveGroupLabel(optionPrompt.group)}`
+    : '';
 
-  function handleOptionAddToCart() {
+  // Merges this group's selections back into the line's selected_options,
+  // leaving every other group's selections on that line untouched — each
+  // Product Option Group button only ever edits its own group.
+  function handleOptionSave() {
     if (!optionPrompt || !optionPromptValid) return;
-    const selected_options: PosCartSelectedOption[] = optionPrompt.groups.flatMap((group) =>
-      (optionPrompt.selections[group.id] ?? []).map((optionId) => {
-        const option = group.options.find((o) => o.id === optionId);
-        return {
-          option_group_id: group.id,
-          option_group_name: resolveGroupLabel(group),
-          option_id: optionId,
-          option_name: option?.name ?? 'Unknown option',
-          price_adjustment: option?.price_adjustment ?? 0,
-        };
-      }),
-    );
-    addItem({
-      product_id: optionPrompt.product.id,
-      product_variant_id: optionPrompt.variant.id,
-      selected_options,
-      quantity: 1,
+    const { lineIndex, group, selection } = optionPrompt;
+    const newGroupOptions: PosCartSelectedOption[] = selection.map((optionId) => {
+      const option = group.options.find((o) => o.id === optionId);
+      return {
+        option_group_id: group.id,
+        option_group_name: resolveGroupLabel(group),
+        option_id: optionId,
+        option_name: option?.name ?? 'Unknown option',
+        price_adjustment: option?.price_adjustment ?? 0,
+      };
     });
+    const otherGroupsOptions = (items[lineIndex]?.selected_options ?? []).filter(
+      (option) => option.option_group_id !== group.id,
+    );
+    updateItemOptions(lineIndex, [...otherGroupsOptions, ...newGroupOptions]);
     setOptionPrompt(null);
+  }
+
+  // Task 82 — removing a cart line shifts every later index down by one;
+  // keep the "selected cart line" pointer in sync so the Add-ons buttons
+  // don't silently point at the wrong (or a now-missing) line.
+  function handleRemoveLine(index: number) {
+    removeItem(index);
+    setSelectedLineIndex((prev) => {
+      if (prev === null) return prev;
+      if (prev === index) return null;
+      if (prev > index) return prev - 1;
+      return prev;
+    });
   }
 
   function handleFlavorPick(flavorId: string) {
@@ -495,6 +520,20 @@ export default function TerminalPage() {
       }),
     [items, variantIndex],
   );
+
+  // Task 82 — Product Option Group buttons shown under the selected cart
+  // line; pre-filtered to groups with at least one active option, same as
+  // handleProductTap/openGroupPromptForLine.
+  const selectedLineGroups = useMemo(() => {
+    if (selectedLineIndex === null) return [];
+    const item = items[selectedLineIndex];
+    if (!item) return [];
+    const info = variantIndex.get(item.product_variant_id);
+    if (!info) return [];
+    return info.variant.option_groups
+      .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
+      .filter((group) => group.options.length > 0);
+  }, [selectedLineIndex, items, variantIndex]);
 
   const subtotal = round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0));
   const { discountAmount, vatAmount, totalAmount } = useMemo(
@@ -587,6 +626,7 @@ export default function TerminalPage() {
       // sync time — this provisional id just needs to be locally unique.
       const provisionalId = await enqueueOfflineTransaction(branchId.slice(0, 8), payload);
       clearCart();
+      setSelectedLineIndex(null);
       resetPaymentFields();
       setQueuedNotice(provisionalId);
       return;
@@ -595,6 +635,7 @@ export default function TerminalPage() {
     try {
       const transaction = await createTransaction.mutateAsync(payload);
       clearCart();
+      setSelectedLineIndex(null);
       resetPaymentFields();
       setReceipt(transaction);
     } catch (error) {
@@ -889,74 +930,66 @@ export default function TerminalPage() {
             <DialogHeader>
               <DialogTitle>{optionPromptTitle}</DialogTitle>
             </DialogHeader>
-            {optionPrompt && (
-              <div className="space-y-4">
-                {optionPrompt.groups.map((group, groupIndex) => {
-                  const selected = optionPrompt.selections[group.id] ?? [];
-                  const atMax = group.max_selections !== null && selected.length >= group.max_selections;
-                  return (
-                    <div key={group.id} className="space-y-2">
-                      {groupIndex > 0 && <Separator />}
-                      <p className="text-sm font-medium">
-                        {resolveGroupLabel(group)}
-                        {group.required && <span className="text-destructive"> *</span>}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{optionGroupHelperText(group.min_selections, group.max_selections)}</p>
-                      {group.selection_type === 'SINGLE' ? (
-                        <RadioGroup
-                          value={selected[0] ?? ''}
-                          onValueChange={(value) =>
-                            value === '__none__'
-                              ? handleOptionClear(group.id)
-                              : handleOptionSelect(group.id, value, 'SINGLE', group.max_selections)
-                          }
-                        >
-                          {group.min_selections === 0 && (
-                            <label className="flex items-center gap-2 text-sm">
-                              <RadioGroupItem value="__none__" />
-                              {resolveNoOptionLabel(group)}
-                            </label>
-                          )}
-                          {group.options.map((option) => (
-                            <label key={option.id} className="flex items-center gap-2 text-sm">
-                              <RadioGroupItem value={option.id} />
-                              {option.name}
-                              {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
-                            </label>
-                          ))}
-                        </RadioGroup>
-                      ) : (
-                        <div className="space-y-1">
-                          {group.options.map((option) => {
-                            const isChecked = selected.includes(option.id);
-                            return (
-                              <label
-                                key={option.id}
-                                className={`flex items-center gap-2 text-sm ${!isChecked && atMax ? 'opacity-50' : ''}`}
-                              >
-                                <Checkbox
-                                  checked={isChecked}
-                                  disabled={!isChecked && atMax}
-                                  onCheckedChange={() => handleOptionSelect(group.id, option.id, 'MULTIPLE', group.max_selections)}
-                                />
-                                {option.name}
-                                {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
-                              </label>
-                            );
-                          })}
-                        </div>
+            {optionPrompt && (() => {
+              const group = optionPrompt.group;
+              const selected = optionPrompt.selection;
+              const atMax = group.max_selections !== null && selected.length >= group.max_selections;
+              return (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">
+                    {resolveGroupLabel(group)}
+                    {group.required && <span className="text-destructive"> *</span>}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{optionGroupHelperText(group.min_selections, group.max_selections)}</p>
+                  {group.selection_type === 'SINGLE' ? (
+                    <RadioGroup
+                      value={selected[0] ?? ''}
+                      onValueChange={(value) => (value === '__none__' ? handleOptionClear() : handleOptionSelect(value))}
+                    >
+                      {group.min_selections === 0 && (
+                        <label className="flex items-center gap-2 text-sm">
+                          <RadioGroupItem value="__none__" />
+                          {resolveNoOptionLabel(group)}
+                        </label>
                       )}
+                      {group.options.map((option) => (
+                        <label key={option.id} className="flex items-center gap-2 text-sm">
+                          <RadioGroupItem value={option.id} />
+                          {option.name}
+                          {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                        </label>
+                      ))}
+                    </RadioGroup>
+                  ) : (
+                    <div className="space-y-1">
+                      {group.options.map((option) => {
+                        const isChecked = selected.includes(option.id);
+                        return (
+                          <label
+                            key={option.id}
+                            className={`flex items-center gap-2 text-sm ${!isChecked && atMax ? 'opacity-50' : ''}`}
+                          >
+                            <Checkbox
+                              checked={isChecked}
+                              disabled={!isChecked && atMax}
+                              onCheckedChange={() => handleOptionSelect(option.id)}
+                            />
+                            {option.name}
+                            {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                          </label>
+                        );
+                      })}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  )}
+                </div>
+              );
+            })()}
             <DialogFooter>
               <Button variant="outline" onClick={() => setOptionPrompt(null)}>
                 Cancel
               </Button>
-              <Button disabled={!optionPromptValid} onClick={handleOptionAddToCart}>
-                Add to Cart
+              <Button disabled={!optionPromptValid} onClick={handleOptionSave}>
+                Save
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -969,7 +1002,19 @@ export default function TerminalPage() {
           {cartLines.length === 0 && <p className="text-sm text-muted-foreground">Cart is empty — tap a product to add it.</p>}
           <div className="space-y-3">
             {cartLines.map((line) => (
-              <div key={line.index} className="space-y-1.5 border-b pb-3 text-sm">
+              <div
+                key={line.index}
+                role="button"
+                tabIndex={0}
+                aria-label={`${line.productName} cart line`}
+                onClick={() => setSelectedLineIndex(line.index)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setSelectedLineIndex(line.index);
+                }}
+                className={`cursor-pointer space-y-1.5 rounded-md border-b pb-3 text-sm transition ${
+                  selectedLineIndex === line.index ? 'border border-primary bg-primary/5 p-2' : 'border-transparent'
+                }`}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <p className="line-clamp-2 min-w-0 flex-1 font-medium leading-snug">
                     {line.productName}
@@ -978,7 +1023,10 @@ export default function TerminalPage() {
                   <Button
                     variant="ghost"
                     className="touch-target h-7 w-7 shrink-0 p-0 text-destructive"
-                    onClick={() => removeItem(line.index)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveLine(line.index);
+                    }}
                     aria-label={`Remove ${line.productName} from cart`}
                   >
                     ×
@@ -1000,11 +1048,25 @@ export default function TerminalPage() {
                 ))}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity - 1)}>
+                    <Button
+                      variant="outline"
+                      className="touch-target h-7 w-7 p-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateItemQuantity(line.index, line.item.quantity - 1);
+                      }}
+                    >
                       −
                     </Button>
                     <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
-                    <Button variant="outline" className="touch-target h-7 w-7 p-0" onClick={() => updateItemQuantity(line.index, line.item.quantity + 1)}>
+                    <Button
+                      variant="outline"
+                      className="touch-target h-7 w-7 p-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateItemQuantity(line.index, line.item.quantity + 1);
+                      }}
+                    >
                       +
                     </Button>
                   </div>
@@ -1142,6 +1204,33 @@ export default function TerminalPage() {
                 maxLength={200}
               />
               <p className="text-xs text-muted-foreground">No photo proof required — just a short note identifying the payment.</p>
+            </div>
+          )}
+
+          {/* Task 82 — one button per Product Option Group assigned to the
+              selected cart line; each opens only that group's own selector. */}
+          {selectedLineGroups.length > 0 && (
+            <div className="space-y-2">
+              {selectedLineGroups.map((group) => {
+                const selectedNames = (cartLines[selectedLineIndex ?? -1]?.optionSelections ?? [])
+                  .filter((opt) => opt.option_group_id === group.id)
+                  .map((opt) => opt.option_name);
+                return (
+                  <Button
+                    key={group.id}
+                    type="button"
+                    variant="outline"
+                    className="touch-target flex w-full items-center justify-between"
+                    size="lg"
+                    onClick={() => openGroupPromptForLine(selectedLineIndex as number, group.id)}
+                  >
+                    <span>{resolveGroupLabel(group)}</span>
+                    {selectedNames.length > 0 && (
+                      <span className="truncate text-xs font-normal text-muted-foreground">{selectedNames.join(', ')}</span>
+                    )}
+                  </Button>
+                );
+              })}
             </div>
           )}
 

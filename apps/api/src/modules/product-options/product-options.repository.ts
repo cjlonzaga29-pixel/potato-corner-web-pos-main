@@ -37,6 +37,22 @@ const variantOptionGroupInclude = {
   },
 } satisfies Prisma.ProductVariantOptionGroupInclude;
 
+// TASK 75 — category/base unit come from InventoryItem, never duplicated on
+// the mapping row itself, so both must be included here for response building.
+const optionInclude = {
+  inventoryMapping: {
+    include: {
+      inventoryItem: {
+        include: {
+          category: { select: { id: true, name: true } },
+          baseUnit: { select: { id: true, code: true, name: true } },
+        },
+      },
+      deductionUnit: { select: { id: true, code: true, name: true } },
+    },
+  },
+} satisfies Prisma.ProductOptionInclude;
+
 /**
  * Product Option Groups / Options / Variant-assignment repository (CR-008
  * R4/R5/R6). All Prisma calls for this module live here — the router and
@@ -67,7 +83,7 @@ export const productOptionsRepository = {
       where: { id },
       include: {
         _count: { select: { options: true } },
-        options: { orderBy: { sortOrder: 'asc' } },
+        options: { orderBy: { sortOrder: 'asc' }, include: optionInclude },
       },
     });
   },
@@ -114,7 +130,7 @@ export const productOptionsRepository = {
   },
 
   findOptionById(id: string) {
-    return prisma.productOption.findUnique({ where: { id } });
+    return prisma.productOption.findUnique({ where: { id }, include: optionInclude });
   },
 
   findOptionByCode(optionGroupId: string, code: string) {
@@ -132,7 +148,19 @@ export const productOptionsRepository = {
         isActive: data.isActive,
         sortOrder: data.sortOrder,
         createdBy: data.createdBy,
+        // Nested write — ProductOption and its ProductOptionInventoryMapping
+        // are created atomically in one Prisma call, no explicit $transaction needed.
+        ...(data.inventoryDeduction && {
+          inventoryMapping: {
+            create: {
+              inventoryItemId: data.inventoryDeduction.inventoryItemId,
+              deductionUnitId: data.inventoryDeduction.deductionUnitId,
+              quantityRequired: data.inventoryDeduction.quantityRequired,
+            },
+          },
+        }),
       },
+      include: optionInclude,
     });
   },
 
@@ -145,7 +173,32 @@ export const productOptionsRepository = {
         imageUrl: data.imageUrl,
         isActive: data.isActive,
         sortOrder: data.sortOrder,
+        // undefined here means "omit the key" (Prisma leaves the relation
+        // untouched); the service resolves null/object/undefined semantics
+        // before calling this, including turning a redundant "remove nothing
+        // that exists" into undefined so `delete` is never called on a
+        // mapping that isn't there.
+        ...(data.inventoryDeduction !== undefined && {
+          inventoryMapping:
+            data.inventoryDeduction === null
+              ? { delete: true }
+              : {
+                  upsert: {
+                    create: {
+                      inventoryItemId: data.inventoryDeduction.inventoryItemId,
+                      deductionUnitId: data.inventoryDeduction.deductionUnitId,
+                      quantityRequired: data.inventoryDeduction.quantityRequired,
+                    },
+                    update: {
+                      inventoryItemId: data.inventoryDeduction.inventoryItemId,
+                      deductionUnitId: data.inventoryDeduction.deductionUnitId,
+                      quantityRequired: data.inventoryDeduction.quantityRequired,
+                    },
+                  },
+                },
+        }),
       },
+      include: optionInclude,
     });
   },
 

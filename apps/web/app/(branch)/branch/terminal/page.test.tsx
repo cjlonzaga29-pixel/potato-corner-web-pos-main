@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import TerminalPage from './page';
 import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
 import { useAuthStore } from '@/stores/auth.store';
 
 const {
   mockAddItem,
+  mockUpdateItemOptions,
   mockUseCatalog,
   mockUseMyActiveShift,
   mockUseIsClockedIn,
@@ -18,6 +19,7 @@ const {
   mockCreateTransactionMutateAsync,
 } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
+  mockUpdateItemOptions: vi.fn(),
   mockUseCatalog: vi.fn(),
   mockCreateTransactionMutateAsync: vi.fn().mockResolvedValue({}),
   mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isLoading: false })),
@@ -82,6 +84,7 @@ vi.mock('@/hooks/use-cart', () => ({
     addItem: mockAddItem,
     removeItem: vi.fn(),
     updateItemQuantity: vi.fn(),
+    updateItemOptions: mockUpdateItemOptions,
     clearCart: vi.fn(),
   }),
 }));
@@ -512,9 +515,10 @@ function optionVariant(overrides: Partial<PosCatalogProduct['variants'][number]>
   };
 }
 
-describe('TerminalPage — product option groups (CR-008)', () => {
+describe('TerminalPage — Product Option Groups as per-group POS buttons (Task 82)', () => {
   beforeEach(() => {
     mockAddItem.mockClear();
+    mockUpdateItemOptions.mockClear();
     mockCartItems.mockReturnValue([]);
   });
 
@@ -527,39 +531,32 @@ describe('TerminalPage — product option groups (CR-008)', () => {
     expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
   });
 
-  it('opens the selector for a required SINGLE option group and enforces a selection before Add to Cart', () => {
+  it('adds directly to the cart with no option dialog even when the variant has option groups assigned', () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByText('Size')).toBeInTheDocument();
-    expect(screen.getByText('Small')).toBeInTheDocument();
-    expect(screen.getByText('Large (+₱20.00)')).toBeInTheDocument();
-    expect(mockAddItem).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Add to Cart' })).toBeDisabled();
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
   });
 
-  it('enables Add to Cart once the required option is picked and submits the option_group_id/option_id selection', () => {
+  it('shows no Add-ons buttons for an empty cart', () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    mockCartItems.mockReturnValue([]);
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    fireEvent.click(screen.getByText('Large (+₱20.00)'));
-    const addButton = screen.getByRole('button', { name: 'Add to Cart' });
-    expect(addButton).not.toBeDisabled();
-    fireEvent.click(addButton);
-
-    expect(mockAddItem).toHaveBeenCalledWith({
-      product_id: 'product-1',
-      product_variant_id: 'variant-1',
-      selected_options: [
-        { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
-      ],
-      quantity: 1,
-    });
+    expect(screen.queryByRole('button', { name: /^Size/ })).not.toBeInTheDocument();
   });
 
-  it('completes a required SINGLE group and an optional MULTIPLE group together, in order', () => {
+  it('shows no Add-ons buttons when a cart line exists but is not yet selected', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    render(<TerminalPage />);
+
+    expect(screen.queryByRole('button', { name: /^Size/ })).not.toBeInTheDocument();
+  });
+
+  it('shows one button per assigned Product Option Group once the cart line is selected, and none for a group whose options are all inactive', () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([
         optionVariant({
@@ -573,41 +570,8 @@ describe('TerminalPage — product option groups (CR-008)', () => {
               min_selections: 0,
               max_selections: null,
               required: false,
-              options: [
-                { id: 'opt-3', name: 'Extra Cheese', price_adjustment: 15, sort_order: 1, is_active: true },
-                { id: 'opt-4', name: 'Bacon Bits', price_adjustment: 10, sort_order: 2, is_active: true },
-              ],
+              options: [{ id: 'opt-3', name: 'Extra Cheese', price_adjustment: 15, sort_order: 1, is_active: true }],
             },
-          ],
-        }),
-      ]),
-      isLoading: false,
-    });
-    render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
-
-    fireEvent.click(screen.getByText('Small'));
-    fireEvent.click(screen.getByText('Extra Cheese (+₱15.00)'));
-    fireEvent.click(screen.getByText('Bacon Bits (+₱10.00)'));
-    fireEvent.click(screen.getByRole('button', { name: 'Add to Cart' }));
-
-    expect(mockAddItem).toHaveBeenCalledWith({
-      product_id: 'product-1',
-      product_variant_id: 'variant-1',
-      selected_options: [
-        { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-1', option_name: 'Small', price_adjustment: 0 },
-        { option_group_id: 'group-2', option_group_name: 'Add-ons', option_id: 'opt-3', option_name: 'Extra Cheese', price_adjustment: 15 },
-        { option_group_id: 'group-2', option_group_name: 'Add-ons', option_id: 'opt-4', option_name: 'Bacon Bits', price_adjustment: 10 },
-      ],
-      quantity: 1,
-    });
-  });
-
-  it('skips groups whose options are all inactive — the dialog never opens and the product adds normally', () => {
-    mockUseCatalog.mockReturnValue({
-      data: catalogWith([
-        optionVariant({
-          option_groups: [
             {
               id: 'group-3',
               name: 'Empty Group',
@@ -623,11 +587,103 @@ describe('TerminalPage — product option groups (CR-008)', () => {
       ]),
       isLoading: false,
     });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
 
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+
+    expect(screen.getByRole('button', { name: /^Size/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Add-ons/ })).toBeInTheDocument();
     expect(screen.queryByText('Empty Group')).not.toBeInTheDocument();
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('opens only that group\'s selector when its button is tapped, enforces required selection, and Saves via updateItemOptions (not addItem)', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    render(<TerminalPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Size/ }));
+
+    expect(screen.getByText('Small')).toBeInTheDocument();
+    expect(screen.getByText('Large (+₱20.00)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+
+    fireEvent.click(screen.getByText('Large (+₱20.00)'));
+    const saveButton = screen.getByRole('button', { name: 'Save' });
+    expect(saveButton).not.toBeDisabled();
+    fireEvent.click(saveButton);
+
+    expect(mockUpdateItemOptions).toHaveBeenCalledWith(0, [
+      { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
+    ]);
+    expect(mockAddItem).not.toHaveBeenCalled();
+  });
+
+  it('preloads the group selector with the line\'s existing selection for that group', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
+        ],
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Size/ }));
+
+    // Large is already selected for this line, so the required group is
+    // already valid without picking anything again.
+    expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
+  });
+
+  it('editing one group only touches that group — the other group\'s selections on the same line are untouched', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        optionVariant({
+          option_groups: [
+            optionGroup(),
+            {
+              id: 'group-2',
+              name: 'Add-ons',
+              pos_button_label: null,
+              selection_type: 'MULTIPLE',
+              min_selections: 0,
+              max_selections: null,
+              required: false,
+              options: [{ id: 'opt-3', name: 'Extra Cheese', price_adjustment: 15, sort_order: 1, is_active: true }],
+            },
+          ],
+        }),
+      ]),
+      isLoading: false,
+    });
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'group-2', option_group_name: 'Add-ons', option_id: 'opt-3', option_name: 'Extra Cheese', price_adjustment: 15 },
+        ],
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Size/ }));
+    fireEvent.click(screen.getByText('Small'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(mockUpdateItemOptions).toHaveBeenCalledWith(0, [
+      { option_group_id: 'group-2', option_group_name: 'Add-ons', option_id: 'opt-3', option_name: 'Extra Cheese', price_adjustment: 15 },
+      { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-1', option_name: 'Small', price_adjustment: 0 },
+    ]);
   });
 
   it('shows the selected option name and price adjustment in the cart, and folds the adjustment into the cart line total', () => {
@@ -660,12 +716,18 @@ describe('TerminalPage — product option groups (CR-008)', () => {
 describe('TerminalPage — option group pos_button_label resolution (Task 70)', () => {
   beforeEach(() => {
     mockAddItem.mockClear();
-    mockCartItems.mockReturnValue([]);
+    mockUpdateItemOptions.mockClear();
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
   });
 
   afterEach(() => cleanup());
 
-  it('displays the configured pos_button_label instead of the internal name', () => {
+  function selectLineAndOpenGroup(nameMatch: RegExp) {
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    fireEvent.click(screen.getByRole('button', { name: nameMatch }));
+  }
+
+  it('uses the configured pos_button_label as the group button text instead of the internal name', () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([
         optionVariant({ option_groups: [optionGroup({ name: 'Flavor Fries', pos_button_label: 'Fries Add-ons' })] }),
@@ -673,9 +735,9 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByText('Fries Add-ons')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    expect(screen.getByRole('button', { name: /^Fries Add-ons/ })).toBeInTheDocument();
     expect(screen.queryByText('Flavor Fries')).not.toBeInTheDocument();
   });
 
@@ -685,9 +747,9 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByText('Flavor Fries')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    expect(screen.getByRole('button', { name: /^Flavor Fries/ })).toBeInTheDocument();
   });
 
   it('falls back to the internal name when pos_button_label is blank/whitespace', () => {
@@ -696,12 +758,12 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByText('Flavor Fries')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    expect(screen.getByRole('button', { name: /^Flavor Fries/ })).toBeInTheDocument();
   });
 
-  it('resolves each group to its own label when multiple groups are shown together', () => {
+  it('resolves each group to its own label when multiple groups are assigned', () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([
         optionVariant({
@@ -723,11 +785,17 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByText('Fries Add-ons')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    expect(screen.getByRole('button', { name: /^Fries Add-ons/ })).toBeInTheDocument();
     expect(screen.queryByText('Flavor Fries')).not.toBeInTheDocument();
-    expect(screen.getByText('Drink Size')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Drink Size/ })).toBeInTheDocument();
+
+    // Each group's button opens only that group's own selector.
+    fireEvent.click(screen.getByRole('button', { name: /^Drink Size/ }));
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText('Regular')).toBeInTheDocument();
+    expect(dialog.queryByText('Large (+₱20.00)')).not.toBeInTheDocument();
   });
 
   it('submits the correct group/option IDs unaffected by the display label', () => {
@@ -738,18 +806,13 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    selectLineAndOpenGroup(/^Fries Add-ons/);
     fireEvent.click(screen.getByText('Large (+₱20.00)'));
-    fireEvent.click(screen.getByRole('button', { name: 'Add to Cart' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(mockAddItem).toHaveBeenCalledWith({
-      product_id: 'product-1',
-      product_variant_id: 'variant-1',
-      selected_options: [
-        { option_group_id: 'group-1', option_group_name: 'Fries Add-ons', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
-      ],
-      quantity: 1,
-    });
+    expect(mockUpdateItemOptions).toHaveBeenCalledWith(0, [
+      { option_group_id: 'group-1', option_group_name: 'Fries Add-ons', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 },
+    ]);
   });
 
   it('shows the resolved label (not the internal name) in the cart summary', () => {
@@ -782,11 +845,11 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    selectLineAndOpenGroup(/^Fries Add-ons/);
 
-    expect(screen.getByRole('button', { name: 'Add to Cart' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     fireEvent.click(screen.getByText('Small'));
-    expect(screen.getByRole('button', { name: 'Add to Cart' })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
   });
 });
 
@@ -797,10 +860,16 @@ describe('TerminalPage — option group pos_button_label resolution (Task 70)', 
 describe('TerminalPage — optional SINGLE option group "no add-on" wording (Task 71)', () => {
   beforeEach(() => {
     mockAddItem.mockClear();
-    mockCartItems.mockReturnValue([]);
+    mockUpdateItemOptions.mockClear();
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
   });
 
   afterEach(() => cleanup());
+
+  function selectLineAndOpenGroup(nameMatch: RegExp) {
+    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
+    fireEvent.click(screen.getByRole('button', { name: nameMatch }));
+  }
 
   it('shows "No {resolved label}" for an optional SINGLE group using its configured pos_button_label', () => {
     mockUseCatalog.mockReturnValue({
@@ -814,7 +883,7 @@ describe('TerminalPage — optional SINGLE option group "no add-on" wording (Tas
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    selectLineAndOpenGroup(/^Fries Add-ons/);
 
     expect(screen.getByText('No Fries Add-ons')).toBeInTheDocument();
     expect(screen.queryByText('None')).not.toBeInTheDocument();
@@ -830,7 +899,7 @@ describe('TerminalPage — optional SINGLE option group "no add-on" wording (Tas
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    selectLineAndOpenGroup(/^Add-ons/);
 
     expect(screen.getByText('No Add-ons')).toBeInTheDocument();
     expect(screen.queryByText('No Add-ons Add-ons')).not.toBeInTheDocument();
@@ -842,14 +911,15 @@ describe('TerminalPage — optional SINGLE option group "no add-on" wording (Tas
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    selectLineAndOpenGroup(/^Size/);
 
-    expect(screen.getByText('Size')).toBeInTheDocument();
-    expect(screen.queryByText('No Size')).not.toBeInTheDocument();
-    expect(screen.queryByText('None')).not.toBeInTheDocument();
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText('Size')).toBeInTheDocument();
+    expect(dialog.queryByText('No Size')).not.toBeInTheDocument();
+    expect(dialog.queryByText('None')).not.toBeInTheDocument();
   });
 
-  it('clears the selection when the no-add-on choice is picked, letting the product add without an option — no premium, no option ID sent', () => {
+  it('clears the selection when the no-add-on choice is picked, saving with an empty selection for that group — no premium, no option ID sent', () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([
         optionVariant({
@@ -861,20 +931,15 @@ describe('TerminalPage — optional SINGLE option group "no add-on" wording (Tas
       isLoading: false,
     });
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    selectLineAndOpenGroup(/^Fries Add-ons/);
 
     fireEvent.click(screen.getByText('Large (+₱20.00)'));
     fireEvent.click(screen.getByText('No Fries Add-ons'));
-    const addButton = screen.getByRole('button', { name: 'Add to Cart' });
-    expect(addButton).not.toBeDisabled();
-    fireEvent.click(addButton);
+    const saveButton = screen.getByRole('button', { name: 'Save' });
+    expect(saveButton).not.toBeDisabled();
+    fireEvent.click(saveButton);
 
-    expect(mockAddItem).toHaveBeenCalledWith({
-      product_id: 'product-1',
-      product_variant_id: 'variant-1',
-      selected_options: [],
-      quantity: 1,
-    });
+    expect(mockUpdateItemOptions).toHaveBeenCalledWith(0, []);
   });
 });
 

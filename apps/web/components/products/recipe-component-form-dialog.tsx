@@ -11,10 +11,6 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useCreateProductComponent, useUpdateProductComponent } from '@/hooks/queries/use-product-components';
-import { useAllActiveProductOptions } from '@/hooks/queries/use-product-options';
-
-/** Sentinel Select value standing in for product_option_id = null (Base Recipe) — Radix Select disallows an empty-string item value. */
-const BASE_RECIPE_VALUE = '__base_recipe__';
 
 interface RecipeComponentFormDialogProps {
   open: boolean;
@@ -22,14 +18,6 @@ interface RecipeComponentFormDialogProps {
   productVariantId: string;
   existingComponents: ProductComponentResponse[];
   editingComponent?: ProductComponentResponse;
-  /**
-   * Manage Deduction flow (Product Option page): the product option this
-   * deduction belongs to is fixed by context, so the Product Option select
-   * is replaced with a read-only label and the admin only edits inventory
-   * item, quantity, and unit.
-   */
-  fixedProductOptionId?: string;
-  fixedProductOptionLabel?: string;
   /** Display label for the product variant this recipe belongs to (e.g. "Regular (Small)"), shown in the Deduction Preview. */
   productVariantLabel?: string;
 }
@@ -71,8 +59,6 @@ export function RecipeComponentFormDialog({
   productVariantId,
   existingComponents,
   editingComponent,
-  fixedProductOptionId,
-  fixedProductOptionLabel,
   productVariantLabel,
 }: RecipeComponentFormDialogProps) {
   const isEdit = Boolean(editingComponent);
@@ -81,7 +67,6 @@ export function RecipeComponentFormDialog({
   const [quantityRequired, setQuantityRequired] = useState('');
   const [recipeUnitId, setRecipeUnitId] = useState('');
   const [isActive, setIsActive] = useState(true);
-  const [productOptionId, setProductOptionId] = useState<string | null>(null);
 
   const createComponent = useCreateProductComponent(productVariantId);
   const updateComponent = useUpdateProductComponent(productVariantId, editingComponent?.id ?? '');
@@ -89,7 +74,6 @@ export function RecipeComponentFormDialog({
 
   const { data: inventoryItems, isLoading: itemsLoading } = useInventoryItems(false);
   const { data: units, isLoading: unitsLoading } = useUnitsOfMeasure(false);
-  const { data: productOptions, isLoading: productOptionsLoading } = useAllActiveProductOptions();
 
   const selectedItem = inventoryItems?.find((item) => item.id === inventoryItemId);
   const baseUnitCode = isEdit ? editingComponent?.base_unit_code : selectedItem?.base_unit_code;
@@ -103,15 +87,13 @@ export function RecipeComponentFormDialog({
       setQuantityRequired(String(editingComponent.quantity_required));
       setRecipeUnitId(editingComponent.recipe_unit_id);
       setIsActive(editingComponent.is_active);
-      setProductOptionId(editingComponent.product_option_id);
     } else {
       setInventoryItemId('');
       setQuantityRequired('');
       setRecipeUnitId('');
       setIsActive(true);
-      setProductOptionId(fixedProductOptionId ?? null);
     }
-  }, [open, editingComponent, fixedProductOptionId]);
+  }, [open, editingComponent]);
 
   // Default the recipe unit whenever the selected item (add mode) resolves a
   // base unit and no recipe unit has been chosen yet.
@@ -130,9 +112,6 @@ export function RecipeComponentFormDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEdit, baseUnit?.id]);
 
-  const selectedOptionLabel = fixedProductOptionId
-    ? fixedProductOptionLabel
-    : (productOptions ?? []).find((option) => option.id === productOptionId)?.name;
   const previewItemName = selectedItem?.name ?? editingComponent?.inventory_item_name;
   const previewCategoryName = selectedItem?.category_name;
 
@@ -156,7 +135,6 @@ export function RecipeComponentFormDialog({
         quantity_required: numericQuantity,
         recipe_unit_id: recipeUnitId,
         is_active: isActive,
-        product_option_id: productOptionId,
       });
     } else {
       if (!inventoryItemId) return;
@@ -165,7 +143,6 @@ export function RecipeComponentFormDialog({
         inventory_item_id: inventoryItemId,
         quantity_required: numericQuantity,
         recipe_unit_id: recipeUnitId || undefined,
-        product_option_id: productOptionId,
       });
     }
     handleOpenChange(false);
@@ -261,7 +238,6 @@ export function RecipeComponentFormDialog({
               <p className="text-xs font-medium uppercase text-muted-foreground">Deduction Preview</p>
               <div className="mt-2 space-y-0.5">
                 {productVariantLabel && <p className="font-medium">{productVariantLabel}</p>}
-                {selectedOptionLabel && <p className="text-muted-foreground">{selectedOptionLabel}</p>}
                 <p className="font-medium">→ {previewItemName ?? 'Selected item'}</p>
               </div>
               <p className="mt-2 text-base font-semibold">
@@ -271,31 +247,6 @@ export function RecipeComponentFormDialog({
               <p className="text-xs text-muted-foreground">per item sold</p>
             </div>
           )}
-
-          <div className="space-y-2">
-            <Label htmlFor="recipe-component-option">Product Option</Label>
-            {fixedProductOptionId ? (
-              <div className="rounded-md border bg-muted/30 p-2 text-sm">{fixedProductOptionLabel ?? 'Selected option'}</div>
-            ) : (
-              <Select
-                value={productOptionId ?? BASE_RECIPE_VALUE}
-                onValueChange={(next) => setProductOptionId(next === BASE_RECIPE_VALUE ? null : next)}
-                disabled={productOptionsLoading}
-              >
-                <SelectTrigger id="recipe-component-option">
-                  <SelectValue placeholder={productOptionsLoading ? 'Loading…' : 'Base Recipe'} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={BASE_RECIPE_VALUE}>Base Recipe</SelectItem>
-                  {(productOptions ?? []).map((option) => (
-                    <SelectItem key={option.id} value={option.id}>
-                      {option.option_group_name}: {option.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
 
           {isEdit && (
             <div className="flex items-center justify-between rounded-md border p-3">

@@ -133,6 +133,15 @@ export const productOptionGroupListResponseSchema = z.object({
   limit: z.number().int(),
 });
 
+// TASK 75 — dedicated inventory deduction directly on a Product Option (see
+// ProductOptionInventoryMapping in schema.prisma). Category/base unit are
+// never accepted here; they're always derived server-side from InventoryItem.
+export const productOptionInventoryDeductionInputSchema = z.object({
+  inventory_item_id: z.uuid(),
+  deduction_unit_id: z.uuid(),
+  quantity_required: z.number().positive(),
+});
+
 export const createProductOptionSchema = z.object({
   code: codeSchema,
   name: z.string().min(1).max(100),
@@ -140,6 +149,7 @@ export const createProductOptionSchema = z.object({
   image_url: z.url().optional(),
   is_active: z.boolean().default(true),
   sort_order: z.number().int().nonnegative().optional(),
+  inventory_deduction: productOptionInventoryDeductionInputSchema.optional(),
 });
 
 export const updateProductOptionSchema = z.object({
@@ -148,7 +158,26 @@ export const updateProductOptionSchema = z.object({
   image_url: z.url().nullable().optional(),
   is_active: z.boolean().optional(),
   sort_order: z.number().int().nonnegative().optional(),
+  // undefined (key omitted) = preserve existing mapping; null = remove it;
+  // object = create or update it.
+  inventory_deduction: productOptionInventoryDeductionInputSchema.nullable().optional(),
 });
+
+export const productOptionInventoryDeductionResponseSchema = z
+  .object({
+    inventory_item_id: z.uuid(),
+    inventory_item_name: z.string(),
+    inventory_category_id: z.uuid().nullable(),
+    inventory_category_name: z.string().nullable(),
+    base_unit_id: z.uuid(),
+    base_unit_code: z.string(),
+    base_unit_name: z.string(),
+    deduction_unit_id: z.uuid(),
+    deduction_unit_code: z.string(),
+    deduction_unit_name: z.string(),
+    quantity_required: z.number(),
+  })
+  .nullable();
 
 export const productOptionResponseSchema = z.object({
   id: z.uuid(),
@@ -159,6 +188,7 @@ export const productOptionResponseSchema = z.object({
   image_url: z.string().nullable(),
   is_active: z.boolean(),
   sort_order: z.number().int().nullable(),
+  inventory_deduction: productOptionInventoryDeductionResponseSchema,
   created_at: z.iso.datetime(),
   updated_at: z.iso.datetime(),
 });

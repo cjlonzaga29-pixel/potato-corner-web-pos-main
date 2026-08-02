@@ -169,109 +169,26 @@ describe('computeBomDeduction', () => {
     await expect(computeBomDeduction('variant-1', 'branch-1', 1)).rejects.toThrow(/No UnitConversion/);
   });
 
-  it('calls the repository with selectedOptionIds undefined when omitted (behavior unchanged)', async () => {
+  it('forwards flavorId to the repository and leaves it as the last parameter (simplified signature)', async () => {
+    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
+      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
+    ]);
+
+    const result = await computeBomDeduction('variant-1', 'branch-1', 3, 'flavor-bbq');
+
+    expect(shadowBomDeductionRepository.findActiveComponentsForVariant).toHaveBeenCalledWith('variant-1', 'flavor-bbq');
+    expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 3 }]);
+  });
+
+  it('calls the repository with flavorId undefined when omitted (behavior unchanged)', async () => {
     vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
       { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
     ]);
 
-    const result = await computeBomDeduction('variant-1', 'branch-1', 3, null);
+    const result = await computeBomDeduction('variant-1', 'branch-1', 3);
 
-    expect(shadowBomDeductionRepository.findActiveComponentsForVariant).toHaveBeenCalledWith('variant-1', null, undefined);
+    expect(shadowBomDeductionRepository.findActiveComponentsForVariant).toHaveBeenCalledWith('variant-1', undefined);
     expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 6 }]);
-  });
-
-  it('forwards an empty selectedOptionIds array unchanged (behavior unchanged)', async () => {
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(2) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 3, null, []);
-
-    expect(shadowBomDeductionRepository.findActiveComponentsForVariant).toHaveBeenCalledWith('variant-1', null, []);
-    expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 6 }]);
-  });
-
-  it('forwards a populated selectedOptionIds array to the repository verbatim', async () => {
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-      { inventoryItemId: 'item-2', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 2, null, ['option-1', 'option-2']);
-
-    expect(shadowBomDeductionRepository.findActiveComponentsForVariant).toHaveBeenCalledWith('variant-1', null, ['option-1', 'option-2']);
-    expect(result).toEqual([
-      { inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 2 },
-      { inventoryItemId: 'item-2', baseUnitId: 'unit-kg', quantity: 2 },
-    ]);
-  });
-
-  it('reflects option-scoped rows the repository includes when a matching option is selected', async () => {
-    // The repository is the source of truth for which rows match selectedOptionIds
-    // (this is asserted separately in the repository's own tests); this test only
-    // proves the service correctly aggregates whatever the repository returns.
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-      { inventoryItemId: 'item-2', quantityRequired: decimal(0.5) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 1, null, ['option-topping-cheese']);
-
-    expect(result).toEqual([
-      { inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 1 },
-      { inventoryItemId: 'item-2', baseUnitId: 'unit-kg', quantity: 0.5 },
-    ]);
-  });
-
-  it('does not include unselected option rows when the repository excludes them', async () => {
-    // Repository excludes unselected option-scoped rows; service must simply
-    // not conjure them back in -- asserted by only base rows coming back.
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 1, null, ['option-not-selected']);
-
-    expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 1 }]);
-  });
-
-  it('combines flavor and selectedOptionIds, forwarding both to the repository', async () => {
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-      { inventoryItemId: 'item-2', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 1, 'flavor-bbq', ['option-1']);
-
-    expect(shadowBomDeductionRepository.findActiveComponentsForVariant).toHaveBeenCalledWith('variant-1', 'flavor-bbq', ['option-1']);
-    expect(result).toEqual([
-      { inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 1 },
-      { inventoryItemId: 'item-2', baseUnitId: 'unit-kg', quantity: 1 },
-    ]);
-  });
-
-  it('still applies unit conversion when selectedOptionIds is provided', async () => {
-    vi.mocked(universalInventoryRepository.findConversion).mockImplementation(
-      ((fromUnitId: string, toUnitId: string) =>
-        Promise.resolve(fromUnitId === 'unit-g' && toUnitId === 'unit-kg' ? { factor: new Prisma.Decimal(0.001) } : null)) as never,
-    );
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(100) as never, baseUnitId: 'unit-kg', recipeUnitId: 'unit-g' },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 1, null, ['option-1']);
-
-    expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 0.1 }]);
-  });
-
-  it('produces a BomDeductionLine[] snapshot shape compatible with existing consumers when selectedOptionIds is provided', async () => {
-    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
-      { inventoryItemId: 'item-1', quantityRequired: decimal(1) as never, baseUnitId: 'unit-kg', recipeUnitId: null },
-    ]);
-
-    const result = await computeBomDeduction('variant-1', 'branch-1', 1, null, ['option-1']);
-
-    expect(result).toEqual([{ inventoryItemId: expect.any(String), baseUnitId: expect.any(String), quantity: expect.any(Number) }]);
   });
 });
 

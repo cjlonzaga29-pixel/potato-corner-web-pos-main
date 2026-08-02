@@ -27,6 +27,7 @@ import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { computeBomDeduction } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import type { BomDeductionLine } from '../shadow-bom-deduction/shadow-bom-deduction.types.js';
+import { convertQuantity } from '../product-components/unit-conversion.util.js';
 // Retained solely for reverseInventoryForTransaction's fallback path, which
 // replays a legacy-shaped deductionSnapshot (or, for transactions that
 // predate the snapshot column entirely, recomputes from ProductInventory) —
@@ -360,6 +361,58 @@ function resolveSelectedOptionsPremium(
 }
 
 /**
+ * Task 79 — Product Option inventory deduction, layered on top of the base
+ * Recipe/BOM deduction. ProductOptionInventoryMapping (one row per option)
+ * is the source of truth, replacing the legacy ProductComponent.productOptionId
+ * rows (resolveCartItems no longer forwards selectedOptionIds into
+ * computeBomDeduction — see the call below). An option with no mapping row
+ * deducts nothing and never fails pricing: resolveSelectedOptionsPremium
+ * already validates the option itself exists / is active / is assigned to
+ * this variant. quantityRequired is converted from the mapping's own
+ * deductionUnitId into the mapped InventoryItem's base unit via the same
+ * convertQuantity utility the base BOM path uses (fails closed if no
+ * UnitConversion row supports it), then scaled by cart quantity.
+ */
+async function computeOptionDeductionLines(selectedOptionIds: string[] | undefined, quantitySold: number): Promise<BomDeductionLine[]> {
+  if (!selectedOptionIds || selectedOptionIds.length === 0) return [];
+
+  const mappings = await transactionsRepository.findOptionInventoryMappings(selectedOptionIds);
+  const map = new Map<string, BomDeductionLine>();
+  for (const mapping of mappings) {
+    if (mapping.inventoryItem.deletedAt !== null) {
+      throw new TransactionError(
+        'PRODUCT_OPTION_INVENTORY_INACTIVE',
+        'The inventory item mapped to a selected Product Option is no longer active',
+        422,
+      );
+    }
+    const baseQuantity = await convertQuantity(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId);
+    const quantity = baseQuantity.toNumber() * quantitySold;
+    const existing = map.get(mapping.inventoryItemId);
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      map.set(mapping.inventoryItemId, { inventoryItemId: mapping.inventoryItemId, baseUnitId: mapping.inventoryItem.baseUnitId, quantity });
+    }
+  }
+  return Array.from(map.values());
+}
+
+/** Merges two BomDeductionLine arrays by inventoryItemId, summing quantities for lines both sides deduct. */
+function mergeDeductionLines(base: BomDeductionLine[], extra: BomDeductionLine[]): BomDeductionLine[] {
+  const map = new Map<string, BomDeductionLine>();
+  for (const line of [...base, ...extra]) {
+    const existing = map.get(line.inventoryItemId);
+    if (existing) {
+      existing.quantity += line.quantity;
+    } else {
+      map.set(line.inventoryItemId, { ...line });
+    }
+  }
+  return Array.from(map.values());
+}
+
+/**
  * Resolves and prices every cart line against the live catalog — never
  * trusts a client-submitted price. Rejects the whole transaction if any
  * item references a variant/flavor that isn't active, sellable at this
@@ -496,10 +549,14 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       }
 
       recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
-      deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null, item.selectedOptionIds);
+      deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null);
     }
 
     const optionsPremium = resolveSelectedOptionsPremium(variant, item.selectedOptionIds);
+    const optionDeductionLines = await computeOptionDeductionLines(item.selectedOptionIds, item.quantity);
+    if (optionDeductionLines.length > 0) {
+      deductionLines = mergeDeductionLines(deductionLines, optionDeductionLines);
+    }
     const basePrice = variant.basePrice.toNumber();
     const unitPrice = round2(basePrice + pricePremium + optionsPremium);
     const lineTotal = round2(unitPrice * item.quantity);

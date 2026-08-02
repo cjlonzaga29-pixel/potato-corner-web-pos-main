@@ -774,6 +774,7 @@ model ProductOption {
   creator               User?                             @relation(fields: [createdBy], references: [id])
   variantAllowedOptions ProductVariantOptionGroupOption[]
   components            ProductComponent[]
+  inventoryMapping      ProductOptionInventoryMapping?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1084,6 +1085,7 @@ model UnitOfMeasure {
   conversionsTo     UnitConversion[]         @relation("UnitConversionTo")
   recipeComponents  ProductComponent[]
   stockMovements    InventoryStockMovement[]
+  optionDeductionMappings ProductOptionInventoryMapping[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1137,6 +1139,7 @@ model InventoryItem {
   stockMovements    InventoryStockMovement[]
   productComponents ProductComponent[]
   identityMappings  InventoryIdentityMapping[]
+  optionMappings    ProductOptionInventoryMapping[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1327,6 +1330,34 @@ model ProductComponent {
   @@index([recipeUnitId])
   @@index([productOptionId])
   @@map("product_components")
+}
+
+/// TASK 74 -- dedicated inventory deduction owned directly by ProductOption,
+/// global across products/variants (unlike ProductComponent, which is scoped
+/// to a ProductVariant). A ProductOption has zero or one mapping (enforced by
+/// the unique productOptionId below). Category/base unit are intentionally
+/// not stored here -- derive them from InventoryItem. inventoryItem and
+/// deductionUnit use onDelete: Restrict (matching TransactionLine.product's
+/// pattern) so a referenced InventoryItem/UnitOfMeasure can't be deleted out
+/// from under a live mapping; productOption uses onDelete: Cascade since the
+/// mapping has no meaning once its owning option is gone.
+model ProductOptionInventoryMapping {
+  id               String  @id @default(uuid())
+  productOptionId  String  @unique @map("product_option_id")
+  inventoryItemId  String  @map("inventory_item_id")
+  quantityRequired Decimal @map("quantity_required") @db.Decimal(18, 6)
+  deductionUnitId  String  @map("deduction_unit_id")
+
+  productOption ProductOption @relation(fields: [productOptionId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  deductionUnit UnitOfMeasure @relation(fields: [deductionUnitId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([inventoryItemId])
+  @@index([deductionUnitId])
+  @@map("product_option_inventory_mappings")
 }
 
 /// CR-012.1 -- shadow-mode classification of how a single sale line's BOM

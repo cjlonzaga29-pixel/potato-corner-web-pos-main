@@ -6,6 +6,7 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 15
     steps:
       - name: Verify PRODUCTION_DATABASE_URL_DIRECT is set

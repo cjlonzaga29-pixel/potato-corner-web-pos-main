@@ -2162,9 +2162,11 @@ describe('transactionsService.createTransaction — Product Option IDs forwarded
 // selected-option validation — deduction forwarding is covered above.
 describe('transactionsService.createTransaction — Product Option price adjustments (server-side pricing)', () => {
   function itemsCall() {
-    // Safe: every test in this suite calls createTransaction exactly once
-    // before reading this, so mock.calls[0] is always populated.
-    return vi.mocked(transactionsRepository.createTransaction).mock.calls[0]![0];
+    const call = vi.mocked(transactionsRepository.createTransaction).mock.calls[0];
+    if (!call) {
+      throw new Error('createTransaction was not called');
+    }
+    return call[0];
   }
 
   it('adds a single valid priced option to unitPrice, and multiplies the adjusted unit price by quantity for lineTotal', async () => {

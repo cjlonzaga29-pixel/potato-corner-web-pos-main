@@ -25,7 +25,7 @@ vi.mock('./transactions.service.js', () => ({
 }));
 
 vi.mock('../cash/cash.repository.js', () => ({
-  cashRepository: { findActiveShift: vi.fn() },
+  cashRepository: { findActiveShiftByBranch: vi.fn() },
 }));
 
 vi.mock('../cash/cash.service.js', () => ({
@@ -125,7 +125,7 @@ function validCreateBody(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
-  vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: SHIFT_1 } as never);
+  vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: SHIFT_1 } as never);
   vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ id: 'att-1', employeeId: 'ignored', branchId: BRANCH_1 } as never);
   // Default: BRANCH_1 is active — matches every supervisor test's "own
   // branch"; BRANCH_2 is deliberately excluded, matching the "outside
@@ -173,7 +173,7 @@ describe('POST / — happy path', () => {
 
   it('overrides a mismatched client-supplied shift_id with the shiftGuard-resolved active shift for staff', async () => {
     const OTHER_SHIFT = randomUUID();
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValue({ id: SHIFT_1 } as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: SHIFT_1 } as never);
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
     const token = generateStaffToken(BRANCH_1);
     const req = mockReq({ ...authHeader(token), body: validCreateBody({ shift_id: OTHER_SHIFT }) });
@@ -217,7 +217,7 @@ describe('POST / — happy path', () => {
 
   it('staff clocked in but with no active shift yet gets one auto-opened by shiftGuard and still reaches the service', async () => {
     const AUTO_SHIFT = randomUUID();
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: AUTO_SHIFT } as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: AUTO_SHIFT } as never);
     vi.mocked(cashService.autoOpenShift).mockResolvedValue({ id: AUTO_SHIFT } as never);
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
     const token = generateStaffToken(BRANCH_1);
@@ -242,7 +242,7 @@ describe('POST / — happy path', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(cashRepository.findActiveShift).not.toHaveBeenCalled();
+    expect(cashRepository.findActiveShiftByBranch).not.toHaveBeenCalled();
   });
 
   it('a staff member posting for a branch they are not assigned to gets 403 from branchGuard', async () => {

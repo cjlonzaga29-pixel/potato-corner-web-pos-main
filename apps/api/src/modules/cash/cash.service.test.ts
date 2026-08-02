@@ -14,6 +14,7 @@ vi.mock('./cash.repository.js', () => ({
     findShiftById: vi.fn(),
     findUserById: vi.fn(),
     createShift: vi.fn(),
+    createAutoShift: vi.fn(),
     sumTransactionsForShift: vi.fn(),
     sumTransactionCountsForShift: vi.fn(),
     countAnyTransactionsForShift: vi.fn(),
@@ -206,6 +207,54 @@ describe('cashService.openShift', () => {
     expect(notifyBranch).toHaveBeenCalledWith(branchId, 'cash:shift_opened', result);
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:shift_opened', result);
     expect(shiftResponseSchema.safeParse(result).success).toBe(true);
+  });
+});
+
+describe('cashService.autoOpenShift', () => {
+  it('creates a new auto shift when the branch has no active shift', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    vi.mocked(cashRepository.createAutoShift).mockResolvedValue(shiftRow({ cashierId: 'cashier-1' }) as never);
+
+    const result = await cashService.autoOpenShift({ branchId: 'branch-1', cashierId: 'cashier-1' }, null);
+
+    expect(cashRepository.createAutoShift).toHaveBeenCalledWith({ branchId: 'branch-1', cashierId: 'cashier-1' });
+    expect(result.cashier_id).toBe('cashier-1');
+  });
+
+  it('reuses another cashier\'s already-open branch shift instead of creating a new one (Task 103)', async () => {
+    const existing = shiftRow({ id: 'shift-owned-by-other', cashierId: 'other-cashier' });
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(existing as never);
+
+    const result = await cashService.autoOpenShift({ branchId: 'branch-1', cashierId: 'cashier-1' }, null);
+
+    expect(cashRepository.createAutoShift).not.toHaveBeenCalled();
+    expect(result.id).toBe('shift-owned-by-other');
+  });
+
+  it('recovers from a P2002 race (two terminals auto-opening at once) by re-reading the branch shift the other request won', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValueOnce(null).mockResolvedValueOnce(shiftRow({ id: 'shift-race-winner', cashierId: 'other-cashier' }) as never);
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the fields: (`branch_id`)', { code: 'P2002', clientVersion: '5.22.0' });
+    vi.mocked(cashRepository.createAutoShift).mockRejectedValue(p2002);
+
+    const result = await cashService.autoOpenShift({ branchId: 'branch-1', cashierId: 'cashier-1' }, null);
+
+    expect(result.id).toBe('shift-race-winner');
+  });
+
+  it('rethrows a P2002 if the branch still has no active shift on re-read (not the concurrency case)', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.22.0' });
+    vi.mocked(cashRepository.createAutoShift).mockRejectedValue(p2002);
+
+    await expect(cashService.autoOpenShift({ branchId: 'branch-1', cashierId: 'cashier-1' }, null)).rejects.toBe(p2002);
+  });
+
+  it('rethrows non-P2002 errors from createAutoShift untouched', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    const dbError = new Error('connection lost');
+    vi.mocked(cashRepository.createAutoShift).mockRejectedValue(dbError);
+
+    await expect(cashService.autoOpenShift({ branchId: 'branch-1', cashierId: 'cashier-1' }, null)).rejects.toBe(dbError);
   });
 });
 

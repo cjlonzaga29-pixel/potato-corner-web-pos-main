@@ -299,16 +299,29 @@ export const cashService = {
    * Auto-managed shift, opened transparently on clock-in (Phase 4-9 shift
    * removal — Architecture doc change) so HoldOrder.shiftId's non-nullable
    * FK stays satisfied without a schema migration, while the cashier never
-   * sees an "Open Shift" step. Idempotent: if a shift is already active for
-   * this cashier at this branch (e.g. a retried clock-in), returns it as-is
-   * rather than erroring — unlike the manual openShift's 409, there is no
-   * "someone else already has the drawer" conflict to protect against here.
+   * sees an "Open Shift" step. Idempotent: if a shift is already active at
+   * this branch (under any cashier), returns it as-is rather than erroring.
+   * Branch-scoped, not cashier-scoped: the DB's `shift_one_open_per_branch`
+   * partial unique index (migration 20260714120000) only ever allows one
+   * active shift per branch, so a per-cashier check here would P2002 the
+   * moment a second cashier at the same branch tried to auto-open (Task 103).
+   * The catch below is belt-and-suspenders for the remaining race between
+   * the check and the create (two terminals auto-opening at the same instant).
    */
   async autoOpenShift(data: AutoOpenShiftData, ipAddress: string | null) {
-    const existing = (await cashRepository.findActiveShift(data.cashierId, data.branchId)) as ShiftRow | null;
+    const existing = (await cashRepository.findActiveShiftByBranch(data.branchId)) as ShiftRow | null;
     if (existing) return toShiftResponse(existing);
 
-    const shift = (await cashRepository.createAutoShift(data)) as ShiftRow;
+    let shift: ShiftRow;
+    try {
+      shift = (await cashRepository.createAutoShift(data)) as ShiftRow;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const raceWinner = (await cashRepository.findActiveShiftByBranch(data.branchId)) as ShiftRow | null;
+        if (raceWinner) return toShiftResponse(raceWinner);
+      }
+      throw err;
+    }
     const response = toShiftResponse(shift);
 
     await recordAuditLog({

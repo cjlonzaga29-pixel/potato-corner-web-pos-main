@@ -13,7 +13,7 @@ vi.mock('../lib/prisma.js', () => ({
 
 vi.mock('../modules/cash/cash.repository.js', () => ({
   cashRepository: {
-    findActiveShift: vi.fn(),
+    findActiveShiftByBranch: vi.fn(),
   },
 }));
 
@@ -95,7 +95,7 @@ const BRANCH_OTHER = randomUUID();
 beforeEach(() => {
   vi.mocked(prisma.revokedToken.findFirst).mockReset();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
-  vi.mocked(cashRepository.findActiveShift).mockReset();
+  vi.mocked(cashRepository.findActiveShiftByBranch).mockReset();
   vi.mocked(cashService.autoOpenShift).mockReset();
   vi.mocked(attendanceRepository.findActiveRecord).mockReset();
   vi.mocked(branchesRepository.findAllActiveBranchIds).mockReset();
@@ -406,7 +406,27 @@ describe('shift-guard middleware', () => {
       employeeId: 't1',
       branchId: 'branch-1',
     } as never);
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValue(shift as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(shift as never);
+    const req = mockReq({
+      user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
+      params: { branchId: 'branch-1' },
+    });
+    const res = mockRes();
+    const next = vi.fn();
+    await shiftGuard(req, res, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.activeShift).toEqual(shift);
+    expect(cashService.autoOpenShift).not.toHaveBeenCalled();
+  });
+
+  it('staff reuses another cashier\'s already-open branch shift instead of auto-opening a new one', async () => {
+    const shift = { id: 'shift-1', cashierId: 'other-cashier', branchId: 'branch-1', status: 'active' };
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      id: 'att-1',
+      employeeId: 't1',
+      branchId: 'branch-1',
+    } as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(shift as never);
     const req = mockReq({
       user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
       params: { branchId: 'branch-1' },
@@ -438,7 +458,7 @@ describe('shift-guard middleware', () => {
       employeeId: 't1',
       branchId: 'branch-1',
     } as never);
-    vi.mocked(cashRepository.findActiveShift).mockResolvedValueOnce(null).mockResolvedValueOnce(shift as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValueOnce(null).mockResolvedValueOnce(shift as never);
     vi.mocked(cashService.autoOpenShift).mockResolvedValue({ id: 'shift-2' } as never);
     const req = mockReq({
       user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
@@ -461,7 +481,7 @@ describe('shift-guard middleware', () => {
     const next = vi.fn();
     await shiftGuard(req, res, next);
     expect(next).toHaveBeenCalledOnce();
-    expect(cashRepository.findActiveShift).not.toHaveBeenCalled();
+    expect(cashRepository.findActiveShiftByBranch).not.toHaveBeenCalled();
   });
 
   it('super admin bypasses the shift check', async () => {
@@ -470,7 +490,7 @@ describe('shift-guard middleware', () => {
     const next = vi.fn();
     await shiftGuard(req, res, next);
     expect(next).toHaveBeenCalledOnce();
-    expect(cashRepository.findActiveShift).not.toHaveBeenCalled();
+    expect(cashRepository.findActiveShiftByBranch).not.toHaveBeenCalled();
   });
 });
 

@@ -43,13 +43,17 @@ export async function shiftGuard(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  let shift = await cashRepository.findActiveShift(req.user.user_id, branchId);
+  // Branch-scoped, not cashier-scoped: the DB only ever allows one active
+  // shift per branch (shift_one_open_per_branch), so a different cashier's
+  // already-open shift must be reused here rather than triggering another
+  // create attempt that would P2002 (Task 103).
+  let shift = await cashRepository.findActiveShiftByBranch(branchId);
   if (!shift) {
     // autoOpenShift returns the public response DTO (like every other
     // cashService method), not the raw Prisma row req.activeShift expects —
     // re-fetch after the fact rather than trust its return shape here.
     await cashService.autoOpenShift({ branchId, cashierId: req.user.user_id }, null);
-    shift = await cashRepository.findActiveShift(req.user.user_id, branchId);
+    shift = await cashRepository.findActiveShiftByBranch(branchId);
   }
 
   req.activeShift = shift ?? undefined;

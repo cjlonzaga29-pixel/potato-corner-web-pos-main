@@ -30,6 +30,7 @@ vi.mock('../../middleware/audit-log.js', () => ({
 vi.mock('../cash/cash.repository.js', () => ({
   cashRepository: {
     findActiveShift: vi.fn(),
+    findActiveShiftByBranch: vi.fn(),
     findShiftById: vi.fn(),
     createAutoShift: vi.fn(),
     closeAutoShift: vi.fn(),
@@ -161,7 +162,10 @@ beforeEach(() => {
   // shift-link guard (§6), only the dedicated auto-close test overrides this.
   vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
   // clockIn auto-opens a shift (Phase 4-9) — cashService.autoOpenShift runs
-  // for real against this mocked repository, so it needs a shift to create.
+  // for real against this mocked repository. It checks branch-scoped (Task
+  // 103: the DB only allows one active shift per branch), so this also
+  // needs to default to "none yet" for the create path to run.
+  vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
   vi.mocked(cashRepository.createAutoShift).mockResolvedValue(shiftRow() as never);
   vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
     cashSalesTotal: decimal(0),

@@ -27,7 +27,7 @@ import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { computeBomDeduction } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import type { BomDeductionLine } from '../shadow-bom-deduction/shadow-bom-deduction.types.js';
-import { convertQuantity } from '../product-components/unit-conversion.util.js';
+import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 // Retained solely for reverseInventoryForTransaction's fallback path, which
 // replays a legacy-shaped deductionSnapshot (or, for transactions that
 // predate the snapshot column entirely, recomputes from ProductInventory) —
@@ -425,7 +425,28 @@ async function computeOptionDeductionLines(selectedOptionIds: string[] | undefin
         422,
       );
     }
-    const baseQuantity = await convertQuantity(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId);
+    // convertQuantity throws UnitConversionError (not TransactionError) when
+    // no UnitConversion row bridges the mapping's deductionUnitId to the
+    // InventoryItem's baseUnitId — left uncaught, that foreign error type
+    // skips the router's `instanceof TransactionError` check (transactions.
+    // router.ts#handleModuleError) and falls through to app.ts's generic
+    // handler, so a real, fixable config gap (missing UnitConversion row)
+    // surfaced to the cashier as an opaque "Something went wrong" instead of
+    // a checkout-safe, actionable rejection. Translate it here the same way
+    // the deletedAt check above does for its own failure mode.
+    let baseQuantity;
+    try {
+      baseQuantity = await convertQuantity(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId);
+    } catch (error) {
+      if (error instanceof UnitConversionError) {
+        throw new TransactionError(
+          'PRODUCT_OPTION_INVENTORY_UNIT_MISMATCH',
+          'The inventory item mapped to a selected Product Option has no unit conversion configured for its deduction unit',
+          422,
+        );
+      }
+      throw error;
+    }
     const quantity = baseQuantity.toNumber() * quantitySold;
     const existing = map.get(mapping.inventoryItemId);
     if (existing) {

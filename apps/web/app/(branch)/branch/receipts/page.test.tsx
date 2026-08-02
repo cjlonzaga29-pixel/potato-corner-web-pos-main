@@ -84,6 +84,13 @@ function setup(transactions: TransactionResponse[]) {
   mockUseEmployee.mockReturnValue({ data: { first_name: 'Jane', last_name: 'Doe' } });
 }
 
+/** Convention shared with the terminal page test suite: a throwing helper instead of `!` under noUncheckedIndexedAccess. */
+function nthOf<T>(arr: readonly T[], index: number): T {
+  const item = arr[index];
+  if (item === undefined) throw new Error(`expected an element at index ${index}`);
+  return item;
+}
+
 describe('ReceiptsPage — Manage Transaction (ViewTransactionDetailDialog)', () => {
   it('opens ReceiptModal for the clicked receipt row, not the detail dialog', () => {
     setup([transaction()]);
@@ -116,7 +123,7 @@ describe('ReceiptsPage — Manage Transaction (ViewTransactionDetailDialog)', ()
     setup([transaction({ id: 'txn-1', receipt_number: 'PC-BR1-20260801-0001' }), transaction({ id: 'txn-2', receipt_number: 'PC-BR1-20260801-0002' })]);
     render(<ReceiptsPage />);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Manage Transaction' })[1]!);
+    fireEvent.click(nthOf(screen.getAllByRole('button', { name: 'Manage Transaction' }), 1));
 
     expect(screen.getByTestId('transaction-detail-dialog')).toHaveTextContent('Detail for txn-2');
   });
@@ -125,7 +132,7 @@ describe('ReceiptsPage — Manage Transaction (ViewTransactionDetailDialog)', ()
     setup([transaction({ id: 'txn-1', receipt_number: 'PC-BR1-20260801-0001' }), transaction({ id: 'txn-2', receipt_number: 'PC-BR1-20260801-0002' })]);
     render(<ReceiptsPage />);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Manage Transaction' })[0]!);
+    fireEvent.click(nthOf(screen.getAllByRole('button', { name: 'Manage Transaction' }), 0));
     expect(screen.getByTestId('transaction-detail-dialog')).toHaveTextContent('Detail for txn-1');
 
     fireEvent.click(screen.getByText('PC-BR1-20260801-0002'));

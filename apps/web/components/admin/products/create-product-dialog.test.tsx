@@ -127,7 +127,7 @@ describe('CreateProductDialog — Category field', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
-    const payload = mutateAsync.mock.calls[0]![0]; // asserted safe: waitFor above confirmed the call happened
+    const [payload] = mutateAsync.mock.calls[0] as [Record<string, unknown>];
     expect(payload).toEqual(
       expect.objectContaining({
         name: 'Cheese Fries',
@@ -157,7 +157,7 @@ describe('CreateProductDialog — Category field', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
-    const payload = mutateAsync.mock.calls[0]![0]; // asserted safe: waitFor above confirmed the call happened
+    const [payload] = mutateAsync.mock.calls[0] as [Record<string, unknown>];
     expect(payload.category_id).toBeUndefined();
     expect(payload.category).toBeUndefined();
   });

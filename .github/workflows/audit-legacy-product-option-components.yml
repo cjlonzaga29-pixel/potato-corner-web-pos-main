@@ -1,0 +1,136 @@
+name: Audit Legacy product_option_id (Read-Only)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify PRODUCTION_DATABASE_URL_DIRECT is set
+        env:
+          DB_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DB_URL:-}" ]; then
+            echo "ERROR: PRODUCTION_DATABASE_URL_DIRECT secret is missing. Aborting audit — no fallback connection will be attempted." >&2
+            exit 1
+          fi
+          echo "Secret present. Continuing."
+
+      - name: Confirm target host and database (no credentials printed)
+        env:
+          DB_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
+        run: |
+          set -euo pipefail
+          DB_HOST=$(printf '%s' "$DB_URL" | sed -E 's#^[a-zA-Z]+://([^@/]*@)?([^/:]+).*#\2#')
+          DB_NAME=$(printf '%s' "$DB_URL" | sed -E 's#^.*/([^/?]+)(\?.*)?$#\1#')
+          echo "Target database host: $DB_HOST"
+          echo "Target database name: $DB_NAME"
+          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+
+      - name: Run read-only audit queries
+        env:
+          DB_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
+        run: |
+          set -euo pipefail
+          mkdir -p audit-output
+
+          psql "$DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          \pset format csv
+
+          BEGIN READ ONLY;
+          SET default_transaction_read_only = on;
+
+          \o audit-output/01-row-count.csv
+          SELECT COUNT(*) AS non_null_rows
+          FROM product_components
+          WHERE product_option_id IS NOT NULL;
+
+          \o audit-output/02-detail-rows.csv
+          SELECT
+            id,
+            product_variant_id,
+            inventory_item_id,
+            product_option_id,
+            quantity_required,
+            recipe_unit_id,
+            is_active,
+            deleted_at,
+            created_at
+          FROM product_components
+          WHERE product_option_id IS NOT NULL
+          ORDER BY product_option_id, product_variant_id;
+
+          \o audit-output/03-conflict-summary.csv
+          SELECT
+            product_option_id,
+            COUNT(*) AS row_count,
+            COUNT(DISTINCT inventory_item_id) AS distinct_items,
+            COUNT(DISTINCT quantity_required) AS distinct_quantities,
+            COUNT(DISTINCT recipe_unit_id) AS distinct_units
+          FROM product_components
+          WHERE product_option_id IS NOT NULL
+          GROUP BY product_option_id
+          HAVING COUNT(*) > 1;
+
+          \o audit-output/04-active-inactive-summary.csv
+          SELECT
+            pc.product_option_id,
+            pc.product_variant_id,
+            pc.inventory_item_id,
+            pc.quantity_required,
+            pc.recipe_unit_id,
+            pc.is_active,
+            pc.deleted_at,
+            po.is_active AS option_is_active,
+            pv.is_active AS variant_is_active
+          FROM product_components pc
+          JOIN product_options po ON po.id = pc.product_option_id
+          JOIN product_variants pv ON pv.id = pc.product_variant_id
+          WHERE pc.product_option_id IS NOT NULL
+          ORDER BY pc.product_option_id, pc.product_variant_id;
+
+          \o
+          ROLLBACK;
+          SQL
+
+      - name: Classify audit result
+        run: |
+          set -euo pipefail
+
+          ROW_COUNT=$(tail -n +2 audit-output/01-row-count.csv | tr -d '\r' | head -n1)
+          ROW_COUNT=${ROW_COUNT:-0}
+
+          CONFLICTING=false
+          if awk -F',' 'NR>1 && ($3>1 || $4>1 || $5>1) {found=1} END{exit !found}' audit-output/03-conflict-summary.csv; then
+            CONFLICTING=true
+          fi
+
+          if [ "$ROW_COUNT" -eq 0 ]; then
+            CLASSIFICATION="ZERO_ROWS"
+          elif [ "$CONFLICTING" = true ]; then
+            CLASSIFICATION="CONFLICTING"
+          else
+            CLASSIFICATION="CONFLICT_FREE"
+          fi
+
+          echo "CLASSIFICATION=$CLASSIFICATION" >> "$GITHUB_ENV"
+
+          {
+            echo "# Legacy product_option_id Audit"
+            echo ""
+            echo "- Database host: $DB_HOST"
+            echo "- Database name: $DB_NAME"
+            echo "- Non-null legacy rows (product_components.product_option_id): $ROW_COUNT"
+            echo "- Final classification: **$CLASSIFICATION**"
+          } | tee audit-output/00-summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-product-option-id-audit
+          path: audit-output/
+          retention-days: 30

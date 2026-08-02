@@ -1,42 +1,32 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { InventoryItemResponse, ProductComponentResponse, ProductOptionAssignedVariantResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
+import type { InventoryItemResponse, ProductComponentResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
 
 interface UseOptionDeductionStateArgs {
   open: boolean;
-  optionId: string;
-  assignedVariants: ProductOptionAssignedVariantResponse[] | undefined;
   inventoryItems: InventoryItemResponse[] | undefined;
   units: UnitOfMeasureResponse[] | undefined;
 }
 
 /**
- * Local form state for the Inventory Deduction section embedded in
- * EditOptionDialog. One option can be assigned to multiple variants
- * (ProductOption is reusable across products), so a variant must still be
- * picked to know which ProductComponent row to write — this is folded into
- * the same dialog rather than a separate "Manage Deduction" workflow.
+ * Local form state for one variant's Inventory Deduction card inside
+ * EditOptionDialog. One instance is scoped to a single ProductComponent row
+ * (one variant), so multiple variants get independent state via separate
+ * hook instances rather than a single selected-variant switch.
  */
-export function useOptionDeductionState({ open, optionId, assignedVariants, inventoryItems, units }: UseOptionDeductionStateArgs) {
-  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+export function useOptionDeductionState({ open, inventoryItems, units }: UseOptionDeductionStateArgs) {
   const [categoryId, setCategoryId] = useState('');
   const [inventoryItemId, setInventoryItemId] = useState('');
   const [quantityRequired, setQuantityRequired] = useState('');
 
   useEffect(() => {
     if (!open) {
-      setSelectedVariantId(null);
       setCategoryId('');
       setInventoryItemId('');
       setQuantityRequired('');
-      return;
     }
-    if (assignedVariants && assignedVariants.length === 1 && assignedVariants[0]) {
-      setSelectedVariantId(assignedVariants[0].product_variant_id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, optionId, assignedVariants?.length]);
+  }, [open]);
 
   function handleSetInventoryItemId(nextItemId: string) {
     setInventoryItemId(nextItemId);
@@ -67,8 +57,6 @@ export function useOptionDeductionState({ open, optionId, assignedVariants, inve
   const baseUnit = units?.find((unit) => unit.code === selectedItem?.base_unit_code);
 
   return {
-    selectedVariantId,
-    setSelectedVariantId,
     categoryId,
     setCategoryId: handleSetCategoryId,
     inventoryItemId,

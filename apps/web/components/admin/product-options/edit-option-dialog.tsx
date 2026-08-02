@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -10,14 +10,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useUpdateProductOption, useProductOptionAssignedVariants } from '@/hooks/queries/use-product-options';
 import { useInventoryCategories, useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
-import { useProductComponents, useCreateProductComponent, useUpdateProductComponent, useDeleteProductComponent } from '@/hooks/queries/use-product-components';
-import { useOptionDeductionState } from './use-option-deduction-state';
+import { VariantDeductionCard, type VariantDeductionCardHandle } from './variant-deduction-card';
 
 function optionalCoercedNumber(min: number) {
   return z.preprocess(
@@ -65,50 +62,22 @@ export function EditOptionDialog({ groupId, option, open, onOpenChange }: EditOp
   const { data: inventoryItems } = useInventoryItems();
   const { data: units } = useUnitsOfMeasure();
 
-  const deduction = useOptionDeductionState({ open, optionId, assignedVariants, inventoryItems, units });
-
-  const { data: components } = useProductComponents(deduction.selectedVariantId);
-  const existingComponent = components?.find((component) => component.product_option_id === optionId);
-
-  useEffect(() => {
-    deduction.hydrateFromExistingComponent(existingComponent);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existingComponent?.id, existingComponent?.quantity_required, existingComponent?.inventory_item_id, deduction.selectedVariantId]);
-
-  const createComponent = useCreateProductComponent(deduction.selectedVariantId ?? '');
-  const updateComponent = useUpdateProductComponent(deduction.selectedVariantId ?? '', existingComponent?.id ?? '');
-  const deleteComponent = useDeleteProductComponent(deduction.selectedVariantId ?? '');
+  const cardRefs = useRef(new Map<string, VariantDeductionCardHandle>());
+  const [isSavingDeductions, setIsSavingDeductions] = useState(false);
 
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
   }
 
-  async function saveDeduction() {
-    if (!deduction.selectedVariantId || !optionId) return;
-
-    const hasDeductionInput = Boolean(deduction.inventoryItemId) && deduction.quantityRequired !== '' && Number(deduction.quantityRequired) > 0;
-
-    if (!hasDeductionInput) {
-      if (existingComponent) await deleteComponent.mutateAsync(existingComponent.id);
-      return;
-    }
-
-    if (!deduction.baseUnit) return;
-
-    if (existingComponent && existingComponent.inventory_item_id === deduction.inventoryItemId) {
-      await updateComponent.mutateAsync({
-        quantity_required: Number(deduction.quantityRequired),
-        recipe_unit_id: deduction.baseUnit.id,
-      });
-    } else {
-      if (existingComponent) await deleteComponent.mutateAsync(existingComponent.id);
-      await createComponent.mutateAsync({
-        product_variant_id: deduction.selectedVariantId,
-        inventory_item_id: deduction.inventoryItemId,
-        quantity_required: Number(deduction.quantityRequired),
-        recipe_unit_id: deduction.baseUnit.id,
-        product_option_id: optionId,
-      });
+  async function saveDeductions() {
+    if (!assignedVariants || !optionId) return;
+    setIsSavingDeductions(true);
+    try {
+      for (const variant of assignedVariants) {
+        await cardRefs.current.get(variant.product_variant_id)?.save();
+      }
+    } finally {
+      setIsSavingDeductions(false);
     }
   }
 
@@ -121,12 +90,11 @@ export function EditOptionDialog({ groupId, option, open, onOpenChange }: EditOp
       sort_order: parsed.sort_order,
       is_active: parsed.is_active,
     });
-    await saveDeduction();
+    await saveDeductions();
     handleOpenChange(false);
   }
 
-  const isSaving =
-    updateOption.isPending || createComponent.isPending || updateComponent.isPending || deleteComponent.isPending;
+  const isSaving = updateOption.isPending || isSavingDeductions;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -173,91 +141,25 @@ export function EditOptionDialog({ groupId, option, open, onOpenChange }: EditOp
                   Assign this option&apos;s group to a variant before configuring a deduction.
                 </p>
               ) : (
-                <>
-                  {assignedVariants.length > 1 && (
-                    <div className="space-y-2">
-                      <Label htmlFor="deduction-variant">Variant</Label>
-                      <Select value={deduction.selectedVariantId ?? ''} onValueChange={deduction.setSelectedVariantId}>
-                        <SelectTrigger id="deduction-variant">
-                          <SelectValue placeholder="Select a variant" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {assignedVariants.map((variant) => (
-                            <SelectItem key={variant.product_variant_id} value={variant.product_variant_id}>
-                              {variant.product_name} {variant.variant_name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-
-                  <div className="space-y-2">
-                    <Label htmlFor="deduction-category">Inventory Category</Label>
-                    <Select value={deduction.categoryId} onValueChange={deduction.setCategoryId}>
-                      <SelectTrigger id="deduction-category">
-                        <SelectValue placeholder="Select a category" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(categories ?? []).map((category) => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="deduction-item">Inventory Item</Label>
-                    <Select value={deduction.inventoryItemId} onValueChange={deduction.setInventoryItemId} disabled={!deduction.categoryId}>
-                      <SelectTrigger id="deduction-item">
-                        <SelectValue placeholder={deduction.categoryId ? 'Select an item' : 'Select a category first'} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {deduction.itemsInCategory.map((item) => (
-                          <SelectItem key={item.id} value={item.id}>
-                            {item.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label>Base Unit</Label>
-                      <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                        {deduction.baseUnit ? `${deduction.baseUnit.code} — ${deduction.baseUnit.name}` : '—'}
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="deduction-quantity">Quantity Required</Label>
-                      <Input
-                        id="deduction-quantity"
-                        type="number"
-                        min="0"
-                        step="0.0001"
-                        value={deduction.quantityRequired}
-                        onChange={(event) => deduction.setQuantityRequired(event.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  {deduction.selectedItem && deduction.quantityRequired !== '' && (
-                    <div className="rounded-md border bg-muted/30 p-3 text-sm">
-                      <p className="text-xs font-medium uppercase text-muted-foreground">Deduction Preview</p>
-                      <p className="mt-2 font-medium">{deduction.selectedItem.name}</p>
-                      <p className="text-base font-semibold">
-                        {deduction.quantityRequired} {deduction.baseUnit?.code ?? ''}
-                      </p>
-                      {deduction.selectedItem.category_name && (
-                        <p className="text-xs text-muted-foreground">from {deduction.selectedItem.category_name}</p>
-                      )}
-                      <p className="text-xs text-muted-foreground">per item sold</p>
-                    </div>
-                  )}
-                </>
+                <div className={assignedVariants.length > 1 ? 'space-y-3' : ''}>
+                  {assignedVariants.map((variant) => (
+                    <VariantDeductionCard
+                      key={variant.product_variant_id}
+                      ref={(node) => {
+                        if (node) cardRefs.current.set(variant.product_variant_id, node);
+                        else cardRefs.current.delete(variant.product_variant_id);
+                      }}
+                      variantId={variant.product_variant_id}
+                      variantLabel={`${variant.product_name} ${variant.variant_name}`}
+                      optionId={optionId}
+                      open={open}
+                      showHeader={assignedVariants.length > 1}
+                      categories={categories}
+                      inventoryItems={inventoryItems}
+                      units={units}
+                    />
+                  ))}
+                </div>
               )}
             </div>
 

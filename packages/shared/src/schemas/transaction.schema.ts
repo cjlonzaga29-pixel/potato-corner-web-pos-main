@@ -150,6 +150,15 @@ export const discountAuditQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
+/** Task 93 — the sale-time snapshot of one Product Option selected on a transaction line, as returned in transactionItemResponseSchema.selected_options. */
+export const transactionItemSelectedOptionSchema = z.object({
+  option_id: z.uuid(),
+  option_name: z.string(),
+  option_group_id: z.uuid(),
+  option_group_name: z.string(),
+  price_adjustment: z.number(),
+});
+
 export const transactionItemResponseSchema = z.object({
   id: z.uuid(),
   product_id: z.uuid(),
@@ -164,6 +173,10 @@ export const transactionItemResponseSchema = z.object({
   // CR-004: the master Recipe.version(s) in effect for this line's
   // deduction at sale time — frozen, same as the snapshot fields above.
   recipe_version: z.number().int(),
+  // Task 93: frozen at checkout via TransactionItem.selectedOptions — the
+  // Product Options actually charged/deducted for this line. Empty array
+  // when none were selected, never omitted.
+  selected_options: z.array(transactionItemSelectedOptionSchema),
 });
 
 export const transactionResponseSchema = z.object({

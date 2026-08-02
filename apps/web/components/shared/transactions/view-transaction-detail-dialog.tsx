@@ -131,12 +131,19 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
             <div className="space-y-1 border-t pt-2">
               <p className="font-medium">Items Sold</p>
               {(transaction.items ?? []).map((item) => (
-                <div key={item.id} className="flex justify-between gap-2">
-                  <span>
-                    {item.quantity}x {item.product_name}
-                    {item.flavor_name ? ` (${item.flavor_name})` : ''} — {item.variant_name}
-                  </span>
-                  <span className="tabular-nums">{formatCurrency(item.line_total)}</span>
+                <div key={item.id}>
+                  <div className="flex justify-between gap-2">
+                    <span>
+                      {item.quantity}x {item.product_name}
+                      {item.flavor_name ? ` (${item.flavor_name})` : ''} — {item.variant_name}
+                    </span>
+                    <span className="tabular-nums">{formatCurrency(item.line_total)}</span>
+                  </div>
+                  {item.selected_options.length > 0 && (
+                    <div className="pl-4 text-xs text-muted-foreground">
+                      {item.selected_options.map((option) => option.option_name).join(', ')}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -39,6 +39,11 @@ export function ViewTransactionItemsDialog({ transaction, onClose }: ViewTransac
                 <TableCell>
                   {item.product_name}
                   {item.flavor_name ? ` — ${item.flavor_name}` : ''}
+                  {item.selected_options.length > 0 && (
+                    <div className="text-xs text-muted-foreground">
+                      {item.selected_options.map((option) => option.option_name).join(', ')}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell>{item.variant_name}</TableCell>
                 <TableCell className="tabular-nums">{item.quantity}</TableCell>

@@ -52,11 +52,58 @@ describe('receiptsService.getPublicReceipt', () => {
     expect(result.receipt_number).toBe('MNL001-20260714-000001');
     expect(result.branch_name).toBe('Manila - Robinsons');
     expect(result.items).toEqual([
-      { product_name: 'Regular', variant_name: 'Solo', flavor_name: 'Cheese', quantity: 2, unit_price: 65, line_total: 130 },
+      {
+        product_name: 'Regular',
+        variant_name: 'Solo',
+        flavor_name: 'Cheese',
+        quantity: 2,
+        unit_price: 65,
+        line_total: 130,
+        selected_options: [],
+      },
     ]);
     expect(result.total_amount).toBe(130);
     expect(result.cash_tendered).toBe(150);
     expect(result.change_given).toBe(20);
+  });
+
+  // Task 93 — the public e-receipt must surface selected Product Options
+  // (name + price adjustment only, never inventory/group IDs — this response
+  // is unauthenticated and customer-facing).
+  it('maps a persisted selectedOptions snapshot to selected_options on the item', async () => {
+    vi.mocked(receiptsRepository.findByTransactionNumber).mockResolvedValue({
+      transactionNumber: 'MNL001-20260714-000001',
+      status: 'completed',
+      paymentMethod: 'cash',
+      createdAt: new Date('2026-07-14T10:00:00Z'),
+      branch: { name: 'Manila - Robinsons' },
+      items: [
+        {
+          productNameSnapshot: 'Regular',
+          variantNameSnapshot: 'Solo',
+          flavorNameSnapshot: 'Cheese',
+          quantity: 1,
+          unitPriceSnapshot: decimal(74),
+          lineTotal: decimal(74),
+          selectedOptions: [
+            { optionId: 'option-cheese', optionName: 'Extra Cheese', optionGroupId: 'group-1', optionGroupName: 'Add-ons', priceAdjustment: 15 },
+          ],
+        },
+      ],
+      subtotal: decimal(74),
+      discountAmount: decimal(0),
+      discountType: null,
+      vatAmount: decimal(7.93),
+      totalAmount: decimal(74),
+      amountTendered: decimal(100),
+      changeAmount: decimal(26),
+      gcashReference: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await receiptsService.getPublicReceipt('MNL001-20260714-000001');
+
+    expect(result.items[0]?.selected_options).toEqual([{ option_name: 'Extra Cheese', price_adjustment: 15 }]);
   });
 
   it('throws RECEIPT_NOT_FOUND (404) when no transaction matches', async () => {

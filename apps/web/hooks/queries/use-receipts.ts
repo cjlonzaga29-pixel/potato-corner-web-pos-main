@@ -3,6 +3,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 
+export interface PublicReceiptSelectedOption {
+  option_name: string;
+  price_adjustment: number;
+}
+
 export interface PublicReceiptItem {
   product_name: string;
   variant_name: string;
@@ -10,6 +15,7 @@ export interface PublicReceiptItem {
   quantity: number;
   unit_price: number;
   line_total: number;
+  selected_options: PublicReceiptSelectedOption[];
 }
 
 export interface PublicReceipt {

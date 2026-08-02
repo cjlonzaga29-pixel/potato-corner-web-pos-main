@@ -1525,6 +1525,14 @@ model TransactionItem {
   // backward-compatible fallback for those. Additive alongside
   // recipeVersion, not a replacement.
   deductionSnapshot   Json?   @map("deduction_snapshot")
+  // Task 93: sale-time snapshot of the Product Options selected for this
+  // line, e.g. [{ option_id, option_name, option_group_id,
+  // option_group_name, price_adjustment }] — frozen at checkout, same
+  // freezing rationale as the other snapshot fields above. price_adjustment
+  // here is the trusted DB value resolveSelectedOptionsPremium validated,
+  // never the frontend-submitted display price. Null for rows with no
+  // selected options (or written before this column existed).
+  selectedOptions     Json?   @map("selected_options")
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)

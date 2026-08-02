@@ -10,7 +10,7 @@ import {
   type ImageProofType,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
-import { transactionsRepository } from './transactions.repository.js';
+import { transactionsRepository, type SelectedOptionSnapshot } from './transactions.repository.js';
 import {
   TransactionError,
   HOLD_ORDER_LIMIT_PER_TERMINAL,
@@ -104,6 +104,7 @@ interface TransactionItemRow {
   quantity: number;
   lineTotal: { toNumber(): number };
   recipeVersion: number;
+  selectedOptions?: SelectedOptionSnapshot[] | null;
 }
 
 interface TransactionRow {
@@ -194,6 +195,13 @@ function toTransactionResponse(row: TransactionRow) {
       quantity: item.quantity,
       line_total: item.lineTotal.toNumber(),
       recipe_version: item.recipeVersion,
+      selected_options: (item.selectedOptions ?? []).map((option) => ({
+        option_id: option.optionId,
+        option_name: option.optionName,
+        option_group_id: option.optionGroupId,
+        option_group_name: option.optionGroupName,
+        price_adjustment: option.priceAdjustment,
+      })),
     })),
   };
 }
@@ -269,6 +277,7 @@ interface ResolvedItem {
   vatableCapAmount: number | null;
   recipeVersion: number;
   selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
+  selectedOptions?: SelectedOptionSnapshot[] | null;
 }
 
 /**
@@ -322,42 +331,72 @@ function readinessRejection(variantName: string, result: ProductVariantReadiness
   return new TransactionError('PRODUCT_UNAVAILABLE', `${variantName} is not currently sellable`, 422);
 }
 
+interface SelectedOptionsResolution {
+  premium: number;
+  snapshot: SelectedOptionSnapshot[];
+}
+
 /**
- * CR-008 Product Options server-side pricing (Task 32). Sums the trusted
- * DB priceAdjustment for each selectedOptionIds entry — never the
- * frontend-provided display price — rejecting the whole transaction if any
- * selected option doesn't exist, isn't active, or isn't actually assigned
- * to this variant (variant.optionGroupAssignments is the same
- * ProductVariantOptionGroupOption-scoped "allowed options" set the Product
- * Builder UI enforces, so pricing can never disagree with what was offered).
+ * CR-008 Product Options server-side pricing (Task 32), extended in Task 93
+ * to also produce the sale-time snapshot persisted on TransactionItem. Sums
+ * the trusted DB priceAdjustment/name for each selectedOptionIds entry —
+ * never the frontend-provided display price/name — rejecting the whole
+ * transaction if any selected option doesn't exist, isn't active, or isn't
+ * actually assigned to this variant (variant.optionGroupAssignments is the
+ * same ProductVariantOptionGroupOption-scoped "allowed options" set the
+ * Product Builder UI enforces, so pricing can never disagree with what was
+ * offered).
  */
-function resolveSelectedOptionsPremium(
+function resolveSelectedOptions(
   variant: {
     name: string;
-    optionGroupAssignments?: { allowedOptions: { productOptionId: string; productOption: { isActive: boolean; priceAdjustment: { toNumber(): number } } }[] }[];
+    optionGroupAssignments?: {
+      optionGroup: { id: string; name: string; posButtonLabel: string | null };
+      allowedOptions: {
+        productOptionId: string;
+        productOption: { id: string; name: string; isActive: boolean; priceAdjustment: { toNumber(): number } };
+      }[];
+    }[];
   },
   selectedOptionIds: string[] | undefined,
-): number {
-  if (!selectedOptionIds || selectedOptionIds.length === 0) return 0;
+): SelectedOptionsResolution {
+  if (!selectedOptionIds || selectedOptionIds.length === 0) return { premium: 0, snapshot: [] };
 
-  const allowedOptions = new Map<string, number>();
+  const allowedOptions = new Map<
+    string,
+    { priceAdjustment: number; optionName: string; optionGroupId: string; optionGroupName: string }
+  >();
   for (const assignment of variant.optionGroupAssignments ?? []) {
+    const optionGroupName = assignment.optionGroup.posButtonLabel?.trim() || assignment.optionGroup.name;
     for (const allowed of assignment.allowedOptions) {
       if (allowed.productOption.isActive) {
-        allowedOptions.set(allowed.productOptionId, allowed.productOption.priceAdjustment.toNumber());
+        allowedOptions.set(allowed.productOptionId, {
+          priceAdjustment: allowed.productOption.priceAdjustment.toNumber(),
+          optionName: allowed.productOption.name,
+          optionGroupId: assignment.optionGroup.id,
+          optionGroupName,
+        });
       }
     }
   }
 
   let premium = 0;
+  const snapshot: SelectedOptionSnapshot[] = [];
   for (const optionId of selectedOptionIds) {
-    const priceAdjustment = allowedOptions.get(optionId);
-    if (priceAdjustment === undefined) {
+    const resolved = allowedOptions.get(optionId);
+    if (resolved === undefined) {
       throw new TransactionError('PRODUCT_OPTION_NOT_AVAILABLE', `Selected product option is not available for ${variant.name}`, 422);
     }
-    premium += priceAdjustment;
+    premium += resolved.priceAdjustment;
+    snapshot.push({
+      optionId,
+      optionName: resolved.optionName,
+      optionGroupId: resolved.optionGroupId,
+      optionGroupName: resolved.optionGroupName,
+      priceAdjustment: resolved.priceAdjustment,
+    });
   }
-  return premium;
+  return { premium, snapshot };
 }
 
 /**
@@ -366,7 +405,7 @@ function resolveSelectedOptionsPremium(
  * is the source of truth, replacing the legacy ProductComponent.productOptionId
  * rows (resolveCartItems no longer forwards selectedOptionIds into
  * computeBomDeduction — see the call below). An option with no mapping row
- * deducts nothing and never fails pricing: resolveSelectedOptionsPremium
+ * deducts nothing and never fails pricing: resolveSelectedOptions
  * already validates the option itself exists / is active / is assigned to
  * this variant. quantityRequired is converted from the mapping's own
  * deductionUnitId into the mapped InventoryItem's base unit via the same
@@ -552,7 +591,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null);
     }
 
-    const optionsPremium = resolveSelectedOptionsPremium(variant, item.selectedOptionIds);
+    const { premium: optionsPremium, snapshot: selectedOptions } = resolveSelectedOptions(variant, item.selectedOptionIds);
     const optionDeductionLines = await computeOptionDeductionLines(item.selectedOptionIds, item.quantity);
     if (optionDeductionLines.length > 0) {
       deductionLines = mergeDeductionLines(deductionLines, optionDeductionLines);
@@ -576,6 +615,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       recipeVersion,
       deductionLines,
       selectedFlavors,
+      selectedOptions: selectedOptions.length > 0 ? selectedOptions : null,
     });
   }
   return resolved;
@@ -1145,6 +1185,7 @@ export const transactionsService = {
                   componentCost: line.componentCost,
                 })),
                 selectedFlavors: item.selectedFlavors,
+                selectedOptions: item.selectedOptions,
               })),
             },
             tx,

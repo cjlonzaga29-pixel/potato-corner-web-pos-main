@@ -500,6 +500,14 @@ export default function TerminalPage() {
           });
         const optionSelections = item.selected_options ?? [];
         const optionsAdjustment = optionSelections.reduce((sum, o) => sum + o.price_adjustment, 0);
+        // Task 92 — every group assigned to this line's variant, pre-filtered
+        // to active groups with at least one active option, same rule
+        // handleProductTap/openGroupPromptForLine already use. Computed per
+        // line so each cart line can render its own buttons unconditionally,
+        // without needing that line to be the selected one first.
+        const optionGroups = (info?.variant.option_groups ?? [])
+          .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
+          .filter((group) => group.options.length > 0);
         const unitPrice =
           slotSelections.length > 0
             ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0) + optionsAdjustment
@@ -512,6 +520,7 @@ export default function TerminalPage() {
           flavorName: flavor?.name ?? null,
           slotSelections,
           optionSelections,
+          optionGroups,
           unitPrice,
           quantity: item.quantity,
           lineTotal: round2(unitPrice * item.quantity),
@@ -520,20 +529,6 @@ export default function TerminalPage() {
       }),
     [items, variantIndex],
   );
-
-  // Task 82 — Product Option Group buttons shown under the selected cart
-  // line; pre-filtered to groups with at least one active option, same as
-  // handleProductTap/openGroupPromptForLine.
-  const selectedLineGroups = useMemo(() => {
-    if (selectedLineIndex === null) return [];
-    const item = items[selectedLineIndex];
-    if (!item) return [];
-    const info = variantIndex.get(item.product_variant_id);
-    if (!info) return [];
-    return info.variant.option_groups
-      .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
-      .filter((group) => group.options.length > 0);
-  }, [selectedLineIndex, items, variantIndex]);
 
   const subtotal = round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0));
   const { discountAmount, vatAmount, totalAmount } = useMemo(
@@ -1046,6 +1041,37 @@ export default function TerminalPage() {
                     {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
                   </p>
                 ))}
+                {/* Task 92 — one button per Product Option Group assigned to
+                    THIS line, rendered immediately, no cart-line selection
+                    required first. Each opens only that group's own selector
+                    for this exact line. */}
+                {line.optionGroups.length > 0 && (
+                  <div className="space-y-1.5">
+                    {line.optionGroups.map((group) => {
+                      const selectedNames = line.optionSelections
+                        .filter((opt) => opt.option_group_id === group.id)
+                        .map((opt) => opt.option_name);
+                      return (
+                        <Button
+                          key={group.id}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="touch-target flex w-full items-center justify-between"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openGroupPromptForLine(line.index, group.id);
+                          }}
+                        >
+                          <span>{resolveGroupLabel(group)}</span>
+                          {selectedNames.length > 0 && (
+                            <span className="truncate text-xs font-normal text-muted-foreground">{selectedNames.join(', ')}</span>
+                          )}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex shrink-0 items-center gap-1">
                     <Button
@@ -1204,33 +1230,6 @@ export default function TerminalPage() {
                 maxLength={200}
               />
               <p className="text-xs text-muted-foreground">No photo proof required — just a short note identifying the payment.</p>
-            </div>
-          )}
-
-          {/* Task 82 — one button per Product Option Group assigned to the
-              selected cart line; each opens only that group's own selector. */}
-          {selectedLineGroups.length > 0 && (
-            <div className="space-y-2">
-              {selectedLineGroups.map((group) => {
-                const selectedNames = (cartLines[selectedLineIndex ?? -1]?.optionSelections ?? [])
-                  .filter((opt) => opt.option_group_id === group.id)
-                  .map((opt) => opt.option_name);
-                return (
-                  <Button
-                    key={group.id}
-                    type="button"
-                    variant="outline"
-                    className="touch-target flex w-full items-center justify-between"
-                    size="lg"
-                    onClick={() => openGroupPromptForLine(selectedLineIndex as number, group.id)}
-                  >
-                    <span>{resolveGroupLabel(group)}</span>
-                    {selectedNames.length > 0 && (
-                      <span className="truncate text-xs font-normal text-muted-foreground">{selectedNames.join(', ')}</span>
-                    )}
-                  </Button>
-                );
-              })}
             </div>
           )}
 

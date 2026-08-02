@@ -50,12 +50,20 @@ export default function PublicReceiptPage() {
 
             <div className="space-y-1 border-y py-2">
               {receipt.items.map((item, index) => (
-                <div key={index} className="flex justify-between gap-2">
-                  <span>
-                    {item.quantity}x {item.product_name}
-                    {item.flavor_name ? ` (${item.flavor_name})` : ''} — {item.variant_name}
-                  </span>
-                  <span className="tabular-nums">{formatPeso(item.line_total)}</span>
+                <div key={index}>
+                  <div className="flex justify-between gap-2">
+                    <span>
+                      {item.quantity}x {item.product_name}
+                      {item.flavor_name ? ` (${item.flavor_name})` : ''} — {item.variant_name}
+                    </span>
+                    <span className="tabular-nums">{formatPeso(item.line_total)}</span>
+                  </div>
+                  {item.selected_options.map((option, optionIndex) => (
+                    <div key={optionIndex} className="flex justify-between gap-2 pl-4 text-xs text-muted-foreground">
+                      <span>+ {option.option_name}</span>
+                      {option.price_adjustment !== 0 && <span className="tabular-nums">{formatPeso(option.price_adjustment)}</span>}
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>

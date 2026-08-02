@@ -319,6 +319,7 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
         quantity: 1,
         line_total: 100,
         recipe_version: 1,
+        selected_options: [],
       },
     ],
     ...overrides,

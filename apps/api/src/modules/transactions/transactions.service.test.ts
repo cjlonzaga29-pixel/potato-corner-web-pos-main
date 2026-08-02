@@ -211,7 +211,12 @@ function variantRow(overrides: Record<string, unknown> = {}) {
 
 /** Task 32 — one ProductVariantOptionGroup assignment row exposing a single allowed ProductOption, in the shape findVariantsForSale's optionGroupAssignments include returns. */
 function optionAssignment(productOptionId: string, priceAdjustment: number, isActive = true) {
-  return { allowedOptions: [{ productOptionId, productOption: { isActive, priceAdjustment: decimal(priceAdjustment) } }] };
+  return {
+    optionGroup: { id: `group-${productOptionId}`, name: `Group ${productOptionId}`, posButtonLabel: null },
+    allowedOptions: [
+      { productOptionId, productOption: { id: productOptionId, name: productOptionId, isActive, priceAdjustment: decimal(priceAdjustment) } },
+    ],
+  };
 }
 
 function transactionRow(overrides: Record<string, unknown> = {}) {
@@ -1193,6 +1198,72 @@ describe('transactionsService.voidTransaction', () => {
       reason: result.void_reason,
     });
     expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', expectedPayload);
+  });
+});
+
+// Task 93 — the response mapping (toTransactionResponse, exercised here via
+// getTransactionById) must surface the persisted selectedOptions snapshot as
+// selected_options, and default to [] for older rows written before this
+// column existed (selectedOptions: null/undefined on the row).
+describe('transactionsService.getTransactionById — selected_options response mapping', () => {
+  it('maps a persisted selectedOptions snapshot to selected_options on the item', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({
+        items: [
+          {
+            id: 'item-1',
+            productId: 'product-1',
+            productVariantId: 'variant-1',
+            flavorId: null,
+            productNameSnapshot: 'Regular',
+            variantNameSnapshot: 'Solo',
+            flavorNameSnapshot: null,
+            unitPriceSnapshot: decimal(74),
+            quantity: 2,
+            lineTotal: decimal(148),
+            recipeVersion: 1,
+            selectedOptions: [
+              { optionId: 'option-cheese', optionName: 'Extra Cheese', optionGroupId: 'group-1', optionGroupName: 'Add-ons', priceAdjustment: 15 },
+            ],
+          },
+        ],
+      }) as never,
+    );
+
+    const result = await transactionsService.getTransactionById('txn-1');
+
+    expect(result.items?.[0]).toMatchObject({
+      selected_options: [
+        { option_id: 'option-cheese', option_name: 'Extra Cheese', option_group_id: 'group-1', option_group_name: 'Add-ons', price_adjustment: 15 },
+      ],
+    });
+  });
+
+  it('defaults selected_options to an empty array when the row has no selectedOptions', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({
+        items: [
+          {
+            id: 'item-1',
+            productId: 'product-1',
+            productVariantId: 'variant-1',
+            flavorId: null,
+            productNameSnapshot: 'Regular',
+            variantNameSnapshot: 'Solo',
+            flavorNameSnapshot: null,
+            unitPriceSnapshot: decimal(59),
+            quantity: 1,
+            lineTotal: decimal(59),
+            recipeVersion: 1,
+            selectedOptions: null,
+          },
+        ],
+      }) as never,
+    );
+
+    const result = await transactionsService.getTransactionById('txn-1');
+
+    expect(result.items?.[0]).toMatchObject({ selected_options: [] });
   });
 });
 
@@ -2286,6 +2357,38 @@ describe('transactionsService.createTransaction — Product Option price adjustm
     );
 
     expect(itemsCall().items[0]).toMatchObject({ unitPrice: 74, quantity: 2, lineTotal: 148 });
+  });
+
+  // Task 93 — the sale-time snapshot persisted on TransactionItem.selectedOptions
+  // must carry the same trusted DB name/price resolveSelectedOptions priced with,
+  // not the raw selectedOptionIds, so it survives to the API response/receipts.
+  it('builds a selectedOptions snapshot with the trusted option/group name and price for each selected option', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ basePrice: decimal(59), optionGroupAssignments: [optionAssignment('option-cheese', 15)] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 2, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    expect(itemsCall().items[0]).toMatchObject({
+      selectedOptions: [
+        {
+          optionId: 'option-cheese',
+          optionName: 'option-cheese',
+          optionGroupId: 'group-option-cheese',
+          optionGroupName: 'Group option-cheese',
+          priceAdjustment: 15,
+        },
+      ],
+    });
+  });
+
+  it('leaves selectedOptions null when the cart item has no selectedOptionIds', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(itemsCall().items[0]).toMatchObject({ selectedOptions: null });
   });
 
   it('sums multiple valid priced options into unitPrice', async () => {

@@ -22,6 +22,14 @@ interface RecipeComponentFormDialogProps {
   productVariantId: string;
   existingComponents: ProductComponentResponse[];
   editingComponent?: ProductComponentResponse;
+  /**
+   * Manage Deduction flow (Product Option page): the product option this
+   * deduction belongs to is fixed by context, so the Product Option select
+   * is replaced with a read-only label and the admin only edits inventory
+   * item, quantity, and unit.
+   */
+  fixedProductOptionId?: string;
+  fixedProductOptionLabel?: string;
 }
 
 /** CR-011.2 — preferred recipe unit per base unit code, when a compatible (same-dimension) unit with that code exists; otherwise falls back to the base unit itself. */
@@ -56,6 +64,8 @@ export function RecipeComponentFormDialog({
   productVariantId,
   existingComponents,
   editingComponent,
+  fixedProductOptionId,
+  fixedProductOptionLabel,
 }: RecipeComponentFormDialogProps) {
   const isEdit = Boolean(editingComponent);
 
@@ -91,9 +101,9 @@ export function RecipeComponentFormDialog({
       setQuantityRequired('');
       setRecipeUnitId('');
       setIsActive(true);
-      setProductOptionId(null);
+      setProductOptionId(fixedProductOptionId ?? null);
     }
-  }, [open, editingComponent]);
+  }, [open, editingComponent, fixedProductOptionId]);
 
   // Default the recipe unit whenever the selected item (add mode) resolves a
   // base unit and no recipe unit has been chosen yet.
@@ -211,23 +221,27 @@ export function RecipeComponentFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="recipe-component-option">Product Option</Label>
-            <Select
-              value={productOptionId ?? BASE_RECIPE_VALUE}
-              onValueChange={(next) => setProductOptionId(next === BASE_RECIPE_VALUE ? null : next)}
-              disabled={productOptionsLoading}
-            >
-              <SelectTrigger id="recipe-component-option">
-                <SelectValue placeholder={productOptionsLoading ? 'Loading…' : 'Base Recipe'} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={BASE_RECIPE_VALUE}>Base Recipe</SelectItem>
-                {(productOptions ?? []).map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {option.option_group_name}: {option.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {fixedProductOptionId ? (
+              <div className="rounded-md border bg-muted/30 p-2 text-sm">{fixedProductOptionLabel ?? 'Selected option'}</div>
+            ) : (
+              <Select
+                value={productOptionId ?? BASE_RECIPE_VALUE}
+                onValueChange={(next) => setProductOptionId(next === BASE_RECIPE_VALUE ? null : next)}
+                disabled={productOptionsLoading}
+              >
+                <SelectTrigger id="recipe-component-option">
+                  <SelectValue placeholder={productOptionsLoading ? 'Loading…' : 'Base Recipe'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={BASE_RECIPE_VALUE}>Base Recipe</SelectItem>
+                  {(productOptions ?? []).map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.option_group_name}: {option.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           {isEdit && (

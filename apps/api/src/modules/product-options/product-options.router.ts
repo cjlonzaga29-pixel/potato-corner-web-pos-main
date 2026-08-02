@@ -146,4 +146,20 @@ router.patch(
   },
 );
 
+router.get(
+  '/:groupId/options/:optionId/variants',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const variants = await productOptionsService.getAssignedVariantsForOption(req.params.groupId as string, req.params.optionId as string);
+      res.status(200).json({ data: { variants }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
 export { router as productOptionsRouter };

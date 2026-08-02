@@ -205,3 +205,13 @@ export const variantOptionGroupResponseSchema = z.object({
     }),
   ),
 });
+
+// Reverse lookup — which Product Variants a given Product Option is
+// assigned to (via ProductVariantOptionGroupOption), for the Manage
+// Deduction dialog's "used by" list.
+export const productOptionAssignedVariantResponseSchema = z.object({
+  product_variant_id: z.uuid(),
+  variant_name: z.string(),
+  product_id: z.uuid(),
+  product_name: z.string(),
+});

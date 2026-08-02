@@ -215,3 +215,4 @@ export type ProductOptionResponse = z.infer<typeof schemas.productOptionResponse
 export type AssignVariantOptionGroupInput = z.infer<typeof schemas.assignVariantOptionGroupSchema>;
 export type UpdateVariantOptionGroupInput = z.infer<typeof schemas.updateVariantOptionGroupSchema>;
 export type VariantOptionGroupResponse = z.infer<typeof schemas.variantOptionGroupResponseSchema>;
+export type ProductOptionAssignedVariantResponse = z.infer<typeof schemas.productOptionAssignedVariantResponseSchema>;

@@ -17,6 +17,7 @@ vi.mock('./product-options.repository.js', () => ({
     assignOptionGroup: vi.fn(),
     updateVariantOptionGroup: vi.fn(),
     deleteVariantOptionGroup: vi.fn(),
+    findAssignedVariantsForOption: vi.fn(),
   },
 }));
 
@@ -198,5 +199,38 @@ describe('productOptionsService.assignOptionGroupToVariant (R6)', () => {
 
     expect(result.allowed_options).toHaveLength(1);
     expect(repo.assignOptionGroup).toHaveBeenCalledWith('variant-1', expect.objectContaining({ optionGroupId: 'group-1' }));
+  });
+});
+
+describe('productOptionsService.getAssignedVariantsForOption (reverse lookup)', () => {
+  it('404s when the option does not belong to the group', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ optionGroupId: 'a-different-group' }) as never);
+
+    await expect(productOptionsService.getAssignedVariantsForOption('group-1', 'option-1')).rejects.toMatchObject({
+      code: 'OPTION_NOT_FOUND',
+    });
+    expect(repo.findAssignedVariantsForOption).not.toHaveBeenCalled();
+  });
+
+  it('returns the deduped list of variants that allow this option', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption() as never);
+    vi.mocked(repo.findAssignedVariantsForOption).mockResolvedValue([
+      {
+        variantOptionGroup: {
+          productVariant: { id: 'variant-1', name: 'Regular', product: { id: 'product-1', name: 'Cheese Fries' } },
+        },
+      },
+      {
+        variantOptionGroup: {
+          productVariant: { id: 'variant-1', name: 'Regular', product: { id: 'product-1', name: 'Cheese Fries' } },
+        },
+      },
+    ] as never);
+
+    const result = await productOptionsService.getAssignedVariantsForOption('group-1', 'option-1');
+
+    expect(result).toEqual([
+      { product_variant_id: 'variant-1', variant_name: 'Regular', product_id: 'product-1', product_name: 'Cheese Fries' },
+    ]);
   });
 });

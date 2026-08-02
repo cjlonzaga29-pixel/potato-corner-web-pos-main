@@ -435,4 +435,30 @@ export const productOptionsService = {
       ipAddress,
     });
   },
+
+  // --- Reverse lookup: Product Option -> assigned Product Variants ---
+
+  async getAssignedVariantsForOption(optionGroupId: string, optionId: string) {
+    const option = await repo.findOptionById(optionId);
+    if (!option || option.optionGroupId !== optionGroupId) {
+      throw new ProductOptionError('OPTION_NOT_FOUND', 'Product option not found', 404);
+    }
+
+    const rows = await repo.findAssignedVariantsForOption(optionId);
+
+    const byVariantId = new Map<string, { product_variant_id: string; variant_name: string; product_id: string; product_name: string }>();
+    for (const row of rows) {
+      const variant = row.variantOptionGroup.productVariant;
+      if (!byVariantId.has(variant.id)) {
+        byVariantId.set(variant.id, {
+          product_variant_id: variant.id,
+          variant_name: variant.name,
+          product_id: variant.product.id,
+          product_name: variant.product.name,
+        });
+      }
+    }
+
+    return Array.from(byVariantId.values());
+  },
 };

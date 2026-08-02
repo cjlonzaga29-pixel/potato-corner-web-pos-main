@@ -11,6 +11,7 @@ vi.mock('./product-options.service.js', () => ({
     updateGroup: vi.fn(),
     createOption: vi.fn(),
     updateOption: vi.fn(),
+    getAssignedVariantsForOption: vi.fn(),
   },
 }));
 
@@ -21,7 +22,7 @@ vi.mock('../../lib/prisma.js', () => ({
 const { prisma } = await import('../../lib/prisma.js');
 const { productOptionsService } = await import('./product-options.service.js');
 const { productOptionsRouter } = await import('./product-options.router.js');
-const { generateBranchToken, generateSuperAdminToken } = await import('../../test-utils/auth-tokens.js');
+const { generateBranchToken, generateSuperAdminToken, generateSupervisorToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
 
@@ -97,5 +98,39 @@ describe('POST /api/product-options — branch cannot create an Option Group (R1
     await runHandlers(handlers, req, res);
 
     expect(productOptionsService.createGroup).toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/product-options/:groupId/options/:optionId/variants — reverse lookup', () => {
+  it('rejects a branch actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productOptionsRouter, 'get', '/:groupId/options/:optionId/variants');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(randomUUID())),
+      params: { groupId: 'group-1', optionId: 'option-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productOptionsService.getAssignedVariantsForOption).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor actor through and returns the assigned variants', async () => {
+    vi.mocked(productOptionsService.getAssignedVariantsForOption).mockResolvedValue([
+      { product_variant_id: 'variant-1', variant_name: 'Regular', product_id: 'product-1', product_name: 'Cheese Fries' },
+    ] as never);
+    const handlers = getRouteHandlers(productOptionsRouter, 'get', '/:groupId/options/:optionId/variants');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([randomUUID()])),
+      params: { groupId: 'group-1', optionId: 'option-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(productOptionsService.getAssignedVariantsForOption).toHaveBeenCalledWith('group-1', 'option-1');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect((res as unknown as { jsonBody: { data: { variants: unknown[] } } }).jsonBody.data.variants).toHaveLength(1);
   });
 });

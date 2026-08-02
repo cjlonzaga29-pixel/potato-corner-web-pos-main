@@ -220,4 +220,19 @@ export const productOptionsRepository = {
   deleteVariantOptionGroup(id: string) {
     return prisma.productVariantOptionGroup.delete({ where: { id } });
   },
+
+  // --- Reverse lookup: Product Option -> assigned Product Variants ---
+
+  findAssignedVariantsForOption(productOptionId: string) {
+    return prisma.productVariantOptionGroupOption.findMany({
+      where: { productOptionId },
+      include: {
+        variantOptionGroup: {
+          include: {
+            productVariant: { include: { product: true } },
+          },
+        },
+      },
+    });
+  },
 };

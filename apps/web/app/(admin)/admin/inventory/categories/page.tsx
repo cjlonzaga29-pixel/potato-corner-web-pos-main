@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { Plus, Tags } from 'lucide-react';
+import { Pencil, Plus, Tags } from 'lucide-react';
 import type { InventoryCategoryResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,9 +10,11 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useInventoryCategories } from '@/hooks/queries/use-universal-inventory';
 import { CreateCategoryDialog } from '@/components/admin/inventory/create-category-dialog';
+import { EditCategoryDialog } from '@/components/admin/inventory/edit-category-dialog';
 
 export default function InventoryCategoriesPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<InventoryCategoryResponse | null>(null);
   const { data, isLoading, isError, refetch } = useInventoryCategories(true);
 
   const columns: ColumnDef<InventoryCategoryResponse>[] = [
@@ -23,6 +25,24 @@ export default function InventoryCategoriesPage() {
       accessorKey: 'is_active',
       header: 'Status',
       cell: ({ row }) => <Badge variant={row.original.is_active ? 'active' : 'inactive'}>{row.original.is_active ? 'Active' : 'Inactive'}</Badge>,
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Edit ${row.original.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setEditing(row.original);
+          }}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
+          Edit
+        </Button>
+      ),
     },
   ];
 
@@ -49,6 +69,7 @@ export default function InventoryCategoriesPage() {
       />
 
       <CreateCategoryDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <EditCategoryDialog category={editing} onOpenChange={(open) => !open && setEditing(null)} />
     </div>
   );
 }

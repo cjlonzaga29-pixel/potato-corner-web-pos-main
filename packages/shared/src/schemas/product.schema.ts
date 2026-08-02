@@ -273,7 +273,10 @@ export const posCatalogOptionSchema = z.object({
 export const posCatalogOptionGroupSchema = z.object({
   id: z.uuid(),
   name: z.string(),
+  pos_button_label: z.string().nullable(),
   selection_type: z.enum(['SINGLE', 'MULTIPLE']),
+  min_selections: z.number().int(),
+  max_selections: z.number().int().nullable(),
   required: z.boolean(),
   options: z.array(posCatalogOptionSchema),
 });

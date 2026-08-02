@@ -47,6 +47,7 @@ function buildGroup(overrides: Partial<Record<string, unknown>> = {}) {
     code: 'flavor',
     name: 'Flavor',
     description: null,
+    posButtonLabel: null,
     selectionType: 'SINGLE',
     minSelections: 1,
     maxSelections: 1,

@@ -26,6 +26,7 @@ export interface CreateOptionGroupData {
   code: string;
   name: string;
   description?: string;
+  posButtonLabel?: string | null;
   selectionType: SelectionType;
   minSelections: number;
   maxSelections?: number;
@@ -38,6 +39,7 @@ export interface CreateOptionGroupData {
 export interface UpdateOptionGroupData {
   name?: string;
   description?: string;
+  posButtonLabel?: string | null;
   selectionType?: SelectionType;
   minSelections?: number;
   maxSelections?: number | null;

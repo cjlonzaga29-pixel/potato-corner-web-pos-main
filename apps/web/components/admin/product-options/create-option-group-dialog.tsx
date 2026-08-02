@@ -30,6 +30,7 @@ const formSchema = z
       .regex(/^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/, 'Lowercase letters, numbers, - or _ only'),
     name: z.string().min(2, 'Minimum 2 characters').max(100),
     description: z.string().max(500).optional(),
+    pos_button_label: z.string().max(100).optional(),
     selection_type: z.enum(['SINGLE', 'MULTIPLE']),
     min_selections: z.coerce.number().int().min(0),
     max_selections: optionalCoercedNumber(1),
@@ -47,6 +48,7 @@ const DEFAULT_VALUES: FormValues = {
   code: '',
   name: '',
   description: '',
+  pos_button_label: '',
   selection_type: 'SINGLE',
   min_selections: 0,
   max_selections: '',
@@ -74,6 +76,7 @@ export function CreateOptionGroupDialog({ open, onOpenChange }: CreateOptionGrou
       code: parsed.code,
       name: parsed.name,
       description: parsed.description || undefined,
+      pos_button_label: parsed.pos_button_label?.trim() || null,
       selection_type: parsed.selection_type,
       min_selections: parsed.min_selections,
       max_selections: parsed.max_selections,
@@ -103,6 +106,14 @@ export function CreateOptionGroupDialog({ open, onOpenChange }: CreateOptionGrou
 
             <FormFieldWrapper<FormValues> name="description" label="Description">
               <Textarea placeholder="Optional description" rows={2} />
+            </FormFieldWrapper>
+
+            <FormFieldWrapper<FormValues>
+              name="pos_button_label"
+              label="POS Button Label"
+              description="This label appears in the POS. Leave blank to use the group name."
+            >
+              <Input placeholder="e.g. Fries Add-ons" />
             </FormFieldWrapper>
 
             <FormFieldWrapper<FormValues> name="selection_type" label="Selection Type" required>

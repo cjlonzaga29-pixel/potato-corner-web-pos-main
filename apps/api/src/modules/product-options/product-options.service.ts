@@ -13,6 +13,7 @@ function toGroupResponse(group: {
   code: string;
   name: string;
   description: string | null;
+  posButtonLabel: string | null;
   selectionType: SelectionType;
   minSelections: number;
   maxSelections: number | null;
@@ -28,6 +29,7 @@ function toGroupResponse(group: {
     code: group.code,
     name: group.name,
     description: group.description,
+    pos_button_label: group.posButtonLabel,
     selection_type: group.selectionType,
     min_selections: group.minSelections,
     max_selections: group.maxSelections,
@@ -117,6 +119,7 @@ interface CreateOptionGroupInput {
   code: string;
   name: string;
   description?: string;
+  pos_button_label?: string | null;
   selection_type: SelectionType;
   min_selections: number;
   max_selections?: number;
@@ -128,6 +131,7 @@ interface CreateOptionGroupInput {
 interface UpdateOptionGroupInput {
   name?: string;
   description?: string;
+  pos_button_label?: string | null;
   selection_type?: SelectionType;
   min_selections?: number;
   max_selections?: number | null;
@@ -202,6 +206,7 @@ export const productOptionsService = {
       code: data.code,
       name: data.name,
       description: data.description,
+      posButtonLabel: data.pos_button_label,
       selectionType: data.selection_type,
       minSelections: data.min_selections,
       maxSelections: data.max_selections,
@@ -232,6 +237,7 @@ export const productOptionsService = {
     const group = await repo.updateGroup(id, {
       name: data.name,
       description: data.description,
+      posButtonLabel: data.pos_button_label,
       selectionType: data.selection_type,
       minSelections: data.min_selections,
       maxSelections: data.max_selections,

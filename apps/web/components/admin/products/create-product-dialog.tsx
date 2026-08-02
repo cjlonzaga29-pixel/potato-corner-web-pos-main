@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { useCreateProduct } from '@/hooks/queries/use-products';
 import { useBranches } from '@/hooks/queries/use-branches';
+import { useProductCategories } from '@/hooks/queries/use-product-categories';
 
 function optionalCoercedNumber(min: number) {
   return z.preprocess(
@@ -29,7 +30,7 @@ const formSchema = z
   .object({
     name: z.string().min(2, 'Minimum 2 characters').max(100),
     description: z.string().max(500).optional(),
-    category: z.string().max(50).optional(),
+    category_id: z.string().optional(),
     status: z.enum(['draft', 'active']),
     display_order: optionalCoercedNumber(0),
     is_seasonal: z.boolean(),
@@ -55,7 +56,7 @@ type FormValues = z.input<typeof formSchema>;
 const DEFAULT_VALUES: FormValues = {
   name: '',
   description: '',
-  category: '',
+  category_id: '',
   status: 'draft',
   display_order: '',
   is_seasonal: false,
@@ -75,6 +76,7 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
   const router = useRouter();
   const createProduct = useCreateProduct();
   const { data: branchData, isLoading: branchesLoading } = useBranches({ status: 'active', limit: 100 });
+  const { data: categoryData, isLoading: categoriesLoading } = useProductCategories({ isActive: true, limit: 100 });
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   const isSeasonal = form.watch('is_seasonal');
   const branchExclusive = form.watch('branch_exclusive');
@@ -93,7 +95,7 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
     const created = await createProduct.mutateAsync({
       name: parsed.name,
       description: parsed.description || undefined,
-      category: parsed.category || undefined,
+      category_id: parsed.category_id || undefined,
       status: parsed.status,
       display_order: parsed.display_order,
       is_seasonal: parsed.is_seasonal,
@@ -125,9 +127,33 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
             </FormFieldWrapper>
 
             <div className="grid grid-cols-2 gap-3">
-              <FormFieldWrapper<FormValues> name="category" label="Category">
-                <Input placeholder="Fries" />
-              </FormFieldWrapper>
+              <div className="space-y-2">
+                <Label htmlFor="create-product-category">Category</Label>
+                <Select
+                  value={form.watch('category_id')}
+                  onValueChange={(value) => form.setValue('category_id', value)}
+                  disabled={categoriesLoading || (categoryData?.categories.length ?? 0) === 0}
+                >
+                  <SelectTrigger id="create-product-category">
+                    <SelectValue
+                      placeholder={
+                        categoriesLoading
+                          ? 'Loading…'
+                          : (categoryData?.categories.length ?? 0) === 0
+                            ? 'No active categories'
+                            : 'Select a category'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(categoryData?.categories ?? []).map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <FormFieldWrapper<FormValues> name="display_order" label="Display Order">
                 <Input inputMode="numeric" placeholder="0" />
               </FormFieldWrapper>

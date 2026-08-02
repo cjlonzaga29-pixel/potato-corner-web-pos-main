@@ -10,8 +10,12 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
+import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
+import { useAttendanceByEmployee } from '@/hooks/queries/use-attendance';
+import { useBranch } from '@/hooks/queries/use-branches';
+import { useEmployee } from '@/hooks/queries/use-employees';
 import { formatDateTime } from '@/lib/utils';
 
 function formatPeso(amount: number): string {
@@ -32,6 +36,7 @@ export default function ReceiptsPage() {
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   useTransactionsRealtimeSync();
   const { data, isLoading, isError, refetch } = useTransactions({
@@ -40,6 +45,23 @@ export default function ReceiptsPage() {
     limit: pagination.pageSize,
   });
   const { data: selectedTransaction } = useTransaction(selectedId);
+  const { data: detailTransaction } = useTransaction(detailId);
+  const { data: branch } = useBranch(branchId);
+  const { data: cashier } = useEmployee(detailTransaction?.cashier_id);
+  const attendanceWindow = detailTransaction
+    ? (() => {
+        const day = detailTransaction.created_at.slice(0, 10);
+        const from = new Date(`${day}T00:00:00.000Z`);
+        from.setUTCDate(from.getUTCDate() - 1);
+        const to = new Date(`${day}T00:00:00.000Z`);
+        to.setUTCDate(to.getUTCDate() + 1);
+        return { from: from.toISOString(), to: to.toISOString() };
+      })()
+    : undefined;
+  const { data: attendanceData } = useAttendanceByEmployee(detailTransaction?.cashier_id, {
+    ...attendanceWindow,
+    limit: 100,
+  });
 
   const columns: ColumnDef<TransactionResponse>[] = [
     { id: 'receipt_number', header: 'Receipt No.', cell: ({ row }) => row.original.receipt_number },
@@ -69,6 +91,23 @@ export default function ReceiptsPage() {
         );
       },
     },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            setDetailId(row.original.id);
+          }}
+        >
+          Manage Transaction
+        </Button>
+      ),
+    },
   ];
 
   if (!branchId) {
@@ -97,6 +136,13 @@ export default function ReceiptsPage() {
 
       <ReceiptModal transaction={selectedTransaction ?? null} onClose={() => setSelectedId(null)} />
       <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
+      <ViewTransactionDetailDialog
+        transaction={detailTransaction ?? null}
+        onClose={() => setDetailId(null)}
+        branchName={branch?.name ?? null}
+        cashierName={cashier ? `${cashier.first_name} ${cashier.last_name}` : (detailTransaction?.cashier_id ?? '')}
+        attendanceRecords={attendanceData?.records ?? []}
+      />
     </div>
   );
 }

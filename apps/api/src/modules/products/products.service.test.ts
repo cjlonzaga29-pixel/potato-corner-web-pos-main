@@ -23,6 +23,7 @@ vi.mock('./products.repository.js', () => ({
     // broadcasts need to override it.
     findBranchProductAvailability: vi.fn().mockResolvedValue([]),
     cascadeBranchAvailabilityOff: vi.fn(),
+    cascadeBranchAvailabilityOn: vi.fn(),
     getProductsByGlobalStatus: vi.fn(),
     allActiveBranches: vi.fn(),
     findActiveBranch: vi.fn(),
@@ -473,15 +474,24 @@ describe('productsService.changeProductStatus — super_admin global transitions
     expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'archived');
   });
 
-  it('archived -> active fails', async () => {
+  it('archived -> active succeeds (Task 34 — Restore) and cascades branch availability back on', async () => {
     vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active' }) as never);
 
-    await expect(productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null)).rejects.toMatchObject({
-      code: 'INVALID_STATUS_TRANSITION',
-      statusCode: 409,
-    });
+    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null);
 
-    expect(productsRepository.updateStatus).not.toHaveBeenCalled();
+    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
+    expect(productsRepository.cascadeBranchAvailabilityOn).toHaveBeenCalledWith('prod-1', SUPER_ADMIN.id);
+    expect(productsRepository.cascadeBranchAvailabilityOff).not.toHaveBeenCalled();
+  });
+
+  it('draft -> active does not cascade branch availability (only archived -> active restore does)', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'draft' }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+
+    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null);
+
+    expect(productsRepository.cascadeBranchAvailabilityOn).not.toHaveBeenCalled();
   });
 
   it('discontinuing a product cascades branch availability off and logs the cascade', async () => {

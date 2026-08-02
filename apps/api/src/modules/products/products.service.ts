@@ -29,16 +29,17 @@ const STATUS_LABELS: Record<ProductStatus, string> = {
 };
 
 /**
- * Product lifecycle matrix (locked — see this phase's spec). archived has no
- * outgoing transitions: archived products are fully read-only. Every other
- * entry lists exactly the statuses reachable from that status by super_admin.
+ * Product lifecycle matrix. Every entry lists exactly the statuses reachable
+ * from that status by super_admin. archived's only outgoing transition is
+ * back to active — the Restore action (Task 34) — otherwise archived
+ * products are read-only (see updateProduct/updateVariant/etc. guards).
  */
 const GLOBAL_TRANSITIONS: Record<ProductStatus, ProductStatus[]> = {
   draft: ['active', 'archived'],
   active: ['temporarily_unavailable', 'discontinued', 'archived'],
   temporarily_unavailable: ['active', 'archived'],
   discontinued: ['active', 'archived'],
-  archived: [],
+  archived: ['active'],
 };
 
 /**
@@ -737,6 +738,20 @@ export const productsService = {
           actorId: actor.id,
           actorRole: actor.role,
           afterState: { cascadedTo: 'unavailable', triggeredBy: data.status },
+          ipAddress,
+        });
+      } else if (product.status === 'archived' && data.status === 'active') {
+        // Task 34 — Restore. Re-enables branch availability at every active
+        // branch, mirroring createWithCascade's default cascade, so restore
+        // needs no manual per-branch reconfiguration.
+        await productsRepository.cascadeBranchAvailabilityOn(productId, actor.id);
+        await recordAuditLog({
+          action: 'PRODUCT_CATALOG_RESTORE_CASCADE',
+          entityType: 'product',
+          entityId: productId,
+          actorId: actor.id,
+          actorRole: actor.role,
+          afterState: { cascadedTo: 'available', triggeredBy: data.status },
           ipAddress,
         });
       }

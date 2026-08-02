@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
+import { Pencil } from 'lucide-react';
 import type { ProductOptionGroupResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -56,6 +57,24 @@ export default function ProductOptionsPage() {
       accessorKey: 'is_active',
       header: 'Status',
       cell: ({ row }) => <Badge variant={row.original.is_active ? 'active' : 'inactive'}>{row.original.is_active ? 'Active' : 'Inactive'}</Badge>,
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Edit ${row.original.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            router.push(`/admin/product-options/${row.original.id}`);
+          }}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
+          Edit
+        </Button>
+      ),
     },
   ];
 

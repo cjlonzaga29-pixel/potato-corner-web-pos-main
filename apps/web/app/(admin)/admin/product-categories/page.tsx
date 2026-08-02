@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
+import { Pencil } from 'lucide-react';
 import type { ProductCategoryResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -45,6 +46,24 @@ export default function ProductCategoriesPage() {
       cell: ({ row }) => <Badge variant={row.original.is_active ? 'active' : 'inactive'}>{row.original.is_active ? 'Active' : 'Inactive'}</Badge>,
     },
     { id: 'updated_at', header: 'Updated', cell: ({ row }) => formatDateTime(row.original.updated_at) },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Edit ${row.original.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setEditing(row.original);
+          }}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
+          Edit
+        </Button>
+      ),
+    },
   ];
 
   return (

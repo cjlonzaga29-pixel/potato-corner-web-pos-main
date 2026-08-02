@@ -278,6 +278,14 @@ export const productsRepository = {
     });
   },
 
+  /** Sets branch_product_availability back to available (at active branches only) — used when an archived product is restored to active, mirroring createWithCascade's default cascade. */
+  cascadeBranchAvailabilityOn(productId: string, updatedBy: string) {
+    return prisma.branchProductAvailability.updateMany({
+      where: { productId, isAvailable: false, branch: { status: 'active' } },
+      data: { isAvailable: true, updatedBy },
+    });
+  },
+
   getProductsByGlobalStatus(statuses: PrismaProductStatus[]) {
     return prisma.product.findMany({ where: { status: { in: statuses } } });
   },

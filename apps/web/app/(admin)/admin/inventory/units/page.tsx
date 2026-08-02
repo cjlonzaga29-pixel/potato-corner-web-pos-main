@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { Plus, Ruler } from 'lucide-react';
+import { Pencil, Plus, Ruler } from 'lucide-react';
 import type { UnitOfMeasureResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,9 +10,11 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { CreateUnitDialog } from '@/components/admin/inventory/create-unit-dialog';
+import { EditUnitDialog } from '@/components/admin/inventory/edit-unit-dialog';
 
 export default function UnitsOfMeasurePage() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingUnit, setEditingUnit] = useState<UnitOfMeasureResponse | null>(null);
   const { data, isLoading, isError, refetch } = useUnitsOfMeasure(true);
 
   const columns: ColumnDef<UnitOfMeasureResponse>[] = [
@@ -28,6 +30,16 @@ export default function UnitsOfMeasurePage() {
       accessorKey: 'is_active',
       header: 'Status',
       cell: ({ row }) => <Badge variant={row.original.is_active ? 'active' : 'inactive'}>{row.original.is_active ? 'Active' : 'Inactive'}</Badge>,
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button variant="outline" size="sm" onClick={() => setEditingUnit(row.original)}>
+          <Pencil className="mr-2 h-4 w-4" />
+          Edit
+        </Button>
+      ),
     },
   ];
 
@@ -54,6 +66,7 @@ export default function UnitsOfMeasurePage() {
       />
 
       <CreateUnitDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <EditUnitDialog unit={editingUnit} onOpenChange={(open) => !open && setEditingUnit(null)} />
     </div>
   );
 }

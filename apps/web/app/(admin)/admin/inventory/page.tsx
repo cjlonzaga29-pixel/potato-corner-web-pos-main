@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState, SortingState } from '@tanstack/react-table';
-import { Boxes, ChevronRight, ClipboardList, Plus } from 'lucide-react';
+import { Boxes, ClipboardList, Pencil, Plus } from 'lucide-react';
 import type { InventoryItemResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
@@ -136,16 +136,16 @@ export default function UniversalInventoryPage() {
       header: 'Actions',
       cell: ({ row }) => (
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
-          aria-label={`View ${row.original.name}`}
+          aria-label={`Edit ${row.original.name}`}
           onClick={(event) => {
             event.stopPropagation();
             router.push(`/admin/inventory/${row.original.id}`);
           }}
         >
-          View
-          <ChevronRight className="ml-1 h-4 w-4" />
+          <Pencil className="mr-1 h-4 w-4" />
+          Edit
         </Button>
       ),
     },

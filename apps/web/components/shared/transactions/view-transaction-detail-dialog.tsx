@@ -1,10 +1,31 @@
 'use client';
 
+import { useState } from 'react';
 import type { AttendanceResponse, TransactionResponse } from '@potato-corner/shared';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ROLES } from '@potato-corner/shared';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { StatusBadge } from '@/components/shared/status-badge';
+import { useAuthStore } from '@/stores/auth.store';
+import { useVoidTransaction } from '@/hooks/queries/use-transactions';
 import { formatCurrency } from '@/lib/utils';
+
+const MIN_VOID_REASON_LENGTH = 10;
+const VOID_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH] as const;
 
 interface ViewTransactionDetailDialogProps {
   transaction: TransactionResponse | null;
@@ -45,6 +66,32 @@ function findCoveringSession(transaction: TransactionResponse, attendanceRecords
 /** Full transaction detail (Reports §11) — branch/cashier/session/items/amounts/payment/status/inventory deduction outcome for one sale. */
 export function ViewTransactionDetailDialog({ transaction, onClose, branchName, cashierName, attendanceRecords }: ViewTransactionDetailDialogProps) {
   const session = transaction ? findCoveringSession(transaction, attendanceRecords) : null;
+  const role = useAuthStore((state) => state.user?.role);
+  const canVoid = role !== undefined && (VOID_ALLOWED_ROLES as readonly string[]).includes(role);
+
+  const [isVoidConfirmOpen, setIsVoidConfirmOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
+  const voidTransaction = useVoidTransaction(transaction?.id ?? '');
+
+  function resetVoidState() {
+    setIsVoidConfirmOpen(false);
+    setVoidReason('');
+  }
+
+  function handleVoidSubmit() {
+    if (voidReason.trim().length < MIN_VOID_REASON_LENGTH) return;
+    voidTransaction.mutate(
+      { void_reason: voidReason },
+      {
+        onSuccess: () => {
+          resetVoidState();
+          onClose();
+        },
+      },
+    );
+  }
+
+  const canSubmitVoid = voidReason.trim().length >= MIN_VOID_REASON_LENGTH && !voidTransaction.isPending;
 
   return (
     <Dialog open={transaction !== null} onOpenChange={(open) => !open && onClose()}>
@@ -112,9 +159,56 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
                 <span className="tabular-nums">{formatCurrency(transaction.total_amount)}</span>
               </div>
             </div>
+
+            {canVoid && transaction.status === 'completed' && (
+              <DialogFooter className="border-t pt-3">
+                <Button variant="danger" onClick={() => setIsVoidConfirmOpen(true)}>
+                  Void Transaction
+                </Button>
+              </DialogFooter>
+            )}
           </div>
         )}
       </DialogContent>
+
+      <AlertDialog open={isVoidConfirmOpen} onOpenChange={voidTransaction.isPending ? undefined : (open) => !open && resetVoidState()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Void Transaction</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action will permanently void this completed transaction. Inventory will be restored automatically. Sales
+              reports will automatically exclude this transaction.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-2">
+            <Label htmlFor="void-reason">Reason (required, min {MIN_VOID_REASON_LENGTH} characters)</Label>
+            <Textarea
+              id="void-reason"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              disabled={voidTransaction.isPending}
+              rows={4}
+            />
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={resetVoidState} disabled={voidTransaction.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleVoidSubmit();
+              }}
+              disabled={!canSubmitVoid}
+              className={buttonVariants({ variant: 'danger' })}
+            >
+              {voidTransaction.isPending ? <LoadingSpinner size="sm" className="text-current" /> : 'Void Transaction'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

@@ -35,8 +35,16 @@ export default function UnitsOfMeasurePage() {
       id: 'actions',
       header: 'Actions',
       cell: ({ row }) => (
-        <Button variant="outline" size="sm" onClick={() => setEditingUnit(row.original)}>
-          <Pencil className="mr-2 h-4 w-4" />
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Edit ${row.original.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setEditingUnit(row.original);
+          }}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
           Edit
         </Button>
       ),

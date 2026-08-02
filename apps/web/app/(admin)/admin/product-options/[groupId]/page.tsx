@@ -2,7 +2,7 @@
 
 import { use, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, Pencil } from 'lucide-react';
 import type { ProductOptionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,8 +10,17 @@ import { Switch } from '@/components/ui/switch';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useProductOptionGroup, useUpdateProductOption } from '@/hooks/queries/use-product-options';
 import { CreateOptionDialog } from '@/components/admin/product-options/create-option-dialog';
+import { EditOptionDialog } from '@/components/admin/product-options/edit-option-dialog';
 
-function OptionRow({ groupId, option }: { groupId: string; option: ProductOptionResponse }) {
+function OptionRow({
+  groupId,
+  option,
+  onEdit,
+}: {
+  groupId: string;
+  option: ProductOptionResponse;
+  onEdit: (option: ProductOptionResponse) => void;
+}) {
   const updateOption = useUpdateProductOption(groupId, option.id);
 
   return (
@@ -30,6 +39,10 @@ function OptionRow({ groupId, option }: { groupId: string; option: ProductOption
           disabled={updateOption.isPending}
           onCheckedChange={(checked) => void updateOption.mutateAsync({ is_active: checked })}
         />
+        <Button variant="outline" size="sm" aria-label={`Edit ${option.name}`} onClick={() => onEdit(option)}>
+          <Pencil className="mr-1 h-4 w-4" />
+          Edit
+        </Button>
       </div>
     </div>
   );
@@ -39,6 +52,7 @@ export default function ProductOptionGroupDetailPage({ params }: { params: Promi
   const { groupId } = use(params);
   const router = useRouter();
   const [createOptionOpen, setCreateOptionOpen] = useState(false);
+  const [editingOption, setEditingOption] = useState<ProductOptionResponse | null>(null);
 
   const { data: group, isLoading } = useProductOptionGroup(groupId);
 
@@ -76,11 +90,21 @@ export default function ProductOptionGroupDetailPage({ params }: { params: Promi
         {group.options.length === 0 ? (
           <EmptyState title="No options yet" description="Add the first selectable option for this group." />
         ) : (
-          group.options.map((option) => <OptionRow key={option.id} groupId={groupId} option={option} />)
+          group.options.map((option) => (
+            <OptionRow key={option.id} groupId={groupId} option={option} onEdit={setEditingOption} />
+          ))
         )}
       </div>
 
       <CreateOptionDialog groupId={groupId} open={createOptionOpen} onOpenChange={setCreateOptionOpen} />
+      <EditOptionDialog
+        groupId={groupId}
+        option={editingOption}
+        open={editingOption !== null}
+        onOpenChange={(next) => {
+          if (!next) setEditingOption(null);
+        }}
+      />
     </div>
   );
 }

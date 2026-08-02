@@ -110,6 +110,16 @@ describe('productComponentsService.createMapping', () => {
     ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
   });
 
+  it('rejects creating a mapping for a variant whose parent product is archived', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1', product: { status: 'archived' } } as never);
+
+    await expect(
+      productComponentsService.createMapping({ product_variant_id: 'variant-1', inventory_item_id: 'item-1', quantity_required: 1 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_ARCHIVED', statusCode: 409 });
+    expect(universalInventoryRepository.findItemById).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
   it('creates the mapping when the variant and item exist and no duplicate is present', async () => {
     vi.mocked(universalInventoryRepository.findItemById).mockResolvedValue({ id: 'item-1', baseUnitId: 'unit-kg' } as never);
     vi.mocked(repo.findByVariantAndItem).mockResolvedValue(null);
@@ -354,6 +364,16 @@ describe('productComponentsService.updateMapping', () => {
     expect(repo.update).not.toHaveBeenCalled();
   });
 
+  it('rejects updating a mapping whose parent product is archived, without mutating it', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1', product: { status: 'archived' } } as never);
+
+    await expect(
+      productComponentsService.updateMapping('component-1', { quantity_required: 5 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_ARCHIVED', statusCode: 409 });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
   it('leaves product_option_id untouched when omitted — existing requests without it keep working', async () => {
     vi.mocked(repo.findById).mockResolvedValue(buildComponent({ productOptionId: 'option-1' }) as never);
     vi.mocked(repo.update).mockResolvedValue(buildComponent({ productOptionId: 'option-1', quantityRequired: decimal(5), version: 2 }) as never);
@@ -378,6 +398,15 @@ describe('productComponentsService.listByVariant', () => {
     expect(result.find((c) => c.id === 'base-component')?.product_option_id).toBeNull();
     expect(result.find((c) => c.id === 'option-component')?.product_option_id).toBe('option-1');
   });
+
+  it('still lists components for a variant whose parent product is archived (read-only, not read-blocked)', async () => {
+    vi.mocked(repo.findByVariant).mockResolvedValue([buildComponent()] as never);
+
+    const result = await productComponentsService.listByVariant('variant-1');
+
+    expect(result).toHaveLength(1);
+    expect(productsRepository.findVariantById).not.toHaveBeenCalled();
+  });
 });
 
 describe('productComponentsService.deleteMapping', () => {
@@ -397,5 +426,16 @@ describe('productComponentsService.deleteMapping', () => {
 
     expect(repo.delete).toHaveBeenCalledWith('component-1', ACTOR.id);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_COMPONENT_DELETED', entityId: 'component-1' }));
+  });
+
+  it('rejects deleting a mapping whose parent product is archived, without mutating it', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildComponent() as never);
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue({ id: 'variant-1', product: { status: 'archived' } } as never);
+
+    await expect(productComponentsService.deleteMapping('component-1', ACTOR, null)).rejects.toMatchObject({
+      code: 'PRODUCT_ARCHIVED',
+      statusCode: 409,
+    });
+    expect(repo.delete).not.toHaveBeenCalled();
   });
 });

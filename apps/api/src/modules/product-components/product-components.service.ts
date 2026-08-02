@@ -71,6 +71,18 @@ async function resolveRecipeUnitId(baseUnitId: string, requestedUnitId: string |
   return requestedUnitId;
 }
 
+/** Blocks recipe mutations on components belonging to an archived product — archived products are read-only, mirroring ProductError('PRODUCT_ARCHIVED') in the products module. */
+async function assertParentProductNotArchived(productVariantId: string): Promise<void> {
+  const variant = await productsRepository.findVariantById(productVariantId);
+  if (variant?.product?.status === 'archived') {
+    throw new ProductComponentError(
+      'PRODUCT_ARCHIVED',
+      'This product is archived and its recipe components are read-only',
+      409,
+    );
+  }
+}
+
 export const productComponentsService = {
   async listByVariant(productVariantId: string) {
     const components = await repo.findByVariant(productVariantId);
@@ -80,6 +92,13 @@ export const productComponentsService = {
   async createMapping(data: CreateProductComponentInput, actor: ActorContext, ipAddress: string | null) {
     const variant = await productsRepository.findVariantById(data.product_variant_id);
     if (!variant) throw new ProductComponentError('PRODUCT_VARIANT_NOT_FOUND', 'product_variant_id does not exist', 404);
+    if (variant.product?.status === 'archived') {
+      throw new ProductComponentError(
+        'PRODUCT_ARCHIVED',
+        'This product is archived and its recipe components are read-only',
+        409,
+      );
+    }
 
     const item = await universalInventoryRepository.findItemById(data.inventory_item_id);
     if (!item) throw new ProductComponentError('INVENTORY_ITEM_NOT_FOUND', 'inventory_item_id does not exist', 404);
@@ -130,6 +149,7 @@ export const productComponentsService = {
   async updateMapping(id: string, data: UpdateProductComponentInput, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
+    await assertParentProductNotArchived(before.productVariantId);
 
     const updateData: { quantityRequired?: number; recipeUnitId?: string; isActive?: boolean; productOptionId?: string | null } = {};
     if (data.quantity_required !== undefined) updateData.quantityRequired = data.quantity_required;
@@ -165,6 +185,7 @@ export const productComponentsService = {
   async deleteMapping(id: string, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
+    await assertParentProductNotArchived(before.productVariantId);
 
     await repo.delete(id, actor.id);
 

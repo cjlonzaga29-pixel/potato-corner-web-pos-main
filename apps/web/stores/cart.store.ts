@@ -50,7 +50,7 @@ interface CartState {
   addItem: (item: PosCartItem) => void;
   removeItem: (index: number) => void;
   updateItemQuantity: (index: number, quantity: number) => void;
-  updateItemOptions: (index: number, selected_options: PosCartSelectedOption[]) => void;
+  replaceItem: (index: number, replacements: PosCartItem[]) => void;
   clearCart: () => void;
   holdCurrentOrder: () => void;
   resumeHeldOrder: (id: string) => void;
@@ -87,12 +87,32 @@ export const useCartStore = create<CartState>((set, get) => ({
       if (quantity <= 0) return { items: state.items.filter((_, i) => i !== index) };
       return { items: state.items.map((item, i) => (i === index ? { ...item, quantity } : item)) };
     }),
-  // Edits add-ons on an existing cart line in place — never merges into or
-  // creates another line, unlike addItem's same-line-detection logic.
-  updateItemOptions: (index, selected_options) =>
-    set((state) => ({
-      items: state.items.map((item, i) => (i === index ? { ...item, selected_options } : item)),
-    })),
+  // Task 108 — swaps ONE cart line (by index) for the line(s) produced by
+  // re-editing it in the Add-ons dialog, in place, then folds any resulting
+  // duplicates (e.g. an edited line now matching another existing line)
+  // using the same identity check addItem uses — never leaves the stale
+  // line behind, never appends a bare duplicate.
+  replaceItem: (index, replacements) =>
+    set((state) => {
+      const spliced = [...state.items.slice(0, index), ...replacements, ...state.items.slice(index + 1)];
+      const merged: PosCartItem[] = [];
+      for (const item of spliced) {
+        const existingIndex = merged.findIndex(
+          (i) =>
+            i.product_variant_id === item.product_variant_id &&
+            i.flavor_id === item.flavor_id &&
+            sameSelectedFlavors(i.selected_flavors, item.selected_flavors) &&
+            sameSelectedOptions(i.selected_options, item.selected_options),
+        );
+        if (existingIndex === -1) {
+          merged.push(item);
+        } else {
+          const existing = merged[existingIndex];
+          if (existing) merged[existingIndex] = { ...existing, quantity: existing.quantity + item.quantity };
+        }
+      }
+      return { items: merged };
+    }),
   clearCart: () => set({ items: [] }),
   holdCurrentOrder: () => {
     const { items, heldOrders } = get();

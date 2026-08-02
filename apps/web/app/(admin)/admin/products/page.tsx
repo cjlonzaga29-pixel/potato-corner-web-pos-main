@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Pencil, Plus } from 'lucide-react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import type { ProductResponse } from '@potato-corner/shared';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -18,11 +18,8 @@ import { BranchExclusiveBadge } from '@/components/admin/products/branch-exclusi
 import { CreateProductDialog } from '@/components/admin/products/create-product-dialog';
 
 const STATUS_FILTERS = [
-  { value: 'all', label: 'All Statuses' },
-  { value: 'draft', label: 'Draft' },
+  { value: 'all', label: 'All' },
   { value: 'active', label: 'Active' },
-  { value: 'temporarily_unavailable', label: 'Temporarily Unavailable' },
-  { value: 'discontinued', label: 'Discontinued' },
   { value: 'archived', label: 'Archived' },
 ] as const;
 
@@ -36,7 +33,7 @@ export default function ProductCatalogPage() {
   const router = useRouter();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
-  const [status, setStatus] = useState<string>('all');
+  const [status, setStatus] = useState<string>('active');
   const [seasonal, setSeasonal] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [createOpen, setCreateOpen] = useState(false);
@@ -76,6 +73,24 @@ export default function ProductCatalogPage() {
     { accessorKey: 'active_variant_count', header: 'Active Variants' },
     { accessorKey: 'active_branch_count', header: 'Active Branches' },
     { id: 'updated_at', header: 'Updated', cell: ({ row }) => formatDateTime(row.original.updated_at) },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Edit ${row.original.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            router.push(`/admin/products/${row.original.id}`);
+          }}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
+          Edit
+        </Button>
+      ),
+    },
   ];
 
   return (

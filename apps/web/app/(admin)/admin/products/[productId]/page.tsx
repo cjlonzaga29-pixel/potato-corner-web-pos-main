@@ -1,8 +1,7 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus } from 'lucide-react';
 import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -16,9 +15,10 @@ import { formatDateTime } from '@/lib/utils';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import {
   useProduct,
-  useDeleteProduct,
+  useChangeProductStatus,
   useDeleteVariant,
   useDeleteProductImage,
+  useProductReadiness,
 } from '@/hooks/queries/use-products';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { BranchAvailabilityPanel } from '@/components/products/branch-availability-panel';
@@ -31,24 +31,23 @@ import { UploadProductImageDialog } from '@/components/admin/products/upload-pro
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
-import { ReadinessTab } from '@/components/admin/products/readiness-tab';
+import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
 
 interface ProductDetailPageProps {
   params: Promise<{ productId: string }>;
 }
 
 export default function ProductDetailPage({ params }: ProductDetailPageProps) {
-  const router = useRouter();
   const { productId } = use(params);
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
-  const deleteProduct = useDeleteProduct();
+  const changeStatus = useChangeProductStatus(productId);
   const { selectedBranchId, availableBranches } = useSelectedBranch();
   const selectedBranchName = availableBranches.find((b) => b.id === selectedBranchId)?.name ?? null;
 
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
 
   if (isLoading) {
@@ -93,22 +92,31 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
           <Button variant="outline" onClick={() => setImageOpen(true)}>
             Upload Image
           </Button>
-          <Button variant="outline" onClick={() => setEditOpen(true)}>
-            Edit Product
-          </Button>
-          <Button onClick={() => setStatusOpen(true)}>Change Status</Button>
-          <Button variant="danger" onClick={() => setDeleteOpen(true)}>
-            Delete
-          </Button>
+          {product.status === 'archived' ? (
+            <Button
+              onClick={() => changeStatus.mutate({ status: 'active' })}
+              disabled={changeStatus.isPending}
+            >
+              Restore
+            </Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => setEditOpen(true)}>
+                Edit Product
+              </Button>
+              <Button onClick={() => setStatusOpen(true)}>Change Status</Button>
+              <Button variant="danger" onClick={() => setArchiveOpen(true)}>
+                Archive
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="readiness">Readiness</TabsTrigger>
           <TabsTrigger value="variants">Variants & Flavors</TabsTrigger>
-          <TabsTrigger value="availability">Branch Availability</TabsTrigger>
           <TabsTrigger value="media">Media</TabsTrigger>
         </TabsList>
 
@@ -116,20 +124,13 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
           <OverviewTab product={product} />
         </TabsContent>
 
-        <TabsContent value="readiness" className="space-y-4">
-          <ReadinessTab
+        <TabsContent value="variants" className="space-y-4">
+          <VariantsTab
             product={product}
             selectedBranchId={selectedBranchId}
+            selectedBranchName={selectedBranchName}
             onNavigateToTab={setActiveTab}
           />
-        </TabsContent>
-
-        <TabsContent value="variants" className="space-y-4">
-          <VariantsTab product={product} selectedBranchId={selectedBranchId} selectedBranchName={selectedBranchName} />
-        </TabsContent>
-
-        <TabsContent value="availability" className="space-y-4">
-          <BranchAvailabilityPanel product={product} />
         </TabsContent>
 
         <TabsContent value="media" className="space-y-4">
@@ -141,15 +142,14 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
       <ChangeProductStatusDialog open={statusOpen} onOpenChange={setStatusOpen} product={product} />
       <UploadProductImageDialog open={imageOpen} onOpenChange={setImageOpen} productId={productId} />
       <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        title={`Delete ${product.name}?`}
-        description="This action cannot be undone."
-        confirmLabel="Delete"
+        open={archiveOpen}
+        onOpenChange={setArchiveOpen}
+        title={`Archive ${product.name}?`}
+        description="Archived products disappear from the POS and product selectors, but stay visible in past transactions and reports. You can restore this product to Active at any time."
+        confirmLabel="Archive"
         variant="danger"
         onConfirm={async () => {
-          await deleteProduct.mutateAsync(productId);
-          router.push('/admin/products');
+          await changeStatus.mutateAsync({ status: 'archived' });
         }}
       />
     </div>
@@ -224,10 +224,12 @@ function VariantsTab({
   product,
   selectedBranchId,
   selectedBranchName,
+  onNavigateToTab,
 }: {
   product: ProductDetailResponse;
   selectedBranchId: string;
   selectedBranchName: string | null;
+  onNavigateToTab: (tab: string) => void;
 }) {
   const [variantDialog, setVariantDialog] = useState<{ open: boolean; variant?: ProductVariantResponse }>({ open: false });
   const [linkFlavorFor, setLinkFlavorFor] = useState<ProductVariantResponse | null>(null);
@@ -236,6 +238,13 @@ function VariantsTab({
   );
   const [deletingVariant, setDeletingVariant] = useState<ProductVariantResponse | null>(null);
   const deleteVariant = useDeleteVariant(product.id);
+  const readiness = useProductReadiness(product.id, selectedBranchId);
+  const availabilitySectionRef = useRef<HTMLDivElement>(null);
+
+  const handleManageBranchAvailability = () => {
+    availabilitySectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    availabilitySectionRef.current?.focus?.();
+  };
 
   const isArchived = product.status === 'archived';
   const sortedVariants = [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
@@ -252,6 +261,34 @@ function VariantsTab({
           Add Variant
         </Button>
       </div>
+
+      <Card>
+        <CardHeader className="py-3">
+          <CardTitle className="text-sm font-medium">Readiness</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-0">
+          {readiness.isLoading ? (
+            <div className="flex justify-center py-4">
+              <LoadingSpinner size="sm" />
+            </div>
+          ) : readiness.isError || !readiness.data ? (
+            <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+              <span>Failed to load readiness.</span>
+              <Button variant="outline" size="sm" onClick={() => void readiness.refetch()}>
+                Retry
+              </Button>
+            </div>
+          ) : readiness.data.scope === 'all_branches' ? (
+            <p className="text-sm text-muted-foreground">Select a single branch to see readiness details.</p>
+          ) : (
+            <ReadinessChecklist
+              data={readiness.data}
+              onNavigateToTab={onNavigateToTab}
+              onManageBranchAvailability={handleManageBranchAvailability}
+            />
+          )}
+        </CardContent>
+      </Card>
 
       {sortedVariants.length === 0 ? (
         <EmptyState title="No variants yet" description="Add a variant to start selling this product." />
@@ -271,6 +308,15 @@ function VariantsTab({
           ))}
         </div>
       )}
+
+      <Card ref={availabilitySectionRef} tabIndex={-1} className="outline-none">
+        <CardHeader className="py-3">
+          <CardTitle className="text-sm font-medium">Branch Availability</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <BranchAvailabilityPanel product={product} />
+        </CardContent>
+      </Card>
 
       <VariantFormDialog
         open={variantDialog.open}

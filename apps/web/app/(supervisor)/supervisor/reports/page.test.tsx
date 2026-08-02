@@ -52,6 +52,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
   useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
   usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
+  useVoidTransaction: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/hooks/use-auth', () => ({

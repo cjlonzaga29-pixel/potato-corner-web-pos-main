@@ -25,25 +25,20 @@ interface StatusOption {
   label: string;
 }
 
-/** Mirrors products.service.ts's GLOBAL_TRANSITIONS matrix exactly — archived has no outgoing transitions. */
+/**
+ * Mirrors products.service.ts's GLOBAL_TRANSITIONS matrix, minus the
+ * 'archived' target on every entry — Task 34 gave Archive/Restore their own
+ * dedicated one-click actions on the product detail page, so this dialog
+ * stays scoped to the non-terminal operational transitions.
+ */
 const GLOBAL_TRANSITIONS: Record<ProductStatus, StatusOption[]> = {
-  draft: [
-    { value: 'active', label: 'Active' },
-    { value: 'archived', label: 'Archived' },
-  ],
+  draft: [{ value: 'active', label: 'Active' }],
   active: [
     { value: 'temporarily_unavailable', label: 'Temporarily Unavailable' },
     { value: 'discontinued', label: 'Discontinued' },
-    { value: 'archived', label: 'Archived' },
   ],
-  temporarily_unavailable: [
-    { value: 'active', label: 'Active' },
-    { value: 'archived', label: 'Archived' },
-  ],
-  discontinued: [
-    { value: 'active', label: 'Active' },
-    { value: 'archived', label: 'Archived' },
-  ],
+  temporarily_unavailable: [{ value: 'active', label: 'Active' }],
+  discontinued: [{ value: 'active', label: 'Active' }],
   archived: [],
 };
 

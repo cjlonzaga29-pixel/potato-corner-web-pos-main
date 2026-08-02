@@ -1445,15 +1445,26 @@ export const productsService = {
             min_selections: assignment.optionGroup.minSelections,
             max_selections: assignment.optionGroup.maxSelections,
             required: assignment.required ?? assignment.optionGroup.required,
-            options: assignment.allowedOptions
-              .filter((allowed) => allowed.productOption.isActive)
-              .map((allowed) => ({
-                id: allowed.productOption.id,
-                name: allowed.productOption.name,
-                price_adjustment: allowed.productOption.priceAdjustment.toNumber(),
-                sort_order: allowed.productOption.sortOrder,
-                is_active: allowed.productOption.isActive,
-              })),
+            // Empty allowedOptions means "all options" — fall back to every
+            // active option in the assigned group (CR-008 R11/R12).
+            options:
+              assignment.allowedOptions.length > 0
+                ? assignment.allowedOptions
+                    .filter((allowed) => allowed.productOption.isActive)
+                    .map((allowed) => ({
+                      id: allowed.productOption.id,
+                      name: allowed.productOption.name,
+                      price_adjustment: allowed.productOption.priceAdjustment.toNumber(),
+                      sort_order: allowed.productOption.sortOrder,
+                      is_active: allowed.productOption.isActive,
+                    }))
+                : assignment.optionGroup.options.map((option) => ({
+                    id: option.id,
+                    name: option.name,
+                    price_adjustment: option.priceAdjustment.toNumber(),
+                    sort_order: option.sortOrder,
+                    is_active: option.isActive,
+                  })),
           })),
         flavor_slots: variant.flavorSlots
           .slice()

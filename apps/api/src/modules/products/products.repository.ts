@@ -325,7 +325,24 @@ export const productsRepository = {
             optionGroupAssignments: {
               include: {
                 optionGroup: {
-                  select: { id: true, name: true, posButtonLabel: true, selectionType: true, minSelections: true, maxSelections: true, required: true, isActive: true },
+                  select: {
+                    id: true,
+                    name: true,
+                    posButtonLabel: true,
+                    selectionType: true,
+                    minSelections: true,
+                    maxSelections: true,
+                    required: true,
+                    isActive: true,
+                    // "All options" assignments (no allowedOptions rows) fall
+                    // back to every active option in the group — see
+                    // getPosCatalog's option_groups mapping.
+                    options: {
+                      where: { isActive: true },
+                      orderBy: { sortOrder: 'asc' },
+                      select: { id: true, name: true, priceAdjustment: true, sortOrder: true, isActive: true },
+                    },
+                  },
                 },
                 allowedOptions: {
                   orderBy: { sortOrder: 'asc' },

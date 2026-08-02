@@ -2329,6 +2329,60 @@ describe('transactionsService.createTransaction — Product Option inventory ded
     expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
     expect(universalInventoryRepository.createStockMovement).not.toHaveBeenCalled();
   });
+
+  it('rejects with a checkout-safe TransactionError, not a raw UnitConversionError, when no UnitConversion row bridges the mapping unit to the inventory item base unit', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({ deductionUnitId: 'unit-tbsp', inventoryItem: { baseUnitId: 'unit-kg', deletedAt: null } }),
+    ] as never);
+    // universalInventoryRepository.findConversion defaults to null (module mock above) for both
+    // the direct and inverse lookup — no UnitConversion row exists between unit-tbsp and unit-kg.
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_INVENTORY_UNIT_MISMATCH', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 5, 10])('scales the mapped deduction quantity linearly at cart quantity %i (0.5 tbsp per unit)', async (cartQuantity) => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-cheese', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([inventoryMappingRow()] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(1000) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: cartQuantity, selectedOptionIds: ['option-cheese'] }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            quantity: cartQuantity,
+            deductionSnapshot: [
+              {
+                inventoryItemId: 'item-cheese-topping',
+                quantity: 0.5 * cartQuantity,
+                baseUnitId: 'unit-tbsp',
+                componentUnitCost: null,
+                componentCost: null,
+              },
+            ],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
 });
 
 // Task 32 — server-side pricing bug fix: selected Product Options'

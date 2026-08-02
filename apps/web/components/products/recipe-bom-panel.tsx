@@ -129,6 +129,7 @@ export function RecipeBomPanel({ productVariantId, variantLabel, branchId }: Rec
           productVariantId={productVariantId}
           existingComponents={components ?? []}
           editingComponent={formDialog.component}
+          productVariantLabel={variantLabel}
         />
       )}
 

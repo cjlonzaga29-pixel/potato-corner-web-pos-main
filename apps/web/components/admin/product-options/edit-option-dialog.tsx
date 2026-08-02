@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -12,7 +12,9 @@ import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
-import { useUpdateProductOption } from '@/hooks/queries/use-product-options';
+import { useUpdateProductOption, useProductOptionAssignedVariants } from '@/hooks/queries/use-product-options';
+import { useInventoryCategories, useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
+import { VariantDeductionCard, type VariantDeductionCardHandle } from './variant-deduction-card';
 
 function optionalCoercedNumber(min: number) {
   return z.preprocess(
@@ -47,15 +49,36 @@ interface EditOptionDialogProps {
 }
 
 export function EditOptionDialog({ groupId, option, open, onOpenChange }: EditOptionDialogProps) {
-  const updateOption = useUpdateProductOption(groupId, option?.id ?? '');
+  const optionId = option?.id ?? '';
+  const updateOption = useUpdateProductOption(groupId, optionId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: option ? valuesFromOption(option) : undefined });
 
   useEffect(() => {
     if (option) form.reset(valuesFromOption(option));
   }, [option, form]);
 
+  const { data: assignedVariants, isLoading: variantsLoading } = useProductOptionAssignedVariants(groupId, optionId);
+  const { data: categories } = useInventoryCategories();
+  const { data: inventoryItems } = useInventoryItems();
+  const { data: units } = useUnitsOfMeasure();
+
+  const cardRefs = useRef(new Map<string, VariantDeductionCardHandle>());
+  const [isSavingDeductions, setIsSavingDeductions] = useState(false);
+
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
+  }
+
+  async function saveDeductions() {
+    if (!assignedVariants || !optionId) return;
+    setIsSavingDeductions(true);
+    try {
+      for (const variant of assignedVariants) {
+        await cardRefs.current.get(variant.product_variant_id)?.save();
+      }
+    } finally {
+      setIsSavingDeductions(false);
+    }
   }
 
   async function onSubmit(values: FormValues) {
@@ -67,8 +90,11 @@ export function EditOptionDialog({ groupId, option, open, onOpenChange }: EditOp
       sort_order: parsed.sort_order,
       is_active: parsed.is_active,
     });
+    await saveDeductions();
     handleOpenChange(false);
   }
+
+  const isSaving = updateOption.isPending || isSavingDeductions;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -103,12 +129,46 @@ export function EditOptionDialog({ groupId, option, open, onOpenChange }: EditOp
               <Switch checked={form.watch('is_active')} onCheckedChange={(checked) => form.setValue('is_active', checked)} />
             </div>
 
+            <div className="space-y-3 rounded-md border p-3">
+              <p className="text-sm font-medium">Inventory Deduction</p>
+
+              {variantsLoading ? (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : !assignedVariants || assignedVariants.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Assign this option&apos;s group to a variant before configuring a deduction.
+                </p>
+              ) : (
+                <div className={assignedVariants.length > 1 ? 'space-y-3' : ''}>
+                  {assignedVariants.map((variant) => (
+                    <VariantDeductionCard
+                      key={variant.product_variant_id}
+                      ref={(node) => {
+                        if (node) cardRefs.current.set(variant.product_variant_id, node);
+                        else cardRefs.current.delete(variant.product_variant_id);
+                      }}
+                      variantId={variant.product_variant_id}
+                      variantLabel={`${variant.product_name} ${variant.variant_name}`}
+                      optionId={optionId}
+                      open={open}
+                      showHeader={assignedVariants.length > 1}
+                      categories={categories}
+                      inventoryItems={inventoryItems}
+                      units={units}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={updateOption.isPending}>
-                {updateOption.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Button type="submit" disabled={isSaving}>
+                {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Save Changes
               </Button>
             </DialogFooter>

@@ -15,7 +15,6 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/hooks/queries/use-product-options', () => ({
   useProductOptionGroup: mockUseProductOptionGroup,
   useUpdateProductOptionGroup: mockUseUpdateProductOptionGroup,
-  useProductOptionDeductionStatus: () => ({ status: 'not_configured', configuredCount: 0, totalCount: 0, isLoading: false }),
   useUpdateProductOption: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
@@ -25,10 +24,6 @@ vi.mock('@/components/admin/product-options/create-option-dialog', () => ({
 
 vi.mock('@/components/admin/product-options/edit-option-dialog', () => ({
   EditOptionDialog: () => null,
-}));
-
-vi.mock('@/components/admin/product-options/manage-option-deduction-dialog', () => ({
-  ManageOptionDeductionDialog: () => null,
 }));
 
 function group(overrides: Partial<ProductOptionGroupDetailResponse> = {}): ProductOptionGroupDetailResponse {

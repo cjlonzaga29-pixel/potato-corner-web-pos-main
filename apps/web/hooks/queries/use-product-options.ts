@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQueries, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type {
   AssignVariantOptionGroupInput,
@@ -242,7 +242,7 @@ export function useUpdateVariantOptionGroup(productId: string, variantId: string
   });
 }
 
-/** Reverse lookup for the Manage Deduction dialog: which variants use this option. */
+/** Reverse lookup for the Edit Option dialog's Inventory Deduction section: which variants use this option. */
 export function useProductOptionAssignedVariants(groupId: string | null | undefined, optionId: string | null | undefined) {
   return useQuery({
     queryKey: ['product-option-assigned-variants', groupId, optionId],
@@ -256,50 +256,6 @@ export function useProductOptionAssignedVariants(groupId: string | null | undefi
     enabled: Boolean(groupId) && Boolean(optionId),
     staleTime: 30 * 1000,
   });
-}
-
-export type ProductOptionDeductionStatus = 'configured' | 'partial' | 'not_configured';
-
-export interface ProductOptionDeductionSummary {
-  status: ProductOptionDeductionStatus;
-  configuredCount: number;
-  totalCount: number;
-  isLoading: boolean;
-}
-
-/**
- * Derives the ProductOption row badge (Configured / Partial / Not Configured)
- * from data the Manage Deduction dialog already fetches — the assigned-variants
- * reverse lookup plus each variant's ProductComponent list (queryKey shared
- * with useProductComponents, so opening the dialog afterward reuses the cache).
- */
-export function useProductOptionDeductionStatus(groupId: string, optionId: string): ProductOptionDeductionSummary {
-  const { data: variants, isLoading: variantsLoading } = useProductOptionAssignedVariants(groupId, optionId);
-
-  const componentQueries = useQueries({
-    queries: (variants ?? []).map((variant) => ({
-      queryKey: ['product-components', variant.product_variant_id],
-      queryFn: async () => {
-        const response = await apiClient<{ components: { product_option_id: string | null }[] }>(
-          `/api/product-components?product_variant_id=${variant.product_variant_id}`,
-        );
-        if (!response.data) throw new Error(errorMessage(response, 'Failed to load recipe components'));
-        return response.data.components;
-      },
-      staleTime: 30 * 1000,
-    })),
-  });
-
-  const totalCount = variants?.length ?? 0;
-  const configuredCount = componentQueries.filter((query) =>
-    query.data?.some((component) => component.product_option_id === optionId),
-  ).length;
-  const isLoading = variantsLoading || componentQueries.some((query) => query.isLoading);
-
-  const status: ProductOptionDeductionStatus =
-    configuredCount === 0 ? 'not_configured' : configuredCount === totalCount ? 'configured' : 'partial';
-
-  return { status, configuredCount, totalCount, isLoading };
 }
 
 export function useUnassignVariantOptionGroup(productId: string, variantId: string) {

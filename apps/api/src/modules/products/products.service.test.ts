@@ -1814,6 +1814,161 @@ describe('productsService.getPosCatalog — option group pos_button_label (Task 
   });
 });
 
+describe('productsService.getPosCatalog — "all options" assignments (Task 72)', () => {
+  function optionGroupVariant(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'variant-1',
+      name: 'Regular',
+      sizeLabel: 'Regular',
+      basePrice: { toNumber: () => 100 },
+      vatableCapAmount: null,
+      variantFlavors: [],
+      optionGroupAssignments: [],
+      flavorSlots: [],
+      ...overrides,
+    };
+  }
+
+  function optionGroupProduct(variant: Record<string, unknown>) {
+    return {
+      id: 'product-1',
+      name: 'Regular Fries',
+      category: 'Snacks',
+      imageUrl: null,
+      variants: [variant],
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+  });
+
+  it('returns every active option in the group when allowedOptions is empty ("all options")', async () => {
+    const assignment = {
+      required: null,
+      optionGroup: {
+        id: 'group-1',
+        name: 'Flavor',
+        posButtonLabel: 'Add-Ons',
+        selectionType: 'MULTIPLE',
+        minSelections: 0,
+        maxSelections: null,
+        required: true,
+        isActive: true,
+        options: [
+          { id: 'opt-cheese', name: 'Cheese', priceAdjustment: { toNumber: () => 0 }, sortOrder: 1, isActive: true },
+          { id: 'opt-bbq', name: 'BBQ', priceAdjustment: { toNumber: () => 0 }, sortOrder: 2, isActive: true },
+          { id: 'opt-sour-cream', name: 'Sour Cream', priceAdjustment: { toNumber: () => 0 }, sortOrder: 3, isActive: true },
+          { id: 'opt-white-cheddar', name: 'White Cheddar', priceAdjustment: { toNumber: () => 5 }, sortOrder: 4, isActive: true },
+        ],
+      },
+      allowedOptions: [],
+    };
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups[0]?.options.map((o) => o.name)).toEqual([
+      'Cheese',
+      'BBQ',
+      'Sour Cream',
+      'White Cheddar',
+    ]);
+    expect(result.products[0]?.variants[0]?.option_groups[0]?.pos_button_label).toBe('Add-Ons');
+  });
+
+  it('excludes inactive options from an "all options" assignment (the repository query already filters isActive, this guards the fallback mapping)', async () => {
+    const assignment = {
+      required: null,
+      optionGroup: {
+        id: 'group-1',
+        name: 'Flavor',
+        posButtonLabel: 'Add-Ons',
+        selectionType: 'MULTIPLE',
+        minSelections: 0,
+        maxSelections: null,
+        required: false,
+        isActive: true,
+        // Simulates the repository's `where: { isActive: true }` filter already having excluded "Ranch".
+        options: [{ id: 'opt-cheese', name: 'Cheese', priceAdjustment: { toNumber: () => 0 }, sortOrder: 1, isActive: true }],
+      },
+      allowedOptions: [],
+    };
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups[0]?.options).toEqual([
+      { id: 'opt-cheese', name: 'Cheese', price_adjustment: 0, sort_order: 1, is_active: true },
+    ]);
+  });
+
+  it('returns only the specific allowed options when allowedOptions is non-empty, ignoring other options in the group', async () => {
+    const assignment = {
+      required: null,
+      optionGroup: {
+        id: 'group-1',
+        name: 'Flavor',
+        posButtonLabel: 'Add-Ons',
+        selectionType: 'MULTIPLE',
+        minSelections: 0,
+        maxSelections: null,
+        required: false,
+        isActive: true,
+        // Other active options exist in the group but are not allowed on this variant.
+        options: [
+          { id: 'opt-cheese', name: 'Cheese', priceAdjustment: { toNumber: () => 0 }, sortOrder: 1, isActive: true },
+          { id: 'opt-bbq', name: 'BBQ', priceAdjustment: { toNumber: () => 0 }, sortOrder: 2, isActive: true },
+        ],
+      },
+      allowedOptions: [
+        {
+          productOption: { id: 'opt-cheese', name: 'Cheese', priceAdjustment: { toNumber: () => 0 }, sortOrder: 1, isActive: true },
+        },
+      ],
+    };
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]?.variants[0]?.option_groups[0]?.options).toEqual([
+      { id: 'opt-cheese', name: 'Cheese', price_adjustment: 0, sort_order: 1, is_active: true },
+    ]);
+  });
+
+  it('does not duplicate options when falling back to "all options"', async () => {
+    const assignment = {
+      required: null,
+      optionGroup: {
+        id: 'group-1',
+        name: 'Flavor',
+        posButtonLabel: 'Add-Ons',
+        selectionType: 'MULTIPLE',
+        minSelections: 0,
+        maxSelections: null,
+        required: false,
+        isActive: true,
+        options: [{ id: 'opt-cheese', name: 'Cheese', priceAdjustment: { toNumber: () => 0 }, sortOrder: 1, isActive: true }],
+      },
+      allowedOptions: [],
+    };
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      optionGroupProduct(optionGroupVariant({ optionGroupAssignments: [assignment] })),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const ids = result.products[0]?.variants[0]?.option_groups[0]?.options.map((o) => o.id) ?? [];
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
 describe('productsService.getPosCatalog — live POS readiness (Phase B, delegated to productReadinessService)', () => {
   function readinessVariant(overrides: Partial<Record<string, unknown>> = {}) {
     return {

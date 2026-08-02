@@ -30,6 +30,8 @@ interface RecipeComponentFormDialogProps {
    */
   fixedProductOptionId?: string;
   fixedProductOptionLabel?: string;
+  /** Display label for the product variant this recipe belongs to (e.g. "Regular (Small)"), shown in the Deduction Preview. */
+  productVariantLabel?: string;
 }
 
 /** CR-011.2 — preferred recipe unit per base unit code, when a compatible (same-dimension) unit with that code exists; otherwise falls back to the base unit itself. */
@@ -45,6 +47,11 @@ function pickDefaultRecipeUnit(compatibleUnits: UnitOfMeasureResponse[], baseUni
   const preferredCode = PREFERRED_RECIPE_UNIT_CODE[baseUnit.code.toLowerCase()];
   const preferred = preferredCode ? compatibleUnits.find((u) => u.code.toLowerCase() === preferredCode) : undefined;
   return (preferred ?? baseUnit).id;
+}
+
+/** COUNT-dimension items (e.g. cups, lids) are consumed one-per-item; WEIGHT/VOLUME items have no sane guess, so the admin must fill them in. */
+function defaultQuantityForDimension(dimension: UnitOfMeasureResponse['dimension']): number {
+  return dimension === 'COUNT' ? 1 : 0;
 }
 
 /**
@@ -66,6 +73,7 @@ export function RecipeComponentFormDialog({
   editingComponent,
   fixedProductOptionId,
   fixedProductOptionLabel,
+  productVariantLabel,
 }: RecipeComponentFormDialogProps) {
   const isEdit = Boolean(editingComponent);
 
@@ -113,6 +121,21 @@ export function RecipeComponentFormDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEdit, baseUnit?.id]);
 
+  // Auto-fill Quantity Required for a new component based on the item's unit
+  // dimension (COUNT → 1, WEIGHT/VOLUME → 0); the admin edits it if needed.
+  // Edit mode never runs this — the stored quantity is reused as-is.
+  useEffect(() => {
+    if (isEdit || !baseUnit || quantityRequired !== '') return;
+    setQuantityRequired(String(defaultQuantityForDimension(baseUnit.dimension)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, baseUnit?.id]);
+
+  const selectedOptionLabel = fixedProductOptionId
+    ? fixedProductOptionLabel
+    : (productOptions ?? []).find((option) => option.id === productOptionId)?.name;
+  const previewItemName = selectedItem?.name ?? editingComponent?.inventory_item_name;
+  const previewCategoryName = selectedItem?.category_name;
+
   const usedItemIds = new Set(existingComponents.map((component) => component.inventory_item_id));
   const availableItems = (inventoryItems ?? []).filter((item) => !usedItemIds.has(item.id));
 
@@ -123,6 +146,7 @@ export function RecipeComponentFormDialog({
   function handleInventoryItemChange(nextItemId: string) {
     setInventoryItemId(nextItemId);
     setRecipeUnitId('');
+    setQuantityRequired('');
   }
 
   async function handleSubmit() {
@@ -190,6 +214,19 @@ export function RecipeComponentFormDialog({
             </div>
           )}
 
+          {selectedItem && (
+            <div className="grid grid-cols-2 gap-3 rounded-md border bg-muted/30 p-3 text-sm">
+              <div>
+                <p className="text-xs text-muted-foreground">Inventory Category</p>
+                <p className="font-medium">{selectedItem.category_name ?? 'Uncategorized'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Base Unit</p>
+                <p className="font-medium">{baseUnit ? `${baseUnit.code} — ${baseUnit.name}` : (selectedItem.base_unit_code ?? '—')}</p>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label htmlFor="recipe-component-quantity">Quantity Required</Label>
@@ -218,6 +255,22 @@ export function RecipeComponentFormDialog({
               </Select>
             </div>
           </div>
+
+          {recipeUnitId && quantityRequired !== '' && (
+            <div className="rounded-md border bg-muted/30 p-3 text-sm">
+              <p className="text-xs font-medium uppercase text-muted-foreground">Deduction Preview</p>
+              <div className="mt-2 space-y-0.5">
+                {productVariantLabel && <p className="font-medium">{productVariantLabel}</p>}
+                {selectedOptionLabel && <p className="text-muted-foreground">{selectedOptionLabel}</p>}
+                <p className="font-medium">→ {previewItemName ?? 'Selected item'}</p>
+              </div>
+              <p className="mt-2 text-base font-semibold">
+                {quantityRequired} {compatibleUnits.find((u) => u.id === recipeUnitId)?.code ?? ''}
+              </p>
+              {previewCategoryName && <p className="text-xs text-muted-foreground">from {previewCategoryName}</p>}
+              <p className="text-xs text-muted-foreground">per item sold</p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="recipe-component-option">Product Option</Label>

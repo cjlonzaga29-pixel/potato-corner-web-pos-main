@@ -86,6 +86,7 @@ export function ManageOptionDeductionDialog({ groupId, option, open, onOpenChang
         editingComponent={editingComponent}
         fixedProductOptionId={option.id}
         fixedProductOptionLabel={option.name}
+        productVariantLabel={`${selectedVariant.product_name} ${selectedVariant.variant_name}`}
       />
     );
   }

@@ -72,6 +72,7 @@ const UNITS: UnitOfMeasureResponse[] = [
   { id: 'unit-g', code: 'g', name: 'Gram', dimension: 'WEIGHT', is_base_unit: false, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
   { id: 'unit-l', code: 'l', name: 'Liter', dimension: 'VOLUME', is_base_unit: true, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
   { id: 'unit-ml', code: 'ml', name: 'Milliliter', dimension: 'VOLUME', is_base_unit: false, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+  { id: 'unit-pc', code: 'pc', name: 'Piece', dimension: 'COUNT', is_base_unit: true, is_active: true, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
 ];
 
 const ITEM: InventoryItemResponse = {
@@ -79,10 +80,38 @@ const ITEM: InventoryItemResponse = {
   name: 'Cheese Powder',
   sku: null,
   barcode: null,
-  category_id: null,
-  category_name: null,
+  category_id: 'category-1',
+  category_name: 'Flavor Powders',
   base_unit_id: 'unit-kg',
   base_unit_code: 'kg',
+  track_inventory: true,
+  created_at: '2026-01-01T00:00:00.000Z',
+  updated_at: '2026-01-01T00:00:00.000Z',
+};
+
+const ITEM_2: InventoryItemResponse = {
+  id: 'item-2',
+  name: 'Regular Cup',
+  sku: null,
+  barcode: null,
+  category_id: 'category-2',
+  category_name: 'Packaging',
+  base_unit_id: 'unit-l',
+  base_unit_code: 'l',
+  track_inventory: true,
+  created_at: '2026-01-01T00:00:00.000Z',
+  updated_at: '2026-01-01T00:00:00.000Z',
+};
+
+const ITEM_PC: InventoryItemResponse = {
+  id: 'item-3',
+  name: 'Cup Lid',
+  sku: null,
+  barcode: null,
+  category_id: 'category-2',
+  category_name: 'Packaging',
+  base_unit_id: 'unit-pc',
+  base_unit_code: 'pc',
   track_inventory: true,
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
@@ -158,6 +187,105 @@ describe('RecipeComponentFormDialog — add mode', () => {
     );
   });
 
+  it('displays the selected item Inventory Category and Base Unit as read-only, and updates them when the item changes', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM, ITEM_2], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
+
+    expect(screen.queryByText('Flavor Powders')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Cheese Powder'));
+    expect(screen.getByText('Flavor Powders')).toBeInTheDocument();
+    expect(screen.getByText('kg — Kilogram')).toBeInTheDocument();
+    // Category/base unit are plain text, not an editable control.
+    expect(screen.getByText('Flavor Powders').tagName).toBe('P');
+
+    fireEvent.click(screen.getByText('Regular Cup'));
+    expect(screen.getByText('Packaging')).toBeInTheDocument();
+    expect(screen.getByText('l — Liter')).toBeInTheDocument();
+    expect(screen.queryByText('Flavor Powders')).not.toBeInTheDocument();
+  });
+
+  it('shows a deduction preview once quantity and unit are set', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
+
+    fireEvent.click(screen.getByText('Cheese Powder'));
+    fireEvent.change(screen.getByLabelText('Quantity Required'), { target: { value: '10' } });
+
+    expect(screen.getByText('Deduction Preview')).toBeInTheDocument();
+    expect(screen.getByText('→ Cheese Powder')).toBeInTheDocument();
+    expect(screen.getByText('10 g')).toBeInTheDocument();
+    expect(screen.getByText('from Flavor Powders')).toBeInTheDocument();
+    expect(screen.getByText('per item sold')).toBeInTheDocument();
+  });
+
+  it('includes the product variant and selected option in the deduction preview', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: PRODUCT_OPTIONS, isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(
+      <RecipeComponentFormDialog
+        open
+        onOpenChange={vi.fn()}
+        productVariantId="variant-1"
+        existingComponents={[]}
+        productVariantLabel="Regular Fries"
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Cheese Powder'));
+    fireEvent.change(screen.getByLabelText('Quantity Required'), { target: { value: '10' } });
+    fireEvent.click(screen.getByText('Size: Large'));
+
+    expect(screen.getByText('Regular Fries')).toBeInTheDocument();
+    expect(screen.getByText('Large')).toBeInTheDocument();
+    expect(screen.getByText('→ Cheese Powder')).toBeInTheDocument();
+    expect(screen.getByText('10 g')).toBeInTheDocument();
+    expect(screen.getByText('from Flavor Powders')).toBeInTheDocument();
+  });
+
+  it('shows the fixed product option label in the deduction preview (Manage Deduction flow)', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM_2], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(
+      <RecipeComponentFormDialog
+        open
+        onOpenChange={vi.fn()}
+        productVariantId="variant-1"
+        existingComponents={[]}
+        productVariantLabel="Regular Fries"
+        fixedProductOptionId="option-1"
+        fixedProductOptionLabel="Cheese"
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Regular Cup'));
+    fireEvent.change(screen.getByLabelText('Quantity Required'), { target: { value: '1' } });
+
+    expect(screen.getByText('Regular Fries')).toBeInTheDocument();
+    // "Cheese" appears twice: the read-only fixed Product Option label and the preview.
+    expect(screen.getAllByText('Cheese')).toHaveLength(2);
+    expect(screen.getByText('→ Regular Cup')).toBeInTheDocument();
+    expect(screen.getByText('from Packaging')).toBeInTheDocument();
+  });
+
   it('loads Product Options with Base Recipe listed first, and Create with Base Recipe sends product_option_id: null', async () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
@@ -183,6 +311,72 @@ describe('RecipeComponentFormDialog — add mode', () => {
         inventory_item_id: 'item-1',
         quantity_required: 100,
         recipe_unit_id: 'unit-g',
+        product_option_id: null,
+      }),
+    );
+  });
+
+  it('defaults Quantity Required to 1 for a COUNT-dimension item (packaging)', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM_PC], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
+
+    fireEvent.click(screen.getByText('Cup Lid'));
+
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(1);
+  });
+
+  it('defaults Quantity Required to 0 for a WEIGHT-dimension item', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
+
+    fireEvent.click(screen.getByText('Cheese Powder'));
+
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(0);
+  });
+
+  it('defaults Quantity Required to 0 for a VOLUME-dimension item', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM_2], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
+
+    fireEvent.click(screen.getByText('Regular Cup'));
+
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(0);
+  });
+
+  it('submits the auto-filled quantity unchanged when the admin does not edit it (COUNT item)', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM_PC], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync, isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
+
+    fireEvent.click(screen.getByText('Cup Lid'));
+    fireEvent.click(screen.getByText('Add Component'));
+
+    await waitFor(() =>
+      expect(mutateAsync).toHaveBeenCalledWith({
+        product_variant_id: 'variant-1',
+        inventory_item_id: 'item-3',
+        quantity_required: 1,
+        recipe_unit_id: 'unit-pc',
         product_option_id: null,
       }),
     );
@@ -216,6 +410,33 @@ describe('RecipeComponentFormDialog — add mode', () => {
 });
 
 describe('RecipeComponentFormDialog — edit mode', () => {
+  it('displays the current item Inventory Category and Base Unit, and preserves the saved quantity and recipe unit', () => {
+    mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
+    mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
+    mockUseAllActiveProductOptions.mockReturnValue({ data: [], isLoading: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+
+    render(
+      <RecipeComponentFormDialog
+        open
+        onOpenChange={vi.fn()}
+        productVariantId="variant-1"
+        existingComponents={[EDITING_COMPONENT]}
+        editingComponent={EDITING_COMPONENT}
+      />,
+    );
+
+    expect(screen.getByText('Flavor Powders')).toBeInTheDocument();
+    expect(screen.getByText('kg — Kilogram')).toBeInTheDocument();
+    expect(screen.getByLabelText('Quantity Required')).toHaveValue(2);
+    expect(screen.getByText('kg').closest('button')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByText('Deduction Preview')).toBeInTheDocument();
+    expect(screen.getByText('→ Cheese Powder')).toBeInTheDocument();
+    expect(screen.getByText('2 kg')).toBeInTheDocument();
+    expect(screen.getByText('from Flavor Powders')).toBeInTheDocument();
+  });
+
   it('allows changing the recipe unit and submits it in the update payload', async () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });

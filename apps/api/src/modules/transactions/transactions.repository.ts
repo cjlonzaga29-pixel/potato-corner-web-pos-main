@@ -156,10 +156,26 @@ export const transactionsRepository = {
         // CR-008 Product Options (Task 32) — the trusted, DB-sourced set of
         // options this variant is actually allowed to sell, used to price
         // and validate selectedOptionIds server-side. Never trust a
-        // frontend-provided option name/price for this.
+        // frontend-provided option name/price for this. Also fetches the
+        // option group's own `options` list (Task 105) — an assignment with
+        // no allowedOptions rows means "all active options in the group"
+        // (CR-008 R11/R12, same fallback getPosCatalog's option_groups
+        // mapping applies), so checkout validation must see the same set
+        // the POS terminal rendered as selectable, or it rejects options the
+        // POS itself offered.
         optionGroupAssignments: {
           include: {
-            optionGroup: { select: { id: true, name: true, posButtonLabel: true } },
+            optionGroup: {
+              select: {
+                id: true,
+                name: true,
+                posButtonLabel: true,
+                options: {
+                  where: { isActive: true },
+                  select: { id: true, name: true, isActive: true, priceAdjustment: true },
+                },
+              },
+            },
             allowedOptions: {
               include: {
                 productOption: { select: { id: true, name: true, isActive: true, priceAdjustment: true } },

@@ -213,10 +213,36 @@ function variantRow(overrides: Record<string, unknown> = {}) {
 /** Task 32 — one ProductVariantOptionGroup assignment row exposing a single allowed ProductOption, in the shape findVariantsForSale's optionGroupAssignments include returns. */
 function optionAssignment(productOptionId: string, priceAdjustment: number, isActive = true) {
   return {
-    optionGroup: { id: `group-${productOptionId}`, name: `Group ${productOptionId}`, posButtonLabel: null },
+    optionGroup: { id: `group-${productOptionId}`, name: `Group ${productOptionId}`, posButtonLabel: null, options: [] },
     allowedOptions: [
       { productOptionId, productOption: { id: productOptionId, name: productOptionId, isActive, priceAdjustment: decimal(priceAdjustment) } },
     ],
+  };
+}
+
+/**
+ * Task 105 — a ProductVariantOptionGroup assignment using the Product
+ * Builder's "all options" mode: no explicit ProductVariantOptionGroupOption
+ * rows (allowedOptions is empty), so every active option in the group is
+ * sellable — the same set getPosCatalog's option_groups mapping renders as
+ * selectable on the POS terminal (products.service.ts, "Empty allowedOptions
+ * means 'all options'"). In the shape findVariantsForSale's
+ * optionGroupAssignments include returns.
+ */
+function allOptionsAssignment(groupId: string, options: { id: string; priceAdjustment: number; isActive?: boolean }[]) {
+  return {
+    optionGroup: {
+      id: groupId,
+      name: `Group ${groupId}`,
+      posButtonLabel: null,
+      options: options.map((option) => ({
+        id: option.id,
+        name: option.id,
+        isActive: option.isActive ?? true,
+        priceAdjustment: decimal(option.priceAdjustment),
+      })),
+    },
+    allowedOptions: [],
   };
 }
 
@@ -2610,6 +2636,101 @@ describe('transactionsService.createTransaction — Product Option price adjustm
       ),
     ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  // Task 105 regression — Regular Cheese Fries / Regular assigned to the
+  // Add-ons group in "all options" mode (no explicit allowedOptions rows):
+  // BBQ is active in the group, so it renders as selectable on the POS
+  // (getPosCatalog's option_groups fallback) and checkout must accept it too.
+  it('accepts an option allowed only via the group\'s "all options" fallback (no explicit allowedOptions rows)', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [allOptionsAssignment('group-addons', [{ id: 'option-bbq', priceAdjustment: 10 }])] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalled();
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 110, lineTotal: 110 });
+  });
+
+  it('prices and snapshots a group-fallback option from the trusted DB priceAdjustment/name, same as an explicitly-allowed option', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [allOptionsAssignment('group-addons', [{ id: 'option-bbq', priceAdjustment: 10 }])] }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
+      null,
+    );
+
+    expect(itemsCall().items[0]).toMatchObject({
+      selectedOptions: [
+        { optionId: 'option-bbq', optionName: 'option-bbq', optionGroupId: 'group-addons', optionGroupName: 'Group group-addons', priceAdjustment: 10 },
+      ],
+    });
+  });
+
+  it('still rejects an option that is not a member of the group at all, even under "all options" mode', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [allOptionsAssignment('group-addons', [{ id: 'option-bbq', priceAdjustment: 10 }])] }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-sourcream'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inactive option even when surfaced via the "all options" fallback', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [allOptionsAssignment('group-addons', [{ id: 'option-bbq', priceAdjustment: 10, isActive: false }])] }),
+    ] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('resolves multiple option groups together when one uses an explicit allow-list and another uses the "all options" fallback', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        optionGroupAssignments: [
+          optionAssignment('option-cheese', 15),
+          allOptionsAssignment('group-addons', [
+            { id: 'option-bbq', priceAdjustment: 10 },
+            { id: 'option-sourcream', priceAdjustment: 8 },
+          ]),
+        ],
+      }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [
+          {
+            productId: 'product-1',
+            productVariantId: 'variant-1',
+            quantity: 1,
+            selectedOptionIds: ['option-cheese', 'option-bbq', 'option-sourcream'],
+          },
+        ],
+      },
+      null,
+    );
+
+    // basePrice 100 + cheese 15 + bbq 10 + sour cream 8
+    expect(itemsCall().items[0]).toMatchObject({ unitPrice: 133, lineTotal: 133 });
   });
 
   it('ignores frontend-provided display price metadata and prices strictly from the trusted DB priceAdjustment', async () => {

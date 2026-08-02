@@ -61,7 +61,17 @@ describe('transactionsRepository.findVariantsForSale', () => {
         variantFlavors: { include: { flavor: { select: { id: true, name: true, isActive: true } } } },
         optionGroupAssignments: {
           include: {
-            optionGroup: { select: { id: true, name: true, posButtonLabel: true } },
+            optionGroup: {
+              select: {
+                id: true,
+                name: true,
+                posButtonLabel: true,
+                options: {
+                  where: { isActive: true },
+                  select: { id: true, name: true, isActive: true, priceAdjustment: true },
+                },
+              },
+            },
             allowedOptions: {
               include: { productOption: { select: { id: true, name: true, isActive: true, priceAdjustment: true } } },
             },

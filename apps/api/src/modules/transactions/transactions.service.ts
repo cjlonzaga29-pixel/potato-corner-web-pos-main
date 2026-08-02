@@ -346,12 +346,23 @@ interface SelectedOptionsResolution {
  * same ProductVariantOptionGroupOption-scoped "allowed options" set the
  * Product Builder UI enforces, so pricing can never disagree with what was
  * offered).
+ *
+ * Task 105 — an assignment with zero allowedOptions rows means "all active
+ * options in the group" (CR-008 R11/R12 "control allowed options" — see
+ * products.service.ts's getPosCatalog option_groups mapping, the source the
+ * POS terminal renders selectable options from). This must apply the exact
+ * same fallback, or checkout rejects an option the POS itself offered.
  */
 function resolveSelectedOptions(
   variant: {
     name: string;
     optionGroupAssignments?: {
-      optionGroup: { id: string; name: string; posButtonLabel: string | null };
+      optionGroup: {
+        id: string;
+        name: string;
+        posButtonLabel: string | null;
+        options: { id: string; name: string; isActive: boolean; priceAdjustment: { toNumber(): number } }[];
+      };
       allowedOptions: {
         productOptionId: string;
         productOption: { id: string; name: string; isActive: boolean; priceAdjustment: { toNumber(): number } };
@@ -368,7 +379,13 @@ function resolveSelectedOptions(
   >();
   for (const assignment of variant.optionGroupAssignments ?? []) {
     const optionGroupName = assignment.optionGroup.posButtonLabel?.trim() || assignment.optionGroup.name;
-    for (const allowed of assignment.allowedOptions) {
+    // Empty allowedOptions means "all options" — fall back to every active
+    // option in the assigned group, mirroring getPosCatalog exactly.
+    const effectiveOptions =
+      assignment.allowedOptions.length > 0
+        ? assignment.allowedOptions.map((allowed) => ({ productOptionId: allowed.productOptionId, productOption: allowed.productOption }))
+        : assignment.optionGroup.options.map((option) => ({ productOptionId: option.id, productOption: option }));
+    for (const allowed of effectiveOptions) {
       if (allowed.productOption.isActive) {
         allowedOptions.set(allowed.productOptionId, {
           priceAdjustment: allowed.productOption.priceAdjustment.toNumber(),

@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { transactionResponseSchema } from '@potato-corner/shared';
+import { UnitConversionError } from '../product-components/unit-conversion.util.js';
 
 vi.mock('../../lib/notify.js', () => ({
   notifyBranch: vi.fn(),
@@ -2347,6 +2348,29 @@ describe('transactionsService.createTransaction — Product Option inventory ded
         null,
       ),
     ).rejects.toMatchObject({ code: 'PRODUCT_OPTION_INVENTORY_UNIT_MISMATCH', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects with a checkout-safe TransactionError, not a raw UnitConversionError, when the base Recipe/BOM (not a Product Option mapping) has no UnitConversion row for a component\'s recipe unit', async () => {
+    // computeBomDeduction is the base recipe path (Task 79's doc comment above
+    // computeOptionDeductionLines calls it "the base BOM path"): it throws the
+    // same UnitConversionError as the option-mapping path when a component's
+    // recipeUnitId has no UnitConversion row to the InventoryItem's baseUnitId
+    // (shadow-bom-deduction.service.ts computeBomDeduction). Task 99 only
+    // wrapped the option-mapping call site (computeOptionDeductionLines) —
+    // this call site (the plain, no-flavor-slots branch of resolveCartItems)
+    // was left throwing the raw error straight into app.ts's generic 500
+    // handler, surfacing as "Something went wrong" for any product whose own
+    // base recipe has this gap, options aside entirely.
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
+    vi.mocked(computeBomDeduction).mockRejectedValueOnce(new UnitConversionError('MISSING_UNIT_CONVERSION', 'No UnitConversion row between unit unit-tbsp and unit-g'));
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 3 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'RECIPE_INVENTORY_UNIT_MISMATCH', statusCode: 422 });
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 

@@ -400,6 +400,31 @@ function resolveSelectedOptions(
 }
 
 /**
+ * Task 100 — computeBomDeduction/computeComponentDeductionForSlots (the base
+ * Recipe/BOM path) throw the same UnitConversionError as the Product Option
+ * mapping path below when a component's recipeUnitId has no UnitConversion
+ * row to its InventoryItem's baseUnitId. Task 99 only wrapped the option
+ * path's own convertQuantity call, so this structurally identical gap in the
+ * base recipe path was still reaching app.ts's generic 500 handler as an
+ * opaque "Something went wrong", independent of whether the cart item had
+ * any Product Options selected at all.
+ */
+async function computeBaseRecipeDeductionOrThrow(compute: () => Promise<BomDeductionLine[]>): Promise<BomDeductionLine[]> {
+  try {
+    return await compute();
+  } catch (error) {
+    if (error instanceof UnitConversionError) {
+      throw new TransactionError(
+        'RECIPE_INVENTORY_UNIT_MISMATCH',
+        'The recipe for this product has an ingredient with no unit conversion configured for its deduction unit',
+        422,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
  * Task 79 — Product Option inventory deduction, layered on top of the base
  * Recipe/BOM deduction. ProductOptionInventoryMapping (one row per option)
  * is the source of truth, replacing the legacy ProductComponent.productOptionId
@@ -587,10 +612,11 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       }
       pricePremium = premiumTotal;
       flavorName = names.join(' / ');
-      selectedFlavors = submitted.map((s) => ({ slotIndex: s.slotIndex, snackProductVariantId: s.snackProductVariantId, flavorId: s.flavorId }));
+      const resolvedSelectedFlavors = submitted.map((s) => ({ slotIndex: s.slotIndex, snackProductVariantId: s.snackProductVariantId, flavorId: s.flavorId }));
+      selectedFlavors = resolvedSelectedFlavors;
 
       recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
-      deductionLines = await computeComponentDeductionForSlots(variant.id, selectedFlavors, item.quantity, branchId);
+      deductionLines = await computeBaseRecipeDeductionOrThrow(() => computeComponentDeductionForSlots(variant.id, resolvedSelectedFlavors, item.quantity, branchId));
     } else {
       const activeFlavorLinks = variant.variantFlavors.filter((vf) => vf.isAvailable && vf.flavor.isActive);
       if (!item.flavorId && activeFlavorLinks.length > 0) {
@@ -609,7 +635,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       }
 
       recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
-      deductionLines = await computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null);
+      deductionLines = await computeBaseRecipeDeductionOrThrow(() => computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null));
     }
 
     const { premium: optionsPremium, snapshot: selectedOptions } = resolveSelectedOptions(variant, item.selectedOptionIds);

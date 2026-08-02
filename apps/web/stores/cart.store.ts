@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import type { CartItem } from '@potato-corner/shared';
 
-// CR-008 Product Option selection (Task 21) — display-only, frontend cart
-// state. Deliberately NOT part of the shared cartItemSchema/CreateTransactionInput
-// contract: checkout persistence for options is a separate, later task, so
-// this field is stripped back out before a cart item is sent to checkout.
+// CR-008 Product Option selection (Task 21) — frontend cart state. Not part
+// of the shared cartItemSchema/CreateTransactionInput contract: only
+// option_id is forwarded to checkout (as selected_option_ids, Task 26); the
+// display metadata here (names, price_adjustment) stays frontend-only.
 export interface PosCartSelectedOption {
   option_group_id: string;
   option_group_name: string;

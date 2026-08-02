@@ -14,6 +14,15 @@ const holdOrderInclude = {
   items: true,
 } satisfies Prisma.HoldOrderInclude;
 
+/** Task 93 — sale-time snapshot of one selected Product Option for a transaction line. */
+export interface SelectedOptionSnapshot {
+  optionId: string;
+  optionName: string;
+  optionGroupId: string;
+  optionGroupName: string;
+  priceAdjustment: number;
+}
+
 interface CreateHoldOrderRow {
   branchId: string;
   shiftId: string;
@@ -71,6 +80,7 @@ interface CreateTransactionRow {
     recipeVersion: number;
     deductionSnapshot?: { inventoryItemId: string; quantity: number; baseUnitId: string }[];
     selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
+    selectedOptions?: SelectedOptionSnapshot[] | null;
   }[];
 }
 
@@ -149,8 +159,11 @@ export const transactionsRepository = {
         // frontend-provided option name/price for this.
         optionGroupAssignments: {
           include: {
+            optionGroup: { select: { id: true, name: true, posButtonLabel: true } },
             allowedOptions: {
-              include: { productOption: { select: { id: true, isActive: true, priceAdjustment: true } } },
+              include: {
+                productOption: { select: { id: true, name: true, isActive: true, priceAdjustment: true } },
+              },
             },
           },
         },
@@ -263,6 +276,12 @@ export const transactionsRepository = {
               recipeVersion: item.recipeVersion,
               deductionSnapshot: item.deductionSnapshot,
               selectedFlavors: item.selectedFlavors ?? undefined,
+              // Cast needed: SelectedOptionSnapshot is a named interface, and Prisma's
+              // InputJsonValue union requires structural index-signature compatibility
+              // that named interfaces don't structurally satisfy on their own (unlike the
+              // inline object-literal types used by selectedFlavors/deductionSnapshot
+              // above) -- the values are plain JSON-serializable objects either way.
+              selectedOptions: (item.selectedOptions ?? undefined) as Prisma.InputJsonValue | undefined,
             })),
           },
         },

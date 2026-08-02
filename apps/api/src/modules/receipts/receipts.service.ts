@@ -1,5 +1,6 @@
 import { receiptsRepository } from './receipts.repository.js';
 import { ReceiptError, type PublicReceiptResponse } from './receipts.types.js';
+import type { SelectedOptionSnapshot } from '../transactions/transactions.repository.js';
 
 /**
  * Receipts business logic. Called by the router after Zod validation;
@@ -22,6 +23,10 @@ export const receiptsService = {
         quantity: item.quantity,
         unit_price: item.unitPriceSnapshot.toNumber(),
         line_total: item.lineTotal.toNumber(),
+        selected_options: ((item.selectedOptions as SelectedOptionSnapshot[] | null) ?? []).map((option) => ({
+          option_name: option.optionName,
+          price_adjustment: option.priceAdjustment,
+        })),
       })),
       subtotal: transaction.subtotal.toNumber(),
       discount_amount: transaction.discountAmount.toNumber(),

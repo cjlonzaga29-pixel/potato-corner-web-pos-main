@@ -548,15 +548,15 @@ describe('TerminalPage — Product Option Groups as per-group POS buttons (Task 
     expect(screen.queryByRole('button', { name: /^Size/ })).not.toBeInTheDocument();
   });
 
-  it('shows no Add-ons buttons when a cart line exists but is not yet selected', () => {
+  it('shows the Add-ons button immediately for a cart line with one assigned group, with no cart-line click required', () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     render(<TerminalPage />);
 
-    expect(screen.queryByRole('button', { name: /^Size/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Size/ })).toBeInTheDocument();
   });
 
-  it('shows one button per assigned Product Option Group once the cart line is selected, and none for a group whose options are all inactive', () => {
+  it('shows one button per assigned Product Option Group without selecting the cart line, and none for a group whose options are all inactive', () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([
         optionVariant({
@@ -589,8 +589,6 @@ describe('TerminalPage — Product Option Groups as per-group POS buttons (Task 
     });
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     render(<TerminalPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Mega Mix Fries cart line' }));
 
     expect(screen.getByRole('button', { name: /^Size/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Add-ons/ })).toBeInTheDocument();

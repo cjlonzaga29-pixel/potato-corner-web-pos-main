@@ -117,6 +117,7 @@ function buildMovement(overrides: Partial<Record<string, unknown>> = {}) {
     quantityBefore: dec(10),
     quantityAfter: dec(15),
     unitId: 'unit-1',
+    unit: { code: 'tbsp' },
     referenceType: null,
     referenceId: null,
     notes: null,
@@ -467,6 +468,18 @@ describe('universalInventoryService.getStockMovements', () => {
     expect(result.page).toBe(2);
     expect(result.limit).toBe(10);
     expect(result.movements).toHaveLength(1);
+    expect(result.movements[0]).toMatchObject({ unit_id: 'unit-1', unit_code: 'tbsp' });
+  });
+
+  it('nulls unit_code when the movement has no unit relation', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ unitId: null, unit: null })],
+      total: 1,
+    } as never);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(result.movements[0]).toMatchObject({ unit_id: null, unit_code: null });
   });
 });
 

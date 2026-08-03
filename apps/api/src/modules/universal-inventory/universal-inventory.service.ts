@@ -156,6 +156,7 @@ interface StockMovementRow {
   quantityBefore: { toNumber(): number };
   quantityAfter: { toNumber(): number };
   unitId: string | null;
+  unit: { code: string } | null;
   referenceType: string | null;
   referenceId: string | null;
   notes: string | null;
@@ -174,6 +175,7 @@ function toStockMovementResponse(row: StockMovementRow) {
     quantity_before: row.quantityBefore.toNumber(),
     quantity_after: row.quantityAfter.toNumber(),
     unit_id: row.unitId,
+    unit_code: row.unit?.code ?? null,
     reference_type: row.referenceType,
     reference_id: row.referenceId,
     notes: row.notes,

@@ -22,6 +22,7 @@ const inventoryItemInclude = {
 
 const stockMovementInclude = {
   inventoryItem: { select: { name: true } },
+  unit: { select: { code: true } },
 } satisfies Prisma.InventoryStockMovementInclude;
 
 const itemConversionInclude = {

@@ -102,6 +102,7 @@ function stockMovement(overrides: Partial<InventoryStockMovementResponse> = {}):
     quantity_before: 0,
     quantity_after: 500,
     unit_id: 'unit-1',
+    unit_code: 'pcs',
     reference_type: null,
     reference_id: null,
     notes: null,

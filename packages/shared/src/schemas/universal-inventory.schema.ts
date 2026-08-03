@@ -219,6 +219,7 @@ export const inventoryStockMovementResponseSchema = z.object({
   quantity_before: z.number(),
   quantity_after: z.number(),
   unit_id: z.uuid().nullable(),
+  unit_code: z.string().nullable(),
   reference_type: z.string().nullable(),
   reference_id: z.string().nullable(),
   notes: z.string().nullable(),

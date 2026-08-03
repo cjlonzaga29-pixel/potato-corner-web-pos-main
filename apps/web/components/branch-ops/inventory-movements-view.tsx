@@ -63,13 +63,19 @@ export function InventoryMovementsView() {
         <span className={`tabular-nums ${row.original.quantity_change < 0 ? 'text-destructive' : 'text-success'}`}>
           {row.original.quantity_change > 0 ? '+' : ''}
           {row.original.quantity_change}
+          {row.original.unit_code ? ` ${row.original.unit_code}` : ''}
         </span>
       ),
     },
     {
       id: 'quantity_after',
       header: 'Balance After',
-      cell: ({ row }) => <span className="tabular-nums">{row.original.quantity_after}</span>,
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {row.original.quantity_after}
+          {row.original.unit_code ? ` ${row.original.unit_code}` : ''}
+        </span>
+      ),
     },
     { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
   ];

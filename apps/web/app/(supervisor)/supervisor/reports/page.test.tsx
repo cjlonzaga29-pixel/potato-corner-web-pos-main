@@ -162,6 +162,7 @@ function movement(overrides: Partial<InventoryStockMovementResponse> = {}): Inve
     quantity_before: 5,
     quantity_after: 15,
     unit_id: null,
+    unit_code: null,
     reference_type: null,
     reference_id: null,
     notes: null,

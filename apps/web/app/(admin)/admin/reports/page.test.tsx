@@ -160,6 +160,7 @@ describe('AdminReportsPage', () => {
     expect(screen.getByRole('tab', { name: 'Inventory Analytics' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Inventory Movement' })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Daily Sales' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Consumption Summary' })).not.toBeInTheDocument();
     // Selecting a category jumps to its first report.
     expect(screen.getByText('Inventory Analytics Panel')).toBeInTheDocument();
   });
@@ -168,7 +169,7 @@ describe('AdminReportsPage', () => {
     render(<AdminReportsPage />);
     const categories: Record<string, string[]> = {
       Finance: ['Financial Summary', 'Daily Sales', 'Cash Reconciliation', 'Expenses'],
-      Inventory: ['Inventory Analytics', 'Inventory Movement', 'Consumption Summary', 'Inventory Summary'],
+      Inventory: ['Inventory Analytics', 'Inventory Movement', 'Inventory Summary'],
       Operations: ['Shift Reports', 'Attendance Summary'],
       Compliance: ['Void / Refund', 'Alerts', 'Discount Compliance', 'Audit Log'],
     };
@@ -176,6 +177,67 @@ describe('AdminReportsPage', () => {
       selectCategory(category);
       for (const label of tabs) expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
     }
+  });
+
+  it('excludes ingredients with a missing kg conversion from the Inventory Summary table, shows a warning banner, and renders no Status column (TASK 134)', () => {
+    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
+      data: {
+        generated_at: '2026-08-01T00:00:00.000Z',
+        data: [
+          {
+            ingredient_id: 'i1',
+            ingredient_name: 'Flour',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            section: 'INGREDIENT_KG',
+            status: 'CONVERTED',
+            unit: 'kg',
+            opening_stock: 10,
+            consumed_today: 1,
+            consumed_this_month: 5,
+            remaining_stock: 9,
+            opening_stock_kg: 10,
+            consumed_today_kg: 1,
+            consumed_this_month_kg: 5,
+            remaining_kg: 9,
+            conversion_warning: null,
+          },
+          {
+            ingredient_id: 'i2',
+            ingredient_name: 'Mystery Powder',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            section: 'INGREDIENT_KG',
+            status: 'CONVERSION_REQUIRED',
+            unit: 'tbsp',
+            opening_stock: 3,
+            consumed_today: 0,
+            consumed_this_month: 0,
+            remaining_stock: 3,
+            opening_stock_kg: null,
+            consumed_today_kg: null,
+            consumed_this_month_kg: null,
+            remaining_kg: null,
+            conversion_warning: 'Configure a valid conversion to kg',
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<AdminReportsPage />);
+    selectCategory('Inventory');
+    selectReportTab('Inventory Summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    expect(screen.getByText('Flour')).toBeInTheDocument();
+    expect(screen.queryByText('Mystery Powder')).not.toBeInTheDocument();
+    expect(screen.getByText(/some ingredients are missing unit conversions and are excluded from kg totals/i)).toBeInTheDocument();
+    expect(screen.queryByText('Converted')).not.toBeInTheDocument();
+    expect(screen.queryByText('Conversion required')).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument();
   });
 
   it('enables only the active tab\'s data hook', () => {

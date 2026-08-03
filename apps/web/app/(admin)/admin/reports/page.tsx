@@ -11,7 +11,6 @@ import type {
   VoidRefundReportRow,
   DiscountComplianceReportRow,
   InventoryMovementReportRow,
-  InventoryConsumptionSummaryReportRow,
   InventorySummaryReportRow,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
@@ -47,7 +46,6 @@ import {
   useVoidRefundReport,
   useDiscountComplianceReport,
   useInventoryMovementReport,
-  useInventoryConsumptionSummaryReport,
   useInventorySummaryReport,
   useAttendanceSummaryReport,
   useFraudAlertSummaryReport,
@@ -199,46 +197,18 @@ const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
   { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-const inventoryConsumptionSummaryColumns: ColumnDef<InventoryConsumptionSummaryReportRow>[] = [
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  {
-    id: 'quantity_consumed',
-    header: 'Consumed',
-    cell: ({ row }) => `${row.original.quantity_consumed} ${row.original.unit}`,
-  },
-  {
-    accessorKey: 'unit_cost',
-    header: 'Unit Cost',
-    cell: ({ row }) => (row.original.unit_cost !== null ? formatCurrency(row.original.unit_cost) : '—'),
-  },
-  { accessorKey: 'consumption_value', header: 'Consumption Value', cell: ({ row }) => formatCurrency(row.original.consumption_value) },
-  { accessorKey: 'movement_count', header: 'Sales Movements' },
-];
-
-// Task 110/114: Inventory Summary is two disjoint tables — kg and pc are
+// Task 110/134: Inventory Summary is two disjoint tables — kg and pc are
 // never rendered in the same table. Section rows are pre-split by `section`
 // before being handed to these column sets (see the INVENTORY_SUMMARY tab
-// below). Rows needing kg-conversion setup stay IN this table (status
-// CONVERSION_REQUIRED, kg cells shown as '—') rather than a separate table.
+// below). Rows with no usable kg conversion (status CONVERSION_REQUIRED) are
+// filtered out of ingredientRows before reaching this table — no fake kg
+// values and no Status column; a warning banner covers those instead.
 const ingredientConsumptionKgColumns: ColumnDef<InventorySummaryReportRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
   { id: 'opening_stock_kg', header: 'Opening Stock (kg)', cell: ({ row }) => row.original.opening_stock_kg ?? '—' },
   { id: 'consumed_today_kg', header: 'Consumed Today (kg)', cell: ({ row }) => row.original.consumed_today_kg ?? '—' },
   { id: 'consumed_this_month_kg', header: 'Consumed This Month (kg)', cell: ({ row }) => row.original.consumed_this_month_kg ?? '—' },
   { id: 'remaining_kg', header: 'Remaining (kg)', cell: ({ row }) => row.original.remaining_kg ?? '—' },
-  {
-    id: 'status',
-    header: 'Status',
-    cell: ({ row }) =>
-      row.original.status === 'CONVERSION_REQUIRED' ? (
-        <span className="text-warning" title={row.original.conversion_warning ?? undefined}>
-          Conversion required
-        </span>
-      ) : (
-        'Converted'
-      ),
-  },
 ];
 
 const packagingConsumptionPcColumns: ColumnDef<InventorySummaryReportRow>[] = [
@@ -283,7 +253,6 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
     reports: [
       { value: 'INVENTORY_ANALYTICS', label: 'Inventory Analytics' },
       { value: 'INVENTORY_MOVEMENT', label: 'Inventory Movement' },
-      { value: 'INVENTORY_CONSUMPTION_SUMMARY', label: 'Consumption Summary' },
       { value: 'INVENTORY_SUMMARY', label: 'Inventory Summary' },
     ],
   },
@@ -314,7 +283,6 @@ const BRANCH_REQUIRED_REPORTS = new Set([
   'VOID_REFUND',
   'DISCOUNT_COMPLIANCE',
   'INVENTORY_MOVEMENT',
-  'INVENTORY_CONSUMPTION_SUMMARY',
   'INVENTORY_SUMMARY',
   'ATTENDANCE_SUMMARY',
 ]);
@@ -385,7 +353,6 @@ function AdminReportsPageContent() {
   const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeReport === 'FRAUD_ALERT_SUMMARY');
   const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeReport === 'DISCOUNT_COMPLIANCE');
   const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
-  const inventoryConsumptionSummary = useInventoryConsumptionSummaryReport(realtimeFilters, activeReport === 'INVENTORY_CONSUMPTION_SUMMARY');
   const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
@@ -681,29 +648,6 @@ function AdminReportsPageContent() {
               </>}
             </TabsContent>
 
-            <TabsContent value="INVENTORY_CONSUMPTION_SUMMARY">
-              {!selectedBranchId ? (
-                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-              ) : inventoryConsumptionSummary.isError ? <ErrorState retry={() => inventoryConsumptionSummary.refetch()} /> : <>
-              <ReportLastUpdated timestamp={inventoryConsumptionSummary.data?.generated_at} isLoading={inventoryConsumptionSummary.isLoading} />
-              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                <KpiCard title="Ingredients Consumed" value={(inventoryConsumptionSummary.data?.data ?? []).length} isLoading={inventoryConsumptionSummary.isLoading} />
-                <KpiCard
-                  title="Total Consumption Value"
-                  value={(inventoryConsumptionSummary.data?.data ?? []).reduce((sum, r) => sum + r.consumption_value, 0)}
-                  prefix="₱"
-                  isLoading={inventoryConsumptionSummary.isLoading}
-                />
-              </div>
-              <DataTable
-                columns={inventoryConsumptionSummaryColumns}
-                data={inventoryConsumptionSummary.data?.data ?? []}
-                isLoading={inventoryConsumptionSummary.isLoading}
-                emptyState={<EmptyState title="No consumption recorded" description="No sale-driven inventory consumption in this range." />}
-              />
-              </>}
-            </TabsContent>
-
             <TabsContent value="INVENTORY_SUMMARY">
               {!selectedBranchId ? (
                 <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
@@ -711,10 +655,17 @@ function AdminReportsPageContent() {
               <ReportLastUpdated timestamp={inventorySummary.data?.generated_at} isLoading={inventorySummary.isLoading} />
               {(() => {
                 const rows = inventorySummary.data?.data ?? [];
-                const ingredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
+                const allIngredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
+                const ingredientRows = allIngredientRows.filter((r) => r.status !== 'CONVERSION_REQUIRED');
+                const hasMissingConversions = ingredientRows.length !== allIngredientRows.length;
                 const packagingRows = rows.filter((r) => r.section === 'PACKAGING_PC');
                 return (
                   <>
+                    {hasMissingConversions && (
+                      <p className="mt-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
+                        Some ingredients are missing unit conversions and are excluded from KG totals.
+                      </p>
+                    )}
                     <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption (KG)</h3>
                     <DataTable
                       columns={ingredientConsumptionKgColumns}

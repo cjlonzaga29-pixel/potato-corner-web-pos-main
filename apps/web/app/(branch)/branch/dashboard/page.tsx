@@ -11,7 +11,6 @@ import {
   CalendarDays,
   BadgeDollarSign,
   TrendingDown,
-  TrendingUp,
   Users,
   PackageSearch,
   BellRing,
@@ -57,6 +56,13 @@ const QUICK_ACTIONS = [
  * compact operational-status row, Payment Collections, Quick Actions,
  * Sales Trend, Inventory Status, and Recent Activity. Same data sources
  * and formulas as before; only the composition changed.
+ *
+ * TASK 165: Net Sales Today and (Estimated) Profit Today were removed from
+ * the KPI rows — neither metric nor its calculation exists anywhere on the
+ * dashboard anymore. The former standalone Low Stock Items / Inventory
+ * Alerts row was folded into KPI row 2 alongside Today's Expenses and Staff
+ * Clocked In, giving the page the same fixed 2-row, 8-card KPI layout as
+ * the Admin/Super Admin dashboard.
  */
 export default function BranchDashboardPage() {
   const router = useRouter();
@@ -99,10 +105,6 @@ export default function BranchDashboardPage() {
   const todayStats = branchStats?.[0];
   const averageOrderValue =
     todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
-  const profitLabel = todayStats?.isNetProfitEstimated ? 'Estimated Profit Today' : 'Profit Today';
-  const profitTooltip = todayStats?.isNetProfitEstimated
-    ? `Net Sales - COGS - Expenses. Cost data was missing for ${todayStats.missingCostItemCount} sold item(s), so this figure is an estimate.`
-    : 'Net Sales - COGS - Expenses';
   const alertCount = alertsData?.alerts.length ?? 0;
 
   return (
@@ -131,12 +133,11 @@ export default function BranchDashboardPage() {
           icon={CalendarDays}
           tooltip="Completed sales for the current Manila calendar month."
         />
-        <KpiCard title="Transactions Today" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} icon={Receipt} />
+        <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} icon={Receipt} />
         <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} icon={BadgeDollarSign} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title="Net Sales Today" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} icon={Wallet} />
         <KpiCard
           title="Today's Expenses"
           value={todayStats?.todayExpenses ?? 0}
@@ -144,19 +145,7 @@ export default function BranchDashboardPage() {
           isLoading={isLoadingStats}
           icon={TrendingDown}
         />
-        <KpiCard
-          title={profitLabel}
-          value={todayStats?.todayNetProfit ?? 0}
-          prefix="₱"
-          isLoading={isLoadingStats}
-          icon={TrendingUp}
-          tone={(todayStats?.todayNetProfit ?? 0) < 0 ? 'negative' : 'default'}
-          tooltip={profitTooltip}
-        />
         <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <KpiCard
           title="Low Stock Items"
           value={todayStats?.lowStockIngredientCount ?? 0}

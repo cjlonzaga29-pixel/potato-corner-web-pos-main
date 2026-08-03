@@ -14,11 +14,9 @@ import { DashboardKpiRow } from './dashboard-kpi-row';
 
 const BASE_PROPS = {
   grossSalesToday: 20000,
-  netSalesToday: 18500,
+  grossSalesMonth: 450000,
   transactionsToday: 120,
-  profitToday: 6000,
-  isProfitEstimated: false,
-  missingCostItemCount: 0,
+  averageOrderValue: 166.67,
   isLoading: false,
 };
 
@@ -28,23 +26,24 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders Gross Sales, Net Sales, Transactions, and Profit Today', () => {
+  it('renders Gross Sales Today, Gross Sales This Month, Today\'s Transactions, and Average Order Value', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
     expect(screen.getByText('₱20000')).toBeInTheDocument();
-    expect(screen.getByText('Net Sales')).toBeInTheDocument();
-    expect(screen.getByText('₱18500')).toBeInTheDocument();
-    expect(screen.getByText('Transactions')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
+    expect(screen.getByText('₱450000')).toBeInTheDocument();
+    expect(screen.getByText("Today's Transactions")).toBeInTheDocument();
     expect(screen.getByText('120')).toBeInTheDocument();
-    expect(screen.getByText('Profit Today')).toBeInTheDocument();
-    expect(screen.getByText('₱6000')).toBeInTheDocument();
+    expect(screen.getByText('Average Order Value')).toBeInTheDocument();
+    expect(screen.getByText('₱166.67')).toBeInTheDocument();
   });
 
-  it('labels the profit card as estimated when cost data is missing', () => {
-    render(<DashboardKpiRow {...BASE_PROPS} isProfitEstimated={true} missingCostItemCount={3} />);
+  it('never renders Net Sales or (Estimated) Profit — removed in TASK 165', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} />);
 
-    expect(screen.getByText('Estimated Profit Today')).toBeInTheDocument();
+    expect(screen.queryByText('Net Sales')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profit/)).not.toBeInTheDocument();
   });
 
   it('renders every card skeleton when isLoading is true', () => {
@@ -57,11 +56,9 @@ describe('DashboardKpiRow', () => {
     render(
       <DashboardKpiRow
         grossSalesToday={undefined}
-        netSalesToday={undefined}
+        grossSalesMonth={undefined}
         transactionsToday={undefined}
-        profitToday={undefined}
-        isProfitEstimated={false}
-        missingCostItemCount={0}
+        averageOrderValue={undefined}
         isLoading={false}
       />,
     );

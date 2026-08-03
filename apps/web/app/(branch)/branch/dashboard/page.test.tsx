@@ -149,26 +149,22 @@ afterEach(() => {
 });
 
 describe('BranchDashboardPage', () => {
-  it('renders Net Sales, Profit Today, and Staff Clocked In from the branch stats row', () => {
-    setup(statsRow());
+  it("renders Today's Expenses and Staff Clocked In from the branch stats row", () => {
+    setup(statsRow({ todayExpenses: 175 }));
     render(<BranchDashboardPage />);
 
-    expect(screen.getByText('Net Sales Today')).toBeInTheDocument();
-    expect(screen.getByText('₱1000')).toBeInTheDocument();
-    expect(screen.getByText('Profit Today')).toBeInTheDocument();
-    expect(screen.getByText('₱650')).toBeInTheDocument();
+    expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
+    expect(screen.getByText('₱175')).toBeInTheDocument();
     expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  it('labels the profit card "Estimated Profit Today" and explains why in the tooltip when cost data is missing', () => {
+  it('never renders Net Sales or (Estimated) Profit — removed in TASK 165', () => {
     setup(statsRow({ isNetProfitEstimated: true, missingCostItemCount: 4 }));
     render(<BranchDashboardPage />);
 
-    expect(screen.getByText('Estimated Profit Today')).toBeInTheDocument();
-    expect(screen.queryByText('Profit Today')).not.toBeInTheDocument();
-    const card = screen.getByText('Estimated Profit Today').closest('div');
-    expect(card).toHaveAttribute('title', expect.stringContaining('missing for 4 sold item'));
+    expect(screen.queryByText('Net Sales Today')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profit/)).not.toBeInTheDocument();
   });
 
   it('renders the per-method payment collections breakdown', () => {

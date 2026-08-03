@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { startOfDay } from 'date-fns';
-import { Wallet, CalendarDays, Receipt, BadgePercent } from 'lucide-react';
+import { Wallet, CalendarDays, Receipt, BadgeDollarSign, TrendingDown, Users, PackageSearch, BellRing } from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
@@ -123,6 +123,9 @@ export default function SupervisorDashboardPage() {
   // Shifts are auto-managed per cashier now (Phase 4-9), so there is no
   // single "the branch's shift" left to show a dedicated card for.
   const todayStats = branchStats?.[0];
+  const averageOrderValue =
+    todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
+  const alertCount = alertsData?.alerts.length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -132,9 +135,9 @@ export default function SupervisorDashboardPage() {
         actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          title="Daily Gross Sales"
+          title="Gross Sales Today"
           value={todayStats?.todayGrossSales ?? 0}
           prefix="₱"
           isLoading={isStatsLoading}
@@ -143,20 +146,39 @@ export default function SupervisorDashboardPage() {
           tooltip="Completed sales for the selected Manila business day."
         />
         <KpiCard
-          title="Monthly Gross Sales"
+          title="Gross Sales This Month"
           value={grossSalesMonth ?? 0}
           prefix="₱"
           isLoading={monthTrend.isLoading}
           icon={CalendarDays}
           tooltip="Completed sales for the current Manila calendar month."
         />
-        <KpiCard title="Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} icon={Receipt} />
+        <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} icon={Receipt} />
+        <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isStatsLoading} icon={BadgeDollarSign} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          title="Discounts Given"
-          value={todayStats?.todayDiscountTotal ?? 0}
+          title="Today's Expenses"
+          value={todayStats?.todayExpenses ?? 0}
           prefix="₱"
           isLoading={isStatsLoading}
-          icon={BadgePercent}
+          icon={TrendingDown}
+        />
+        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isStatsLoading} icon={Users} />
+        <KpiCard
+          title="Low Stock Items"
+          value={todayStats?.lowStockIngredientCount ?? 0}
+          isLoading={isStatsLoading}
+          icon={PackageSearch}
+          tone={(todayStats?.lowStockIngredientCount ?? 0) > 0 ? 'warning' : 'default'}
+        />
+        <KpiCard
+          title="Inventory Alerts"
+          value={alertCount}
+          isLoading={isAlertsLoading}
+          icon={BellRing}
+          tone={alertCount > 0 ? 'warning' : 'default'}
         />
       </div>
 

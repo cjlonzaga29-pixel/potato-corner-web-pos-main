@@ -13,6 +13,8 @@ const {
   mockUseSelectedBranch,
   mockUseInventoryRealtimeSync,
   mockUseDashboardSalesTrendReport,
+  mockUseAdminInventoryRollup,
+  mockUseAdminInventoryRollupRealtimeSync,
 } = vi.hoisted(() => ({
   mockUseShiftsRealtimeSync: vi.fn(),
   mockUseTransactionsRealtimeSync: vi.fn(),
@@ -23,6 +25,8 @@ const {
   mockUseSelectedBranch: vi.fn(),
   mockUseInventoryRealtimeSync: vi.fn(),
   mockUseDashboardSalesTrendReport: vi.fn(),
+  mockUseAdminInventoryRollup: vi.fn(),
+  mockUseAdminInventoryRollupRealtimeSync: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -79,6 +83,11 @@ vi.mock('@/hooks/queries/use-branches', () => ({
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useInventoryStockRealtimeSync: mockUseInventoryRealtimeSync,
+}));
+
+vi.mock('@/hooks/queries/use-admin-inventory-rollup', () => ({
+  useAdminInventoryRollup: mockUseAdminInventoryRollup,
+  useAdminInventoryRollupRealtimeSync: mockUseAdminInventoryRollupRealtimeSync,
 }));
 
 vi.mock('@/hooks/queries/use-reports', () => ({
@@ -158,6 +167,8 @@ beforeEach(() => {
   mockUseAllBranchStats.mockReturnValue({ data: [], isLoading: false, isError: false });
   mockUseBranches.mockReturnValue({ data: { branches: [], total: 0, page: 1, limit: 500 }, isLoading: false, isError: false });
   mockUseDashboardSalesTrendReport.mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+  mockUseAdminInventoryRollup.mockReturnValue({ data: { branches: [], summary: {} }, isLoading: false, isError: false });
+  mockUseAdminInventoryRollupRealtimeSync.mockReturnValue(undefined);
   mockUseSelectedBranch.mockReturnValue({
     selectedBranchId: 'all',
     setSelectedBranch: vi.fn(),
@@ -173,7 +184,7 @@ afterEach(() => {
 });
 
 describe('AdminDashboardPage', () => {
-  it('renders Gross Sales aggregated across branch stats', () => {
+  it('renders Gross Sales Today aggregated across branch stats', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStat({ branchId: 'b1', todayGrossSales: 1000 }), branchStat({ branchId: 'b2', todayGrossSales: 500 })],
       isLoading: false,
@@ -182,11 +193,11 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
   });
 
-  it('renders Gross Sales — This Month summed from the sales trend report', () => {
+  it('renders Gross Sales This Month summed from the sales trend report', () => {
     mockUseDashboardSalesTrendReport.mockReturnValue({
       data: { data: [{ report_date: '2026-07-01', gross_sales: 10000 }, { report_date: '2026-07-15', gross_sales: 5000 }] },
       isLoading: false,
@@ -195,11 +206,11 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Gross Sales — This Month')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
     expect(screen.getByText('₱15000')).toBeInTheDocument();
   });
 
-  it('Gross Sales (today) and Gross Sales — This Month use different date ranges and can differ', () => {
+  it('Gross Sales Today and Gross Sales This Month use different date ranges and can differ', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStat({ branchId: 'b1', todayGrossSales: 1500 })],
       isLoading: false,
@@ -213,18 +224,18 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
-    expect(screen.getByText('Gross Sales — This Month')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
     // Today reflects only today's branch stats (1500); this month sums the whole month (11500) — distinct periods, distinct values.
     expect(screen.getByText('₱1500')).toBeInTheDocument();
     expect(screen.getByText('₱11500')).toBeInTheDocument();
   });
 
-  it('renders Net Sales, Transactions, and Profit Today aggregated across branch stats', () => {
+  it('renders Today\'s Transactions and Average Order Value aggregated across branch stats', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [
-        branchStat({ branchId: 'b1', todayNetSales: 900, todayTransactionCount: 10, todayNetProfit: 300 }),
-        branchStat({ branchId: 'b2', todayNetSales: 400, todayTransactionCount: 5, todayNetProfit: 150 }),
+        branchStat({ branchId: 'b1', todayGrossSales: 1000, todayTransactionCount: 10 }),
+        branchStat({ branchId: 'b2', todayGrossSales: 500, todayTransactionCount: 5 }),
       ],
       isLoading: false,
       isError: false,
@@ -232,24 +243,85 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Net Sales')).toBeInTheDocument();
-    expect(screen.getByText('₱1300')).toBeInTheDocument();
-    expect(screen.getByText('Transactions')).toBeInTheDocument();
+    expect(screen.getByText("Today's Transactions")).toBeInTheDocument();
     expect(screen.getByText('15')).toBeInTheDocument();
-    expect(screen.getByText('Profit Today')).toBeInTheDocument();
-    expect(screen.getByText('₱450')).toBeInTheDocument();
+    // Average Order Value = aggregated gross sales (1500) / aggregated transactions (15) = 100
+    expect(screen.getByText('Average Order Value')).toBeInTheDocument();
+    expect(screen.getByText('₱100')).toBeInTheDocument();
   });
 
-  it('labels Profit Today as estimated when any branch has estimated cost data', () => {
+  it('never renders Net Sales or (Estimated) Profit — removed in TASK 165', () => {
     mockUseAllBranchStats.mockReturnValue({
-      data: [branchStat({ branchId: 'b1', isNetProfitEstimated: true, missingCostItemCount: 2 })],
+      data: [branchStat({ branchId: 'b1', todayNetSales: 900, todayNetProfit: 300, isNetProfitEstimated: true, missingCostItemCount: 2 })],
       isLoading: false,
       isError: false,
     });
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Estimated Profit Today')).toBeInTheDocument();
+    expect(screen.queryByText('Net Sales')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profit/)).not.toBeInTheDocument();
+  });
+
+  it("renders Today's Expenses, Staff Clocked In, Low Stock Items, and Inventory Alerts", () => {
+    mockUseAllBranchStats.mockReturnValue({
+      data: [
+        branchStat({ branchId: 'b1', todayExpenses: 500, staffTimedInCount: 4, lowStockIngredientCount: 3 }),
+        branchStat({ branchId: 'b2', todayExpenses: 200, staffTimedInCount: 2, lowStockIngredientCount: 1 }),
+      ],
+      isLoading: false,
+      isError: false,
+    });
+    mockUseAdminInventoryRollup.mockReturnValue({
+      data: {
+        branches: [
+          { branch_id: 'b1', critical_stock_count: 2, out_of_stock_count: 1 },
+          { branch_id: 'b2', critical_stock_count: 0, out_of_stock_count: 2 },
+        ],
+        summary: {},
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
+    expect(screen.getByText('₱700')).toBeInTheDocument();
+    expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
+    expect(screen.getByText('6')).toBeInTheDocument();
+    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
+    // 4 total low-stock items (3 + 1) appears twice: the compact KPI card and the richer Low Stock Inventory widget below.
+    expect(screen.getAllByText('4')).toHaveLength(2);
+    expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+  });
+
+  it('scopes Inventory Alerts to the selected branch when a single branch is chosen', () => {
+    mockUseSelectedBranch.mockReturnValue({
+      selectedBranchId: 'b1',
+      setSelectedBranch: vi.fn(),
+      availableBranches: [],
+      allLabel: 'All Branches',
+      isSingleBranchUser: false,
+    });
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStat({ branchId: 'b1' })], isLoading: false, isError: false });
+    mockUseAdminInventoryRollup.mockReturnValue({
+      data: {
+        branches: [
+          { branch_id: 'b1', critical_stock_count: 2, out_of_stock_count: 1 },
+          { branch_id: 'b2', critical_stock_count: 5, out_of_stock_count: 5 },
+        ],
+        summary: {},
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
   });
 
   it('renders the payment breakdown aggregated across branches', () => {
@@ -287,7 +359,8 @@ describe('AdminDashboardPage', () => {
     render(<AdminDashboardPage />);
 
     expect(screen.getByText('Low Stock Inventory')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    // Appears twice: the compact "Low Stock Items" KPI card (row 2) and the richer Low Stock Inventory widget below.
+    expect(screen.getAllByText('3')).toHaveLength(2);
     expect(screen.getByText('View Inventory').closest('a')).toHaveAttribute('href', '/admin/inventory');
   });
 

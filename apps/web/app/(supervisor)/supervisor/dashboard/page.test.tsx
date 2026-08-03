@@ -127,6 +127,9 @@ interface BranchStatsOverview {
   todayGrossSales: number;
   todayTransactionCount: number;
   todayDiscountTotal: number;
+  todayExpenses: number;
+  staffTimedInCount: number;
+  lowStockIngredientCount: number;
 }
 
 function branchStats(overrides: Partial<BranchStatsOverview> = {}): BranchStatsOverview {
@@ -135,6 +138,9 @@ function branchStats(overrides: Partial<BranchStatsOverview> = {}): BranchStatsO
     todayGrossSales: 0,
     todayTransactionCount: 0,
     todayDiscountTotal: 0,
+    todayExpenses: 0,
+    staffTimedInCount: 0,
+    lowStockIngredientCount: 0,
     ...overrides,
   };
 }
@@ -285,9 +291,9 @@ describe('SupervisorDashboardPage', () => {
     expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
   });
 
-  it('renders Gross Sales, Transactions, and Discounts from branch day-stats regardless of any individual cashier shift state (Phase 4-9: shifts are auto-managed per cashier, not branch-wide)', () => {
+  it('renders Gross Sales Today and Today\'s Transactions from branch day-stats regardless of any individual cashier shift state (Phase 4-9: shifts are auto-managed per cashier, not branch-wide)', () => {
     mockUseAllBranchStats.mockReturnValue({
-      data: [branchStats({ todayGrossSales: 84.5, todayTransactionCount: 2, todayDiscountTotal: 0 })],
+      data: [branchStats({ todayGrossSales: 84.5, todayTransactionCount: 2 })],
       isLoading: false,
     });
     render(<SupervisorDashboardPage />);
@@ -295,23 +301,39 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  it('renders Daily Gross Sales and Monthly Gross Sales as distinct KPI cards with independent values', () => {
+  it('renders Gross Sales Today and Gross Sales This Month as distinct KPI cards with independent values', () => {
     mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayGrossSales: 1500 })], isLoading: false });
     mockUseDashboardSalesTrendReport.mockReturnValue({
       data: { data: [{ gross_sales: 8000 }, { gross_sales: 3500 }] },
       isLoading: false,
     });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
-    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
     expect(screen.getByText('₱11500')).toBeInTheDocument();
   });
 
-  it('renders discounts given from todayDiscountTotal', () => {
+  it("renders Today's Expenses, Staff Clocked In, and Low Stock Items from branch day-stats", () => {
+    mockUseAllBranchStats.mockReturnValue({
+      data: [branchStats({ todayExpenses: 250.5, staffTimedInCount: 3, lowStockIngredientCount: 2 })],
+      isLoading: false,
+    });
+    render(<SupervisorDashboardPage />);
+    expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
+    expect(screen.getByText('₱250.50')).toBeInTheDocument();
+    expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('never renders Net Sales, (Estimated) Profit, or Discounts Given — not part of the TASK 165 KPI set', () => {
     mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayDiscountTotal: 250.5 })], isLoading: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('₱250.50')).toBeInTheDocument();
+    expect(screen.queryByText('Net Sales')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profit/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Discounts Given')).not.toBeInTheDocument();
   });
 
   it('renders inventory alerts sorted critical-first', () => {
@@ -320,7 +342,7 @@ describe('SupervisorDashboardPage', () => {
       isLoading: false,
     });
     render(<SupervisorDashboardPage />);
-    const names = screen.getAllByText(/Item/).map((el) => el.textContent);
+    const names = screen.getAllByText(/\bItem\b/).map((el) => el.textContent);
     expect(names).toEqual(['Critical Item', 'Low Item']);
   });
 

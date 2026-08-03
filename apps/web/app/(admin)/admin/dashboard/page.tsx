@@ -6,6 +6,7 @@ import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats, useBranches, type PaymentBreakdown } from '@/hooks/queries/use-branches';
 import { useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
+import { useAdminInventoryRollup, useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
@@ -23,7 +24,7 @@ import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analy
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
-import { CalendarDays } from 'lucide-react';
+import { TrendingDown, Users, PackageSearch, BellRing } from 'lucide-react';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 function AdminDashboardPageContent() {
@@ -40,9 +41,11 @@ function AdminDashboardPageContent() {
   useInventoryAnalyticsRealtimeSync();
   useAttendanceRealtimeSync();
   useExpensesRealtimeSync();
+  useAdminInventoryRollupRealtimeSync();
 
   const { data: branchStats, isLoading: isLoadingBranchStats } = useAllBranchStats(branchFilter);
   const { data: branchList, isLoading: isLoadingBranchList } = useBranches({ limit: MAX_LIST_LIMIT });
+  const { data: inventoryRollup, isLoading: isLoadingInventoryRollup } = useAdminInventoryRollup();
   const monthTrend = useDashboardSalesTrendReport({
     date_from: manilaMonthStart(),
     date_to: manilaToday(),
@@ -52,13 +55,20 @@ function AdminDashboardPageContent() {
   });
 
   const grossSalesToday = branchStats?.reduce((sum, b) => sum + b.todayGrossSales, 0);
-  const netSalesToday = branchStats?.reduce((sum, b) => sum + b.todayNetSales, 0);
   const transactionsToday = branchStats?.reduce((sum, b) => sum + b.todayTransactionCount, 0);
-  const profitToday = branchStats?.reduce((sum, b) => sum + b.todayNetProfit, 0);
-  const isProfitEstimated = branchStats?.some((b) => b.isNetProfitEstimated) ?? false;
-  const missingCostItemCount = branchStats?.reduce((sum, b) => sum + b.missingCostItemCount, 0) ?? 0;
+  const averageOrderValue = grossSalesToday && transactionsToday ? grossSalesToday / transactionsToday : 0;
+  const todayExpenses = branchStats?.reduce((sum, b) => sum + b.todayExpenses, 0);
+  const staffClockedIn = branchStats?.reduce((sum, b) => sum + b.staffTimedInCount, 0);
   const lowStockCount = branchStats?.reduce((sum, b) => sum + b.lowStockIngredientCount, 0);
   const grossSalesMonth = monthTrend.data?.data.reduce((sum, row) => sum + row.gross_sales, 0);
+
+  // Inventory Alerts (critical + out-of-stock) — org-wide rollup (TASK 165),
+  // scoped to the selected branch client-side since the rollup endpoint has
+  // no branch_id filter of its own; each branch row already carries its own
+  // critical_stock_count/out_of_stock_count.
+  const rollupBranches = inventoryRollup?.branches ?? [];
+  const scopedRollupBranches = branchFilter ? rollupBranches.filter((b) => b.branch_id === branchFilter) : rollupBranches;
+  const inventoryAlertCount = scopedRollupBranches.reduce((sum, b) => sum + b.critical_stock_count + b.out_of_stock_count, 0);
 
   const paymentBreakdown = branchStats?.reduce<PaymentBreakdown>(
     (acc, b) => ({
@@ -88,27 +98,36 @@ function AdminDashboardPageContent() {
 
       <DashboardKpiRow
         grossSalesToday={grossSalesToday}
-        netSalesToday={netSalesToday}
+        grossSalesMonth={grossSalesMonth}
         transactionsToday={transactionsToday}
-        profitToday={profitToday}
-        isProfitEstimated={isProfitEstimated}
-        missingCostItemCount={missingCostItemCount}
-        isLoading={isLoadingBranchStats}
+        averageOrderValue={averageOrderValue}
+        isLoading={isLoadingBranchStats || monthTrend.isLoading}
       />
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard title="Today's Expenses" value={todayExpenses ?? 0} prefix="₱" isLoading={isLoadingBranchStats} icon={TrendingDown} />
+        <KpiCard title="Staff Clocked In" value={staffClockedIn ?? 0} isLoading={isLoadingBranchStats} icon={Users} />
+        <KpiCard
+          title="Low Stock Items"
+          value={lowStockCount ?? 0}
+          isLoading={isLoadingBranchStats}
+          icon={PackageSearch}
+          tone={(lowStockCount ?? 0) > 0 ? 'warning' : 'default'}
+        />
+        <KpiCard
+          title="Inventory Alerts"
+          value={inventoryAlertCount}
+          isLoading={isLoadingInventoryRollup}
+          icon={BellRing}
+          tone={inventoryAlertCount > 0 ? 'warning' : 'default'}
+        />
+      </div>
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchFilter} />
       </WidgetErrorBoundary>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          title="Gross Sales — This Month"
-          value={grossSalesMonth ?? 0}
-          prefix="₱"
-          isLoading={monthTrend.isLoading}
-          icon={CalendarDays}
-          tooltip="Completed sales for the current Manila calendar month."
-        />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <DashboardPaymentBreakdown breakdown={paymentBreakdown} isLoading={isLoadingBranchStats} />
         <DashboardLowStockCard totalItems={lowStockCount} isLoading={isLoadingBranchStats} />
         <DashboardActiveBranchesCard

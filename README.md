@@ -1,4 +1,4 @@
-# Potato Corner Enterprise Web POS & Branch Management Platform
+# Henlin Enterprise Web POS & Branch Management Platform
 
 Unified web application serving three role-based interfaces (Super Admin, Supervisor, Staff POS) for a multi-branch Philippine QSR franchise operation. One Next.js frontend, one Express backend, offline-first POS terminal, recipe-driven inventory, and full Philippine PWD/Senior Citizen VAT compliance.
 

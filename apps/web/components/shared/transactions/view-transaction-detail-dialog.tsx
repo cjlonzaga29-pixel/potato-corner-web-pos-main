@@ -21,11 +21,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { useAuthStore } from '@/stores/auth.store';
-import { useVoidTransaction } from '@/hooks/queries/use-transactions';
+import { useVoidTransaction, useRefundTransaction } from '@/hooks/queries/use-transactions';
 import { formatCurrency } from '@/lib/utils';
 
 const MIN_VOID_REASON_LENGTH = 10;
 const VOID_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH] as const;
+const MIN_REFUND_REASON_LENGTH = 10;
+const REFUND_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH] as const;
 
 interface ViewTransactionDetailDialogProps {
   transaction: TransactionResponse | null;
@@ -68,10 +70,15 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
   const session = transaction ? findCoveringSession(transaction, attendanceRecords) : null;
   const role = useAuthStore((state) => state.user?.role);
   const canVoid = role !== undefined && (VOID_ALLOWED_ROLES as readonly string[]).includes(role);
+  const canRefund = role !== undefined && (REFUND_ALLOWED_ROLES as readonly string[]).includes(role);
 
   const [isVoidConfirmOpen, setIsVoidConfirmOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const voidTransaction = useVoidTransaction(transaction?.id ?? '');
+
+  const [isRefundConfirmOpen, setIsRefundConfirmOpen] = useState(false);
+  const [refundReason, setRefundReason] = useState('');
+  const refundTransaction = useRefundTransaction(transaction?.id ?? '');
 
   function resetVoidState() {
     setIsVoidConfirmOpen(false);
@@ -92,6 +99,26 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
   }
 
   const canSubmitVoid = voidReason.trim().length >= MIN_VOID_REASON_LENGTH && !voidTransaction.isPending;
+
+  function resetRefundState() {
+    setIsRefundConfirmOpen(false);
+    setRefundReason('');
+  }
+
+  function handleRefundSubmit() {
+    const trimmedReason = refundReason.trim();
+    if (trimmedReason.length < MIN_REFUND_REASON_LENGTH) return;
+    refundTransaction.mutate(
+      { refund_reason: trimmedReason },
+      {
+        onSuccess: () => {
+          resetRefundState();
+        },
+      },
+    );
+  }
+
+  const canSubmitRefund = refundReason.trim().length >= MIN_REFUND_REASON_LENGTH && !refundTransaction.isPending;
 
   return (
     <Dialog open={transaction !== null} onOpenChange={(open) => !open && onClose()}>
@@ -167,11 +194,18 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
               </div>
             </div>
 
-            {canVoid && transaction.status === 'completed' && (
-              <DialogFooter className="border-t pt-3">
-                <Button variant="danger" onClick={() => setIsVoidConfirmOpen(true)}>
-                  Void Transaction
-                </Button>
+            {transaction.status === 'completed' && (canVoid || canRefund) && (
+              <DialogFooter className="border-t pt-3 gap-2">
+                {canVoid && (
+                  <Button variant="danger" onClick={() => setIsVoidConfirmOpen(true)}>
+                    Void Transaction
+                  </Button>
+                )}
+                {canRefund && (
+                  <Button variant="danger" onClick={() => setIsRefundConfirmOpen(true)}>
+                    Refund Transaction
+                  </Button>
+                )}
               </DialogFooter>
             )}
           </div>
@@ -212,6 +246,63 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
               className={buttonVariants({ variant: 'danger' })}
             >
               {voidTransaction.isPending ? <LoadingSpinner size="sm" className="text-current" /> : 'Void Transaction'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={isRefundConfirmOpen} onOpenChange={refundTransaction.isPending ? undefined : (open) => !open && resetRefundState()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Refund Transaction</AlertDialogTitle>
+            <AlertDialogDescription>
+              This records a full refund and restores the inventory deducted by this sale. Handle the actual customer
+              payment return according to branch procedure.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {transaction && (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted-foreground">Receipt No.</span>
+              <span>{transaction.receipt_number}</span>
+              <span className="text-muted-foreground">Amount</span>
+              <span>{formatCurrency(transaction.total_amount)}</span>
+              <span className="text-muted-foreground">Payment Method</span>
+              <span>{PAYMENT_METHOD_LABEL[transaction.payment_method]}</span>
+              <span className="text-muted-foreground">Date</span>
+              <span>{formatManila(transaction.created_at)}</span>
+              <span className="text-muted-foreground">Cashier</span>
+              <span>{cashierName}</span>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <Label htmlFor="refund-reason">Refund Reason</Label>
+            <Textarea
+              id="refund-reason"
+              value={refundReason}
+              onChange={(e) => setRefundReason(e.target.value)}
+              disabled={refundTransaction.isPending}
+              rows={4}
+            />
+            <p className="text-xs text-muted-foreground">
+              {refundReason.trim().length}/{MIN_REFUND_REASON_LENGTH} characters minimum
+            </p>
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={resetRefundState} disabled={refundTransaction.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleRefundSubmit();
+              }}
+              disabled={!canSubmitRefund}
+              className={buttonVariants({ variant: 'danger' })}
+            >
+              {refundTransaction.isPending ? <LoadingSpinner size="sm" className="text-current" /> : 'Confirm Refund'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

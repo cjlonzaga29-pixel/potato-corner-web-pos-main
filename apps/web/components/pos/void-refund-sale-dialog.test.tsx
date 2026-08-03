@@ -102,7 +102,9 @@ describe('VoidRefundSaleDialog', () => {
     setup([transaction({ id: 'txn-1' }), transaction({ id: 'txn-2', receipt_number: 'PC-BR1-20260801-0002' })]);
     render(<VoidRefundSaleDialog branchId="branch-1" open onOpenChange={vi.fn()} />);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Manage' })[1]!);
+    const secondManageButton = screen.getAllByRole('button', { name: 'Manage' })[1];
+    if (!secondManageButton) throw new Error('expected a second Manage button');
+    fireEvent.click(secondManageButton);
 
     expect(screen.getByTestId('transaction-detail-dialog')).toHaveTextContent('Detail for txn-2');
   });

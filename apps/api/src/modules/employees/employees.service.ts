@@ -208,8 +208,10 @@ export const employeesService = {
 
     const employee = await employeesRepository.create({
       email: isStaff ? undefined : data.email,
-      firstName: data.first_name,
-      lastName: data.last_name,
+      // Branch accounts (Task 168) no longer collect a name — firstName/lastName
+      // are NOT NULL columns with no migration planned, so store '' rather than null.
+      firstName: data.first_name ?? '',
+      lastName: data.last_name ?? '',
       phone: data.phone,
       role: data.role,
       employmentType: data.employment_type,

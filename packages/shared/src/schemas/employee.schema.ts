@@ -32,8 +32,11 @@ export const philippineMobileSchema = z
 export const createEmployeeSchema = z
   .object({
     email: z.email().optional(),
-    first_name: z.string().min(2).max(50),
-    last_name: z.string().min(2).max(50),
+    // Optional at the base type: Task 168 dropped the name requirement for
+    // `branch` accounts (identity is username/password only). Required for
+    // every other role via the refinement below.
+    first_name: z.string().min(2).max(50).optional(),
+    last_name: z.string().min(2).max(50).optional(),
     phone: philippineMobileSchema.optional(),
     role: z.enum(roleValues),
     employment_type: z.enum(employmentTypeValues),
@@ -56,6 +59,14 @@ export const createEmployeeSchema = z
   .refine((data) => data.role === ROLES.STAFF || Boolean(data.initial_password), {
     message: 'An initial password is required for a non-staff account',
     path: ['initial_password'],
+  })
+  .refine((data) => data.role === ROLES.BRANCH || Boolean(data.first_name), {
+    message: 'First name is required',
+    path: ['first_name'],
+  })
+  .refine((data) => data.role === ROLES.BRANCH || Boolean(data.last_name), {
+    message: 'Last name is required',
+    path: ['last_name'],
   })
   .refine((data) => data.role !== ROLES.STAFF || Boolean(data.position), {
     message: 'Position is required for a staff employee',

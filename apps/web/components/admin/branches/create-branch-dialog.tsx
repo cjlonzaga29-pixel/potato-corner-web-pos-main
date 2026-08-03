@@ -30,8 +30,6 @@ const formSchema = z
     gpsLatitude: optionalCoercedNumber(-90, 90),
     gpsLongitude: optionalCoercedNumber(-180, 180),
     gpsRadiusMeters: z.coerce.number().int().min(10).max(1000).default(100),
-    accountFirstName: z.string().min(2, 'Minimum 2 characters').max(50),
-    accountLastName: z.string().min(2, 'Minimum 2 characters').max(50),
     username: z.email('Must be a valid email'),
     password: z.string().min(8, 'Minimum 8 characters'),
     confirmPassword: z.string().min(8, 'Minimum 8 characters'),
@@ -50,8 +48,6 @@ const DEFAULT_VALUES: FormValues = {
   gpsLatitude: '',
   gpsLongitude: '',
   gpsRadiusMeters: 100,
-  accountFirstName: '',
-  accountLastName: '',
   username: '',
   password: '',
   confirmPassword: '',
@@ -105,8 +101,6 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
     // existing user via assign-supervisor-dialog.tsx, not created here.
     await createAccount.mutateAsync({
       email: parsed.username,
-      first_name: parsed.accountFirstName,
-      last_name: parsed.accountLastName,
       role: ROLES.BRANCH,
       employment_type: EMPLOYMENT_TYPE.REGULAR,
       branch_ids: [branch.id],
@@ -151,15 +145,6 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
             <FormFieldWrapper<FormValues> name="gpsRadiusMeters" label="GPS Radius (meters)" description="Default 100m">
               <Input inputMode="numeric" />
             </FormFieldWrapper>
-
-            <div className="grid grid-cols-2 gap-3">
-              <FormFieldWrapper<FormValues> name="accountFirstName" label="Account First Name" required>
-                <Input placeholder="Juan" />
-              </FormFieldWrapper>
-              <FormFieldWrapper<FormValues> name="accountLastName" label="Account Last Name" required>
-                <Input placeholder="Dela Cruz" />
-              </FormFieldWrapper>
-            </div>
 
             <FormFieldWrapper<FormValues> name="username" label="Username" description="Used as the branch account login (email format)" required>
               <Input type="email" placeholder="branch.manila@potatocorner.com" />

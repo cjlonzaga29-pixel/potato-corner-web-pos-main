@@ -75,7 +75,7 @@ export async function processGenerateExport(jobId: string, data: GenerateExportJ
   const rows = await getReportRows(reportType, filters);
   const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
 
-  // INVENTORY_SUMMARY (Task 110) has no single-table column set — see
+  // INVENTORY_SUMMARY (Task 144) has no single-totals-row column set — see
   // generateInventorySummaryCsv/Pdf's doc comment.
   let buffer: Buffer;
   if (reportType === 'INVENTORY_SUMMARY') {

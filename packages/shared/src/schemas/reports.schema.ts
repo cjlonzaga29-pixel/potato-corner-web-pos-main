@@ -170,23 +170,10 @@ export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsu
 // Per-ingredient stock snapshot: opening balance for today, consumption
 // today/this-month (SALE movements only, matching the Branch Inventory
 // list's "Consumed Today" column), and the current remaining balance.
-// Task 110: split into two disjoint sections so kg and pc are never
-// rendered in the same table — `section` discriminates which group a row
-// belongs to. INGREDIENT_KG rows carry weight-normalized kg figures in the
-// *_kg fields (base-unit figures still populated for audit/export use);
-// PACKAGING_PC rows are already piece-denominated, so the *_kg fields stay
-// null. Rows whose base unit is neither weight-normalizable nor COUNT
-// (e.g. a liquid tracked in mL/L with no UnitConversion to weight) are
-// excluded entirely by the repository — there is no third section.
-// Task 112/114: a base unit CAN be weight-normalized (WEIGHT dimension, or
-// tbsp/tsp) but still lack a resolvable path to kg — e.g. a tbsp-tracked
-// ingredient with no UnitConversion row to kg configured. Those rows stay in
-// INGREDIENT_KG (never a separate section/table) with status
-// 'CONVERSION_REQUIRED': the *_kg fields stay null (never fabricated) and
-// conversion_warning explains what to fix, instead of the row silently
-// disappearing or being hidden in a third table. g/kg themselves never hit
-// this path — they convert deterministically (value / 1000 and identity)
-// without needing a UnitConversion row, so they're always 'CONVERTED'.
+// Task 144: every row displays using the inventory item's own base unit —
+// no kg conversion, no CONVERSION_REQUIRED status, no section split between
+// ingredients and packaging. `unit` is always the InventoryItem's base unit
+// code as stored (kg, g, tbsp, tsp, pcs, ml, L, ...), never converted.
 // Distinct from InventoryConsumptionSummaryReportRow above, which is a
 // date-range consumption total with no stock-level or opening/remaining data.
 export const InventorySummaryReportRowSchema = z.object({
@@ -194,18 +181,11 @@ export const InventorySummaryReportRowSchema = z.object({
   ingredient_name: z.string(),
   branch_id: z.uuid(),
   branch_name: z.string(),
-  section: z.enum(['INGREDIENT_KG', 'PACKAGING_PC']),
-  status: z.enum(['CONVERTED', 'CONVERSION_REQUIRED']).nullable(),
   unit: z.string(),
   opening_stock: z.number(),
   consumed_today: z.number(),
   consumed_this_month: z.number(),
   remaining_stock: z.number(),
-  opening_stock_kg: z.number().nullable(),
-  consumed_today_kg: z.number().nullable(),
-  consumed_this_month_kg: z.number().nullable(),
-  remaining_kg: z.number().nullable(),
-  conversion_warning: z.string().nullable(),
 });
 export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
 

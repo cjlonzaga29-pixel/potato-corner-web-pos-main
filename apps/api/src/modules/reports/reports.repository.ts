@@ -2,7 +2,6 @@ import type { Prisma, $Enums } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
-import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import type {
   ReportFilters,
@@ -477,6 +476,9 @@ export const reportsRepository = {
   // at today's Manila midnight. consumed_today/consumed_this_month count only
   // SALE movements, matching the Branch Inventory list's "Consumed Today"
   // column (getConsumedTodayByBranch) for consistency across the app.
+  // Task 144: every row is reported in the inventory item's own base unit —
+  // no kg conversion, no CONVERSION_REQUIRED status, no ingredient/packaging
+  // section split. The caller groups/totals rows by `unit` itself.
   async getInventorySummary(filters: ReportFilters): Promise<InventorySummaryReportRow[]> {
     const now = new Date();
     const { dayStart, dayEnd } = dayBounds(now);
@@ -492,7 +494,7 @@ export const reportsRepository = {
         inventoryItemId: true,
         quantityOnHand: true,
         branch: { select: { name: true } },
-        inventoryItem: { select: { name: true, baseUnitId: true, baseUnit: { select: { code: true, dimension: true } } } },
+        inventoryItem: { select: { name: true, baseUnit: { select: { code: true } } } },
       },
       orderBy: { inventoryItem: { name: 'asc' } },
     });
@@ -502,7 +504,7 @@ export const reportsRepository = {
     const branchIds = Array.from(new Set(stocks.map((s) => s.branchId)));
     const movementScope = { inventoryItemId: { in: itemIds }, branchId: { in: branchIds } };
 
-    const [todayNet, todaySales, monthSales, kilogramUnit, gramUnit] = await Promise.all([
+    const [todayNet, todaySales, monthSales] = await Promise.all([
       prisma.inventoryStockMovement.groupBy({
         by: ['branchId', 'inventoryItemId'],
         where: { ...movementScope, createdAt: { gte: dayStart, lte: dayEnd } },
@@ -518,8 +520,6 @@ export const reportsRepository = {
         where: { ...movementScope, movementType: 'SALE', createdAt: { gte: monthStart, lte: monthEnd } },
         _sum: { quantityChange: true },
       }),
-      prisma.unitOfMeasure.findUnique({ where: { code: 'kg' } }),
-      prisma.unitOfMeasure.findUnique({ where: { code: 'g' } }),
     ]);
 
     const toMap = (rows: typeof todayNet, abs: boolean) =>
@@ -528,100 +528,14 @@ export const reportsRepository = {
     const todaySalesMap = toMap(todaySales, true);
     const monthSalesMap = toMap(monthSales, true);
 
-    // Weight (kilogram) auto-conversion, cached per base unit so each
-    // distinct unit is resolved at most once regardless of row count.
-    // Task 110: Section 1 (Ingredient Consumption (KG)) admits a base unit
-    // when its dimension is WEIGHT (g, kg, and any future weight unit), or
-    // when its code is tbsp/tsp — those two are UnitDimension.VOLUME in this
-    // schema, but the spec explicitly calls for converting them to kg via
-    // an existing UnitConversion row (e.g. a seasoning tracked by the
-    // tablespoon). Every other unit (pieces, mL, L, ...) is NOT_APPLICABLE:
-    // no factor is fabricated and no row is emitted at all.
-    // Task 112: g and kg convert deterministically (value / 1000, identity)
-    // — the standard metric relationship must never depend on a manually
-    // configured UnitConversion row. Every other weight-eligible unit (other
-    // WEIGHT units, tbsp, tsp) still goes through convertQuantity's
-    // UnitConversion lookup; when that throws UnitConversionError (no row
-    // configured), the unit is UNRESOLVED — eligible for kg tracking but not
-    // convertible yet — so the caller keeps it in INGREDIENT_KG with status
-    // CONVERSION_REQUIRED (Task 114) instead of silently dropping it or
-    // routing it to a separate section.
-    const WEIGHT_ELIGIBLE_CODES = new Set(['tbsp', 'tsp']);
-    type WeightResolution = { status: 'resolved'; toKilograms: number } | { status: 'unresolved' } | { status: 'not_applicable' };
-    // Keyed by `${inventoryItemId}:${baseUnitId}`, not baseUnitId alone —
-    // two items sharing a base unit (e.g. two tbsp-tracked seasonings) can
-    // resolve to different kg factors via their own InventoryItemUnitConversion
-    // row, so a bare-baseUnitId cache would silently leak one item's factor
-    // onto another's rows.
-    const weightFactorCache = new Map<string, WeightResolution>();
-    async function resolveWeightFactors(inventoryItemId: string, baseUnitId: string, dimension: string, code: string): Promise<WeightResolution> {
-      const cacheKey = `${inventoryItemId}:${baseUnitId}`;
-      const cached = weightFactorCache.get(cacheKey);
-      if (cached) return cached;
-
-      const normalizedCode = code.toLowerCase();
-      const isWeightEligible = dimension === 'WEIGHT' || WEIGHT_ELIGIBLE_CODES.has(normalizedCode);
-      if (!isWeightEligible) {
-        const result: WeightResolution = { status: 'not_applicable' };
-        weightFactorCache.set(cacheKey, result);
-        return result;
-      }
-      if (normalizedCode === 'g') {
-        const result: WeightResolution = { status: 'resolved', toKilograms: 0.001 };
-        weightFactorCache.set(cacheKey, result);
-        return result;
-      }
-      if (normalizedCode === 'kg') {
-        const result: WeightResolution = { status: 'resolved', toKilograms: 1 };
-        weightFactorCache.set(cacheKey, result);
-        return result;
-      }
-
-      // Direct base unit -> kg, item-specific InventoryItemUnitConversion
-      // checked before the global UnitConversion table (convertQuantity's
-      // own precedence).
-      if (kilogramUnit) {
-        try {
-          const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id, inventoryItemId)).toNumber();
-          const result: WeightResolution = { status: 'resolved', toKilograms };
-          weightFactorCache.set(cacheKey, result);
-          return result;
-        } catch (error) {
-          if (!(error instanceof UnitConversionError)) throw error;
-        }
-      }
-
-      // Task 134: item-specific conversions are commonly authored against
-      // grams rather than kg directly (e.g. "1 tbsp = 7 g" for a seasoning),
-      // so a base unit with no direct ...->kg row still resolves by chaining
-      // base unit -> g (item-specific, then global) -> kg (the fixed metric
-      // factor) before falling back to CONVERSION_REQUIRED.
-      if (gramUnit) {
-        try {
-          const toGrams = (await convertQuantity(1, baseUnitId, gramUnit.id, inventoryItemId)).toNumber();
-          const result: WeightResolution = { status: 'resolved', toKilograms: toGrams * 0.001 };
-          weightFactorCache.set(cacheKey, result);
-          return result;
-        } catch (error) {
-          if (!(error instanceof UnitConversionError)) throw error;
-        }
-      }
-
-      const result: WeightResolution = { status: 'unresolved' };
-      weightFactorCache.set(cacheKey, result);
-      return result;
-    }
-
-    const rows: InventorySummaryReportRow[] = [];
-    for (const s of stocks) {
+    return stocks.map((s) => {
       const key = `${s.branchId}:${s.inventoryItemId}`;
       const remaining = s.quantityOnHand.toNumber();
       const opening = remaining - (todayNetMap.get(key) ?? 0);
       const consumedToday = todaySalesMap.get(key) ?? 0;
       const consumedMonth = monthSalesMap.get(key) ?? 0;
-      const dimension = s.inventoryItem.baseUnit.dimension;
 
-      const base = {
+      return {
         ingredient_id: s.inventoryItemId,
         ingredient_name: s.inventoryItem.name,
         branch_id: s.branchId,
@@ -632,62 +546,7 @@ export const reportsRepository = {
         consumed_this_month: round2(consumedMonth),
         remaining_stock: round2(remaining),
       };
-
-      // Section 2 (Packaging Consumption (PC)): base unit dimension COUNT
-      // (pc, cup, lid, tray, ...) — already piece-denominated, no conversion.
-      if (dimension === 'COUNT') {
-        rows.push({
-          ...base,
-          section: 'PACKAGING_PC',
-          status: null,
-          opening_stock_kg: null,
-          consumed_today_kg: null,
-          consumed_this_month_kg: null,
-          remaining_kg: null,
-          conversion_warning: null,
-        });
-        continue;
-      }
-
-      const resolution = await resolveWeightFactors(s.inventoryItemId, s.inventoryItem.baseUnitId, dimension, s.inventoryItem.baseUnit.code);
-
-      // Not weight-normalizable and not COUNT (e.g. mL/L liquids) — excluded
-      // entirely, there is no row for these at all.
-      if (resolution.status === 'not_applicable') continue;
-
-      // Task 114: weight-eligible (WEIGHT dimension, or tbsp/tsp) but no
-      // resolvable path to kg — stays IN the Ingredient Consumption (KG)
-      // table (never a separate section) with status CONVERSION_REQUIRED so
-      // it isn't hidden, but its kg fields stay null and it's excluded from
-      // kg totals by the export/UI layers.
-      if (resolution.status === 'unresolved') {
-        rows.push({
-          ...base,
-          section: 'INGREDIENT_KG',
-          status: 'CONVERSION_REQUIRED',
-          opening_stock_kg: null,
-          consumed_today_kg: null,
-          consumed_this_month_kg: null,
-          remaining_kg: null,
-          conversion_warning: 'Configure a valid conversion to kg',
-        });
-        continue;
-      }
-
-      // Section 1 (Ingredient Consumption (KG)).
-      rows.push({
-        ...base,
-        section: 'INGREDIENT_KG',
-        status: 'CONVERTED',
-        opening_stock_kg: round2(opening * resolution.toKilograms),
-        consumed_today_kg: round2(consumedToday * resolution.toKilograms),
-        consumed_this_month_kg: round2(consumedMonth * resolution.toKilograms),
-        remaining_kg: round2(remaining * resolution.toKilograms),
-        conversion_warning: null,
-      });
-    }
-
-    return rows;
+    });
   },
 
   async getAttendanceSummary(filters: ReportFilters): Promise<AttendanceSummaryReportRow[]> {

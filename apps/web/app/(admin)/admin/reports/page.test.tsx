@@ -179,46 +179,54 @@ describe('AdminReportsPage', () => {
     }
   });
 
-  it('excludes ingredients with a missing kg conversion from the Inventory Summary table, shows a warning banner, and renders no Status column (TASK 134)', () => {
+  it('renders every ingredient in its own inventory unit with no KG conversion, no Status column, and no warning banner (TASK 144)', () => {
     vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
       data: {
         generated_at: '2026-08-01T00:00:00.000Z',
         data: [
           {
             ingredient_id: 'i1',
-            ingredient_name: 'Flour',
+            ingredient_name: 'Raw Fries',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
-            section: 'INGREDIENT_KG',
-            status: 'CONVERTED',
             unit: 'kg',
-            opening_stock: 10,
-            consumed_today: 1,
-            consumed_this_month: 5,
-            remaining_stock: 9,
-            opening_stock_kg: 10,
-            consumed_today_kg: 1,
-            consumed_this_month_kg: 5,
-            remaining_kg: 9,
-            conversion_warning: null,
+            opening_stock: 12.5,
+            consumed_today: 2.3,
+            consumed_this_month: 54.1,
+            remaining_stock: 10.2,
           },
           {
             ingredient_id: 'i2',
-            ingredient_name: 'Mystery Powder',
+            ingredient_name: 'Cheese Powder',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
-            section: 'INGREDIENT_KG',
-            status: 'CONVERSION_REQUIRED',
             unit: 'tbsp',
-            opening_stock: 3,
-            consumed_today: 0,
-            consumed_this_month: 0,
-            remaining_stock: 3,
-            opening_stock_kg: null,
-            consumed_today_kg: null,
-            consumed_this_month_kg: null,
-            remaining_kg: null,
-            conversion_warning: 'Configure a valid conversion to kg',
+            opening_stock: 420,
+            consumed_today: 18,
+            consumed_this_month: 260,
+            remaining_stock: 160,
+          },
+          {
+            ingredient_id: 'i3',
+            ingredient_name: 'Vanilla Extract',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            unit: 'tsp',
+            opening_stock: 100,
+            consumed_today: 5,
+            consumed_this_month: 40,
+            remaining_stock: 90,
+          },
+          {
+            ingredient_id: 'i4',
+            ingredient_name: 'Salt',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            unit: 'g',
+            opening_stock: 250,
+            consumed_today: 35,
+            consumed_this_month: 920,
+            remaining_stock: 215,
           },
         ],
       },
@@ -232,12 +240,24 @@ describe('AdminReportsPage', () => {
     selectReportTab('Inventory Summary');
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
 
-    expect(screen.getByText('Flour')).toBeInTheDocument();
-    expect(screen.queryByText('Mystery Powder')).not.toBeInTheDocument();
-    expect(screen.getByText(/some ingredients are missing unit conversions and are excluded from kg totals/i)).toBeInTheDocument();
+    // Every unit appears — tbsp, tsp, g, and kg — with no row excluded.
+    expect(screen.getByText('Raw Fries')).toBeInTheDocument();
+    expect(screen.getByText('Cheese Powder')).toBeInTheDocument();
+    expect(screen.getByText('Vanilla Extract')).toBeInTheDocument();
+    expect(screen.getByText('Salt')).toBeInTheDocument();
+
+    // No leftover kg-conversion UI.
+    expect(screen.queryByText(/missing unit conversions/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Converted')).not.toBeInTheDocument();
     expect(screen.queryByText('Conversion required')).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Packaging Consumption (PC)')).not.toBeInTheDocument();
+
+    // Totals grouped by unit, never mixed.
+    expect(screen.getByText('Total (kg)')).toBeInTheDocument();
+    expect(screen.getByText('Total (tbsp)')).toBeInTheDocument();
+    expect(screen.getByText('Total (tsp)')).toBeInTheDocument();
+    expect(screen.getByText('Total (g)')).toBeInTheDocument();
   });
 
   it('enables only the active tab\'s data hook', () => {

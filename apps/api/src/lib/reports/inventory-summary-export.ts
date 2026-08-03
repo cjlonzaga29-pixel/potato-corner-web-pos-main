@@ -1,17 +1,13 @@
 // apps/api/src/lib/reports/inventory-summary-export.ts
 //
-// Task 110: the Inventory Summary report renders as two disjoint sections —
-// Ingredient Consumption (KG) and Packaging Consumption (PC) — that must
-// never share a table/column set. The generic column-based generateCsv/
-// generatePdf (lib/reports/csv.ts, lib/reports/pdf.ts) assume one flat table
-// per report, so this report gets its own dedicated builders instead of a
-// REPORT_COLUMNS entry.
-//
-// Task 129: rows needing kg-conversion setup (status 'CONVERSION_REQUIRED')
-// are excluded from Ingredient Consumption (KG) entirely — no Status column,
-// no blank-kg row — matching the admin UI (page.tsx), which drops them from
-// the table and surfaces a single warning line instead. CSV/PDF must match
-// the UI exactly, so the warning line is reproduced here too.
+// Task 144: the Inventory Summary report renders as a single "Ingredient
+// Consumption" table — every inventory item in its own stored base unit,
+// never converted (no kg conversion, no CONVERSION_REQUIRED status, no
+// ingredient/packaging section split). The generic column-based generateCsv/
+// generatePdf (lib/reports/csv.ts, lib/reports/pdf.ts) assume one totals row
+// per whole report, but totals here must be grouped per unit (never mixing
+// units together), so this report keeps its own dedicated builders instead
+// of a REPORT_COLUMNS entry.
 import React from 'react';
 import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-pdf/renderer';
 import type { InventorySummaryReportRow } from '@potato-corner/shared';
@@ -25,52 +21,51 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function sumBy(rows: InventorySummaryReportRow[], key: keyof InventorySummaryReportRow): number {
-  return round2(rows.reduce((total, r) => total + (Number(r[key]) || 0), 0));
+export interface UnitTotal {
+  unit: string;
+  opening_stock: number;
+  consumed_today: number;
+  consumed_this_month: number;
+  remaining_stock: number;
 }
 
-const MISSING_CONVERSION_WARNING = 'Some ingredients are missing unit conversions and are excluded from KG totals.';
-
-function splitSections(rows: InventorySummaryReportRow[]) {
-  const allIngredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
-  return {
-    ingredientRows: allIngredientRows.filter((r) => r.status !== 'CONVERSION_REQUIRED'),
-    packagingRows: rows.filter((r) => r.section === 'PACKAGING_PC'),
-    hasMissingConversions: allIngredientRows.some((r) => r.status === 'CONVERSION_REQUIRED'),
-  };
+/** Totals grouped by unit, in first-appearance order — rows with different units are never summed together. */
+export function groupTotalsByUnit(rows: InventorySummaryReportRow[]): UnitTotal[] {
+  const totalsByUnit = new Map<string, UnitTotal>();
+  for (const r of rows) {
+    const existing = totalsByUnit.get(r.unit);
+    if (existing) {
+      existing.opening_stock = round2(existing.opening_stock + r.opening_stock);
+      existing.consumed_today = round2(existing.consumed_today + r.consumed_today);
+      existing.consumed_this_month = round2(existing.consumed_this_month + r.consumed_this_month);
+      existing.remaining_stock = round2(existing.remaining_stock + r.remaining_stock);
+    } else {
+      totalsByUnit.set(r.unit, {
+        unit: r.unit,
+        opening_stock: r.opening_stock,
+        consumed_today: r.consumed_today,
+        consumed_this_month: r.consumed_this_month,
+        remaining_stock: r.remaining_stock,
+      });
+    }
+  }
+  return Array.from(totalsByUnit.values());
 }
 
-function csvSectionLines(title: string, headers: string[], dataRows: Array<Array<string | number>>, totalsRow: Array<string | number>): string[] {
-  return [title, headers.join(','), ...dataRows.map((row) => row.map(escapeCsvField).join(',')), totalsRow.map(escapeCsvField).join(',')];
-}
+const HEADERS = ['Ingredient', 'Unit', 'Opening Stock', 'Consumed Today', 'Consumed This Month', 'Remaining'];
 
-/** CSV: Section 1 (Ingredient Consumption (KG), CONVERSION_REQUIRED rows excluded entirely — a warning line stands in for them), a blank line, then Section 2 (Packaging Consumption (PC)). Only two sections, ever — never mixes kg and pc columns in one table. */
+/** CSV: one "Ingredient Consumption" table — every row in its own unit — followed by one Total line per distinct unit. */
 export function generateInventorySummaryCsv(rows: InventorySummaryReportRow[]): Buffer {
-  const { ingredientRows, packagingRows, hasMissingConversions } = splitSections(rows);
+  const totals = groupTotalsByUnit(rows);
 
-  const section1 = csvSectionLines(
-    'Ingredient Consumption (KG)',
-    ['Ingredient', 'Opening Stock (kg)', 'Consumed Today (kg)', 'Consumed This Month (kg)', 'Remaining (kg)'],
-    ingredientRows.map((r) => [r.ingredient_name, r.opening_stock_kg ?? '', r.consumed_today_kg ?? '', r.consumed_this_month_kg ?? '', r.remaining_kg ?? '']),
-    [
-      'Total',
-      sumBy(ingredientRows, 'opening_stock_kg'),
-      sumBy(ingredientRows, 'consumed_today_kg'),
-      sumBy(ingredientRows, 'consumed_this_month_kg'),
-      sumBy(ingredientRows, 'remaining_kg'),
-    ],
-  );
-
-  // Section 2's footer only totals Consumed Today/Month per spec — Opening
-  // and Remaining are left blank in the totals row, not zero-filled.
-  const section2 = csvSectionLines(
-    'Packaging Consumption (PC)',
-    ['Packaging', 'Opening Stock (pc)', 'Consumed Today (pc)', 'Consumed This Month (pc)', 'Remaining (pc)'],
-    packagingRows.map((r) => [r.ingredient_name, r.opening_stock, r.consumed_today, r.consumed_this_month, r.remaining_stock]),
-    ['Total', '', sumBy(packagingRows, 'consumed_today'), sumBy(packagingRows, 'consumed_this_month'), ''],
-  );
-
-  const lines = [...section1, '', ...section2, ...(hasMissingConversions ? ['', MISSING_CONVERSION_WARNING] : [])];
+  const lines = [
+    'Ingredient Consumption',
+    HEADERS.join(','),
+    ...rows.map((r) => [r.ingredient_name, r.unit, r.opening_stock, r.consumed_today, r.consumed_this_month, r.remaining_stock].map(escapeCsvField).join(',')),
+    ...totals.map((t) =>
+      [`Total (${t.unit})`, '', t.opening_stock, t.consumed_today, t.consumed_this_month, t.remaining_stock].map(escapeCsvField).join(','),
+    ),
+  ];
 
   return Buffer.from(lines.join('\n'), 'utf-8');
 }
@@ -84,52 +79,43 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 10, fontWeight: 700, marginTop: 16, marginBottom: 6 },
   table: { display: 'flex', width: '100%', borderTop: '1px solid #000000' },
   row: { flexDirection: 'row', borderBottom: '1px solid #cccccc' },
-  totalsRow: { flexDirection: 'row', borderBottom: '1px solid #000000', borderTop: '1px solid #000000', fontWeight: 700 },
+  totalsRow: { flexDirection: 'row', borderBottom: '1px solid #000000', fontWeight: 700 },
   headerRow: { flexDirection: 'row', borderBottom: '1px solid #000000', fontWeight: 700 },
   cell: { flex: 1, padding: 4 },
-  warning: { fontSize: 8, marginTop: 6, color: '#8a6d00' },
   footer: { position: 'absolute', bottom: 16, left: 24, right: 24, fontSize: 8, textAlign: 'center', color: '#666666' },
 });
 
-function pdfTable(
-  headers: string[],
-  dataRows: Array<Array<string | number>>,
-  totalsRow?: Array<string | number>,
-): ReturnType<typeof e> {
-  return e(
-    View,
-    { style: styles.table },
-    e(View, { style: styles.headerRow }, ...headers.map((h, i) => e(Text, { key: i, style: styles.cell }, h))),
-    ...dataRows.map((row, i) => e(View, { key: i, style: styles.row, wrap: false }, ...row.map((v, j) => e(Text, { key: j, style: styles.cell }, String(v))))),
-    ...(totalsRow ? [e(View, { style: styles.totalsRow }, ...totalsRow.map((v, i) => e(Text, { key: i, style: styles.cell }, String(v))))] : []),
-  );
-}
-
-/** PDF: one document — title header, then Section 1's table (Ingredient Consumption (KG), CONVERSION_REQUIRED rows excluded entirely), then Section 2's table (Packaging Consumption (PC)). Only two sections, ever. */
+/** PDF: one document — title header, then the "Ingredient Consumption" table with every row in its own unit, followed by one Total row per distinct unit. */
 export async function generateInventorySummaryPdf(filters: ReportFilters, rows: InventorySummaryReportRow[], branchName: string | null): Promise<Buffer> {
-  const { ingredientRows, packagingRows, hasMissingConversions } = splitSections(rows);
+  const totals = groupTotalsByUnit(rows);
   const generatedAt = new Date().toISOString();
   const dateRangeLabel =
     filters.dateFrom || filters.dateTo
       ? `${filters.dateFrom ? manilaDateKey(filters.dateFrom) : '...'} to ${filters.dateTo ? manilaDateKey(filters.dateTo) : '...'}`
       : 'All dates';
 
-  const ingredientTable = pdfTable(
-    ['Ingredient', 'Opening Stock (kg)', 'Consumed Today (kg)', 'Consumed This Month (kg)', 'Remaining (kg)'],
-    ingredientRows.map((r) => [r.ingredient_name, r.opening_stock_kg ?? '—', r.consumed_today_kg ?? '—', r.consumed_this_month_kg ?? '—', r.remaining_kg ?? '—']),
-    [
-      'Total',
-      sumBy(ingredientRows, 'opening_stock_kg'),
-      sumBy(ingredientRows, 'consumed_today_kg'),
-      sumBy(ingredientRows, 'consumed_this_month_kg'),
-      sumBy(ingredientRows, 'remaining_kg'),
-    ],
-  );
-
-  const packagingTable = pdfTable(
-    ['Packaging', 'Opening Stock (pc)', 'Consumed Today (pc)', 'Consumed This Month (pc)', 'Remaining (pc)'],
-    packagingRows.map((r) => [r.ingredient_name, r.opening_stock, r.consumed_today, r.consumed_this_month, r.remaining_stock]),
-    ['Total', '', sumBy(packagingRows, 'consumed_today'), sumBy(packagingRows, 'consumed_this_month'), ''],
+  const table = e(
+    View,
+    { style: styles.table },
+    e(View, { style: styles.headerRow }, ...HEADERS.map((h, i) => e(Text, { key: i, style: styles.cell }, h))),
+    ...rows.map((r, i) =>
+      e(
+        View,
+        { key: i, style: styles.row, wrap: false },
+        ...[r.ingredient_name, r.unit, r.opening_stock, r.consumed_today, r.consumed_this_month, r.remaining_stock].map((v, j) =>
+          e(Text, { key: j, style: styles.cell }, String(v)),
+        ),
+      ),
+    ),
+    ...totals.map((t, i) =>
+      e(
+        View,
+        { key: `total-${i}`, style: styles.totalsRow },
+        ...[`Total (${t.unit})`, '', t.opening_stock, t.consumed_today, t.consumed_this_month, t.remaining_stock].map((v, j) =>
+          e(Text, { key: j, style: styles.cell }, String(v)),
+        ),
+      ),
+    ),
   );
 
   const doc = e(
@@ -145,11 +131,8 @@ export async function generateInventorySummaryPdf(filters: ReportFilters, rows: 
         e(Text, { style: styles.title }, 'Inventory Summary Report'),
         e(Text, { style: styles.meta }, `Branch: ${branchName ?? 'All Branches'} | Date range: ${dateRangeLabel} | Generated: ${generatedAt}`),
       ),
-      e(Text, { style: styles.sectionTitle }, 'Ingredient Consumption (KG)'),
-      ingredientTable,
-      ...(hasMissingConversions ? [e(Text, { style: styles.warning }, MISSING_CONVERSION_WARNING)] : []),
-      e(Text, { style: styles.sectionTitle }, 'Packaging Consumption (PC)'),
-      packagingTable,
+      e(Text, { style: styles.sectionTitle }, 'Ingredient Consumption'),
+      table,
       e(Text, {
         style: styles.footer,
         fixed: true,

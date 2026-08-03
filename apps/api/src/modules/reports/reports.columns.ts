@@ -114,23 +114,19 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
   // Not used for CSV/PDF export — INVENTORY_SUMMARY is special-cased in
   // reports.service.ts's requestExport and report.queue.ts's
   // processGenerateExport (see generateInventorySummaryCsv/Pdf), since it
-  // renders as two disjoint kg/pc sections rather than one flat table. This
-  // entry exists only so REPORT_COLUMNS stays a total Record<ReportType, ...>.
+  // renders as a single native-unit table (Task 144) rather than the
+  // generic single-totals-row layout. This entry exists only so
+  // REPORT_COLUMNS stays a total Record<ReportType, ...>.
   INVENTORY_SUMMARY: [
     { key: 'ingredient_id', header: 'Ingredient ID', isAudit: true },
     { key: 'ingredient_name', header: 'Ingredient' },
     { key: 'branch_id', header: 'Branch ID', isAudit: true },
     { key: 'branch_name', header: 'Branch' },
-    { key: 'section', header: 'Section' },
     { key: 'unit', header: 'Unit' },
     { key: 'opening_stock', header: 'Opening Stock' },
     { key: 'consumed_today', header: 'Consumed Today' },
     { key: 'consumed_this_month', header: 'Consumed This Month' },
     { key: 'remaining_stock', header: 'Remaining' },
-    { key: 'opening_stock_kg', header: 'Opening Stock (kg)' },
-    { key: 'consumed_today_kg', header: 'Consumed Today (kg)' },
-    { key: 'consumed_this_month_kg', header: 'Consumed This Month (kg)' },
-    { key: 'remaining_kg', header: 'Remaining (kg)' },
   ],
   ATTENDANCE_SUMMARY: [
     { key: 'employee_id', header: 'Employee ID', isAudit: true },

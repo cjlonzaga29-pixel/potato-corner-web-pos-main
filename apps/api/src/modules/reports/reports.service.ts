@@ -378,9 +378,9 @@ export const reportsService = {
       return { kind: 'file', buffer, filename, contentType };
     }
 
-    // INVENTORY_SUMMARY (Task 110) renders as two disjoint sections —
-    // Ingredient Consumption (KG) and Packaging Consumption (PC) — which the
-    // generic single-table generateCsv/generatePdf can't express, so both
+    // INVENTORY_SUMMARY (Task 144) renders as a single "Ingredient
+    // Consumption" table with per-unit totals, which the generic
+    // single-totals-row generateCsv/generatePdf can't express, so both
     // formats are redirected to the dedicated builders regardless of role
     // (the underlying rows are identical for every requester).
     if (reportType === 'INVENTORY_SUMMARY') {

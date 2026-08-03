@@ -197,26 +197,50 @@ const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
   { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-// Task 110/134: Inventory Summary is two disjoint tables — kg and pc are
-// never rendered in the same table. Section rows are pre-split by `section`
-// before being handed to these column sets (see the INVENTORY_SUMMARY tab
-// below). Rows with no usable kg conversion (status CONVERSION_REQUIRED) are
-// filtered out of ingredientRows before reaching this table — no fake kg
-// values and no Status column; a warning banner covers those instead.
-const ingredientConsumptionKgColumns: ColumnDef<InventorySummaryReportRow>[] = [
+// Task 144: Inventory Summary is a single "Ingredient Consumption" table —
+// every inventory item displays using its own stored base unit, never
+// converted. No section split, no Status column, no warning banner.
+const ingredientConsumptionColumns: ColumnDef<InventorySummaryReportRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { id: 'opening_stock_kg', header: 'Opening Stock (kg)', cell: ({ row }) => row.original.opening_stock_kg ?? '—' },
-  { id: 'consumed_today_kg', header: 'Consumed Today (kg)', cell: ({ row }) => row.original.consumed_today_kg ?? '—' },
-  { id: 'consumed_this_month_kg', header: 'Consumed This Month (kg)', cell: ({ row }) => row.original.consumed_this_month_kg ?? '—' },
-  { id: 'remaining_kg', header: 'Remaining (kg)', cell: ({ row }) => row.original.remaining_kg ?? '—' },
+  { accessorKey: 'unit', header: 'Unit' },
+  { accessorKey: 'opening_stock', header: 'Opening Stock' },
+  { accessorKey: 'consumed_today', header: 'Consumed Today' },
+  { accessorKey: 'consumed_this_month', header: 'Consumed This Month' },
+  { accessorKey: 'remaining_stock', header: 'Remaining' },
 ];
 
-const packagingConsumptionPcColumns: ColumnDef<InventorySummaryReportRow>[] = [
-  { accessorKey: 'ingredient_name', header: 'Packaging' },
-  { accessorKey: 'opening_stock', header: 'Opening Stock (pc)' },
-  { accessorKey: 'consumed_today', header: 'Consumed Today (pc)' },
-  { accessorKey: 'consumed_this_month', header: 'Consumed This Month (pc)' },
-  { accessorKey: 'remaining_stock', header: 'Remaining (pc)' },
+interface UnitTotal {
+  unit: string;
+  opening_stock: number;
+  consumed_today: number;
+  consumed_this_month: number;
+  remaining_stock: number;
+}
+
+// Totals grouped by unit, in first-appearance order — rows with different
+// units are never summed together (TASK 144).
+function groupTotalsByUnit(rows: InventorySummaryReportRow[]): UnitTotal[] {
+  const totalsByUnit = new Map<string, UnitTotal>();
+  for (const r of rows) {
+    const existing = totalsByUnit.get(r.unit);
+    if (existing) {
+      existing.opening_stock += r.opening_stock;
+      existing.consumed_today += r.consumed_today;
+      existing.consumed_this_month += r.consumed_this_month;
+      existing.remaining_stock += r.remaining_stock;
+    } else {
+      totalsByUnit.set(r.unit, { unit: r.unit, opening_stock: r.opening_stock, consumed_today: r.consumed_today, consumed_this_month: r.consumed_this_month, remaining_stock: r.remaining_stock });
+    }
+  }
+  return Array.from(totalsByUnit.values());
+}
+
+const inventoryConsumptionTotalsColumns: ColumnDef<UnitTotal>[] = [
+  { id: 'unit', header: 'Total', cell: ({ row }) => `Total (${row.original.unit})` },
+  { accessorKey: 'opening_stock', header: 'Opening Stock' },
+  { accessorKey: 'consumed_today', header: 'Consumed Today' },
+  { accessorKey: 'consumed_this_month', header: 'Consumed This Month' },
+  { accessorKey: 'remaining_stock', header: 'Remaining' },
 ];
 
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
@@ -655,31 +679,19 @@ function AdminReportsPageContent() {
               <ReportLastUpdated timestamp={inventorySummary.data?.generated_at} isLoading={inventorySummary.isLoading} />
               {(() => {
                 const rows = inventorySummary.data?.data ?? [];
-                const allIngredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
-                const ingredientRows = allIngredientRows.filter((r) => r.status !== 'CONVERSION_REQUIRED');
-                const hasMissingConversions = ingredientRows.length !== allIngredientRows.length;
-                const packagingRows = rows.filter((r) => r.section === 'PACKAGING_PC');
+                const totals = groupTotalsByUnit(rows);
                 return (
                   <>
-                    {hasMissingConversions && (
-                      <p className="mt-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
-                        Some ingredients are missing unit conversions and are excluded from KG totals.
-                      </p>
+                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption</h3>
+                    <DataTable
+                      columns={ingredientConsumptionColumns}
+                      data={rows}
+                      isLoading={inventorySummary.isLoading}
+                      emptyState={<EmptyState title="No tracked inventory" description="No inventory items at this branch." />}
+                    />
+                    {totals.length > 0 && (
+                      <DataTable columns={inventoryConsumptionTotalsColumns} data={totals} isLoading={inventorySummary.isLoading} />
                     )}
-                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption (KG)</h3>
-                    <DataTable
-                      columns={ingredientConsumptionKgColumns}
-                      data={ingredientRows}
-                      isLoading={inventorySummary.isLoading}
-                      emptyState={<EmptyState title="No tracked ingredients" description="No weight-trackable ingredients at this branch." />}
-                    />
-                    <h3 className="mt-8 mb-2 text-sm font-semibold text-foreground">Packaging Consumption (PC)</h3>
-                    <DataTable
-                      columns={packagingConsumptionPcColumns}
-                      data={packagingRows}
-                      isLoading={inventorySummary.isLoading}
-                      emptyState={<EmptyState title="No tracked packaging" description="No packaging items at this branch." />}
-                    />
                   </>
                 );
               })()}

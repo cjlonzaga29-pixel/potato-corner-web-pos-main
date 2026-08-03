@@ -10,7 +10,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'Potato Corner POS',
+  title: 'Henlin POS',
   description: 'Enterprise Web POS and Branch Management Platform',
   // public/manifest.json exists but was never linked — Next.js only
   // auto-serves a manifest placed at app/manifest.ts/.json, not one under

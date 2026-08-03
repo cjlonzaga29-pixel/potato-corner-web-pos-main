@@ -12,9 +12,9 @@ export default function LoginPage() {
       <Card className="glass-panel relative w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-primary/70 text-lg font-bold text-primary-foreground shadow-glow">
-            PC
+            H
           </div>
-          <CardTitle className="text-xl">Potato Corner POS</CardTitle>
+          <CardTitle className="text-xl">Henlin POS</CardTitle>
           <CardDescription>Sign in to continue</CardDescription>
         </CardHeader>
         <CardContent>

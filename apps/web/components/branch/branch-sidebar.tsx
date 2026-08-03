@@ -133,9 +133,9 @@ export function BranchSidebar() {
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-              PC
+              H
             </div>
-            <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
+            <span className="text-sm font-semibold tracking-tight">Henlin POS</span>
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
@@ -224,9 +224,9 @@ export function BranchSidebar() {
         <SheetTitle className="sr-only">Navigation</SheetTitle>
         <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border/60 px-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-            PC
+            H
           </div>
-          <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
+          <span className="text-sm font-semibold tracking-tight">Henlin POS</span>
         </div>
 
         <nav className="flex-1 space-y-4 overflow-y-auto p-2">

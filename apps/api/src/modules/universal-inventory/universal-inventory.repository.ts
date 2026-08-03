@@ -8,6 +8,8 @@ import type {
   CreateUnitOfMeasureData,
   UpdateUnitOfMeasureData,
   CreateUnitConversionData,
+  CreateInventoryItemUnitConversionData,
+  UpdateInventoryItemUnitConversionData,
   CreateInventoryItemData,
   UpdateInventoryItemData,
   InventoryStockMovementType,
@@ -21,6 +23,11 @@ const inventoryItemInclude = {
 const stockMovementInclude = {
   inventoryItem: { select: { name: true } },
 } satisfies Prisma.InventoryStockMovementInclude;
+
+const itemConversionInclude = {
+  fromUnit: { select: { id: true, code: true, name: true } },
+  toUnit: { select: { id: true, code: true, name: true } },
+} satisfies Prisma.InventoryItemUnitConversionInclude;
 
 export interface CreateStockMovementInput {
   branchId: string;
@@ -121,6 +128,35 @@ export const universalInventoryRepository = {
     return prisma.unitConversion.create({
       data: { fromUnitId: data.fromUnitId, toUnitId: data.toUnitId, factor: data.factor },
     });
+  },
+
+  // --- Item-specific unit conversions (TASK 115, enriched TASK 121) ---
+  listItemConversions(inventoryItemId: string) {
+    return prisma.inventoryItemUnitConversion.findMany({
+      where: { inventoryItemId },
+      include: itemConversionInclude,
+      orderBy: { createdAt: 'asc' },
+    });
+  },
+  findItemConversionById(id: string) {
+    return prisma.inventoryItemUnitConversion.findUnique({ where: { id }, include: itemConversionInclude });
+  },
+  findItemConversion(inventoryItemId: string, fromUnitId: string, toUnitId: string) {
+    return prisma.inventoryItemUnitConversion.findUnique({
+      where: { inventoryItemId_fromUnitId_toUnitId: { inventoryItemId, fromUnitId, toUnitId } },
+    });
+  },
+  createItemConversion(data: CreateInventoryItemUnitConversionData) {
+    return prisma.inventoryItemUnitConversion.create({
+      data: { inventoryItemId: data.inventoryItemId, fromUnitId: data.fromUnitId, toUnitId: data.toUnitId, factor: data.factor },
+      include: itemConversionInclude,
+    });
+  },
+  updateItemConversion(id: string, data: UpdateInventoryItemUnitConversionData) {
+    return prisma.inventoryItemUnitConversion.update({ where: { id }, data: { factor: data.factor }, include: itemConversionInclude });
+  },
+  deleteItemConversion(id: string) {
+    return prisma.inventoryItemUnitConversion.delete({ where: { id } });
   },
 
   // --- Inventory items (the universal identity) ---

@@ -40,6 +40,36 @@ export const createUnitConversionSchema = z.object({
   factor: z.number().positive(),
 });
 
+// --- Item-specific unit conversions (TASK 121) ---
+
+export const createInventoryItemUnitConversionSchema = z.object({
+  from_unit_id: z.uuid(),
+  to_unit_id: z.uuid(),
+  factor: z.number().positive(),
+});
+
+export const updateInventoryItemUnitConversionSchema = z.object({
+  factor: z.number().positive(),
+});
+
+export const inventoryItemUnitConversionResponseSchema = z.object({
+  id: z.uuid(),
+  inventory_item_id: z.uuid(),
+  from_unit_id: z.uuid(),
+  from_unit_code: z.string(),
+  from_unit_name: z.string(),
+  to_unit_id: z.uuid(),
+  to_unit_code: z.string(),
+  to_unit_name: z.string(),
+  factor: z.number(),
+  created_at: z.iso.datetime(),
+  updated_at: z.iso.datetime(),
+});
+
+export const inventoryItemUnitConversionListResponseSchema = z.object({
+  conversions: z.array(inventoryItemUnitConversionResponseSchema),
+});
+
 export const createInventoryItemSchema = z.object({
   name: z.string().min(1, 'name is required'),
   sku: z.string().min(1).optional(),

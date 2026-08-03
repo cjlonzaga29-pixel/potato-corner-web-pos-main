@@ -6,6 +6,8 @@ import {
   createUnitOfMeasureSchema,
   updateUnitOfMeasureSchema,
   createUnitConversionSchema,
+  createInventoryItemUnitConversionSchema,
+  updateInventoryItemUnitConversionSchema,
   createInventoryItemSchema,
   updateInventoryItemSchema,
   assignInventoryItemToBranchesSchema,
@@ -298,6 +300,96 @@ router.post(
       const result = await universalInventoryService.assignToBranches(
         req.params.itemId as string,
         req.body.branch_ids,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// --- Item-specific unit conversions (TASK 121 — reuses TASK 115's service/repository) ---
+
+router.get(
+  '/items/:itemId/conversions',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const conversions = await universalInventoryService.listItemConversions(req.params.itemId as string);
+      res.status(200).json({ data: { conversions }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/items/:itemId/conversions',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(createInventoryItemUnitConversionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof createInventoryItemUnitConversionSchema>;
+      const conversion = await universalInventoryService.createItemConversion(
+        {
+          inventoryItemId: req.params.itemId as string,
+          fromUnitId: body.from_unit_id,
+          toUnitId: body.to_unit_id,
+          factor: body.factor,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: conversion, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/items/:itemId/conversions/:conversionId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updateInventoryItemUnitConversionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof updateInventoryItemUnitConversionSchema>;
+      const conversion = await universalInventoryService.updateItemConversion(
+        req.params.itemId as string,
+        req.params.conversionId as string,
+        { factor: body.factor },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: conversion, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.delete(
+  '/items/:itemId/conversions/:conversionId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await universalInventoryService.deleteItemConversion(
+        req.params.itemId as string,
+        req.params.conversionId as string,
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );

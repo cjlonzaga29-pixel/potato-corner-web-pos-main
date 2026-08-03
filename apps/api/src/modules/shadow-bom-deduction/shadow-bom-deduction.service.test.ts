@@ -21,7 +21,10 @@ vi.mock('../recipe-readiness/recipe-readiness.service.js', () => ({
 }));
 
 vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
-  universalInventoryRepository: { findConversion: vi.fn() },
+  // TASK 118 — computeBomDeduction now always forwards component.inventoryItemId
+  // to convertQuantity, which checks findItemConversion before falling back
+  // to the global findConversion table. No item-specific row by default.
+  universalInventoryRepository: { findConversion: vi.fn(), findItemConversion: vi.fn().mockResolvedValue(null) },
 }));
 
 // No InventoryMovement/InventoryStock/ProductInventory writer is imported by
@@ -158,6 +161,19 @@ describe('computeBomDeduction', () => {
     const result = await computeBomDeduction('variant-1', 'branch-1', 1);
 
     expect(result).toEqual([{ inventoryItemId: 'item-1', baseUnitId: 'unit-kg', quantity: 0.1 }]);
+  });
+
+  it('TASK 118 — prefers an item-specific InventoryItemUnitConversion over the global table when converting a recipe unit', async () => {
+    vi.mocked(universalInventoryRepository.findItemConversion).mockResolvedValueOnce({ factor: new Prisma.Decimal(0.002) } as never);
+    vi.mocked(shadowBomDeductionRepository.findActiveComponentsForVariant).mockResolvedValue([
+      { inventoryItemId: 'item-cheese', quantityRequired: decimal(100) as never, baseUnitId: 'unit-kg', recipeUnitId: 'unit-g' },
+    ]);
+
+    const result = await computeBomDeduction('variant-1', 'branch-1', 1);
+
+    expect(universalInventoryRepository.findItemConversion).toHaveBeenCalledWith('item-cheese', 'unit-g', 'unit-kg');
+    expect(universalInventoryRepository.findConversion).not.toHaveBeenCalled();
+    expect(result).toEqual([{ inventoryItemId: 'item-cheese', baseUnitId: 'unit-kg', quantity: 0.2 }]);
   });
 
   it('fails closed (rejects) when a recorded recipe unit has no UnitConversion to the base unit', async () => {

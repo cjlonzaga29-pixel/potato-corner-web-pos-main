@@ -23,6 +23,10 @@ vi.mock('./universal-inventory.service.js', () => ({
     createItem: vi.fn(),
     updateItem: vi.fn(),
     assignToBranches: vi.fn(),
+    listItemConversions: vi.fn(),
+    createItemConversion: vi.fn(),
+    updateItemConversion: vi.fn(),
+    deleteItemConversion: vi.fn(),
   },
 }));
 
@@ -209,5 +213,134 @@ describe('POST /api/universal-inventory/items/:itemId/branches', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(universalInventoryService.assignToBranches).toHaveBeenCalledWith('item-1', [BRANCH_1], expect.any(Object), null);
+  });
+});
+
+// --- Item-specific unit conversions (TASK 121) ---
+
+describe('GET /api/universal-inventory/items/:itemId/conversions', () => {
+  it('rejects a branch-role token', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'get', '/items/:itemId/conversions');
+    const req = mockReq({ ...authHeader(generateBranchToken(BRANCH_1)), params: { itemId: 'item-1' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.listItemConversions).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor token (read-only oversight)', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'get', '/items/:itemId/conversions');
+    const req = mockReq({ ...authHeader(generateSupervisorToken([BRANCH_1])), params: { itemId: 'item-1' } });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.listItemConversions).mockResolvedValue([]);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.listItemConversions).toHaveBeenCalledWith('item-1');
+  });
+});
+
+describe('POST /api/universal-inventory/items/:itemId/conversions', () => {
+  it('rejects a supervisor token — identity mutation is Super Admin only', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items/:itemId/conversions');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { itemId: 'item-1' },
+      body: { from_unit_id: UNIT_1, to_unit_id: UNIT_1, factor: 7 },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.createItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('forwards the create request to the service for a super_admin token', async () => {
+    const TO_UNIT = randomUUID();
+    const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items/:itemId/conversions');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { itemId: 'item-1' },
+      body: { from_unit_id: UNIT_1, to_unit_id: TO_UNIT, factor: 7 },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.createItemConversion).mockResolvedValue({ id: 'conv-1' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(universalInventoryService.createItemConversion).toHaveBeenCalledWith(
+      { inventoryItemId: 'item-1', fromUnitId: UNIT_1, toUnitId: TO_UNIT, factor: 7 },
+      expect.any(Object),
+      null,
+    );
+  });
+});
+
+describe('PATCH /api/universal-inventory/items/:itemId/conversions/:conversionId', () => {
+  it('rejects a supervisor token', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'patch', '/items/:itemId/conversions/:conversionId');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { itemId: 'item-1', conversionId: 'conv-1' },
+      body: { factor: 9 },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.updateItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('forwards the update to the service scoped to both itemId and conversionId', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'patch', '/items/:itemId/conversions/:conversionId');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { itemId: 'item-1', conversionId: 'conv-1' },
+      body: { factor: 9 },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.updateItemConversion).mockResolvedValue({ id: 'conv-1', factor: 9 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.updateItemConversion).toHaveBeenCalledWith('item-1', 'conv-1', { factor: 9 }, expect.any(Object), null);
+  });
+});
+
+describe('DELETE /api/universal-inventory/items/:itemId/conversions/:conversionId', () => {
+  it('rejects a supervisor token', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'delete', '/items/:itemId/conversions/:conversionId');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { itemId: 'item-1', conversionId: 'conv-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.deleteItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('forwards the delete to the service scoped to both itemId and conversionId', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'delete', '/items/:itemId/conversions/:conversionId');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { itemId: 'item-1', conversionId: 'conv-1' },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.deleteItemConversion).mockResolvedValue({ id: 'conv-1' });
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.deleteItemConversion).toHaveBeenCalledWith('item-1', 'conv-1', expect.any(Object), null);
   });
 });

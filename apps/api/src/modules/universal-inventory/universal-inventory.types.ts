@@ -42,6 +42,17 @@ export interface CreateUnitConversionData {
   factor: number;
 }
 
+export interface CreateInventoryItemUnitConversionData {
+  inventoryItemId: string;
+  fromUnitId: string;
+  toUnitId: string;
+  factor: number;
+}
+
+export interface UpdateInventoryItemUnitConversionData {
+  factor: number;
+}
+
 export interface CreateInventoryItemData {
   name: string;
   sku?: string;

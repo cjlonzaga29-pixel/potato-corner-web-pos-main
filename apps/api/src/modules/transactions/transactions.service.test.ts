@@ -152,6 +152,10 @@ vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
     // differs from the mapped InventoryItem's baseUnitId. No conversion row
     // by default — tests that need one mock a resolved value per-case.
     findConversion: vi.fn().mockResolvedValue(null),
+    // TASK 118 — convertQuantity now always checks for an item-specific
+    // conversion (keyed on mapping.inventoryItemId) before falling back to
+    // the global table above. No item-specific row by default.
+    findItemConversion: vi.fn().mockResolvedValue(null),
   },
 }));
 
@@ -2308,6 +2312,41 @@ describe('transactionsService.createTransaction — Product Option inventory ded
         items: [
           expect.objectContaining({
             deductionSnapshot: [{ inventoryItemId: 'item-bbq-seasoning', quantity: 15, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('TASK 118 — prefers an item-specific InventoryItemUnitConversion over the global table for Product Option deduction', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-bbq', 0)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      inventoryMappingRow({
+        inventoryItemId: 'item-bbq-seasoning',
+        quantityRequired: 1,
+        deductionUnitId: 'unit-tbsp',
+        inventoryItem: { baseUnitId: 'unit-g', deletedAt: null },
+      }),
+    ] as never);
+    vi.mocked(universalInventoryRepository.findItemConversion).mockResolvedValueOnce({ factor: 6 } as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(100) } as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
+      null,
+    );
+
+    expect(universalInventoryRepository.findItemConversion).toHaveBeenCalledWith('item-bbq-seasoning', 'unit-tbsp', 'unit-g');
+    expect(universalInventoryRepository.findConversion).not.toHaveBeenCalled();
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            deductionSnapshot: [{ inventoryItemId: 'item-bbq-seasoning', quantity: 6, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
           }),
         ],
       }),

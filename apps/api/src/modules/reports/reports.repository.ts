@@ -542,46 +542,53 @@ export const reportsRepository = {
     // WEIGHT units, tbsp, tsp) still goes through convertQuantity's
     // UnitConversion lookup; when that throws UnitConversionError (no row
     // configured), the unit is UNRESOLVED — eligible for kg tracking but not
-    // convertible yet — so the caller can surface it in the
-    // "Needs KG Conversion Setup" section instead of silently dropping it.
+    // convertible yet — so the caller keeps it in INGREDIENT_KG with status
+    // CONVERSION_REQUIRED (Task 114) instead of silently dropping it or
+    // routing it to a separate section.
     const WEIGHT_ELIGIBLE_CODES = new Set(['tbsp', 'tsp']);
     type WeightResolution = { status: 'resolved'; toKilograms: number } | { status: 'unresolved' } | { status: 'not_applicable' };
+    // Keyed by `${inventoryItemId}:${baseUnitId}`, not baseUnitId alone —
+    // two items sharing a base unit (e.g. two tbsp-tracked seasonings) can
+    // resolve to different kg factors via their own InventoryItemUnitConversion
+    // row, so a bare-baseUnitId cache would silently leak one item's factor
+    // onto another's rows.
     const weightFactorCache = new Map<string, WeightResolution>();
-    async function resolveWeightFactors(baseUnitId: string, dimension: string, code: string): Promise<WeightResolution> {
-      const cached = weightFactorCache.get(baseUnitId);
+    async function resolveWeightFactors(inventoryItemId: string, baseUnitId: string, dimension: string, code: string): Promise<WeightResolution> {
+      const cacheKey = `${inventoryItemId}:${baseUnitId}`;
+      const cached = weightFactorCache.get(cacheKey);
       if (cached) return cached;
 
       const normalizedCode = code.toLowerCase();
       const isWeightEligible = dimension === 'WEIGHT' || WEIGHT_ELIGIBLE_CODES.has(normalizedCode);
       if (!isWeightEligible) {
         const result: WeightResolution = { status: 'not_applicable' };
-        weightFactorCache.set(baseUnitId, result);
+        weightFactorCache.set(cacheKey, result);
         return result;
       }
       if (normalizedCode === 'g') {
         const result: WeightResolution = { status: 'resolved', toKilograms: 0.001 };
-        weightFactorCache.set(baseUnitId, result);
+        weightFactorCache.set(cacheKey, result);
         return result;
       }
       if (normalizedCode === 'kg') {
         const result: WeightResolution = { status: 'resolved', toKilograms: 1 };
-        weightFactorCache.set(baseUnitId, result);
+        weightFactorCache.set(cacheKey, result);
         return result;
       }
       if (!kilogramUnit) {
         const result: WeightResolution = { status: 'unresolved' };
-        weightFactorCache.set(baseUnitId, result);
+        weightFactorCache.set(cacheKey, result);
         return result;
       }
       try {
-        const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id)).toNumber();
+        const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id, inventoryItemId)).toNumber();
         const result: WeightResolution = { status: 'resolved', toKilograms };
-        weightFactorCache.set(baseUnitId, result);
+        weightFactorCache.set(cacheKey, result);
         return result;
       } catch (error) {
         if (error instanceof UnitConversionError) {
           const result: WeightResolution = { status: 'unresolved' };
-          weightFactorCache.set(baseUnitId, result);
+          weightFactorCache.set(cacheKey, result);
           return result;
         }
         throw error;
@@ -615,6 +622,7 @@ export const reportsRepository = {
         rows.push({
           ...base,
           section: 'PACKAGING_PC',
+          status: null,
           opening_stock_kg: null,
           consumed_today_kg: null,
           consumed_this_month_kg: null,
@@ -624,18 +632,22 @@ export const reportsRepository = {
         continue;
       }
 
-      const resolution = await resolveWeightFactors(s.inventoryItem.baseUnitId, dimension, s.inventoryItem.baseUnit.code);
+      const resolution = await resolveWeightFactors(s.inventoryItemId, s.inventoryItem.baseUnitId, dimension, s.inventoryItem.baseUnit.code);
 
       // Not weight-normalizable and not COUNT (e.g. mL/L liquids) — excluded
       // entirely, there is no row for these at all.
       if (resolution.status === 'not_applicable') continue;
 
-      // Weight-eligible (WEIGHT dimension, or tbsp/tsp) but no resolvable
-      // path to kg — surface it instead of silently dropping it.
+      // Task 114: weight-eligible (WEIGHT dimension, or tbsp/tsp) but no
+      // resolvable path to kg — stays IN the Ingredient Consumption (KG)
+      // table (never a separate section) with status CONVERSION_REQUIRED so
+      // it isn't hidden, but its kg fields stay null and it's excluded from
+      // kg totals by the export/UI layers.
       if (resolution.status === 'unresolved') {
         rows.push({
           ...base,
-          section: 'NEEDS_KG_CONVERSION',
+          section: 'INGREDIENT_KG',
+          status: 'CONVERSION_REQUIRED',
           opening_stock_kg: null,
           consumed_today_kg: null,
           consumed_this_month_kg: null,
@@ -649,6 +661,7 @@ export const reportsRepository = {
       rows.push({
         ...base,
         section: 'INGREDIENT_KG',
+        status: 'CONVERTED',
         opening_stock_kg: round2(opening * resolution.toKilograms),
         consumed_today_kg: round2(consumedToday * resolution.toKilograms),
         consumed_this_month_kg: round2(consumedMonth * resolution.toKilograms),

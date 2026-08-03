@@ -216,15 +216,29 @@ const inventoryConsumptionSummaryColumns: ColumnDef<InventoryConsumptionSummaryR
   { accessorKey: 'movement_count', header: 'Sales Movements' },
 ];
 
-// Task 110: Inventory Summary is two disjoint tables — kg and pc are never
-// rendered in the same table. Section rows are pre-split by `section` before
-// being handed to these column sets (see the INVENTORY_SUMMARY tab below).
+// Task 110/114: Inventory Summary is two disjoint tables — kg and pc are
+// never rendered in the same table. Section rows are pre-split by `section`
+// before being handed to these column sets (see the INVENTORY_SUMMARY tab
+// below). Rows needing kg-conversion setup stay IN this table (status
+// CONVERSION_REQUIRED, kg cells shown as '—') rather than a separate table.
 const ingredientConsumptionKgColumns: ColumnDef<InventorySummaryReportRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { id: 'opening_stock_kg', header: 'Opening Stock (kg)', cell: ({ row }) => row.original.opening_stock_kg ?? 0 },
-  { id: 'consumed_today_kg', header: 'Consumed Today (kg)', cell: ({ row }) => row.original.consumed_today_kg ?? 0 },
-  { id: 'consumed_this_month_kg', header: 'Consumed This Month (kg)', cell: ({ row }) => row.original.consumed_this_month_kg ?? 0 },
-  { id: 'remaining_kg', header: 'Remaining (kg)', cell: ({ row }) => row.original.remaining_kg ?? 0 },
+  { id: 'opening_stock_kg', header: 'Opening Stock (kg)', cell: ({ row }) => row.original.opening_stock_kg ?? '—' },
+  { id: 'consumed_today_kg', header: 'Consumed Today (kg)', cell: ({ row }) => row.original.consumed_today_kg ?? '—' },
+  { id: 'consumed_this_month_kg', header: 'Consumed This Month (kg)', cell: ({ row }) => row.original.consumed_this_month_kg ?? '—' },
+  { id: 'remaining_kg', header: 'Remaining (kg)', cell: ({ row }) => row.original.remaining_kg ?? '—' },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) =>
+      row.original.status === 'CONVERSION_REQUIRED' ? (
+        <span className="text-warning" title={row.original.conversion_warning ?? undefined}>
+          Conversion required
+        </span>
+      ) : (
+        'Converted'
+      ),
+  },
 ];
 
 const packagingConsumptionPcColumns: ColumnDef<InventorySummaryReportRow>[] = [
@@ -233,20 +247,6 @@ const packagingConsumptionPcColumns: ColumnDef<InventorySummaryReportRow>[] = [
   { accessorKey: 'consumed_today', header: 'Consumed Today (pc)' },
   { accessorKey: 'consumed_this_month', header: 'Consumed This Month (pc)' },
   { accessorKey: 'remaining_stock', header: 'Remaining (pc)' },
-];
-
-// Task 112: weight-eligible ingredients (WEIGHT dimension, or tbsp/tsp) that
-// have no resolvable UnitConversion path to kg — temporary operational
-// visibility so they surface here instead of silently disappearing from
-// Ingredient Consumption (KG). Not a third totals category.
-const needsKgConversionColumns: ColumnDef<InventorySummaryReportRow>[] = [
-  { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { accessorKey: 'unit', header: 'Unit' },
-  { accessorKey: 'opening_stock', header: 'Opening Stock' },
-  { accessorKey: 'consumed_today', header: 'Consumed Today' },
-  { accessorKey: 'consumed_this_month', header: 'Consumed This Month' },
-  { accessorKey: 'remaining_stock', header: 'Remaining' },
-  { id: 'conversion_warning', header: 'Message', cell: ({ row }) => row.original.conversion_warning ?? 'Configure a valid conversion to kg' },
 ];
 
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
@@ -713,7 +713,6 @@ function AdminReportsPageContent() {
                 const rows = inventorySummary.data?.data ?? [];
                 const ingredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
                 const packagingRows = rows.filter((r) => r.section === 'PACKAGING_PC');
-                const needsConversionRows = rows.filter((r) => r.section === 'NEEDS_KG_CONVERSION');
                 return (
                   <>
                     <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption (KG)</h3>
@@ -723,12 +722,6 @@ function AdminReportsPageContent() {
                       isLoading={inventorySummary.isLoading}
                       emptyState={<EmptyState title="No tracked ingredients" description="No weight-trackable ingredients at this branch." />}
                     />
-                    {needsConversionRows.length > 0 && (
-                      <>
-                        <h3 className="mt-8 mb-2 text-sm font-semibold text-foreground">Needs KG Conversion Setup</h3>
-                        <DataTable columns={needsKgConversionColumns} data={needsConversionRows} isLoading={inventorySummary.isLoading} />
-                      </>
-                    )}
                     <h3 className="mt-8 mb-2 text-sm font-semibold text-foreground">Packaging Consumption (PC)</h3>
                     <DataTable
                       columns={packagingConsumptionPcColumns}

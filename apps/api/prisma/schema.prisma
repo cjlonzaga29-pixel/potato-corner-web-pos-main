@@ -1086,6 +1086,8 @@ model UnitOfMeasure {
   recipeComponents  ProductComponent[]
   stockMovements    InventoryStockMovement[]
   optionDeductionMappings ProductOptionInventoryMapping[]
+  itemConversionsFrom InventoryItemUnitConversion[] @relation("InventoryItemUnitConversionFrom")
+  itemConversionsTo   InventoryItemUnitConversion[] @relation("InventoryItemUnitConversionTo")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1111,6 +1113,34 @@ model UnitConversion {
 
   @@unique([fromUnitId, toUnitId])
   @@map("unit_conversions")
+}
+
+/// TASK 115 — per-InventoryItem override of UnitConversion. UnitConversion's
+/// factor is global across every item sharing a unit pair, which is wrong
+/// for ingredients that differ by density (e.g. Cheese Flavor Powder: 1 tbsp
+/// = 7g vs BBQ Flavor Powder: 1 tbsp = 6g). A row here takes precedence over
+/// the matching UnitConversion row for the same unit pair; UnitConversion
+/// remains the fallback when no item-specific row exists (see
+/// unit-conversion.util.ts's resolution order).
+model InventoryItemUnitConversion {
+  id              String  @id @default(uuid())
+  inventoryItemId String  @map("inventory_item_id")
+  fromUnitId      String  @map("from_unit_id")
+  toUnitId        String  @map("to_unit_id")
+  factor          Decimal @db.Decimal(18, 8)
+
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  fromUnit      UnitOfMeasure @relation("InventoryItemUnitConversionFrom", fields: [fromUnitId], references: [id], onDelete: Restrict)
+  toUnit        UnitOfMeasure @relation("InventoryItemUnitConversionTo", fields: [toUnitId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([inventoryItemId, fromUnitId, toUnitId])
+  @@index([inventoryItemId])
+  @@index([fromUnitId])
+  @@index([toUnitId])
+  @@map("inventory_item_unit_conversions")
 }
 
 /// CR-007 §3 — the only immutable identity in the inventory domain. Replaces
@@ -1140,6 +1170,7 @@ model InventoryItem {
   productComponents ProductComponent[]
   identityMappings  InventoryIdentityMapping[]
   optionMappings    ProductOptionInventoryMapping[]
+  unitConversions   InventoryItemUnitConversion[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

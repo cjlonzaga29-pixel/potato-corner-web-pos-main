@@ -478,7 +478,7 @@ async function computeOptionDeductionLines(selectedOptionIds: string[] | undefin
     // the deletedAt check above does for its own failure mode.
     let baseQuantity;
     try {
-      baseQuantity = await convertQuantity(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId);
+      baseQuantity = await convertQuantity(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId, mapping.inventoryItemId);
     } catch (error) {
       if (error instanceof UnitConversionError) {
         throw new TransactionError(

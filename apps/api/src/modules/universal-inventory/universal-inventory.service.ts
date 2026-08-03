@@ -16,6 +16,8 @@ import type {
   CreateUnitOfMeasureData,
   UpdateUnitOfMeasureData,
   CreateUnitConversionData,
+  CreateInventoryItemUnitConversionData,
+  UpdateInventoryItemUnitConversionData,
   CreateInventoryItemData,
   UpdateInventoryItemData,
   ReceiveInventoryStockData,
@@ -83,6 +85,32 @@ function toConversionResponse(conversion: {
     to_unit_id: conversion.toUnitId,
     factor: conversion.factor.toNumber(),
     created_at: conversion.createdAt.toISOString(),
+  };
+}
+
+function toItemConversionResponse(conversion: {
+  id: string;
+  inventoryItemId: string;
+  fromUnitId: string;
+  toUnitId: string;
+  factor: { toNumber(): number };
+  createdAt: Date;
+  updatedAt: Date;
+  fromUnit: { code: string; name: string };
+  toUnit: { code: string; name: string };
+}) {
+  return {
+    id: conversion.id,
+    inventory_item_id: conversion.inventoryItemId,
+    from_unit_id: conversion.fromUnitId,
+    from_unit_code: conversion.fromUnit.code,
+    from_unit_name: conversion.fromUnit.name,
+    to_unit_id: conversion.toUnitId,
+    to_unit_code: conversion.toUnit.code,
+    to_unit_name: conversion.toUnit.name,
+    factor: conversion.factor.toNumber(),
+    created_at: conversion.createdAt.toISOString(),
+    updated_at: conversion.updatedAt.toISOString(),
   };
 }
 
@@ -346,6 +374,112 @@ export const universalInventoryService = {
     return response;
   },
 
+  // --- Item-specific unit conversions (TASK 115) ---
+  // Dimension is intentionally not checked here (unlike createConversion):
+  // item-specific rows exist precisely to encode density conversions across
+  // dimensions (e.g. tbsp[VOLUME] -> g[WEIGHT] for a given ingredient), so
+  // requiring matching dimensions would defeat the feature.
+
+  async listItemConversions(inventoryItemId: string) {
+    const item = await repo.findItemById(inventoryItemId);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const conversions = await repo.listItemConversions(inventoryItemId);
+    return conversions.map(toItemConversionResponse);
+  },
+
+  async createItemConversion(data: CreateInventoryItemUnitConversionData, actor: ActorContext, ipAddress: string | null) {
+    if (data.fromUnitId === data.toUnitId) {
+      throw new UniversalInventoryError('CONVERSION_SAME_UNIT', 'from_unit_id and to_unit_id must differ', 422);
+    }
+    if (!(data.factor > 0)) {
+      throw new UniversalInventoryError('CONVERSION_FACTOR_INVALID', 'factor must be greater than zero', 422);
+    }
+
+    const item = await repo.findItemById(data.inventoryItemId);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const [fromUnit, toUnit] = await Promise.all([repo.findUnitById(data.fromUnitId), repo.findUnitById(data.toUnitId)]);
+    if (!fromUnit || !toUnit) throw new UniversalInventoryError('UNIT_NOT_FOUND', 'from_unit_id or to_unit_id does not exist', 404);
+    if (!fromUnit.isActive || !toUnit.isActive) {
+      throw new UniversalInventoryError('UNIT_INACTIVE', 'from_unit_id and to_unit_id must both be active', 422);
+    }
+
+    const existing = await repo.findItemConversion(data.inventoryItemId, data.fromUnitId, data.toUnitId);
+    if (existing) {
+      throw new UniversalInventoryError('ITEM_CONVERSION_ALREADY_EXISTS', 'A conversion between these units already exists for this item', 409);
+    }
+
+    const conversion = await repo.createItemConversion(data);
+    const response = toItemConversionResponse(conversion);
+
+    await recordAuditLog({
+      action: 'INVENTORY_ITEM_UNIT_CONVERSION_CREATED',
+      entityType: 'inventory_item_unit_conversion',
+      entityId: conversion.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      afterState: response,
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async updateItemConversion(
+    inventoryItemId: string,
+    id: string,
+    data: UpdateInventoryItemUnitConversionData,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ) {
+    if (!(data.factor > 0)) {
+      throw new UniversalInventoryError('CONVERSION_FACTOR_INVALID', 'factor must be greater than zero', 422);
+    }
+
+    const before = await repo.findItemConversionById(id);
+    if (!before || before.inventoryItemId !== inventoryItemId) {
+      throw new UniversalInventoryError('ITEM_CONVERSION_NOT_FOUND', 'Inventory item unit conversion not found', 404);
+    }
+
+    const conversion = await repo.updateItemConversion(id, data);
+    const response = toItemConversionResponse(conversion);
+
+    await recordAuditLog({
+      action: 'INVENTORY_ITEM_UNIT_CONVERSION_UPDATED',
+      entityType: 'inventory_item_unit_conversion',
+      entityId: conversion.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: toItemConversionResponse(before),
+      afterState: response,
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async deleteItemConversion(inventoryItemId: string, id: string, actor: ActorContext, ipAddress: string | null) {
+    const before = await repo.findItemConversionById(id);
+    if (!before || before.inventoryItemId !== inventoryItemId) {
+      throw new UniversalInventoryError('ITEM_CONVERSION_NOT_FOUND', 'Inventory item unit conversion not found', 404);
+    }
+
+    await repo.deleteItemConversion(id);
+
+    await recordAuditLog({
+      action: 'INVENTORY_ITEM_UNIT_CONVERSION_DELETED',
+      entityType: 'inventory_item_unit_conversion',
+      entityId: id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: toItemConversionResponse(before),
+      ipAddress,
+    });
+
+    return { id };
+  },
+
   // --- Inventory items ---
   async listItems(includeInactive: boolean) {
     const items = await repo.listItems(includeInactive);
@@ -559,7 +693,7 @@ export const universalInventoryService = {
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
-    const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId);
+    const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);
 
     const movement = await prisma.$transaction(async (tx) => {
       const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
@@ -676,7 +810,7 @@ export const universalInventoryService = {
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
-    const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId);
+    const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);
 
     const movement = await prisma.$transaction(async (tx) => {
       const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);

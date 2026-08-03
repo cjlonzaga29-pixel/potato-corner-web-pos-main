@@ -94,7 +94,7 @@ export async function computeBomDeduction(
     // UnitConversion row; the caller (runShadowComparison) turns that into
     // an ERROR-classified comparison rather than a silent bad number.
     const recipeUnitId = component.recipeUnitId ?? component.baseUnitId;
-    const baseQuantity = await convertQuantity(component.quantityRequired, recipeUnitId, component.baseUnitId);
+    const baseQuantity = await convertQuantity(component.quantityRequired, recipeUnitId, component.baseUnitId, component.inventoryItemId);
     const quantity = baseQuantity.toNumber() * quantitySold;
     const existing = map.get(component.inventoryItemId);
     if (existing) {

@@ -19,6 +19,7 @@ vi.mock('../../lib/prisma.js', () => {
     inventoryStockMovement: { findMany: vi.fn(), groupBy: vi.fn(), count: vi.fn() },
     unitOfMeasure: { findUnique: vi.fn() },
     unitConversion: { findUnique: vi.fn() },
+    inventoryItemUnitConversion: { findUnique: vi.fn() },
     reportSnapshot: { create: vi.fn(), findFirst: vi.fn(), deleteMany: vi.fn() },
     auditLog: { findMany: vi.fn() },
   };
@@ -36,6 +37,10 @@ const baseFilters = { page: 1, limit: 25 } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // resolveWeightFactors now always checks for an item-specific conversion
+  // first (TASK 118); default to none configured so existing global-only
+  // fixtures keep exercising the prisma.unitConversion fallback path.
+  vi.mocked(prisma.inventoryItemUnitConversion.findUnique).mockResolvedValue(null as never);
 });
 
 describe('reportsRepository.getDailySales', () => {
@@ -382,6 +387,7 @@ describe('reportsRepository.getInventorySummary', () => {
         branch_id: 'b1',
         branch_name: 'SM North',
         section: 'INGREDIENT_KG',
+        status: 'CONVERTED',
         unit: 'kg',
         opening_stock: 10,
         consumed_today: 5,
@@ -413,6 +419,7 @@ describe('reportsRepository.getInventorySummary', () => {
 
     expect(rows[0]).toMatchObject({
       section: 'PACKAGING_PC',
+      status: null,
       unit: 'pc',
       opening_stock: 12,
       consumed_today: 0,
@@ -443,6 +450,7 @@ describe('reportsRepository.getInventorySummary', () => {
 
     expect(rows[0]).toMatchObject({
       section: 'INGREDIENT_KG',
+      status: 'CONVERTED',
       unit: 'g',
       remaining_stock: 1968,
       remaining_kg: 1.97,
@@ -468,7 +476,7 @@ describe('reportsRepository.getInventorySummary', () => {
 
     const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
 
-    expect(rows[0]).toMatchObject({ section: 'INGREDIENT_KG', unit: 'kg', remaining_stock: 3, remaining_kg: 3 });
+    expect(rows[0]).toMatchObject({ section: 'INGREDIENT_KG', status: 'CONVERTED', unit: 'kg', remaining_stock: 3, remaining_kg: 3 });
     expect(prisma.unitConversion.findUnique).not.toHaveBeenCalled();
   });
 
@@ -488,10 +496,58 @@ describe('reportsRepository.getInventorySummary', () => {
 
     const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
 
-    expect(rows[0]).toMatchObject({ section: 'INGREDIENT_KG', unit: 'tbsp', remaining_stock: 100, remaining_kg: 1.5, conversion_warning: null });
+    expect(rows[0]).toMatchObject({
+      section: 'INGREDIENT_KG',
+      status: 'CONVERTED',
+      unit: 'tbsp',
+      remaining_stock: 100,
+      remaining_kg: 1.5,
+      conversion_warning: null,
+    });
   });
 
-  it('surfaces a tbsp base unit with no configured UnitConversion row as NEEDS_KG_CONVERSION instead of dropping it (Flavored Fries Powder)', async () => {
+  it('resolves two tbsp items sharing a base unit to different kg factors via their own InventoryItemUnitConversion row (TASK 118) instead of leaking one item\'s cached factor onto the other', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-cheese-powder',
+        quantityOnHand: decimal(100),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Cheese Flavor Powder', baseUnitId: 'unit-tbsp', baseUnit: { code: 'tbsp', dimension: 'VOLUME' } },
+      },
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-bbq-powder',
+        quantityOnHand: decimal(100),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'BBQ Flavor Powder', baseUnitId: 'unit-tbsp', baseUnit: { code: 'tbsp', dimension: 'VOLUME' } },
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStockMovement.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique).mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
+    vi.mocked(prisma.inventoryItemUnitConversion.findUnique).mockImplementation(
+      ((args: { where: { inventoryItemId_fromUnitId_toUnitId: { inventoryItemId: string } } }) => {
+        const inventoryItemId = args.where.inventoryItemId_fromUnitId_toUnitId.inventoryItemId;
+        return Promise.resolve(
+          inventoryItemId === 'item-cheese-powder'
+            ? { factor: decimal(0.015) }
+            : inventoryItemId === 'item-bbq-powder'
+              ? { factor: decimal(0.012) }
+              : null,
+        );
+      }) as never,
+    );
+
+    const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows).toMatchObject([
+      { ingredient_id: 'item-cheese-powder', remaining_kg: 1.5 },
+      { ingredient_id: 'item-bbq-powder', remaining_kg: 1.2 },
+    ]);
+    expect(prisma.unitConversion.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('keeps a tbsp base unit with no configured UnitConversion row in INGREDIENT_KG with status CONVERSION_REQUIRED instead of dropping it or moving it to a separate section (Flavored Fries Powder)', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       {
         branchId: 'b1',
@@ -508,7 +564,8 @@ describe('reportsRepository.getInventorySummary', () => {
     const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
 
     expect(rows[0]).toMatchObject({
-      section: 'NEEDS_KG_CONVERSION',
+      section: 'INGREDIENT_KG',
+      status: 'CONVERSION_REQUIRED',
       unit: 'tbsp',
       remaining_stock: 50,
       opening_stock_kg: null,

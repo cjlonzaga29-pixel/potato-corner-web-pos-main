@@ -10,11 +10,13 @@ import type {
   BranchInventoryStockListResponse,
   CreateInventoryCategoryInput,
   CreateInventoryItemInput,
+  CreateInventoryItemUnitConversionInput,
   CreateUnitConversionInput,
   CreateUnitOfMeasureInput,
   InventoryCategoryResponse,
   InventoryItemDetailResponse,
   InventoryItemResponse,
+  InventoryItemUnitConversionResponse,
   InventoryStockAlertListResponse,
   InventoryStockMovementListResponse,
   InventoryStockMovementResponse,
@@ -27,6 +29,7 @@ import type {
   UnitOfMeasureResponse,
   UpdateInventoryCategoryInput,
   UpdateInventoryItemInput,
+  UpdateInventoryItemUnitConversionInput,
   UpdateUnitOfMeasureInput,
   WasteInventoryStockInput,
 } from '@potato-corner/shared';
@@ -265,6 +268,79 @@ export function useAssignInventoryItemToBranches(itemId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['inventory-item', itemId] });
       toast.success('Branch assignment updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+// --- Item-specific unit conversions (TASK 121 — reuses TASK 115's backend) ---
+
+export function useInventoryItemConversions(itemId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['inventory-item-conversions', itemId],
+    queryFn: async () => {
+      const response = await apiClient<{ conversions: InventoryItemUnitConversionResponse[] }>(
+        `/api/universal-inventory/items/${itemId}/conversions`,
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load unit conversions'));
+      return response.data.conversions;
+    },
+    enabled: Boolean(itemId),
+    staleTime: 30 * 1000,
+  });
+}
+
+export function useCreateInventoryItemConversion(itemId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateInventoryItemUnitConversionInput) => {
+      const response = await apiClient<InventoryItemUnitConversionResponse>(`/api/universal-inventory/items/${itemId}/conversions`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to create conversion'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['inventory-item-conversions', itemId] });
+      toast.success('Conversion created');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useUpdateInventoryItemConversion(itemId: string, conversionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateInventoryItemUnitConversionInput) => {
+      const response = await apiClient<InventoryItemUnitConversionResponse>(
+        `/api/universal-inventory/items/${itemId}/conversions/${conversionId}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update conversion'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['inventory-item-conversions', itemId] });
+      toast.success('Conversion updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useDeleteInventoryItemConversion(itemId: string, conversionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient<{ id: string }>(`/api/universal-inventory/items/${itemId}/conversions/${conversionId}`, {
+        method: 'DELETE',
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to delete conversion'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['inventory-item-conversions', itemId] });
+      toast.success('Conversion deleted');
     },
     onError: (error: Error) => toast.error(error.message),
   });

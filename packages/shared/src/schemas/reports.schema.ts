@@ -178,14 +178,15 @@ export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsu
 // null. Rows whose base unit is neither weight-normalizable nor COUNT
 // (e.g. a liquid tracked in mL/L with no UnitConversion to weight) are
 // excluded entirely by the repository — there is no third section.
-// Task 112: a base unit CAN be weight-normalized (WEIGHT dimension, or
+// Task 112/114: a base unit CAN be weight-normalized (WEIGHT dimension, or
 // tbsp/tsp) but still lack a resolvable path to kg — e.g. a tbsp-tracked
-// ingredient with no UnitConversion row to kg configured. Those rows are
-// NEEDS_KG_CONVERSION: the *_kg fields stay null (never fabricated) and
+// ingredient with no UnitConversion row to kg configured. Those rows stay in
+// INGREDIENT_KG (never a separate section/table) with status
+// 'CONVERSION_REQUIRED': the *_kg fields stay null (never fabricated) and
 // conversion_warning explains what to fix, instead of the row silently
-// disappearing. g/kg themselves never land here — they convert
-// deterministically (value / 1000 and identity) without needing a
-// UnitConversion row.
+// disappearing or being hidden in a third table. g/kg themselves never hit
+// this path — they convert deterministically (value / 1000 and identity)
+// without needing a UnitConversion row, so they're always 'CONVERTED'.
 // Distinct from InventoryConsumptionSummaryReportRow above, which is a
 // date-range consumption total with no stock-level or opening/remaining data.
 export const InventorySummaryReportRowSchema = z.object({
@@ -193,7 +194,8 @@ export const InventorySummaryReportRowSchema = z.object({
   ingredient_name: z.string(),
   branch_id: z.uuid(),
   branch_name: z.string(),
-  section: z.enum(['INGREDIENT_KG', 'PACKAGING_PC', 'NEEDS_KG_CONVERSION']),
+  section: z.enum(['INGREDIENT_KG', 'PACKAGING_PC']),
+  status: z.enum(['CONVERTED', 'CONVERSION_REQUIRED']).nullable(),
   unit: z.string(),
   opening_stock: z.number(),
   consumed_today: z.number(),

@@ -9,6 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useBranches } from '@/hooks/queries/use-branches';
 import { useAssignInventoryItemToBranches, useInventoryItem } from '@/hooks/queries/use-universal-inventory';
+import { ItemUnitConversionsSection } from '@/components/admin/inventory/item-unit-conversions-section';
 
 export default function InventoryItemDetailPage() {
   const params = useParams<{ itemId: string }>();
@@ -98,6 +99,8 @@ export default function InventoryItemDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      <ItemUnitConversionsSection itemId={item.id} />
     </div>
   );
 }

@@ -16,6 +16,12 @@ vi.mock('./universal-inventory.repository.js', () => ({
     listConversions: vi.fn(),
     findConversion: vi.fn(),
     createConversion: vi.fn(),
+    listItemConversions: vi.fn(),
+    findItemConversionById: vi.fn(),
+    findItemConversion: vi.fn(),
+    createItemConversion: vi.fn(),
+    updateItemConversion: vi.fn(),
+    deleteItemConversion: vi.fn(),
     listItems: vi.fn(),
     findItemById: vi.fn(),
     findItemByName: vi.fn(),
@@ -77,6 +83,7 @@ const { universalInventoryRepository: repo } = await import('./universal-invento
 const { branchesRepository } = await import('../branches/branches.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { universalInventoryService } = await import('./universal-inventory.service.js');
+const { convertQuantity } = await import('../product-components/unit-conversion.util.js');
 
 const ACTOR = { id: 'admin-1', role: 'super_admin' };
 
@@ -514,6 +521,18 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     expect(result.movement_type).toBe('RECEIVING');
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'INVENTORY_STOCK_RECEIVED' }));
   });
+
+  it('TASK 118 — passes the InventoryItem id to convertQuantity so an item-specific conversion is preferred', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+
+    await universalInventoryService.receiveStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, enteredUnitId: 'unit-tbsp' },
+      ACTOR,
+      null,
+    );
+
+    expect(convertQuantity).toHaveBeenCalledWith(5, 'unit-tbsp', 'unit-1', 'item-1');
+  });
 });
 
 describe('universalInventoryService.adjustStock — Test C (stock adjustment)', () => {
@@ -621,6 +640,19 @@ describe('universalInventoryService.wasteStock — Test D (waste management)', (
       universalInventoryService.wasteStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, reasonCode: 'spoilage' }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
     expect(repo.createStockMovement).not.toHaveBeenCalled();
+  });
+
+  it('TASK 118 — passes the InventoryItem id to convertQuantity so an item-specific conversion is preferred', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(7) }) as never);
+
+    await universalInventoryService.wasteStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage', enteredUnitId: 'unit-tbsp' },
+      ACTOR,
+      null,
+    );
+
+    expect(convertQuantity).toHaveBeenCalledWith(3, 'unit-tbsp', 'unit-1', 'item-1');
   });
 });
 
@@ -762,5 +794,204 @@ describe('universalInventoryService.submitPhysicalCount — Test F (physical cou
         null,
       ),
     ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
+  });
+});
+
+function buildItemConversion(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'item-conv-1',
+    inventoryItemId: 'item-1',
+    fromUnitId: 'unit-tbsp',
+    toUnitId: 'unit-g',
+    factor: dec(7),
+    createdAt: new Date('2026-01-01'),
+    updatedAt: new Date('2026-01-01'),
+    fromUnit: { code: 'tbsp', name: 'Tablespoon' },
+    toUnit: { code: 'g', name: 'Gram' },
+    ...overrides,
+  };
+}
+
+describe('universalInventoryService.createItemConversion — TASK 115', () => {
+  it('creates a conversion scoped to one inventory item', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(repo.findUnitById).mockImplementation(
+      (id: string) => Promise.resolve(buildUnit({ id, dimension: id === 'unit-tbsp' ? 'VOLUME' : 'WEIGHT' })) as never,
+    );
+    vi.mocked(repo.findItemConversion).mockResolvedValue(null);
+    vi.mocked(repo.createItemConversion).mockResolvedValue(buildItemConversion() as never);
+
+    const result = await universalInventoryService.createItemConversion(
+      { inventoryItemId: 'item-1', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 7 },
+      ACTOR,
+      null,
+    );
+
+    expect(result).toMatchObject({
+      inventory_item_id: 'item-1',
+      from_unit_id: 'unit-tbsp',
+      from_unit_code: 'tbsp',
+      from_unit_name: 'Tablespoon',
+      to_unit_id: 'unit-g',
+      to_unit_code: 'g',
+      to_unit_name: 'Gram',
+      factor: 7,
+    });
+    expect(repo.createItemConversion).toHaveBeenCalledWith({ inventoryItemId: 'item-1', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 7 });
+  });
+
+  it('allows different items to declare different factors for the same unit pair (density override)', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(repo.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.findItemConversion).mockResolvedValue(null);
+    vi.mocked(repo.createItemConversion).mockImplementation(
+      ((data: { inventoryItemId: string; fromUnitId: string; toUnitId: string; factor: number }) =>
+        Promise.resolve(buildItemConversion({ ...data, factor: dec(data.factor) }))) as never,
+    );
+
+    const cheese = await universalInventoryService.createItemConversion(
+      { inventoryItemId: 'item-cheese', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 7 },
+      ACTOR,
+      null,
+    );
+    const bbq = await universalInventoryService.createItemConversion(
+      { inventoryItemId: 'item-bbq', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 6 },
+      ACTOR,
+      null,
+    );
+
+    expect(cheese.factor).toBe(7);
+    expect(bbq.factor).toBe(6);
+  });
+
+  it('rejects a non-positive factor', async () => {
+    await expect(
+      universalInventoryService.createItemConversion({ inventoryItemId: 'item-1', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 0 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'CONVERSION_FACTOR_INVALID' });
+    expect(repo.createItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('rejects when from_unit_id and to_unit_id are identical', async () => {
+    await expect(
+      universalInventoryService.createItemConversion({ inventoryItemId: 'item-1', fromUnitId: 'unit-g', toUnitId: 'unit-g', factor: 1 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'CONVERSION_SAME_UNIT' });
+  });
+
+  it('rejects a duplicate item/from/to conversion', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(repo.findUnitById).mockResolvedValue(buildUnit() as never);
+    vi.mocked(repo.findItemConversion).mockResolvedValue(buildItemConversion() as never);
+
+    await expect(
+      universalInventoryService.createItemConversion({ inventoryItemId: 'item-1', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 7 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'ITEM_CONVERSION_ALREADY_EXISTS' });
+    expect(repo.createItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the inventory item does not exist', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(null);
+
+    await expect(
+      universalInventoryService.createItemConversion({ inventoryItemId: 'missing-item', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 7 }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
+  });
+
+  it('allows dimensions to differ, since item-specific density conversions cross dimensions on purpose', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(repo.findUnitById).mockImplementation(
+      (id: string) => Promise.resolve(buildUnit({ id, dimension: id === 'unit-tbsp' ? 'VOLUME' : 'WEIGHT' })) as never,
+    );
+    vi.mocked(repo.findItemConversion).mockResolvedValue(null);
+    vi.mocked(repo.createItemConversion).mockResolvedValue(buildItemConversion() as never);
+
+    await expect(
+      universalInventoryService.createItemConversion({ inventoryItemId: 'item-1', fromUnitId: 'unit-tbsp', toUnitId: 'unit-g', factor: 7 }, ACTOR, null),
+    ).resolves.toMatchObject({ factor: 7 });
+  });
+});
+
+describe('universalInventoryService.updateItemConversion — TASK 115 / TASK 121', () => {
+  it('updates the factor', async () => {
+    vi.mocked(repo.findItemConversionById).mockResolvedValue(buildItemConversion() as never);
+    vi.mocked(repo.updateItemConversion).mockResolvedValue(buildItemConversion({ factor: dec(9) }) as never);
+
+    const result = await universalInventoryService.updateItemConversion('item-1', 'item-conv-1', { factor: 9 }, ACTOR, null);
+
+    expect(result.factor).toBe(9);
+    expect(repo.updateItemConversion).toHaveBeenCalledWith('item-conv-1', { factor: 9 });
+  });
+
+  it('rejects a non-positive factor', async () => {
+    await expect(universalInventoryService.updateItemConversion('item-1', 'item-conv-1', { factor: -1 }, ACTOR, null)).rejects.toMatchObject({
+      code: 'CONVERSION_FACTOR_INVALID',
+    });
+    expect(repo.updateItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the conversion does not exist', async () => {
+    vi.mocked(repo.findItemConversionById).mockResolvedValue(null);
+
+    await expect(universalInventoryService.updateItemConversion('item-1', 'missing', { factor: 5 }, ACTOR, null)).rejects.toMatchObject({
+      code: 'ITEM_CONVERSION_NOT_FOUND',
+    });
+  });
+
+  it('rejects when the conversion belongs to a different inventory item', async () => {
+    vi.mocked(repo.findItemConversionById).mockResolvedValue(buildItemConversion({ inventoryItemId: 'item-other' }) as never);
+
+    await expect(universalInventoryService.updateItemConversion('item-1', 'item-conv-1', { factor: 9 }, ACTOR, null)).rejects.toMatchObject({
+      code: 'ITEM_CONVERSION_NOT_FOUND',
+    });
+    expect(repo.updateItemConversion).not.toHaveBeenCalled();
+  });
+});
+
+describe('universalInventoryService.deleteItemConversion — TASK 115 / TASK 121', () => {
+  it('deletes an existing conversion', async () => {
+    vi.mocked(repo.findItemConversionById).mockResolvedValue(buildItemConversion() as never);
+    vi.mocked(repo.deleteItemConversion).mockResolvedValue(buildItemConversion() as never);
+
+    const result = await universalInventoryService.deleteItemConversion('item-1', 'item-conv-1', ACTOR, null);
+
+    expect(result).toEqual({ id: 'item-conv-1' });
+    expect(repo.deleteItemConversion).toHaveBeenCalledWith('item-conv-1');
+  });
+
+  it('rejects when the conversion does not exist', async () => {
+    vi.mocked(repo.findItemConversionById).mockResolvedValue(null);
+
+    await expect(universalInventoryService.deleteItemConversion('item-1', 'missing', ACTOR, null)).rejects.toMatchObject({
+      code: 'ITEM_CONVERSION_NOT_FOUND',
+    });
+    expect(repo.deleteItemConversion).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the conversion belongs to a different inventory item', async () => {
+    vi.mocked(repo.findItemConversionById).mockResolvedValue(buildItemConversion({ inventoryItemId: 'item-other' }) as never);
+
+    await expect(universalInventoryService.deleteItemConversion('item-1', 'item-conv-1', ACTOR, null)).rejects.toMatchObject({
+      code: 'ITEM_CONVERSION_NOT_FOUND',
+    });
+    expect(repo.deleteItemConversion).not.toHaveBeenCalled();
+  });
+});
+
+describe('universalInventoryService.listItemConversions — TASK 115', () => {
+  it('lists conversions for one inventory item', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
+    vi.mocked(repo.listItemConversions).mockResolvedValue([buildItemConversion()] as never);
+
+    const result = await universalInventoryService.listItemConversions('item-1');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ inventory_item_id: 'item-1', factor: 7 });
+  });
+
+  it('rejects when the inventory item does not exist', async () => {
+    vi.mocked(repo.findItemById).mockResolvedValue(null);
+
+    await expect(universalInventoryService.listItemConversions('missing-item')).rejects.toMatchObject({
+      code: 'INVENTORY_ITEM_NOT_FOUND',
+    });
   });
 });

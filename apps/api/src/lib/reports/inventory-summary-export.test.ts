@@ -10,6 +10,7 @@ function row(overrides: Partial<InventorySummaryReportRow>): InventorySummaryRep
     branch_id: '22222222-2222-2222-2222-222222222222',
     branch_name: 'SM North',
     section: 'INGREDIENT_KG',
+    status: 'CONVERTED',
     unit: 'g',
     opening_stock: 0,
     consumed_today: 0,
@@ -39,6 +40,7 @@ const ingredientRow = row({
 
 const packagingRow = row({
   section: 'PACKAGING_PC',
+  status: null,
   ingredient_name: 'Cups',
   unit: 'pc',
   opening_stock: 12,
@@ -48,7 +50,8 @@ const packagingRow = row({
 });
 
 const warningRow = row({
-  section: 'NEEDS_KG_CONVERSION',
+  section: 'INGREDIENT_KG',
+  status: 'CONVERSION_REQUIRED',
   ingredient_name: 'Flavored Fries Powder',
   unit: 'tbsp',
   opening_stock: 50,
@@ -59,44 +62,44 @@ const warningRow = row({
 });
 
 describe('generateInventorySummaryCsv', () => {
-  it('includes Ingredient Consumption (KG) and Packaging Consumption (PC) when there are no unresolved rows', () => {
+  it('includes Ingredient Consumption (KG) and Packaging Consumption (PC) as the only two sections', () => {
     const csv = generateInventorySummaryCsv([ingredientRow, packagingRow]).toString('utf-8');
 
     expect(csv).toContain('Ingredient Consumption (KG)');
-    expect(csv).toContain('Raw Fries,2.416,0.448,2.416,1.968');
+    expect(csv).toContain('Raw Fries,2.416,0.448,2.416,1.968,Converted');
     expect(csv).toContain('Packaging Consumption (PC)');
     expect(csv).toContain('Cups,12,3,20,9');
     expect(csv).not.toContain('Needs KG Conversion Setup');
   });
 
-  it('appends a Needs KG Conversion Setup section, with original units and no kg totals, only when unresolved rows exist', () => {
+  it('keeps an unresolved (CONVERSION_REQUIRED) row inside Ingredient Consumption (KG), with blank kg fields and a Status column, never a separate section', () => {
     const csv = generateInventorySummaryCsv([ingredientRow, packagingRow, warningRow]).toString('utf-8');
 
-    expect(csv).toContain('Needs KG Conversion Setup');
-    expect(csv).toContain('Ingredient,Unit,Opening Stock,Consumed Today,Consumed This Month,Remaining,Message');
-    expect(csv).toContain('Flavored Fries Powder,tbsp,50,5,30,45,Configure a valid conversion to kg');
+    expect(csv).not.toContain('Needs KG Conversion Setup');
+    expect(csv).toContain('Ingredient,Opening Stock (kg),Consumed Today (kg),Consumed This Month (kg),Remaining (kg),Status');
+    expect(csv).toContain('Flavored Fries Powder,,,,,Conversion required');
   });
 
-  it('excludes unresolved rows from the Ingredient Consumption (KG) totals', () => {
+  it('excludes CONVERSION_REQUIRED rows from the Ingredient Consumption (KG) totals', () => {
     const csv = generateInventorySummaryCsv([ingredientRow, warningRow]).toString('utf-8');
     const lines = csv.split('\n');
-    const totalsLine = lines[lines.indexOf('Ingredient Consumption (KG)') + 3];
+    const totalsLine = lines[lines.indexOf('Ingredient Consumption (KG)') + 4];
 
     // Only ingredientRow (2.416/0.448/2.416/1.968) contributes — warningRow's
     // tbsp figures must not be folded into these kg totals.
-    expect(totalsLine).toBe('Total,2.42,0.45,2.42,1.97');
+    expect(totalsLine).toBe('Total,2.42,0.45,2.42,1.97,');
   });
 });
 
 describe('generateInventorySummaryPdf', () => {
-  it('renders a non-empty PDF buffer starting with the %PDF magic bytes, covering all three sections', async () => {
+  it('renders a non-empty PDF buffer starting with the %PDF magic bytes, with the unresolved row folded into Ingredient Consumption (KG)', async () => {
     const buffer = await generateInventorySummaryPdf({ page: 1, limit: 25 }, [ingredientRow, packagingRow, warningRow], 'SM North');
 
     expect(buffer.length).toBeGreaterThan(0);
     expect(buffer.subarray(0, 5).toString('utf-8')).toBe('%PDF-');
   });
 
-  it('renders without a Needs KG Conversion Setup table when no rows are unresolved', async () => {
+  it('renders only two sections when no rows are unresolved', async () => {
     const buffer = await generateInventorySummaryPdf({ page: 1, limit: 25 }, [ingredientRow, packagingRow], null);
 
     expect(buffer.length).toBeGreaterThan(0);

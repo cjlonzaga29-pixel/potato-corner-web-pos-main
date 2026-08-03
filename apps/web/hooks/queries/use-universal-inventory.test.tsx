@@ -8,11 +8,26 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const { apiClient } = await import('@/lib/api-client');
 const { toast } = await import('sonner');
-const { useCreateInventoryItem } = await import('./use-universal-inventory.js');
+const {
+  useCreateInventoryItem,
+  useInventoryItemConversions,
+  useCreateInventoryItemConversion,
+  useUpdateInventoryItemConversion,
+  useDeleteInventoryItemConversion,
+} = await import('./use-universal-inventory.js');
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+}
+
+/** Wrapper that exposes its QueryClient so invalidation scope can be asserted directly. */
+function makeWrapperWithClient() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  function ClientWrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  }
+  return { queryClient, ClientWrapper };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -58,5 +73,65 @@ describe('useCreateInventoryItem', () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
 
     expect(toast.error).toHaveBeenCalledWith('base_unit_id: Invalid UUID');
+  });
+});
+
+describe('useInventoryItemConversions', () => {
+  it('lists conversions scoped to the item', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { conversions: [{ id: 'conv-1' }] }, error: null, meta: null });
+    const { result } = renderHook(() => useInventoryItemConversions('item-1'), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiClient).toHaveBeenCalledWith('/api/universal-inventory/items/item-1/conversions');
+    expect(result.current.data).toEqual([{ id: 'conv-1' }]);
+  });
+});
+
+describe('item-conversion mutations — TASK 121 (scoped invalidation)', () => {
+  it('useCreateInventoryItemConversion invalidates only this item\'s conversion query key', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'conv-1' }, error: null, meta: null });
+    const { queryClient, ClientWrapper } = makeWrapperWithClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result } = renderHook(() => useCreateInventoryItemConversion('item-1'), { wrapper: ClientWrapper });
+
+    result.current.mutate({ from_unit_id: 'unit-tbsp', to_unit_id: 'unit-g', factor: 7 });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiClient).toHaveBeenCalledWith(
+      '/api/universal-inventory/items/item-1/conversions',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ from_unit_id: 'unit-tbsp', to_unit_id: 'unit-g', factor: 7 }) }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-item-conversions', 'item-1'] });
+  });
+
+  it('useUpdateInventoryItemConversion sends only the factor and invalidates the item-scoped key', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'conv-1', factor: 9 }, error: null, meta: null });
+    const { queryClient, ClientWrapper } = makeWrapperWithClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result } = renderHook(() => useUpdateInventoryItemConversion('item-1', 'conv-1'), { wrapper: ClientWrapper });
+
+    result.current.mutate({ factor: 9 });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiClient).toHaveBeenCalledWith(
+      '/api/universal-inventory/items/item-1/conversions/conv-1',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ factor: 9 }) }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-item-conversions', 'item-1'] });
+  });
+
+  it('useDeleteInventoryItemConversion calls DELETE and invalidates the item-scoped key', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { id: 'conv-1' }, error: null, meta: null });
+    const { queryClient, ClientWrapper } = makeWrapperWithClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result } = renderHook(() => useDeleteInventoryItemConversion('item-1', 'conv-1'), { wrapper: ClientWrapper });
+
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiClient).toHaveBeenCalledWith('/api/universal-inventory/items/item-1/conversions/conv-1', expect.objectContaining({ method: 'DELETE' }));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-item-conversions', 'item-1'] });
   });
 });

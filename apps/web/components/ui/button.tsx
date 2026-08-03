@@ -8,14 +8,14 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow-glow',
+        default: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
         destructive: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
         outline: 'border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground',
         secondary: 'bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground',
         link: 'text-primary underline-offset-4 hover:underline',
         /** Large touch-friendly button for the POS terminal — never used in admin/supervisor. */
-        pos: 'min-h-[56px] rounded-xl bg-primary text-lg font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow-glow',
+        pos: 'min-h-[56px] rounded-xl bg-primary text-lg font-semibold text-primary-foreground shadow-sm hover:bg-primary/90',
         /** Destructive actions (void, delete) that shouldn't share styling with the outline `destructive` variant. */
         danger: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
         'ghost-yellow': 'bg-transparent text-accent hover:bg-accent/10',

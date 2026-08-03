@@ -30,11 +30,11 @@ export function DataTableColumnHeader<TData, TValue>({
       className={cn('-ml-3 h-8', className)}
       onClick={column.getToggleSortingHandler()}
     >
-      <span>{title}</span>
+      <span className={cn(sorted && 'text-primary')}>{title}</span>
       {sorted === 'desc' ? (
-        <ArrowDown className="ml-2 h-4 w-4" />
+        <ArrowDown className="ml-2 h-4 w-4 text-primary" />
       ) : sorted === 'asc' ? (
-        <ArrowUp className="ml-2 h-4 w-4" />
+        <ArrowUp className="ml-2 h-4 w-4 text-primary" />
       ) : (
         <ChevronsUpDown className="ml-2 h-4 w-4 text-muted-foreground" />
       )}

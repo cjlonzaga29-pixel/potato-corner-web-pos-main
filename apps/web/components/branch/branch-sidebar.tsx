@@ -127,7 +127,7 @@ export function BranchSidebar() {
       <div className="flex h-16 items-center justify-between border-b border-border/60 px-3">
         {!collapsed && (
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/70 text-sm font-bold text-primary-foreground shadow-glow">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
               PC
             </div>
             <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
@@ -159,10 +159,10 @@ export function BranchSidebar() {
                   <Link
                     href={item.href ?? '#'}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+                      'flex items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
                       isActive
-                        ? 'bg-primary text-primary-foreground shadow-glow'
-                        : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                     )}
                   >
                     <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
@@ -187,7 +187,7 @@ export function BranchSidebar() {
         <div className={cn('flex items-center gap-3 rounded-lg p-1.5 transition-colors hover:bg-accent/50', collapsed && 'justify-center')}>
           <Link href="/branch/profile" className="flex min-w-0 flex-1 items-center gap-3">
             <Avatar className="h-8 w-8 ring-2 ring-primary/20">
-              <AvatarFallback className="bg-gradient-to-br from-primary to-primary/70 text-xs font-semibold text-primary-foreground">
+              <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
                 {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
               </AvatarFallback>
             </Avatar>

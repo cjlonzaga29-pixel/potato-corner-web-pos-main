@@ -87,11 +87,11 @@ export function DashboardHeader({ navItems, homeHref, homeLabel, profileHref, fa
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="ml-1 flex items-center gap-2 rounded-lg p-1 transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="ml-1 flex items-center gap-2 rounded-lg p-1 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Account menu"
             >
               <Avatar className="h-8 w-8 ring-2 ring-primary/20">
-                <AvatarFallback className="bg-gradient-to-br from-primary to-primary/70 text-xs font-semibold text-primary-foreground">
+                <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
                   {user ? generateInitials(user.firstName || firstFallback, user.lastName || lastFallback) : fallbackInitials}
                 </AvatarFallback>
               </Avatar>

@@ -1,1 +1,1 @@
-PWA icon assets (192x192 and 512x512 PNG, per manifest.json) — added Phase 20 Task 6. Solid Henlin red (#D11A38) background with a white "HP" monogram, sized 192x192 and 512x512 per manifest.json. Updated 2026-08-04 as part of the Henlin rebrand (commit 1261eee) to replace the leftover Potato Corner "PC" mark.
+PWA icon assets (192x192 and 512x512 PNG, per manifest.json) — added Phase 20 Task 6. Solid Potato Corner orange (#f97316) background with a white "PC" monogram, sized 192x192 and 512x512 per manifest.json.

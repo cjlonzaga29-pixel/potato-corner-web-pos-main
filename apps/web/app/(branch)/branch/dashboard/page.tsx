@@ -1,19 +1,14 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { startOfDay } from 'date-fns';
-import { ShoppingCart, PackagePlus, Receipt } from 'lucide-react';
+import Link from 'next/link';
+import { ShoppingCart, PackagePlus, SlidersHorizontal, Receipt } from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { DashboardInventoryAlerts } from '@/components/supervisor/dashboard-inventory-alerts';
-import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-attendance-overview';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
-import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
 import { InventoryConsumptionPanel } from '@/components/shared/dashboard/inventory-consumption-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { formatDate } from '@/lib/utils';
@@ -25,16 +20,15 @@ import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
-import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
-const ATTENDANCE_OVERVIEW_LIMIT = 100;
 
 const QUICK_ACTIONS = [
-  { label: 'Open POS Terminal', href: '/branch/terminal', icon: ShoppingCart },
+  { label: 'Open POS', href: '/branch/terminal', icon: ShoppingCart },
   { label: 'Receive Stock', href: '/branch/inventory/stock-in', icon: PackagePlus },
+  { label: 'Stock Adjustment', href: '/branch/inventory/adjust', icon: SlidersHorizontal },
   { label: 'Log Expense', href: '/branch/expenses', icon: Receipt },
 ] as const;
 
@@ -44,6 +38,11 @@ const QUICK_ACTIONS = [
  * useBranchStore), a branch account is bound to exactly one physical
  * branch, so this reads branchId straight off the JWT the same way the
  * former POS shell did (user.branchIds[0]), not from a branch selector.
+ *
+ * TASK 124: trimmed to a branch-manager-focused layout — 2 KPI rows, a
+ * compact operational-status row, Payment Collections, Quick Actions,
+ * Sales Trend, Inventory Status, and Recent Activity. Same data sources
+ * and formulas as before; only the composition changed.
  */
 export default function BranchDashboardPage() {
   const router = useRouter();
@@ -56,16 +55,7 @@ export default function BranchDashboardPage() {
   useTransactionsRealtimeSync();
   useInventoryStockRealtimeSync(branchId);
   useInventoryAnalyticsRealtimeSync();
-  useAttendanceRealtimeSync();
   useExpensesRealtimeSync();
-
-  // Calendar-day boundary, computed once on mount — deliberately not
-  // reactive to clock ticking, same as the supervisor dashboard's
-  // attendance panel ("today so far", not a live-updating window).
-  const [{ from, to }] = useState(() => {
-    const now = new Date();
-    return { from: startOfDay(now).toISOString(), to: now.toISOString() };
-  });
 
   const { data: branch } = useBranch(branchId);
   const { data: branchStats, isLoading: isLoadingStats } = useAllBranchStats(branchId);
@@ -74,11 +64,6 @@ export default function BranchDashboardPage() {
     limit: RECENT_TRANSACTIONS_LIMIT,
   });
   const { data: alertsData, isLoading: isAlertsLoading } = useBranchInventoryStockAlerts(branchId);
-  const { data: attendanceData, isLoading: isAttendanceLoading } = useAttendanceByBranch(branchId, {
-    from,
-    to,
-    limit: ATTENDANCE_OVERVIEW_LIMIT,
-  });
   const monthTrend = useDashboardSalesTrendReport({
     date_from: manilaMonthStart(),
     date_to: manilaToday(),
@@ -100,15 +85,16 @@ export default function BranchDashboardPage() {
   const todayStats = branchStats?.[0];
   const averageOrderValue =
     todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
-  const netProfitLabel = todayStats?.isNetProfitEstimated ? 'Estimated Net Profit' : 'Net Profit';
-  const netProfitTooltip = todayStats?.isNetProfitEstimated
+  const profitLabel = todayStats?.isNetProfitEstimated ? 'Estimated Profit Today' : 'Profit Today';
+  const profitTooltip = todayStats?.isNetProfitEstimated
     ? `Net Sales - COGS - Expenses. Cost data was missing for ${todayStats.missingCostItemCount} sold item(s), so this figure is an estimate.`
     : 'Net Sales - COGS - Expenses';
   const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
   const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
+  const alertCount = alertsData?.alerts.length ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold">Branch Dashboard</h1>
@@ -123,40 +109,52 @@ export default function BranchDashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          title="Daily Gross Sales"
+          title="Gross Sales Today"
           value={todayStats?.todayGrossSales ?? 0}
           prefix="₱"
           isLoading={isLoadingStats}
           tooltip="Completed sales for the selected Manila business day."
         />
         <KpiCard
-          title="Monthly Gross Sales"
+          title="Gross Sales This Month"
           value={grossSalesMonth ?? 0}
           prefix="₱"
           isLoading={monthTrend.isLoading}
           tooltip="Completed sales for the current Manila calendar month."
         />
-        <KpiCard title="Net Sales" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} />
-        <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} />
+        <KpiCard title="Transactions Today" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} />
         <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard title="Net Sales Today" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} />
+        <KpiCard title="Today's Expenses" value={todayStats?.todayExpenses ?? 0} prefix="₱" isLoading={isLoadingStats} />
         <KpiCard
-          title={netProfitLabel}
+          title={profitLabel}
           value={todayStats?.todayNetProfit ?? 0}
           prefix="₱"
           isLoading={isLoadingStats}
           tone={(todayStats?.todayNetProfit ?? 0) < 0 ? 'negative' : 'default'}
-          tooltip={netProfitTooltip}
+          tooltip={profitTooltip}
         />
-        <KpiCard title="Expenses" value={todayStats?.todayExpenses ?? 0} prefix="₱" isLoading={isLoadingStats} />
+        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <KpiCard
           title="Low Stock Items"
           value={todayStats?.lowStockIngredientCount ?? 0}
           isLoading={isLoadingStats}
           tone={(todayStats?.lowStockIngredientCount ?? 0) > 0 ? 'warning' : 'default'}
         />
-        <KpiCard title="Staff Timed In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} />
+        <KpiCard
+          title="Inventory Alerts"
+          value={alertCount}
+          isLoading={isAlertsLoading}
+          tone={alertCount > 0 ? 'warning' : 'default'}
+        />
       </div>
 
       <Card>
@@ -198,11 +196,8 @@ export default function BranchDashboardPage() {
         <SalesAnalyticsSection branchId={branchId} />
       </WidgetErrorBoundary>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <WidgetErrorBoundary label="Top Products">
-          <TopProductsPanel branchId={branchId} />
-        </WidgetErrorBoundary>
-        <WidgetErrorBoundary label="Inventory Consumption">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <WidgetErrorBoundary label="Inventory Status">
           <InventoryConsumptionPanel branchId={branchId} />
         </WidgetErrorBoundary>
         <DashboardTransactionsFeed
@@ -210,11 +205,6 @@ export default function BranchDashboardPage() {
           isLoading={isTransactionsLoading}
           onRowClick={() => router.push('/branch/receipts')}
         />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <DashboardInventoryAlerts alerts={alertsData?.alerts} isLoading={isAlertsLoading} />
-        <DashboardAttendanceOverview records={attendanceData?.records} isLoading={isAttendanceLoading} />
       </div>
     </div>
   );

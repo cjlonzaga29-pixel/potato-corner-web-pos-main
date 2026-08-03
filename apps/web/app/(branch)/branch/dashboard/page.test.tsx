@@ -14,8 +14,6 @@ const {
   mockUseTransactionsRealtimeSync,
   mockUseBranchInventoryStockAlerts,
   mockUseInventoryStockRealtimeSync,
-  mockUseAttendanceByBranch,
-  mockUseAttendanceRealtimeSync,
   mockUseDashboardSalesTrendReport,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
@@ -29,8 +27,6 @@ const {
   mockUseTransactionsRealtimeSync: vi.fn(),
   mockUseBranchInventoryStockAlerts: vi.fn(),
   mockUseInventoryStockRealtimeSync: vi.fn(),
-  mockUseAttendanceByBranch: vi.fn(),
-  mockUseAttendanceRealtimeSync: vi.fn(),
   mockUseDashboardSalesTrendReport: vi.fn(),
 }));
 
@@ -66,11 +62,6 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useInventoryStockRealtimeSync: mockUseInventoryStockRealtimeSync,
 }));
 
-vi.mock('@/hooks/queries/use-attendance', () => ({
-  useAttendanceByBranch: mockUseAttendanceByBranch,
-  useAttendanceRealtimeSync: mockUseAttendanceRealtimeSync,
-}));
-
 vi.mock('@/hooks/queries/use-reports', () => ({
   useDashboardSalesTrendReport: mockUseDashboardSalesTrendReport,
   useInventoryAnalyticsRealtimeSync: vi.fn(),
@@ -82,10 +73,6 @@ vi.mock('@/hooks/queries/use-expenses', () => ({
 
 vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
   SalesAnalyticsSection: () => <div>Sales Analytics Section</div>,
-}));
-
-vi.mock('@/components/shared/dashboard/top-products-panel', () => ({
-  TopProductsPanel: () => <div>Top Products Panel</div>,
 }));
 
 vi.mock('@/components/shared/dashboard/inventory-consumption-panel', () => ({
@@ -153,7 +140,6 @@ function setup(stats: ReturnType<typeof statsRow> | undefined, isLoadingStats = 
   mockUseCurrentShift.mockReturnValue({ data: undefined, isLoading: false });
   mockUseTransactions.mockReturnValue({ data: { transactions: [] }, isLoading: false });
   mockUseBranchInventoryStockAlerts.mockReturnValue({ data: { alerts: [] }, isLoading: false });
-  mockUseAttendanceByBranch.mockReturnValue({ data: { records: [] }, isLoading: false });
   mockUseDashboardSalesTrendReport.mockReturnValue({ data: { data: [] }, isLoading: false });
 }
 
@@ -163,25 +149,25 @@ afterEach(() => {
 });
 
 describe('BranchDashboardPage', () => {
-  it('renders Net Sales, Net Profit, and Staff Timed In from the branch stats row', () => {
+  it('renders Net Sales, Profit Today, and Staff Clocked In from the branch stats row', () => {
     setup(statsRow());
     render(<BranchDashboardPage />);
 
-    expect(screen.getByText('Net Sales')).toBeInTheDocument();
+    expect(screen.getByText('Net Sales Today')).toBeInTheDocument();
     expect(screen.getByText('₱1000')).toBeInTheDocument();
-    expect(screen.getByText('Net Profit')).toBeInTheDocument();
+    expect(screen.getByText('Profit Today')).toBeInTheDocument();
     expect(screen.getByText('₱650')).toBeInTheDocument();
-    expect(screen.getByText('Staff Timed In')).toBeInTheDocument();
+    expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  it('labels the profit card "Estimated Net Profit" and explains why in the tooltip when cost data is missing', () => {
+  it('labels the profit card "Estimated Profit Today" and explains why in the tooltip when cost data is missing', () => {
     setup(statsRow({ isNetProfitEstimated: true, missingCostItemCount: 4 }));
     render(<BranchDashboardPage />);
 
-    expect(screen.getByText('Estimated Net Profit')).toBeInTheDocument();
-    expect(screen.queryByText('Net Profit')).not.toBeInTheDocument();
-    const card = screen.getByText('Estimated Net Profit').closest('div');
+    expect(screen.getByText('Estimated Profit Today')).toBeInTheDocument();
+    expect(screen.queryByText('Profit Today')).not.toBeInTheDocument();
+    const card = screen.getByText('Estimated Profit Today').closest('div');
     expect(card).toHaveAttribute('title', expect.stringContaining('missing for 4 sold item'));
   });
 
@@ -206,7 +192,6 @@ describe('BranchDashboardPage', () => {
     mockUseCurrentShift.mockReturnValue({ data: undefined, isLoading: false });
     mockUseTransactions.mockReturnValue({ data: undefined, isLoading: false });
     mockUseBranchInventoryStockAlerts.mockReturnValue({ data: undefined, isLoading: false });
-    mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: false });
     mockUseDashboardSalesTrendReport.mockReturnValue({ data: undefined, isLoading: false });
 
     render(<BranchDashboardPage />);
@@ -214,7 +199,7 @@ describe('BranchDashboardPage', () => {
     expect(screen.getByText('No branch assigned')).toBeInTheDocument();
   });
 
-  it('renders Daily Gross Sales from branch day-stats and Monthly Gross Sales summed from the sales trend report', () => {
+  it('renders Gross Sales Today from branch day-stats and Gross Sales This Month summed from the sales trend report', () => {
     setup(statsRow({ todayGrossSales: 1500 }));
     mockUseDashboardSalesTrendReport.mockReturnValue({
       data: { data: [{ gross_sales: 8000 }, { gross_sales: 3500 }] },
@@ -222,9 +207,33 @@ describe('BranchDashboardPage', () => {
     });
     render(<BranchDashboardPage />);
 
-    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales Today')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
-    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales This Month')).toBeInTheDocument();
     expect(screen.getByText('₱11500')).toBeInTheDocument();
+  });
+
+  it('renders the compact operational status cards for low stock and inventory alerts', () => {
+    setup(statsRow({ lowStockIngredientCount: 3 }));
+    mockUseBranchInventoryStockAlerts.mockReturnValue({
+      data: { alerts: [{ inventory_item_id: '1' }, { inventory_item_id: '2' }, { inventory_item_id: '3' }, { inventory_item_id: '4' }, { inventory_item_id: '5' }] },
+      isLoading: false,
+    });
+    render(<BranchDashboardPage />);
+
+    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+  });
+
+  it('renders the simplified quick actions including Stock Adjustment', () => {
+    setup(statsRow());
+    render(<BranchDashboardPage />);
+
+    expect(screen.getByText('Open POS')).toBeInTheDocument();
+    expect(screen.getByText('Receive Stock')).toBeInTheDocument();
+    expect(screen.getByText('Stock Adjustment')).toBeInTheDocument();
+    expect(screen.getByText('Log Expense')).toBeInTheDocument();
   });
 });

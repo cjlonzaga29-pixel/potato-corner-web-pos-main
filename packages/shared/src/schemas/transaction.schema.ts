@@ -44,8 +44,8 @@ export const cartItemSchema = z.object({
   quantity: z.number().int().positive(),
 });
 
-/** GCash and Maya carry identical proof requirements (audit "Simple Operational Fixes" §5: "use the same proof requirement as GCash unless existing requirements differ"). */
-const PROOF_REQUIRED_METHODS: readonly PaymentMethod[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA];
+/** GCash, Maya, and Other all carry identical proof requirements — a payment proof photo, no reference number/note (Task 139). */
+const PROOF_REQUIRED_METHODS: readonly PaymentMethod[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA, PAYMENT_METHOD.OTHER];
 
 export const createTransactionSchema = z
   .object({
@@ -64,20 +64,16 @@ export const createTransactionSchema = z
     // PROMO only — passed directly rather than computed (architecture doc §Discounts).
     discount_amount: z.number().nonnegative().optional(),
     cash_tendered: z.number().nonnegative().optional(),
-    // Shared by GCash and Maya — both are reference-number-based e-wallet
-    // payments with the same 10-20 digit reference format.
+    // Deprecated (Task 139) — no longer collected or required by the POS UI;
+    // kept optional here only so older clients/queued payloads still parse.
     gcash_reference_number: z
       .string()
       .regex(/^\d{10,20}$/)
       .optional(),
     gcash_manually_verified: z.boolean().optional(),
-    // "other" payment method only (bank transfer, voucher, etc.) — a short
-    // free-text reference/note in place of GCash/Maya's reference number and
-    // photo proof, per the audit's "do not require a new complex
-    // payment-settings workflow" instruction.
     other_reference_note: z.string().min(1).max(200).optional(),
     // Storage key + capture mode returned by POST /api/transactions/payment-proof
-    // — required together for GCash/Maya only (see superRefine below).
+    // — required together for GCash/Maya/Other (see superRefine below).
     payment_proof_key: z.string().min(1).optional(),
     payment_proof_type: z.enum(imageProofTypeValues).optional(),
     is_offline_transaction: z.boolean().default(false),
@@ -87,32 +83,17 @@ export const createTransactionSchema = z
     if (data.payment_method === PAYMENT_METHOD.CASH && data.cash_tendered === undefined) {
       ctx.addIssue({ code: 'custom', path: ['cash_tendered'], message: 'cash_tendered is required for a cash payment' });
     }
-    if (PROOF_REQUIRED_METHODS.includes(data.payment_method) && !data.gcash_reference_number) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['gcash_reference_number'],
-        message: 'gcash_reference_number is required for a GCash or Maya payment',
-      });
-    }
     if (PROOF_REQUIRED_METHODS.includes(data.payment_method) && (!data.payment_proof_key || !data.payment_proof_type)) {
       ctx.addIssue({
         code: 'custom',
         path: ['payment_proof_key'],
-        message: 'payment_proof_key and payment_proof_type are required for a GCash or Maya payment',
-      });
-    }
-    if (data.payment_method === PAYMENT_METHOD.OTHER && !data.other_reference_note) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['other_reference_note'],
-        message: 'other_reference_note is required for an Other payment',
+        message: 'payment_proof_key and payment_proof_type are required for a GCash, Maya, or Other payment',
       });
     }
     // Proof capture requires a live, confirmed upload before the sale is
-    // created — there's no offline blob queue for it, so GCash/Maya sales
-    // can't be queued while offline (see terminal/page.tsx's offline guard).
-    // "other" is cash-adjacent (no photo proof) but still requires a live
-    // connection to keep the offline queue's contract simple: only cash.
+    // created — there's no offline blob queue for it, so GCash/Maya/Other
+    // sales can't be queued while offline (see terminal/page.tsx's offline
+    // guard).
     if (data.is_offline_transaction && data.payment_method !== PAYMENT_METHOD.CASH) {
       ctx.addIssue({
         code: 'custom',

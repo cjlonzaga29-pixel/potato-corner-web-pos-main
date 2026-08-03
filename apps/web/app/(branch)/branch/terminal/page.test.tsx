@@ -20,6 +20,7 @@ const {
   mockUseClockIn,
   mockUseClockOut,
   mockUseCreateTransaction,
+  mockUploadPaymentProofMutateAsync,
 } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockReplaceItem: vi.fn(),
@@ -43,7 +44,21 @@ const {
   mockUseClockIn: vi.fn(),
   mockUseClockOut: vi.fn(),
   mockUseCreateTransaction: vi.fn(),
+  mockUploadPaymentProofMutateAsync: vi
+    .fn()
+    .mockResolvedValue({ payment_proof_key: 'branch-1/shift-1/user-1-123.webp', payment_proof_type: 'gallery_upload' }),
 }));
+
+// jsdom implements neither createImageBitmap nor canvas 2D drawing/encoding —
+// ImageUpload's compression pipeline needs both to drive a real gallery
+// upload interaction in "payment proof still works" tests below.
+if (typeof globalThis.createImageBitmap === 'undefined') {
+  globalThis.createImageBitmap = vi.fn().mockResolvedValue({ width: 10, height: 10 }) as never;
+}
+HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({ drawImage: vi.fn() }) as never;
+HTMLCanvasElement.prototype.toBlob = function toBlob(callback: BlobCallback) {
+  callback(new Blob(['fake-image'], { type: 'image/jpeg' }));
+};
 
 /** Real Radix Select needs pointer-event interactions jsdom can't drive without @testing-library/user-event — swap in a plain, click-responsive stand-in (same pattern as reports/page.test.tsx). */
 vi.mock('@/components/ui/select', () => {
@@ -130,7 +145,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
     mockUseCreateTransaction(accessTokenOverride);
     return { mutateAsync: mockCreateTransactionMutateAsync, isPending: false };
   },
-  useUploadPaymentProof: () => ({ mutateAsync: vi.fn() }),
+  useUploadPaymentProof: () => ({ mutateAsync: mockUploadPaymentProofMutateAsync }),
 }));
 
 vi.mock('@/lib/offline/cache', () => ({
@@ -1124,43 +1139,96 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
   });
 });
 
-// Simple Operational Audit §5 — Maya and Other must be reachable and usable
-// from the same terminal Charge flow as cash/GCash, not dead-end tabs.
-describe('TerminalPage — Maya and Other payment methods', () => {
+// Task 139 — GCash, Maya, and Other are unified onto one photo-proof-only
+// flow: no reference number or note field for any of them, matching cash's
+// simplicity of "one input, then Charge".
+describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, Task 139)', () => {
   beforeEach(() => {
     mockAddItem.mockClear();
+    mockUploadPaymentProofMutateAsync.mockClear();
+    mockCreateTransactionMutateAsync.mockClear();
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
   });
 
   afterEach(() => cleanup());
 
-  it('shows a Maya reference field and proof capture, mirroring GCash, and keeps Charge disabled until reference/verification/proof are all present', () => {
-    render(<TerminalPage />);
-    // Radix TabsTrigger activates on mousedown, not click — fireEvent.click
-    // alone never fires it (see fireEvent.click's lack of a mousedown step).
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Maya' }));
+  // Radix TabsTrigger activates on mousedown, not click — fireEvent.click
+  // alone never fires it (see fireEvent.click's lack of a mousedown step).
+  function selectTab(name: string) {
+    fireEvent.mouseDown(screen.getByRole('tab', { name }));
+  }
 
-    expect(screen.getByPlaceholderText('Maya reference number')).toBeInTheDocument();
-    expect(screen.getByText('I manually verified this Maya payment')).toBeInTheDocument();
-    // No proof captured yet — Charge must stay disabled regardless of reference/verification.
-    fireEvent.change(screen.getByPlaceholderText('Maya reference number'), { target: { value: '1234567890' } });
-    fireEvent.click(screen.getByText('I manually verified this Maya payment'));
+  it('shows GCash with only a Payment Proof upload — no reference number field', () => {
+    render(<TerminalPage />);
+    selectTab('GCash');
+
+    expect(screen.getByText('Payment Proof')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Take photo/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Upload from gallery/i })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/reference number/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/manually verified/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
   });
 
-  it('shows a short reference/note field for Other with no proof-capture UI, and gates Charge on the note alone', () => {
+  it('shows Maya with only a Payment Proof upload — no reference number field', () => {
     render(<TerminalPage />);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Other' }));
+    selectTab('Maya');
 
-    expect(screen.getByPlaceholderText('Payment reference or note (e.g. bank transfer, voucher)')).toBeInTheDocument();
-    expect(screen.queryByText(/manually verified/)).not.toBeInTheDocument();
+    expect(screen.getByText('Payment Proof')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/reference number/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/manually verified/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
 
-    fireEvent.change(screen.getByPlaceholderText('Payment reference or note (e.g. bank transfer, voucher)'), {
-      target: { value: 'Bank transfer #445' },
-    });
+  it('shows Other with only a Payment Proof upload — no reference/note field, same as GCash/Maya', () => {
+    render(<TerminalPage />);
+    selectTab('Other');
+
+    expect(screen.getByText('Payment Proof')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Take photo/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Upload from gallery/i })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/reference or note/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
+
+  it('keeps Charge disabled for GCash/Maya/Other until payment proof is captured, with cash unaffected', () => {
+    render(<TerminalPage />);
+    // Cash is unchanged — still gated on cash tendered alone.
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+
+    selectTab('Other');
+    expect(screen.getByText('Upload payment proof before continuing.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
+
+  it('uploads a gallery photo as payment proof for Other and enables Charge, sending payment_proof_key/type with no reference fields', async () => {
+    render(<TerminalPage />);
+    selectTab('Other');
+
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(mockUploadPaymentProofMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled());
+
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync) as CreateTransactionInput;
+    expect(payload.payment_method).toBe('other');
+    expect(payload.payment_proof_key).toBe('branch-1/shift-1/user-1-123.webp');
+    expect(payload.payment_proof_type).toBe('gallery_upload');
+    expect(payload).not.toHaveProperty('gcash_reference_number');
+    expect(payload).not.toHaveProperty('other_reference_note');
+    expect(payload).not.toHaveProperty('gcash_manually_verified');
   });
 });
 

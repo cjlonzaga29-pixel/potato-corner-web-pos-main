@@ -272,12 +272,12 @@ describe('POST / — validate middleware', () => {
     expect(transactionsService.createTransaction).not.toHaveBeenCalled();
   });
 
-  it('a GCash payment missing gcash_reference_number gets 422 before reaching the service', async () => {
+  it('a GCash payment missing payment_proof_key/payment_proof_type gets 422 before reaching the service — no reference number required', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
     const token = generateStaffToken(BRANCH_1);
     const req = mockReq({
       ...authHeader(token),
-      body: validCreateBody({ payment_method: 'gcash', cash_tendered: undefined, gcash_manually_verified: true }),
+      body: validCreateBody({ payment_method: 'gcash', cash_tendered: undefined }),
     });
     const res = mockRes();
 
@@ -287,17 +287,12 @@ describe('POST / — validate middleware', () => {
     expect(transactionsService.createTransaction).not.toHaveBeenCalled();
   });
 
-  it('a GCash payment missing payment_proof_key/payment_proof_type gets 422 before reaching the service', async () => {
+  it('an Other payment missing payment_proof_key/payment_proof_type gets 422 before reaching the service — same as GCash/Maya', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/');
     const token = generateStaffToken(BRANCH_1);
     const req = mockReq({
       ...authHeader(token),
-      body: validCreateBody({
-        payment_method: 'gcash',
-        cash_tendered: undefined,
-        gcash_reference_number: '1234567890',
-        gcash_manually_verified: true,
-      }),
+      body: validCreateBody({ payment_method: 'other', cash_tendered: undefined }),
     });
     const res = mockRes();
 
@@ -315,8 +310,6 @@ describe('POST / — validate middleware', () => {
       body: validCreateBody({
         payment_method: 'gcash',
         cash_tendered: undefined,
-        gcash_reference_number: '1234567890',
-        gcash_manually_verified: true,
         payment_proof_key: 'branch-1/shift-1/user-1-123.webp',
         payment_proof_type: 'live_capture',
         is_offline_transaction: true,

@@ -193,7 +193,6 @@ const mutableConfig = config as { shadowBomDeductionEnabled: boolean; shadowBomD
 const { shadowBomDeductionService, computeBomDeduction } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { transactionsService } = await import('./transactions.service.js');
-const { TransactionError } = await import('./transactions.types.js');
 
 function decimal(value: number) {
   return { toNumber: () => value };
@@ -406,22 +405,6 @@ describe('transactionsService.createTransaction — VAT calculation', () => {
 });
 
 describe('transactionsService.createTransaction — payment validation', () => {
-  it('rejects a GCash payment that has not been manually verified', async () => {
-    await expect(
-      transactionsService.createTransaction(
-        { ...baseInput, paymentMethod: 'gcash', gcashReferenceNumber: '1234567890', gcashManuallyVerified: false },
-        null,
-      ),
-    ).rejects.toThrow(TransactionError);
-    await expect(
-      transactionsService.createTransaction(
-        { ...baseInput, paymentMethod: 'gcash', gcashReferenceNumber: '1234567890', gcashManuallyVerified: false },
-        null,
-      ),
-    ).rejects.toMatchObject({ code: 'PAYMENT_NOT_VERIFIED' });
-    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
-  });
-
   it('rejects a cash payment where cash_tendered is less than total_amount', async () => {
     await expect(transactionsService.createTransaction({ ...baseInput, cashTendered: 50 }, null)).rejects.toMatchObject({
       code: 'INSUFFICIENT_CASH_TENDERED',
@@ -444,15 +427,14 @@ describe('transactionsService.createTransaction — payment validation', () => {
 
   it('rejects a GCash payment with no payment proof key/type attached — mandatory, server-side', async () => {
     await expect(
-      transactionsService.createTransaction(
-        {
-          ...baseInput,
-          paymentMethod: 'gcash',
-          gcashReferenceNumber: '1234567890',
-          gcashManuallyVerified: true,
-        },
-        null,
-      ),
+      transactionsService.createTransaction({ ...baseInput, paymentMethod: 'gcash' }, null),
+    ).rejects.toMatchObject({ code: 'PAYMENT_PROOF_REQUIRED' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an Other payment with no payment proof key/type attached — same requirement as GCash/Maya', async () => {
+    await expect(
+      transactionsService.createTransaction({ ...baseInput, paymentMethod: 'other' }, null),
     ).rejects.toMatchObject({ code: 'PAYMENT_PROOF_REQUIRED' });
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
@@ -462,8 +444,6 @@ describe('transactionsService.createTransaction — payment validation', () => {
       {
         ...baseInput,
         paymentMethod: 'gcash',
-        gcashReferenceNumber: '1234567890',
-        gcashManuallyVerified: true,
         paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
         paymentProofType: 'live_capture',
       },
@@ -474,6 +454,27 @@ describe('transactionsService.createTransaction — payment validation', () => {
       expect.objectContaining({
         paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
         paymentProofType: 'live_capture',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('accepts an Other payment once a payment proof key/type are attached, with no reference/note required', async () => {
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        paymentMethod: 'other',
+        paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
+        paymentProofType: 'gallery_upload',
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentProofKey: 'branch-1/shift-1/user-1-123.webp',
+        paymentProofType: 'gallery_upload',
+        gcashReference: null,
       }),
       expect.anything(),
     );

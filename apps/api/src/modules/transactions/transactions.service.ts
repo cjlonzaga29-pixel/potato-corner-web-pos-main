@@ -61,8 +61,8 @@ const EMPLOYEE_DISCOUNT_RATE = 0.2;
 const RECEIPT_SEQUENCE_RETRY_LIMIT = 5;
 
 const PAYMENT_PROOF_BUCKET = 'payment-proofs';
-/** GCash and Maya are the two reference-number + photo-proof e-wallet methods; "other" and "cash" are not. */
-const PROOF_REQUIRED_METHODS: readonly string[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA];
+/** GCash, Maya, and Other all require a payment proof photo — only cash does not (Task 139). */
+const PROOF_REQUIRED_METHODS: readonly string[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA, PAYMENT_METHOD.OTHER];
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -1098,34 +1098,17 @@ export const transactionsService = {
       throw new TransactionError('SHIFT_CLOSED', 'Cannot record a transaction on a shift that is not open', 409);
     }
 
-    // Presence of cash_tendered (for cash) / gcash_reference_number (for
-    // gcash/maya) / other_reference_note (for other) is already guaranteed
-    // by createTransactionSchema's superRefine — only the business-logic
-    // checks below belong here.
-    if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && data.gcashManuallyVerified !== true) {
-      throw new TransactionError(
-        'PAYMENT_NOT_VERIFIED',
-        'GCash and Maya payments must be manually verified before the transaction can be recorded',
-        422,
-      );
-    }
+    // Presence of cash_tendered (for cash) is already guaranteed by
+    // createTransactionSchema's superRefine — only the business-logic checks
+    // below belong here.
 
     // Belt: createTransactionSchema's superRefine already rejects a missing
     // key/type client-side; this is the server-side gate that actually makes
-    // "mandatory" hold regardless of what the client sends. "other" is
-    // reference/note-based, not photo-proof-based (Simple Operational Audit
-    // §5), so it is deliberately excluded here.
+    // "mandatory" hold regardless of what the client sends.
     if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && (!data.paymentProofKey || !data.paymentProofType)) {
       throw new TransactionError(
         'PAYMENT_PROOF_REQUIRED',
-        'A payment proof photo must be captured before a GCash or Maya sale can be recorded',
-        422,
-      );
-    }
-    if (data.paymentMethod === PAYMENT_METHOD.OTHER && !data.otherReferenceNote) {
-      throw new TransactionError(
-        'PAYMENT_REFERENCE_REQUIRED',
-        'A short payment reference or note is required before an Other-method sale can be recorded',
+        'A payment proof photo must be captured before a GCash, Maya, or Other sale can be recorded',
         422,
       );
     }
@@ -1167,14 +1150,15 @@ export const transactionsService = {
     const discountCustomerIdEncrypted = data.discountIdReference ? encryptField(data.discountIdReference) : null;
     const discountCustomerIdHash = data.discountIdReference ? hashField(data.discountIdReference) : null;
 
-    // gcashReference is reused as the generic "reference/note" column for
-    // gcash, maya, and other — adding per-method columns would require a
-    // migration the audit's "no unnecessary migrations" constraint rules out.
+    // gcash_reference_number/other_reference_note are no longer collected by
+    // the POS UI (Task 139) — the gcashReference column is left null for new
+    // sales. Kept only as a pass-through for any older/already-queued client
+    // payload that still carries one.
     const referenceNote =
       data.paymentMethod === PAYMENT_METHOD.GCASH || data.paymentMethod === PAYMENT_METHOD.MAYA
-        ? (data.gcashReferenceNumber as string)
+        ? (data.gcashReferenceNumber ?? null)
         : data.paymentMethod === PAYMENT_METHOD.OTHER
-          ? (data.otherReferenceNote as string)
+          ? (data.otherReferenceNote ?? null)
           : null;
     const requiresProof = PROOF_REQUIRED_METHODS.includes(data.paymentMethod);
 
@@ -1217,7 +1201,7 @@ export const transactionsService = {
               cashTendered: data.paymentMethod === 'cash' ? (data.cashTendered as number) : null,
               changeAmount: changeGiven,
               gcashReference: referenceNote,
-              gcashManuallyVerified: requiresProof ? true : null,
+              gcashManuallyVerified: null,
               paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
               paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
               paymentProofUploadedAt: requiresProof ? new Date() : null,

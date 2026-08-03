@@ -3,6 +3,7 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import { Camera, Check, ImageIcon, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 
 type CaptureMode = 'live_capture' | 'gallery_upload';
@@ -10,6 +11,7 @@ type CaptureMode = 'live_capture' | 'gallery_upload';
 interface ImageUploadProps {
   onImageSelected: (file: File, type: CaptureMode) => void;
   label?: string;
+  description?: string;
   required?: boolean;
 }
 
@@ -36,7 +38,7 @@ async function drawToCanvas(source: ImageBitmapSource): Promise<HTMLCanvasElemen
 }
 
 /** Supports live camera capture (getUserMedia) with a gallery-upload fallback when the camera is unavailable or fails. */
-export function ImageUpload({ onImageSelected, label = 'Photo', required }: ImageUploadProps) {
+export function ImageUpload({ onImageSelected, label = 'Photo', description, required }: ImageUploadProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -106,16 +108,20 @@ export function ImageUpload({ onImageSelected, label = 'Photo', required }: Imag
 
   return (
     <div className="space-y-3">
-      <p className="text-sm font-medium">
-        {label}
-        {required && <span className="ml-0.5 text-destructive">*</span>}
-      </p>
+      <div className="space-y-0.5">
+        <p className="flex items-center gap-1.5 text-sm font-medium">
+          <Camera className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          {label}
+          {required && <span className="ml-0.5 text-destructive">*</span>}
+        </p>
+        {description && <p className="text-xs text-muted-foreground">{description}</p>}
+      </div>
 
       {!previewUrl && !isCameraActive && (
         <div className="flex gap-2">
           <Button type="button" variant="outline" className="touch-target flex-1" onClick={() => void startCamera()}>
             <Camera className="mr-2 h-4 w-4" />
-            Take photo
+            Take Photo
           </Button>
           <Button
             type="button"
@@ -124,7 +130,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', required }: Imag
             onClick={() => fileInputRef.current?.click()}
           >
             <ImageIcon className="mr-2 h-4 w-4" />
-            Upload from gallery
+            Upload from Gallery
           </Button>
           <input
             ref={fileInputRef}
@@ -136,7 +142,11 @@ export function ImageUpload({ onImageSelected, label = 'Photo', required }: Imag
         </div>
       )}
 
-      {cameraError && <p className="text-sm text-destructive">{cameraError}</p>}
+      {cameraError && (
+        <Alert variant="destructive" className="px-3 py-2">
+          <AlertDescription>{cameraError}</AlertDescription>
+        </Alert>
+      )}
 
       {isCameraActive && (
         <div className="space-y-2">

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Fingerprint, Loader2, LogOut, MapPin, User } from 'lucide-react';
+import { CheckCircle2, Fingerprint, Loader2, LogOut, MapPin, Pencil, Receipt, ShoppingCart, Trash2, User } from 'lucide-react';
 import { ROLES } from '@potato-corner/shared';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 import { AddOnsDialog, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import type { PosCartSelectedOption } from '@/stores/cart.store';
@@ -850,9 +851,9 @@ export default function TerminalPage() {
         </Button>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
       {/* LEFT PANEL — product catalog */}
-      <div className="relative flex w-2/3 flex-col overflow-hidden border-r">
+      <div className="relative flex flex-col lg:w-2/3 lg:flex-none lg:overflow-hidden lg:border-r">
         <div className="border-b p-3">
           <Tabs value={activeCategory} onValueChange={setActiveCategory}>
             <TabsList>
@@ -866,20 +867,30 @@ export default function TerminalPage() {
           </Tabs>
         </div>
 
-        <div className="grid flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+        <div className="grid grid-cols-2 content-start gap-2 p-4 sm:grid-cols-2 md:grid-cols-3 lg:flex-1 lg:grid-cols-4 lg:overflow-y-auto xl:grid-cols-5 2xl:grid-cols-6">
           {visibleProducts.map((product) =>
             product.variants.map((variant) => {
               const message = readinessMessage(variant);
               return (
                 <Card
                   key={variant.id}
+                  role="button"
+                  tabIndex={variant.live_ready ? 0 : -1}
                   aria-disabled={!variant.live_ready}
-                  className={`flex h-full flex-col touch-target transition ${
-                    variant.live_ready ? 'cursor-pointer hover:border-primary' : 'cursor-not-allowed opacity-60'
+                  className={`flex h-full min-h-[92px] flex-col rounded-lg border shadow-none outline-none transition-colors touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                    variant.live_ready
+                      ? 'cursor-pointer hover:border-primary hover:bg-muted'
+                      : 'cursor-not-allowed opacity-60'
                   }`}
                   onClick={() => handleProductTap(product, variant)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleProductTap(product, variant);
+                    }
+                  }}
                 >
-                  <CardContent className="flex h-full flex-col gap-0.5 p-2">
+                  <CardContent className="flex h-full flex-col gap-0.5 p-3">
                     <p className="line-clamp-2 min-h-[2rem] text-xs font-medium leading-tight">{product.name}</p>
                     <p className="truncate text-[11px] text-muted-foreground">{variant.name}</p>
                     <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
@@ -897,7 +908,7 @@ export default function TerminalPage() {
         </div>
 
         {flavorPrompt && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
+          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
             <Card className="w-full max-w-sm">
               <CardContent className="space-y-3 p-4">
                 <p className="font-medium">Choose a flavor — {flavorPrompt.product.name} ({flavorPrompt.variant.name})</p>
@@ -918,7 +929,7 @@ export default function TerminalPage() {
         )}
 
         {slotPrompt && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
+          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
             <Card className="w-full max-w-sm">
               <CardContent className="space-y-3 p-4">
                 <p className="font-medium">
@@ -1013,86 +1024,102 @@ export default function TerminalPage() {
       </div>
 
       {/* RIGHT PANEL — cart + payment */}
-      <div className="flex w-1/3 flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto p-3">
-          {cartLines.length === 0 && <p className="text-sm text-muted-foreground">Cart is empty — tap a product to add it.</p>}
-          <div className="space-y-3">
-            {cartLines.map((line) => (
-              <div key={line.index} className="space-y-1.5 rounded-md border-b pb-3 text-sm">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="line-clamp-2 min-w-0 flex-1 font-medium leading-snug">
-                    {line.productName}
-                    {line.flavorName ? ` — ${line.flavorName}` : ''}
+      <div className="flex flex-col border-t lg:w-1/3 lg:flex-none lg:overflow-hidden lg:border-t-0">
+        <div className="p-4 pb-32 lg:flex-1 lg:overflow-y-auto lg:pb-4">
+          {cartLines.length === 0 && (
+            <div className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
+              <ShoppingCart className="h-8 w-8" />
+              <p className="text-sm font-medium text-foreground">Your cart is empty</p>
+              <p className="text-xs">Tap a product to start a sale.</p>
+            </div>
+          )}
+          <div className="space-y-4">
+            {cartLines.map((line, i) => (
+              <div key={line.index}>
+                {i > 0 && <Separator className="mb-4" />}
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="line-clamp-2 min-w-0 flex-1 font-medium leading-snug">
+                      {line.productName}
+                      {line.flavorName ? ` — ${line.flavorName}` : ''}
+                    </p>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {line.hasOptionGroups && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="touch-target"
+                          onClick={() => handleEditLine(line.index)}
+                          aria-label="Edit"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="touch-target text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => handleRemoveLine(line.index)}
+                        aria-label={`Remove ${line.productName} from cart`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {line.variantName} · {formatPeso(line.unitPrice)} each
                   </p>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {line.hasOptionGroups && (
+                  {line.slotSelections.map((sel, si) => (
+                    <p key={si} className="text-xs text-muted-foreground">
+                      {sel.label}: {sel.snackName} — {sel.flavorName}
+                    </p>
+                  ))}
+                  {line.optionSelections.map((opt) => (
+                    <p key={opt.option_id} className="text-xs text-muted-foreground">
+                      {opt.option_group_name}: {opt.option_name}
+                      {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
+                    </p>
+                  ))}
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <div className="flex shrink-0 items-center gap-1">
                       <Button
                         variant="outline"
-                        className="touch-target h-7 px-2 text-xs"
-                        onClick={() => handleEditLine(line.index)}
+                        size="icon"
+                        className="touch-target"
+                        aria-label={`Decrease ${line.productName} quantity`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateItemQuantity(line.index, line.item.quantity - 1);
+                        }}
                       >
-                        Edit
+                        −
                       </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      className="touch-target h-7 w-7 p-0 text-destructive"
-                      onClick={() => handleRemoveLine(line.index)}
-                      aria-label={`Remove ${line.productName} from cart`}
-                    >
-                      ×
-                    </Button>
+                      <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="touch-target"
+                        aria-label={`Increase ${line.productName} quantity`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateItemQuantity(line.index, line.item.quantity + 1);
+                        }}
+                      >
+                        +
+                      </Button>
+                    </div>
+                    <p className="text-right font-semibold tabular-nums">{formatPeso(line.lineTotal)}</p>
                   </div>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {line.variantName} · {formatPeso(line.unitPrice)} each
-                </p>
-                {line.slotSelections.map((sel, i) => (
-                  <p key={i} className="text-xs text-muted-foreground">
-                    {sel.label}: {sel.snackName} — {sel.flavorName}
-                  </p>
-                ))}
-                {line.optionSelections.map((opt) => (
-                  <p key={opt.option_id} className="text-xs text-muted-foreground">
-                    {opt.option_group_name}: {opt.option_name}
-                    {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
-                  </p>
-                ))}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      variant="outline"
-                      className="touch-target h-7 w-7 p-0"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        updateItemQuantity(line.index, line.item.quantity - 1);
-                      }}
-                    >
-                      −
-                    </Button>
-                    <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
-                    <Button
-                      variant="outline"
-                      className="touch-target h-7 w-7 p-0"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        updateItemQuantity(line.index, line.item.quantity + 1);
-                      }}
-                    >
-                      +
-                    </Button>
-                  </div>
-                  <p className="text-right font-semibold tabular-nums">{formatPeso(line.lineTotal)}</p>
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        <div className="space-y-3 border-t bg-card p-3">
-          <div className="space-y-1 text-sm">
+        <div className="sticky bottom-0 z-10 space-y-4 border-t bg-card p-4 lg:static">
+          <div className="space-y-1.5 text-sm">
             <div className="flex justify-between">
-              <span>Subtotal</span>
+              <span className="text-muted-foreground">Subtotal</span>
               <span className="tabular-nums">{formatPeso(subtotal)}</span>
             </div>
             <div className="flex justify-between text-xs text-muted-foreground">
@@ -1105,20 +1132,29 @@ export default function TerminalPage() {
                 <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
               </div>
             )}
-            <div className="flex justify-between text-base font-semibold">
-              <span>Total</span>
-              <span className="tabular-nums">{formatPeso(totalAmount)}</span>
+            <Separator className="my-2" />
+            <div className="flex items-baseline justify-between">
+              <span className="text-base font-semibold">Total</span>
+              <span className="flex items-center gap-1.5 text-2xl font-bold tabular-nums">
+                <Receipt className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                {formatPeso(totalAmount)}
+              </span>
             </div>
           </div>
 
           {canManageVoidRefund && (
-            <Button type="button" variant="outline" className="touch-target w-full" onClick={() => setIsVoidRefundOpen(true)}>
+            <Button
+              type="button"
+              variant="outline"
+              className="touch-target w-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setIsVoidRefundOpen(true)}
+            >
               Void / Refund Sale
             </Button>
           )}
 
           <Select value={discountType} onValueChange={(v) => setDiscountType(v as DiscountChoice)}>
-            <SelectTrigger>
+            <SelectTrigger className="touch-target">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -1132,27 +1168,35 @@ export default function TerminalPage() {
 
           {(discountType === 'pwd' || discountType === 'senior_citizen') && (
             <Input
+              className="touch-target"
               placeholder="PWD / Senior Citizen ID number"
               value={discountIdReference}
               onChange={(e) => setDiscountIdReference(e.target.value)}
             />
           )}
           {discountType === 'promotional' && (
-            <Input type="number" min={0} placeholder="Promo discount amount" value={promoAmount} onChange={(e) => setPromoAmount(e.target.value)} />
+            <Input
+              className="touch-target"
+              type="number"
+              min={0}
+              placeholder="Promo discount amount"
+              value={promoAmount}
+              onChange={(e) => setPromoAmount(e.target.value)}
+            />
           )}
 
           <Tabs value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as 'cash' | 'gcash' | 'maya' | 'other')}>
-            <TabsList className="w-full">
-              <TabsTrigger value="cash" className="flex-1">
+            <TabsList className="h-11 w-full">
+              <TabsTrigger value="cash" className="h-9 flex-1">
                 Cash
               </TabsTrigger>
-              <TabsTrigger value="gcash" className="flex-1" disabled={!isOnline}>
+              <TabsTrigger value="gcash" className="h-9 flex-1" disabled={!isOnline}>
                 GCash
               </TabsTrigger>
-              <TabsTrigger value="maya" className="flex-1" disabled={!isOnline}>
+              <TabsTrigger value="maya" className="h-9 flex-1" disabled={!isOnline}>
                 Maya
               </TabsTrigger>
-              <TabsTrigger value="other" className="flex-1" disabled={!isOnline}>
+              <TabsTrigger value="other" className="h-9 flex-1" disabled={!isOnline}>
                 Other
               </TabsTrigger>
             </TabsList>
@@ -1163,51 +1207,70 @@ export default function TerminalPage() {
 
           {paymentMethod === 'cash' && (
             <div className="space-y-1">
-              <Input type="number" min={0} placeholder="Cash tendered" value={cashTendered} onChange={(e) => setCashTendered(e.target.value)} />
+              <Input
+                className="touch-target"
+                type="number"
+                min={0}
+                placeholder="Cash tendered"
+                value={cashTendered}
+                onChange={(e) => setCashTendered(e.target.value)}
+              />
               <p className="text-xs text-muted-foreground">Change: {formatPeso(change)}</p>
             </div>
           )}
 
           {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
-            <div className="space-y-2">
-              {paymentProofKey ? (
-                <div className="flex items-center justify-between rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
-                  <span>Payment proof captured</span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-auto p-0 text-xs underline"
-                    onClick={() => {
-                      setPaymentProofKey(null);
-                      setPaymentProofType(null);
+            <Card className="rounded-lg shadow-none">
+              <CardContent className="space-y-3 p-3">
+                {paymentProofKey ? (
+                  <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      Payment proof attached
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-auto shrink-0 p-0 text-xs underline"
+                      onClick={() => {
+                        setPaymentProofKey(null);
+                        setPaymentProofType(null);
+                      }}
+                    >
+                      Replace
+                    </Button>
+                  </div>
+                ) : (
+                  <ImageUpload
+                    label="Payment Proof"
+                    description="Upload a clear screenshot or photo of the successful payment."
+                    required
+                    onImageSelected={(file, type) => {
+                      if (!branchId) return;
+                      void uploadPaymentProof
+                        .mutateAsync({ branchId, shiftId: shift?.id, type, file })
+                        .then((result) => {
+                          setPaymentProofKey(result.payment_proof_key);
+                          setPaymentProofType(result.payment_proof_type);
+                        });
                     }}
-                  >
-                    Retake
-                  </Button>
-                </div>
-              ) : (
-                <ImageUpload
-                  label="Payment Proof"
-                  required
-                  onImageSelected={(file, type) => {
-                    if (!branchId) return;
-                    void uploadPaymentProof
-                      .mutateAsync({ branchId, shiftId: shift?.id, type, file })
-                      .then((result) => {
-                        setPaymentProofKey(result.payment_proof_key);
-                        setPaymentProofType(result.payment_proof_type);
-                      });
-                  }}
-                />
-              )}
-            </div>
+                  />
+                )}
+              </CardContent>
+            </Card>
           )}
 
-          {chargeError && <p className="text-xs text-destructive">{chargeError}</p>}
+          {chargeError && (
+            <Alert variant="destructive" className="px-3 py-2">
+              <AlertDescription className="text-xs">{chargeError}</AlertDescription>
+            </Alert>
+          )}
 
           {chargeDisabledReason && (
-            <p className="rounded-md bg-muted px-3 py-2 text-sm font-medium text-foreground">{chargeDisabledReason}</p>
+            <Alert className="border-none bg-muted px-3 py-2">
+              <AlertDescription className="text-sm font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
+            </Alert>
           )}
 
           <Button

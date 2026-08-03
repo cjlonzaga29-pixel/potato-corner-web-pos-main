@@ -88,7 +88,7 @@ export function AddOnsDialog({
   }
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
       <Card className="w-full max-w-sm">
         <CardContent className="max-h-[85vh] space-y-4 overflow-y-auto p-4">
           <div>

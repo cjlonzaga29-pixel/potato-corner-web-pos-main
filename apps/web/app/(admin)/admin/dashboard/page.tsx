@@ -21,6 +21,9 @@ import { DashboardLowStockSummary } from '@/components/admin/dashboard-low-stock
 import { DashboardRecentActivity } from '@/components/admin/dashboard-recent-activity';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
+import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
+import { KpiCard } from '@/components/shared/charts/kpi-card';
+import { CalendarDays } from 'lucide-react';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 function AdminDashboardPageContent() {
@@ -49,6 +52,11 @@ function AdminDashboardPageContent() {
   });
 
   const grossSalesToday = branchStats?.reduce((sum, b) => sum + b.todayGrossSales, 0);
+  const netSalesToday = branchStats?.reduce((sum, b) => sum + b.todayNetSales, 0);
+  const transactionsToday = branchStats?.reduce((sum, b) => sum + b.todayTransactionCount, 0);
+  const profitToday = branchStats?.reduce((sum, b) => sum + b.todayNetProfit, 0);
+  const isProfitEstimated = branchStats?.some((b) => b.isNetProfitEstimated) ?? false;
+  const missingCostItemCount = branchStats?.reduce((sum, b) => sum + b.missingCostItemCount, 0) ?? 0;
   const lowStockCount = branchStats?.reduce((sum, b) => sum + b.lowStockIngredientCount, 0);
   const grossSalesMonth = monthTrend.data?.data.reduce((sum, row) => sum + row.gross_sales, 0);
 
@@ -65,34 +73,42 @@ function AdminDashboardPageContent() {
   const activeBranchCount = branchList?.branches.filter((b) => b.status === 'active').length;
   const inactiveBranchCount = branchList?.branches.filter((b) => b.status !== 'active').length;
 
-  const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
-  const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
-
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold tracking-tight">Super Admin Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Live overview across every branch.</p>
-        </div>
-        <div className="flex min-w-0 items-center gap-3">
-          <BranchSelector />
-          <span
-            title={connectionLabel}
-            aria-label={connectionLabel}
-            className={`h-2.5 w-2.5 shrink-0 rounded-full ${connectionColor}`}
-          />
-        </div>
-      </div>
+    <div className="space-y-6">
+      <DashboardPageHeader
+        title="Super Admin Dashboard"
+        subtitle="Live overview across every branch."
+        actions={
+          <>
+            <BranchSelector />
+            <DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />
+          </>
+        }
+      />
 
       <DashboardKpiRow
         grossSalesToday={grossSalesToday}
-        grossSalesMonth={grossSalesMonth}
-        isLoadingToday={isLoadingBranchStats}
-        isLoadingMonth={monthTrend.isLoading}
+        netSalesToday={netSalesToday}
+        transactionsToday={transactionsToday}
+        profitToday={profitToday}
+        isProfitEstimated={isProfitEstimated}
+        missingCostItemCount={missingCostItemCount}
+        isLoading={isLoadingBranchStats}
       />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <WidgetErrorBoundary label="Sales Trend">
+        <SalesAnalyticsSection branchId={branchFilter} />
+      </WidgetErrorBoundary>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          title="Gross Sales — This Month"
+          value={grossSalesMonth ?? 0}
+          prefix="₱"
+          isLoading={monthTrend.isLoading}
+          icon={CalendarDays}
+          tooltip="Completed sales for the current Manila calendar month."
+        />
         <DashboardPaymentBreakdown breakdown={paymentBreakdown} isLoading={isLoadingBranchStats} />
         <DashboardLowStockCard totalItems={lowStockCount} isLoading={isLoadingBranchStats} />
         <DashboardActiveBranchesCard
@@ -101,10 +117,6 @@ function AdminDashboardPageContent() {
           isLoading={isLoadingBranchList}
         />
       </div>
-
-      <WidgetErrorBoundary label="Sales Trend">
-        <SalesAnalyticsSection branchId={branchFilter} />
-      </WidgetErrorBoundary>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <WidgetErrorBoundary label="Branch Performance">

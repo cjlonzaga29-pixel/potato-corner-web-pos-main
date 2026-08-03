@@ -2,15 +2,29 @@
 
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ShoppingCart, PackagePlus, SlidersHorizontal, Receipt } from 'lucide-react';
+import {
+  ShoppingCart,
+  PackagePlus,
+  SlidersHorizontal,
+  Receipt,
+  Wallet,
+  CalendarDays,
+  BadgeDollarSign,
+  TrendingDown,
+  TrendingUp,
+  Users,
+  PackageSearch,
+  BellRing,
+} from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
+import { PaymentMethodGrid } from '@/components/shared/dashboard/payment-method-grid';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { InventoryConsumptionPanel } from '@/components/shared/dashboard/inventory-consumption-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
+import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { formatDate } from '@/lib/utils';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { useAuth } from '@/hooks/use-auth';
@@ -89,25 +103,15 @@ export default function BranchDashboardPage() {
   const profitTooltip = todayStats?.isNetProfitEstimated
     ? `Net Sales - COGS - Expenses. Cost data was missing for ${todayStats.missingCostItemCount} sold item(s), so this figure is an estimate.`
     : 'Net Sales - COGS - Expenses';
-  const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
-  const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
   const alertCount = alertsData?.alerts.length ?? 0;
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Branch Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            {branch?.name ?? branchId} — {formatDate(new Date())}
-          </p>
-        </div>
-        <span
-          title={connectionLabel}
-          aria-label={connectionLabel}
-          className={`h-2.5 w-2.5 rounded-full ${connectionColor}`}
-        />
-      </div>
+    <div className="space-y-6">
+      <DashboardPageHeader
+        title="Branch Dashboard"
+        subtitle={`${branch?.name ?? branchId} — ${formatDate(new Date())}`}
+        actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
+      />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
@@ -115,6 +119,8 @@ export default function BranchDashboardPage() {
           value={todayStats?.todayGrossSales ?? 0}
           prefix="₱"
           isLoading={isLoadingStats}
+          icon={Wallet}
+          emphasize
           tooltip="Completed sales for the selected Manila business day."
         />
         <KpiCard
@@ -122,24 +128,32 @@ export default function BranchDashboardPage() {
           value={grossSalesMonth ?? 0}
           prefix="₱"
           isLoading={monthTrend.isLoading}
+          icon={CalendarDays}
           tooltip="Completed sales for the current Manila calendar month."
         />
-        <KpiCard title="Transactions Today" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} />
-        <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} />
+        <KpiCard title="Transactions Today" value={todayStats?.todayTransactionCount ?? 0} isLoading={isLoadingStats} icon={Receipt} />
+        <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isLoadingStats} icon={BadgeDollarSign} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title="Net Sales Today" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} />
-        <KpiCard title="Today's Expenses" value={todayStats?.todayExpenses ?? 0} prefix="₱" isLoading={isLoadingStats} />
+        <KpiCard title="Net Sales Today" value={todayStats?.todayNetSales ?? 0} prefix="₱" isLoading={isLoadingStats} icon={Wallet} />
+        <KpiCard
+          title="Today's Expenses"
+          value={todayStats?.todayExpenses ?? 0}
+          prefix="₱"
+          isLoading={isLoadingStats}
+          icon={TrendingDown}
+        />
         <KpiCard
           title={profitLabel}
           value={todayStats?.todayNetProfit ?? 0}
           prefix="₱"
           isLoading={isLoadingStats}
+          icon={TrendingUp}
           tone={(todayStats?.todayNetProfit ?? 0) < 0 ? 'negative' : 'default'}
           tooltip={profitTooltip}
         />
-        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} />
+        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -147,50 +161,51 @@ export default function BranchDashboardPage() {
           title="Low Stock Items"
           value={todayStats?.lowStockIngredientCount ?? 0}
           isLoading={isLoadingStats}
+          icon={PackageSearch}
           tone={(todayStats?.lowStockIngredientCount ?? 0) > 0 ? 'warning' : 'default'}
         />
         <KpiCard
           title="Inventory Alerts"
           value={alertCount}
           isLoading={isAlertsLoading}
+          icon={BellRing}
           tone={alertCount > 0 ? 'warning' : 'default'}
         />
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Payment Collections Today</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {(['cash', 'gcash', 'maya', 'other'] as const).map((method) => (
-            <div key={method} className="space-y-1">
-              <p className="text-xs capitalize text-muted-foreground">{method}</p>
-              <p className="text-lg font-semibold">
-                {isLoadingStats ? '—' : `₱${(todayStats?.paymentBreakdown[method].total ?? 0).toFixed(2)}`}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {isLoadingStats ? '' : `${todayStats?.paymentBreakdown[method].count ?? 0} txns`}
-              </p>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium">Payment Collections Today</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <PaymentMethodGrid
+              breakdown={todayStats?.paymentBreakdown}
+              isLoading={isLoadingStats}
+              showCount
+              className="sm:grid-cols-4"
+            />
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Quick Actions</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {QUICK_ACTIONS.map((action) => (
-            <Button key={action.href} variant="outline" className="h-auto flex-col gap-2 py-4" asChild>
-              <Link href={action.href}>
-                <action.icon className="h-5 w-5" />
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium">Quick Actions</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {QUICK_ACTIONS.map((action) => (
+              <Link
+                key={action.href}
+                href={action.href}
+                className="hover-elevate flex h-24 flex-col items-center justify-center gap-2 rounded-xl border border-border/60 bg-card text-center"
+              >
+                <action.icon className="h-5 w-5 text-primary" aria-hidden="true" />
                 <span className="text-xs font-medium">{action.label}</span>
               </Link>
-            </Button>
-          ))}
-        </CardContent>
-      </Card>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchId} />

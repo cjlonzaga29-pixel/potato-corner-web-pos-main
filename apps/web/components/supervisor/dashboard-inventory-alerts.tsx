@@ -42,15 +42,18 @@ export function DashboardInventoryAlerts({ alerts, isLoading }: DashboardInvento
         {sorted.length === 0 ? (
           <EmptyState title="All stock levels are healthy" />
         ) : (
-          <div className="space-y-2">
+          <div className="divide-y divide-border/60">
             {visible.map((alert) => (
-              <div key={alert.inventory_item_id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                <span className="font-medium">{alert.name}</span>
-                <span className="tabular-nums text-muted-foreground">{alert.quantity_on_hand}</span>
+              <div
+                key={alert.inventory_item_id}
+                className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
+              >
+                <span className="min-w-0 truncate font-medium">{alert.name}</span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">{alert.quantity_on_hand}</span>
                 <StatusBadge status={alert.severity} type="inventory" />
               </div>
             ))}
-            {remaining > 0 && <p className="text-xs text-muted-foreground">and {remaining} more</p>}
+            {remaining > 0 && <p className="pt-2 text-xs text-muted-foreground">and {remaining} more</p>}
           </div>
         )}
       </CardContent>

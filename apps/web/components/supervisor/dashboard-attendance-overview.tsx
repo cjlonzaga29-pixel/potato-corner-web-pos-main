@@ -51,11 +51,14 @@ export function DashboardAttendanceOverview({ records, isLoading }: DashboardAtt
         {clockedIn.length === 0 ? (
           <EmptyState title="No staff currently clocked in" />
         ) : (
-          <div className="space-y-2">
+          <div className="divide-y divide-border/60">
             {clockedIn.map((record) => (
-              <div key={record.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                <span className="font-medium">{truncateText(record.employee_id, 13)}</span>
-                <span className="tabular-nums text-muted-foreground">{formatTimeOnly(record.clock_in_server_time)}</span>
+              <div
+                key={record.id}
+                className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
+              >
+                <span className="min-w-0 truncate font-medium">{truncateText(record.employee_id, 13)}</span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">{formatTimeOnly(record.clock_in_server_time)}</span>
                 <StatusBadge status={record.clock_in_gps_status} type="gps" />
               </div>
             ))}

@@ -62,14 +62,14 @@ export function DashboardTransactionsFeed({ transactions, isLoading, onRowClick 
         {!transactions || transactions.length === 0 ? (
           <EmptyState title="No transactions this shift" />
         ) : (
-          <div className="space-y-2">
+          <div className="divide-y divide-border/60">
             {transactions.map((transaction) => (
               <div
                 key={transaction.id}
                 onClick={onRowClick}
                 className={cn(
-                  'flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-sm',
-                  onRowClick && 'cursor-pointer hover:bg-muted/50',
+                  '-mx-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md px-2 py-2.5 text-sm transition-colors',
+                  onRowClick ? 'cursor-pointer hover:bg-muted/40' : 'hover:bg-muted/40',
                 )}
               >
                 <span className="min-w-0 truncate font-medium">{transaction.receipt_number}</span>

@@ -369,15 +369,15 @@ describe('SupervisorDashboardPage', () => {
     expect(mockUseAttendanceRealtimeSync).toHaveBeenCalled();
   });
 
-  it('renders a green connection indicator when connected', () => {
+  it('renders a labeled Connected badge (not color-only) when connected', () => {
     mockSocketState({ isConnected: true, isReconnecting: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByTitle('Connected').className).toContain('bg-success');
+    expect(screen.getByText('Connected').closest('div')?.className).toContain('bg-success');
   });
 
-  it('renders a red connection indicator when disconnected', () => {
+  it('renders a labeled Disconnected badge when the socket drops', () => {
     mockSocketState({ isConnected: false, isReconnecting: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByTitle('Disconnected').className).toContain('bg-destructive');
+    expect(screen.getByText('Disconnected').closest('div')?.className).toContain('bg-destructive');
   });
 });

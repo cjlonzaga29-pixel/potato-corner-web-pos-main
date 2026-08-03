@@ -173,7 +173,7 @@ afterEach(() => {
 });
 
 describe('AdminDashboardPage', () => {
-  it('renders Daily Gross Sales aggregated across branch stats', () => {
+  it('renders Gross Sales aggregated across branch stats', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStat({ branchId: 'b1', todayGrossSales: 1000 }), branchStat({ branchId: 'b2', todayGrossSales: 500 })],
       isLoading: false,
@@ -182,11 +182,11 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
   });
 
-  it('renders Monthly Gross Sales summed from the sales trend report', () => {
+  it('renders Gross Sales — This Month summed from the sales trend report', () => {
     mockUseDashboardSalesTrendReport.mockReturnValue({
       data: { data: [{ report_date: '2026-07-01', gross_sales: 10000 }, { report_date: '2026-07-15', gross_sales: 5000 }] },
       isLoading: false,
@@ -195,11 +195,11 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales — This Month')).toBeInTheDocument();
     expect(screen.getByText('₱15000')).toBeInTheDocument();
   });
 
-  it('Daily Gross Sales and Monthly Gross Sales use different date ranges and can differ', () => {
+  it('Gross Sales (today) and Gross Sales — This Month use different date ranges and can differ', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStat({ branchId: 'b1', todayGrossSales: 1500 })],
       isLoading: false,
@@ -213,11 +213,43 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
-    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
-    // Daily reflects only today's branch stats (1500); Monthly sums the whole month (11500) — distinct periods, distinct values.
+    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales — This Month')).toBeInTheDocument();
+    // Today reflects only today's branch stats (1500); this month sums the whole month (11500) — distinct periods, distinct values.
     expect(screen.getByText('₱1500')).toBeInTheDocument();
     expect(screen.getByText('₱11500')).toBeInTheDocument();
+  });
+
+  it('renders Net Sales, Transactions, and Profit Today aggregated across branch stats', () => {
+    mockUseAllBranchStats.mockReturnValue({
+      data: [
+        branchStat({ branchId: 'b1', todayNetSales: 900, todayTransactionCount: 10, todayNetProfit: 300 }),
+        branchStat({ branchId: 'b2', todayNetSales: 400, todayTransactionCount: 5, todayNetProfit: 150 }),
+      ],
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(screen.getByText('Net Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱1300')).toBeInTheDocument();
+    expect(screen.getByText('Transactions')).toBeInTheDocument();
+    expect(screen.getByText('15')).toBeInTheDocument();
+    expect(screen.getByText('Profit Today')).toBeInTheDocument();
+    expect(screen.getByText('₱450')).toBeInTheDocument();
+  });
+
+  it('labels Profit Today as estimated when any branch has estimated cost data', () => {
+    mockUseAllBranchStats.mockReturnValue({
+      data: [branchStat({ branchId: 'b1', isNetProfitEstimated: true, missingCostItemCount: 2 })],
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(screen.getByText('Estimated Profit Today')).toBeInTheDocument();
   });
 
   it('renders the payment breakdown aggregated across branches', () => {
@@ -282,10 +314,16 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('1')).toBeInTheDocument();
   });
 
-  it('renders a green connection indicator when connected', () => {
+  it('renders a labeled Connected badge (not color-only) when connected', () => {
     mockSocketState({ isConnected: true, isReconnecting: false });
     render(<AdminDashboardPage />);
-    expect(screen.getByTitle('Connected').className).toContain('bg-success');
+    expect(screen.getByText('Connected').closest('div')?.className).toContain('bg-success');
+  });
+
+  it('renders a labeled Disconnected badge when the socket drops', () => {
+    mockSocketState({ isConnected: false, isReconnecting: false });
+    render(<AdminDashboardPage />);
+    expect(screen.getByText('Disconnected').closest('div')?.className).toContain('bg-destructive');
   });
 
   it('calls all realtime sync hooks on mount', () => {

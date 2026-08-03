@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { startOfDay } from 'date-fns';
+import { Wallet, CalendarDays, Receipt, BadgePercent } from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
@@ -12,6 +13,7 @@ import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-tra
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
+import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { formatDate } from '@/lib/utils';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { useBranchStore } from '@/stores/branch.store';
@@ -121,24 +123,14 @@ export default function SupervisorDashboardPage() {
   // Shifts are auto-managed per cashier now (Phase 4-9), so there is no
   // single "the branch's shift" left to show a dedicated card for.
   const todayStats = branchStats?.[0];
-  const connectionLabel = isReconnecting ? 'Reconnecting' : isConnected ? 'Connected' : 'Disconnected';
-  const connectionColor = isReconnecting ? 'bg-warning' : isConnected ? 'bg-success' : 'bg-destructive';
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Branch Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            {activeBranch?.name ?? activeBranchId} — {formatDate(new Date())}
-          </p>
-        </div>
-        <span
-          title={connectionLabel}
-          aria-label={connectionLabel}
-          className={`h-2.5 w-2.5 rounded-full ${connectionColor}`}
-        />
-      </div>
+      <DashboardPageHeader
+        title="Supervisor Dashboard"
+        subtitle={`${activeBranch?.name ?? activeBranchId} — ${formatDate(new Date())}`}
+        actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
+      />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
         <KpiCard
@@ -146,6 +138,8 @@ export default function SupervisorDashboardPage() {
           value={todayStats?.todayGrossSales ?? 0}
           prefix="₱"
           isLoading={isStatsLoading}
+          icon={Wallet}
+          emphasize
           tooltip="Completed sales for the selected Manila business day."
         />
         <KpiCard
@@ -153,10 +147,17 @@ export default function SupervisorDashboardPage() {
           value={grossSalesMonth ?? 0}
           prefix="₱"
           isLoading={monthTrend.isLoading}
+          icon={CalendarDays}
           tooltip="Completed sales for the current Manila calendar month."
         />
-        <KpiCard title="Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} />
-        <KpiCard title="Discounts Given" value={todayStats?.todayDiscountTotal ?? 0} prefix="₱" isLoading={isStatsLoading} />
+        <KpiCard title="Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} icon={Receipt} />
+        <KpiCard
+          title="Discounts Given"
+          value={todayStats?.todayDiscountTotal ?? 0}
+          prefix="₱"
+          isLoading={isStatsLoading}
+          icon={BadgePercent}
+        />
       </div>
 
       <WidgetErrorBoundary label="Sales Trend">

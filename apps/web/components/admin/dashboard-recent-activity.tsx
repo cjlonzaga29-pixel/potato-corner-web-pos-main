@@ -51,9 +51,12 @@ export function DashboardRecentActivity({ branchId }: { branchId: string | undef
         ) : rows.length === 0 ? (
           <EmptyState title="No recent activity" description="New sales will show up here as they happen." />
         ) : (
-          <ul className="divide-y">
+          <ul className="divide-y divide-border/60">
             {rows.map((txn) => (
-              <li key={txn.id} className="flex items-center justify-between py-2 text-sm">
+              <li
+                key={txn.id}
+                className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
+              >
                 <div className="min-w-0">
                   <p className="truncate font-medium">{txn.receipt_number}</p>
                   <p className="truncate text-xs text-muted-foreground">

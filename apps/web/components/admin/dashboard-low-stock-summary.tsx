@@ -52,11 +52,14 @@ export function DashboardLowStockSummary({ branchId }: DashboardLowStockSummaryP
         ) : affectedBranches.length === 0 ? (
           <EmptyState title="No low stock items" description="Every branch is within its stock thresholds." />
         ) : (
-          <ul className="divide-y">
+          <ul className="divide-y divide-border/60">
             {affectedBranches.map((branch) => (
-              <li key={branch.branch_id} className="flex items-center justify-between py-2 text-sm">
-                <span className="font-medium">{branch.branch_name}</span>
-                <span className="text-muted-foreground">
+              <li
+                key={branch.branch_id}
+                className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
+              >
+                <span className="min-w-0 truncate font-medium">{branch.branch_name}</span>
+                <span className="shrink-0 text-muted-foreground">
                   {branch.low_stock_count} low
                   {branch.critical_stock_count > 0 && `, ${branch.critical_stock_count} critical`}
                   {branch.out_of_stock_count > 0 && `, ${branch.out_of_stock_count} out of stock`}

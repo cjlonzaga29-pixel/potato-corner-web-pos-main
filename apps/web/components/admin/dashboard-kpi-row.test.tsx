@@ -14,9 +14,12 @@ import { DashboardKpiRow } from './dashboard-kpi-row';
 
 const BASE_PROPS = {
   grossSalesToday: 20000,
-  grossSalesMonth: 450000,
-  isLoadingToday: false,
-  isLoadingMonth: false,
+  netSalesToday: 18500,
+  transactionsToday: 120,
+  profitToday: 6000,
+  isProfitEstimated: false,
+  missingCostItemCount: 0,
+  isLoading: false,
 };
 
 afterEach(() => {
@@ -25,25 +28,45 @@ afterEach(() => {
 });
 
 describe('DashboardKpiRow', () => {
-  it('renders Daily Gross Sales and Monthly Gross Sales', () => {
+  it('renders Gross Sales, Net Sales, Transactions, and Profit Today', () => {
     render(<DashboardKpiRow {...BASE_PROPS} />);
 
-    expect(screen.getByText('Daily Gross Sales')).toBeInTheDocument();
+    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱20000')).toBeInTheDocument();
-    expect(screen.getByText('Monthly Gross Sales')).toBeInTheDocument();
-    expect(screen.getByText('₱450000')).toBeInTheDocument();
+    expect(screen.getByText('Net Sales')).toBeInTheDocument();
+    expect(screen.getByText('₱18500')).toBeInTheDocument();
+    expect(screen.getByText('Transactions')).toBeInTheDocument();
+    expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.getByText('Profit Today')).toBeInTheDocument();
+    expect(screen.getByText('₱6000')).toBeInTheDocument();
   });
 
-  it('renders each card skeleton independently based on its own isLoading prop', () => {
-    render(<DashboardKpiRow {...BASE_PROPS} isLoadingToday={true} isLoadingMonth={false} />);
+  it('labels the profit card as estimated when cost data is missing', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} isProfitEstimated={true} missingCostItemCount={3} />);
 
-    expect(screen.getByText('Daily Gross Sales').closest('div')?.textContent).toContain('loading');
-    expect(screen.getByText('Monthly Gross Sales').closest('div')?.textContent).not.toContain('loading');
+    expect(screen.getByText('Estimated Profit Today')).toBeInTheDocument();
+  });
+
+  it('renders every card skeleton when isLoading is true', () => {
+    render(<DashboardKpiRow {...BASE_PROPS} isLoading={true} />);
+
+    expect(screen.getAllByText('loading')).toHaveLength(4);
   });
 
   it('defaults to 0 when values are undefined', () => {
-    render(<DashboardKpiRow grossSalesToday={undefined} grossSalesMonth={undefined} isLoadingToday={false} isLoadingMonth={false} />);
+    render(
+      <DashboardKpiRow
+        grossSalesToday={undefined}
+        netSalesToday={undefined}
+        transactionsToday={undefined}
+        profitToday={undefined}
+        isProfitEstimated={false}
+        missingCostItemCount={0}
+        isLoading={false}
+      />,
+    );
 
-    expect(screen.getAllByText('₱0')).toHaveLength(2);
+    expect(screen.getAllByText('₱0')).toHaveLength(3);
+    expect(screen.getByText('0')).toBeInTheDocument();
   });
 });

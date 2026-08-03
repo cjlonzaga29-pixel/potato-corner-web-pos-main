@@ -68,3 +68,6 @@ apps/api/prisma/seeds/cr005-fixture-catalog.ts
 
 # CR-006 Phase B dry-run output (point-in-time artifact, not source)
 apps/api/reports/
+
+.vercel
+.env*

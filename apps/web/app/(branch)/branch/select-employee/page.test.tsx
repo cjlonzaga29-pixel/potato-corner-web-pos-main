@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe('SelectEmployeePage', () => {
-  it('routes to Clock In (not the dashboard) after selecting an employee', async () => {
+  it('routes to the dashboard-embedded POS Terminal (not the dashboard or the legacy clock-in page) after selecting an employee', async () => {
     mockUseAuth.mockReturnValue({ user: { role: 'branch' }, selectEmployee: mockSelectEmployee });
     mockSelectEmployee.mockResolvedValue({ id: 'employee-1' });
     mockUseEmployees.mockReturnValue({
@@ -52,8 +52,9 @@ describe('SelectEmployeePage', () => {
     fireEvent.click(screen.getByText('Jane Doe'));
 
     await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
-    expect(mockPush).toHaveBeenCalledWith('/branch/clock-in');
+    expect(mockPush).toHaveBeenCalledWith('/branch/terminal');
     expect(mockPush).not.toHaveBeenCalledWith('/branch/dashboard');
+    expect(mockPush).not.toHaveBeenCalledWith('/branch/clock-in');
   });
 
   it('does not attempt navigation when selecting an employee fails', async () => {

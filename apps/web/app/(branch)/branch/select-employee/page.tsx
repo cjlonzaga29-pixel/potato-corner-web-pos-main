@@ -46,7 +46,11 @@ export default function SelectEmployeePage() {
     setSelectingId(employeeId);
     try {
       await selectEmployee(employeeId);
-      router.push('/branch/clock-in');
+      // POS Terminal owns the rest of the flow inline (Clock In, then the
+      // catalog) inside this same Branch Dashboard shell — see
+      // terminal/page.tsx STATE 2. Do not route through the legacy
+      // standalone /branch/clock-in page.
+      router.push('/branch/terminal');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not start employee session');
       setSelectingId(null);

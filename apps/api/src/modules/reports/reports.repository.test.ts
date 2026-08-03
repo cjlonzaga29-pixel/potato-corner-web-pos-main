@@ -355,7 +355,7 @@ describe('reportsRepository.getInventorySummary', () => {
     expect(prisma.inventoryStockMovement.groupBy).not.toHaveBeenCalled();
   });
 
-  it('derives opening_stock by subtracting today\'s net movement from the current balance, and sums SALE-only movements for consumed_today/consumed_this_month', async () => {
+  it('derives opening_stock by subtracting today\'s net movement from the current balance, and sums SALE-only movements for consumed_today/consumed_this_month, converted to kg for a WEIGHT-dimension item', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       {
         branchId: 'b1',
@@ -370,9 +370,7 @@ describe('reportsRepository.getInventorySummary', () => {
       .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-1', _sum: { quantityChange: decimal(-3) } }] as never)
       .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-1', _sum: { quantityChange: decimal(-5) } }] as never)
       .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-1', _sum: { quantityChange: decimal(-40) } }] as never);
-    vi.mocked(prisma.unitOfMeasure.findUnique)
-      .mockResolvedValueOnce({ id: 'unit-g', code: 'g' } as never)
-      .mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique).mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
 
     const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
 
@@ -382,18 +380,21 @@ describe('reportsRepository.getInventorySummary', () => {
         ingredient_name: 'Flour',
         branch_id: 'b1',
         branch_name: 'SM North',
+        section: 'INGREDIENT_KG',
         unit: 'kg',
         opening_stock: 10,
         consumed_today: 5,
         consumed_this_month: 40,
         remaining_stock: 7,
-        remaining_grams: 7000,
-        remaining_kilograms: 7,
+        opening_stock_kg: 10,
+        consumed_today_kg: 5,
+        consumed_this_month_kg: 40,
+        remaining_kg: 7,
       },
     ]);
   });
 
-  it('returns null grams/kilograms for a non-weight unit instead of fabricating a conversion', async () => {
+  it('routes a COUNT-dimension item (packaging) to the PACKAGING_PC section with no kg conversion', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       {
         branchId: 'b1',
@@ -404,13 +405,38 @@ describe('reportsRepository.getInventorySummary', () => {
       },
     ] as never);
     vi.mocked(prisma.inventoryStockMovement.groupBy).mockResolvedValue([] as never);
-    vi.mocked(prisma.unitOfMeasure.findUnique)
-      .mockResolvedValueOnce({ id: 'unit-g', code: 'g' } as never)
-      .mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique).mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
 
     const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
 
-    expect(rows[0]).toMatchObject({ unit: 'pc', opening_stock: 12, consumed_today: 0, remaining_grams: null, remaining_kilograms: null });
+    expect(rows[0]).toMatchObject({
+      section: 'PACKAGING_PC',
+      unit: 'pc',
+      opening_stock: 12,
+      consumed_today: 0,
+      opening_stock_kg: null,
+      consumed_today_kg: null,
+      consumed_this_month_kg: null,
+      remaining_kg: null,
+    });
+  });
+
+  it('excludes an item whose base unit cannot be normalized to weight and is not COUNT-dimension (no third section)', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-3',
+        quantityOnHand: decimal(5),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Cooking Oil', baseUnitId: 'unit-ml', baseUnit: { code: 'ml', dimension: 'VOLUME' } },
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStockMovement.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique).mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never);
+
+    const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows).toEqual([]);
   });
 
   it('scopes InventoryStock.findMany to the given branchId', async () => {

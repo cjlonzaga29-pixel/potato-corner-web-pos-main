@@ -216,21 +216,23 @@ const inventoryConsumptionSummaryColumns: ColumnDef<InventoryConsumptionSummaryR
   { accessorKey: 'movement_count', header: 'Sales Movements' },
 ];
 
-const inventorySummaryColumns: ColumnDef<InventorySummaryReportRow>[] = [
-  { accessorKey: 'branch_name', header: 'Branch' },
+// Task 110: Inventory Summary is two disjoint tables — kg and pc are never
+// rendered in the same table. Section rows are pre-split by `section` before
+// being handed to these column sets (see the INVENTORY_SUMMARY tab below).
+const ingredientConsumptionKgColumns: ColumnDef<InventorySummaryReportRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { id: 'opening_stock', header: 'Opening Stock', cell: ({ row }) => `${row.original.opening_stock} ${row.original.unit}` },
-  { id: 'consumed_today', header: 'Consumed Today', cell: ({ row }) => `${row.original.consumed_today} ${row.original.unit}` },
-  { id: 'consumed_this_month', header: 'Consumed This Month', cell: ({ row }) => `${row.original.consumed_this_month} ${row.original.unit}` },
-  { id: 'remaining_stock', header: 'Remaining', cell: ({ row }) => `${row.original.remaining_stock} ${row.original.unit}` },
-  {
-    id: 'remaining_conversion',
-    header: 'Remaining (g / kg)',
-    cell: ({ row }) =>
-      row.original.remaining_grams !== null && row.original.remaining_kilograms !== null
-        ? `${row.original.remaining_grams} g / ${row.original.remaining_kilograms} kg`
-        : '—',
-  },
+  { id: 'opening_stock_kg', header: 'Opening Stock (kg)', cell: ({ row }) => row.original.opening_stock_kg ?? 0 },
+  { id: 'consumed_today_kg', header: 'Consumed Today (kg)', cell: ({ row }) => row.original.consumed_today_kg ?? 0 },
+  { id: 'consumed_this_month_kg', header: 'Consumed This Month (kg)', cell: ({ row }) => row.original.consumed_this_month_kg ?? 0 },
+  { id: 'remaining_kg', header: 'Remaining (kg)', cell: ({ row }) => row.original.remaining_kg ?? 0 },
+];
+
+const packagingConsumptionPcColumns: ColumnDef<InventorySummaryReportRow>[] = [
+  { accessorKey: 'ingredient_name', header: 'Packaging' },
+  { accessorKey: 'opening_stock', header: 'Opening Stock (pc)' },
+  { accessorKey: 'consumed_today', header: 'Consumed Today (pc)' },
+  { accessorKey: 'consumed_this_month', header: 'Consumed This Month (pc)' },
+  { accessorKey: 'remaining_stock', header: 'Remaining (pc)' },
 ];
 
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
@@ -693,20 +695,29 @@ function AdminReportsPageContent() {
                 <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
               ) : inventorySummary.isError ? <ErrorState retry={() => inventorySummary.refetch()} /> : <>
               <ReportLastUpdated timestamp={inventorySummary.data?.generated_at} isLoading={inventorySummary.isLoading} />
-              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                <KpiCard title="Ingredients Tracked" value={(inventorySummary.data?.data ?? []).length} isLoading={inventorySummary.isLoading} />
-                <KpiCard
-                  title="Consumed Today (all ingredients)"
-                  value={(inventorySummary.data?.data ?? []).reduce((sum, r) => sum + r.consumed_today, 0)}
-                  isLoading={inventorySummary.isLoading}
-                />
-              </div>
-              <DataTable
-                columns={inventorySummaryColumns}
-                data={inventorySummary.data?.data ?? []}
-                isLoading={inventorySummary.isLoading}
-                emptyState={<EmptyState title="No tracked inventory" description="No trackable inventory items at this branch." />}
-              />
+              {(() => {
+                const rows = inventorySummary.data?.data ?? [];
+                const ingredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
+                const packagingRows = rows.filter((r) => r.section === 'PACKAGING_PC');
+                return (
+                  <>
+                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption (KG)</h3>
+                    <DataTable
+                      columns={ingredientConsumptionKgColumns}
+                      data={ingredientRows}
+                      isLoading={inventorySummary.isLoading}
+                      emptyState={<EmptyState title="No tracked ingredients" description="No weight-trackable ingredients at this branch." />}
+                    />
+                    <h3 className="mt-8 mb-2 text-sm font-semibold text-foreground">Packaging Consumption (PC)</h3>
+                    <DataTable
+                      columns={packagingConsumptionPcColumns}
+                      data={packagingRows}
+                      isLoading={inventorySummary.isLoading}
+                      emptyState={<EmptyState title="No tracked packaging" description="No packaging items at this branch." />}
+                    />
+                  </>
+                );
+              })()}
               </>}
             </TabsContent>
 

@@ -502,7 +502,7 @@ export const reportsRepository = {
     const branchIds = Array.from(new Set(stocks.map((s) => s.branchId)));
     const movementScope = { inventoryItemId: { in: itemIds }, branchId: { in: branchIds } };
 
-    const [todayNet, todaySales, monthSales, gramUnit, kilogramUnit] = await Promise.all([
+    const [todayNet, todaySales, monthSales, kilogramUnit] = await Promise.all([
       prisma.inventoryStockMovement.groupBy({
         by: ['branchId', 'inventoryItemId'],
         where: { ...movementScope, createdAt: { gte: dayStart, lte: dayEnd } },
@@ -518,7 +518,6 @@ export const reportsRepository = {
         where: { ...movementScope, movementType: 'SALE', createdAt: { gte: monthStart, lte: monthEnd } },
         _sum: { quantityChange: true },
       }),
-      prisma.unitOfMeasure.findUnique({ where: { code: 'g' } }),
       prisma.unitOfMeasure.findUnique({ where: { code: 'kg' } }),
     ]);
 
@@ -528,33 +527,35 @@ export const reportsRepository = {
     const todaySalesMap = toMap(todaySales, true);
     const monthSalesMap = toMap(monthSales, true);
 
-    // Weight (grams/kilograms) auto-conversion, cached per base unit so each
-    // distinct unit is resolved at most once regardless of row count. Only
-    // applies to WEIGHT-dimension units — a non-weight item (pieces, liters)
-    // reports null rather than a fabricated conversion.
-    const weightFactorCache = new Map<string, { toGrams: number; toKilograms: number } | null>();
+    // Weight (kilogram) auto-conversion, cached per base unit so each
+    // distinct unit is resolved at most once regardless of row count.
+    // Task 110: Section 1 (Ingredient Consumption (KG)) admits a base unit
+    // when its dimension is WEIGHT (g, kg, and any future weight unit), or
+    // when its code is tbsp/tsp — those two are UnitDimension.VOLUME in this
+    // schema, but the spec explicitly calls for converting them to grams via
+    // an existing UnitConversion row (e.g. a seasoning tracked by the
+    // tablespoon). Every other unit (pieces, mL, L, ...) returns null: no
+    // factor is fabricated, and convertQuantity's fail-closed
+    // UnitConversionError (missing UnitConversion row) also resolves to null
+    // rather than throwing, so an ingredient with no conversion path is
+    // silently excluded from Section 1 instead of crashing the report.
+    const WEIGHT_ELIGIBLE_CODES = new Set(['tbsp', 'tsp']);
+    const weightFactorCache = new Map<string, { toKilograms: number } | null>();
     async function resolveWeightFactors(baseUnitId: string, dimension: string, code: string) {
       if (weightFactorCache.has(baseUnitId)) return weightFactorCache.get(baseUnitId) ?? null;
-      if (dimension !== 'WEIGHT' || !gramUnit || !kilogramUnit) {
+      const isWeightEligible = dimension === 'WEIGHT' || WEIGHT_ELIGIBLE_CODES.has(code.toLowerCase());
+      if (!isWeightEligible || !kilogramUnit) {
         weightFactorCache.set(baseUnitId, null);
         return null;
       }
-      if (code === gramUnit.code) {
-        const result = { toGrams: 1, toKilograms: 0.001 };
-        weightFactorCache.set(baseUnitId, result);
-        return result;
-      }
       if (code === kilogramUnit.code) {
-        const result = { toGrams: 1000, toKilograms: 1 };
+        const result = { toKilograms: 1 };
         weightFactorCache.set(baseUnitId, result);
         return result;
       }
       try {
-        const [toGrams, toKilograms] = await Promise.all([
-          convertQuantity(1, baseUnitId, gramUnit.id),
-          convertQuantity(1, baseUnitId, kilogramUnit.id),
-        ]);
-        const result = { toGrams: toGrams.toNumber(), toKilograms: toKilograms.toNumber() };
+        const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id)).toNumber();
+        const result = { toKilograms };
         weightFactorCache.set(baseUnitId, result);
         return result;
       } catch (error) {
@@ -571,20 +572,42 @@ export const reportsRepository = {
       const key = `${s.branchId}:${s.inventoryItemId}`;
       const remaining = s.quantityOnHand.toNumber();
       const opening = remaining - (todayNetMap.get(key) ?? 0);
-      const factors = await resolveWeightFactors(s.inventoryItem.baseUnitId, s.inventoryItem.baseUnit.dimension, s.inventoryItem.baseUnit.code);
+      const consumedToday = todaySalesMap.get(key) ?? 0;
+      const consumedMonth = monthSalesMap.get(key) ?? 0;
+      const dimension = s.inventoryItem.baseUnit.dimension;
 
-      rows.push({
+      const base = {
         ingredient_id: s.inventoryItemId,
         ingredient_name: s.inventoryItem.name,
         branch_id: s.branchId,
         branch_name: s.branch.name,
         unit: s.inventoryItem.baseUnit.code,
         opening_stock: round2(opening),
-        consumed_today: round2(todaySalesMap.get(key) ?? 0),
-        consumed_this_month: round2(monthSalesMap.get(key) ?? 0),
+        consumed_today: round2(consumedToday),
+        consumed_this_month: round2(consumedMonth),
         remaining_stock: round2(remaining),
-        remaining_grams: factors ? round2(remaining * factors.toGrams) : null,
-        remaining_kilograms: factors ? round2(remaining * factors.toKilograms) : null,
+      };
+
+      // Section 2 (Packaging Consumption (PC)): base unit dimension COUNT
+      // (pc, cup, lid, tray, ...) — already piece-denominated, no conversion.
+      if (dimension === 'COUNT') {
+        rows.push({ ...base, section: 'PACKAGING_PC', opening_stock_kg: null, consumed_today_kg: null, consumed_this_month_kg: null, remaining_kg: null });
+        continue;
+      }
+
+      // Section 1 (Ingredient Consumption (KG)): only when a real
+      // UnitConversion path to kilograms exists. Everything else (e.g. mL/L
+      // liquids with no weight conversion) is excluded from the report.
+      const factors = await resolveWeightFactors(s.inventoryItem.baseUnitId, dimension, s.inventoryItem.baseUnit.code);
+      if (!factors) continue;
+
+      rows.push({
+        ...base,
+        section: 'INGREDIENT_KG',
+        opening_stock_kg: round2(opening * factors.toKilograms),
+        consumed_today_kg: round2(consumedToday * factors.toKilograms),
+        consumed_this_month_kg: round2(consumedMonth * factors.toKilograms),
+        remaining_kg: round2(remaining * factors.toKilograms),
       });
     }
 

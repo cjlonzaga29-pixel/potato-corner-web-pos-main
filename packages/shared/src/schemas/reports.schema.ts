@@ -169,8 +169,15 @@ export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsu
 
 // Per-ingredient stock snapshot: opening balance for today, consumption
 // today/this-month (SALE movements only, matching the Branch Inventory
-// list's "Consumed Today" column), and the current remaining balance — with
-// grams/kilograms auto-conversion when the item's base unit is weight-based.
+// list's "Consumed Today" column), and the current remaining balance.
+// Task 110: split into two disjoint sections so kg and pc are never
+// rendered in the same table — `section` discriminates which group a row
+// belongs to. INGREDIENT_KG rows carry weight-normalized kg figures in the
+// *_kg fields (base-unit figures still populated for audit/export use);
+// PACKAGING_PC rows are already piece-denominated, so the *_kg fields stay
+// null. Rows whose base unit is neither weight-normalizable nor COUNT
+// (e.g. a liquid tracked in mL/L with no UnitConversion to weight) are
+// excluded entirely by the repository — there is no third section.
 // Distinct from InventoryConsumptionSummaryReportRow above, which is a
 // date-range consumption total with no stock-level or opening/remaining data.
 export const InventorySummaryReportRowSchema = z.object({
@@ -178,13 +185,16 @@ export const InventorySummaryReportRowSchema = z.object({
   ingredient_name: z.string(),
   branch_id: z.uuid(),
   branch_name: z.string(),
+  section: z.enum(['INGREDIENT_KG', 'PACKAGING_PC']),
   unit: z.string(),
   opening_stock: z.number(),
   consumed_today: z.number(),
   consumed_this_month: z.number(),
   remaining_stock: z.number(),
-  remaining_grams: z.number().nullable(),
-  remaining_kilograms: z.number().nullable(),
+  opening_stock_kg: z.number().nullable(),
+  consumed_today_kg: z.number().nullable(),
+  consumed_this_month_kg: z.number().nullable(),
+  remaining_kg: z.number().nullable(),
 });
 export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
 

@@ -1,12 +1,13 @@
 import * as Sentry from '@sentry/node';
 import { randomUUID } from 'node:crypto';
-import { SOCKET_EVENTS, type ReportType } from '@potato-corner/shared';
+import { SOCKET_EVENTS, type ReportType, type InventorySummaryReportRow } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyUser } from '../lib/notify.js';
 import { generateCsv } from '../lib/reports/csv.js';
 import { generatePdf } from '../lib/reports/pdf.js';
+import { generateInventorySummaryCsv, generateInventorySummaryPdf } from '../lib/reports/inventory-summary-export.js';
 import { buildExportFilename } from '../lib/reports/export-filename.js';
 import { recordAuditLog } from '../middleware/audit-log.js';
 import { prisma } from '../lib/prisma.js';
@@ -72,10 +73,18 @@ export function enqueueRefreshSnapshot(data: RefreshSnapshotJobData): Promise<{ 
 export async function processGenerateExport(jobId: string, data: GenerateExportJobData): Promise<void> {
   const { reportType, filters, format, requesterId, branchId } = data;
   const rows = await getReportRows(reportType, filters);
-  const columns = REPORT_COLUMNS[reportType];
   const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
 
-  const buffer = format === 'csv' ? generateCsv(rows, columns) : await generatePdf(reportType, filters, rows, columns, branch?.name ?? null);
+  // INVENTORY_SUMMARY (Task 110) has no single-table column set — see
+  // generateInventorySummaryCsv/Pdf's doc comment.
+  let buffer: Buffer;
+  if (reportType === 'INVENTORY_SUMMARY') {
+    const summaryRows = rows as unknown as InventorySummaryReportRow[];
+    buffer = format === 'csv' ? generateInventorySummaryCsv(summaryRows) : await generateInventorySummaryPdf(filters, summaryRows, branch?.name ?? null);
+  } else {
+    const columns = REPORT_COLUMNS[reportType];
+    buffer = format === 'csv' ? generateCsv(rows, columns) : await generatePdf(reportType, filters, rows, columns, branch?.name ?? null);
+  }
   const extension = format === 'csv' ? 'csv' : 'pdf';
   const contentType = format === 'csv' ? 'text/csv' : 'application/pdf';
   const path = `reports/${requesterId}/${Date.now()}-${reportType}.${extension}`;

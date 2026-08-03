@@ -8,6 +8,7 @@ import { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS } from '
 import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
 import { generatePdf } from '../../lib/reports/pdf.js';
+import { generateInventorySummaryCsv, generateInventorySummaryPdf } from '../../lib/reports/inventory-summary-export.js';
 import { buildExportFilename } from '../../lib/reports/export-filename.js';
 import { prisma } from '../../lib/prisma.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
@@ -362,6 +363,39 @@ export const reportsService = {
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
         buffer = await generatePdf(reportType, resolvedFilters, rows, DAILY_SALES_TRANSACTION_COLUMNS, branch?.name ?? null);
+        contentType = 'application/pdf';
+      }
+
+      await recordAuditLog({
+        action: 'REPORT_EXPORTED',
+        entityType: 'report',
+        entityId: reportType,
+        actorId: requesterId,
+        actorRole: requesterRole,
+        branchId,
+        afterState: { reportType, format, async: false, rowCount: rows.length },
+      });
+      return { kind: 'file', buffer, filename, contentType };
+    }
+
+    // INVENTORY_SUMMARY (Task 110) renders as two disjoint sections —
+    // Ingredient Consumption (KG) and Packaging Consumption (PC) — which the
+    // generic single-table generateCsv/generatePdf can't express, so both
+    // formats are redirected to the dedicated builders regardless of role
+    // (the underlying rows are identical for every requester).
+    if (reportType === 'INVENTORY_SUMMARY') {
+      const resolvedFilters = defaultRealtimeFilters(filters);
+      const rows = await reportsRepository.getInventorySummary(resolvedFilters);
+      const filename = buildExportFilename(reportType, format, resolvedFilters);
+
+      let buffer: Buffer;
+      let contentType: 'text/csv' | 'application/pdf';
+      if (format === 'csv') {
+        buffer = generateInventorySummaryCsv(rows);
+        contentType = 'text/csv';
+      } else {
+        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+        buffer = await generateInventorySummaryPdf(resolvedFilters, rows, branch?.name ?? null);
         contentType = 'application/pdf';
       }
 

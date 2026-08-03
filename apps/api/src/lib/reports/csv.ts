@@ -3,7 +3,7 @@ import type { ReportColumn } from '../../modules/reports/reports.types.js';
 
 const FORMULA_TRIGGER_CHARS = new Set(['=', '+', '-', '@']);
 
-function escapeCsvField(value: unknown): string {
+export function escapeCsvField(value: unknown): string {
   const isString = typeof value === 'string';
   let str = value === null || value === undefined ? '' : String(value);
 

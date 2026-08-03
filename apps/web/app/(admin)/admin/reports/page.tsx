@@ -680,6 +680,7 @@ function AdminReportsPageContent() {
               {(() => {
                 const rows = inventorySummary.data?.data ?? [];
                 const totals = groupTotalsByUnit(rows);
+                const weightSummaryKg = inventorySummary.data?.weight_summary_kg;
                 return (
                   <>
                     <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption</h3>
@@ -691,6 +692,22 @@ function AdminReportsPageContent() {
                     />
                     {totals.length > 0 && (
                       <DataTable columns={inventoryConsumptionTotalsColumns} data={totals} isLoading={inventorySummary.isLoading} />
+                    )}
+                    {weightSummaryKg && (
+                      <>
+                        <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Total Ingredient Weight (KG)</h3>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                          <KpiCard title="Opening Stock (KG)" value={weightSummaryKg.opening_stock_kg} suffix=" kg" isLoading={inventorySummary.isLoading} />
+                          <KpiCard title="Consumed Today (KG)" value={weightSummaryKg.consumed_today_kg} suffix=" kg" isLoading={inventorySummary.isLoading} />
+                          <KpiCard title="Consumed This Month (KG)" value={weightSummaryKg.consumed_this_month_kg} suffix=" kg" isLoading={inventorySummary.isLoading} />
+                          <KpiCard title="Remaining (KG)" value={weightSummaryKg.remaining_kg} suffix=" kg" isLoading={inventorySummary.isLoading} />
+                        </div>
+                        {weightSummaryKg.excluded_item_count > 0 && (
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            Some non-count ingredients are excluded from the KG total because no weight conversion is configured.
+                          </p>
+                        )}
+                      </>
                     )}
                   </>
                 );

@@ -1,7 +1,19 @@
 // apps/api/src/lib/reports/inventory-summary-export.test.ts
 import { describe, it, expect } from 'vitest';
-import type { InventorySummaryReportRow } from '@potato-corner/shared';
+import type { InventorySummaryReportRow, WeightSummaryKg } from '@potato-corner/shared';
 import { generateInventorySummaryCsv, generateInventorySummaryPdf, groupTotalsByUnit } from './inventory-summary-export.js';
+
+function weightSummary(overrides: Partial<WeightSummaryKg>): WeightSummaryKg {
+  return {
+    opening_stock_kg: 0,
+    consumed_today_kg: 0,
+    consumed_this_month_kg: 0,
+    remaining_kg: 0,
+    included_item_count: 0,
+    excluded_item_count: 0,
+    ...overrides,
+  };
+}
 
 function row(overrides: Partial<InventorySummaryReportRow>): InventorySummaryReportRow {
   return {
@@ -147,6 +159,33 @@ describe('generateInventorySummaryCsv', () => {
   });
 });
 
+describe('generateInventorySummaryCsv — TOTAL INGREDIENT WEIGHT (KG) (TASK 149)', () => {
+  it('appends a TOTAL INGREDIENT WEIGHT (KG) section with the four kg totals when weightSummaryKg is supplied', () => {
+    const csv = generateInventorySummaryCsv(
+      [rawFries, cheesePowder],
+      weightSummary({ opening_stock_kg: 12.796, consumed_today_kg: 2.426, consumed_this_month_kg: 55.92, remaining_kg: 10.312, included_item_count: 2 }),
+    ).toString('utf-8');
+
+    expect(csv).toContain('TOTAL INGREDIENT WEIGHT (KG)');
+    expect(csv).toContain('Opening Stock (KG),Consumed Today (KG),Consumed This Month (KG),Remaining (KG)');
+    expect(csv).toContain('12.796,2.426,55.92,10.312');
+  });
+
+  it('appends the missing-conversion warning only when excluded_item_count > 0', () => {
+    const withWarning = generateInventorySummaryCsv([cheesePowder], weightSummary({ excluded_item_count: 1 })).toString('utf-8');
+    const withoutWarning = generateInventorySummaryCsv([cheesePowder], weightSummary({ excluded_item_count: 0 })).toString('utf-8');
+
+    expect(withWarning).toContain('Some non-count ingredients are excluded from the KG total because no weight conversion is configured.');
+    expect(withoutWarning).not.toContain('excluded from the KG total');
+  });
+
+  it('omits the KG section entirely when weightSummaryKg is not supplied — the existing native-unit CSV is untouched', () => {
+    const csv = generateInventorySummaryCsv(allRows).toString('utf-8');
+
+    expect(csv).not.toContain('TOTAL INGREDIENT WEIGHT (KG)');
+  });
+});
+
 describe('generateInventorySummaryPdf', () => {
   it('renders a non-empty PDF buffer starting with the %PDF magic bytes for a mix of tbsp, tsp, g, kg, and pcs rows', async () => {
     const buffer = await generateInventorySummaryPdf({ page: 1, limit: 25 }, allRows, 'SM North');
@@ -157,6 +196,35 @@ describe('generateInventorySummaryPdf', () => {
 
   it('renders a non-empty PDF buffer with no rows', async () => {
     const buffer = await generateInventorySummaryPdf({ page: 1, limit: 25 }, [], null);
+
+    expect(buffer.length).toBeGreaterThan(0);
+    expect(buffer.subarray(0, 5).toString('utf-8')).toBe('%PDF-');
+  });
+});
+
+describe('generateInventorySummaryPdf — Total Ingredient Weight (KG) (TASK 149)', () => {
+  it('renders a larger, still-valid PDF when weightSummaryKg is supplied — the KG table/warning add content', async () => {
+    const withoutKg = await generateInventorySummaryPdf({ page: 1, limit: 25 }, allRows, 'SM North');
+    const withKg = await generateInventorySummaryPdf(
+      { page: 1, limit: 25 },
+      allRows,
+      'SM North',
+      weightSummary({
+        opening_stock_kg: 12.796,
+        consumed_today_kg: 2.426,
+        consumed_this_month_kg: 55.92,
+        remaining_kg: 10.312,
+        included_item_count: 5,
+        excluded_item_count: 1,
+      }),
+    );
+
+    expect(withKg.subarray(0, 5).toString('utf-8')).toBe('%PDF-');
+    expect(withKg.length).toBeGreaterThan(withoutKg.length);
+  });
+
+  it('renders a valid PDF for a KG summary with no excluded items and with no native rows at all', async () => {
+    const buffer = await generateInventorySummaryPdf({ page: 1, limit: 25 }, [], null, weightSummary({ included_item_count: 0, excluded_item_count: 0 }));
 
     expect(buffer.length).toBeGreaterThan(0);
     expect(buffer.subarray(0, 5).toString('utf-8')).toBe('%PDF-');

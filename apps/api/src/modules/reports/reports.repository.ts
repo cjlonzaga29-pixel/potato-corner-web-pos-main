@@ -1,7 +1,9 @@
-import type { Prisma, $Enums } from '@prisma/client';
+import { Prisma, type $Enums } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
+import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
+import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import type {
   ReportFilters,
@@ -25,10 +27,19 @@ import type {
   AdminInventoryValuationRollupResponse,
   BranchComparisonReportRow,
   InventoryAnalyticsReport,
+  WeightSummaryKg,
 } from './reports.types.js';
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+// TASK 149 — kg totals need more precision than the native-unit round2 (2dp):
+// a tbsp/tsp-derived factor can land on a value like 23.5 tbsp x 7g / 1000 =
+// 0.1645kg, which round2 (or even 3dp rounding) would visibly truncate.
+// Rounds to 6dp purely to strip floating-point dust, never the value itself.
+function round3(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 /**
@@ -67,6 +78,137 @@ function mapVoidRefundRow(tx: VoidRefundTransaction): VoidRefundReportRow {
     actioned_by_name: actionedBy ? `${actionedBy.firstName} ${actionedBy.lastName}` : null,
     actioned_at: (isVoided ? tx.voidedAt : tx.refundedAt)?.toISOString() ?? null,
   };
+}
+
+interface InventorySnapshotRow {
+  branchId: string;
+  branchName: string;
+  inventoryItemId: string;
+  itemName: string;
+  unitId: string;
+  unitCode: string;
+  unitDimension: $Enums.UnitDimension;
+  opening: number;
+  consumedToday: number;
+  consumedMonth: number;
+  remaining: number;
+}
+
+// Shared by getInventorySummary and getInventorySummaryWeightKg below — same
+// stock/movement query TASK 144 established, extended (TASK 149) to also
+// select the base unit's id/dimension so the KG roll-up can resolve
+// conversions and exclude COUNT-dimension (packaging) items without a second
+// round-trip per item.
+async function fetchInventorySnapshot(filters: ReportFilters): Promise<InventorySnapshotRow[]> {
+  const now = new Date();
+  const { dayStart, dayEnd } = dayBounds(now);
+  const { monthStart, monthEnd } = monthBounds(now);
+
+  const stocks = await prisma.inventoryStock.findMany({
+    where: {
+      ...(filters.branchId && { branchId: filters.branchId }),
+      inventoryItem: { deletedAt: null, trackInventory: true },
+    },
+    select: {
+      branchId: true,
+      inventoryItemId: true,
+      quantityOnHand: true,
+      branch: { select: { name: true } },
+      inventoryItem: { select: { name: true, baseUnit: { select: { id: true, code: true, dimension: true } } } },
+    },
+    orderBy: { inventoryItem: { name: 'asc' } },
+  });
+  if (stocks.length === 0) return [];
+
+  const itemIds = Array.from(new Set(stocks.map((s) => s.inventoryItemId)));
+  const branchIds = Array.from(new Set(stocks.map((s) => s.branchId)));
+  const movementScope = { inventoryItemId: { in: itemIds }, branchId: { in: branchIds } };
+
+  const [todayNet, todaySales, monthSales] = await Promise.all([
+    prisma.inventoryStockMovement.groupBy({
+      by: ['branchId', 'inventoryItemId'],
+      where: { ...movementScope, createdAt: { gte: dayStart, lte: dayEnd } },
+      _sum: { quantityChange: true },
+    }),
+    prisma.inventoryStockMovement.groupBy({
+      by: ['branchId', 'inventoryItemId'],
+      where: { ...movementScope, movementType: 'SALE', createdAt: { gte: dayStart, lte: dayEnd } },
+      _sum: { quantityChange: true },
+    }),
+    prisma.inventoryStockMovement.groupBy({
+      by: ['branchId', 'inventoryItemId'],
+      where: { ...movementScope, movementType: 'SALE', createdAt: { gte: monthStart, lte: monthEnd } },
+      _sum: { quantityChange: true },
+    }),
+  ]);
+
+  const toMap = (rows: typeof todayNet, abs: boolean) =>
+    new Map(rows.map((r) => [`${r.branchId}:${r.inventoryItemId}`, abs ? Math.abs(r._sum.quantityChange?.toNumber() ?? 0) : (r._sum.quantityChange?.toNumber() ?? 0)]));
+  const todayNetMap = toMap(todayNet, false);
+  const todaySalesMap = toMap(todaySales, true);
+  const monthSalesMap = toMap(monthSales, true);
+
+  return stocks.map((s) => {
+    const key = `${s.branchId}:${s.inventoryItemId}`;
+    const remaining = s.quantityOnHand.toNumber();
+    const opening = remaining - (todayNetMap.get(key) ?? 0);
+    const consumedToday = todaySalesMap.get(key) ?? 0;
+    const consumedMonth = monthSalesMap.get(key) ?? 0;
+
+    return {
+      branchId: s.branchId,
+      branchName: s.branch.name,
+      inventoryItemId: s.inventoryItemId,
+      itemName: s.inventoryItem.name,
+      unitId: s.inventoryItem.baseUnit.id,
+      unitCode: s.inventoryItem.baseUnit.code,
+      unitDimension: s.inventoryItem.baseUnit.dimension,
+      opening: round2(opening),
+      consumedToday: round2(consumedToday),
+      consumedMonth: round2(consumedMonth),
+      remaining: round2(remaining),
+    };
+  });
+}
+
+// TASK 149 conversion precedence: an item's base unit already being kg/g is
+// checked first (no DB call needed), then a kg-targeted lookup (which
+// convertQuantity itself resolves item-specific before global), then a
+// g-targeted lookup on the same item/global precedence, converted to kg.
+// This collapses the spec's 6-step item/global x kg/g precedence into two
+// convertQuantity calls; the only scenario it orders differently from a
+// strict per-step reading is an item having a g-specific override while a
+// *different*, global kg conversion also exists for the same unit — not a
+// real configuration in this system's seed/admin data. Returns null (never
+// throws) when no conversion path exists, so the item is excluded from the
+// KG total only, never from the native-unit report.
+async function resolveKgFactor(
+  fromUnitId: string,
+  inventoryItemId: string,
+  kgUnitId: string | undefined,
+  gUnitId: string | undefined,
+): Promise<Prisma.Decimal | null> {
+  if (kgUnitId && fromUnitId === kgUnitId) return new Prisma.Decimal(1);
+  if (gUnitId && fromUnitId === gUnitId) return new Prisma.Decimal(0.001);
+
+  if (kgUnitId) {
+    try {
+      return await convertQuantity(1, fromUnitId, kgUnitId, inventoryItemId);
+    } catch (err) {
+      if (!(err instanceof UnitConversionError)) throw err;
+    }
+  }
+
+  if (gUnitId) {
+    try {
+      const grams = await convertQuantity(1, fromUnitId, gUnitId, inventoryItemId);
+      return grams.mul(0.001);
+    } catch (err) {
+      if (!(err instanceof UnitConversionError)) throw err;
+    }
+  }
+
+  return null;
 }
 
 export const reportsRepository = {
@@ -480,73 +622,73 @@ export const reportsRepository = {
   // no kg conversion, no CONVERSION_REQUIRED status, no ingredient/packaging
   // section split. The caller groups/totals rows by `unit` itself.
   async getInventorySummary(filters: ReportFilters): Promise<InventorySummaryReportRow[]> {
-    const now = new Date();
-    const { dayStart, dayEnd } = dayBounds(now);
-    const { monthStart, monthEnd } = monthBounds(now);
+    const snapshot = await fetchInventorySnapshot(filters);
+    return snapshot.map((s) => ({
+      ingredient_id: s.inventoryItemId,
+      ingredient_name: s.itemName,
+      branch_id: s.branchId,
+      branch_name: s.branchName,
+      unit: s.unitCode,
+      opening_stock: s.opening,
+      consumed_today: s.consumedToday,
+      consumed_this_month: s.consumedMonth,
+      remaining_stock: s.remaining,
+    }));
+  },
 
-    const stocks = await prisma.inventoryStock.findMany({
-      where: {
-        ...(filters.branchId && { branchId: filters.branchId }),
-        inventoryItem: { deletedAt: null, trackInventory: true },
-      },
-      select: {
-        branchId: true,
-        inventoryItemId: true,
-        quantityOnHand: true,
-        branch: { select: { name: true } },
-        inventoryItem: { select: { name: true, baseUnit: { select: { code: true } } } },
-      },
-      orderBy: { inventoryItem: { name: 'asc' } },
-    });
-    if (stocks.length === 0) return [];
-
-    const itemIds = Array.from(new Set(stocks.map((s) => s.inventoryItemId)));
-    const branchIds = Array.from(new Set(stocks.map((s) => s.branchId)));
-    const movementScope = { inventoryItemId: { in: itemIds }, branchId: { in: branchIds } };
-
-    const [todayNet, todaySales, monthSales] = await Promise.all([
-      prisma.inventoryStockMovement.groupBy({
-        by: ['branchId', 'inventoryItemId'],
-        where: { ...movementScope, createdAt: { gte: dayStart, lte: dayEnd } },
-        _sum: { quantityChange: true },
-      }),
-      prisma.inventoryStockMovement.groupBy({
-        by: ['branchId', 'inventoryItemId'],
-        where: { ...movementScope, movementType: 'SALE', createdAt: { gte: dayStart, lte: dayEnd } },
-        _sum: { quantityChange: true },
-      }),
-      prisma.inventoryStockMovement.groupBy({
-        by: ['branchId', 'inventoryItemId'],
-        where: { ...movementScope, movementType: 'SALE', createdAt: { gte: monthStart, lte: monthEnd } },
-        _sum: { quantityChange: true },
-      }),
+  // TASK 149 — additive kg roll-up alongside getInventorySummary's native-unit
+  // rows above. Kept as its own repository call (re-running the same stock/
+  // movement query rather than sharing a single result with getInventorySummary)
+  // so that function's existing "never queries UnitOfMeasure/UnitConversion/
+  // InventoryItemUnitConversion" contract stays true — this is the only path
+  // that resolves conversions.
+  async getInventorySummaryWeightKg(filters: ReportFilters): Promise<WeightSummaryKg> {
+    const snapshot = await fetchInventorySnapshot(filters);
+    const [kgUnit, gUnit] = await Promise.all([
+      universalInventoryRepository.findUnitByCode('kg'),
+      universalInventoryRepository.findUnitByCode('g'),
     ]);
 
-    const toMap = (rows: typeof todayNet, abs: boolean) =>
-      new Map(rows.map((r) => [`${r.branchId}:${r.inventoryItemId}`, abs ? Math.abs(r._sum.quantityChange?.toNumber() ?? 0) : (r._sum.quantityChange?.toNumber() ?? 0)]));
-    const todayNetMap = toMap(todayNet, false);
-    const todaySalesMap = toMap(todaySales, true);
-    const monthSalesMap = toMap(monthSales, true);
+    let openingKg = new Prisma.Decimal(0);
+    let consumedTodayKg = new Prisma.Decimal(0);
+    let consumedMonthKg = new Prisma.Decimal(0);
+    let remainingKg = new Prisma.Decimal(0);
+    let includedItemCount = 0;
+    let excludedItemCount = 0;
 
-    return stocks.map((s) => {
-      const key = `${s.branchId}:${s.inventoryItemId}`;
-      const remaining = s.quantityOnHand.toNumber();
-      const opening = remaining - (todayNetMap.get(key) ?? 0);
-      const consumedToday = todaySalesMap.get(key) ?? 0;
-      const consumedMonth = monthSalesMap.get(key) ?? 0;
+    // Same-item stock rows (multiple branches) share one conversion factor —
+    // resolve it once per inventoryItemId, not once per row.
+    const factorCache = new Map<string, Prisma.Decimal | null>();
 
-      return {
-        ingredient_id: s.inventoryItemId,
-        ingredient_name: s.inventoryItem.name,
-        branch_id: s.branchId,
-        branch_name: s.branch.name,
-        unit: s.inventoryItem.baseUnit.code,
-        opening_stock: round2(opening),
-        consumed_today: round2(consumedToday),
-        consumed_this_month: round2(consumedMonth),
-        remaining_stock: round2(remaining),
-      };
-    });
+    for (const s of snapshot) {
+      if (s.unitDimension === 'COUNT') continue; // packaging/count items are never part of the KG total
+
+      let factor = factorCache.get(s.inventoryItemId);
+      if (factor === undefined) {
+        factor = await resolveKgFactor(s.unitId, s.inventoryItemId, kgUnit?.id, gUnit?.id);
+        factorCache.set(s.inventoryItemId, factor);
+      }
+
+      if (factor === null) {
+        excludedItemCount += 1;
+        continue;
+      }
+
+      includedItemCount += 1;
+      openingKg = openingKg.add(new Prisma.Decimal(s.opening).mul(factor));
+      consumedTodayKg = consumedTodayKg.add(new Prisma.Decimal(s.consumedToday).mul(factor));
+      consumedMonthKg = consumedMonthKg.add(new Prisma.Decimal(s.consumedMonth).mul(factor));
+      remainingKg = remainingKg.add(new Prisma.Decimal(s.remaining).mul(factor));
+    }
+
+    return {
+      opening_stock_kg: round3(openingKg.toNumber()),
+      consumed_today_kg: round3(consumedTodayKg.toNumber()),
+      consumed_this_month_kg: round3(consumedMonthKg.toNumber()),
+      remaining_kg: round3(remainingKg.toNumber()),
+      included_item_count: includedItemCount,
+      excluded_item_count: excludedItemCount,
+    };
   },
 
   async getAttendanceSummary(filters: ReportFilters): Promise<AttendanceSummaryReportRow[]> {

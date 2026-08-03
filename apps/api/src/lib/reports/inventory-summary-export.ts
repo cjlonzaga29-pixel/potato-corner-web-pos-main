@@ -10,10 +10,12 @@
 // of a REPORT_COLUMNS entry.
 import React from 'react';
 import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-pdf/renderer';
-import type { InventorySummaryReportRow } from '@potato-corner/shared';
+import type { InventorySummaryReportRow, WeightSummaryKg } from '@potato-corner/shared';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { escapeCsvField } from './csv.js';
 import { manilaDateKey } from '../manila-time.js';
+
+const MISSING_CONVERSION_WARNING = 'Some non-count ingredients are excluded from the KG total because no weight conversion is configured.';
 
 const e = React.createElement;
 
@@ -54,8 +56,14 @@ export function groupTotalsByUnit(rows: InventorySummaryReportRow[]): UnitTotal[
 
 const HEADERS = ['Ingredient', 'Unit', 'Opening Stock', 'Consumed Today', 'Consumed This Month', 'Remaining'];
 
-/** CSV: one "Ingredient Consumption" table — every row in its own unit — followed by one Total line per distinct unit. */
-export function generateInventorySummaryCsv(rows: InventorySummaryReportRow[]): Buffer {
+/**
+ * CSV: one "Ingredient Consumption" table — every row in its own unit — followed
+ * by one Total line per distinct unit. When weightSummaryKg is supplied (TASK
+ * 149), a separate "TOTAL INGREDIENT WEIGHT (KG)" section is appended after
+ * the native-unit totals; omitted entirely when not supplied, so existing
+ * callers/tests that only pass rows are unaffected.
+ */
+export function generateInventorySummaryCsv(rows: InventorySummaryReportRow[], weightSummaryKg?: WeightSummaryKg): Buffer {
   const totals = groupTotalsByUnit(rows);
 
   const lines = [
@@ -66,6 +74,23 @@ export function generateInventorySummaryCsv(rows: InventorySummaryReportRow[]): 
       [`Total (${t.unit})`, '', t.opening_stock, t.consumed_today, t.consumed_this_month, t.remaining_stock].map(escapeCsvField).join(','),
     ),
   ];
+
+  if (weightSummaryKg) {
+    lines.push(
+      '',
+      'TOTAL INGREDIENT WEIGHT (KG)',
+      'Opening Stock (KG),Consumed Today (KG),Consumed This Month (KG),Remaining (KG)',
+      [
+        weightSummaryKg.opening_stock_kg,
+        weightSummaryKg.consumed_today_kg,
+        weightSummaryKg.consumed_this_month_kg,
+        weightSummaryKg.remaining_kg,
+      ]
+        .map(escapeCsvField)
+        .join(','),
+    );
+    if (weightSummaryKg.excluded_item_count > 0) lines.push(MISSING_CONVERSION_WARNING);
+  }
 
   return Buffer.from(lines.join('\n'), 'utf-8');
 }
@@ -85,8 +110,21 @@ const styles = StyleSheet.create({
   footer: { position: 'absolute', bottom: 16, left: 24, right: 24, fontSize: 8, textAlign: 'center', color: '#666666' },
 });
 
-/** PDF: one document — title header, then the "Ingredient Consumption" table with every row in its own unit, followed by one Total row per distinct unit. */
-export async function generateInventorySummaryPdf(filters: ReportFilters, rows: InventorySummaryReportRow[], branchName: string | null): Promise<Buffer> {
+const KG_HEADERS = ['Opening Stock (KG)', 'Consumed Today (KG)', 'Consumed This Month (KG)', 'Remaining (KG)'];
+
+/**
+ * PDF: one document — title header, then the "Ingredient Consumption" table
+ * with every row in its own unit, followed by one Total row per distinct
+ * unit. When weightSummaryKg is supplied (TASK 149), a separate "Total
+ * Ingredient Weight (KG)" table is appended, with a missing-conversion
+ * warning line when applicable; omitted entirely when not supplied.
+ */
+export async function generateInventorySummaryPdf(
+  filters: ReportFilters,
+  rows: InventorySummaryReportRow[],
+  branchName: string | null,
+  weightSummaryKg?: WeightSummaryKg,
+): Promise<Buffer> {
   const totals = groupTotalsByUnit(rows);
   const generatedAt = new Date().toISOString();
   const dateRangeLabel =
@@ -118,6 +156,30 @@ export async function generateInventorySummaryPdf(filters: ReportFilters, rows: 
     ),
   );
 
+  const weightSection = weightSummaryKg
+    ? [
+        e(Text, { key: 'kg-title', style: styles.sectionTitle }, 'Total Ingredient Weight (KG)'),
+        e(
+          View,
+          { key: 'kg-table', style: styles.table },
+          e(View, { style: styles.headerRow }, ...KG_HEADERS.map((h, i) => e(Text, { key: i, style: styles.cell }, h))),
+          e(
+            View,
+            { style: styles.totalsRow },
+            ...[
+              weightSummaryKg.opening_stock_kg,
+              weightSummaryKg.consumed_today_kg,
+              weightSummaryKg.consumed_this_month_kg,
+              weightSummaryKg.remaining_kg,
+            ].map((v, j) => e(Text, { key: j, style: styles.cell }, String(v))),
+          ),
+        ),
+        ...(weightSummaryKg.excluded_item_count > 0
+          ? [e(Text, { key: 'kg-warning', style: styles.meta }, MISSING_CONVERSION_WARNING)]
+          : []),
+      ]
+    : [];
+
   const doc = e(
     Document,
     null,
@@ -133,6 +195,7 @@ export async function generateInventorySummaryPdf(filters: ReportFilters, rows: 
       ),
       e(Text, { style: styles.sectionTitle }, 'Ingredient Consumption'),
       table,
+      ...weightSection,
       e(Text, {
         style: styles.footer,
         fixed: true,

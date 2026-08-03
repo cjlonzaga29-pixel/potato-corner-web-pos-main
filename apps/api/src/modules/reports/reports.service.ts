@@ -1,5 +1,5 @@
 import { ROLES } from '@potato-corner/shared';
-import type { ReportType } from '@potato-corner/shared';
+import type { ReportType, InventorySummaryReportRow } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
 import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
@@ -178,8 +178,31 @@ export const reportsService = {
     realtimeReport('INVENTORY_MOVEMENT', filters, actorId, actorRole, (f) => reportsRepository.getInventoryMovement(f)),
   getInventoryConsumptionSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('INVENTORY_CONSUMPTION_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventoryConsumptionSummary(f)),
-  getInventorySummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
-    realtimeReport('INVENTORY_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventorySummary(f)),
+  // Bespoke rather than the generic realtimeReport helper — INVENTORY_SUMMARY
+  // is the only report type whose response carries an extra top-level
+  // weight_summary_kg field (TASK 149) alongside the native-unit rows.
+  async getInventorySummaryReport(filters: ReportFilters, actorId: string, actorRole: string): Promise<ReportResponse<InventorySummaryReportRow>> {
+    const resolved = defaultRealtimeFilters(filters);
+    const [rows, weightSummaryKg] = await Promise.all([
+      reportsRepository.getInventorySummary(resolved),
+      reportsRepository.getInventorySummaryWeightKg(resolved),
+    ]);
+    const start = (resolved.page - 1) * resolved.limit;
+    const page = rows.slice(start, start + resolved.limit);
+
+    await accessAudit('INVENTORY_SUMMARY', resolved, actorId, actorRole, rows.length);
+
+    return {
+      report_type: 'INVENTORY_SUMMARY',
+      generated_at: new Date().toISOString(),
+      filters: toWireFilters(resolved),
+      data: page,
+      total: rows.length,
+      page: resolved.page,
+      limit: resolved.limit,
+      weight_summary_kg: weightSummaryKg,
+    };
+  },
   getAttendanceSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('ATTENDANCE_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getAttendanceSummary(f)),
   getFraudAlertSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
@@ -385,17 +408,20 @@ export const reportsService = {
     // (the underlying rows are identical for every requester).
     if (reportType === 'INVENTORY_SUMMARY') {
       const resolvedFilters = defaultRealtimeFilters(filters);
-      const rows = await reportsRepository.getInventorySummary(resolvedFilters);
+      const [rows, weightSummaryKg] = await Promise.all([
+        reportsRepository.getInventorySummary(resolvedFilters),
+        reportsRepository.getInventorySummaryWeightKg(resolvedFilters),
+      ]);
       const filename = buildExportFilename(reportType, format, resolvedFilters);
 
       let buffer: Buffer;
       let contentType: 'text/csv' | 'application/pdf';
       if (format === 'csv') {
-        buffer = generateInventorySummaryCsv(rows);
+        buffer = generateInventorySummaryCsv(rows, weightSummaryKg);
         contentType = 'text/csv';
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generateInventorySummaryPdf(resolvedFilters, rows, branch?.name ?? null);
+        buffer = await generateInventorySummaryPdf(resolvedFilters, rows, branch?.name ?? null, weightSummaryKg);
         contentType = 'application/pdf';
       }
 

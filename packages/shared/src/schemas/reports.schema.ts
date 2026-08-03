@@ -189,6 +189,24 @@ export const InventorySummaryReportRowSchema = z.object({
 });
 export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
 
+// TASK 149 — org-wide (or per-branch, per the same filters as the rows
+// above) weight roll-up in kilograms, additive to InventorySummaryReportRow's
+// native-unit rows above (never replacing them). Only non-COUNT-dimension
+// items (weight/volume ingredients) ever contribute; packaging/count items
+// are never included and never counted toward excluded_item_count either —
+// they're simply out of scope for a weight total. excluded_item_count is
+// non-COUNT items with no resolvable conversion to kg (native rows for those
+// items still render — this only drops their KG contribution).
+export const WeightSummaryKgSchema = z.object({
+  opening_stock_kg: z.number(),
+  consumed_today_kg: z.number(),
+  consumed_this_month_kg: z.number(),
+  remaining_kg: z.number(),
+  included_item_count: z.number().int(),
+  excluded_item_count: z.number().int(),
+});
+export type WeightSummaryKg = z.infer<typeof WeightSummaryKgSchema>;
+
 export const AttendanceSummaryReportRowSchema = z.object({
   employee_id: z.uuid(),
   employee_name: z.string(),
@@ -383,6 +401,8 @@ export interface ReportResponse<T> {
   total: number;
   page: number;
   limit: number;
+  // Only populated for INVENTORY_SUMMARY — every other report type leaves this undefined.
+  weight_summary_kg?: WeightSummaryKg;
 }
 
 export interface SnapshotResponse<T> {

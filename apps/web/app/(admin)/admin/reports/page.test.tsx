@@ -260,6 +260,87 @@ describe('AdminReportsPage', () => {
     expect(screen.getByText('Total (g)')).toBeInTheDocument();
   });
 
+  it('renders the Total Ingredient Weight (KG) card alongside the native-unit totals, plus the missing-conversion warning when items are excluded (TASK 149)', () => {
+    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
+      data: {
+        generated_at: '2026-08-01T00:00:00.000Z',
+        data: [
+          {
+            ingredient_id: 'i1',
+            ingredient_name: 'Raw Fries',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            unit: 'kg',
+            opening_stock: 12.5,
+            consumed_today: 2.3,
+            consumed_this_month: 54.1,
+            remaining_stock: 10.2,
+          },
+        ],
+        weight_summary_kg: {
+          opening_stock_kg: 12.5,
+          consumed_today_kg: 2.3,
+          consumed_this_month_kg: 54.1,
+          remaining_kg: 10.2,
+          included_item_count: 1,
+          excluded_item_count: 1,
+        },
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<AdminReportsPage />);
+    selectCategory('Inventory');
+    selectReportTab('Inventory Summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    // Native-unit table and totals are still there, unchanged.
+    expect(screen.getByText('Raw Fries')).toBeInTheDocument();
+    expect(screen.getByText('Total (kg)')).toBeInTheDocument();
+
+    // Separate KG summary card, additive to the native totals above.
+    expect(screen.getByText('Total Ingredient Weight (KG)')).toBeInTheDocument();
+    expect(screen.getByText('Opening Stock (KG)')).toBeInTheDocument();
+    expect(screen.getByText('Consumed Today (KG)')).toBeInTheDocument();
+    expect(screen.getByText('Consumed This Month (KG)')).toBeInTheDocument();
+    expect(screen.getByText('Remaining (KG)')).toBeInTheDocument();
+    expect(screen.getByText(/Some non-count ingredients are excluded from the KG total/i)).toBeInTheDocument();
+  });
+
+  it('omits the Total Ingredient Weight (KG) card and its warning when weight_summary_kg is absent from the response', () => {
+    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
+      data: {
+        generated_at: '2026-08-01T00:00:00.000Z',
+        data: [
+          {
+            ingredient_id: 'i1',
+            ingredient_name: 'Raw Fries',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            unit: 'kg',
+            opening_stock: 12.5,
+            consumed_today: 2.3,
+            consumed_this_month: 54.1,
+            remaining_stock: 10.2,
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<AdminReportsPage />);
+    selectCategory('Inventory');
+    selectReportTab('Inventory Summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    expect(screen.queryByText('Total Ingredient Weight (KG)')).not.toBeInTheDocument();
+    expect(screen.queryByText(/excluded from the KG total/i)).not.toBeInTheDocument();
+  });
+
   it('enables only the active tab\'s data hook', () => {
     render(<AdminReportsPage />);
     selectReportTab('Daily Sales');

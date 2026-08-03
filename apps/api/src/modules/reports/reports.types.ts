@@ -16,6 +16,7 @@ export type {
   InventoryMovementReportRow,
   InventoryConsumptionSummaryReportRow,
   InventorySummaryReportRow,
+  WeightSummaryKg,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ProductPerformanceReportRow,

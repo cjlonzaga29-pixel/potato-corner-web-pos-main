@@ -19,6 +19,10 @@ export const metadata: Metadata = {
   // still-open, separate blocker: the icons this manifest references
   // (icon-192x192.png, icon-512x512.png) don't exist yet.
   manifest: '/manifest.json',
+  icons: {
+    icon: '/icons/icon-192x192.png',
+    apple: '/apple-touch-icon.png',
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

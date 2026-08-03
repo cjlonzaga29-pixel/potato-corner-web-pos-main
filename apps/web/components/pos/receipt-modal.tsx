@@ -38,7 +38,7 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
 
         <div id="receipt-print-area" className="space-y-3 text-sm">
           <div className="text-center">
-            <p className="font-semibold">Henlin POS</p>
+            <p className="font-semibold">Potato Corner</p>
             <p className="text-xs text-muted-foreground">{new Date(transaction.created_at).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground">Receipt No. {transaction.receipt_number}</p>
             <p className="text-xs text-muted-foreground">Cashier: {cashier ? `${cashier.first_name} ${cashier.last_name}`.trim() : ''}</p>

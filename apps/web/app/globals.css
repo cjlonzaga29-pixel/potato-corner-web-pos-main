@@ -3,13 +3,11 @@
 @tailwind utilities;
 
 /**
- * Henlin POS design tokens. HSL triples (no hsl() wrapper) so
+ * Potato Corner design tokens. HSL triples (no hsl() wrapper) so
  * tailwind.config.ts can compose them as `hsl(var(--x) / <alpha-value>)`
  * and support opacity modifiers (bg-card/60, border-border/50, etc.).
- * Primary = Henlin Red, hue 350 (crimson) — deliberately offset from
- * --destructive's hue 0 so brand and danger states stay visually distinct
- * despite both being "red". Green/yellow/blue are reserved for semantic
- * status only (success/warning/info) — never brand.
+ * Primary = Liquid Lava (orange). Green/yellow/blue/red are reserved for
+ * semantic status only (success/warning/info/destructive) — never brand.
  */
 @layer base {
   :root {
@@ -19,14 +17,14 @@
     --card-foreground: 252 11% 9%;
     --popover: 0 0% 100%;
     --popover-foreground: 252 11% 9%;
-    --primary: 350 78% 46%;
+    --primary: 25 92% 51%;
     --primary-foreground: 0 0% 100%;
     --secondary: 0 0% 95%;
     --secondary-foreground: 252 11% 9%;
     --muted: 0 0% 95%;
     --muted-foreground: 0 0% 45%;
-    --accent: 350 100% 96%;
-    --accent-foreground: 350 75% 32%;
+    --accent: 25 100% 95%;
+    --accent-foreground: 25 80% 30%;
     --success: 142 66% 30%;
     --success-foreground: 0 0% 100%;
     --warning: 42 96% 48%;
@@ -37,9 +35,9 @@
     --destructive-foreground: 0 0% 100%;
     --border: 0 0% 90%;
     --input: 0 0% 88%;
-    --ring: 350 78% 46%;
+    --ring: 25 92% 51%;
     --radius: 0.85rem;
-    --chart-1: 350 78% 46%;
+    --chart-1: 25 92% 51%;
     --chart-2: 210 90% 48%;
     --chart-3: 142 66% 30%;
     --chart-4: 42 96% 48%;
@@ -54,13 +52,13 @@
     --card-foreground: 0 0% 98%;
     --popover: 240 5% 11%;
     --popover-foreground: 0 0% 98%;
-    --primary: 350 78% 52%;
+    --primary: 25 92% 51%;
     --primary-foreground: 0 0% 98%;
     --secondary: 0 0% 15%;
     --secondary-foreground: 0 0% 98%;
     --muted: 0 0% 15%;
     --muted-foreground: 0 0% 60%;
-    --accent: 350 45% 20%;
+    --accent: 25 45% 18%;
     --accent-foreground: 0 0% 98%;
     --success: 142 55% 45%;
     --success-foreground: 150 25% 8%;
@@ -72,8 +70,8 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 22%;
     --input: 0 0% 20%;
-    --ring: 350 78% 52%;
-    --chart-1: 350 78% 58%;
+    --ring: 25 92% 51%;
+    --chart-1: 25 92% 55%;
     --chart-2: 210 85% 62%;
     --chart-3: 142 55% 45%;
     --chart-4: 42 92% 55%;

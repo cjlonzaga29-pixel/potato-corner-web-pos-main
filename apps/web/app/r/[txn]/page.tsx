@@ -39,7 +39,7 @@ export default function PublicReceiptPage() {
         <CardContent className="space-y-3 p-6 text-sm">
           <div id="receipt-print-area" className="space-y-3">
             <div className="text-center">
-              <p className="font-semibold">Henlin POS</p>
+              <p className="font-semibold">Potato Corner</p>
               <p className="text-xs text-muted-foreground">{receipt.branch_name}</p>
               <p className="text-xs text-muted-foreground">{new Date(receipt.created_at).toLocaleString()}</p>
               <p className="text-xs text-muted-foreground">Receipt No. {receipt.receipt_number}</p>

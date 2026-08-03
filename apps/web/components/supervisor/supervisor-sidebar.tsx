@@ -70,9 +70,9 @@ export function SupervisorSidebar() {
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-              H
+              PC
             </div>
-            <span className="text-sm font-semibold tracking-tight">Henlin POS</span>
+            <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
           </div>
         )}
         <div className="ml-auto flex items-center gap-1">
@@ -160,9 +160,9 @@ export function SupervisorSidebar() {
         <SheetTitle className="sr-only">Navigation</SheetTitle>
         <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border/60 px-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-            H
+            PC
           </div>
-          <span className="text-sm font-semibold tracking-tight">Henlin POS</span>
+          <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
         </div>
 
         <div className="shrink-0 border-b border-border/60 p-3">

@@ -493,16 +493,16 @@ describe('authService.selectEmployee', () => {
     };
   }
 
-  it('mints a staff session bound to the branch actor own branch when the employee is active and assigned there', async () => {
+  it('mints a staff access token bound to the branch actor own branch when the employee is active and assigned there, without creating a refresh token', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
 
-    const result = await authService.selectEmployee(BRANCH_ACTOR, 'emp-1', 'device-1', null);
+    const result = await authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null);
 
     expect(result.access_token).toEqual(expect.any(String));
-    expect(result.refreshToken).toEqual(expect.any(String));
+    expect(result).not.toHaveProperty('refreshToken');
     expect(result.user.id).toBe('emp-1');
     expect(result.user.branch_ids).toEqual(['branch-1']);
-    expect(authRepository.storeRefreshToken).toHaveBeenCalledWith('emp-1', result.refreshToken, 'device-1', expect.any(Date));
+    expect(authRepository.storeRefreshToken).not.toHaveBeenCalled();
   });
 
   it('rejects an employee not assigned to the branch actor own branch', async () => {
@@ -510,7 +510,7 @@ describe('authService.selectEmployee', () => {
       buildStaffEmployee({ branchAssignments: [{ branchId: 'branch-2' }] }) as never,
     );
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', 'device-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_ACCESS_DENIED',
       statusCode: 403,
     });
@@ -520,7 +520,7 @@ describe('authService.selectEmployee', () => {
   it('rejects a non-active employee', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee({ status: 'suspended', isActive: false }) as never);
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', 'device-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_INACTIVE',
       statusCode: 403,
     });
@@ -529,7 +529,7 @@ describe('authService.selectEmployee', () => {
   it('rejects an unknown employee id', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(null);
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'missing', 'device-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'missing', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_NOT_FOUND',
       statusCode: 404,
     });
@@ -538,7 +538,7 @@ describe('authService.selectEmployee', () => {
   it('rejects selecting a non-staff row (e.g. another branch account)', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee({ role: ROLES.SUPERVISOR }) as never);
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', 'device-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_NOT_FOUND',
       statusCode: 404,
     });

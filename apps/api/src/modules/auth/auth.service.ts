@@ -416,12 +416,21 @@ export const authService = {
    * revokeAllUserTokens) already tears this session down the moment status
    * leaves 'active' — no new revocation mechanism needed.
    */
+  /**
+   * Deliberately issues an access token only — no refresh token is created
+   * or stored for the selected employee. This is a terminal-local identity
+   * switch on top of an already-authenticated Branch session, not a new
+   * login: writing (and cookie-ing) an employee refresh token would let a
+   * later silent refresh rotate the Branch account's session into a Staff
+   * one, so the Branch refresh cookie must be the only refresh session in
+   * play here. See select-employee router handler for the cookie side of
+   * this.
+   */
   async selectEmployee(
     branchActor: JwtPayload,
     employeeId: string,
-    deviceId: string,
     ipAddress: string | null,
-  ): Promise<LoginResponse & { refreshToken: string }> {
+  ): Promise<LoginResponse> {
     if (!('branch_ids' in branchActor) || branchActor.branch_ids.length === 0) {
       throw new AuthError('EMPLOYEE_ACCESS_DENIED', 'No branch assigned to this session', 403);
     }
@@ -448,12 +457,9 @@ export const authService = {
       branchIds: [branchId],
       mustChangePassword: false,
     });
-    const refreshToken = generateRefreshToken();
-    const refreshExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
 
     await Promise.all([
       authRepository.updateLastLogin(employee.id),
-      authRepository.storeRefreshToken(employee.id, refreshToken, deviceId, refreshExpiresAt),
       recordAuditLog({
         action: 'EMPLOYEE_SESSION_STARTED',
         entityType: 'user',
@@ -467,7 +473,6 @@ export const authService = {
 
     return {
       access_token: accessToken,
-      refreshToken,
       user: toUserSummary({ ...employee, mustChangePassword: false }, [branchId]),
     };
   },

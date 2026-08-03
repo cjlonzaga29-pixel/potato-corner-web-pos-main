@@ -240,6 +240,16 @@ router.post('/pin/login', loginLimiter, validate(pinLoginSchema), async (req: Re
 /**
  * Branch Employee Authorization: only a `branch` (Branch Account) session
  * may select an Employee to operate as — Employees never log in directly.
+ *
+ * Deliberately does NOT touch cookies: this is a terminal-local identity
+ * switch layered on top of the already-authenticated Branch session, not a
+ * new login. It must never call setRefreshCookie or setAccessHintCookie —
+ * doing so previously let the browser's silent-refresh-on-hard-refresh read
+ * back the employee's cookie and turn the global Branch session into a
+ * Staff one. The employee access token is returned in the JSON body only;
+ * the caller is expected to hold it in terminal-local state and pass it as
+ * a per-request override, never in the global auth store or localStorage.
+ * The Branch refresh cookie set by /login is left completely alone here.
  */
 router.post(
   '/select-employee',
@@ -253,10 +263,8 @@ router.post(
         res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
         return;
       }
-      const { employee_id, device_id } = req.body as { employee_id: string; device_id: string };
-      const result = await authService.selectEmployee(req.user, employee_id, device_id, req.ip ?? null);
-      setRefreshCookie(res, result.refreshToken);
-      setAccessHintCookie(res, result.access_token);
+      const { employee_id } = req.body as { employee_id: string; device_id: string };
+      const result = await authService.selectEmployee(req.user, employee_id, req.ip ?? null);
       res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);

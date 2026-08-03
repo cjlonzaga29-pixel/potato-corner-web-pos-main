@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/node';
 import { randomUUID } from 'node:crypto';
-import { SOCKET_EVENTS, type ReportType, type InventorySummaryReportRow } from '@potato-corner/shared';
+import { SOCKET_EVENTS, type ReportType } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
 import { supabaseAdmin } from '../lib/supabase.js';
@@ -72,16 +72,16 @@ export function enqueueRefreshSnapshot(data: RefreshSnapshotJobData): Promise<{ 
 
 export async function processGenerateExport(jobId: string, data: GenerateExportJobData): Promise<void> {
   const { reportType, filters, format, requesterId, branchId } = data;
-  const rows = await getReportRows(reportType, filters);
   const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
 
-  // INVENTORY_SUMMARY (Task 144) has no single-totals-row column set — see
-  // generateInventorySummaryCsv/Pdf's doc comment.
+  // INVENTORY_SUMMARY (TASK 157) has no single flat-row/single-totals-row
+  // shape — see generateInventorySummaryCsv/Pdf's doc comment.
   let buffer: Buffer;
   if (reportType === 'INVENTORY_SUMMARY') {
-    const summaryRows = rows as unknown as InventorySummaryReportRow[];
-    buffer = format === 'csv' ? generateInventorySummaryCsv(summaryRows) : await generateInventorySummaryPdf(filters, summaryRows, branch?.name ?? null);
+    const split = await reportsRepository.getInventorySummarySplit(filters);
+    buffer = format === 'csv' ? generateInventorySummaryCsv(split) : await generateInventorySummaryPdf(filters, split, branch?.name ?? null);
   } else {
+    const rows = await getReportRows(reportType, filters);
     const columns = REPORT_COLUMNS[reportType];
     buffer = format === 'csv' ? generateCsv(rows, columns) : await generatePdf(reportType, filters, rows, columns, branch?.name ?? null);
   }

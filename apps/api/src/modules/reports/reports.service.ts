@@ -1,5 +1,5 @@
 import { ROLES } from '@potato-corner/shared';
-import type { ReportType, InventorySummaryReportRow } from '@potato-corner/shared';
+import type { ReportType, InventorySummaryResponse } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
 import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
@@ -179,28 +179,25 @@ export const reportsService = {
   getInventoryConsumptionSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('INVENTORY_CONSUMPTION_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventoryConsumptionSummary(f)),
   // Bespoke rather than the generic realtimeReport helper — INVENTORY_SUMMARY
-  // is the only report type whose response carries an extra top-level
-  // weight_summary_kg field (TASK 149) alongside the native-unit rows.
-  async getInventorySummaryReport(filters: ReportFilters, actorId: string, actorRole: string): Promise<ReportResponse<InventorySummaryReportRow>> {
+  // (TASK 157) returns two independently-dimensioned tables (ingredient
+  // weight in kg, packaging in native count) plus their own totals, not a
+  // single data[]/total pair.
+  async getInventorySummaryReport(filters: ReportFilters, actorId: string, actorRole: string): Promise<InventorySummaryResponse> {
     const resolved = defaultRealtimeFilters(filters);
-    const [rows, weightSummaryKg] = await Promise.all([
-      reportsRepository.getInventorySummary(resolved),
-      reportsRepository.getInventorySummaryWeightKg(resolved),
-    ]);
-    const start = (resolved.page - 1) * resolved.limit;
-    const page = rows.slice(start, start + resolved.limit);
+    const split = await reportsRepository.getInventorySummarySplit(resolved);
+    const rowCount = split.ingredientWeightKg.length + split.packagingPc.length;
 
-    await accessAudit('INVENTORY_SUMMARY', resolved, actorId, actorRole, rows.length);
+    await accessAudit('INVENTORY_SUMMARY', resolved, actorId, actorRole, rowCount);
 
     return {
       report_type: 'INVENTORY_SUMMARY',
       generated_at: new Date().toISOString(),
       filters: toWireFilters(resolved),
-      data: page,
-      total: rows.length,
-      page: resolved.page,
-      limit: resolved.limit,
-      weight_summary_kg: weightSummaryKg,
+      ingredient_weight_kg: split.ingredientWeightKg,
+      packaging_pc: split.packagingPc,
+      ingredient_weight_totals_kg: split.ingredientWeightTotalsKg,
+      packaging_totals_pc: split.packagingTotalsPc,
+      excluded_ingredient_count: split.excludedIngredientCount,
     };
   },
   getAttendanceSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
@@ -401,27 +398,25 @@ export const reportsService = {
       return { kind: 'file', buffer, filename, contentType };
     }
 
-    // INVENTORY_SUMMARY (Task 144) renders as a single "Ingredient
-    // Consumption" table with per-unit totals, which the generic
-    // single-totals-row generateCsv/generatePdf can't express, so both
-    // formats are redirected to the dedicated builders regardless of role
-    // (the underlying rows are identical for every requester).
+    // INVENTORY_SUMMARY (TASK 157) renders as two independently-dimensioned
+    // tables (ingredient weight in kg, packaging in native count), which the
+    // generic single-totals-row generateCsv/generatePdf can't express, so
+    // both formats are redirected to the dedicated builders regardless of
+    // role (the underlying data is identical for every requester).
     if (reportType === 'INVENTORY_SUMMARY') {
       const resolvedFilters = defaultRealtimeFilters(filters);
-      const [rows, weightSummaryKg] = await Promise.all([
-        reportsRepository.getInventorySummary(resolvedFilters),
-        reportsRepository.getInventorySummaryWeightKg(resolvedFilters),
-      ]);
+      const split = await reportsRepository.getInventorySummarySplit(resolvedFilters);
       const filename = buildExportFilename(reportType, format, resolvedFilters);
+      const rowCount = split.ingredientWeightKg.length + split.packagingPc.length;
 
       let buffer: Buffer;
       let contentType: 'text/csv' | 'application/pdf';
       if (format === 'csv') {
-        buffer = generateInventorySummaryCsv(rows, weightSummaryKg);
+        buffer = generateInventorySummaryCsv(split);
         contentType = 'text/csv';
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generateInventorySummaryPdf(resolvedFilters, rows, branch?.name ?? null, weightSummaryKg);
+        buffer = await generateInventorySummaryPdf(resolvedFilters, split, branch?.name ?? null);
         contentType = 'application/pdf';
       }
 
@@ -432,7 +427,7 @@ export const reportsService = {
         actorId: requesterId,
         actorRole: requesterRole,
         branchId,
-        afterState: { reportType, format, async: false, rowCount: rows.length },
+        afterState: { reportType, format, async: false, rowCount },
       });
       return { kind: 'file', buffer, filename, contentType };
     }

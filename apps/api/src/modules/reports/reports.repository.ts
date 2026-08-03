@@ -17,7 +17,10 @@ import type {
   PaymentMethodMixReportRow,
   InventoryMovementReportRow,
   InventoryConsumptionSummaryReportRow,
-  InventorySummaryReportRow,
+  IngredientWeightKgRow,
+  PackagingPcRow,
+  IngredientWeightTotalsKg,
+  PackagingTotalsPc,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ProductPerformanceReportRow,
@@ -27,7 +30,6 @@ import type {
   AdminInventoryValuationRollupResponse,
   BranchComparisonReportRow,
   InventoryAnalyticsReport,
-  WeightSummaryKg,
 } from './reports.types.js';
 
 function round2(value: number): number {
@@ -94,11 +96,10 @@ interface InventorySnapshotRow {
   remaining: number;
 }
 
-// Shared by getInventorySummary and getInventorySummaryWeightKg below — same
-// stock/movement query TASK 144 established, extended (TASK 149) to also
-// select the base unit's id/dimension so the KG roll-up can resolve
-// conversions and exclude COUNT-dimension (packaging) items without a second
-// round-trip per item.
+// Shared by getInventorySummarySplit below — same stock/movement query
+// TASK 144 established, extended (TASK 149) to also select the base unit's
+// id/dimension so the KG roll-up can resolve conversions and exclude
+// COUNT-dimension (packaging) items without a second round-trip per item.
 async function fetchInventorySnapshot(filters: ReportFilters): Promise<InventorySnapshotRow[]> {
   const now = new Date();
   const { dayStart, dayEnd } = dayBounds(now);
@@ -618,50 +619,62 @@ export const reportsRepository = {
   // at today's Manila midnight. consumed_today/consumed_this_month count only
   // SALE movements, matching the Branch Inventory list's "Consumed Today"
   // column (getConsumedTodayByBranch) for consistency across the app.
-  // Task 144: every row is reported in the inventory item's own base unit —
-  // no kg conversion, no CONVERSION_REQUIRED status, no ingredient/packaging
-  // section split. The caller groups/totals rows by `unit` itself.
-  async getInventorySummary(filters: ReportFilters): Promise<InventorySummaryReportRow[]> {
-    const snapshot = await fetchInventorySnapshot(filters);
-    return snapshot.map((s) => ({
-      ingredient_id: s.inventoryItemId,
-      ingredient_name: s.itemName,
-      branch_id: s.branchId,
-      branch_name: s.branchName,
-      unit: s.unitCode,
-      opening_stock: s.opening,
-      consumed_today: s.consumedToday,
-      consumed_this_month: s.consumedMonth,
-      remaining_stock: s.remaining,
-    }));
-  },
-
-  // TASK 149 — additive kg roll-up alongside getInventorySummary's native-unit
-  // rows above. Kept as its own repository call (re-running the same stock/
-  // movement query rather than sharing a single result with getInventorySummary)
-  // so that function's existing "never queries UnitOfMeasure/UnitConversion/
-  // InventoryItemUnitConversion" contract stays true — this is the only path
-  // that resolves conversions.
-  async getInventorySummaryWeightKg(filters: ReportFilters): Promise<WeightSummaryKg> {
+  //
+  // TASK 157 — splits the snapshot into two independently-dimensioned
+  // tables instead of one mixed-unit list (TASK 144/149's getInventorySummary/
+  // getInventorySummaryWeightKg pair, now merged into this one call):
+  //   - ingredientWeightKg: every non-COUNT-dimension item converted to kg
+  //     (identity for kg, /1000 for g, item-specific-then-global conversion
+  //     for everything else via resolveKgFactor). Items with no resolvable
+  //     factor are excluded from this table entirely (never shown with an
+  //     invented value) and counted in excludedIngredientCount instead.
+  //   - packagingPc: every COUNT-dimension item, in its native quantity —
+  //     COUNT items never query a conversion, never contribute to the KG
+  //     table, and never count toward excludedIngredientCount.
+  // Totals are the sum of each table's own (already-rounded) visible rows,
+  // so UI/CSV/PDF totals can never drift from what's actually rendered.
+  async getInventorySummarySplit(filters: ReportFilters): Promise<{
+    ingredientWeightKg: IngredientWeightKgRow[];
+    packagingPc: PackagingPcRow[];
+    ingredientWeightTotalsKg: IngredientWeightTotalsKg;
+    packagingTotalsPc: PackagingTotalsPc;
+    excludedIngredientCount: number;
+  }> {
     const snapshot = await fetchInventorySnapshot(filters);
     const [kgUnit, gUnit] = await Promise.all([
       universalInventoryRepository.findUnitByCode('kg'),
       universalInventoryRepository.findUnitByCode('g'),
     ]);
 
-    let openingKg = new Prisma.Decimal(0);
-    let consumedTodayKg = new Prisma.Decimal(0);
-    let consumedMonthKg = new Prisma.Decimal(0);
-    let remainingKg = new Prisma.Decimal(0);
-    let includedItemCount = 0;
-    let excludedItemCount = 0;
+    const ingredientWeightKg: IngredientWeightKgRow[] = [];
+    const packagingPc: PackagingPcRow[] = [];
+    let excludedIngredientCount = 0;
+
+    const weightSums = { opening: 0, today: 0, month: 0, remaining: 0 };
+    const pcSums = { opening: 0, today: 0, month: 0, remaining: 0 };
 
     // Same-item stock rows (multiple branches) share one conversion factor —
     // resolve it once per inventoryItemId, not once per row.
     const factorCache = new Map<string, Prisma.Decimal | null>();
 
     for (const s of snapshot) {
-      if (s.unitDimension === 'COUNT') continue; // packaging/count items are never part of the KG total
+      if (s.unitDimension === 'COUNT') {
+        packagingPc.push({
+          ingredient_id: s.inventoryItemId,
+          ingredient_name: s.itemName,
+          branch_id: s.branchId,
+          branch_name: s.branchName,
+          opening_stock_pc: s.opening,
+          consumed_today_pc: s.consumedToday,
+          consumed_this_month_pc: s.consumedMonth,
+          remaining_pc: s.remaining,
+        });
+        pcSums.opening += s.opening;
+        pcSums.today += s.consumedToday;
+        pcSums.month += s.consumedMonth;
+        pcSums.remaining += s.remaining;
+        continue;
+      }
 
       let factor = factorCache.get(s.inventoryItemId);
       if (factor === undefined) {
@@ -670,24 +683,47 @@ export const reportsRepository = {
       }
 
       if (factor === null) {
-        excludedItemCount += 1;
+        excludedIngredientCount += 1;
         continue;
       }
 
-      includedItemCount += 1;
-      openingKg = openingKg.add(new Prisma.Decimal(s.opening).mul(factor));
-      consumedTodayKg = consumedTodayKg.add(new Prisma.Decimal(s.consumedToday).mul(factor));
-      consumedMonthKg = consumedMonthKg.add(new Prisma.Decimal(s.consumedMonth).mul(factor));
-      remainingKg = remainingKg.add(new Prisma.Decimal(s.remaining).mul(factor));
+      const openingKg = round3(new Prisma.Decimal(s.opening).mul(factor).toNumber());
+      const consumedTodayKg = round3(new Prisma.Decimal(s.consumedToday).mul(factor).toNumber());
+      const consumedMonthKg = round3(new Prisma.Decimal(s.consumedMonth).mul(factor).toNumber());
+      const remainingKg = round3(new Prisma.Decimal(s.remaining).mul(factor).toNumber());
+
+      ingredientWeightKg.push({
+        ingredient_id: s.inventoryItemId,
+        ingredient_name: s.itemName,
+        branch_id: s.branchId,
+        branch_name: s.branchName,
+        opening_stock_kg: openingKg,
+        consumed_today_kg: consumedTodayKg,
+        consumed_this_month_kg: consumedMonthKg,
+        remaining_kg: remainingKg,
+      });
+      weightSums.opening += openingKg;
+      weightSums.today += consumedTodayKg;
+      weightSums.month += consumedMonthKg;
+      weightSums.remaining += remainingKg;
     }
 
     return {
-      opening_stock_kg: round3(openingKg.toNumber()),
-      consumed_today_kg: round3(consumedTodayKg.toNumber()),
-      consumed_this_month_kg: round3(consumedMonthKg.toNumber()),
-      remaining_kg: round3(remainingKg.toNumber()),
-      included_item_count: includedItemCount,
-      excluded_item_count: excludedItemCount,
+      ingredientWeightKg,
+      packagingPc,
+      ingredientWeightTotalsKg: {
+        opening_stock_kg: round3(weightSums.opening),
+        consumed_today_kg: round3(weightSums.today),
+        consumed_this_month_kg: round3(weightSums.month),
+        remaining_kg: round3(weightSums.remaining),
+      },
+      packagingTotalsPc: {
+        opening_stock_pc: round2(pcSums.opening),
+        consumed_today_pc: round2(pcSums.today),
+        consumed_this_month_pc: round2(pcSums.month),
+        remaining_pc: round2(pcSums.remaining),
+      },
+      excludedIngredientCount,
     };
   },
 
@@ -1233,7 +1269,7 @@ export const reportsRepository = {
       case 'INVENTORY_CONSUMPTION_SUMMARY':
         return this.getInventoryConsumptionSummary(filters).then((rows) => rows.length);
       case 'INVENTORY_SUMMARY':
-        return this.getInventorySummary(filters).then((rows) => rows.length);
+        return this.getInventorySummarySplit(filters).then((r) => r.ingredientWeightKg.length + r.packagingPc.length);
       case 'PRODUCT_PERFORMANCE':
         return this.getProductPerformance(filters).then((rows) => rows.length);
       case 'FLAVOR_PERFORMANCE':

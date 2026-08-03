@@ -18,7 +18,7 @@ import {
   type PaymentMethodMixReportRow,
   type InventoryMovementReportRow,
   type InventoryConsumptionSummaryReportRow,
-  type InventorySummaryReportRow,
+  type InventorySummaryResponse,
   type AttendanceSummaryReportRow,
   type FraudAlertSummaryReportRow,
   type ProductPerformanceReportRow,
@@ -68,7 +68,6 @@ const REALTIME_ENDPOINTS: Record<string, string> = {
   DISCOUNT_COMPLIANCE: 'discount-compliance',
   INVENTORY_MOVEMENT: 'inventory-movement',
   INVENTORY_CONSUMPTION_SUMMARY: 'inventory-consumption-summary',
-  INVENTORY_SUMMARY: 'inventory-summary',
   ATTENDANCE_SUMMARY: 'attendance-summary',
   FRAUD_ALERT_SUMMARY: 'fraud-alert-summary',
 };
@@ -122,8 +121,24 @@ export function useInventoryMovementReport(filters: ReportQueryFilters, enabled 
 export function useInventoryConsumptionSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<InventoryConsumptionSummaryReportRow>('INVENTORY_CONSUMPTION_SUMMARY', filters, enabled && Boolean(filters.branch_id));
 }
+/**
+ * GET /api/reports/inventory-summary returns a bespoke two-table response
+ * (TASK 157: split ingredient-weight-KG and packaging-PC breakdowns, each
+ * with its own totals) rather than the generic ReportResponse<T>.data[]
+ * shape, so it's fetched directly rather than through useRealtimeReport,
+ * the same pattern as usePaymentMethodMixReport below.
+ */
 export function useInventorySummaryReport(filters: ReportQueryFilters, enabled = true) {
-  return useRealtimeReport<InventorySummaryReportRow>('INVENTORY_SUMMARY', filters, enabled && Boolean(filters.branch_id));
+  return useQuery({
+    queryKey: ['reports', 'INVENTORY_SUMMARY', filters],
+    queryFn: async () => {
+      const response = await apiClient<InventorySummaryResponse>(`/api/reports/inventory-summary?${buildReportQueryString(filters)}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load INVENTORY_SUMMARY report'));
+      return response.data;
+    },
+    enabled: enabled && Boolean(filters.branch_id),
+    staleTime: 60_000,
+  });
 }
 export function useAttendanceSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<AttendanceSummaryReportRow>('ATTENDANCE_SUMMARY', filters, enabled && Boolean(filters.branch_id));

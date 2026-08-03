@@ -179,56 +179,57 @@ describe('AdminReportsPage', () => {
     }
   });
 
-  it('renders every ingredient in its own inventory unit with no KG conversion, no Status column, and no warning banner (TASK 144)', () => {
+  it('renders exactly two tables — Ingredient Weight Consumption (KG) and Packaging Consumption (PC) — with items in their respective table only (TASK 157)', () => {
     vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
       data: {
         generated_at: '2026-08-01T00:00:00.000Z',
-        data: [
+        ingredient_weight_kg: [
           {
             ingredient_id: 'i1',
             ingredient_name: 'Raw Fries',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
-            unit: 'kg',
-            opening_stock: 12.5,
-            consumed_today: 2.3,
-            consumed_this_month: 54.1,
-            remaining_stock: 10.2,
+            opening_stock_kg: 12.5,
+            consumed_today_kg: 2.3,
+            consumed_this_month_kg: 54.1,
+            remaining_kg: 10.2,
           },
           {
             ingredient_id: 'i2',
             ingredient_name: 'Cheese Powder',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
-            unit: 'tbsp',
-            opening_stock: 420,
-            consumed_today: 18,
-            consumed_this_month: 260,
-            remaining_stock: 160,
+            opening_stock_kg: 0.294,
+            consumed_today_kg: 0.126,
+            consumed_this_month_kg: 1.82,
+            remaining_kg: 1.12,
           },
+        ],
+        packaging_pc: [
           {
             ingredient_id: 'i3',
-            ingredient_name: 'Vanilla Extract',
+            ingredient_name: 'Regular Cup',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
-            unit: 'tsp',
-            opening_stock: 100,
-            consumed_today: 5,
-            consumed_this_month: 40,
-            remaining_stock: 90,
+            opening_stock_pc: 300,
+            consumed_today_pc: 20,
+            consumed_this_month_pc: 240,
+            remaining_pc: 240,
           },
           {
             ingredient_id: 'i4',
-            ingredient_name: 'Salt',
+            ingredient_name: 'Kraft Bag No. 2',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
-            unit: 'g',
-            opening_stock: 250,
-            consumed_today: 35,
-            consumed_this_month: 920,
-            remaining_stock: 215,
+            opening_stock_pc: 500,
+            consumed_today_pc: 40,
+            consumed_this_month_pc: 300,
+            remaining_pc: 460,
           },
         ],
+        ingredient_weight_totals_kg: { opening_stock_kg: 12.794, consumed_today_kg: 2.426, consumed_this_month_kg: 55.92, remaining_kg: 11.32 },
+        packaging_totals_pc: { opening_stock_pc: 800, consumed_today_pc: 60, consumed_this_month_pc: 540, remaining_pc: 700 },
+        excluded_ingredient_count: 0,
       },
       isLoading: false,
       isError: false,
@@ -240,105 +241,67 @@ describe('AdminReportsPage', () => {
     selectReportTab('Inventory Summary');
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
 
-    // Every unit appears — tbsp, tsp, g, and kg — with no row excluded.
+    // Both section titles present, KG before PC.
+    expect(screen.getByText('Ingredient Weight Consumption (KG)')).toBeInTheDocument();
+    expect(screen.getByText('Packaging Consumption (PC)')).toBeInTheDocument();
+
+    // Weight items appear once, in the KG table.
     expect(screen.getByText('Raw Fries')).toBeInTheDocument();
     expect(screen.getByText('Cheese Powder')).toBeInTheDocument();
-    expect(screen.getByText('Vanilla Extract')).toBeInTheDocument();
-    expect(screen.getByText('Salt')).toBeInTheDocument();
 
-    // No leftover kg-conversion UI.
-    expect(screen.queryByText(/missing unit conversions/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('Converted')).not.toBeInTheDocument();
-    expect(screen.queryByText('Conversion required')).not.toBeInTheDocument();
+    // Packaging items appear only in the PC table.
+    expect(screen.getByText('Regular Cup')).toBeInTheDocument();
+    expect(screen.getByText('Kraft Bag No. 2')).toBeInTheDocument();
+
+    // No leftover Task-144-era UI: mixed native-unit table, per-unit totals, or Status column.
+    expect(screen.queryByText('Ingredient Consumption')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Total \(/)).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Packaging Consumption (PC)')).not.toBeInTheDocument();
-
-    // Totals grouped by unit, never mixed.
-    expect(screen.getByText('Total (kg)')).toBeInTheDocument();
-    expect(screen.getByText('Total (tbsp)')).toBeInTheDocument();
-    expect(screen.getByText('Total (tsp)')).toBeInTheDocument();
-    expect(screen.getByText('Total (g)')).toBeInTheDocument();
-  });
-
-  it('renders the Total Ingredient Weight (KG) card alongside the native-unit totals, plus the missing-conversion warning when items are excluded (TASK 149)', () => {
-    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
-      data: {
-        generated_at: '2026-08-01T00:00:00.000Z',
-        data: [
-          {
-            ingredient_id: 'i1',
-            ingredient_name: 'Raw Fries',
-            branch_id: 'branch-1',
-            branch_name: 'Main Branch',
-            unit: 'kg',
-            opening_stock: 12.5,
-            consumed_today: 2.3,
-            consumed_this_month: 54.1,
-            remaining_stock: 10.2,
-          },
-        ],
-        weight_summary_kg: {
-          opening_stock_kg: 12.5,
-          consumed_today_kg: 2.3,
-          consumed_this_month_kg: 54.1,
-          remaining_kg: 10.2,
-          included_item_count: 1,
-          excluded_item_count: 1,
-        },
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    } as never);
-
-    render(<AdminReportsPage />);
-    selectCategory('Inventory');
-    selectReportTab('Inventory Summary');
-    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
-
-    // Native-unit table and totals are still there, unchanged.
-    expect(screen.getByText('Raw Fries')).toBeInTheDocument();
-    expect(screen.getByText('Total (kg)')).toBeInTheDocument();
-
-    // Separate KG summary card, additive to the native totals above.
-    expect(screen.getByText('Total Ingredient Weight (KG)')).toBeInTheDocument();
-    expect(screen.getByText('Opening Stock (KG)')).toBeInTheDocument();
-    expect(screen.getByText('Consumed Today (KG)')).toBeInTheDocument();
-    expect(screen.getByText('Consumed This Month (KG)')).toBeInTheDocument();
-    expect(screen.getByText('Remaining (KG)')).toBeInTheDocument();
-    expect(screen.getByText(/Some non-count ingredients are excluded from the KG total/i)).toBeInTheDocument();
-  });
-
-  it('omits the Total Ingredient Weight (KG) card and its warning when weight_summary_kg is absent from the response', () => {
-    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
-      data: {
-        generated_at: '2026-08-01T00:00:00.000Z',
-        data: [
-          {
-            ingredient_id: 'i1',
-            ingredient_name: 'Raw Fries',
-            branch_id: 'branch-1',
-            branch_name: 'Main Branch',
-            unit: 'kg',
-            opening_stock: 12.5,
-            consumed_today: 2.3,
-            consumed_this_month: 54.1,
-            remaining_stock: 10.2,
-          },
-        ],
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    } as never);
-
-    render(<AdminReportsPage />);
-    selectCategory('Inventory');
-    selectReportTab('Inventory Summary');
-    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
-
     expect(screen.queryByText('Total Ingredient Weight (KG)')).not.toBeInTheDocument();
-    expect(screen.queryByText(/excluded from the KG total/i)).not.toBeInTheDocument();
+
+    // Totals appear as a final row inside each table, matching each table's own totals.
+    expect(screen.getAllByText('Total')).toHaveLength(2);
+    expect(screen.getByText(11.32)).toBeInTheDocument();
+    expect(screen.getByText(700)).toBeInTheDocument();
+  });
+
+  it('shows the missing-conversion warning when excluded_ingredient_count > 0, and omits it when zero', () => {
+    const baseData = {
+      generated_at: '2026-08-01T00:00:00.000Z',
+      ingredient_weight_kg: [],
+      packaging_pc: [],
+      ingredient_weight_totals_kg: { opening_stock_kg: 0, consumed_today_kg: 0, consumed_this_month_kg: 0, remaining_kg: 0 },
+      packaging_totals_pc: { opening_stock_pc: 0, consumed_today_pc: 0, consumed_this_month_pc: 0, remaining_pc: 0 },
+    };
+
+    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
+      data: { ...baseData, excluded_ingredient_count: 1 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<AdminReportsPage />);
+    selectCategory('Inventory');
+    selectReportTab('Inventory Summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    expect(screen.getByText(/Some ingredients are excluded because no weight conversion is configured/i)).toBeInTheDocument();
+
+    vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
+      data: { ...baseData, excluded_ingredient_count: 0 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never);
+
+    cleanup();
+    render(<AdminReportsPage />);
+    selectCategory('Inventory');
+    selectReportTab('Inventory Summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+
+    expect(screen.queryByText(/excluded because no weight conversion/i)).not.toBeInTheDocument();
   });
 
   it('enables only the active tab\'s data hook', () => {

@@ -167,45 +167,54 @@ export const InventoryConsumptionSummaryReportRowSchema = z.object({
 });
 export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsumptionSummaryReportRowSchema>;
 
-// Per-ingredient stock snapshot: opening balance for today, consumption
-// today/this-month (SALE movements only, matching the Branch Inventory
-// list's "Consumed Today" column), and the current remaining balance.
-// Task 144: every row displays using the inventory item's own base unit —
-// no kg conversion, no CONVERSION_REQUIRED status, no section split between
-// ingredients and packaging. `unit` is always the InventoryItem's base unit
-// code as stored (kg, g, tbsp, tsp, pcs, ml, L, ...), never converted.
-// Distinct from InventoryConsumptionSummaryReportRow above, which is a
-// date-range consumption total with no stock-level or opening/remaining data.
-export const InventorySummaryReportRowSchema = z.object({
+// TASK 157 — Inventory Summary is split into two independently-dimensioned
+// tables instead of one mixed-unit list (TASK 144/149's InventorySummaryReportRow/
+// WeightSummaryKg pair, now replaced): every non-COUNT-dimension (weight/
+// volume) ingredient with a resolvable kg conversion gets one row here, in
+// kg. Items with no resolvable conversion are excluded from this table
+// entirely (counted in excluded_ingredient_count on the response instead),
+// never shown with an invented factor.
+export const IngredientWeightKgRowSchema = z.object({
   ingredient_id: z.uuid(),
   ingredient_name: z.string(),
   branch_id: z.uuid(),
   branch_name: z.string(),
-  unit: z.string(),
-  opening_stock: z.number(),
-  consumed_today: z.number(),
-  consumed_this_month: z.number(),
-  remaining_stock: z.number(),
-});
-export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
-
-// TASK 149 — org-wide (or per-branch, per the same filters as the rows
-// above) weight roll-up in kilograms, additive to InventorySummaryReportRow's
-// native-unit rows above (never replacing them). Only non-COUNT-dimension
-// items (weight/volume ingredients) ever contribute; packaging/count items
-// are never included and never counted toward excluded_item_count either —
-// they're simply out of scope for a weight total. excluded_item_count is
-// non-COUNT items with no resolvable conversion to kg (native rows for those
-// items still render — this only drops their KG contribution).
-export const WeightSummaryKgSchema = z.object({
   opening_stock_kg: z.number(),
   consumed_today_kg: z.number(),
   consumed_this_month_kg: z.number(),
   remaining_kg: z.number(),
-  included_item_count: z.number().int(),
-  excluded_item_count: z.number().int(),
 });
-export type WeightSummaryKg = z.infer<typeof WeightSummaryKgSchema>;
+export type IngredientWeightKgRow = z.infer<typeof IngredientWeightKgRowSchema>;
+
+// TASK 157 — every COUNT-dimension (packaging) item, displayed in its own
+// native quantity (never a weight conversion — COUNT items never query one).
+export const PackagingPcRowSchema = z.object({
+  ingredient_id: z.uuid(),
+  ingredient_name: z.string(),
+  branch_id: z.uuid(),
+  branch_name: z.string(),
+  opening_stock_pc: z.number(),
+  consumed_today_pc: z.number(),
+  consumed_this_month_pc: z.number(),
+  remaining_pc: z.number(),
+});
+export type PackagingPcRow = z.infer<typeof PackagingPcRowSchema>;
+
+export const IngredientWeightTotalsKgSchema = z.object({
+  opening_stock_kg: z.number(),
+  consumed_today_kg: z.number(),
+  consumed_this_month_kg: z.number(),
+  remaining_kg: z.number(),
+});
+export type IngredientWeightTotalsKg = z.infer<typeof IngredientWeightTotalsKgSchema>;
+
+export const PackagingTotalsPcSchema = z.object({
+  opening_stock_pc: z.number(),
+  consumed_today_pc: z.number(),
+  consumed_this_month_pc: z.number(),
+  remaining_pc: z.number(),
+});
+export type PackagingTotalsPc = z.infer<typeof PackagingTotalsPcSchema>;
 
 export const AttendanceSummaryReportRowSchema = z.object({
   employee_id: z.uuid(),
@@ -401,8 +410,6 @@ export interface ReportResponse<T> {
   total: number;
   page: number;
   limit: number;
-  // Only populated for INVENTORY_SUMMARY — every other report type leaves this undefined.
-  weight_summary_kg?: WeightSummaryKg;
 }
 
 export interface SnapshotResponse<T> {
@@ -410,4 +417,18 @@ export interface SnapshotResponse<T> {
   computed_at: string;
   branch_id: string | null;
   data: T[];
+}
+
+// TASK 157 — INVENTORY_SUMMARY's bespoke response shape: two independently-
+// dimensioned tables (ingredient weight in kg, packaging in native count)
+// plus their own totals, instead of ReportResponse<T>'s single data[] + total.
+export interface InventorySummaryResponse {
+  report_type: 'INVENTORY_SUMMARY';
+  generated_at: string;
+  filters: { branch_id?: string; date_from?: string; date_to?: string; page: number; limit: number };
+  ingredient_weight_kg: IngredientWeightKgRow[];
+  packaging_pc: PackagingPcRow[];
+  ingredient_weight_totals_kg: IngredientWeightTotalsKg;
+  packaging_totals_pc: PackagingTotalsPc;
+  excluded_ingredient_count: number;
 }

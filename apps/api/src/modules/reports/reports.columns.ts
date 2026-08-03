@@ -212,8 +212,12 @@ export async function getReportRows(reportType: ReportType, filters: ReportFilte
       return reportsRepository.getInventoryMovement(filters);
     case 'INVENTORY_CONSUMPTION_SUMMARY':
       return reportsRepository.getInventoryConsumptionSummary(filters);
+    // INVENTORY_SUMMARY has no flat-row shape (TASK 157 split it into two
+    // tables) — it's special-cased in reports.service.ts's requestExport and
+    // report.queue.ts's processGenerateExport instead of going through this
+    // generic per-row/per-column path.
     case 'INVENTORY_SUMMARY':
-      return reportsRepository.getInventorySummary(filters);
+      return [];
     case 'ATTENDANCE_SUMMARY':
       return reportsRepository.getAttendanceSummary(filters);
     case 'FRAUD_ALERT_SUMMARY':

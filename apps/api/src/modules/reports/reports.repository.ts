@@ -620,14 +620,18 @@ export const reportsRepository = {
   // SALE movements, matching the Branch Inventory list's "Consumed Today"
   // column (getConsumedTodayByBranch) for consistency across the app.
   //
-  // TASK 157 — splits the snapshot into two independently-dimensioned
+  // TASK 157/165 — splits the snapshot into two independently-dimensioned
   // tables instead of one mixed-unit list (TASK 144/149's getInventorySummary/
   // getInventorySummaryWeightKg pair, now merged into this one call):
-  //   - ingredientWeightKg: every non-COUNT-dimension item converted to kg
-  //     (identity for kg, /1000 for g, item-specific-then-global conversion
-  //     for everything else via resolveKgFactor). Items with no resolvable
-  //     factor are excluded from this table entirely (never shown with an
-  //     invented value) and counted in excludedIngredientCount instead.
+  //   - ingredientWeightKg: every non-COUNT-dimension item, always shown, in
+  //     its native base unit. When a kg conversion resolves (identity for
+  //     kg, /1000 for g, item-specific-then-global conversion for everything
+  //     else via resolveKgFactor) the row also carries kg columns and
+  //     status: 'converted'. When no factor resolves, the row still appears
+  //     (native columns only, kg columns null, status: 'conversion_needed')
+  //     — never hidden, never shown with an invented kg value — and counts
+  //     toward excludedIngredientCount, which means "excluded from the KG
+  //     totals", not "excluded from the table".
   //   - packagingPc: every COUNT-dimension item, in its native quantity —
   //     COUNT items never query a conversion, never contribute to the KG
   //     table, and never count toward excludedIngredientCount.
@@ -684,6 +688,22 @@ export const reportsRepository = {
 
       if (factor === null) {
         excludedIngredientCount += 1;
+        ingredientWeightKg.push({
+          ingredient_id: s.inventoryItemId,
+          ingredient_name: s.itemName,
+          branch_id: s.branchId,
+          branch_name: s.branchName,
+          unit_code: s.unitCode,
+          opening_stock: s.opening,
+          consumed_today: s.consumedToday,
+          consumed_this_month: s.consumedMonth,
+          remaining: s.remaining,
+          opening_stock_kg: null,
+          consumed_today_kg: null,
+          consumed_this_month_kg: null,
+          remaining_kg: null,
+          status: 'conversion_needed',
+        });
         continue;
       }
 
@@ -697,10 +717,16 @@ export const reportsRepository = {
         ingredient_name: s.itemName,
         branch_id: s.branchId,
         branch_name: s.branchName,
+        unit_code: s.unitCode,
+        opening_stock: s.opening,
+        consumed_today: s.consumedToday,
+        consumed_this_month: s.consumedMonth,
+        remaining: s.remaining,
         opening_stock_kg: openingKg,
         consumed_today_kg: consumedTodayKg,
         consumed_this_month_kg: consumedMonthKg,
         remaining_kg: remainingKg,
+        status: 'converted',
       });
       weightSums.opening += openingKg;
       weightSums.today += consumedTodayKg;

@@ -9,10 +9,16 @@ function kgRow(overrides: Partial<IngredientWeightKgRow>): IngredientWeightKgRow
     ingredient_name: 'Test Ingredient',
     branch_id: '22222222-2222-2222-2222-222222222222',
     branch_name: 'SM North',
+    unit_code: 'g',
+    opening_stock: 0,
+    consumed_today: 0,
+    consumed_this_month: 0,
+    remaining: 0,
     opening_stock_kg: 0,
     consumed_today_kg: 0,
     consumed_this_month_kg: 0,
     remaining_kg: 0,
+    status: 'converted',
     ...overrides,
   };
 }
@@ -31,8 +37,45 @@ function pcRow(overrides: Partial<PackagingPcRow>): PackagingPcRow {
   };
 }
 
-const rawFries = kgRow({ ingredient_name: 'Raw Fries', opening_stock_kg: 12.5, consumed_today_kg: 2.3, consumed_this_month_kg: 54.1, remaining_kg: 10.2 });
-const cheesePowder = kgRow({ ingredient_name: 'Cheese Powder', opening_stock_kg: 0.294, consumed_today_kg: 0.126, consumed_this_month_kg: 1.82, remaining_kg: 1.12 });
+const rawFries = kgRow({
+  ingredient_name: 'Raw Fries',
+  unit_code: 'g',
+  opening_stock: 12500,
+  consumed_today: 2300,
+  consumed_this_month: 54100,
+  remaining: 10200,
+  opening_stock_kg: 12.5,
+  consumed_today_kg: 2.3,
+  consumed_this_month_kg: 54.1,
+  remaining_kg: 10.2,
+  status: 'converted',
+});
+const cheesePowder = kgRow({
+  ingredient_name: 'Cheese Powder',
+  unit_code: 'tbsp',
+  opening_stock: 42,
+  consumed_today: 18,
+  consumed_this_month: 260,
+  remaining: 160,
+  opening_stock_kg: 0.294,
+  consumed_today_kg: 0.126,
+  consumed_this_month_kg: 1.82,
+  remaining_kg: 1.12,
+  status: 'converted',
+});
+const mysteryPowder = kgRow({
+  ingredient_name: 'Mystery Powder',
+  unit_code: 'tbsp',
+  opening_stock: 50,
+  consumed_today: 0,
+  consumed_this_month: 0,
+  remaining: 50,
+  opening_stock_kg: null,
+  consumed_today_kg: null,
+  consumed_this_month_kg: null,
+  remaining_kg: null,
+  status: 'conversion_needed',
+});
 
 const regularCup = pcRow({ ingredient_name: 'Regular Cup', opening_stock_pc: 300, consumed_today_pc: 20, consumed_this_month_pc: 240, remaining_pc: 240 });
 const kraftBag = pcRow({ ingredient_name: 'Kraft Bag No. 2', opening_stock_pc: 500, consumed_today_pc: 40, consumed_this_month_pc: 300, remaining_pc: 460 });
@@ -64,12 +107,20 @@ describe('generateInventorySummaryCsv', () => {
     expect(csv.indexOf('Ingredient Weight Consumption (KG)')).toBeLessThan(csv.indexOf('Packaging Consumption (PC)'));
   });
 
-  it('renders KG rows with the Ingredient/Opening/Consumed Today/Consumed This Month/Remaining (KG) header and no unit column', () => {
+  it('renders KG rows with the Ingredient/Base Unit/native/KG/Status header', () => {
     const csv = generateInventorySummaryCsv(fullSplit).toString('utf-8');
 
-    expect(csv).toContain('Ingredient,Opening Stock (KG),Consumed Today (KG),Consumed This Month (KG),Remaining (KG)');
-    expect(csv).toContain('Raw Fries,12.5,2.3,54.1,10.2');
-    expect(csv).toContain('Cheese Powder,0.294,0.126,1.82,1.12');
+    expect(csv).toContain(
+      'Ingredient,Base Unit,Opening Stock,Consumed Today,Consumed This Month,Remaining,Opening Stock (KG),Consumed Today (KG),Consumed This Month (KG),Remaining (KG),Status',
+    );
+    expect(csv).toContain('Raw Fries,g,12500,2300,54100,10200,12.5,2.3,54.1,10.2,Converted');
+    expect(csv).toContain('Cheese Powder,tbsp,42,18,260,160,0.294,0.126,1.82,1.12,Converted');
+  });
+
+  it('never hides a row lacking a KG conversion — shows native columns, "—" in KG columns, and Conversion Needed status', () => {
+    const csv = generateInventorySummaryCsv(split({ ingredientWeightKg: [mysteryPowder], excludedIngredientCount: 1 })).toString('utf-8');
+
+    expect(csv).toContain('Mystery Powder,tbsp,50,0,0,50,—,—,—,—,Conversion Needed');
   });
 
   it('renders PC rows with the Packaging header and no g/kg/tbsp/tsp rows mixed in', () => {
@@ -84,7 +135,7 @@ describe('generateInventorySummaryCsv', () => {
     const csv = generateInventorySummaryCsv(fullSplit).toString('utf-8');
     const lines = csv.split('\n');
 
-    expect(lines).toContain('Total,12.794,2.426,55.92,11.32');
+    expect(lines).toContain('Total,,,,,,12.794,2.426,55.92,11.32,');
     expect(lines).toContain('Total,800,60,540,700');
   });
 
@@ -92,7 +143,7 @@ describe('generateInventorySummaryCsv', () => {
     const csv = generateInventorySummaryCsv(fullSplit).toString('utf-8');
 
     expect(csv).not.toContain('Ingredient Consumption');
-    expect(csv).not.toContain('Unit,Opening Stock,Consumed Today');
+    expect(csv).not.toContain('Ingredient,Unit,Opening Stock,Consumed Today');
     expect(csv).not.toContain('Total (kg)');
     expect(csv).not.toContain('Total (pcs)');
   });
@@ -101,8 +152,8 @@ describe('generateInventorySummaryCsv', () => {
     const withWarning = generateInventorySummaryCsv(split({ excludedIngredientCount: 1 })).toString('utf-8');
     const withoutWarning = generateInventorySummaryCsv(split({ excludedIngredientCount: 0 })).toString('utf-8');
 
-    expect(withWarning).toContain('Some ingredients are excluded because no weight conversion is configured.');
-    expect(withoutWarning).not.toContain('excluded because no weight conversion');
+    expect(withWarning).toContain('Some ingredients have no weight conversion configured');
+    expect(withoutWarning).not.toContain('no weight conversion configured');
   });
 });
 

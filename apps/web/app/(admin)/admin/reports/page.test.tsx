@@ -189,20 +189,48 @@ describe('AdminReportsPage', () => {
             ingredient_name: 'Raw Fries',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
+            unit_code: 'g',
+            opening_stock: 12500,
+            consumed_today: 2300,
+            consumed_this_month: 54100,
+            remaining: 10200,
             opening_stock_kg: 12.5,
             consumed_today_kg: 2.3,
             consumed_this_month_kg: 54.1,
             remaining_kg: 10.2,
+            status: 'converted',
           },
           {
             ingredient_id: 'i2',
             ingredient_name: 'Cheese Powder',
             branch_id: 'branch-1',
             branch_name: 'Main Branch',
+            unit_code: 'tbsp',
+            opening_stock: 42,
+            consumed_today: 18,
+            consumed_this_month: 260,
+            remaining: 160,
             opening_stock_kg: 0.294,
             consumed_today_kg: 0.126,
             consumed_this_month_kg: 1.82,
             remaining_kg: 1.12,
+            status: 'converted',
+          },
+          {
+            ingredient_id: 'i5',
+            ingredient_name: 'Mystery Powder',
+            branch_id: 'branch-1',
+            branch_name: 'Main Branch',
+            unit_code: 'tbsp',
+            opening_stock: 50,
+            consumed_today: 0,
+            consumed_this_month: 0,
+            remaining: 50,
+            opening_stock_kg: null,
+            consumed_today_kg: null,
+            consumed_this_month_kg: null,
+            remaining_kg: null,
+            status: 'conversion_needed',
           },
         ],
         packaging_pc: [
@@ -249,14 +277,21 @@ describe('AdminReportsPage', () => {
     expect(screen.getByText('Raw Fries')).toBeInTheDocument();
     expect(screen.getByText('Cheese Powder')).toBeInTheDocument();
 
+    // Ingredient with no resolvable KG conversion is still shown (TASK 165 — never hidden),
+    // with a Conversion Needed status instead of an invented KG value.
+    expect(screen.getByText('Mystery Powder')).toBeInTheDocument();
+    expect(screen.getByText('Conversion Needed')).toBeInTheDocument();
+    expect(screen.getAllByText('Converted').length).toBeGreaterThan(0);
+
     // Packaging items appear only in the PC table.
     expect(screen.getByText('Regular Cup')).toBeInTheDocument();
     expect(screen.getByText('Kraft Bag No. 2')).toBeInTheDocument();
 
-    // No leftover Task-144-era UI: mixed native-unit table, per-unit totals, or Status column.
+    // No leftover Task-144-era UI: mixed native-unit table or per-unit totals.
+    // Status column now exists on the ingredient table (TASK 165).
     expect(screen.queryByText('Ingredient Consumption')).not.toBeInTheDocument();
     expect(screen.queryByText(/^Total \(/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Status' })).toBeInTheDocument();
     expect(screen.queryByText('Total Ingredient Weight (KG)')).not.toBeInTheDocument();
 
     // Totals appear as a final row inside each table, matching each table's own totals.
@@ -286,7 +321,7 @@ describe('AdminReportsPage', () => {
     selectReportTab('Inventory Summary');
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
 
-    expect(screen.getByText(/Some ingredients are excluded because no weight conversion is configured/i)).toBeInTheDocument();
+    expect(screen.getByText(/Some ingredients have no weight conversion configured/i)).toBeInTheDocument();
 
     vi.mocked(reportsHooks.useInventorySummaryReport).mockReturnValue({
       data: { ...baseData, excluded_ingredient_count: 0 },
@@ -301,7 +336,7 @@ describe('AdminReportsPage', () => {
     selectReportTab('Inventory Summary');
     fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
 
-    expect(screen.queryByText(/excluded because no weight conversion/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no weight conversion configured/i)).not.toBeInTheDocument();
   });
 
   it('enables only the active tab\'s data hook', () => {

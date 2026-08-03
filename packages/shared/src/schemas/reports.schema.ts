@@ -167,22 +167,30 @@ export const InventoryConsumptionSummaryReportRowSchema = z.object({
 });
 export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsumptionSummaryReportRowSchema>;
 
-// TASK 157 — Inventory Summary is split into two independently-dimensioned
+// TASK 157/165 — Inventory Summary is split into two independently-dimensioned
 // tables instead of one mixed-unit list (TASK 144/149's InventorySummaryReportRow/
 // WeightSummaryKg pair, now replaced): every non-COUNT-dimension (weight/
-// volume) ingredient with a resolvable kg conversion gets one row here, in
-// kg. Items with no resolvable conversion are excluded from this table
-// entirely (counted in excluded_ingredient_count on the response instead),
+// volume) ingredient gets one row here, always — in its native base unit plus
+// a kg conversion when one is resolvable. Items with no resolvable conversion
+// still get a row (native columns populated, kg columns null, status
+// 'conversion_needed') and are counted in excluded_ingredient_count on the
+// response — excluded from the KG totals only, never from this list, and
 // never shown with an invented factor.
 export const IngredientWeightKgRowSchema = z.object({
   ingredient_id: z.uuid(),
   ingredient_name: z.string(),
   branch_id: z.uuid(),
   branch_name: z.string(),
-  opening_stock_kg: z.number(),
-  consumed_today_kg: z.number(),
-  consumed_this_month_kg: z.number(),
-  remaining_kg: z.number(),
+  unit_code: z.string(),
+  opening_stock: z.number(),
+  consumed_today: z.number(),
+  consumed_this_month: z.number(),
+  remaining: z.number(),
+  opening_stock_kg: z.number().nullable(),
+  consumed_today_kg: z.number().nullable(),
+  consumed_this_month_kg: z.number().nullable(),
+  remaining_kg: z.number().nullable(),
+  status: z.enum(['converted', 'conversion_needed']),
 });
 export type IngredientWeightKgRow = z.infer<typeof IngredientWeightKgRowSchema>;
 

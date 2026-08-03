@@ -16,7 +16,7 @@ import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { escapeCsvField } from './csv.js';
 import { manilaDateKey } from '../manila-time.js';
 
-const MISSING_CONVERSION_WARNING = 'Some ingredients are excluded because no weight conversion is configured.';
+const MISSING_CONVERSION_WARNING = 'Some ingredients have no weight conversion configured — shown in native units only, excluded from the KG totals.';
 
 export interface InventorySummarySplit {
   ingredientWeightKg: IngredientWeightKgRow[];
@@ -28,14 +28,32 @@ export interface InventorySummarySplit {
 
 const e = React.createElement;
 
-const KG_HEADERS = ['Ingredient', 'Opening Stock (KG)', 'Consumed Today (KG)', 'Consumed This Month (KG)', 'Remaining (KG)'];
+const KG_HEADERS = [
+  'Ingredient',
+  'Base Unit',
+  'Opening Stock',
+  'Consumed Today',
+  'Consumed This Month',
+  'Remaining',
+  'Opening Stock (KG)',
+  'Consumed Today (KG)',
+  'Consumed This Month (KG)',
+  'Remaining (KG)',
+  'Status',
+];
 const PC_HEADERS = ['Packaging', 'Opening Stock (PC)', 'Consumed Today (PC)', 'Consumed This Month (PC)', 'Remaining (PC)'];
+
+const statusLabel = (status: IngredientWeightKgRow['status']) => (status === 'converted' ? 'Converted' : 'Conversion Needed');
+const kgCell = (v: number | null) => (v === null ? '—' : v);
 
 /**
  * CSV: exactly two sections — "Ingredient Weight Consumption (KG)" then
  * "Packaging Consumption (PC)", each with its own header row, data rows, and
- * a single Total row, separated by a blank line. No mixed native-unit
- * table, no duplicate KG summary section.
+ * a single Total row, separated by a blank line. Every non-COUNT ingredient
+ * gets a row regardless of whether a KG conversion exists — rows without one
+ * show '—' in the KG columns and 'Conversion Needed' in Status; the Total
+ * row only sums converted rows, so its native-unit columns stay blank
+ * (native units differ per row and can't be meaningfully summed).
  */
 export function generateInventorySummaryCsv(split: InventorySummarySplit): Buffer {
   const { ingredientWeightKg, packagingPc, ingredientWeightTotalsKg, packagingTotalsPc, excludedIngredientCount } = split;
@@ -44,14 +62,34 @@ export function generateInventorySummaryCsv(split: InventorySummarySplit): Buffe
     'Ingredient Weight Consumption (KG)',
     KG_HEADERS.join(','),
     ...ingredientWeightKg.map((r) =>
-      [r.ingredient_name, r.opening_stock_kg, r.consumed_today_kg, r.consumed_this_month_kg, r.remaining_kg].map(escapeCsvField).join(','),
+      [
+        r.ingredient_name,
+        r.unit_code,
+        r.opening_stock,
+        r.consumed_today,
+        r.consumed_this_month,
+        r.remaining,
+        kgCell(r.opening_stock_kg),
+        kgCell(r.consumed_today_kg),
+        kgCell(r.consumed_this_month_kg),
+        kgCell(r.remaining_kg),
+        statusLabel(r.status),
+      ]
+        .map(escapeCsvField)
+        .join(','),
     ),
     [
       'Total',
+      '',
+      '',
+      '',
+      '',
+      '',
       ingredientWeightTotalsKg.opening_stock_kg,
       ingredientWeightTotalsKg.consumed_today_kg,
       ingredientWeightTotalsKg.consumed_this_month_kg,
       ingredientWeightTotalsKg.remaining_kg,
+      '',
     ]
       .map(escapeCsvField)
       .join(','),
@@ -128,8 +166,32 @@ export async function generateInventorySummaryPdf(
 
   const kgTable = buildTable(
     KG_HEADERS,
-    ingredientWeightKg.map((r) => [r.ingredient_name, r.opening_stock_kg, r.consumed_today_kg, r.consumed_this_month_kg, r.remaining_kg]),
-    ['Total', ingredientWeightTotalsKg.opening_stock_kg, ingredientWeightTotalsKg.consumed_today_kg, ingredientWeightTotalsKg.consumed_this_month_kg, ingredientWeightTotalsKg.remaining_kg],
+    ingredientWeightKg.map((r) => [
+      r.ingredient_name,
+      r.unit_code,
+      r.opening_stock,
+      r.consumed_today,
+      r.consumed_this_month,
+      r.remaining,
+      kgCell(r.opening_stock_kg),
+      kgCell(r.consumed_today_kg),
+      kgCell(r.consumed_this_month_kg),
+      kgCell(r.remaining_kg),
+      statusLabel(r.status),
+    ]),
+    [
+      'Total',
+      '',
+      '',
+      '',
+      '',
+      '',
+      ingredientWeightTotalsKg.opening_stock_kg,
+      ingredientWeightTotalsKg.consumed_today_kg,
+      ingredientWeightTotalsKg.consumed_this_month_kg,
+      ingredientWeightTotalsKg.remaining_kg,
+      '',
+    ],
   );
 
   const pcTable = buildTable(

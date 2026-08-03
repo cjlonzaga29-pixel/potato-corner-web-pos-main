@@ -392,10 +392,16 @@ describe('reportsRepository.getInventorySummarySplit', () => {
         ingredient_name: 'Salt',
         branch_id: 'b1',
         branch_name: 'SM North',
+        unit_code: 'g',
+        opening_stock: 1000,
+        consumed_today: 0,
+        consumed_this_month: 0,
+        remaining: 1000,
         opening_stock_kg: 1,
         consumed_today_kg: 0,
         consumed_this_month_kg: 0,
         remaining_kg: 1,
+        status: 'converted',
       },
     ]);
     expect(result.excludedIngredientCount).toBe(0);
@@ -497,7 +503,7 @@ describe('reportsRepository.getInventorySummarySplit', () => {
     expect(fries?.remaining_kg).toBe(0.06); // 10 tbsp x 6g = 60g = 0.06kg
   });
 
-  it('excludes an item from the KG table (never invents a factor) and increments excludedIngredientCount when no conversion is configured', async () => {
+  it('still shows an item with no resolvable conversion (never invents a factor) — native columns populated, kg columns null, status conversion_needed — and increments excludedIngredientCount (excluded from KG totals only)', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       {
         branchId: 'b1',
@@ -511,8 +517,26 @@ describe('reportsRepository.getInventorySummarySplit', () => {
 
     const result = await reportsRepository.getInventorySummarySplit({ branchId: 'b1', page: 1, limit: 25 });
 
-    expect(result.ingredientWeightKg).toEqual([]);
+    expect(result.ingredientWeightKg).toEqual([
+      {
+        ingredient_id: 'item-mystery',
+        ingredient_name: 'Mystery Powder',
+        branch_id: 'b1',
+        branch_name: 'SM North',
+        unit_code: 'tbsp',
+        opening_stock: 50,
+        consumed_today: 0,
+        consumed_this_month: 0,
+        remaining: 50,
+        opening_stock_kg: null,
+        consumed_today_kg: null,
+        consumed_this_month_kg: null,
+        remaining_kg: null,
+        status: 'conversion_needed',
+      },
+    ]);
     expect(result.excludedIngredientCount).toBe(1);
+    expect(result.ingredientWeightTotalsKg).toEqual({ opening_stock_kg: 0, consumed_today_kg: 0, consumed_this_month_kg: 0, remaining_kg: 0 });
     expect(prisma.inventoryItemUnitConversion.findUnique).toHaveBeenCalled();
     expect(prisma.unitConversion.findUnique).toHaveBeenCalled();
   });
@@ -584,7 +608,7 @@ describe('reportsRepository.getInventorySummarySplit', () => {
 
     const result = await reportsRepository.getInventorySummarySplit({ branchId: 'b1', page: 1, limit: 25 });
 
-    const expectedSum = result.ingredientWeightKg.reduce((sum, r) => sum + r.remaining_kg, 0);
+    const expectedSum = result.ingredientWeightKg.reduce((sum, r) => sum + (r.remaining_kg ?? 0), 0);
     expect(result.ingredientWeightTotalsKg.remaining_kg).toBeCloseTo(expectedSum, 6);
     expect(result.ingredientWeightTotalsKg.remaining_kg).toBeCloseTo(1.536 + 10, 3);
   });

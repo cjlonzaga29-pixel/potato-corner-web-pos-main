@@ -200,16 +200,34 @@ const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
   { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-// TASK 157: Inventory Summary is split into two independently-dimensioned
+// TASK 157/165: Inventory Summary is split into two independently-dimensioned
 // tables — Ingredient Weight Consumption (KG) and Packaging Consumption
-// (PC) — instead of one mixed-unit table (TASK 144). No Status column, no
-// per-unit grouping.
+// (PC) — instead of one mixed-unit table (TASK 144). Every non-COUNT
+// ingredient gets a row regardless of whether a KG conversion is configured;
+// rows without one show "—" in the KG columns and a "Conversion Needed"
+// Status badge instead of being hidden (TASK 165 — previously such rows
+// were silently dropped from this table entirely).
+const kgOrDash = (v: number | null) => (v === null ? '—' : v);
 const ingredientWeightKgColumns: ColumnDef<IngredientWeightKgRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { accessorKey: 'opening_stock_kg', header: 'Opening Stock (KG)' },
-  { accessorKey: 'consumed_today_kg', header: 'Consumed Today (KG)' },
-  { accessorKey: 'consumed_this_month_kg', header: 'Consumed This Month (KG)' },
-  { accessorKey: 'remaining_kg', header: 'Remaining (KG)' },
+  { accessorKey: 'unit_code', header: 'Base Unit' },
+  { accessorKey: 'opening_stock', header: 'Opening Stock' },
+  { accessorKey: 'consumed_today', header: 'Consumed Today' },
+  { accessorKey: 'consumed_this_month', header: 'Consumed This Month' },
+  { accessorKey: 'remaining', header: 'Remaining' },
+  { accessorKey: 'opening_stock_kg', header: 'Opening Stock (KG)', cell: ({ row }) => kgOrDash(row.original.opening_stock_kg) },
+  { accessorKey: 'consumed_today_kg', header: 'Consumed Today (KG)', cell: ({ row }) => kgOrDash(row.original.consumed_today_kg) },
+  { accessorKey: 'consumed_this_month_kg', header: 'Consumed This Month (KG)', cell: ({ row }) => kgOrDash(row.original.consumed_this_month_kg) },
+  { accessorKey: 'remaining_kg', header: 'Remaining (KG)', cell: ({ row }) => kgOrDash(row.original.remaining_kg) },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => (
+      <Badge variant={row.original.status === 'converted' ? 'default' : 'secondary'}>
+        {row.original.status === 'converted' ? 'Converted' : 'Conversion Needed'}
+      </Badge>
+    ),
+  },
 ];
 
 const packagingPcColumns: ColumnDef<PackagingPcRow>[] = [
@@ -690,7 +708,7 @@ function AdminReportsPageContent() {
                     )}
                     {excludedCount > 0 && (
                       <p className="mt-2 text-sm text-muted-foreground">
-                        Some ingredients are excluded because no weight conversion is configured.
+                        Some ingredients have no weight conversion configured — shown in native units only, excluded from the KG totals.
                       </p>
                     )}
 

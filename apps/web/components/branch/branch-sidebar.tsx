@@ -29,9 +29,11 @@ import {
 import { ROLE_LABELS, type Role } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
+import { useUiStore } from '@/stores/ui.store';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 import type { NavItem } from '@/components/shared/nav-types';
 
@@ -105,6 +107,8 @@ export function BranchSidebar() {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const isMobileNavOpen = useUiStore((state) => state.isMobileNavOpen);
+  const setMobileNavOpen = useUiStore((state) => state.setMobileNavOpen);
 
   async function handleLogout() {
     setIsLoggingOut(true);
@@ -118,9 +122,10 @@ export function BranchSidebar() {
   const navGroups = branchNavGroupsForRole(user?.role);
 
   return (
+    <>
     <aside
       className={cn(
-        'glass-panel flex h-screen flex-col border-r transition-all duration-200',
+        'glass-panel hidden h-screen flex-col border-r transition-all duration-200 lg:flex',
         collapsed ? 'w-16' : 'w-64',
       )}
     >
@@ -213,5 +218,77 @@ export function BranchSidebar() {
         </div>
       </div>
     </aside>
+
+    <Sheet open={isMobileNavOpen} onOpenChange={setMobileNavOpen}>
+      <SheetContent side="left" className="flex w-72 max-w-[85vw] flex-col gap-0 p-0 lg:hidden">
+        <SheetTitle className="sr-only">Navigation</SheetTitle>
+        <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border/60 px-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
+            PC
+          </div>
+          <span className="text-sm font-semibold tracking-tight">Potato Corner</span>
+        </div>
+
+        <nav className="flex-1 space-y-4 overflow-y-auto p-2">
+          {navGroups.map(({ group, items }) => (
+            <div key={group} className="space-y-1">
+              <p className="px-3 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">{group}</p>
+              {items.map((item) => {
+                const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href ?? '#'}
+                    onClick={() => setMobileNavOpen(false)}
+                    className={cn(
+                      'flex min-h-11 items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                      isActive
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                    )}
+                  >
+                    <NavLinkIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+                    <span className="flex-1 truncate">{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        <div className="shrink-0 border-t border-border/60 p-3">
+          <div className="flex items-center gap-3 rounded-lg p-1.5">
+            <Link
+              href="/branch/profile"
+              onClick={() => setMobileNavOpen(false)}
+              className="flex min-w-0 flex-1 items-center gap-3"
+            >
+              <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+                <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+                  {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">
+                  {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+              </div>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 shrink-0"
+              onClick={() => void handleLogout()}
+              disabled={isLoggingOut}
+              aria-label="Log out"
+            >
+              {isLoggingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+    </>
   );
 }

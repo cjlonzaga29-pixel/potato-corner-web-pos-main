@@ -61,6 +61,22 @@ import {
 const REFRESH_COOLDOWN_SECONDS = 60;
 const DEFAULT_RANGE_DAYS = 7;
 
+/** Below `md`, Inventory Summary renders one card per row instead of the wide KG/PC tables — same breakpoint hook as Universal Inventory's column-hiding. Defaults to desktop (matches before mount, and in non-browser test environments). */
+function useIsDesktop() {
+  const [isDesktop, setIsDesktop] = useState(true);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia('(min-width: 768px)');
+    setIsDesktop(query.matches);
+    const listener = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
+    query.addEventListener('change', listener);
+    return () => query.removeEventListener('change', listener);
+  }, []);
+
+  return isDesktop;
+}
+
 function humanize(value: string): string {
   return value
     .split('_')
@@ -238,6 +254,54 @@ const packagingPcColumns: ColumnDef<PackagingPcRow>[] = [
   { accessorKey: 'remaining_pc', header: 'Remaining (PC)' },
 ];
 
+/** Mobile fallback for Ingredient Weight Consumption — the 11-column table is unusable under md, so small screens get one card per ingredient with the same fields instead. */
+function IngredientWeightKgMobileCards({ rows }: { rows: IngredientWeightKgRow[] }) {
+  return (
+    <div className="space-y-3 md:hidden">
+      {rows.map((row) => (
+        <div key={row.ingredient_id} className="rounded-xl border border-border/60 bg-card p-4 shadow-panel">
+          <div className="flex items-start justify-between gap-2">
+            <p className="min-w-0 truncate font-medium">{row.ingredient_name}</p>
+            <Badge variant={row.status === 'converted' ? 'default' : 'secondary'} className="shrink-0">
+              {row.status === 'converted' ? 'Converted' : 'Conversion Needed'}
+            </Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">Base unit: {row.unit_code}</p>
+          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+            <div><p className="text-xs text-muted-foreground">Opening Stock</p><p>{row.opening_stock}</p></div>
+            <div><p className="text-xs text-muted-foreground">Consumed Today</p><p>{row.consumed_today}</p></div>
+            <div><p className="text-xs text-muted-foreground">Consumed This Month</p><p>{row.consumed_this_month}</p></div>
+            <div><p className="text-xs text-muted-foreground">Remaining</p><p>{row.remaining}</p></div>
+            <div><p className="text-xs text-muted-foreground">Opening (KG)</p><p>{kgOrDash(row.opening_stock_kg)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Consumed Today (KG)</p><p>{kgOrDash(row.consumed_today_kg)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Consumed Month (KG)</p><p>{kgOrDash(row.consumed_this_month_kg)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Remaining (KG)</p><p>{kgOrDash(row.remaining_kg)}</p></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Mobile fallback for Packaging Consumption, matching IngredientWeightKgMobileCards' pattern. */
+function PackagingPcMobileCards({ rows }: { rows: PackagingPcRow[] }) {
+  return (
+    <div className="space-y-3 md:hidden">
+      {rows.map((row) => (
+        <div key={row.ingredient_id} className="rounded-xl border border-border/60 bg-card p-4 shadow-panel">
+          <p className="truncate font-medium">{row.ingredient_name}</p>
+          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+            <div><p className="text-xs text-muted-foreground">Opening (PC)</p><p>{row.opening_stock_pc}</p></div>
+            <div><p className="text-xs text-muted-foreground">Consumed Today (PC)</p><p>{row.consumed_today_pc}</p></div>
+            <div><p className="text-xs text-muted-foreground">Consumed Month (PC)</p><p>{row.consumed_this_month_pc}</p></div>
+            <div><p className="text-xs text-muted-foreground">Remaining (PC)</p><p>{row.remaining_pc}</p></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const ingredientWeightKgTotalsColumns: ColumnDef<IngredientWeightTotalsKg & { label: string }>[] = [
   { accessorKey: 'label', header: 'Ingredient' },
   { accessorKey: 'opening_stock_kg', header: 'Opening Stock (KG)' },
@@ -327,6 +391,7 @@ function categoryFor(reportValue: string): string {
 }
 
 function AdminReportsPageContent() {
+  const isDesktop = useIsDesktop();
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSocketConnected = useSocketStore((s) => s.isConnected);
   const searchParams = useSearchParams();
@@ -437,8 +502,8 @@ function AdminReportsPageContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-xl font-semibold">Reports</h1>
           <p className="text-muted-foreground text-sm">Real-time and pre-computed reporting across all branches.</p>
         </div>
@@ -486,7 +551,7 @@ function AdminReportsPageContent() {
       </div>
 
       <Tabs value={activeReport} onValueChange={setActiveReport}>
-        <TabsList className="flex-wrap">
+        <TabsList>
           {REPORT_GROUPS.find((g) => g.category === activeCategory)?.reports.map((r) => (
             <TabsTrigger key={r.value} value={r.value}>
               {r.label}
@@ -697,12 +762,16 @@ function AdminReportsPageContent() {
                 return (
                   <>
                     <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Weight Consumption (KG)</h3>
-                    <DataTable
-                      columns={ingredientWeightKgColumns}
-                      data={ingredientWeightKg}
-                      isLoading={inventorySummary.isLoading}
-                      emptyState={<EmptyState title="No weighable ingredients" description="No KG-convertible ingredients at this branch." />}
-                    />
+                    {!isDesktop && !inventorySummary.isLoading && ingredientWeightKg.length > 0 ? (
+                      <IngredientWeightKgMobileCards rows={ingredientWeightKg} />
+                    ) : (
+                      <DataTable
+                        columns={ingredientWeightKgColumns}
+                        data={ingredientWeightKg}
+                        isLoading={inventorySummary.isLoading}
+                        emptyState={<EmptyState title="No weighable ingredients" description="No KG-convertible ingredients at this branch." />}
+                      />
+                    )}
                     {weightTotals && (
                       <DataTable columns={ingredientWeightKgTotalsColumns} data={[{ label: 'Total', ...weightTotals }]} isLoading={inventorySummary.isLoading} />
                     )}
@@ -713,12 +782,16 @@ function AdminReportsPageContent() {
                     )}
 
                     <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Packaging Consumption (PC)</h3>
-                    <DataTable
-                      columns={packagingPcColumns}
-                      data={packagingPc}
-                      isLoading={inventorySummary.isLoading}
-                      emptyState={<EmptyState title="No packaging items" description="No packaging items at this branch." />}
-                    />
+                    {!isDesktop && !inventorySummary.isLoading && packagingPc.length > 0 ? (
+                      <PackagingPcMobileCards rows={packagingPc} />
+                    ) : (
+                      <DataTable
+                        columns={packagingPcColumns}
+                        data={packagingPc}
+                        isLoading={inventorySummary.isLoading}
+                        emptyState={<EmptyState title="No packaging items" description="No packaging items at this branch." />}
+                      />
+                    )}
                     {packagingTotals && (
                       <DataTable columns={packagingPcTotalsColumns} data={[{ label: 'Total', ...packagingTotals }]} isLoading={inventorySummary.isLoading} />
                     )}

@@ -107,7 +107,7 @@ export default function EmployeeListPage() {
             setPagination((prev) => ({ ...prev, pageIndex: 0 }));
           }}
           placeholder="Search name, email, or employee ID..."
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
         />
         <Select
           value={role}

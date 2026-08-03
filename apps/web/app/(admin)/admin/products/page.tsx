@@ -89,7 +89,7 @@ export default function ProductCatalogPage() {
           <h1 className="text-2xl font-bold">Product Catalog</h1>
           <p className="text-sm text-muted-foreground">Manage the global product catalog, variants, and flavor pricing.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
           <Plus className="mr-2 h-4 w-4" />
           Create Product
         </Button>
@@ -103,7 +103,7 @@ export default function ProductCatalogPage() {
             setPagination((prev) => ({ ...prev, pageIndex: 0 }));
           }}
           placeholder="Search name or category..."
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
         />
         <SearchInput
           value={category}

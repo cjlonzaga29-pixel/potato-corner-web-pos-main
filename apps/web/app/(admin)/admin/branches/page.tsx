@@ -91,12 +91,12 @@ export default function BranchListPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold">Branch Management</h1>
           <p className="text-sm text-muted-foreground">Manage branches, GPS settings, and supervisor assignments.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
           <Plus className="mr-2 h-4 w-4" />
           Create Branch
         </Button>
@@ -110,7 +110,7 @@ export default function BranchListPage() {
             setPagination((prev) => ({ ...prev, pageIndex: 0 }));
           }}
           placeholder="Search name or code..."
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
         />
         <Input
           placeholder="Filter by city"

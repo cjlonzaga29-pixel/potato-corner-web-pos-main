@@ -156,19 +156,19 @@ export default function UniversalInventoryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold">Universal Inventory</h1>
           <p className="text-sm text-muted-foreground">
             The single, company-wide inventory identity. Branches reference these items — they never create their own.
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => router.push('/admin/inventory/migration-report')}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:shrink-0">
+          <Button variant="outline" onClick={() => router.push('/admin/inventory/migration-report')} className="w-full sm:w-auto">
             <ClipboardList className="mr-2 h-4 w-4" />
             Migration Report
           </Button>
-          <Button onClick={() => setDialogOpen(true)}>
+          <Button onClick={() => setDialogOpen(true)} className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" />
             Create Item
           </Button>
@@ -183,7 +183,7 @@ export default function UniversalInventoryPage() {
             setPagination((prev) => ({ ...prev, pageIndex: 0 }));
           }}
           placeholder="Search by item name, SKU, or category..."
-          className="max-w-sm"
+          className="w-full sm:max-w-sm"
         />
         {categories.length > 0 && (
           <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by category">

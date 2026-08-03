@@ -614,24 +614,28 @@ export function ReportsView() {
         <p className="text-sm text-muted-foreground">Real-time reports composed from live data for your active branch.</p>
       </div>
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <Label htmlFor="reports-from">From</Label>
-          <Input id="reports-from" type="date" value={fromInput} onChange={(e) => setFromInput(e.target.value)} />
+      <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+        <div className="grid grid-cols-2 gap-3 sm:flex sm:w-auto sm:gap-4">
+          <div className="w-full sm:w-auto">
+            <Label htmlFor="reports-from">From</Label>
+            <Input id="reports-from" type="date" value={fromInput} onChange={(e) => setFromInput(e.target.value)} className="w-full" />
+          </div>
+          <div className="w-full sm:w-auto">
+            <Label htmlFor="reports-to">To</Label>
+            <Input id="reports-to" type="date" value={toInput} onChange={(e) => setToInput(e.target.value)} className="w-full" />
+          </div>
         </div>
-        <div>
-          <Label htmlFor="reports-to">To</Label>
-          <Input id="reports-to" type="date" value={toInput} onChange={(e) => setToInput(e.target.value)} />
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <Button onClick={handleRefresh} disabled={refreshDisabled} className="w-full sm:w-auto">
+            {refreshDisabled ? `Refresh (${refreshCooldown}s)` : 'Refresh'}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => handleExport('csv')} disabled={isExportingCsv} className="w-full sm:w-auto">
+            {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => handleExport('pdf')} disabled={isExportingPdf} className="w-full sm:w-auto">
+            {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
+          </Button>
         </div>
-        <Button onClick={handleRefresh} disabled={refreshDisabled}>
-          {refreshDisabled ? `Refresh (${refreshCooldown}s)` : 'Refresh'}
-        </Button>
-        <Button type="button" variant="outline" onClick={() => handleExport('csv')} disabled={isExportingCsv}>
-          {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
-        </Button>
-        <Button type="button" variant="outline" onClick={() => handleExport('pdf')} disabled={isExportingPdf}>
-          {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
-        </Button>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
@@ -677,13 +681,13 @@ export function ReportsView() {
             timestamp={soldTransactionsQuery.dataUpdatedAt ? new Date(soldTransactionsQuery.dataUpdatedAt).toISOString() : undefined}
             isLoading={soldTransactionsQuery.isLoading}
           />
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:items-end lg:flex lg:flex-wrap">
+            <div className="w-full lg:w-auto">
               <Label htmlFor="sold-receipt-search">Receipt #</Label>
               <Input
                 id="sold-receipt-search"
                 placeholder="Search receipt number"
-                className="w-[180px]"
+                className="w-full lg:w-[180px]"
                 value={soldReceiptSearch}
                 onChange={(e) => {
                   setSoldReceiptSearch(e.target.value);
@@ -691,7 +695,7 @@ export function ReportsView() {
                 }}
               />
             </div>
-            <div>
+            <div className="w-full lg:w-auto">
               <Label>Cashier</Label>
               <Select
                 value={soldCashierFilter}
@@ -700,7 +704,7 @@ export function ReportsView() {
                   setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
                 }}
               >
-                <SelectTrigger className="w-[160px]">
+                <SelectTrigger className="w-full lg:w-[160px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -713,7 +717,7 @@ export function ReportsView() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
+            <div className="w-full lg:w-auto">
               <Label>Payment Method</Label>
               <Select
                 value={soldPaymentMethodFilter}
@@ -722,7 +726,7 @@ export function ReportsView() {
                   setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
                 }}
               >
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-full lg:w-[150px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -734,7 +738,7 @@ export function ReportsView() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
+            <div className="w-full lg:w-auto">
               <Label>Status</Label>
               <Select
                 value={soldStatusFilter}
@@ -743,7 +747,7 @@ export function ReportsView() {
                   setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
                 }}
               >
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-full lg:w-[150px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -754,7 +758,7 @@ export function ReportsView() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
+            <div className="w-full lg:w-auto">
               <Label>Product</Label>
               <Select
                 value={soldProductFilter}
@@ -763,7 +767,7 @@ export function ReportsView() {
                   setSoldPagination((p) => ({ ...p, pageIndex: 0 }));
                 }}
               >
-                <SelectTrigger className="w-[170px]">
+                <SelectTrigger className="w-full lg:w-[170px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

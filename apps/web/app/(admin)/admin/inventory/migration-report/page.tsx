@@ -42,12 +42,12 @@ export default function MigrationReportPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold">Legacy Migration Report</h1>
           <p className="text-sm text-muted-foreground">Generated {new Date(r.generatedAt).toLocaleString()} — advisory only, no data is migrated automatically.</p>
         </div>
-        <Badge variant={r.migrationReadiness ? 'active' : 'inactive'}>{r.migrationReadiness ? 'Ready' : 'Not Ready'}</Badge>
+        <Badge variant={r.migrationReadiness ? 'active' : 'inactive'} className="shrink-0">{r.migrationReadiness ? 'Ready' : 'Not Ready'}</Badge>
       </div>
 
       <Card>

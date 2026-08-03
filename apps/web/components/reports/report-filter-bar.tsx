@@ -50,12 +50,12 @@ export function ReportFilterBar({
   const branches = branchesData?.branches ?? [];
 
   return (
-    <div className="flex flex-wrap items-end gap-4">
+    <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
       {showBranchSelector && (
-        <div>
+        <div className="w-full sm:w-auto">
           <Label htmlFor="report-filter-branch">Branch</Label>
           <Select value={branchId ?? 'all'} onValueChange={(value) => onBranchChange(value === 'all' ? null : value)}>
-            <SelectTrigger id="report-filter-branch" className="w-[200px]">
+            <SelectTrigger id="report-filter-branch" className="w-full sm:w-[200px]">
               <SelectValue placeholder="All Branches" />
             </SelectTrigger>
             <SelectContent>
@@ -69,26 +69,30 @@ export function ReportFilterBar({
           </Select>
         </div>
       )}
-      <div>
-        <Label htmlFor="report-filter-from">From</Label>
-        <Input id="report-filter-from" type="date" value={dateFrom} onChange={(e) => onDateFromChange(e.target.value)} />
+      <div className="grid grid-cols-2 gap-3 sm:flex sm:w-auto sm:gap-4">
+        <div className="w-full sm:w-auto">
+          <Label htmlFor="report-filter-from">From</Label>
+          <Input id="report-filter-from" type="date" value={dateFrom} onChange={(e) => onDateFromChange(e.target.value)} className="w-full" />
+        </div>
+        <div className="w-full sm:w-auto">
+          <Label htmlFor="report-filter-to">To</Label>
+          <Input id="report-filter-to" type="date" value={dateTo} onChange={(e) => onDateToChange(e.target.value)} className="w-full" />
+        </div>
       </div>
-      <div>
-        <Label htmlFor="report-filter-to">To</Label>
-        <Input id="report-filter-to" type="date" value={dateTo} onChange={(e) => onDateToChange(e.target.value)} />
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <Button type="button" variant="outline" onClick={onRefresh} disabled={isRefreshDisabled} className="w-full sm:w-auto">
+          <RotateCw className="mr-2 h-4 w-4" />
+          {isRefreshDisabled ? `Refresh (${refreshCooldownSeconds}s)` : 'Refresh'}
+        </Button>
+        <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv || exportDisabled} className="w-full sm:w-auto">
+          {isExportingCsv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+          {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
+        </Button>
+        <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf || exportDisabled} className="w-full sm:w-auto">
+          {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+          {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
+        </Button>
       </div>
-      <Button type="button" variant="outline" onClick={onRefresh} disabled={isRefreshDisabled}>
-        <RotateCw className="mr-2 h-4 w-4" />
-        {isRefreshDisabled ? `Refresh (${refreshCooldownSeconds}s)` : 'Refresh'}
-      </Button>
-      <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv || exportDisabled}>
-        {isExportingCsv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-        {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
-      </Button>
-      <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf || exportDisabled}>
-        {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-        {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
-      </Button>
     </div>
   );
 }

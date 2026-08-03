@@ -118,7 +118,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
       </div>
 
       {!previewUrl && !isCameraActive && (
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="button" variant="outline" className="touch-target flex-1" onClick={() => void startCamera()}>
             <Camera className="mr-2 h-4 w-4" />
             Take Photo

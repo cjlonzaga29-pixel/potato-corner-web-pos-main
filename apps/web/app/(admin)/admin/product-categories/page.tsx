@@ -68,12 +68,12 @@ export default function ProductCategoriesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold">Product Categories</h1>
           <p className="text-sm text-muted-foreground">Company-owned categories, shared across every branch.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>New Category</Button>
+        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">New Category</Button>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

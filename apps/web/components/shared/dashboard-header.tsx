@@ -2,11 +2,13 @@
 
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { LogOut, User } from 'lucide-react';
+import { LogOut, Menu, User } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { generateInitials } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
+import { useUiStore } from '@/stores/ui.store';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -55,12 +57,23 @@ interface DashboardHeaderProps {
 export function DashboardHeader({ navItems, homeHref, homeLabel, profileHref, fallbackInitials }: DashboardHeaderProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
+  const toggleMobileNav = useUiStore((state) => state.toggleMobileNav);
   const label = findBreadcrumbLabel(pathname, navItems);
   const firstFallback = fallbackInitials.charAt(0) || 'A';
   const lastFallback = fallbackInitials.charAt(1) || 'D';
 
   return (
-    <header className="flex h-16 shrink-0 items-center gap-4 border-b border-border/60 bg-card/60 px-4 backdrop-blur-xl lg:px-6">
+    <header className="flex h-16 shrink-0 items-center gap-2 border-b border-border/60 bg-card/60 px-3 backdrop-blur-xl sm:gap-4 sm:px-4 lg:px-6">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-11 w-11 shrink-0 rounded-lg lg:hidden"
+        onClick={toggleMobileNav}
+        aria-label="Open navigation menu"
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
       <Breadcrumb className="hidden min-w-0 sm:block">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>

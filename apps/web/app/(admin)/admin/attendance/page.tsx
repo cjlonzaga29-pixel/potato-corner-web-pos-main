@@ -81,10 +81,10 @@ export default function AdminAttendancePage() {
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
-        <div>
+        <div className="w-full sm:w-auto">
           <Label htmlFor="attendance-branch-filter">Branch</Label>
           <Select value={branchId ?? undefined} onValueChange={handleBranchChange}>
-            <SelectTrigger id="attendance-branch-filter" className="w-[240px]" disabled={isBranchesLoading}>
+            <SelectTrigger id="attendance-branch-filter" className="w-full sm:w-[240px]" disabled={isBranchesLoading}>
               <SelectValue placeholder="Select a branch" />
             </SelectTrigger>
             <SelectContent>

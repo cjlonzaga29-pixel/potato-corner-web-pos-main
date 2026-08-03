@@ -110,21 +110,21 @@ export function InventoryList({ basePath }: { basePath: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold">Inventory</h1>
           <p className="text-sm text-muted-foreground">Current stock levels, derived from every recorded movement.</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/transfer`)}>
+        <div className="grid grid-cols-1 gap-2 sm:flex sm:shrink-0">
+          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/transfer`)} className="w-full sm:w-auto">
             <ArrowRightLeft className="mr-2 h-4 w-4" />
             Transfer
           </Button>
-          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/movements`)}>
+          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/movements`)} className="w-full sm:w-auto">
             <History className="mr-2 h-4 w-4" />
             Movements
           </Button>
-          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/count`)}>
+          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/count`)} className="w-full sm:w-auto">
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
           </Button>

@@ -909,7 +909,7 @@ export default function TerminalPage() {
 
         {flavorPrompt && (
           <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
-            <Card className="w-full max-w-sm">
+            <Card className="max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto">
               <CardContent className="space-y-3 p-4">
                 <p className="font-medium">Choose a flavor — {flavorPrompt.product.name} ({flavorPrompt.variant.name})</p>
                 <div className="grid grid-cols-2 gap-2">
@@ -930,7 +930,7 @@ export default function TerminalPage() {
 
         {slotPrompt && (
           <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
-            <Card className="w-full max-w-sm">
+            <Card className="max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto">
               <CardContent className="space-y-3 p-4">
                 <p className="font-medium">
                   {slotPrompt.product.name} ({slotPrompt.variant.name})
@@ -1294,7 +1294,7 @@ export default function TerminalPage() {
 
       {queuedNotice && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-sm">
+          <Card className="max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto">
             <CardContent className="space-y-3 p-4 text-center">
               <p className="font-medium">Sale queued for sync</p>
               <p className="text-sm text-muted-foreground">Provisional ID: {queuedNotice}</p>

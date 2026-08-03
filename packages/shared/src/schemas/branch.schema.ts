@@ -20,6 +20,20 @@ export const branchCodeSchema = z
   .string()
   .regex(/^PC-[A-Z]{2,5}-[0-9]{3}$/, 'Branch code must match PC-[CITY]-[NUM], e.g. PC-MNL-001');
 
+/**
+ * Task 174 — Branch Employee Authorization: creating a branch's login
+ * account is optional at the schema layer (existing branches created before
+ * this fix, and any future branch-then-assign-supervisor-only flow, have no
+ * account), but when provided, branchesService.createBranch creates the
+ * branch row and this account in the SAME database transaction — no more
+ * two-step create-branch-then-create-account flow that can leave an orphan
+ * branch with no login if the second call fails.
+ */
+export const createBranchAccountSchema = z.object({
+  email: z.email('Must be a valid email'),
+  password: z.string().min(8, 'Minimum 8 characters'),
+});
+
 export const createBranchSchema = z.object({
   name: z.string().min(2).max(100),
   // Omitted entirely -> auto-generated (branches.service.ts). Provided -> validated against branchCodeSchema and uniqueness.
@@ -30,6 +44,7 @@ export const createBranchSchema = z.object({
   gpsLongitude: z.number().min(-180).max(180).optional(),
   gpsRadiusMeters: z.number().int().min(10).max(1000).default(100),
   status: z.enum(branchStatusValues).default('active'),
+  account: createBranchAccountSchema.optional(),
 });
 
 /** Code is deliberately absent — branch codes are immutable after creation (locked rule). */

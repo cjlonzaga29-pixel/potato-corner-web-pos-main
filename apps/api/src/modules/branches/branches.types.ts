@@ -19,6 +19,8 @@ export interface CreateBranchData {
   gpsLongitude?: number;
   gpsRadiusMeters: number;
   status: BranchStatus;
+  /** Task 174 — when present, the branch's login account is created atomically with the branch itself. */
+  account?: { email: string; password: string };
 }
 
 export interface UpdateBranchData {

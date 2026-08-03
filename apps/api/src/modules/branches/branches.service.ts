@@ -1,10 +1,12 @@
 import { IngredientCategory, type Prisma } from '@prisma/client';
+import bcrypt from 'bcrypt';
 import sharp from 'sharp';
-import { ROLES, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
+import { ROLES, EMPLOYMENT_TYPE, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
+import { employeesRepository } from '../employees/employees.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
 import { universalInventoryService } from '../universal-inventory/universal-inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -16,6 +18,13 @@ import { prisma } from '../../lib/prisma.js';
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
+
+const BCRYPT_COST_FACTOR = 12;
+
+/** Consistent with the check in auth.service.ts's login — a mismatched case/whitespace between account creation and login must never cause a false "Invalid email or password". */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 const STATUS_LABELS: Record<BranchStatus, string> = {
@@ -178,13 +187,57 @@ export const branchesService = {
       code = await branchesRepository.generateBranchCode(data.city);
     }
 
-    // Branch creation, identity resolution, and provisioning all commit
-    // atomically — a failure partway through (e.g. provisioning throws)
-    // must never leave an orphan branch row with an incomplete ingredient
-    // set. findByCode/generateBranchCode above are pre-flight validation,
-    // not part of the atomicity requirement, so they stay outside.
+    // Task 174 — branch account creation used to be a second, independent
+    // frontend mutation (POST /api/employees) fired after this endpoint
+    // returned. If that second call failed for any reason (validation,
+    // network, transient error), the branch it created here was already
+    // committed and stayed orphaned: visible in Branch Management, absent
+    // from Branch Accounts, no way to log in. Folding account creation into
+    // this same transaction below closes that gap — either both commit or
+    // neither does. Pre-flight checks (email uniqueness, employee ID
+    // allocation, password hashing) run here, outside the transaction, for
+    // the same reason findByCode/generateBranchCode do: keep the open
+    // transaction short, and a wasted employee-ID-counter increment on a
+    // pre-flight rejection is an accepted, pre-existing gap (see
+    // generateBranchCode's counter, same tradeoff).
+    let accountEmail: string | undefined;
+    let accountPasswordHash: string | undefined;
+    let accountEmployeeId: string | undefined;
+    if (data.account) {
+      accountEmail = normalizeEmail(data.account.email);
+      const existingAccount = await employeesRepository.findByEmail(accountEmail);
+      if (existingAccount) {
+        throw new BranchError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
+      }
+      accountPasswordHash = await bcrypt.hash(data.account.password, BCRYPT_COST_FACTOR);
+      accountEmployeeId = await employeesRepository.generateEmployeeId();
+    }
+
+    // Branch creation, account provisioning, identity resolution, and
+    // ingredient provisioning all commit atomically — a failure partway
+    // through (e.g. provisioning throws) must never leave an orphan branch
+    // row with a missing account or an incomplete ingredient set.
+    let createdAccountId: string | null = null;
+
     const branch = await prisma.$transaction(async (tx) => {
       const created = await branchesRepository.create({ ...data, code }, tx);
+
+      if (data.account && accountEmail && accountPasswordHash && accountEmployeeId) {
+        const account = await employeesRepository.create(
+          {
+            email: accountEmail,
+            firstName: '',
+            lastName: '',
+            role: ROLES.BRANCH,
+            employmentType: EMPLOYMENT_TYPE.REGULAR,
+            branchIds: [created.id],
+            employeeId: accountEmployeeId,
+            passwordHash: accountPasswordHash,
+          },
+          tx,
+        );
+        createdAccountId = account.id;
+      }
 
       // CR-004 idempotent branch provisioning — every ingredient identity an
       // active ProductInventory mapping references gets a zero-stock row
@@ -237,6 +290,20 @@ export const branchesService = {
       afterState: { name: branch.name, code: branch.code, city: branch.city, status: branch.status },
       ipAddress,
     });
+
+    if (createdAccountId && accountEmail) {
+      // Never logs the password — only that an account was created, its id, and its (non-secret) email.
+      await recordAuditLog({
+        action: 'BRANCH_ACCOUNT_CREATED',
+        entityType: 'user',
+        entityId: createdAccountId,
+        actorId: createdBy.id,
+        actorRole: createdBy.role,
+        branchId: branch.id,
+        afterState: { email: accountEmail, role: ROLES.BRANCH, branchId: branch.id },
+        ipAddress,
+      });
+    }
 
     const response = toBranchResponse(branch);
     // No supervisor is assigned yet at creation time, so a branch room has

@@ -23,6 +23,11 @@ import { employeesRepository } from '../employees/employees.repository.js';
 const BCRYPT_COST_FACTOR = 12;
 const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
 
+/** Task 174 — login must resolve the same row account creation wrote, regardless of case/whitespace differences between the two. */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 interface AccessTokenUser {
   id: string;
   role: Role;
@@ -121,7 +126,7 @@ export const authService = {
     deviceId: string,
     ipAddress: string | null,
   ): Promise<(LoginResponse & { refreshToken: string }) | ChallengeResponse> {
-    const user = await authRepository.findUserByEmail(email);
+    const user = await authRepository.findUserByEmail(normalizeEmail(email));
 
     if (!user) {
       // Generic message — do not reveal whether the email exists.
@@ -360,7 +365,8 @@ export const authService = {
   },
 
   async requestPasswordReset(email: string): Promise<void> {
-    const user = await authRepository.findUserByEmail(email);
+    const normalizedEmail = normalizeEmail(email);
+    const user = await authRepository.findUserByEmail(normalizedEmail);
 
     // Always behave the same way regardless of whether the email exists —
     // the router returns a generic success message either way.
@@ -370,7 +376,7 @@ export const authService = {
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000);
     await authRepository.storePasswordResetToken(sha256Hex(token), user.id, expiresAt);
     // user was looked up BY this exact email, so it's guaranteed non-null here.
-    await sendPasswordResetEmail(email, token).catch((error: unknown) => {
+    await sendPasswordResetEmail(normalizedEmail, token).catch((error: unknown) => {
       console.error('Failed to send password reset email:', error);
     });
 

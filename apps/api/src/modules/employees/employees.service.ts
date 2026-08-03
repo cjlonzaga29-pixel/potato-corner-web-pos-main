@@ -41,6 +41,11 @@ function revokeEmployeeSession(employeeId: string, status: string): void {
 
 const BCRYPT_COST_FACTOR = 12;
 
+/** Task 174 — stored and looked-up emails must agree on case/whitespace, or login (auth.service.ts) can fail to resolve an account created here. */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 export interface EmployeeListQuery {
   role?: Role;
   employmentType?: EmploymentType;
@@ -179,9 +184,10 @@ export const employeesService = {
     // separate login — no email, so nothing to deduplicate or hash. Every
     // other role still authenticates normally and requires both.
     const isStaff = data.role === ROLES.STAFF;
+    const normalizedEmail = isStaff ? undefined : normalizeEmail(data.email as string);
 
-    if (!isStaff) {
-      const existing = await employeesRepository.findByEmail(data.email as string);
+    if (!isStaff && normalizedEmail) {
+      const existing = await employeesRepository.findByEmail(normalizedEmail);
       if (existing) {
         throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
       }
@@ -207,7 +213,7 @@ export const employeesService = {
     const passwordHash = isStaff ? undefined : await bcrypt.hash(data.initial_password as string, BCRYPT_COST_FACTOR);
 
     const employee = await employeesRepository.create({
-      email: isStaff ? undefined : data.email,
+      email: normalizedEmail,
       // Branch accounts (Task 168) no longer collect a name — firstName/lastName
       // are NOT NULL columns with no migration planned, so store '' rather than null.
       firstName: data.first_name ?? '',

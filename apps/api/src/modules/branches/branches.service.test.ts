@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import bcrypt from 'bcrypt';
 import { ROLES } from '@potato-corner/shared';
 import { branchCodeSchema, bulkAssignGcashQrSchema } from '@potato-corner/shared';
 
@@ -29,6 +30,14 @@ vi.mock('./branches.repository.js', () => ({
 
 vi.mock('../../lib/id-counter.js', () => ({
   nextCounterValue: vi.fn(),
+}));
+
+vi.mock('../employees/employees.repository.js', () => ({
+  employeesRepository: {
+    findByEmail: vi.fn(),
+    generateEmployeeId: vi.fn(),
+    create: vi.fn(),
+  },
 }));
 
 // createBranch wraps branch-create + identity resolution + provisioning in
@@ -97,6 +106,7 @@ const { productInventoryRepository } = await import('../product-inventory/produc
 const { flavorsRepository } = await import('../flavors/flavors.repository.js');
 const { inventoryService } = await import('../inventory/inventory.service.js');
 const { universalInventoryService } = await import('../universal-inventory/universal-inventory.service.js');
+const { employeesRepository } = await import('../employees/employees.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
@@ -468,6 +478,151 @@ describe('branchesService.createBranch', () => {
       expect(txCallOrder).toBeDefined();
       expect(emitCallOrder).toBeDefined();
       expect(txCallOrder as number).toBeLessThan(emitCallOrder as number);
+    });
+  });
+
+  describe('Task 174: atomic branch + account creation', () => {
+    function stubProvisioning() {
+      vi.mocked(productInventoryRepository.findDistinctIngredientIdentities).mockResolvedValue([]);
+      vi.mocked(flavorsRepository.findDistinctFlavorIngredientIdentities).mockResolvedValue([]);
+    }
+
+    it('creates exactly one branch and one branch-role account inside the same transaction when account fields are provided', async () => {
+      stubProvisioning();
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-020');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-20', code: 'PC-MNL-020' }) as never);
+      vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+      vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000020');
+      vi.mocked(employeesRepository.create).mockResolvedValue({ id: 'user-20' } as never);
+
+      await branchesService.createBranch(
+        {
+          name: 'Branch 20',
+          address: '1 EDSA',
+          city: 'Manila',
+          gpsRadiusMeters: 100,
+          status: 'active',
+          account: { email: 'Branch20@Example.com', password: 'Password1!' },
+        },
+        ACTOR,
+        null,
+      );
+
+      expect(branchesRepository.create).toHaveBeenCalledTimes(1);
+      expect(employeesRepository.create).toHaveBeenCalledTimes(1);
+      const [accountData, tx] = vi.mocked(employeesRepository.create).mock.calls[0] as Parameters<
+        typeof employeesRepository.create
+      >;
+      // Same tx as the branch row — proves this is one atomic transaction, not two calls.
+      expect(tx).toBe(txMock);
+      expect(accountData.role).toBe(ROLES.BRANCH);
+      expect(accountData.branchIds).toEqual(['branch-20']);
+      // Email is normalized (trimmed + lowercased) so login later resolves the same row regardless of case.
+      expect(accountData.email).toBe('branch20@example.com');
+      // No first/last name required for a branch account (Task 168/174).
+      expect(accountData.firstName).toBe('');
+      expect(accountData.lastName).toBe('');
+      // Never the plaintext password.
+      expect(accountData.passwordHash).not.toBe('Password1!');
+      expect(await bcrypt.compare('Password1!', accountData.passwordHash ?? '')).toBe(true);
+    });
+
+    it('creates no account when the branch is created without account fields (back-compat)', async () => {
+      stubProvisioning();
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-021');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-21', code: 'PC-MNL-021' }) as never);
+
+      await branchesService.createBranch(
+        { name: 'Branch 21', address: '1 EDSA', city: 'Manila', gpsRadiusMeters: 100, status: 'active' },
+        ACTOR,
+        null,
+      );
+
+      expect(employeesRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects with EMAIL_ALREADY_EXISTS before opening the transaction when the account email is already taken, and creates no branch', async () => {
+      vi.mocked(employeesRepository.findByEmail).mockResolvedValue({ id: 'existing-user' } as never);
+
+      await expect(
+        branchesService.createBranch(
+          {
+            name: 'Branch 22',
+            address: '1 EDSA',
+            city: 'Manila',
+            gpsRadiusMeters: 100,
+            status: 'active',
+            account: { email: 'taken@example.com', password: 'Password1!' },
+          },
+          ACTOR,
+          null,
+        ),
+      ).rejects.toMatchObject({ code: 'EMAIL_ALREADY_EXISTS' });
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(branchesRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('rolls back the branch row when account creation fails inside the transaction (no orphan branch)', async () => {
+      stubProvisioning();
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-023');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-23', code: 'PC-MNL-023' }) as never);
+      vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+      vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000023');
+      vi.mocked(employeesRepository.create).mockRejectedValueOnce(new Error('unique constraint violated'));
+
+      await expect(
+        branchesService.createBranch(
+          {
+            name: 'Branch 23',
+            address: '1 EDSA',
+            city: 'Manila',
+            gpsRadiusMeters: 100,
+            status: 'active',
+            account: { email: 'branch23@example.com', password: 'Password1!' },
+          },
+          ACTOR,
+          null,
+        ),
+      ).rejects.toThrow('unique constraint violated');
+
+      // The transaction callback threw, so the real prisma.$transaction (mocked
+      // here to just invoke the callback) would roll back everything written
+      // inside it, including the branch row created moments earlier in the
+      // same callback. No post-commit side effect (audit log) may run either.
+      expect(recordAuditLog).not.toHaveBeenCalled();
+    });
+
+    it('records a BRANCH_ACCOUNT_CREATED audit entry with the email but never the password', async () => {
+      stubProvisioning();
+      vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-024');
+      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-24', code: 'PC-MNL-024' }) as never);
+      vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+      vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000024');
+      vi.mocked(employeesRepository.create).mockResolvedValue({ id: 'user-24' } as never);
+
+      await branchesService.createBranch(
+        {
+          name: 'Branch 24',
+          address: '1 EDSA',
+          city: 'Manila',
+          gpsRadiusMeters: 100,
+          status: 'active',
+          account: { email: 'branch24@example.com', password: 'Password1!' },
+        },
+        ACTOR,
+        null,
+      );
+
+      expect(recordAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'BRANCH_ACCOUNT_CREATED',
+          entityId: 'user-24',
+          afterState: expect.objectContaining({ email: 'branch24@example.com' }),
+        }),
+      );
+      const auditCalls = vi.mocked(recordAuditLog).mock.calls.map((call) => JSON.stringify(call));
+      expect(auditCalls.some((call) => call.includes('Password1!'))).toBe(false);
     });
   });
 });

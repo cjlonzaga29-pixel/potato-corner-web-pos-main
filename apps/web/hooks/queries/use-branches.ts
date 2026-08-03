@@ -199,7 +199,10 @@ export function useCreateBranch() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['branches'] });
-      toast.success('Branch created');
+      void queryClient.invalidateQueries({ queryKey: ['branches', 'accounts-overview'] });
+      // No toast here — the branch and its login account now commit together
+      // in one request (Task 174), and create-branch-dialog.tsx's own
+      // success toast already covers both.
     },
     onError: (error: Error) => toast.error(error.message),
   });

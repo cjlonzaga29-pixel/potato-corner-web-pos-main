@@ -5,14 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { ROLES, EMPLOYMENT_TYPE } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useCreateBranch } from '@/hooks/queries/use-branches';
-import { useCreateEmployee } from '@/hooks/queries/use-employees';
 
 /** Empty string -> undefined (skips validation for optional GPS fields) before coercing to a number. */
 function optionalCoercedNumber(min: number, max: number) {
@@ -69,11 +67,10 @@ function previewCityPrefix(city: string): string {
 
 export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogProps) {
   const createBranch = useCreateBranch();
-  const createAccount = useCreateEmployee();
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   const city = form.watch('city');
   const prefix = previewCityPrefix(city ?? '');
-  const isPending = createBranch.isPending || createAccount.isPending;
+  const isPending = createBranch.isPending;
 
   function handleOpenChange(next: boolean) {
     if (!next) form.reset(DEFAULT_VALUES);
@@ -82,7 +79,17 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
-    const branch = await createBranch.mutateAsync({
+
+    // Branch Employee Authorization: the branch row and its login account
+    // (role `branch`) are created in a single request now (Task 174) — the
+    // backend creates both inside one database transaction, so a failure
+    // partway through can never leave an orphan branch with no working
+    // login. Employees (`staff`) never get their own credentials; they're
+    // authorized inside this session (see POS Terminal's inline "Who's
+    // working?" state at /branch/terminal — Task 120). Regional oversight
+    // (`supervisor`) is a separate role assigned to an existing user via
+    // assign-supervisor-dialog.tsx, not created here.
+    await createBranch.mutateAsync({
       name: parsed.name,
       city: parsed.city,
       address: parsed.address,
@@ -90,21 +97,7 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
       gpsLongitude: parsed.gpsLongitude,
       gpsRadiusMeters: parsed.gpsRadiusMeters,
       status: 'active',
-    });
-
-    // Branch Employee Authorization: this mints the Branch Account itself
-    // (role `branch`) — the login that authenticates the physical branch.
-    // Employees (`staff`) never get their own credentials; they're
-    // authorized inside this session (see POS Terminal's inline "Who's
-    // working?" state at /branch/terminal — Task 120).
-    // Regional oversight (`supervisor`) is a separate role assigned to an
-    // existing user via assign-supervisor-dialog.tsx, not created here.
-    await createAccount.mutateAsync({
-      email: parsed.username,
-      role: ROLES.BRANCH,
-      employment_type: EMPLOYMENT_TYPE.REGULAR,
-      branch_ids: [branch.id],
-      initial_password: parsed.password,
+      account: { email: parsed.username, password: parsed.password },
     });
 
     toast.success('Branch created, branch account created, login credentials set');

@@ -138,36 +138,46 @@ export const employeesRepository = {
     return `PC-EMP-${String(next).padStart(6, '0')}`;
   },
 
-  create(data: CreateEmployeeData) {
-    return prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          email: data.email,
-          passwordHash: data.passwordHash,
-          role: data.role,
-          firstName: data.firstName,
-          lastName: data.lastName,
-          phone: data.phone,
-          employeeId: data.employeeId,
-          employmentType: data.employmentType,
-          position: data.position,
-          notes: data.notes,
-          sssNumberEncrypted: data.sssNumberEncrypted,
-          philhealthNumberEncrypted: data.philhealthNumberEncrypted,
-          tinNumberEncrypted: data.tinNumberEncrypted,
-          pagibigNumberEncrypted: data.pagibigNumberEncrypted,
-          // `staff` (Employees) never have credentials, so there is no
-          // password to force a change on — only true when one was actually set.
-          mustChangePassword: Boolean(data.passwordHash),
-        },
-      });
+  /**
+   * Task 174 — accepts an optional transaction client so branchesService can
+   * create a branch's login account inside the SAME transaction as the
+   * branch row itself (atomic branch+account creation, no orphan branch if
+   * account creation fails). Without a `tx`, this opens its own transaction
+   * as before — the two writes below must always commit or roll back together.
+   */
+  create(data: CreateEmployeeData, tx?: Prisma.TransactionClient) {
+    if (tx) return employeesRepository.createInTx(tx, data);
+    return prisma.$transaction((innerTx) => employeesRepository.createInTx(innerTx, data));
+  },
 
-      await tx.userBranchAssignment.createMany({
-        data: data.branchIds.map((branchId) => ({ userId: user.id, branchId, assignedAt: new Date() })),
-      });
-
-      return tx.user.findUniqueOrThrow({ where: { id: user.id }, select: employeeSelect });
+  async createInTx(tx: Prisma.TransactionClient, data: CreateEmployeeData) {
+    const user = await tx.user.create({
+      data: {
+        email: data.email,
+        passwordHash: data.passwordHash,
+        role: data.role,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        phone: data.phone,
+        employeeId: data.employeeId,
+        employmentType: data.employmentType,
+        position: data.position,
+        notes: data.notes,
+        sssNumberEncrypted: data.sssNumberEncrypted,
+        philhealthNumberEncrypted: data.philhealthNumberEncrypted,
+        tinNumberEncrypted: data.tinNumberEncrypted,
+        pagibigNumberEncrypted: data.pagibigNumberEncrypted,
+        // `staff` (Employees) never have credentials, so there is no
+        // password to force a change on — only true when one was actually set.
+        mustChangePassword: Boolean(data.passwordHash),
+      },
     });
+
+    await tx.userBranchAssignment.createMany({
+      data: data.branchIds.map((branchId) => ({ userId: user.id, branchId, assignedAt: new Date() })),
+    });
+
+    return tx.user.findUniqueOrThrow({ where: { id: user.id }, select: employeeSelect });
   },
 
   update(id: string, data: UpdateEmployeeData) {

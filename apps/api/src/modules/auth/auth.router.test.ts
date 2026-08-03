@@ -62,6 +62,7 @@ interface MockResponse extends Response {
  * type (it wants every method's return type to also carry the extras).
  */
 function mockRes(): MockResponse {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see comment above
   const res: any = {};
   res.cookies = [];
   res.clearedCookies = [];

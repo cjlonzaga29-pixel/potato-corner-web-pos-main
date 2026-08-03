@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Fingerprint, Loader2, LogOut, MapPin, User } from 'lucide-react';
 import { ROLES } from '@potato-corner/shared';
 import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
@@ -21,7 +21,6 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { useAuth } from '@/hooks/use-auth';
-import { useAuthStore, type AuthUser } from '@/stores/auth.store';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
@@ -105,10 +104,38 @@ export default function TerminalPage() {
   const { user, selectEmployee } = useAuth();
   const branchId = user?.branchIds[0];
   const isBranchAccount = user?.role === ROLES.BRANCH;
+
+  // STATE 1 — "Who is working?" (Branch Employee Authorization). Only a
+  // `branch` (Branch Account) session ever sees this: a `staff` login is
+  // already bound to one Employee via its own JWT. Task 120: selecting an
+  // employee here sets ONLY this terminal-local state — it never touches
+  // the global auth store, so the authenticated user (sidebar, header,
+  // every other /branch page) stays the Branch Account for the whole
+  // session. activeEmployeeToken is the Employee-scoped access token the
+  // backend still issues (same /api/auth/select-employee call as before) —
+  // held here, never written to useAuthStore, and passed as an explicit
+  // override only on the specific calls below that must be attributed to
+  // this Employee (clock-in/out, checkout, payment-proof upload), because
+  // the API derives cashier/attendance attribution from the request's
+  // bearer token server-side.
+  const [employeeSearch, setEmployeeSearch] = useState('');
+  const [selectingEmployeeId, setSelectingEmployeeId] = useState<string | null>(null);
+  const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
+  const [activeEmployee, setActiveEmployee] = useState<{ id: string; firstName: string; lastName: string; role: string } | null>(null);
+  const [activeEmployeeToken, setActiveEmployeeToken] = useState<string | null>(null);
+
+  // The operator actually running this terminal session — the selected
+  // Employee when a Branch Account picked one, otherwise the authenticated
+  // user itself (a genuine `staff` login). Drives attendance/checkout calls
+  // below; never the authenticated-user identity shown in the shell chrome.
+  const operatorId = isBranchAccount ? activeEmployee?.id : user?.id;
+  const operatorToken = isBranchAccount ? (activeEmployeeToken ?? undefined) : undefined;
+  const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
+
   const { items, addItem, removeItem, updateItemQuantity, replaceItem, clearCart } = useCart();
   const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
-  const { isClockedIn, record: attendanceRecord, isLoading: isAttendanceLoading } = useIsClockedIn();
+  const { isClockedIn, record: attendanceRecord, isLoading: isAttendanceLoading } = useIsClockedIn(operatorId);
   // Informational only below (payment-proof storage path fallback) — never
   // gates the Charge button. The API resolves and auto-opens the cashier's
   // own active shift server-side via shiftGuard, so checkout is never
@@ -116,30 +143,13 @@ export default function TerminalPage() {
   const { shift } = useMyActiveShift(branchId);
   useShiftsRealtimeSync();
   const { isOnline } = useOffline();
-  const createTransaction = useCreateTransaction();
-  const uploadPaymentProof = useUploadPaymentProof();
-  const clockIn = useClockIn();
-  const clockOut = useClockOut();
+  const createTransaction = useCreateTransaction(operatorToken);
+  const uploadPaymentProof = useUploadPaymentProof(operatorToken);
+  const clockIn = useClockIn(operatorToken);
+  const clockOut = useClockOut(operatorToken);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
 
-  // STATE 1 — "Who is working?" (Branch Employee Authorization). Only a
-  // `branch` (Branch Account) session ever sees this: a `staff` login is
-  // already bound to one Employee via its own JWT, same exemption
-  // select-employee/page.tsx has always applied. Selecting an employee here
-  // swaps the client session in place (selectEmployee -> setAuth) — no
-  // navigation, no separate route — so the very next render already has
-  // `user.role === 'staff'` and falls straight into STATE 2/3 below.
-  const [employeeSearch, setEmployeeSearch] = useState('');
-  const [selectingEmployeeId, setSelectingEmployeeId] = useState<string | null>(null);
-  const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
-  // Snapshot of the Branch Account session, captured right before handing
-  // off to the selected Employee — restored on Clock Out so the panel goes
-  // back to "Who is working?" instead of staying on this Employee's Clock In
-  // card. Only ever set when the hand-off actually came from a Branch
-  // Account; a genuine `staff` login has nothing to restore, so Clock Out
-  // for it correctly leaves the cashier on their own Clock In card.
-  const branchSessionRef = useRef<{ user: AuthUser; accessToken: string } | null>(null);
   const {
     data: employeesData,
     isLoading: isEmployeesLoading,
@@ -147,19 +157,17 @@ export default function TerminalPage() {
     refetch: refetchEmployees,
   } = useEmployees(
     { role: ROLES.STAFF, isActive: true, search: employeeSearch || undefined, limit: 100 },
-    { enabled: isBranchAccount },
+    { enabled: isBranchAccount && !activeEmployee },
   );
 
   async function handleSelectEmployee(employeeId: string) {
     if (selectingEmployeeId) return;
-    const snapshot = useAuthStore.getState();
     setSelectingEmployeeId(employeeId);
     setSelectEmployeeError(null);
     try {
-      await selectEmployee(employeeId);
-      if (snapshot.user && snapshot.accessToken) {
-        branchSessionRef.current = { user: snapshot.user, accessToken: snapshot.accessToken };
-      }
+      const selected = await selectEmployee(employeeId);
+      setActiveEmployee({ id: selected.user.id, firstName: selected.user.firstName, lastName: selected.user.lastName, role: selected.user.role });
+      setActiveEmployeeToken(selected.accessToken);
     } catch (error) {
       setSelectEmployeeError(error instanceof Error ? error.message : 'Could not start employee session');
     } finally {
@@ -225,12 +233,12 @@ export default function TerminalPage() {
   // separate "open a shift" step and no redirect to another route — a
   // clocked-out cashier sees the Clock In card below instead of the catalog.
   async function handleClockIn() {
-    if (!user || !branchId) return;
+    if (!operatorId || !branchId) return;
     setGpsError(null);
     setIsLocating(true);
     try {
       const coords: GpsCoords = await getCurrentPosition();
-      await clockIn.mutateAsync({ employee_id: user.id, branch_id: branchId, gps_lat: coords.lat, gps_lng: coords.lng });
+      await clockIn.mutateAsync({ employee_id: operatorId, branch_id: branchId, gps_lat: coords.lat, gps_lng: coords.lng });
     } catch (error) {
       setGpsError(error instanceof Error ? error.message : 'Unable to read your location.');
     } finally {
@@ -239,7 +247,7 @@ export default function TerminalPage() {
   }
 
   async function handleClockOut() {
-    if (!user || !branchId || createTransaction.isPending) return;
+    if (!operatorId || !branchId || createTransaction.isPending) return;
     setGpsError(null);
     setIsLocating(true);
     let coords: GpsCoords | null = null;
@@ -249,13 +257,14 @@ export default function TerminalPage() {
       coords = null;
     }
     setIsLocating(false);
-    await clockOut.mutateAsync({ employee_id: user.id, branch_id: branchId, ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}) });
-    // Hand the panel back to the Branch Account that selected this Employee,
-    // if that's how this session started — same page, no navigation, back
-    // to STATE 1 ("Who is working?").
-    if (branchSessionRef.current) {
-      useAuthStore.getState().setAuth(branchSessionRef.current.user, branchSessionRef.current.accessToken);
-      branchSessionRef.current = null;
+    await clockOut.mutateAsync({ employee_id: operatorId, branch_id: branchId, ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}) });
+    // The Branch Account was never signed out of — just drop the selected
+    // Employee's terminal-local state, back to STATE 1 ("Who is working?").
+    // A genuine `staff` login has no activeEmployee to clear here; it has
+    // nowhere else to go on Clock Out (same as before this task).
+    if (isBranchAccount) {
+      setActiveEmployee(null);
+      setActiveEmployeeToken(null);
     }
   }
 
@@ -639,10 +648,11 @@ export default function TerminalPage() {
   }
 
   // STATE 1 — no Employee selected yet. Branch Employee Authorization:
-  // rendered right here instead of a separate /branch/select-employee route,
-  // so the Branch shell (sidebar/header) never unmounts and there is no
-  // in-between page to flash through.
-  if (isBranchAccount) {
+  // rendered right here inline (never a separate route/navigation), so the
+  // Branch shell (sidebar/header) never unmounts and the authenticated user
+  // never changes. Once activeEmployee is set, this falls through to
+  // STATE 2/3 below without the Branch Account ever losing its own session.
+  if (isBranchAccount && !activeEmployee) {
     return (
       <div className="mx-auto max-w-3xl space-y-6 overflow-y-auto p-6">
         <div>
@@ -748,7 +758,7 @@ export default function TerminalPage() {
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card px-3 py-2">
         <div className="flex items-center gap-2 text-sm">
           <Badge variant="active">Clocked In</Badge>
-          <span className="font-medium">{user ? `${user.firstName} ${user.lastName}`.trim() || user.email : ''}</span>
+          <span className="font-medium">{operatorName}</span>
           {attendanceRecord && (
             <span className="text-xs text-muted-foreground">
               since {new Date(attendanceRecord.clock_in_server_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}

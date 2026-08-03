@@ -85,14 +85,24 @@ export function useTransaction(transactionId: string | null | undefined) {
   });
 }
 
-export function useCreateTransaction() {
+/**
+ * Task 120: accessTokenOverride lets the POS Terminal check out using the
+ * selected Employee's token (obtained from useAuth().selectEmployee, never
+ * written to the global auth store) instead of the authenticated Branch
+ * session's — checkout attributes cashier_id from the request's bearer
+ * token server-side, so this is what makes a sale record the actual
+ * Employee instead of the Branch account. See terminal/page.tsx. Omitted
+ * for a genuine `staff` session, unchanged from before.
+ */
+export function useCreateTransaction(accessTokenOverride?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateTransactionInput) => {
-      const response = await apiClient<TransactionResponse>('/api/transactions', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
+      const response = await apiClient<TransactionResponse>(
+        '/api/transactions',
+        { method: 'POST', body: JSON.stringify(input) },
+        accessTokenOverride,
+      );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to record transaction'));
       return response.data;
     },
@@ -118,8 +128,13 @@ interface UploadPaymentProofInput {
   file: File;
 }
 
-/** Uploads a proof photo ahead of checkout — the returned key/type are held in terminal component state and included in the transaction-create payload, not persisted here. */
-export function useUploadPaymentProof() {
+/**
+ * Uploads a proof photo ahead of checkout — the returned key/type are held
+ * in terminal component state and included in the transaction-create
+ * payload, not persisted here. Task 120: see useCreateTransaction's
+ * accessTokenOverride note above — same reasoning applies here.
+ */
+export function useUploadPaymentProof(accessTokenOverride?: string) {
   return useMutation({
     mutationFn: async ({ branchId, shiftId, type, file }: UploadPaymentProofInput) => {
       const formData = new FormData();
@@ -127,10 +142,11 @@ export function useUploadPaymentProof() {
       if (shiftId) formData.set('shift_id', shiftId);
       formData.set('type', type);
       formData.set('proof', file);
-      const response = await apiClient<PaymentProofUploadResponse>('/api/transactions/payment-proof', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await apiClient<PaymentProofUploadResponse>(
+        '/api/transactions/payment-proof',
+        { method: 'POST', body: formData },
+        accessTokenOverride,
+      );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to upload payment proof'));
       return response.data;
     },

@@ -83,7 +83,7 @@ const UNREADABLE_RESPONSE_ERROR = {
   message: 'Checkout could not be confirmed. Please check Receipts before trying again.',
 } as const;
 
-function buildHeaders(init?: RequestInit): Headers {
+function buildHeaders(init?: RequestInit, accessTokenOverride?: string): Headers {
   const headers = new Headers(init?.headers);
   // FormData (multipart uploads, e.g. product images) must not get a manual
   // Content-Type — the browser sets one with the correct multipart boundary.
@@ -91,7 +91,7 @@ function buildHeaders(init?: RequestInit): Headers {
     headers.set('Content-Type', 'application/json');
   }
 
-  const accessToken = useAuthStore.getState().accessToken;
+  const accessToken = accessTokenOverride ?? useAuthStore.getState().accessToken;
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
 
   const deviceId = getOrCreateDeviceId();
@@ -119,8 +119,22 @@ function buildHeaders(init?: RequestInit): Headers {
  * get the same auth/refresh/retry behavior without `apiClient`'s `.json()`
  * parsing.
  */
-export async function fetchAuthenticated(path: string, init?: RequestInit, _isRetry = false): Promise<Response> {
+export async function fetchAuthenticated(
+  path: string,
+  init?: RequestInit,
+  _isRetry = false,
+  accessTokenOverride?: string,
+): Promise<Response> {
   const isAuthPath = path === '/api/auth/refresh' || path === '/api/auth/login';
+  // A caller-supplied token (e.g. the POS Terminal's active-employee token —
+  // see terminal/page.tsx) belongs to a session the global auth store never
+  // holds. It has its own lifecycle: no dedup against refreshInFlight, and a
+  // 401 on it must never trigger this module's global-store refresh/clear —
+  // that would touch the Branch account's own session over an employee
+  // token expiring, which selecting an employee must never do.
+  if (accessTokenOverride) {
+    return fetch(`${API_URL}${path}`, { ...init, credentials: 'include', headers: buildHeaders(init, accessTokenOverride) });
+  }
   if (refreshInFlight && !_isRetry && !isAuthPath) {
     // A refresh is already resolving elsewhere (e.g. another mutation's 401
     // triggered it). Wait for it instead of firing with a token we know is
@@ -194,10 +208,10 @@ export async function fetchAuthenticated(path: string, init?: RequestInit, _isRe
  * in the app goes through this. Handles the 204-no-body case, the non-JSON-
  * response guard, JSON parse failures, and the MUST_CHANGE_PASSWORD redirect.
  */
-export async function apiClient<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
+export async function apiClient<T>(path: string, init?: RequestInit, accessTokenOverride?: string): Promise<ApiResponse<T>> {
   let response: Response;
   try {
-    response = await fetchAuthenticated(path, init);
+    response = await fetchAuthenticated(path, init, false, accessTokenOverride);
   } catch {
     return {
       data: null,

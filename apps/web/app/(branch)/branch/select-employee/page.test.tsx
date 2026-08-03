@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, cleanup, waitFor } from '@testing-library/react';
 import SelectEmployeePage from './page';
 
-const { mockPush, mockReplace, mockUseAuth, mockSelectEmployee, mockUseEmployees } = vi.hoisted(() => ({
+const { mockPush, mockReplace, mockUseAuth } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockReplace: vi.fn(),
   mockUseAuth: vi.fn(),
-  mockSelectEmployee: vi.fn(),
-  mockUseEmployees: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -18,59 +16,33 @@ vi.mock('@/hooks/use-auth', () => ({
   useAuth: mockUseAuth,
 }));
 
-vi.mock('@/hooks/queries/use-employees', () => ({
-  useEmployees: mockUseEmployees,
-}));
-
-function employee(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'employee-1',
-    first_name: 'Jane',
-    last_name: 'Doe',
-    position: 'Cashier',
-    ...overrides,
-  };
-}
-
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
 
-describe('SelectEmployeePage', () => {
-  it('routes to the dashboard-embedded POS Terminal (not the dashboard or the legacy clock-in page) after selecting an employee', async () => {
-    mockUseAuth.mockReturnValue({ user: { role: 'branch' }, selectEmployee: mockSelectEmployee });
-    mockSelectEmployee.mockResolvedValue({ id: 'employee-1' });
-    mockUseEmployees.mockReturnValue({
-      data: { employees: [employee()] },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
+describe('SelectEmployeePage (Task 120: retired redirect shim)', () => {
+  it('redirects a branch session straight to the POS Terminal, without authenticating as anyone else', async () => {
+    mockUseAuth.mockReturnValue({ user: { role: 'branch' } });
 
     render(<SelectEmployeePage />);
-    fireEvent.click(screen.getByText('Jane Doe'));
 
-    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
-    expect(mockPush).toHaveBeenCalledWith('/branch/terminal');
-    expect(mockPush).not.toHaveBeenCalledWith('/branch/dashboard');
-    expect(mockPush).not.toHaveBeenCalledWith('/branch/clock-in');
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/branch/terminal'));
   });
 
-  it('does not attempt navigation when selecting an employee fails', async () => {
-    mockUseAuth.mockReturnValue({ user: { role: 'branch' }, selectEmployee: mockSelectEmployee });
-    mockSelectEmployee.mockRejectedValue(new Error('Employee is not active'));
-    mockUseEmployees.mockReturnValue({
-      data: { employees: [employee()] },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
+  it('redirects a staff session straight to the POS Terminal too', async () => {
+    mockUseAuth.mockReturnValue({ user: { role: 'staff' } });
 
     render(<SelectEmployeePage />);
-    fireEvent.click(screen.getByText('Jane Doe'));
 
-    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalled());
-    expect(mockPush).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/branch/terminal'));
+  });
+
+  it('does not redirect while there is no authenticated user yet', () => {
+    mockUseAuth.mockReturnValue({ user: null });
+
+    render(<SelectEmployeePage />);
+
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 });

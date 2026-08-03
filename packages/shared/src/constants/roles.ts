@@ -19,15 +19,18 @@ export const ROLE_LABELS: Record<Role, string> = {
  * Where each role lands after login/refresh — the single source of truth
  * for both apps/web/middleware.ts and apps/web/lib/constants.ts.
  *
- * Branch Employee Authorization: `branch` (the Branch Account) lands on the
- * employee picker, not the dashboard directly — Employees are authorized to
- * operate inside the authenticated Branch Account only after one is
- * selected there. `staff` sessions (minted by that selection) go straight
- * to the terminal, same as before.
+ * Task 120: `branch` (the Branch Account) lands on its own dashboard, same
+ * as every other role — it stays authenticated as itself for the whole
+ * session (sidebar, header, every /branch page). "Who's working?" is no
+ * longer a login-time redirect target: it's inline STATE 1 of the POS
+ * Terminal's own state machine (apps/web/app/(branch)/branch/terminal/page.tsx),
+ * reached by navigating there like any other branch page, not by
+ * authenticating as a different user. `staff` sessions (a genuine Employee
+ * login, e.g. via PIN) still go straight to the terminal, unchanged.
  */
 export const ROLE_DASHBOARDS: Record<Role, string> = {
   super_admin: '/admin/dashboard',
   supervisor: '/supervisor/dashboard',
-  branch: '/branch/select-employee',
+  branch: '/branch/dashboard',
   staff: '/branch/terminal',
 };

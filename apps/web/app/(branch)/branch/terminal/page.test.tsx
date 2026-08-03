@@ -17,6 +17,9 @@ const {
   mockSelectEmployee,
   mockUseEmployees,
   mockCreateTransactionMutateAsync,
+  mockUseClockIn,
+  mockUseClockOut,
+  mockUseCreateTransaction,
 } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockReplaceItem: vi.fn(),
@@ -33,6 +36,13 @@ const {
   mockUseAuth: vi.fn(),
   mockSelectEmployee: vi.fn(),
   mockUseEmployees: vi.fn(),
+  // Task 120: these wrap the mutation hooks so tests can inspect what
+  // accessTokenOverride terminal/page.tsx actually threaded through — the
+  // whole point of the fix is that this is the selected Employee's token,
+  // never the Branch Account's.
+  mockUseClockIn: vi.fn(),
+  mockUseClockOut: vi.fn(),
+  mockUseCreateTransaction: vi.fn(),
 }));
 
 /** Real Radix Select needs pointer-event interactions jsdom can't drive without @testing-library/user-event — swap in a plain, click-responsive stand-in (same pattern as reports/page.test.tsx). */
@@ -105,12 +115,21 @@ vi.mock('@/hooks/queries/use-shifts', () => ({
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
   useIsClockedIn: mockUseIsClockedIn,
-  useClockIn: () => ({ mutateAsync: mockClockInMutateAsync, isPending: false }),
-  useClockOut: () => ({ mutateAsync: mockClockOutMutateAsync, isPending: false }),
+  useClockIn: (accessTokenOverride?: string) => {
+    mockUseClockIn(accessTokenOverride);
+    return { mutateAsync: mockClockInMutateAsync, isPending: false };
+  },
+  useClockOut: (accessTokenOverride?: string) => {
+    mockUseClockOut(accessTokenOverride);
+    return { mutateAsync: mockClockOutMutateAsync, isPending: false };
+  },
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
-  useCreateTransaction: () => ({ mutateAsync: mockCreateTransactionMutateAsync, isPending: false }),
+  useCreateTransaction: (accessTokenOverride?: string) => {
+    mockUseCreateTransaction(accessTokenOverride);
+    return { mutateAsync: mockCreateTransactionMutateAsync, isPending: false };
+  },
   useUploadPaymentProof: () => ({ mutateAsync: vi.fn() }),
 }));
 
@@ -1107,9 +1126,11 @@ describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () =
   });
 });
 
-// Branch Employee Authorization, embedded (Section 3 of the routing fix):
-// a `branch` (Branch Account) session sees "Who is working?" right inside
-// POS Terminal — no separate /branch/select-employee route/redirect. A
+// Task 120: a `branch` (Branch Account) session sees "Who is working?"
+// right inside POS Terminal — no separate /branch/select-employee route/
+// redirect — and selecting an Employee there never authenticates as anyone
+// else: it only sets terminal-local "active employee" state. The Branch
+// Account's own session (useAuthStore) is never touched by any of this. A
 // `staff` session (already bound to one Employee) never sees this at all,
 // covered by the STAFF_USER default in the top-level beforeEach above.
 describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)', () => {
@@ -1117,10 +1138,21 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
   }
 
+  function selectEmployeeResult(overrides: Record<string, unknown> = {}) {
+    return {
+      user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
+      accessToken: 'employee-token',
+      ...overrides,
+    };
+  }
+
   beforeEach(() => {
     mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
     useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
+    mockUseClockIn.mockClear();
+    mockUseClockOut.mockClear();
+    mockUseCreateTransaction.mockClear();
   });
 
   afterEach(() => cleanup());
@@ -1147,6 +1179,8 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     expect(await screen.findByText('This employee is not active')).toBeInTheDocument();
     // Still on the same page/component — no router navigation exists to assert against.
     expect(screen.getByText("Who's working?")).toBeInTheDocument();
+    // A failed selection must not have touched the Branch Account's session either.
+    expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
   });
 
   it('shows an empty state when no active employees are assigned to the branch', () => {
@@ -1157,31 +1191,69 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     expect(screen.getByText('No active employees')).toBeInTheDocument();
   });
 
-  it('restores the Branch Account session on Clock Out, returning the panel to "Who is working?"', async () => {
+  it('never authenticates as the selected Employee — the Branch Account session is untouched before, during, and after selection', async () => {
+    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
+    mockCartItems.mockReturnValue([]);
+    mockSelectEmployee.mockResolvedValue(selectEmployeeResult());
+
+    render(<TerminalPage />);
+    expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
+
+    fireEvent.click(screen.getByText('Jane Doe'));
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+
+    // Employee selected -> falls straight into STATE 2 (Clock In), inline, no navigation.
+    expect(await screen.findByText('Clock In to Start Selling')).toBeInTheDocument();
+    // useIsClockedIn is now checked for the selected Employee, not the Branch Account.
+    expect(mockUseIsClockedIn).toHaveBeenLastCalledWith('employee-1');
+    // The authenticated user (global store) never changed.
+    expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
+    expect(useAuthStore.getState().accessToken).toBe('branch-token');
+  });
+
+  it('clocks in and checks out using the selected Employee\'s token, never the Branch Account\'s', async () => {
     const employees = { data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() };
     mockUseEmployees.mockReturnValue(employees);
     mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
     mockCartItems.mockReturnValue([]);
-    mockSelectEmployee.mockResolvedValue({ id: 'employee-1' });
+    mockSelectEmployee.mockResolvedValue(selectEmployeeResult());
+    mockClockInMutateAsync.mockResolvedValue({ id: 'attendance-1' });
     mockClockOutMutateAsync.mockResolvedValue({ id: 'attendance-1' });
 
     const { rerender } = render(<TerminalPage />);
 
-    // STATE 1 -> employee selected, snapshotting the Branch Account session first.
     fireEvent.click(screen.getByText('Jane Doe'));
     await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
 
-    // Selection swaps the session client-side — simulate that by re-rendering as the now-active staff employee (STATE 3: already clocked in).
-    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    // Clock In: attendance is recorded for the selected Employee, authorized with that Employee's token.
+    fireEvent.click(await screen.findByRole('button', { name: 'Clock In' }));
+    await waitFor(() => expect(mockClockInMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ employee_id: 'employee-1', branch_id: 'branch-1' })));
+    expect(mockUseClockIn).toHaveBeenLastCalledWith('employee-token');
+
+    // Once clocked in, the POS/checkout hooks are wired to the same Employee token too.
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
-    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
     rerender(<TerminalPage />);
+    expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token');
+    // The active cashier shown in the attendance strip is the selected Employee, not the Branch Account.
+    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
 
+    // Clock Out: same Employee token. Wait for the whole async handler (not
+    // just the mutateAsync call) to finish, since the selected-Employee
+    // state only clears after it resolves — STATE 1 reappearing is proof
+    // that finished, regardless of what the still-static isClockedIn mock
+    // says (its guard runs before the isClockedIn check in the component).
     fireEvent.click(screen.getByRole('button', { name: /Clock Out/ }));
-    await waitFor(() => expect(mockClockOutMutateAsync).toHaveBeenCalled());
+    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(mockClockOutMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ employee_id: 'employee-1', branch_id: 'branch-1' }));
+    // useClockOut was wired to the Employee's token while the sale/clock-out
+    // was active — checked via the full call history, not the last call,
+    // since STATE 1 reappearing re-renders with no active employee and no
+    // token at all (the terminal-local state was correctly cleared).
+    expect(mockUseClockOut).toHaveBeenCalledWith('employee-token');
 
-    // The Branch Account snapshot taken before hand-off is restored — same session that selected Jane Doe.
-    await waitFor(() => expect(useAuthStore.getState().user).toEqual(BRANCH_USER));
+    // Branch Account was never signed out of at any point in this flow.
+    expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
   });
 });

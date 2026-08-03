@@ -99,7 +99,8 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
     // Branch Employee Authorization: this mints the Branch Account itself
     // (role `branch`) — the login that authenticates the physical branch.
     // Employees (`staff`) never get their own credentials; they're
-    // authorized inside this session (see /branch/select-employee).
+    // authorized inside this session (see POS Terminal's inline "Who's
+    // working?" state at /branch/terminal — Task 120).
     // Regional oversight (`supervisor`) is a separate role assigned to an
     // existing user via assign-supervisor-dialog.tsx, not created here.
     await createAccount.mutateAsync({

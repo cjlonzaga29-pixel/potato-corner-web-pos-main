@@ -30,7 +30,10 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  * session away from /branch/terminal to a separate /branch/select-employee
  * route. Employee selection ("Who is working?") is now rendered inline by
  * the terminal page itself (STATE 1 of its state machine), so that redirect
- * — and the extra page hop it caused — is gone entirely.
+ * — and the extra page hop it caused — is gone entirely. Task 120:
+ * ROLE_DASHBOARDS now lands a `branch` login on /branch/dashboard like every
+ * other role — /branch/select-employee is kept only as a redirect shim for
+ * stale links, it is no longer part of the login flow.
  */
 export default function BranchLayout({ children }: { children: ReactNode }) {
   return (

@@ -67,10 +67,16 @@ export function useAttendanceByEmployee(employeeId: string | null | undefined, f
  * (latest attendance record with no clock-out yet), reusable by Open Shift
  * and the POS route guard so they never disagree with the Clock In page
  * about attendance state.
+ *
+ * Task 120: a `branch` session operating the POS Terminal has no attendance
+ * record of its own — the caller passes the selected Employee's id as
+ * employeeIdOverride so this checks that Employee's status instead of the
+ * authenticated (Branch) user's. A genuine `staff` session omits it and
+ * falls back to its own id, unchanged from before.
  */
-export function useIsClockedIn() {
+export function useIsClockedIn(employeeIdOverride?: string) {
   const { user } = useAuth();
-  const query = useAttendanceByEmployee(user?.id, { limit: 1 });
+  const query = useAttendanceByEmployee(employeeIdOverride ?? user?.id, { limit: 1 });
   const latestRecord = query.data?.records[0] ?? null;
   const isClockedIn = latestRecord !== null && latestRecord.clock_out_server_time === null;
   return { isClockedIn, record: isClockedIn ? latestRecord : null, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
@@ -89,14 +95,22 @@ export function useAttendanceRealtimeSync(): void {
   );
 }
 
-export function useClockIn() {
+/**
+ * Task 120: accessTokenOverride lets the POS Terminal clock in the selected
+ * Employee using that Employee's token (obtained from useAuth().selectEmployee,
+ * never written to the global auth store) instead of the authenticated
+ * Branch session's — see terminal/page.tsx. Omitted for a genuine `staff`
+ * session, unchanged from before.
+ */
+export function useClockIn(accessTokenOverride?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: ClockInInput) => {
-      const response = await apiClient<AttendanceResponse>('/api/attendance/clock-in', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
+      const response = await apiClient<AttendanceResponse>(
+        '/api/attendance/clock-in',
+        { method: 'POST', body: JSON.stringify(input) },
+        accessTokenOverride,
+      );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to clock in'));
       return response.data;
     },
@@ -108,14 +122,16 @@ export function useClockIn() {
   });
 }
 
-export function useClockOut() {
+/** Task 120: see useClockIn's accessTokenOverride note above — same reasoning applies to clock-out. */
+export function useClockOut(accessTokenOverride?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: ClockOutInput) => {
-      const response = await apiClient<AttendanceResponse>('/api/attendance/clock-out', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
+      const response = await apiClient<AttendanceResponse>(
+        '/api/attendance/clock-out',
+        { method: 'POST', body: JSON.stringify(input) },
+        accessTokenOverride,
+      );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to clock out'));
       return response.data;
     },

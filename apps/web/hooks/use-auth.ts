@@ -245,10 +245,20 @@ export function useAuth() {
   }
 
   /**
-   * Branch Employee Authorization: swaps the current `branch` session for a
-   * `staff` session bound to the selected Employee — no password involved,
-   * the Branch Account is already authenticated. Same response shape as
-   * login(), so the same setAuth path applies.
+   * Task 120: Branch Employee Authorization no longer swaps the session.
+   * Selecting an Employee only sets which Employee is the active terminal
+   * operator — the Branch Account stays the authenticated user throughout
+   * (sidebar, header, and every other page keep reading the Branch session
+   * from useAuthStore, untouched by this call). This never calls setAuth().
+   *
+   * The backend still returns a staff-scoped access token (same endpoint,
+   * same response shape as login()) — checkout's cashier attribution and
+   * attendance's active-shift resolution are both keyed off the request's
+   * bearer token server-side, so the caller (POS Terminal) must hold onto
+   * this token itself and pass it as an explicit override on the specific
+   * calls that need to be attributed to this Employee (clock-in/out,
+   * checkout, payment-proof upload) — see terminal/page.tsx's activeEmployee
+   * state. It is never written into the global auth store.
    */
   async function selectEmployee(employeeId: string) {
     const deviceId = getOrCreateDeviceId();
@@ -261,8 +271,7 @@ export function useAuth() {
       throw new Error(typeof response.error === 'string' ? response.error : response.error?.message ?? 'Could not start employee session');
     }
 
-    setAuth(toAuthUser(response.data.user), response.data.access_token);
-    return response.data.user;
+    return { user: toAuthUser(response.data.user), accessToken: response.data.access_token };
   }
 
   async function logout() {

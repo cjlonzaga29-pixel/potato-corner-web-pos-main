@@ -502,7 +502,7 @@ export const reportsRepository = {
     const branchIds = Array.from(new Set(stocks.map((s) => s.branchId)));
     const movementScope = { inventoryItemId: { in: itemIds }, branchId: { in: branchIds } };
 
-    const [todayNet, todaySales, monthSales, kilogramUnit] = await Promise.all([
+    const [todayNet, todaySales, monthSales, kilogramUnit, gramUnit] = await Promise.all([
       prisma.inventoryStockMovement.groupBy({
         by: ['branchId', 'inventoryItemId'],
         where: { ...movementScope, createdAt: { gte: dayStart, lte: dayEnd } },
@@ -519,6 +519,7 @@ export const reportsRepository = {
         _sum: { quantityChange: true },
       }),
       prisma.unitOfMeasure.findUnique({ where: { code: 'kg' } }),
+      prisma.unitOfMeasure.findUnique({ where: { code: 'g' } }),
     ]);
 
     const toMap = (rows: typeof todayNet, abs: boolean) =>
@@ -575,24 +576,40 @@ export const reportsRepository = {
         weightFactorCache.set(cacheKey, result);
         return result;
       }
-      if (!kilogramUnit) {
-        const result: WeightResolution = { status: 'unresolved' };
-        weightFactorCache.set(cacheKey, result);
-        return result;
-      }
-      try {
-        const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id, inventoryItemId)).toNumber();
-        const result: WeightResolution = { status: 'resolved', toKilograms };
-        weightFactorCache.set(cacheKey, result);
-        return result;
-      } catch (error) {
-        if (error instanceof UnitConversionError) {
-          const result: WeightResolution = { status: 'unresolved' };
+
+      // Direct base unit -> kg, item-specific InventoryItemUnitConversion
+      // checked before the global UnitConversion table (convertQuantity's
+      // own precedence).
+      if (kilogramUnit) {
+        try {
+          const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id, inventoryItemId)).toNumber();
+          const result: WeightResolution = { status: 'resolved', toKilograms };
           weightFactorCache.set(cacheKey, result);
           return result;
+        } catch (error) {
+          if (!(error instanceof UnitConversionError)) throw error;
         }
-        throw error;
       }
+
+      // Task 134: item-specific conversions are commonly authored against
+      // grams rather than kg directly (e.g. "1 tbsp = 7 g" for a seasoning),
+      // so a base unit with no direct ...->kg row still resolves by chaining
+      // base unit -> g (item-specific, then global) -> kg (the fixed metric
+      // factor) before falling back to CONVERSION_REQUIRED.
+      if (gramUnit) {
+        try {
+          const toGrams = (await convertQuantity(1, baseUnitId, gramUnit.id, inventoryItemId)).toNumber();
+          const result: WeightResolution = { status: 'resolved', toKilograms: toGrams * 0.001 };
+          weightFactorCache.set(cacheKey, result);
+          return result;
+        } catch (error) {
+          if (!(error instanceof UnitConversionError)) throw error;
+        }
+      }
+
+      const result: WeightResolution = { status: 'unresolved' };
+      weightFactorCache.set(cacheKey, result);
+      return result;
     }
 
     const rows: InventorySummaryReportRow[] = [];

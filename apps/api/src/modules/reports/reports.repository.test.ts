@@ -576,6 +576,40 @@ describe('reportsRepository.getInventorySummary', () => {
     });
   });
 
+  it('resolves a tbsp base unit to kg by chaining an item-specific tbsp->g conversion through the metric g->kg factor instead of reporting CONVERSION_REQUIRED (TASK 134)', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-seasoning',
+        quantityOnHand: decimal(13),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Seasoning', baseUnitId: 'unit-tbsp', baseUnit: { code: 'tbsp', dimension: 'VOLUME' } },
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStockMovement.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.unitOfMeasure.findUnique)
+      .mockResolvedValueOnce({ id: 'unit-kg', code: 'kg' } as never)
+      .mockResolvedValueOnce({ id: 'unit-g', code: 'g' } as never);
+    vi.mocked(prisma.unitConversion.findUnique).mockResolvedValue(null as never);
+    vi.mocked(prisma.inventoryItemUnitConversion.findUnique).mockImplementation(
+      ((args: { where: { inventoryItemId_fromUnitId_toUnitId: { inventoryItemId: string; fromUnitId: string; toUnitId: string } } }) => {
+        const { fromUnitId, toUnitId } = args.where.inventoryItemId_fromUnitId_toUnitId;
+        return Promise.resolve(fromUnitId === 'unit-tbsp' && toUnitId === 'unit-g' ? { factor: decimal(7) } : null);
+      }) as never,
+    );
+
+    const rows = await reportsRepository.getInventorySummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]).toMatchObject({
+      section: 'INGREDIENT_KG',
+      status: 'CONVERTED',
+      unit: 'tbsp',
+      remaining_stock: 13,
+      remaining_kg: 0.09,
+      conversion_warning: null,
+    });
+  });
+
   it('excludes an item whose base unit cannot be normalized to weight and is not COUNT-dimension (no third section)', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       {

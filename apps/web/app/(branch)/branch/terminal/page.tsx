@@ -33,6 +33,12 @@ import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cach
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
+import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
+
+// Task 140 — the same allowed-roles set ViewTransactionDetailDialog itself
+// gates Void/Refund actions on (view-transaction-detail-dialog.tsx); kept
+// here only to decide whether the POS entry point is worth showing at all.
+const VOID_REFUND_ENTRY_ROLES: readonly string[] = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH];
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -105,6 +111,10 @@ export default function TerminalPage() {
   const { user, selectEmployee } = useAuth();
   const branchId = user?.branchIds[0];
   const isBranchAccount = user?.role === ROLES.BRANCH;
+  // Task 140 — the authenticated account's own role, never the selected
+  // Employee's (a Branch Account picking a Staff employee to run the
+  // terminal must still see this; a genuine `staff` login must not).
+  const canManageVoidRefund = user?.role !== undefined && VOID_REFUND_ENTRY_ROLES.includes(user.role);
 
   // STATE 1 — "Who is working?" (Branch Employee Authorization). Only a
   // `branch` (Branch Account) session ever sees this: a `staff` login is
@@ -221,6 +231,7 @@ export default function TerminalPage() {
   const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
+  const [isVoidRefundOpen, setIsVoidRefundOpen] = useState(false);
 
   // GCash/Maya proof capture and Other's reference note both require a live
   // connection (see createTransactionSchema's offline-must-be-cash rule) —
@@ -1115,6 +1126,12 @@ export default function TerminalPage() {
             </div>
           </div>
 
+          {canManageVoidRefund && (
+            <Button type="button" variant="outline" className="touch-target w-full" onClick={() => setIsVoidRefundOpen(true)}>
+              Void / Refund Sale
+            </Button>
+          )}
+
           <Select value={discountType} onValueChange={(v) => setDiscountType(v as DiscountChoice)}>
             <SelectTrigger>
               <SelectValue />
@@ -1243,6 +1260,10 @@ export default function TerminalPage() {
       </div>
 
       <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />
+
+      {canManageVoidRefund && (
+        <VoidRefundSaleDialog branchId={branchId} open={isVoidRefundOpen} onOpenChange={setIsVoidRefundOpen} />
+      )}
 
       {queuedNotice && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4">

@@ -144,6 +144,15 @@ vi.mock('@/lib/offline/sync-queue', () => ({
 
 vi.mock('@/components/pos/receipt-modal', () => ({ ReceiptModal: () => null }));
 
+// VoidRefundSaleDialog has its own full test coverage
+// (void-refund-sale-dialog.test.tsx) — stubbed here to isolate the
+// terminal's entry point (button visibility + open state) from that
+// dialog's own transactions/branch/employee query chain.
+vi.mock('@/components/pos/void-refund-sale-dialog', () => ({
+  VoidRefundSaleDialog: ({ open }: { branchId: string; open: boolean; onOpenChange: (open: boolean) => void }) =>
+    open ? <div data-testid="void-refund-sale-dialog">Void or Refund Sale</div> : null,
+}));
+
 type SnackOption = PosCatalogProduct['variants'][number]['flavor_slots'][number]['snack_options'][number];
 
 function slotVariant(overrides: Partial<PosCatalogProduct['variants'][number]> = {}): PosCatalogProduct['variants'][number] {
@@ -1494,5 +1503,46 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     // Branch Account was never signed out of at any point in this flow.
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
+  });
+});
+
+// Task 140 — POS Terminal entry point onto the existing Void/Refund workflow.
+// Uses a SUPERVISOR session (authorized, and not the `branch` role) so the
+// terminal renders directly without the "Who's working?" employee-selection
+// step a `branch` account would hit first — that step is orthogonal to
+// button visibility, which is covered by role alone.
+describe('TerminalPage — Void / Refund Sale entry point (Task 140)', () => {
+  const SUPERVISOR_USER = { id: 'user-2', role: 'supervisor' as const, branchIds: ['branch-1'], firstName: 'Sam', lastName: 'Reyes', email: 'sam@example.com' };
+
+  beforeEach(() => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([]);
+  });
+
+  afterEach(() => cleanup());
+
+  it('shows the Void / Refund Sale button for an authorized role (supervisor)', () => {
+    mockUseAuth.mockReturnValue({ user: SUPERVISOR_USER, selectEmployee: mockSelectEmployee });
+    render(<TerminalPage />);
+
+    expect(screen.getByRole('button', { name: 'Void / Refund Sale' })).toBeInTheDocument();
+  });
+
+  it('hides the Void / Refund Sale button for STAFF', () => {
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    render(<TerminalPage />);
+
+    expect(screen.queryByRole('button', { name: 'Void / Refund Sale' })).not.toBeInTheDocument();
+  });
+
+  it('opens the Void or Refund Sale dialog when the button is clicked', () => {
+    mockUseAuth.mockReturnValue({ user: SUPERVISOR_USER, selectEmployee: mockSelectEmployee });
+    render(<TerminalPage />);
+
+    expect(screen.queryByTestId('void-refund-sale-dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Void / Refund Sale' }));
+    expect(screen.getByTestId('void-refund-sale-dialog')).toBeInTheDocument();
   });
 });

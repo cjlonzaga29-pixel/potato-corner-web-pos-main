@@ -62,32 +62,39 @@ const warningRow = row({
 });
 
 describe('generateInventorySummaryCsv', () => {
-  it('includes Ingredient Consumption (KG) and Packaging Consumption (PC) as the only two sections', () => {
+  it('includes Ingredient Consumption (KG) and Packaging Consumption (PC) as the only two sections, with no Status column', () => {
     const csv = generateInventorySummaryCsv([ingredientRow, packagingRow]).toString('utf-8');
 
     expect(csv).toContain('Ingredient Consumption (KG)');
-    expect(csv).toContain('Raw Fries,2.416,0.448,2.416,1.968,Converted');
+    expect(csv).toContain('Ingredient,Opening Stock (kg),Consumed Today (kg),Consumed This Month (kg),Remaining (kg)');
+    expect(csv).toContain('Raw Fries,2.416,0.448,2.416,1.968');
     expect(csv).toContain('Packaging Consumption (PC)');
     expect(csv).toContain('Cups,12,3,20,9');
-    expect(csv).not.toContain('Needs KG Conversion Setup');
   });
 
-  it('keeps an unresolved (CONVERSION_REQUIRED) row inside Ingredient Consumption (KG), with blank kg fields and a Status column, never a separate section', () => {
+  it('excludes an unresolved (CONVERSION_REQUIRED) row from Ingredient Consumption (KG) entirely and appends a warning line instead, matching the admin UI', () => {
     const csv = generateInventorySummaryCsv([ingredientRow, packagingRow, warningRow]).toString('utf-8');
 
-    expect(csv).not.toContain('Needs KG Conversion Setup');
-    expect(csv).toContain('Ingredient,Opening Stock (kg),Consumed Today (kg),Consumed This Month (kg),Remaining (kg),Status');
-    expect(csv).toContain('Flavored Fries Powder,,,,,Conversion required');
+    expect(csv).not.toContain('Flavored Fries Powder');
+    expect(csv).not.toContain('Status');
+    expect(csv).toContain('Some ingredients are missing unit conversions and are excluded from KG totals.');
+  });
+
+  it('omits the warning line when no rows need a kg conversion', () => {
+    const csv = generateInventorySummaryCsv([ingredientRow, packagingRow]).toString('utf-8');
+
+    expect(csv).not.toContain('missing unit conversions');
   });
 
   it('excludes CONVERSION_REQUIRED rows from the Ingredient Consumption (KG) totals', () => {
     const csv = generateInventorySummaryCsv([ingredientRow, warningRow]).toString('utf-8');
     const lines = csv.split('\n');
-    const totalsLine = lines[lines.indexOf('Ingredient Consumption (KG)') + 4];
+    const totalsLine = lines[lines.indexOf('Ingredient Consumption (KG)') + 3];
 
     // Only ingredientRow (2.416/0.448/2.416/1.968) contributes — warningRow's
-    // tbsp figures must not be folded into these kg totals.
-    expect(totalsLine).toBe('Total,2.42,0.45,2.42,1.97,');
+    // tbsp figures must not be folded into these kg totals, and it isn't a row
+    // in this table at all.
+    expect(totalsLine).toBe('Total,2.42,0.45,2.42,1.97');
   });
 });
 

@@ -3,6 +3,19 @@ import type { PosCartSelectedOption } from '@/stores/cart.store';
 /** Sentinel key for "No Add-ons" within a group's assignment map. */
 export const NO_ADD_ON_KEY = '__none__';
 
+/**
+ * Task 131 — matches a Product Option Group configured as the POS "Add-ons"
+ * group, which gets the simplified optional-multi-select flow instead of the
+ * legacy per-choice quantity allocator. Matches on pos_button_label (the
+ * cashier-facing override) first, falling back to the internal name — never
+ * matches unrelated groups like Size/Flavor just because they're assigned.
+ */
+export function isAddOnsGroup(group: { name: string; pos_button_label?: string | null }): boolean {
+  const label = group.pos_button_label?.trim().toLowerCase() ?? '';
+  if (label) return label.includes('add-on');
+  return group.name.toLowerCase().includes('add-on');
+}
+
 export interface AddOnSplitGroup {
   id: string;
   name: string;

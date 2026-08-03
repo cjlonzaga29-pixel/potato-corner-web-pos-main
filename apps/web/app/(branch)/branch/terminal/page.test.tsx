@@ -876,6 +876,245 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
   });
 });
 
+// Task 131 — a Product Option Group matching the Add-ons naming rule
+// (name/pos_button_label containing "Add-on") gets a simplified optional
+// multi-select in the Add-ons dialog instead of the legacy per-choice
+// quantity allocator exercised above by the "Size" group: no Product
+// Quantity control, no Assigned N/N text, Add enabled with zero selections,
+// and any number of options selectable together on one product line.
+function addOnsGroup(overrides: Partial<OptionGroup> = {}): OptionGroup {
+  return optionGroup({
+    id: 'addons-group',
+    name: 'Add-ons',
+    pos_button_label: null,
+    selection_type: 'MULTIPLE',
+    min_selections: 0,
+    max_selections: null,
+    required: false,
+    options: [
+      { id: 'cheese', name: 'Cheese', price_adjustment: 10, sort_order: 1, is_active: true },
+      { id: 'bbq', name: 'BBQ', price_adjustment: 10, sort_order: 2, is_active: true },
+      { id: 'sour-cream', name: 'Sour Cream', price_adjustment: 0, sort_order: 3, is_active: true },
+    ],
+    ...overrides,
+  });
+}
+
+describe('TerminalPage — Add-ons group simplified optional multi-select (Task 131)', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockReplaceItem.mockClear();
+    mockCartItems.mockReturnValue([]);
+  });
+
+  afterEach(() => cleanup());
+
+  it('renders no Product Quantity control and no Assigned N/N text for a variant with only an Add-ons group', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.queryByRole('button', { name: 'Increase quantity' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Decrease quantity' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Assigned \d+ \/ \d+/)).not.toBeInTheDocument();
+  });
+
+  it('Add is enabled with zero add-ons selected — the product can be sold with No Add-ons', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('one selected add-on is added once on the product line', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+      ],
+      quantity: 1,
+    });
+  });
+
+  it('multiple add-ons can be selected together on one product line — never split into separate lines', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByText('BBQ (+₱10.00)'));
+    fireEvent.click(screen.getByText('Sour Cream'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+        { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'bbq', option_name: 'BBQ', price_adjustment: 10 },
+        { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'sour-cream', option_name: 'Sour Cream', price_adjustment: 0 },
+      ],
+      quantity: 1,
+    });
+  });
+
+  it('selecting No Add-ons after choosing options clears the selection', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByText('No Add-ons'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('selecting an add-on after No Add-ons results in only that add-on being applied', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByText('No Add-ons'));
+    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+      ],
+      quantity: 1,
+    });
+  });
+
+  it('quantity 3 with one selected add-on scales the line total ×3 in the cart preview', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+        ],
+        quantity: 3,
+      },
+    ]);
+    render(<TerminalPage />);
+
+    // unit price 80 + 10 = 90; ×3 = 270, short ₱20 of a ₱250 cash tender.
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '250' } });
+    expect(screen.getByText('Cash tendered is ₱20.00 short.')).toBeInTheDocument();
+  });
+
+  it('Edit preloads every selected add-on for the group', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+          { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'bbq', option_name: 'BBQ', price_adjustment: 10 },
+        ],
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    // Re-toggling Cheese off, then Save, must leave only BBQ selected.
+    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(mockReplaceItem).toHaveBeenCalledWith(0, [
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'bbq', option_name: 'BBQ', price_adjustment: 10 },
+        ],
+        quantity: 1,
+      },
+    ]);
+  });
+
+  it('Edit can clear all add-ons via No Add-ons', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
+    mockCartItems.mockReturnValue([
+      {
+        product_id: 'product-1',
+        product_variant_id: 'variant-1',
+        selected_options: [
+          { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+        ],
+        quantity: 1,
+      },
+    ]);
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByText('No Add-ons'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(mockReplaceItem).toHaveBeenCalledWith(0, [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+  });
+
+  it('a required, SINGLE-selection Add-ons-named group is still treated as optional (No Add-ons shown, Add enabled with zero selections)', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        optionVariant({ option_groups: [addOnsGroup({ selection_type: 'SINGLE', min_selections: 1, max_selections: 1, required: true })] }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.getByText('No Add-ons')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+  });
+
+  it('a variant with both a legacy Size group and an Add-ons group keeps the Size quantity allocator while the Add-ons group stays a simplified multi-select', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([optionVariant({ option_groups: [optionGroup(), addOnsGroup()] })]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    // Product Quantity control still present (Size still needs it) — Add
+    // starts disabled until Size is assigned, unaffected by Add-ons.
+    expect(screen.getByRole('button', { name: 'Increase quantity' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Small quantity' }));
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-1', option_name: 'Small', price_adjustment: 0 },
+        { option_group_id: 'addons-group', option_group_name: 'Add-ons', option_id: 'cheese', option_name: 'Cheese', price_adjustment: 10 },
+      ],
+      quantity: 1,
+    });
+  });
+});
+
 // Simple Operational Audit §5 — Maya and Other must be reachable and usable
 // from the same terminal Charge flow as cash/GCash, not dead-end tabs.
 describe('TerminalPage — Maya and Other payment methods', () => {

@@ -10,8 +10,9 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
-import { AddOnsDialog, type AddOnsDialogGroup } from '@/components/pos/add-ons-dialog';
-import { splitAddOnLines, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
+import { AddOnsDialog, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
+import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
+import type { PosCartSelectedOption } from '@/stores/cart.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -183,10 +184,14 @@ export default function TerminalPage() {
     variant: PosCatalogProduct['variants'][number];
     selections: Record<number, { snackProductVariantId: string; flavorId: string }>;
   } | null>(null);
-  // Task 107 — add-ons are chosen BEFORE the item reaches the cart. Every
-  // assigned Product Option Group gets a per-choice quantity that must sum
-  // to the product quantity; on confirm the line is split into one cart
-  // line per distinct combination (lib/pos/split-add-ons.ts).
+  // Task 107 — add-ons are chosen BEFORE the item reaches the cart. Legacy
+  // (non-Add-ons) Product Option Groups still get a per-choice quantity that
+  // must sum to the product quantity, splitting into one cart line per
+  // distinct combination on confirm (lib/pos/split-add-ons.ts).
+  // Task 131 — groups matching the Add-ons naming rule (isAddOnsGroup)
+  // instead use `selectedOptionIds`: a plain optional multi-select with no
+  // quantity allocation, applied once per unit regardless of how many
+  // legacy-group lines the product quantity gets split into.
   // Task 108 — the same dialog reopens, preloaded, to edit an existing cart
   // line's add-ons/quantity; editingIndex marks that case (vs. undefined for
   // the pre-add "create" flow) so confirm knows to replace instead of add.
@@ -197,6 +202,7 @@ export default function TerminalPage() {
     selectedFlavors?: { slot_index: number; snack_product_variant_id: string; flavor_id: string }[];
     quantity: number;
     assignments: AddOnAssignments;
+    selectedOptionIds: AddOnSelections;
     editingIndex?: number;
   } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'other'>('cash');
@@ -331,6 +337,21 @@ export default function TerminalPage() {
       .filter((group) => group.options.length > 0);
   }
 
+  // Task 131 — groups the Add-ons dialog for a variant: groups matching the
+  // Add-ons naming rule (isAddOnsGroup) render as the simplified optional
+  // multi-select; every other group keeps the original per-choice quantity
+  // allocator (label/allowNoAddOn computed exactly as before).
+  function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOnsDialogGroup[] {
+    return activeOptionGroups(variant).map((group) => ({
+      id: group.id,
+      name: resolveGroupLabel(group),
+      label: resolveGroupLabel(group),
+      allowNoAddOn: group.min_selections === 0,
+      simplified: isAddOnsGroup(group),
+      options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
+    }));
+  }
+
   // Opens the Add-ons dialog for a product about to be added to the cart —
   // called only after any flavor/slot choice is already resolved. Returns
   // true when the dialog was opened (caller must not addItem directly).
@@ -341,7 +362,7 @@ export default function TerminalPage() {
   ): boolean {
     const groups = activeOptionGroups(variant);
     if (groups.length === 0) return false;
-    setAddOnsPrompt({ product, variant, ...extra, quantity: 1, assignments: {} });
+    setAddOnsPrompt({ product, variant, ...extra, quantity: 1, assignments: {}, selectedOptionIds: {} });
     return true;
   }
 
@@ -373,9 +394,34 @@ export default function TerminalPage() {
     });
   }
 
+  // Task 131 — toggles one option within a simplified Add-ons group's
+  // selection; selecting any option implicitly clears "No Add-ons" (an empty
+  // array), never a separate flag to keep in sync.
+  function handleToggleAddOnOption(groupId: string, optionId: string) {
+    setAddOnsPrompt((prev) => {
+      if (!prev) return prev;
+      const current = prev.selectedOptionIds[groupId] ?? [];
+      const next = current.includes(optionId) ? current.filter((id) => id !== optionId) : [...current, optionId];
+      return { ...prev, selectedOptionIds: { ...prev.selectedOptionIds, [groupId]: next } };
+    });
+  }
+
+  // Task 131 — "No Add-ons" for a simplified group always clears that
+  // group's selection outright (not a toggle) — the cashier must never be
+  // blocked from selling the product without an add-on.
+  function handleClearAddOnGroup(groupId: string) {
+    setAddOnsPrompt((prev) => (prev ? { ...prev, selectedOptionIds: { ...prev.selectedOptionIds, [groupId]: [] } } : prev));
+  }
+
   // Splits the product quantity into independent cart lines — one per
-  // distinct combination of add-on choices (lib/pos/split-add-ons.ts). Never
-  // creates a single line carrying per-option quantities.
+  // distinct combination of legacy-group add-on choices
+  // (lib/pos/split-add-ons.ts). Never creates a single line carrying
+  // per-option quantities.
+  //
+  // Task 131 — simplified (Add-ons) group selections are chosen once for the
+  // whole prompt, not per unit: they're appended onto every resulting line
+  // untouched by legacy splitting, so each selected add-on's price/deduction
+  // scales with that line's own quantity exactly like any other option.
   //
   // Task 108 — in edit mode (editingIndex set) this replaces that one cart
   // line with the freshly-split line(s) instead of appending new lines; the
@@ -383,21 +429,41 @@ export default function TerminalPage() {
   // another existing line using the same identity rules addItem uses.
   function handleAddOnsConfirm() {
     if (!addOnsPrompt) return;
-    const { product, variant, flavorId, selectedFlavors, quantity, assignments, editingIndex } = addOnsPrompt;
-    const groups = activeOptionGroups(variant).map((group) => ({
-      id: group.id,
-      name: resolveGroupLabel(group),
-      options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
-    }));
-    const lines = splitAddOnLines(groups, assignments, quantity);
-    const newItems = lines.map((line) => ({
-      product_id: product.id,
-      product_variant_id: variant.id,
-      ...(flavorId ? { flavor_id: flavorId } : {}),
-      ...(selectedFlavors ? { selected_flavors: selectedFlavors } : {}),
-      ...(line.selected_options.length > 0 ? { selected_options: line.selected_options } : {}),
-      quantity: line.quantity,
-    }));
+    const { product, variant, flavorId, selectedFlavors, quantity, assignments, selectedOptionIds, editingIndex } = addOnsPrompt;
+    const groups = dialogGroupsFor(variant);
+    const legacyGroups = groups.filter((group) => !group.simplified);
+    const addOnGroups = groups.filter((group) => group.simplified);
+
+    const addOnSelectedOptions: PosCartSelectedOption[] = addOnGroups.flatMap((group) =>
+      (selectedOptionIds[group.id] ?? []).flatMap((optionId) => {
+        const option = group.options.find((o) => o.id === optionId);
+        if (!option) return [];
+        return [
+          {
+            option_group_id: group.id,
+            option_group_name: group.name,
+            option_id: option.id,
+            option_name: option.name,
+            price_adjustment: option.price_adjustment,
+          },
+        ];
+      }),
+    );
+
+    const baseLines =
+      legacyGroups.length > 0 ? splitAddOnLines(legacyGroups, assignments, quantity) : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
+
+    const newItems = baseLines.map((line) => {
+      const selected_options = [...line.selected_options, ...addOnSelectedOptions];
+      return {
+        product_id: product.id,
+        product_variant_id: variant.id,
+        ...(flavorId ? { flavor_id: flavorId } : {}),
+        ...(selectedFlavors ? { selected_flavors: selectedFlavors } : {}),
+        ...(selected_options.length > 0 ? { selected_options } : {}),
+        quantity: line.quantity,
+      };
+    });
     if (editingIndex !== undefined) {
       replaceItem(editingIndex, newItems);
     } else {
@@ -412,24 +478,34 @@ export default function TerminalPage() {
 
   // Task 108 — "Edit" on a cart line reopens the same Add-ons dialog used
   // pre-add, preloaded with that line's product/variant/flavor, quantity,
-  // and current option choices (reconstructed back into per-choice
-  // assignments — the inverse of splitAddOnLines). Only offered for lines
-  // whose variant currently has assignable option groups; there is nothing
-  // for this dialog to edit otherwise.
+  // and current option choices. Only offered for lines whose variant
+  // currently has assignable option groups; there is nothing for this
+  // dialog to edit otherwise.
+  //
+  // Task 131 — legacy groups preload back into per-choice assignments (the
+  // inverse of splitAddOnLines) exactly as before; simplified (Add-ons)
+  // groups preload every matching selected option id into selectedOptionIds
+  // instead (a line can carry several, not just one).
   function handleEditLine(index: number) {
     const item = items[index];
     if (!item) return;
     const info = variantIndex.get(item.product_variant_id);
     if (!info) return;
     const { product, variant } = info;
-    const groups = activeOptionGroups(variant);
+    const groups = dialogGroupsFor(variant);
     if (groups.length === 0) return;
     const assignments: AddOnAssignments = {};
+    const selectedOptionIds: AddOnSelections = {};
     for (const group of groups) {
-      const selected = (item.selected_options ?? []).find((option) => option.option_group_id === group.id);
+      const selectedForGroup = (item.selected_options ?? []).filter((option) => option.option_group_id === group.id);
+      if (group.simplified) {
+        selectedOptionIds[group.id] = selectedForGroup.map((option) => option.option_id);
+        continue;
+      }
+      const selected = selectedForGroup[0];
       if (selected) {
         assignments[group.id] = { [selected.option_id]: item.quantity };
-      } else if (group.min_selections === 0) {
+      } else if (group.allowNoAddOn) {
         assignments[group.id] = { [NO_ADD_ON_KEY]: item.quantity };
       }
     }
@@ -440,6 +516,7 @@ export default function TerminalPage() {
       ...(item.selected_flavors ? { selectedFlavors: item.selected_flavors } : {}),
       quantity: item.quantity,
       assignments,
+      selectedOptionIds,
       editingIndex: index,
     });
   }
@@ -924,19 +1001,14 @@ export default function TerminalPage() {
           <AddOnsDialog
             productName={addOnsPrompt.product.name}
             variantName={addOnsPrompt.variant.name}
-            groups={activeOptionGroups(addOnsPrompt.variant).map(
-              (group): AddOnsDialogGroup => ({
-                id: group.id,
-                name: resolveGroupLabel(group),
-                label: resolveGroupLabel(group),
-                allowNoAddOn: group.min_selections === 0,
-                options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
-              }),
-            )}
+            groups={dialogGroupsFor(addOnsPrompt.variant)}
             quantity={addOnsPrompt.quantity}
             onQuantityChange={handleAddOnsQuantityChange}
             assignments={addOnsPrompt.assignments}
             onAssignmentChange={handleAddOnsAssignmentChange}
+            selectedOptionIds={addOnsPrompt.selectedOptionIds}
+            onToggleOption={handleToggleAddOnOption}
+            onClearGroup={handleClearAddOnGroup}
             onCancel={() => setAddOnsPrompt(null)}
             onConfirm={handleAddOnsConfirm}
             isEditMode={addOnsPrompt.editingIndex !== undefined}

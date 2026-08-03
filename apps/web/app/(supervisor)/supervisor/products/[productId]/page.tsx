@@ -40,21 +40,13 @@ export default function SupervisorProductActivationPage({ params }: SupervisorPr
         </Link>
       </Button>
 
-      <div className="flex items-center gap-4">
-        {product.image_url ? (
-          // eslint-disable-next-line @next/next/no-img-element -- product photo from Supabase Storage
-          <img src={product.image_url} alt={product.name} className="h-16 w-16 rounded-md object-cover" />
-        ) : (
-          <div className="h-16 w-16 rounded-md bg-muted" />
-        )}
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold">{product.name}</h1>
-            <ProductStatusBadge status={product.status} />
-            <SeasonalBadge isSeasonal={product.is_seasonal} />
-          </div>
-          <p className="text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold">{product.name}</h1>
+          <ProductStatusBadge status={product.status} />
+          <SeasonalBadge isSeasonal={product.is_seasonal} />
         </div>
+        <p className="text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
       </div>
 
       <BranchAvailabilityPanel product={product} />

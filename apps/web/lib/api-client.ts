@@ -85,8 +85,8 @@ const UNREADABLE_RESPONSE_ERROR = {
 
 function buildHeaders(init?: RequestInit, accessTokenOverride?: string): Headers {
   const headers = new Headers(init?.headers);
-  // FormData (multipart uploads, e.g. product images) must not get a manual
-  // Content-Type — the browser sets one with the correct multipart boundary.
+  // FormData (multipart uploads, e.g. payment proof photos) must not get a
+  // manual Content-Type — the browser sets one with the correct multipart boundary.
   if (!(init?.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }

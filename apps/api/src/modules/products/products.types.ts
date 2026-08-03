@@ -22,7 +22,6 @@ export interface CreateProductData {
   isSeasonal: boolean;
   seasonalStartDate?: string;
   seasonalEndDate?: string;
-  imageUrl?: string;
   branchExclusive: boolean;
   exclusiveBranchId?: string;
 }
@@ -36,7 +35,6 @@ export interface UpdateProductData {
   isSeasonal?: boolean;
   seasonalStartDate?: string | null;
   seasonalEndDate?: string | null;
-  imageUrl?: string | null;
 }
 
 export interface CreateVariantData {

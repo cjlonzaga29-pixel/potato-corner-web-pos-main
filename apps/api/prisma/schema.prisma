@@ -531,7 +531,6 @@ model Product {
   name              String
   description       String?
   category          String?
-  imageUrl          String?       @map("image_url")
   status            ProductStatus @default(draft)
   displayOrder      Int?          @map("display_order")
   isSeasonal        Boolean       @default(false) @map("is_seasonal")

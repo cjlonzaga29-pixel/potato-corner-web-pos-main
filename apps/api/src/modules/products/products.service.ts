@@ -1,4 +1,3 @@
-import sharp from 'sharp';
 import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS, type JwtPayload, type PosReadinessCode, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
@@ -11,7 +10,6 @@ import {
 } from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
-import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
@@ -124,12 +122,6 @@ function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function extractStoragePath(imageUrl: string): string | null {
-  const marker = '/object/public/product-images/';
-  const idx = imageUrl.indexOf(marker);
-  return idx === -1 ? null : imageUrl.slice(idx + marker.length);
-}
-
 function isForeignKeyViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
 }
@@ -207,7 +199,6 @@ function toProductBase(product: {
   description: string | null;
   category: string | null;
   categoryId: string | null;
-  imageUrl: string | null;
   status: ProductStatus;
   displayOrder: number | null;
   isSeasonal: boolean;
@@ -228,7 +219,6 @@ function toProductBase(product: {
     category: product.category,
     category_id: product.categoryId,
     category_name: product.productCategory?.name ?? null,
-    image_url: product.imageUrl,
     status: product.status,
     status_label: STATUS_LABELS[product.status],
     display_order: product.displayOrder,
@@ -306,10 +296,6 @@ function validateSeasonalRules(input: {
   }
 }
 
-function sanitizeFilename(name: string): string {
-  return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-}
-
 interface CreateProductInput {
   name: string;
   description?: string;
@@ -320,7 +306,6 @@ interface CreateProductInput {
   is_seasonal: boolean;
   seasonal_start_date?: string;
   seasonal_end_date?: string;
-  image_url?: string;
   branch_exclusive: boolean;
   exclusive_branch_id?: string;
 }
@@ -334,7 +319,6 @@ interface UpdateProductInput {
   is_seasonal?: boolean;
   seasonal_start_date?: string | null;
   seasonal_end_date?: string | null;
-  image_url?: string | null;
 }
 
 interface ChangeStatusInput {
@@ -611,7 +595,6 @@ export const productsService = {
         isSeasonal: data.is_seasonal,
         seasonalStartDate: data.seasonal_start_date,
         seasonalEndDate: data.seasonal_end_date,
-        imageUrl: data.image_url,
         branchExclusive: data.branch_exclusive,
         exclusiveBranchId: data.exclusive_branch_id,
       },
@@ -686,7 +669,6 @@ export const productsService = {
       isSeasonal: data.is_seasonal,
       seasonalStartDate: data.seasonal_start_date,
       seasonalEndDate: data.seasonal_end_date,
-      imageUrl: data.image_url,
     });
 
     const response = toProductDetailResponse(product as DetailRow);
@@ -1153,52 +1135,6 @@ export const productsService = {
     return response;
   },
 
-  async uploadProductImage(productId: string, file: { buffer: Buffer; originalname: string }, actor: ActorContext, ipAddress: string | null) {
-    const product = await productsRepository.findById(productId);
-    if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
-    if (product.status === 'archived') {
-      throw new ProductError('PRODUCT_ARCHIVED', 'Archived products cannot have their image changed', 409);
-    }
-
-    const compressed = await sharp(file.buffer)
-      .resize({ width: 1200, withoutEnlargement: true })
-      .webp({ quality: 80 })
-      .toBuffer();
-
-    const path = `product-images/${productId}/${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
-    const { error } = await supabaseAdmin.storage
-      .from('product-images')
-      .upload(path, compressed, { contentType: 'image/webp', upsert: true });
-    if (error) {
-      console.error('Supabase Storage upload failed for product image:', {
-        bucket: 'product-images',
-        path,
-        size: compressed.length,
-        error,
-      });
-      throw new ProductError('IMAGE_UPLOAD_FAILED', 'Failed to upload the product image', 502);
-    }
-
-    const {
-      data: { publicUrl },
-    } = supabaseAdmin.storage.from('product-images').getPublicUrl(path);
-
-    await productsRepository.updateImage(productId, publicUrl);
-
-    await recordAuditLog({
-      action: 'PRODUCT_IMAGE_UPLOADED',
-      entityType: 'product',
-      entityId: productId,
-      actorId: actor.id,
-      actorRole: actor.role,
-      beforeState: { imageUrl: product.imageUrl },
-      afterState: { imageUrl: publicUrl },
-      ipAddress,
-    });
-
-    return { image_url: publicUrl };
-  },
-
   async getBranchAvailabilityMatrix(productId: string, _actor: ActorContext) {
     const product = await productsRepository.findById(productId);
     if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
@@ -1498,7 +1434,6 @@ export const productsService = {
         id: product.id,
         name: product.name,
         category: product.category,
-        image_url: product.imageUrl,
         variants,
       };
     });
@@ -1567,35 +1502,6 @@ export const productsService = {
       beforeState: toVariantResponse(existing),
       ipAddress,
     });
-  },
-
-  async deleteProductImage(productId: string, actor: ActorContext, ipAddress: string | null) {
-    const product = await productsRepository.findById(productId);
-    if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
-    if (!product.imageUrl) throw new ProductError('IMAGE_NOT_FOUND', 'This product has no image to remove', 404);
-
-    const path = extractStoragePath(product.imageUrl);
-    if (path) {
-      const { error } = await supabaseAdmin.storage.from('product-images').remove([path]);
-      if (error) {
-        console.error('Supabase Storage removal failed for product image:', { bucket: 'product-images', path, error });
-      }
-    }
-
-    await productsRepository.clearImage(productId);
-
-    await recordAuditLog({
-      action: 'PRODUCT_IMAGE_DELETED',
-      entityType: 'product',
-      entityId: productId,
-      actorId: actor.id,
-      actorRole: actor.role,
-      beforeState: { imageUrl: product.imageUrl },
-      afterState: { imageUrl: null },
-      ipAddress,
-    });
-
-    return { image_url: null };
   },
 
   // --- CR-005 Sub-phase 3d — flavor slot CRUD ---

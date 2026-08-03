@@ -72,7 +72,6 @@ export const createProductSchema = z
     is_seasonal: z.boolean().default(false),
     seasonal_start_date: z.iso.date().optional(),
     seasonal_end_date: z.iso.date().optional(),
-    image_url: z.url().optional(),
     // CR-001: cascade default is "all active branches"; branch_exclusive flips
     // that to "requesting branch only" and requires exclusive_branch_id.
     branch_exclusive: z.boolean().default(false),
@@ -114,7 +113,6 @@ export const updateProductSchema = z
     is_seasonal: z.boolean().optional(),
     seasonal_start_date: z.iso.date().nullable().optional(),
     seasonal_end_date: z.iso.date().nullable().optional(),
-    image_url: z.url().nullable().optional(),
   })
   .superRefine((data, ctx) => {
     validateSeasonalFields(
@@ -213,7 +211,6 @@ export const productResponseSchema = z.object({
   category: z.string().nullable(),
   category_id: z.uuid().nullable(),
   category_name: z.string().nullable(),
-  image_url: z.string().nullable(),
   status: z.enum(productStatusValues),
   status_label: z.string(),
   display_order: z.number().int().nullable(),
@@ -343,7 +340,6 @@ export const posCatalogProductSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   category: z.string().nullable(),
-  image_url: z.string().nullable(),
   variants: z.array(posCatalogVariantSchema),
 });
 

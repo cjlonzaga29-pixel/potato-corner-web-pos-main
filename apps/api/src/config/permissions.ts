@@ -22,7 +22,6 @@ export const PERMISSIONS = {
   PRODUCT_CREATE: 'adminOnly',
   PRODUCT_UPDATE: 'adminOnly',
   PRODUCT_STATUS_CHANGE: 'adminOrSupervisor',
-  PRODUCT_IMAGE_UPLOAD: 'adminOnly',
   PRODUCT_BRANCH_AVAILABILITY: 'adminOrSupervisor',
   VARIANT_CREATE: 'adminOnly',
   VARIANT_UPDATE: 'adminOnly',

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { ArrowLeft, Plus } from 'lucide-react';
 import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
@@ -17,7 +17,6 @@ import {
   useProduct,
   useChangeProductStatus,
   useDeleteVariant,
-  useDeleteProductImage,
   useProductReadiness,
 } from '@/hooks/queries/use-products';
 import { BranchSelector } from '@/components/admin/branch-selector';
@@ -27,7 +26,6 @@ import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { VariantCard } from '@/components/admin/products/variant-card';
 import { EditProductDialog } from '@/components/admin/products/edit-product-dialog';
 import { ChangeProductStatusDialog } from '@/components/admin/products/change-product-status-dialog';
-import { UploadProductImageDialog } from '@/components/admin/products/upload-product-image-dialog';
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
@@ -46,7 +44,6 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
 
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
-  const [imageOpen, setImageOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
 
@@ -72,26 +69,15 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
       </Button>
 
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-center gap-4">
-          {product.image_url ? (
-            // eslint-disable-next-line @next/next/no-img-element -- product photo from Supabase Storage
-            <img src={product.image_url} alt={product.name} className="h-16 w-16 rounded-md object-cover" />
-          ) : (
-            <div className="h-16 w-16 rounded-md bg-muted" />
-          )}
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold">{product.name}</h1>
-              <ProductStatusBadge status={product.status} />
-              <SeasonalBadge isSeasonal={product.is_seasonal} />
-            </div>
-            <p className="text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold">{product.name}</h1>
+            <ProductStatusBadge status={product.status} />
+            <SeasonalBadge isSeasonal={product.is_seasonal} />
           </div>
+          <p className="text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setImageOpen(true)}>
-            Upload Image
-          </Button>
           {product.status === 'archived' ? (
             <Button
               onClick={() => changeStatus.mutate({ status: 'active' })}
@@ -117,7 +103,6 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="variants">Variants & Flavors</TabsTrigger>
-          <TabsTrigger value="media">Media</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
@@ -132,15 +117,10 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
             onNavigateToTab={setActiveTab}
           />
         </TabsContent>
-
-        <TabsContent value="media" className="space-y-4">
-          <MediaTab product={product} onUpload={() => setImageOpen(true)} />
-        </TabsContent>
       </Tabs>
 
       <EditProductDialog open={editOpen} onOpenChange={setEditOpen} product={product} />
       <ChangeProductStatusDialog open={statusOpen} onOpenChange={setStatusOpen} product={product} />
-      <UploadProductImageDialog open={imageOpen} onOpenChange={setImageOpen} productId={productId} />
       <ConfirmDialog
         open={archiveOpen}
         onOpenChange={setArchiveOpen}
@@ -359,50 +339,5 @@ function VariantsTab({
         />
       )}
     </div>
-  );
-}
-
-function MediaTab({ product, onUpload }: { product: ProductDetailResponse; onUpload: () => void }) {
-  const [removeOpen, setRemoveOpen] = useState(false);
-  const deleteImage = useDeleteProductImage(product.id);
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Product Image</CardTitle>
-        <CardDescription>Compressed server-side with Sharp and stored in Supabase Storage.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {product.image_url ? (
-          // eslint-disable-next-line @next/next/no-img-element -- product photo from Supabase Storage
-          <img src={product.image_url} alt={product.name} className="max-h-72 rounded-md border object-contain" />
-        ) : (
-          <div className="flex h-40 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-            No image uploaded yet
-          </div>
-        )}
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={onUpload} disabled={product.status === 'archived'}>
-            Upload Image
-          </Button>
-          {product.image_url && (
-            <Button variant="danger" onClick={() => setRemoveOpen(true)} disabled={product.status === 'archived'}>
-              Remove Image
-            </Button>
-          )}
-        </div>
-      </CardContent>
-      <ConfirmDialog
-        open={removeOpen}
-        onOpenChange={setRemoveOpen}
-        title="Remove this image?"
-        description="This action cannot be undone."
-        confirmLabel="Remove"
-        variant="danger"
-        onConfirm={async () => {
-          await deleteImage.mutateAsync();
-        }}
-      />
-    </Card>
   );
 }

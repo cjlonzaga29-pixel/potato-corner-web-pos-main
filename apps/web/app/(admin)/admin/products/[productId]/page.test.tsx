@@ -71,7 +71,6 @@ vi.mock('@/hooks/queries/use-products', () => ({
   useProduct: mockUseProduct,
   useChangeProductStatus: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useDeleteVariant: () => ({ mutateAsync: vi.fn() }),
-  useDeleteProductImage: () => ({ mutateAsync: vi.fn() }),
   useBranchProductAvailability: () => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
   useUpdateBranchProductAvailability: () => ({ mutateAsync: vi.fn() }),
   useBulkUpdateBranchProductAvailability: () => ({ mutateAsync: vi.fn() }),
@@ -87,7 +86,6 @@ vi.mock('@/components/admin/products/variant-card', () => ({
 
 vi.mock('@/components/admin/products/edit-product-dialog', () => ({ EditProductDialog: () => null }));
 vi.mock('@/components/admin/products/change-product-status-dialog', () => ({ ChangeProductStatusDialog: () => null }));
-vi.mock('@/components/admin/products/upload-product-image-dialog', () => ({ UploadProductImageDialog: () => null }));
 vi.mock('@/components/admin/products/variant-form-dialog', () => ({ VariantFormDialog: () => null }));
 vi.mock('@/components/admin/products/link-flavor-dialog', () => ({ LinkFlavorDialog: () => null }));
 vi.mock('@/components/admin/products/edit-variant-flavor-dialog', () => ({ EditVariantFlavorDialog: () => null }));
@@ -116,7 +114,6 @@ function product(overrides: Partial<ProductDetailResponse> = {}): ProductDetailR
     category: 'Snacks',
     category_id: null,
     category_name: null,
-    image_url: null,
     status: 'active',
     status_label: 'Active',
     display_order: 0,
@@ -304,7 +301,7 @@ describe('ProductDetailPage', () => {
       expect(screen.queryByRole('tab', { name: 'Readiness' })).not.toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Overview' })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Variants & Flavors' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: 'Media' })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument();
     });
   });
 

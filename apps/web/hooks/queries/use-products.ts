@@ -176,28 +176,6 @@ export function useChangeProductStatus(productId: string) {
   });
 }
 
-export function useUploadProductImage(productId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.set('image', file);
-      const response = await apiClient<{ image_url: string }>(`/api/products/${productId}/image`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload product image'));
-      return response.data;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['product', productId] });
-      void queryClient.invalidateQueries({ queryKey: ['products'] });
-      toast.success('Product image uploaded');
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-}
-
 export function useBranchProductAvailability(productId: string | null | undefined) {
   return useQuery({
     queryKey: ['product', productId, 'branch-availability'],
@@ -409,22 +387,6 @@ export function useDeleteVariant(productId: string) {
       void queryClient.invalidateQueries({ queryKey: ['products'] });
       void queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Variant deleted');
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-}
-
-export function useDeleteProductImage(productId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      const response = await apiClient<{ image_url: null }>(`/api/products/${productId}/image`, { method: 'DELETE' });
-      if (response.error) throw new Error(errorMessage(response, 'Failed to remove product image'));
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['product', productId] });
-      void queryClient.invalidateQueries({ queryKey: ['products'] });
-      toast.success('Product image removed');
     },
     onError: (error: Error) => toast.error(error.message),
   });

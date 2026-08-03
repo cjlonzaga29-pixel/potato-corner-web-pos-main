@@ -120,7 +120,6 @@ export const productsRepository = {
           isSeasonal: data.isSeasonal,
           seasonalStartDate: data.seasonalStartDate ? new Date(data.seasonalStartDate) : undefined,
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : undefined,
-          imageUrl: data.imageUrl,
           branchExclusive: data.branchExclusive,
           exclusiveBranchId: data.branchExclusive ? data.exclusiveBranchId : undefined,
           createdBy,
@@ -164,7 +163,6 @@ export const productsRepository = {
         ...(data.seasonalEndDate !== undefined && {
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : null,
         }),
-        ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
       },
       include: detailInclude,
     });
@@ -176,14 +174,6 @@ export const productsRepository = {
       data: { status },
       include: detailInclude,
     });
-  },
-
-  updateImage(productId: string, imageUrl: string) {
-    return prisma.product.update({ where: { id: productId }, data: { imageUrl }, include: detailInclude });
-  },
-
-  clearImage(productId: string) {
-    return prisma.product.update({ where: { id: productId }, data: { imageUrl: null }, include: detailInclude });
   },
 
   countActiveBranches(productId: string) {

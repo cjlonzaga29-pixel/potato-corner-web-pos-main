@@ -199,7 +199,7 @@ function slotVariant(overrides: Partial<PosCatalogProduct['variants'][number]> =
 
 function catalogWith(variants: PosCatalogProduct['variants'][number][]): { products: PosCatalogProduct[] } {
   return {
-    products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', image_url: null, variants }],
+    products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', variants }],
   };
 }
 

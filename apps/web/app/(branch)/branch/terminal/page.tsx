@@ -807,12 +807,6 @@ export default function TerminalPage() {
                   onClick={() => handleProductTap(product, variant)}
                 >
                   <CardContent className="flex h-full flex-col gap-0.5 p-2">
-                    {product.image_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={product.image_url} alt={product.name} className="mb-1 aspect-[4/3] w-full rounded object-cover" />
-                    ) : (
-                      <div className="mb-1 aspect-[4/3] w-full rounded bg-muted" />
-                    )}
                     <p className="line-clamp-2 min-h-[2rem] text-xs font-medium leading-tight">{product.name}</p>
                     <p className="truncate text-[11px] text-muted-foreground">{variant.name}</p>
                     <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>

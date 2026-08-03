@@ -11,8 +11,6 @@ vi.mock('./products.repository.js', () => ({
     createWithCascade: vi.fn(),
     update: vi.fn(),
     updateStatus: vi.fn(),
-    updateImage: vi.fn(),
-    clearImage: vi.fn(),
     countActiveBranches: vi.fn(),
     createVariant: vi.fn(),
     updateVariant: vi.fn(),
@@ -158,30 +156,9 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../lib/supabase.js', () => ({
-  supabaseAdmin: {
-    storage: {
-      from: vi.fn(() => ({
-        upload: vi.fn().mockResolvedValue({ error: null }),
-        remove: vi.fn().mockResolvedValue({ error: null }),
-        getPublicUrl: vi.fn(() => ({ data: { publicUrl: 'https://cdn.test/product-images/img.webp' } })),
-      })),
-    },
-  },
-}));
-
-vi.mock('sharp', () => ({
-  default: vi.fn(() => ({
-    resize: vi.fn().mockReturnThis(),
-    webp: vi.fn().mockReturnThis(),
-    toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake-image-bytes')),
-  })),
-}));
-
 const { productsRepository } = await import('./products.repository.js');
 const { productsService } = await import('./products.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
-const { supabaseAdmin } = await import('../../lib/supabase.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
@@ -243,7 +220,6 @@ function buildProduct(overrides: Partial<Record<string, unknown>> = {}) {
     name: 'Cheese Fries',
     description: null,
     category: 'Fries',
-    imageUrl: null,
     status: 'draft',
     displayOrder: null,
     isSeasonal: false,
@@ -798,26 +774,6 @@ describe('productsService.createVariant', () => {
   });
 });
 
-describe('productsService.uploadProductImage', () => {
-  it('updates image_url and records an audit log entry', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
-    vi.mocked(productsRepository.updateImage).mockResolvedValue(
-      buildProduct({ status: 'active', imageUrl: 'https://cdn.test/product-images/img.webp' }) as never,
-    );
-
-    const result = await productsService.uploadProductImage(
-      'prod-1',
-      { buffer: Buffer.from('fake'), originalname: 'fries.jpg' },
-      SUPER_ADMIN,
-      null,
-    );
-
-    expect(result.image_url).toBe('https://cdn.test/product-images/img.webp');
-    expect(productsRepository.updateImage).toHaveBeenCalledWith('prod-1', 'https://cdn.test/product-images/img.webp');
-    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_UPLOADED' }));
-  });
-});
-
 describe('productsService.deleteProduct', () => {
   it('deletes the product cascade and records an audit log entry', async () => {
     vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ variants: [buildVariant()] }) as never);
@@ -867,36 +823,6 @@ describe('productsService.deleteVariant', () => {
     });
 
     expect(recordAuditLog).not.toHaveBeenCalled();
-  });
-});
-
-describe('productsService.deleteProductImage', () => {
-  it('removes the Storage object, clears image_url, and records an audit log entry', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(
-      buildProduct({ imageUrl: 'https://cdn.test/storage/v1/object/public/product-images/product-images/prod-1/img.webp' }) as never,
-    );
-    vi.mocked(productsRepository.clearImage).mockResolvedValue(buildProduct({ imageUrl: null }) as never);
-
-    const result = await productsService.deleteProductImage('prod-1', SUPER_ADMIN, null);
-
-    expect(result.image_url).toBeNull();
-    expect(productsRepository.clearImage).toHaveBeenCalledWith('prod-1');
-    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_DELETED' }));
-  });
-
-  it('still clears image_url when Supabase Storage removal fails', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(
-      buildProduct({ imageUrl: 'https://cdn.test/storage/v1/object/public/product-images/product-images/prod-1/img.webp' }) as never,
-    );
-    vi.mocked(productsRepository.clearImage).mockResolvedValue(buildProduct({ imageUrl: null }) as never);
-    vi.mocked(supabaseAdmin.storage.from).mockReturnValueOnce({
-      remove: vi.fn().mockResolvedValue({ error: 'boom' }),
-    } as never);
-
-    const result = await productsService.deleteProductImage('prod-1', SUPER_ADMIN, null);
-
-    expect(result.image_url).toBeNull();
-    expect(productsRepository.clearImage).toHaveBeenCalledWith('prod-1');
   });
 });
 
@@ -1607,7 +1533,6 @@ describe('productsService.getPosCatalog — Mix & Max snack options', () => {
       id: 'product-1',
       name: 'Mega Mix',
       category: 'Snacks',
-      imageUrl: null,
       variants: [
         {
           id: 'variant-1',
@@ -1719,7 +1644,6 @@ describe('productsService.getPosCatalog — option group pos_button_label (Task 
       id: 'product-1',
       name: 'Mega Mix',
       category: 'Snacks',
-      imageUrl: null,
       variants: [variant],
     };
   }
@@ -1834,7 +1758,6 @@ describe('productsService.getPosCatalog — "all options" assignments (Task 72)'
       id: 'product-1',
       name: 'Regular Fries',
       category: 'Snacks',
-      imageUrl: null,
       variants: [variant],
     };
   }
@@ -1989,7 +1912,6 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
       id: 'product-1',
       name: 'Mega Mix',
       category: 'Snacks',
-      imageUrl: null,
       variants: [variant],
       ...overrides,
     };

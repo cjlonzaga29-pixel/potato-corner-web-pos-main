@@ -48,17 +48,6 @@ export default function ProductCatalogPage() {
   });
 
   const columns: ColumnDef<ProductResponse>[] = [
-    {
-      id: 'image',
-      header: '',
-      cell: ({ row }) =>
-        row.original.image_url ? (
-          // eslint-disable-next-line @next/next/no-img-element -- small thumbnail from Supabase Storage, not worth Next/Image config here
-          <img src={row.original.image_url} alt="" className="h-10 w-10 rounded-md object-cover" />
-        ) : (
-          <div className="h-10 w-10 rounded-md bg-muted" />
-        ),
-    },
     { accessorKey: 'name', header: 'Product' },
     { accessorKey: 'category', header: 'Category', cell: ({ row }) => row.original.category ?? '—' },
     { accessorKey: 'status', header: 'Status', cell: ({ row }) => <ProductStatusBadge status={row.original.status} /> },

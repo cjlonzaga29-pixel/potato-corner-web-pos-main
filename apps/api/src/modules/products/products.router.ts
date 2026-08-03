@@ -1,5 +1,4 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import multer from 'multer';
 import { z } from 'zod';
 import {
   createProductSchema,
@@ -31,18 +30,6 @@ import { requirePasswordChange } from '../../middleware/require-password-change.
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (_req, file, callback) => {
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
-      callback(new ProductError('INVALID_IMAGE_TYPE', 'Image must be JPEG, PNG, or WebP', 422));
-      return;
-    }
-    callback(null, true);
-  },
-});
 
 const productStatusValues = Object.values(PRODUCT_STATUS) as [ProductStatus, ...ProductStatus[]];
 
@@ -193,60 +180,6 @@ router.patch(
     }
   },
 );
-
-router.post(
-  '/:productId/image',
-  authenticate,
-  adminOnly,
-  requirePasswordChange,
-  (req: Request, res: Response, next: NextFunction) => {
-    upload.single('image')(req, res, (error: unknown) => {
-      if (error) {
-        handleModuleError(
-          error instanceof multer.MulterError
-            ? new ProductError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422)
-            : error,
-          res,
-          next,
-        );
-        return;
-      }
-      next();
-    });
-  },
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      if (!requireUser(req, res)) return;
-      if (!req.file) {
-        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'An image file is required' }, meta: null });
-        return;
-      }
-      const result = await productsService.uploadProductImage(
-        req.params.productId as string,
-        { buffer: req.file.buffer, originalname: req.file.originalname },
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
-      res.status(200).json({ data: result, error: null, meta: null });
-    } catch (error) {
-      handleModuleError(error, res, next);
-    }
-  },
-);
-
-router.delete('/:productId/image', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!requireUser(req, res)) return;
-    const result = await productsService.deleteProductImage(
-      req.params.productId as string,
-      { id: req.user.user_id, role: req.user.role },
-      req.ip ?? null,
-    );
-    res.status(200).json({ data: result, error: null, meta: null });
-  } catch (error) {
-    handleModuleError(error, res, next);
-  }
-});
 
 router.get(
   '/:productId/branch-availability',

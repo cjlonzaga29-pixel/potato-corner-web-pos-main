@@ -38,12 +38,6 @@ export default function SupervisorProductsPage() {
             <Link key={product.id} href={`/supervisor/products/${product.id}`}>
               <Card className="transition-colors hover:bg-accent/40">
                 <CardContent className="flex items-center gap-3 p-4">
-                  {product.image_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- small thumbnail from Supabase Storage
-                    <img src={product.image_url} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover" />
-                  ) : (
-                    <div className="h-12 w-12 shrink-0 rounded-md bg-muted" />
-                  )}
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{product.name}</p>
                     <p className="truncate text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>

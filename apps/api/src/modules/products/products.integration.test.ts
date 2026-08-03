@@ -79,13 +79,6 @@ describe.skipIf(!canRunIntegrationTests)('products integration', () => {
     expect(true).toBe(true);
   });
 
-  it('POST /api/products/:id/image uploads and updates image_url', async () => {
-    // TODO: POST a small JPEG as super_admin; assert 200 and
-    // response.data.image_url is a Supabase Storage URL under
-    // product-images/:productId/.
-    expect(true).toBe(true);
-  });
-
   it('a discontinued product cannot be re-enabled by a supervisor', async () => {
     // TODO: set a product to discontinued as super_admin, then PATCH
     // /:id/status as supervisor with { status: 'active', branch_id }; assert
@@ -93,7 +86,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration', () => {
     expect(true).toBe(true);
   });
 
-  it('create/update/status-change/image-upload actions each create an audit_logs row', async () => {
+  it('create/update/status-change actions each create an audit_logs row', async () => {
     // TODO: after each of the above actions, assert a matching audit_logs
     // row exists with the correct action and entity_type.
     expect(true).toBe(true);

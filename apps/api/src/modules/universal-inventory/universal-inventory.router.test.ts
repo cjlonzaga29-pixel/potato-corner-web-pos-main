@@ -27,6 +27,7 @@ vi.mock('./universal-inventory.service.js', () => ({
     createItemConversion: vi.fn(),
     updateItemConversion: vi.fn(),
     deleteItemConversion: vi.fn(),
+    getStockMovements: vi.fn(),
   },
 }));
 
@@ -38,9 +39,20 @@ vi.mock('../../lib/prisma.js', () => ({
   prisma: { revokedToken: { findFirst: vi.fn() } },
 }));
 
+// branchGuard/hasBranchAccess resolve Supervisor scope from the database via
+// branch-access.ts, never the JWT's branch_ids — mocked here so the
+// stockBranchRouter tests below don't depend on a real Prisma connection
+// (same setup as inventory.router.test.ts).
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { prisma } = await import('../../lib/prisma.js');
 const { universalInventoryService } = await import('./universal-inventory.service.js');
-const { universalInventoryRouter } = await import('./universal-inventory.router.js');
+const { universalInventoryRouter, inventoryStockBranchRouter } = await import('./universal-inventory.router.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateBranchToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
@@ -91,6 +103,7 @@ const UNIT_1 = randomUUID();
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
 });
 
 describe('GET /api/universal-inventory/items', () => {
@@ -342,5 +355,51 @@ describe('DELETE /api/universal-inventory/items/:itemId/conversions/:conversionI
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(universalInventoryService.deleteItemConversion).toHaveBeenCalledWith('item-1', 'conv-1', expect.any(Object), null);
+  });
+});
+
+describe('GET /:branchId/inventory-stock/movements — date filter boundary resolution', () => {
+  it('widens a bare from_date/to_date filter to Manila day boundaries, not UTC midnight', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/movements');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_1 },
+      query: { from_date: '2026-07-30', to_date: '2026-07-30' },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.getStockMovements).mockResolvedValue({ movements: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.getStockMovements).toHaveBeenCalledWith(
+      BRANCH_1,
+      expect.objectContaining({
+        fromDate: new Date('2026-07-29T16:00:00.000Z'),
+        toDate: new Date('2026-07-30T15:59:59.999Z'),
+      }),
+    );
+  });
+
+  it('accepts an already-precise ISO datetime for from_date/to_date and passes it through unchanged', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/movements');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_1 },
+      query: { from_date: '2026-07-30T00:00:00.000Z', to_date: '2026-07-30T09:30:00.000Z' },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.getStockMovements).mockResolvedValue({ movements: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.getStockMovements).toHaveBeenCalledWith(
+      BRANCH_1,
+      expect.objectContaining({
+        fromDate: new Date('2026-07-30T00:00:00.000Z'),
+        toDate: new Date('2026-07-30T09:30:00.000Z'),
+      }),
+    );
   });
 });

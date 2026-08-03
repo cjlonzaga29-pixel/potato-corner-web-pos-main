@@ -26,6 +26,7 @@ import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../mid
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 
 const router: Router = Router();
 
@@ -434,11 +435,25 @@ const stockMovementTypeValues = [
   'SALE_REVERSAL',
 ] as const;
 
+// from_date/to_date accept either a bare Manila business date (YYYY-MM-DD,
+// widened server-side via resolveDateRangeBoundary) or an already-precise
+// ISO datetime — same union as inventory.router.ts's movementsQuerySchema
+// and reports.schema.ts's ReportFiltersSchema. Previously z.iso.datetime()-only,
+// which rejected the bare date the Stock Movement page's date filter sends,
+// surfacing as a 422 ("Something went wrong") whenever a date range was set.
 const stockMovementsQuerySchema = z.object({
   inventory_item_id: z.uuid().optional(),
   movement_type: z.enum(stockMovementTypeValues).optional(),
-  from_date: z.iso.datetime().optional(),
-  to_date: z.iso.datetime().optional(),
+  from_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime())
+    .optional(),
+  to_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.iso.datetime())
+    .optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
@@ -498,8 +513,8 @@ stockBranchRouter.get(
       const result = await universalInventoryService.getStockMovements(req.params.branchId as string, {
         inventoryItemId: parsed.data.inventory_item_id,
         movementType: parsed.data.movement_type as InventoryStockMovementType | undefined,
-        fromDate: parsed.data.from_date ? new Date(parsed.data.from_date) : undefined,
-        toDate: parsed.data.to_date ? new Date(parsed.data.to_date) : undefined,
+        fromDate: parsed.data.from_date ? resolveDateRangeBoundary(parsed.data.from_date, 'start') : undefined,
+        toDate: parsed.data.to_date ? resolveDateRangeBoundary(parsed.data.to_date, 'end') : undefined,
         page: parsed.data.page,
         limit: parsed.data.limit,
       });

@@ -532,36 +532,57 @@ export const reportsRepository = {
     // Task 110: Section 1 (Ingredient Consumption (KG)) admits a base unit
     // when its dimension is WEIGHT (g, kg, and any future weight unit), or
     // when its code is tbsp/tsp — those two are UnitDimension.VOLUME in this
-    // schema, but the spec explicitly calls for converting them to grams via
+    // schema, but the spec explicitly calls for converting them to kg via
     // an existing UnitConversion row (e.g. a seasoning tracked by the
-    // tablespoon). Every other unit (pieces, mL, L, ...) returns null: no
-    // factor is fabricated, and convertQuantity's fail-closed
-    // UnitConversionError (missing UnitConversion row) also resolves to null
-    // rather than throwing, so an ingredient with no conversion path is
-    // silently excluded from Section 1 instead of crashing the report.
+    // tablespoon). Every other unit (pieces, mL, L, ...) is NOT_APPLICABLE:
+    // no factor is fabricated and no row is emitted at all.
+    // Task 112: g and kg convert deterministically (value / 1000, identity)
+    // — the standard metric relationship must never depend on a manually
+    // configured UnitConversion row. Every other weight-eligible unit (other
+    // WEIGHT units, tbsp, tsp) still goes through convertQuantity's
+    // UnitConversion lookup; when that throws UnitConversionError (no row
+    // configured), the unit is UNRESOLVED — eligible for kg tracking but not
+    // convertible yet — so the caller can surface it in the
+    // "Needs KG Conversion Setup" section instead of silently dropping it.
     const WEIGHT_ELIGIBLE_CODES = new Set(['tbsp', 'tsp']);
-    const weightFactorCache = new Map<string, { toKilograms: number } | null>();
-    async function resolveWeightFactors(baseUnitId: string, dimension: string, code: string) {
-      if (weightFactorCache.has(baseUnitId)) return weightFactorCache.get(baseUnitId) ?? null;
-      const isWeightEligible = dimension === 'WEIGHT' || WEIGHT_ELIGIBLE_CODES.has(code.toLowerCase());
-      if (!isWeightEligible || !kilogramUnit) {
-        weightFactorCache.set(baseUnitId, null);
-        return null;
+    type WeightResolution = { status: 'resolved'; toKilograms: number } | { status: 'unresolved' } | { status: 'not_applicable' };
+    const weightFactorCache = new Map<string, WeightResolution>();
+    async function resolveWeightFactors(baseUnitId: string, dimension: string, code: string): Promise<WeightResolution> {
+      const cached = weightFactorCache.get(baseUnitId);
+      if (cached) return cached;
+
+      const normalizedCode = code.toLowerCase();
+      const isWeightEligible = dimension === 'WEIGHT' || WEIGHT_ELIGIBLE_CODES.has(normalizedCode);
+      if (!isWeightEligible) {
+        const result: WeightResolution = { status: 'not_applicable' };
+        weightFactorCache.set(baseUnitId, result);
+        return result;
       }
-      if (code === kilogramUnit.code) {
-        const result = { toKilograms: 1 };
+      if (normalizedCode === 'g') {
+        const result: WeightResolution = { status: 'resolved', toKilograms: 0.001 };
+        weightFactorCache.set(baseUnitId, result);
+        return result;
+      }
+      if (normalizedCode === 'kg') {
+        const result: WeightResolution = { status: 'resolved', toKilograms: 1 };
+        weightFactorCache.set(baseUnitId, result);
+        return result;
+      }
+      if (!kilogramUnit) {
+        const result: WeightResolution = { status: 'unresolved' };
         weightFactorCache.set(baseUnitId, result);
         return result;
       }
       try {
         const toKilograms = (await convertQuantity(1, baseUnitId, kilogramUnit.id)).toNumber();
-        const result = { toKilograms };
+        const result: WeightResolution = { status: 'resolved', toKilograms };
         weightFactorCache.set(baseUnitId, result);
         return result;
       } catch (error) {
         if (error instanceof UnitConversionError) {
-          weightFactorCache.set(baseUnitId, null);
-          return null;
+          const result: WeightResolution = { status: 'unresolved' };
+          weightFactorCache.set(baseUnitId, result);
+          return result;
         }
         throw error;
       }
@@ -591,23 +612,48 @@ export const reportsRepository = {
       // Section 2 (Packaging Consumption (PC)): base unit dimension COUNT
       // (pc, cup, lid, tray, ...) — already piece-denominated, no conversion.
       if (dimension === 'COUNT') {
-        rows.push({ ...base, section: 'PACKAGING_PC', opening_stock_kg: null, consumed_today_kg: null, consumed_this_month_kg: null, remaining_kg: null });
+        rows.push({
+          ...base,
+          section: 'PACKAGING_PC',
+          opening_stock_kg: null,
+          consumed_today_kg: null,
+          consumed_this_month_kg: null,
+          remaining_kg: null,
+          conversion_warning: null,
+        });
         continue;
       }
 
-      // Section 1 (Ingredient Consumption (KG)): only when a real
-      // UnitConversion path to kilograms exists. Everything else (e.g. mL/L
-      // liquids with no weight conversion) is excluded from the report.
-      const factors = await resolveWeightFactors(s.inventoryItem.baseUnitId, dimension, s.inventoryItem.baseUnit.code);
-      if (!factors) continue;
+      const resolution = await resolveWeightFactors(s.inventoryItem.baseUnitId, dimension, s.inventoryItem.baseUnit.code);
 
+      // Not weight-normalizable and not COUNT (e.g. mL/L liquids) — excluded
+      // entirely, there is no row for these at all.
+      if (resolution.status === 'not_applicable') continue;
+
+      // Weight-eligible (WEIGHT dimension, or tbsp/tsp) but no resolvable
+      // path to kg — surface it instead of silently dropping it.
+      if (resolution.status === 'unresolved') {
+        rows.push({
+          ...base,
+          section: 'NEEDS_KG_CONVERSION',
+          opening_stock_kg: null,
+          consumed_today_kg: null,
+          consumed_this_month_kg: null,
+          remaining_kg: null,
+          conversion_warning: 'Configure a valid conversion to kg',
+        });
+        continue;
+      }
+
+      // Section 1 (Ingredient Consumption (KG)).
       rows.push({
         ...base,
         section: 'INGREDIENT_KG',
-        opening_stock_kg: round2(opening * factors.toKilograms),
-        consumed_today_kg: round2(consumedToday * factors.toKilograms),
-        consumed_this_month_kg: round2(consumedMonth * factors.toKilograms),
-        remaining_kg: round2(remaining * factors.toKilograms),
+        opening_stock_kg: round2(opening * resolution.toKilograms),
+        consumed_today_kg: round2(consumedToday * resolution.toKilograms),
+        consumed_this_month_kg: round2(consumedMonth * resolution.toKilograms),
+        remaining_kg: round2(remaining * resolution.toKilograms),
+        conversion_warning: null,
       });
     }
 

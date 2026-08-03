@@ -235,6 +235,20 @@ const packagingConsumptionPcColumns: ColumnDef<InventorySummaryReportRow>[] = [
   { accessorKey: 'remaining_stock', header: 'Remaining (pc)' },
 ];
 
+// Task 112: weight-eligible ingredients (WEIGHT dimension, or tbsp/tsp) that
+// have no resolvable UnitConversion path to kg — temporary operational
+// visibility so they surface here instead of silently disappearing from
+// Ingredient Consumption (KG). Not a third totals category.
+const needsKgConversionColumns: ColumnDef<InventorySummaryReportRow>[] = [
+  { accessorKey: 'ingredient_name', header: 'Ingredient' },
+  { accessorKey: 'unit', header: 'Unit' },
+  { accessorKey: 'opening_stock', header: 'Opening Stock' },
+  { accessorKey: 'consumed_today', header: 'Consumed Today' },
+  { accessorKey: 'consumed_this_month', header: 'Consumed This Month' },
+  { accessorKey: 'remaining_stock', header: 'Remaining' },
+  { id: 'conversion_warning', header: 'Message', cell: ({ row }) => row.original.conversion_warning ?? 'Configure a valid conversion to kg' },
+];
+
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { accessorKey: 'employee_name', header: 'Employee' },
   { accessorKey: 'branch_name', header: 'Branch' },
@@ -699,6 +713,7 @@ function AdminReportsPageContent() {
                 const rows = inventorySummary.data?.data ?? [];
                 const ingredientRows = rows.filter((r) => r.section === 'INGREDIENT_KG');
                 const packagingRows = rows.filter((r) => r.section === 'PACKAGING_PC');
+                const needsConversionRows = rows.filter((r) => r.section === 'NEEDS_KG_CONVERSION');
                 return (
                   <>
                     <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Consumption (KG)</h3>
@@ -708,6 +723,12 @@ function AdminReportsPageContent() {
                       isLoading={inventorySummary.isLoading}
                       emptyState={<EmptyState title="No tracked ingredients" description="No weight-trackable ingredients at this branch." />}
                     />
+                    {needsConversionRows.length > 0 && (
+                      <>
+                        <h3 className="mt-8 mb-2 text-sm font-semibold text-foreground">Needs KG Conversion Setup</h3>
+                        <DataTable columns={needsKgConversionColumns} data={needsConversionRows} isLoading={inventorySummary.isLoading} />
+                      </>
+                    )}
                     <h3 className="mt-8 mb-2 text-sm font-semibold text-foreground">Packaging Consumption (PC)</h3>
                     <DataTable
                       columns={packagingConsumptionPcColumns}

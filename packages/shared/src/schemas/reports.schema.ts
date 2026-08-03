@@ -178,6 +178,14 @@ export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsu
 // null. Rows whose base unit is neither weight-normalizable nor COUNT
 // (e.g. a liquid tracked in mL/L with no UnitConversion to weight) are
 // excluded entirely by the repository — there is no third section.
+// Task 112: a base unit CAN be weight-normalized (WEIGHT dimension, or
+// tbsp/tsp) but still lack a resolvable path to kg — e.g. a tbsp-tracked
+// ingredient with no UnitConversion row to kg configured. Those rows are
+// NEEDS_KG_CONVERSION: the *_kg fields stay null (never fabricated) and
+// conversion_warning explains what to fix, instead of the row silently
+// disappearing. g/kg themselves never land here — they convert
+// deterministically (value / 1000 and identity) without needing a
+// UnitConversion row.
 // Distinct from InventoryConsumptionSummaryReportRow above, which is a
 // date-range consumption total with no stock-level or opening/remaining data.
 export const InventorySummaryReportRowSchema = z.object({
@@ -185,7 +193,7 @@ export const InventorySummaryReportRowSchema = z.object({
   ingredient_name: z.string(),
   branch_id: z.uuid(),
   branch_name: z.string(),
-  section: z.enum(['INGREDIENT_KG', 'PACKAGING_PC']),
+  section: z.enum(['INGREDIENT_KG', 'PACKAGING_PC', 'NEEDS_KG_CONVERSION']),
   unit: z.string(),
   opening_stock: z.number(),
   consumed_today: z.number(),
@@ -195,6 +203,7 @@ export const InventorySummaryReportRowSchema = z.object({
   consumed_today_kg: z.number().nullable(),
   consumed_this_month_kg: z.number().nullable(),
   remaining_kg: z.number().nullable(),
+  conversion_warning: z.string().nullable(),
 });
 export type InventorySummaryReportRow = z.infer<typeof InventorySummaryReportRowSchema>;
 

@@ -27,6 +27,7 @@ function splitSections(rows: InventorySummaryReportRow[]) {
   return {
     ingredientRows: rows.filter((r) => r.section === 'INGREDIENT_KG'),
     packagingRows: rows.filter((r) => r.section === 'PACKAGING_PC'),
+    conversionWarningRows: rows.filter((r) => r.section === 'NEEDS_KG_CONVERSION'),
   };
 }
 
@@ -34,9 +35,9 @@ function csvSectionLines(title: string, headers: string[], dataRows: Array<Array
   return [title, headers.join(','), ...dataRows.map((row) => row.map(escapeCsvField).join(',')), totalsRow.map(escapeCsvField).join(',')];
 }
 
-/** CSV: Section 1 (title, header, rows, totals), a blank line, then Section 2 — never mixes kg and pc columns in one table. */
+/** CSV: Section 1 (title, header, rows, totals), a blank line, then Section 2, then — only when unresolved rows exist — the conversion-warning section. Never mixes kg and pc columns in one table. */
 export function generateInventorySummaryCsv(rows: InventorySummaryReportRow[]): Buffer {
-  const { ingredientRows, packagingRows } = splitSections(rows);
+  const { ingredientRows, packagingRows, conversionWarningRows } = splitSections(rows);
 
   const section1 = csvSectionLines(
     'Ingredient Consumption (KG)',
@@ -60,7 +61,25 @@ export function generateInventorySummaryCsv(rows: InventorySummaryReportRow[]): 
     ['Total', '', sumBy(packagingRows, 'consumed_today'), sumBy(packagingRows, 'consumed_this_month'), ''],
   );
 
-  return Buffer.from([...section1, '', ...section2].join('\n'), 'utf-8');
+  const lines = [...section1, '', ...section2];
+
+  // Unresolved rows keep their original (non-kg) unit and are never totaled
+  // into a kg figure — this section is operational visibility, not a totals table.
+  if (conversionWarningRows.length > 0) {
+    const section3 = [
+      '',
+      'Needs KG Conversion Setup',
+      ['Ingredient', 'Unit', 'Opening Stock', 'Consumed Today', 'Consumed This Month', 'Remaining', 'Message'].join(','),
+      ...conversionWarningRows.map((r) =>
+        [r.ingredient_name, r.unit, r.opening_stock, r.consumed_today, r.consumed_this_month, r.remaining_stock, r.conversion_warning ?? '']
+          .map(escapeCsvField)
+          .join(','),
+      ),
+    ];
+    lines.push(...section3);
+  }
+
+  return Buffer.from(lines.join('\n'), 'utf-8');
 }
 
 const styles = StyleSheet.create({
@@ -81,20 +100,20 @@ const styles = StyleSheet.create({
 function pdfTable(
   headers: string[],
   dataRows: Array<Array<string | number>>,
-  totalsRow: Array<string | number>,
+  totalsRow?: Array<string | number>,
 ): ReturnType<typeof e> {
   return e(
     View,
     { style: styles.table },
     e(View, { style: styles.headerRow }, ...headers.map((h, i) => e(Text, { key: i, style: styles.cell }, h))),
     ...dataRows.map((row, i) => e(View, { key: i, style: styles.row, wrap: false }, ...row.map((v, j) => e(Text, { key: j, style: styles.cell }, String(v))))),
-    e(View, { style: styles.totalsRow }, ...totalsRow.map((v, i) => e(Text, { key: i, style: styles.cell }, String(v)))),
+    ...(totalsRow ? [e(View, { style: styles.totalsRow }, ...totalsRow.map((v, i) => e(Text, { key: i, style: styles.cell }, String(v))))] : []),
   );
 }
 
-/** PDF: one document — title header, then Section 1's table, then Section 2's table, each with its own totals row. */
+/** PDF: one document — title header, then Section 1's table, then Section 2's table, then — only when unresolved rows exist — the conversion-warning table, each with its own totals row (the warning table has none). */
 export async function generateInventorySummaryPdf(filters: ReportFilters, rows: InventorySummaryReportRow[], branchName: string | null): Promise<Buffer> {
-  const { ingredientRows, packagingRows } = splitSections(rows);
+  const { ingredientRows, packagingRows, conversionWarningRows } = splitSections(rows);
   const generatedAt = new Date().toISOString();
   const dateRangeLabel =
     filters.dateFrom || filters.dateTo
@@ -119,6 +138,24 @@ export async function generateInventorySummaryPdf(filters: ReportFilters, rows: 
     ['Total', '', sumBy(packagingRows, 'consumed_today'), sumBy(packagingRows, 'consumed_this_month'), ''],
   );
 
+  // No totals row: unresolved rows keep their original unit and are never
+  // summed into a kg figure — this table is operational visibility only.
+  const conversionWarningTable =
+    conversionWarningRows.length > 0
+      ? pdfTable(
+          ['Ingredient', 'Unit', 'Opening Stock', 'Consumed Today', 'Consumed This Month', 'Remaining', 'Message'],
+          conversionWarningRows.map((r) => [
+            r.ingredient_name,
+            r.unit,
+            r.opening_stock,
+            r.consumed_today,
+            r.consumed_this_month,
+            r.remaining_stock,
+            r.conversion_warning ?? '',
+          ]),
+        )
+      : null;
+
   const doc = e(
     Document,
     null,
@@ -136,6 +173,9 @@ export async function generateInventorySummaryPdf(filters: ReportFilters, rows: 
       ingredientTable,
       e(Text, { style: styles.sectionTitle }, 'Packaging Consumption (PC)'),
       packagingTable,
+      ...(conversionWarningTable
+        ? [e(Text, { style: styles.sectionTitle }, 'Needs KG Conversion Setup'), conversionWarningTable]
+        : []),
       e(Text, {
         style: styles.footer,
         fixed: true,

@@ -1,8 +1,9 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { cn } from '@/lib/utils';
 import { NO_ADD_ON_KEY, assignedQuantity, type AddOnAssignments, type AddOnSplitGroup } from '@/lib/pos/split-add-ons';
 
 function formatPeso(amount: number): string {
@@ -21,24 +22,37 @@ export interface AddOnsDialogGroup extends AddOnSplitGroup {
    * lib/pos/split-add-ons.ts#isAddOnsGroup) render as an optional
    * multi-select checklist: zero or many options, applied once per product
    * unit, no quantity allocation. Every other group (e.g. a SINGLE-selection
-   * Size group) keeps the original per-choice quantity allocator untouched.
+   * Flavor/Size group) is split further by selectionType below.
    */
   simplified: boolean;
+  /**
+   * Task 182 — a SINGLE-selection group (typically a required Flavor/Size
+   * choice) renders as one checkbox-style row per option with radio
+   * (single-select) behavior — no quantity allocator. A MULTIPLE-selection
+   * group keeps the per-choice quantity allocator, sized against the
+   * group's own required count (minSelections/maxSelections) rather than
+   * the removed top-level product quantity.
+   */
+  selectionType: 'SINGLE' | 'MULTIPLE';
+  required: boolean;
+  minSelections: number;
+  maxSelections: number | null;
 }
 
-/** groupId -> selected option ids (simplified/Add-ons groups only). */
+/** groupId -> selected option ids (simplified/Add-ons groups and SINGLE-selection groups). */
 export type AddOnSelections = Record<string, string[]>;
 
 interface AddOnsDialogProps {
   productName: string;
   variantName: string;
   groups: AddOnsDialogGroup[];
+  /** Cart line quantity — 1 on a new add, preserved unchanged on edit. Never adjustable from this dialog (Task 182); the cart owns quantity. */
   quantity: number;
-  onQuantityChange: (quantity: number) => void;
   assignments: AddOnAssignments;
   onAssignmentChange: (groupId: string, choiceKey: string, quantity: number) => void;
   selectedOptionIds: AddOnSelections;
   onToggleOption: (groupId: string, optionId: string) => void;
+  onSelectOption: (groupId: string, optionId: string) => void;
   onClearGroup: (groupId: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -46,40 +60,51 @@ interface AddOnsDialogProps {
   isEditMode?: boolean;
 }
 
+/** How many picks a MULTIPLE group's allocator must sum to — the group's own required count, independent of product quantity (Task 182). */
+export function multiGroupTarget(group: AddOnsDialogGroup): number {
+  return group.maxSelections ?? Math.max(group.minSelections, 1);
+}
+
 /**
  * Task 107 — collects add-on choices BEFORE the item reaches the cart.
  * Task 108 — this same dialog also reopens (preloaded) when a cashier taps
  * "Edit" on an existing cart line, via isEditMode.
  *
- * Task 131 — split into two rendering modes per group:
- *  - simplified (Add-ons) groups: optional multi-select checkboxes, no
- *    quantity allocation, "No Add-ons" always available.
- *  - legacy groups (everything else, e.g. Size): unchanged per-choice
- *    quantity allocator, requiring assigned total to equal product quantity
- *    (lib/pos/split-add-ons.ts).
- * The Product Quantity control only appears when at least one legacy group
- * is present — a variant with only Add-ons groups never shows it; quantity
- * for that product is set/changed on the cart line itself instead.
+ * Task 131 — split into two rendering modes per group: simplified (Add-ons)
+ * groups get an optional multi-select checklist; every other (legacy) group
+ * keeps a per-choice allocator.
+ *
+ * Task 182 — legacy groups split further by selectionType: SINGLE (e.g. a
+ * required Flavor choice) renders one checkbox-style row per option with
+ * single-select behavior and no allocator; MULTIPLE keeps the quantity
+ * allocator, now sized to the group's own required count. The top-level
+ * product Quantity control is gone entirely — a new item always starts at
+ * cart quantity 1; editing preserves the cart line's existing quantity;
+ * quantity is only ever changed from the cart itself.
  */
 export function AddOnsDialog({
   productName,
   variantName,
   groups,
   quantity,
-  onQuantityChange,
   assignments,
   onAssignmentChange,
   selectedOptionIds,
   onToggleOption,
+  onSelectOption,
   onClearGroup,
   onCancel,
   onConfirm,
   isEditMode = false,
 }: AddOnsDialogProps) {
   const simplifiedGroups = groups.filter((group) => group.simplified);
-  const legacyGroups = groups.filter((group) => !group.simplified);
+  const singleGroups = groups.filter((group) => !group.simplified && group.selectionType === 'SINGLE');
+  const multiGroups = groups.filter((group) => !group.simplified && group.selectionType === 'MULTIPLE');
 
-  const isValid = quantity > 0 && legacyGroups.every((group) => assignedQuantity(assignments[group.id]) === quantity);
+  const isValid =
+    quantity > 0 &&
+    singleGroups.filter((group) => group.required).every((group) => (selectedOptionIds[group.id] ?? []).length === 1) &&
+    multiGroups.every((group) => assignedQuantity(assignments[group.id]) === multiGroupTarget(group));
 
   function bump(groupId: string, choiceKey: string, delta: number, current: number) {
     const next = current + delta;
@@ -88,41 +113,19 @@ export function AddOnsDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
-      <Card className="w-full max-w-sm">
-        <CardContent className="max-h-[85vh] space-y-4 overflow-y-auto p-4">
-          <div>
-            <p className="font-medium">{productName}</p>
-            <p className="text-xs text-muted-foreground">{variantName}</p>
-          </div>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{productName}</DialogTitle>
+          <DialogDescription>{variantName}</DialogDescription>
+        </DialogHeader>
 
-          {legacyGroups.length > 0 && (
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Quantity</span>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="touch-target h-7 w-7 p-0"
-                  aria-label="Decrease quantity"
-                  onClick={() => onQuantityChange(Math.max(1, quantity - 1))}
-                >
-                  −
-                </Button>
-                <span className="w-6 text-center tabular-nums">{quantity}</span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="touch-target h-7 w-7 p-0"
-                  aria-label="Increase quantity"
-                  onClick={() => onQuantityChange(quantity + 1)}
-                >
-                  +
-                </Button>
-              </div>
-            </div>
-          )}
-
+        <div className="max-h-[calc(100vh-14rem)] space-y-4 overflow-y-auto">
           {simplifiedGroups.map((group) => {
             const selected = selectedOptionIds[group.id] ?? [];
             return (
@@ -148,7 +151,38 @@ export function AddOnsDialog({
             );
           })}
 
-          {legacyGroups.map((group) => {
+          {singleGroups.map((group) => {
+            const selectedId = (selectedOptionIds[group.id] ?? [])[0];
+            return (
+              <div key={group.id} className="space-y-2 border-t pt-3">
+                <p className="text-sm font-semibold">{group.label}</p>
+
+                <div className="space-y-2">
+                  {group.options.map((option) => {
+                    const isSelected = selectedId === option.id;
+                    return (
+                      <label
+                        key={option.id}
+                        className={cn(
+                          'touch-target flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                          isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
+                        )}
+                      >
+                        <Checkbox checked={isSelected} onCheckedChange={() => onSelectOption(group.id, option.id)} />
+                        <span className="flex-1">
+                          {option.name}
+                          {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+
+          {multiGroups.map((group) => {
+            const target = multiGroupTarget(group);
             const groupAssignment = assignments[group.id] ?? {};
             const assigned = assignedQuantity(groupAssignment);
             return (
@@ -212,23 +246,23 @@ export function AddOnsDialog({
                   </div>
                 ))}
 
-                <p className={`text-xs ${assigned === quantity ? 'text-muted-foreground' : 'font-medium text-destructive'}`}>
-                  Assigned {assigned} / {quantity}
+                <p className={`text-xs ${assigned === target ? 'text-muted-foreground' : 'font-medium text-destructive'}`}>
+                  Assigned {assigned} / {target}
                 </p>
               </div>
             );
           })}
+        </div>
 
-          <div className="flex gap-2 pt-2">
-            <Button type="button" variant="outline" className="flex-1" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button type="button" className="flex-1" disabled={!isValid} onClick={onConfirm}>
-              {isEditMode ? 'Save' : 'Add'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+        <DialogFooter className="flex-row gap-2 sm:justify-normal">
+          <Button type="button" variant="outline" className="touch-target flex-1" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="button" className="touch-target flex-1" disabled={!isValid} onClick={onConfirm}>
+            {isEditMode ? 'Save' : 'Add'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

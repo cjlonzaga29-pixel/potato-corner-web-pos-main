@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { AddOnsDialog, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
+import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import type { PosCartSelectedOption } from '@/stores/cart.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -348,6 +348,9 @@ export default function TerminalPage() {
   // Add-ons naming rule (isAddOnsGroup) render as the simplified optional
   // multi-select; every other group keeps the original per-choice quantity
   // allocator (label/allowNoAddOn computed exactly as before).
+  // Task 182 — selectionType/required/minSelections/maxSelections passed
+  // through so the dialog can render a required SINGLE-selection group
+  // (e.g. Flavor) as checkbox-style single-select instead of an allocator.
   function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOnsDialogGroup[] {
     return activeOptionGroups(variant).map((group) => ({
       id: group.id,
@@ -355,6 +358,10 @@ export default function TerminalPage() {
       label: resolveGroupLabel(group),
       allowNoAddOn: group.min_selections === 0,
       simplified: isAddOnsGroup(group),
+      selectionType: group.selection_type,
+      required: group.required,
+      minSelections: group.min_selections,
+      maxSelections: group.max_selections,
       options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
     }));
   }
@@ -387,10 +394,6 @@ export default function TerminalPage() {
     addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
   }
 
-  function handleAddOnsQuantityChange(quantity: number) {
-    setAddOnsPrompt((prev) => (prev ? { ...prev, quantity } : prev));
-  }
-
   function handleAddOnsAssignmentChange(groupId: string, choiceKey: string, quantity: number) {
     setAddOnsPrompt((prev) => {
       if (!prev) return prev;
@@ -420,6 +423,13 @@ export default function TerminalPage() {
     setAddOnsPrompt((prev) => (prev ? { ...prev, selectedOptionIds: { ...prev.selectedOptionIds, [groupId]: [] } } : prev));
   }
 
+  // Task 182 — a required SINGLE-selection group (e.g. Flavor) behaves like
+  // a radio group: picking an option replaces whatever was selected before,
+  // never adds to it.
+  function handleSelectSingleOption(groupId: string, optionId: string) {
+    setAddOnsPrompt((prev) => (prev ? { ...prev, selectedOptionIds: { ...prev.selectedOptionIds, [groupId]: [optionId] } } : prev));
+  }
+
   // Splits the product quantity into independent cart lines — one per
   // distinct combination of legacy-group add-on choices
   // (lib/pos/split-add-ons.ts). Never creates a single line carrying
@@ -438,10 +448,14 @@ export default function TerminalPage() {
     if (!addOnsPrompt) return;
     const { product, variant, flavorId, selectedFlavors, quantity, assignments, selectedOptionIds, editingIndex } = addOnsPrompt;
     const groups = dialogGroupsFor(variant);
-    const legacyGroups = groups.filter((group) => !group.simplified);
-    const addOnGroups = groups.filter((group) => group.simplified);
+    // Task 182 — only MULTIPLE-selection groups still go through the
+    // per-unit quantity-allocator split; simplified (Add-ons) groups and
+    // required SINGLE-selection groups (e.g. Flavor) are both chosen once
+    // for the whole line via selectedOptionIds.
+    const legacyGroups = groups.filter((group) => !group.simplified && group.selectionType === 'MULTIPLE');
+    const flatGroups = groups.filter((group) => group.simplified || group.selectionType === 'SINGLE');
 
-    const addOnSelectedOptions: PosCartSelectedOption[] = addOnGroups.flatMap((group) =>
+    const addOnSelectedOptions: PosCartSelectedOption[] = flatGroups.flatMap((group) =>
       (selectedOptionIds[group.id] ?? []).flatMap((optionId) => {
         const option = group.options.find((o) => o.id === optionId);
         if (!option) return [];
@@ -457,8 +471,14 @@ export default function TerminalPage() {
       }),
     );
 
+    // Task 182 — a genuine multi-slot (MULTIPLE) group's allocator is sized
+    // to the group's own required count, not the cart line's quantity; that
+    // required count now drives how many lines/units this add produces.
+    const multiSlotQuantity = legacyGroups.length > 0 ? Math.max(...legacyGroups.map(multiGroupTarget)) : quantity;
     const baseLines =
-      legacyGroups.length > 0 ? splitAddOnLines(legacyGroups, assignments, quantity) : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
+      legacyGroups.length > 0
+        ? splitAddOnLines(legacyGroups, assignments, multiSlotQuantity)
+        : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
 
     const newItems = baseLines.map((line) => {
       const selected_options = [...line.selected_options, ...addOnSelectedOptions];
@@ -489,10 +509,14 @@ export default function TerminalPage() {
   // currently has assignable option groups; there is nothing for this
   // dialog to edit otherwise.
   //
-  // Task 131 — legacy groups preload back into per-choice assignments (the
-  // inverse of splitAddOnLines) exactly as before; simplified (Add-ons)
-  // groups preload every matching selected option id into selectedOptionIds
-  // instead (a line can carry several, not just one).
+  // Task 131 — simplified (Add-ons) groups preload every matching selected
+  // option id into selectedOptionIds (a line can carry several, not just
+  // one).
+  // Task 182 — required SINGLE-selection groups (e.g. Flavor) preload the
+  // same way — a line only ever carries one. Only genuine MULTIPLE
+  // (multi-slot) groups still preload into per-choice assignments (the
+  // inverse of splitAddOnLines), tallying how many times each option
+  // appears rather than assuming a single choice.
   function handleEditLine(index: number) {
     const item = items[index];
     if (!item) return;
@@ -505,15 +529,16 @@ export default function TerminalPage() {
     const selectedOptionIds: AddOnSelections = {};
     for (const group of groups) {
       const selectedForGroup = (item.selected_options ?? []).filter((option) => option.option_group_id === group.id);
-      if (group.simplified) {
+      if (group.simplified || group.selectionType === 'SINGLE') {
         selectedOptionIds[group.id] = selectedForGroup.map((option) => option.option_id);
         continue;
       }
-      const selected = selectedForGroup[0];
-      if (selected) {
-        assignments[group.id] = { [selected.option_id]: item.quantity };
+      if (selectedForGroup.length > 0) {
+        const counts: Record<string, number> = {};
+        for (const option of selectedForGroup) counts[option.option_id] = (counts[option.option_id] ?? 0) + 1;
+        assignments[group.id] = counts;
       } else if (group.allowNoAddOn) {
-        assignments[group.id] = { [NO_ADD_ON_KEY]: item.quantity };
+        assignments[group.id] = { [NO_ADD_ON_KEY]: multiGroupTarget(group) };
       }
     }
     setAddOnsPrompt({
@@ -1010,11 +1035,11 @@ export default function TerminalPage() {
             variantName={addOnsPrompt.variant.name}
             groups={dialogGroupsFor(addOnsPrompt.variant)}
             quantity={addOnsPrompt.quantity}
-            onQuantityChange={handleAddOnsQuantityChange}
             assignments={addOnsPrompt.assignments}
             onAssignmentChange={handleAddOnsAssignmentChange}
             selectedOptionIds={addOnsPrompt.selectedOptionIds}
             onToggleOption={handleToggleAddOnOption}
+            onSelectOption={handleSelectSingleOption}
             onClearGroup={handleClearAddOnGroup}
             onCancel={() => setAddOnsPrompt(null)}
             onConfirm={handleAddOnsConfirm}

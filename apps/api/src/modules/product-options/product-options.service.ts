@@ -350,6 +350,36 @@ export const productOptionsService = {
     return response;
   },
 
+  async deleteGroup(id: string, actor: ActorContext, ipAddress: string | null) {
+    const before = await repo.findGroupById(id);
+    if (!before) throw new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404);
+
+    const assignedVariantCount = await repo.countVariantAssignments(id);
+    if (assignedVariantCount > 0) {
+      throw new ProductOptionError(
+        'OPTION_GROUP_IN_USE',
+        `Remove this option group from ${assignedVariantCount} product variant${assignedVariantCount === 1 ? '' : 's'} before deleting it permanently`,
+        409,
+        { assignedVariantCount },
+      );
+    }
+
+    await repo.deleteGroup(id);
+
+    // entityId (not a FK, just an indexed string) still identifies the
+    // deleted group for lookups — the row itself is already gone by this
+    // point, same reasoning as deleteBranch's audit entry.
+    await recordAuditLog({
+      action: 'PRODUCT_OPTION_GROUP_DELETED',
+      entityType: 'product_option_group',
+      entityId: before.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: toGroupResponse({ ...before, _count: { options: before.options.length } }),
+      ipAddress,
+    });
+  },
+
   // --- Options (R5) ---
 
   async createOption(optionGroupId: string, data: CreateOptionInput, actor: ActorContext, ipAddress: string | null) {

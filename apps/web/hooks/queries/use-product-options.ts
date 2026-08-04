@@ -109,6 +109,23 @@ export function useUpdateProductOptionGroup(groupId: string) {
   });
 }
 
+/** DELETE /api/product-options/:groupId — permanent delete, blocked (409) while the group is still assigned to any variant. */
+export function useDeleteProductOptionGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (groupId: string) => {
+      const response = await apiClient<null>(`/api/product-options/${groupId}`, { method: 'DELETE' });
+      if (response.error) throw new Error(errorMessage(response, 'Failed to delete option group'));
+    },
+    onSuccess: (_data, groupId) => {
+      void queryClient.invalidateQueries({ queryKey: ['product-option-groups'] });
+      queryClient.removeQueries({ queryKey: ['product-option-group', groupId] });
+      toast.success('Product option group deleted permanently.');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useCreateProductOption(groupId: string) {
   const queryClient = useQueryClient();
   return useMutation({

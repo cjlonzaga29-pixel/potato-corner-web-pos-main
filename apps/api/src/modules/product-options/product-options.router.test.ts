@@ -9,6 +9,7 @@ vi.mock('./product-options.service.js', () => ({
     getGroupById: vi.fn(),
     createGroup: vi.fn(),
     updateGroup: vi.fn(),
+    deleteGroup: vi.fn(),
     createOption: vi.fn(),
     updateOption: vi.fn(),
     getAssignedVariantsForOption: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock('../../lib/prisma.js', () => ({
 const { prisma } = await import('../../lib/prisma.js');
 const { productOptionsService } = await import('./product-options.service.js');
 const { productOptionsRouter } = await import('./product-options.router.js');
+const { ProductOptionError } = await import('./product-options.types.js');
 const { generateBranchToken, generateSuperAdminToken, generateSupervisorToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
@@ -98,6 +100,87 @@ describe('POST /api/product-options — branch cannot create an Option Group (R1
     await runHandlers(handlers, req, res);
 
     expect(productOptionsService.createGroup).toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/product-options/:groupId — permanent delete (SUPER_ADMIN only)', () => {
+  it('rejects a branch actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(randomUUID())),
+      params: { groupId: 'group-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productOptionsService.deleteGroup).not.toHaveBeenCalled();
+  });
+
+  it('rejects a supervisor actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([randomUUID()])),
+      params: { groupId: 'group-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productOptionsService.deleteGroup).not.toHaveBeenCalled();
+  });
+
+  it('allows a super_admin actor through and returns 204 on success', async () => {
+    vi.mocked(productOptionsService.deleteGroup).mockResolvedValue(undefined as never);
+    const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { groupId: 'group-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(productOptionsService.deleteGroup).toHaveBeenCalledWith('group-1', expect.objectContaining({ role: 'super_admin' }), null);
+    expect(res.status).toHaveBeenCalledWith(204);
+    expect(res.send).toHaveBeenCalled();
+  });
+
+  it('returns 404 when the group does not exist', async () => {
+    vi.mocked(productOptionsService.deleteGroup).mockRejectedValue(
+      new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404),
+    );
+    const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { groupId: 'missing-group' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  it('returns 409 when the group is still assigned to a product variant', async () => {
+    vi.mocked(productOptionsService.deleteGroup).mockRejectedValue(
+      new ProductOptionError('OPTION_GROUP_IN_USE', 'Remove this option group from 2 product variants before deleting it permanently', 409, {
+        assignedVariantCount: 2,
+      }),
+    );
+    const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { groupId: 'group-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect((res as unknown as { jsonBody: { error: { code: string } } }).jsonBody.error.code).toBe('OPTION_GROUP_IN_USE');
   });
 });
 

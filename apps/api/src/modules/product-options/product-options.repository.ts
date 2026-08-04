@@ -276,6 +276,23 @@ export const productOptionsRepository = {
     return prisma.productVariantOptionGroup.delete({ where: { id } });
   },
 
+  countVariantAssignments(optionGroupId: string) {
+    return prisma.productVariantOptionGroup.count({ where: { optionGroupId } });
+  },
+
+  // Options (and their ProductComponent/ProductOptionInventoryMapping
+  // children, both onDelete: Cascade at the DB level) are removed first —
+  // ProductOption.optionGroup has no onDelete clause (defaults to Restrict),
+  // so the group row can't be deleted while any option row still points at
+  // it. Wrapped in a transaction so a failure partway through leaves
+  // neither the options nor the group deleted.
+  async deleteGroup(id: string) {
+    await prisma.$transaction(async (tx) => {
+      await tx.productOption.deleteMany({ where: { optionGroupId: id } });
+      await tx.productOptionGroup.delete({ where: { id } });
+    });
+  },
+
   // --- Reverse lookup: Product Option -> assigned Product Variants ---
 
   findAssignedVariantsForOption(productOptionId: string) {

@@ -7,6 +7,8 @@ vi.mock('./product-options.repository.js', () => ({
     findGroupByCode: vi.fn(),
     createGroup: vi.fn(),
     updateGroup: vi.fn(),
+    countVariantAssignments: vi.fn(),
+    deleteGroup: vi.fn(),
     findOptionById: vi.fn(),
     findOptionByCode: vi.fn(),
     createOption: vi.fn(),
@@ -152,6 +154,42 @@ describe('productOptionsService.createGroup', () => {
       ),
     ).rejects.toMatchObject({ code: 'OPTION_GROUP_CODE_CONFLICT' });
     expect(repo.createGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe('productOptionsService.deleteGroup', () => {
+  it('404s when the group does not exist', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(null);
+
+    await expect(productOptionsService.deleteGroup('missing-group', ACTOR, null)).rejects.toMatchObject({
+      code: 'OPTION_GROUP_NOT_FOUND',
+    });
+    expect(repo.deleteGroup).not.toHaveBeenCalled();
+  });
+
+  it('409s when the group is still assigned to any product variant', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.countVariantAssignments).mockResolvedValue(3);
+
+    await expect(productOptionsService.deleteGroup('group-1', ACTOR, null)).rejects.toMatchObject({
+      code: 'OPTION_GROUP_IN_USE',
+      statusCode: 409,
+    });
+    expect(repo.deleteGroup).not.toHaveBeenCalled();
+  });
+
+  it('deletes the group and records an audit log when it has zero variant assignments', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.countVariantAssignments).mockResolvedValue(0);
+    vi.mocked(repo.deleteGroup).mockResolvedValue(undefined as never);
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+
+    await productOptionsService.deleteGroup('group-1', ACTOR, null);
+
+    expect(repo.deleteGroup).toHaveBeenCalledWith('group-1');
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'PRODUCT_OPTION_GROUP_DELETED', entityType: 'product_option_group', entityId: 'group-1' }),
+    );
   });
 });
 

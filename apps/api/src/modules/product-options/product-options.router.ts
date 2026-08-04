@@ -101,6 +101,16 @@ router.patch('/:groupId', authenticate, adminOnly, requirePasswordChange, valida
   }
 });
 
+router.delete('/:groupId', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    await productOptionsService.deleteGroup(req.params.groupId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    res.status(204).send();
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
 router.post(
   '/:groupId/options',
   authenticate,

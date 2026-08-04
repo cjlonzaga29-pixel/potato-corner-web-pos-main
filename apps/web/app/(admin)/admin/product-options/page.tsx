@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { Pencil } from 'lucide-react';
+import { Pencil, Trash2 } from 'lucide-react';
 import type { ProductOptionGroupResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { useProductOptionGroups } from '@/hooks/queries/use-product-options';
+import { ConfirmDialog } from '@/components/shared/confirm-dialog';
+import { useDeleteProductOptionGroup, useProductOptionGroups } from '@/hooks/queries/use-product-options';
 import { CreateOptionGroupDialog } from '@/components/admin/product-options/create-option-group-dialog';
 
 const ACTIVE_FILTERS = [
@@ -26,6 +27,8 @@ export default function ProductOptionsPage() {
   const [active, setActive] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [createOpen, setCreateOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ProductOptionGroupResponse | null>(null);
+  const deleteGroup = useDeleteProductOptionGroup();
 
   const { data, isLoading, isError, refetch } = useProductOptionGroups({
     isActive: active === 'all' ? undefined : active === 'true',
@@ -62,21 +65,39 @@ export default function ProductOptionsPage() {
       id: 'actions',
       header: 'Actions',
       cell: ({ row }) => (
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={`Edit ${row.original.name}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            router.push(`/admin/product-options/${row.original.id}`);
-          }}
-        >
-          <Pencil className="mr-1 h-4 w-4" />
-          Edit
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label={`Edit ${row.original.name}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              router.push(`/admin/product-options/${row.original.id}`);
+            }}
+          >
+            <Pencil className="mr-1 h-4 w-4" />
+            Edit
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label={`Delete ${row.original.name}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDeleteTarget(row.original);
+            }}
+          >
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
+        </div>
       ),
     },
   ];
+
+  async function handleDeleteConfirmed() {
+    if (!deleteTarget) return;
+    await deleteGroup.mutateAsync(deleteTarget.id);
+  }
 
   return (
     <div className="space-y-6">
@@ -134,6 +155,28 @@ export default function ProductOptionsPage() {
       />
 
       <CreateOptionGroupDialog open={createOpen} onOpenChange={setCreateOpen} />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title="Delete Product Option Group?"
+        description={
+          deleteTarget && (
+            <>
+              This permanently deletes the option group, its options, and unused mappings. This action cannot be undone.
+              <br />
+              <br />
+              <span className="font-medium text-foreground">{deleteTarget.name}</span> ({deleteTarget.code}) —{' '}
+              {deleteTarget.option_count} option{deleteTarget.option_count === 1 ? '' : 's'}
+            </>
+          )
+        }
+        confirmLabel="Delete Permanently"
+        variant="danger"
+        onConfirm={handleDeleteConfirmed}
+      />
     </div>
   );
 }

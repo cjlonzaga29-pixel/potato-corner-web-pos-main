@@ -300,19 +300,21 @@ export const authService = {
   },
 
   /**
-   * Unlike a self-service "forgot password" reset, this is called by an
-   * already-authenticated user (voluntary change, or the mandatory
-   * must-change-password flow) — so instead of forcing a full re-login, it
-   * blacklists the now-stale token and every *other* session, then issues
-   * this session a fresh token pair reflecting must_change_password: false.
+   * Task 180: a password change — voluntary or the mandatory
+   * must-change-password flow — now fully ends the session it was made
+   * from, same as every other session for that user. It used to issue this
+   * session a fresh token pair so the caller could keep going without a
+   * re-login; that let a still-live browser tab carry on into the
+   * dashboard on the just-replaced temporary password's session instead of
+   * proving the *new* password works. The caller must sign in again.
    */
   async changePassword(
     userId: string,
     currentPassword: string,
     newPassword: string,
     accessToken: string,
-    deviceId: string,
-  ): Promise<LoginResponse & { refreshToken: string }> {
+    _deviceId: string,
+  ): Promise<{ user: AuthenticatedUserSummary }> {
     const user = await authRepository.findUserWithPasswordById(userId);
     if (!user) {
       throw new AuthError('USER_NOT_FOUND', 'User not found', 404);
@@ -330,24 +332,13 @@ export const authService = {
     await authRepository.updatePasswordHash(userId, newHash);
     await authRepository.setMustChangePassword(userId, false);
 
-    // Password change blacklists all active tokens for that user (locked rule) — including this one, which is
-    // about to be replaced with a fresh pair below so the current session doesn't get logged out too.
+    // Revokes every session for this user, including the one this request
+    // was made on — the caller must sign in again with the new password.
     await authRepository.revokeAllUserTokens(userId);
     await blacklistToken(accessToken, decodeExpiry(accessToken));
 
     const userWithBranches = await authRepository.findUserById(userId);
     const branchIds = userWithBranches?.branchAssignments.map((assignment) => assignment.branchId) ?? [];
-
-    const newAccessToken = generateAccessToken({
-      id: user.id,
-      role: user.role,
-      email: user.email,
-      branchIds,
-      mustChangePassword: false,
-    });
-    const newRefreshToken = generateRefreshToken();
-    const refreshExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
-    await authRepository.storeRefreshToken(userId, newRefreshToken, deviceId, refreshExpiresAt);
 
     await recordAuditLog({
       action: 'PASSWORD_CHANGED',
@@ -358,8 +349,6 @@ export const authService = {
     });
 
     return {
-      access_token: newAccessToken,
-      refreshToken: newRefreshToken,
       user: toUserSummary({ ...user, mustChangePassword: false }, branchIds),
     };
   },

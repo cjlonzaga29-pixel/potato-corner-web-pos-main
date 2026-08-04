@@ -169,9 +169,13 @@ router.post(
         return;
       }
       const result = await authService.changePassword(req.user.user_id, current_password, new_password, accessToken, deviceId);
-      setRefreshCookie(res, result.refreshToken);
-      setAccessHintCookie(res, result.access_token);
-      res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
+      // Task 180: the session this request was made on is now revoked
+      // server-side (see authService.changePassword) — clear the cookies
+      // that carried it so the browser doesn't keep presenting a dead
+      // refresh token, same as /logout.
+      clearRefreshCookie(res);
+      clearAccessHintCookie(res);
+      res.status(200).json({ data: { user: result.user }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);
     }

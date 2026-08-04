@@ -22,7 +22,7 @@ All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE
 | POST | `/refresh` | public | `refreshSchema` (`device_id`) | Reads `refresh_token` cookie; rotates it. Returns `{ access_token }`. |
 | POST | `/logout` | authenticated | — | Blacklists the access token, revokes the refresh token if present. |
 | POST | `/logout-all` | authenticated | — | Revokes every refresh token for the user across all devices. |
-| POST | `/change-password` | authenticated | `changePasswordSchema` (`current_password`, `new_password`, `confirm_password`) | Requires `x-device-id` header. Revokes all other sessions, issues a fresh token pair. |
+| POST | `/change-password` | authenticated | `changePasswordSchema` (`current_password`, `new_password`, `confirm_password`) | Requires `x-device-id` header. Revokes *every* session for the user, including the one the request was made on (Task 180) — no fresh token pair is issued; the client must sign in again with the new password. Clears the `refresh_token`/`pc_access_hint` cookies, same as `/logout`. |
 | POST | `/request-reset` | public, `resetLimiter` | `resetRequestSchema` (`email`) | Always returns the same generic message regardless of whether the email exists. |
 | POST | `/reset-password` | public | `resetPasswordSchema` (`token`, `new_password`, `confirm_password`) | Revokes all refresh tokens for the user on success. |
 | POST | `/pin/set` | authenticated | `pinSetSchema` (`pin`, 6 digits) | Requires `x-device-id` header and an existing active session on that device. |

@@ -546,7 +546,7 @@ describe('authService.selectEmployee', () => {
 });
 
 describe('authService.changePassword', () => {
-  it('blacklists all existing tokens, clears must_change_password, and issues a fresh token pair', async () => {
+  it('blacklists all existing tokens, clears must_change_password, and does not issue a new session', async () => {
     const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
     vi.mocked(authRepository.findUserWithPasswordById).mockResolvedValue(buildUser({ passwordHash }) as never);
     vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser({ mustChangePassword: false }) as never);
@@ -564,9 +564,31 @@ describe('authService.changePassword', () => {
     expect(authRepository.setMustChangePassword).toHaveBeenCalledWith('user-1', false);
     expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('user-1');
     expect(authRepository.insertRevokedToken).toHaveBeenCalledWith(expect.any(String), expect.any(Date));
-    expect(result.access_token).toEqual(expect.any(String));
-    expect(result.refreshToken).toEqual(expect.any(String));
-    expect(authRepository.storeRefreshToken).toHaveBeenCalledWith('user-1', result.refreshToken, 'device-1', expect.any(Date));
+    expect(result.user.must_change_password).toBe(false);
+    expect(result).not.toHaveProperty('access_token');
+    expect(result).not.toHaveProperty('refreshToken');
+    expect(authRepository.storeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('throws INVALID_PASSWORD and does not touch any session state on a wrong current password', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserWithPasswordById).mockResolvedValue(buildUser({ passwordHash }) as never);
+
+    const accessToken = authService.generateAccessToken({
+      id: 'user-1',
+      role: ROLES.STAFF,
+      email: 'staff@potatocorner.test',
+      branchIds: ['branch-1'],
+      mustChangePassword: true,
+    });
+
+    await expect(
+      authService.changePassword('user-1', 'WrongPassword1', 'NewPassword1', accessToken, 'device-1'),
+    ).rejects.toMatchObject({ code: 'INVALID_PASSWORD', statusCode: 401 });
+
+    expect(authRepository.setMustChangePassword).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
   });
 });
 

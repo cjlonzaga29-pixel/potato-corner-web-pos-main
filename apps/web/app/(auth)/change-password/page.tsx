@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
-import { ROLE_DASHBOARDS, type Role } from '@potato-corner/shared';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -14,7 +14,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { apiClient } from '@/lib/api-client';
-import { useAuthStore, type AuthUser } from '@/stores/auth.store';
+import { broadcastLogout } from '@/lib/auth-broadcast';
+import { getSafeReturnTo } from '@/lib/safe-redirect';
+import { useAuthStore } from '@/stores/auth.store';
 
 const PASSWORD_RULES = [
   { label: 'At least 8 characters', test: (v: string) => v.length >= 8 },
@@ -44,14 +46,8 @@ const formSchema = z
 type FormValues = z.infer<typeof formSchema>;
 
 interface ChangePasswordResponseData {
-  access_token: string;
   user: {
     id: string;
-    role: Role;
-    email: string;
-    first_name: string;
-    last_name: string;
-    branch_ids: string[];
     must_change_password: boolean;
   };
 }
@@ -71,7 +67,7 @@ function strengthColorClass(score: number): string {
 
 export default function ChangePasswordPage() {
   const router = useRouter();
-  const setAuth = useAuthStore((state) => state.setAuth);
+  const clearAuth = useAuthStore((state) => state.clearAuth);
   const [error, setError] = useState<string | null>(null);
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -103,22 +99,20 @@ export default function ChangePasswordPage() {
       return;
     }
 
-    const { user, access_token } = response.data;
-    const authUser: AuthUser = {
-      id: user.id,
-      role: user.role,
-      email: user.email,
-      firstName: user.first_name,
-      lastName: user.last_name,
-      branchIds: user.branch_ids,
-    };
-    setAuth(authUser, access_token);
+    // The password change already revoked this session server-side (see
+    // apps/api/src/modules/auth/auth.service.ts changePassword) — clear the
+    // client-side mirror of it and sign the user out everywhere so they
+    // come back in on the new password rather than riding the old session
+    // straight into their dashboard.
+    clearAuth();
+    broadcastLogout();
+    toast.success('Password updated. Please sign in again.');
 
     const storedRedirect = typeof window !== 'undefined' ? sessionStorage.getItem(REDIRECT_STORAGE_KEY) : null;
     if (storedRedirect) sessionStorage.removeItem(REDIRECT_STORAGE_KEY);
+    const returnTo = getSafeReturnTo(storedRedirect && storedRedirect !== '/change-password' ? storedRedirect : null);
 
-    const destination = storedRedirect && storedRedirect !== '/change-password' ? storedRedirect : ROLE_DASHBOARDS[user.role];
-    router.push(destination);
+    router.replace(returnTo ? `/login?returnTo=${encodeURIComponent(returnTo)}` : '/login');
   }
 
   return (

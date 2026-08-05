@@ -455,30 +455,56 @@ export default function TerminalPage() {
     const legacyGroups = groups.filter((group) => !group.simplified && group.selectionType === 'MULTIPLE');
     const flatGroups = groups.filter((group) => group.simplified || group.selectionType === 'SINGLE');
 
-    const addOnSelectedOptions: PosCartSelectedOption[] = flatGroups.flatMap((group) =>
-      (selectedOptionIds[group.id] ?? []).flatMap((optionId) => {
-        const option = group.options.find((o) => o.id === optionId);
-        if (!option) return [];
-        return [
-          {
+    // Task 193B — splitAddOnLines zips choices across groups by unit index
+    // using one shared quantity, which only has a coherent meaning when a
+    // single MULTIPLE group is being split across the line's units. Two or
+    // more required MULTIPLE groups can carry different target counts (e.g.
+    // a 2-pick Flavor group alongside a 1-pick Sauce group); forcing them
+    // through one shared (max) quantity fails splitAddOnLines's per-group
+    // length check for the smaller group and silently returns zero lines,
+    // even though isValid already confirmed every group independently met
+    // its own target. When more than one MULTIPLE group is present, fold
+    // every group's picks directly onto a single line instead — the same
+    // "chosen once for the whole line" treatment flatGroups already gets.
+    const splittableGroup = legacyGroups.length === 1 ? legacyGroups[0] : undefined;
+    const flatMultiGroups = splittableGroup ? [] : legacyGroups;
+
+    const addOnSelectedOptions: PosCartSelectedOption[] = [
+      ...flatGroups.flatMap((group) =>
+        (selectedOptionIds[group.id] ?? []).flatMap((optionId) => {
+          const option = group.options.find((o) => o.id === optionId);
+          if (!option) return [];
+          return [
+            {
+              option_group_id: group.id,
+              option_group_name: group.name,
+              option_id: option.id,
+              option_name: option.name,
+              price_adjustment: option.price_adjustment,
+            },
+          ];
+        }),
+      ),
+      ...flatMultiGroups.flatMap((group) => {
+        const groupAssignment = assignments[group.id] ?? {};
+        return group.options.flatMap((option) =>
+          Array.from({ length: groupAssignment[option.id] ?? 0 }, () => ({
             option_group_id: group.id,
             option_group_name: group.name,
             option_id: option.id,
             option_name: option.name,
             price_adjustment: option.price_adjustment,
-          },
-        ];
+          })),
+        );
       }),
-    );
+    ];
 
     // Task 182 — a genuine multi-slot (MULTIPLE) group's allocator is sized
     // to the group's own required count, not the cart line's quantity; that
     // required count now drives how many lines/units this add produces.
-    const multiSlotQuantity = legacyGroups.length > 0 ? Math.max(...legacyGroups.map(multiGroupTarget)) : quantity;
-    const baseLines =
-      legacyGroups.length > 0
-        ? splitAddOnLines(legacyGroups, assignments, multiSlotQuantity)
-        : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
+    const baseLines = splittableGroup
+      ? splitAddOnLines([splittableGroup], assignments, multiGroupTarget(splittableGroup))
+      : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
 
     const newItems = baseLines.map((line) => {
       const selected_options = [...line.selected_options, ...addOnSelectedOptions];

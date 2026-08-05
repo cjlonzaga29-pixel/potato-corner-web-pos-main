@@ -1207,6 +1207,53 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
     expect(dialog.className).toContain('max-h-[calc(100vh-2rem)]');
     expect(dialog.className).toContain('overflow-y-auto');
   });
+
+  // Task 193B — a variant carrying two independent required MULTIPLE groups
+  // (e.g. a real Mega-size Flavor group needing 2 picks alongside a separate
+  // required Sauce group needing 1) satisfies isValid per-group, but
+  // handleAddOnsConfirm forced every legacy group through splitAddOnLines
+  // using one shared quantity (the max target across groups). Any group
+  // whose own assigned total falls short of that shared max fails
+  // splitAddOnLines's internal per-group length check, silently returning no
+  // lines at all — the item never reaches the cart despite a fully valid,
+  // Add-enabled selection.
+  it('two required MULTIPLE groups with different targets still add the item to the cart', () => {
+    const flavorGroup = multiSlotGroup({
+      id: 'flavor-group',
+      name: 'Flavor',
+      min_selections: 2,
+      max_selections: 2,
+      options: [
+        { id: 'flavor-a', name: 'Cheese', price_adjustment: 0, sort_order: 1, is_active: true },
+        { id: 'flavor-b', name: 'Sour Cream', price_adjustment: 0, sort_order: 2, is_active: true },
+      ],
+    });
+    const sauceGroup = multiSlotGroup({
+      id: 'sauce-group',
+      name: 'Sauce',
+      min_selections: 1,
+      max_selections: 1,
+      options: [{ id: 'sauce-a', name: 'Ketchup', price_adjustment: 0, sort_order: 1, is_active: true }],
+    });
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([optionVariant({ option_groups: [flavorGroup, sauceGroup] })]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Cheese quantity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Sour Cream quantity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Ketchup quantity' }));
+
+    expect(screen.getByText('Assigned 2 / 2')).toBeInTheDocument();
+    expect(screen.getByText('Assigned 1 / 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockAddItem).toHaveBeenCalled();
+  });
 });
 
 // Task 139 — GCash, Maya, and Other are unified onto one photo-proof-only

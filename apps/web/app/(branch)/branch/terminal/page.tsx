@@ -17,6 +17,8 @@ import type { PosCartSelectedOption } from '@/stores/cart.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Skeleton } from '@/components/ui/skeleton';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
@@ -39,6 +41,31 @@ import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 // gates Void/Refund actions on (view-transaction-detail-dialog.tsx); kept
 // here only to decide whether the POS entry point is worth showing at all.
 const VOID_REFUND_ENTRY_ROLES: readonly string[] = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH];
+
+// Task 196 (visual redesign) — desktop keeps the cart/checkout panel inline
+// (unchanged layout); below the `lg` breakpoint it moves into a Sheet opened
+// from a sticky "View Cart" bar instead, per the redesign spec's mobile
+// requirements. Same defaulting pattern already used by
+// (admin)/admin/reports and (admin)/admin/inventory's useIsDesktop: starts
+// `true` (matches server render and every test environment, since jsdom has
+// no matchMedia) and only ever flips based on a real matchMedia result, so
+// no existing test needs to simulate opening a drawer to reach the cart —
+// they keep seeing the same inline panel as before.
+function useIsDesktop(query = '(min-width: 1024px)'): boolean {
+  const [isDesktop, setIsDesktop] = useState(true);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia(query);
+    setIsDesktop(mql.matches);
+    const listener = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
+    mql.addEventListener('change', listener);
+    return () => mql.removeEventListener('change', listener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- query is effectively static per call site
+  }, []);
+
+  return isDesktop;
+}
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -182,7 +209,12 @@ export default function TerminalPage() {
   const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
 
   const { items, addItem, removeItem, updateItemQuantity, replaceItem, clearCart } = useCart();
-  const { data: liveCatalog, isLoading: isCatalogLoading } = useCatalog(branchId);
+  const {
+    data: liveCatalog,
+    isLoading: isCatalogLoading,
+    isError: isCatalogError,
+    refetch: refetchCatalog,
+  } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
   const { isClockedIn, record: attendanceRecord, isLoading: isAttendanceLoading } = useIsClockedIn(operatorId);
   // Informational only below (payment-proof storage path fallback) — never
@@ -226,6 +258,16 @@ export default function TerminalPage() {
 
   const [cachedProducts, setCachedProducts] = useState<PosCatalogProduct[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('all');
+  // Task 196 (visual redesign) — cashier-facing product search, purely a
+  // client-side display filter layered on top of the existing category
+  // filter below; never touches catalog fetching, ordering, or category
+  // derivation logic.
+  const [productSearch, setProductSearch] = useState('');
+  // Task 196 (visual redesign) — mobile cart access: a sticky "View Cart"
+  // bar opens this Sheet instead of the inline desktop panel. See
+  // useIsDesktop above for why this never changes existing test behavior.
+  const isDesktop = useIsDesktop();
+  const [isCartSheetOpen, setIsCartSheetOpen] = useState(false);
   const [flavorPrompt, setFlavorPrompt] = useState<{ product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] } | null>(null);
   const [slotPrompt, setSlotPrompt] = useState<{
     product: PosCatalogProduct;
@@ -342,10 +384,18 @@ export default function TerminalPage() {
     () => [...new Set(catalog.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort(),
     [catalog],
   );
-  const visibleProducts = useMemo(
-    () => (activeCategory === 'all' ? catalog : catalog.filter((p) => p.category === activeCategory)),
-    [catalog, activeCategory],
-  );
+  // Task 196 (visual redesign) — category filter unchanged; a search term
+  // (product or variant name, case-insensitive) narrows the same list
+  // further. Display-only: never touches `catalog`, ordering, or what's
+  // sent anywhere.
+  const visibleProducts = useMemo(() => {
+    const byCategory = activeCategory === 'all' ? catalog : catalog.filter((p) => p.category === activeCategory);
+    const term = productSearch.trim().toLowerCase();
+    if (!term) return byCategory;
+    return byCategory.filter(
+      (p) => p.name.toLowerCase().includes(term) || p.variants.some((v) => v.name.toLowerCase().includes(term)),
+    );
+  }, [catalog, activeCategory, productSearch]);
 
   const variantIndex = useMemo(() => {
     const map = new Map<string, { product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] }>();
@@ -892,6 +942,60 @@ export default function TerminalPage() {
     );
   }
 
+  // Task 196 (visual redesign) — cart lines + checkout panel rendered from
+  // one shared source. Desktop keeps it inline (unchanged layout); below
+  // `lg` it renders once inside a Sheet instead — never both at once, so
+  // there's exactly one Cash Tendered input / Charge button / cart line list
+  // in the DOM at a time, same as before the redesign.
+  const cartLinesList =
+    cartLines.length === 0 ? (
+      <EmptyState icon={ShoppingCart} title="Your cart is empty" description="Tap a product to start a sale." />
+    ) : (
+      <div className="space-y-3">
+        {cartLines.map((line, i) => (
+          <CartLineItem
+            key={line.index}
+            line={line}
+            showDivider={i > 0}
+            onEdit={handleEditLine}
+            onRemove={removeItem}
+            onQuantityChange={updateItemQuantity}
+          />
+        ))}
+      </div>
+    );
+
+  const paymentFooterElement = (
+    <PaymentFooter
+      subtotal={subtotal}
+      vatAmount={vatAmount}
+      discountAmount={discountAmount}
+      totalAmount={totalAmount}
+      canManageVoidRefund={canManageVoidRefund}
+      onOpenVoidRefund={openVoidRefund}
+      discountType={discountType}
+      onDiscountTypeChange={setDiscountType}
+      discountIdReference={discountIdReference}
+      onDiscountIdReferenceChange={setDiscountIdReference}
+      promoAmount={promoAmount}
+      onPromoAmountChange={setPromoAmount}
+      paymentMethod={paymentMethod}
+      onPaymentMethodChange={setPaymentMethod}
+      isOnline={isOnline}
+      cashTendered={cashTendered}
+      onCashTenderedChange={setCashTendered}
+      change={change}
+      paymentProofKey={paymentProofKey}
+      onProofSelected={handleProofSelected}
+      onClearProof={handleClearProof}
+      chargeError={chargeError}
+      chargeDisabledReason={chargeDisabledReason}
+      canCharge={canCharge}
+      isChargePending={createTransaction.isPending}
+      onCharge={() => void handleCharge()}
+    />
+  );
+
   return (
     <div className="flex h-full flex-col">
       {!isOnline && (
@@ -924,11 +1028,19 @@ export default function TerminalPage() {
       </div>
 
       <div className="flex flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
-      {/* LEFT PANEL — product catalog */}
+      {/* LEFT PANEL — product catalog. ~66% width on desktop (lg:w-2/3), independent scroll region below the toolbar. */}
       <div className="relative flex flex-col lg:w-2/3 lg:flex-none lg:overflow-hidden lg:border-r">
-        <div className="border-b p-3">
+        <div className="space-y-2 border-b bg-card p-3">
+          <h1 className="sr-only">POS Terminal — product catalog</h1>
+          <SearchInput
+            value={productSearch}
+            onChange={setProductSearch}
+            placeholder="Search products…"
+            className="max-w-md"
+          />
+          {/* Category pills — only ever built from categories actually present on the catalog (no fabricated categories). TabsList already scrolls horizontally on narrow screens. */}
           <Tabs value={activeCategory} onValueChange={setActiveCategory}>
-            <TabsList>
+            <TabsList aria-label="Filter by category">
               <TabsTrigger value="all">All</TabsTrigger>
               {categories.map((category) => (
                 <TabsTrigger key={category} value={category}>
@@ -939,16 +1051,42 @@ export default function TerminalPage() {
           </Tabs>
         </div>
 
-        <div className="grid grid-cols-2 content-start gap-2 p-4 sm:grid-cols-2 md:grid-cols-3 lg:flex-1 lg:grid-cols-4 lg:overflow-y-auto xl:grid-cols-5 2xl:grid-cols-6">
-          {visibleProducts.map((product) =>
-            product.variants.map((variant) => (
-              <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />
-            )),
-          )}
-          {visibleProducts.length === 0 && (
-            <p className="col-span-full p-6 text-center text-sm text-muted-foreground">
-              {isCatalogLoading ? 'Loading catalog…' : 'No products available.'}
-            </p>
+        <div className="lg:flex-1 lg:overflow-y-auto">
+          {isCatalogLoading && catalog.length === 0 ? (
+            <div
+              className="grid grid-cols-2 content-start gap-2 p-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+              aria-hidden="true"
+            >
+              {Array.from({ length: 12 }, (_, i) => (
+                <Skeleton key={i} className="h-[136px] rounded-xl" />
+              ))}
+            </div>
+          ) : isCatalogError && catalog.length === 0 ? (
+            <ErrorState
+              title="Failed to load the product catalog"
+              description="Check your connection and try again."
+              retry={() => void refetchCatalog()}
+            />
+          ) : visibleProducts.length === 0 ? (
+            <EmptyState
+              icon={ShoppingCart}
+              title={productSearch || activeCategory !== 'all' ? 'No matching products' : 'No products available'}
+              description={
+                productSearch
+                  ? `No products match "${productSearch}".`
+                  : activeCategory !== 'all'
+                    ? 'No products in this category yet.'
+                    : 'This branch has no catalog items yet.'
+              }
+            />
+          ) : (
+            <div className="grid grid-cols-2 content-start gap-2 p-4 pb-24 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 lg:pb-4 xl:grid-cols-5 2xl:grid-cols-6">
+              {visibleProducts.map((product) =>
+                product.variants.map((variant) => (
+                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />
+                )),
+              )}
+            </div>
           )}
         </div>
 
@@ -1068,60 +1206,46 @@ export default function TerminalPage() {
         )}
       </div>
 
-      {/* RIGHT PANEL — cart + payment */}
-      <div className="flex flex-col border-t lg:w-1/3 lg:flex-none lg:overflow-hidden lg:border-t-0">
-        <div className="p-4 pb-32 lg:flex-1 lg:overflow-y-auto lg:pb-4">
-          {cartLines.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
-              <ShoppingCart className="h-8 w-8" />
-              <p className="text-sm font-medium text-foreground">Your cart is empty</p>
-              <p className="text-xs">Tap a product to start a sale.</p>
-            </div>
-          )}
-          <div className="space-y-4">
-            {cartLines.map((line, i) => (
-              <CartLineItem
-                key={line.index}
-                line={line}
-                showDivider={i > 0}
-                onEdit={handleEditLine}
-                onRemove={removeItem}
-                onQuantityChange={updateItemQuantity}
-              />
-            ))}
+      {/* RIGHT PANEL — cart + payment. ~34% width on desktop (lg:w-1/3), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone. */}
+      {isDesktop && (
+        <div className="hidden flex-col border-t lg:flex lg:w-1/3 lg:flex-none lg:overflow-hidden lg:border-t-0">
+          <div className="p-4 lg:flex-1 lg:overflow-y-auto">
+            <h2 className="sr-only">Cart</h2>
+            {cartLinesList}
           </div>
+          {paymentFooterElement}
         </div>
+      )}
+      </div>
 
-        <PaymentFooter
-          subtotal={subtotal}
-          vatAmount={vatAmount}
-          discountAmount={discountAmount}
-          totalAmount={totalAmount}
-          canManageVoidRefund={canManageVoidRefund}
-          onOpenVoidRefund={openVoidRefund}
-          discountType={discountType}
-          onDiscountTypeChange={setDiscountType}
-          discountIdReference={discountIdReference}
-          onDiscountIdReferenceChange={setDiscountIdReference}
-          promoAmount={promoAmount}
-          onPromoAmountChange={setPromoAmount}
-          paymentMethod={paymentMethod}
-          onPaymentMethodChange={setPaymentMethod}
-          isOnline={isOnline}
-          cashTendered={cashTendered}
-          onCashTenderedChange={setCashTendered}
-          change={change}
-          paymentProofKey={paymentProofKey}
-          onProofSelected={handleProofSelected}
-          onClearProof={handleClearProof}
-          chargeError={chargeError}
-          chargeDisabledReason={chargeDisabledReason}
-          canCharge={canCharge}
-          isChargePending={createTransaction.isPending}
-          onCharge={() => void handleCharge()}
-        />
-      </div>
-      </div>
+      {/* Mobile cart access — sticky bar + Sheet, only below `lg`. isDesktop defaults true (see useIsDesktop), so this branch never mounts in a non-browser/test environment. */}
+      {!isDesktop && (
+        <>
+          <div className="sticky bottom-0 z-20 border-t bg-card p-3 lg:hidden">
+            <Button
+              variant="pos"
+              className="touch-target w-full justify-between px-5"
+              onClick={() => setIsCartSheetOpen(true)}
+            >
+              <span className="flex items-center gap-2">
+                <ShoppingCart className="h-5 w-5" aria-hidden="true" />
+                View Cart{cartLines.length > 0 ? ` · ${cartLines.reduce((sum, l) => sum + l.quantity, 0)}` : ''}
+              </span>
+              <span className="tabular-nums">{formatPeso(totalAmount)}</span>
+            </Button>
+          </div>
+
+          <Sheet open={isCartSheetOpen} onOpenChange={setIsCartSheetOpen}>
+            <SheetContent side="bottom" className="flex h-[92vh] flex-col gap-0 p-0">
+              <SheetHeader className="border-b p-4 text-left">
+                <SheetTitle>Cart</SheetTitle>
+              </SheetHeader>
+              <div className="flex-1 overflow-y-auto p-4">{cartLinesList}</div>
+              {paymentFooterElement}
+            </SheetContent>
+          </Sheet>
+        </>
+      )}
 
       <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />
 

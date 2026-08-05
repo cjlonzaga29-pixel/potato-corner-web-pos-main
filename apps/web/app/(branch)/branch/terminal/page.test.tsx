@@ -1731,3 +1731,61 @@ describe('TerminalPage — Void / Refund Sale entry point (Task 140)', () => {
     expect(screen.getByTestId('void-refund-sale-dialog')).toBeInTheDocument();
   });
 });
+
+// Task 196 (visual redesign) — below the `lg` breakpoint, the cart/checkout
+// panel moves into a Sheet opened from a sticky "View Cart" button instead
+// of rendering inline (desktop keeps the exact previous inline layout,
+// covered by every test above, all of which run under the default/no-op
+// matchMedia — see useIsDesktop's comment in page.tsx). These tests simulate
+// a real matchMedia result to exercise the narrow-viewport branch, which is
+// otherwise never reached by this suite.
+describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign)', () => {
+  const originalMatchMedia = window.matchMedia;
+
+  function mockMatchMedia(matches: boolean) {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  beforeEach(() => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+  });
+
+  afterEach(() => {
+    cleanup();
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it('keeps the inline cart panel (no View Cart button) when matchMedia reports a desktop-width viewport', () => {
+    mockMatchMedia(true);
+    render(<TerminalPage />);
+
+    expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+
+  it('shows a sticky View Cart button instead of the inline panel on a narrow viewport, and opens the cart in a Sheet on tap', () => {
+    mockMatchMedia(false);
+    render(<TerminalPage />);
+
+    const viewCartButton = screen.getByRole('button', { name: /View Cart/ });
+    expect(viewCartButton).toBeInTheDocument();
+    // Single source of truth for the cart content — not duplicated in the
+    // DOM: the Charge button only exists once the Sheet is opened.
+    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+
+    fireEvent.click(viewCartButton);
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+});

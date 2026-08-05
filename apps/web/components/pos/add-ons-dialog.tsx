@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { NO_ADD_ON_KEY, assignedQuantity, type AddOnAssignments, type AddOnSplitGroup } from '@/lib/pos/split-add-ons';
 
@@ -81,6 +82,14 @@ export function multiGroupTarget(group: AddOnsDialogGroup): number {
  * product Quantity control is gone entirely — a new item always starts at
  * cart quantity 1; editing preserves the cart line's existing quantity;
  * quantity is only ever changed from the cart itself.
+ *
+ * Task 196 (visual redesign) — sticky header/footer within the dialog's
+ * existing scroll container (DialogContent already carries
+ * max-h-[calc(100vh-2rem)]/overflow-y-auto/w-[calc(100vw-2rem)] from the base
+ * component — untouched here, only className="max-w-md" narrows it), a
+ * required-selection progress readout per group, and card-style highlighting
+ * for every selected/checked row. Every group's selection logic, isValid
+ * rule, and the exact "Assigned N / M" text are unchanged.
  */
 export function AddOnsDialog({
   productName,
@@ -120,33 +129,51 @@ export function AddOnsDialog({
       }}
     >
       <DialogContent className="max-w-md">
-        <DialogHeader>
+        <DialogHeader className="sticky top-0 z-10 -mx-4 -mt-4 border-b bg-card px-4 pb-3 pt-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6">
           <DialogTitle>{productName}</DialogTitle>
           <DialogDescription>{variantName}</DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[calc(100vh-14rem)] space-y-4 overflow-y-auto">
+        <div className="space-y-4 py-1">
           {simplifiedGroups.map((group) => {
             const selected = selectedOptionIds[group.id] ?? [];
             return (
               <div key={group.id} className="space-y-2 border-t pt-3">
-                <p className="text-sm font-semibold">{group.label}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold">{group.label}</p>
+                  <Badge variant="secondary" className="text-[10px] font-medium">
+                    Optional
+                  </Badge>
+                </div>
 
-                <label className="flex items-center gap-2 text-sm">
+                <label
+                  className={cn(
+                    'touch-target flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                    selected.length === 0 ? 'border-primary bg-primary/10 font-medium' : 'border-input',
+                  )}
+                >
                   <Checkbox checked={selected.length === 0} onCheckedChange={() => onClearGroup(group.id)} />
                   No Add-ons
                 </label>
 
-                {group.options.map((option) => (
-                  <label key={option.id} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      checked={selected.includes(option.id)}
-                      onCheckedChange={() => onToggleOption(group.id, option.id)}
-                    />
-                    {option.name}
-                    {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
-                  </label>
-                ))}
+                {group.options.map((option) => {
+                  const isSelected = selected.includes(option.id);
+                  return (
+                    <label
+                      key={option.id}
+                      className={cn(
+                        'touch-target flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                        isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
+                      )}
+                    >
+                      <Checkbox checked={isSelected} onCheckedChange={() => onToggleOption(group.id, option.id)} />
+                      <span className="flex-1">
+                        {option.name}
+                        {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             );
           })}
@@ -155,7 +182,14 @@ export function AddOnsDialog({
             const selectedId = (selectedOptionIds[group.id] ?? [])[0];
             return (
               <div key={group.id} className="space-y-2 border-t pt-3">
-                <p className="text-sm font-semibold">{group.label}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold">{group.label}</p>
+                  {group.required && (
+                    <Badge variant={selectedId ? 'active' : 'warning'} className="text-[10px] font-medium">
+                      {selectedId ? 'Selected' : 'Required'}
+                    </Badge>
+                  )}
+                </div>
 
                 <div className="space-y-2">
                   {group.options.map((option) => {
@@ -187,7 +221,14 @@ export function AddOnsDialog({
             const assigned = assignedQuantity(groupAssignment);
             return (
               <div key={group.id} className="space-y-2 border-t pt-3">
-                <p className="text-sm font-semibold">{group.label}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold">{group.label}</p>
+                  {group.required && (
+                    <Badge variant={assigned === target ? 'active' : 'warning'} className="text-[10px] font-medium">
+                      {assigned === target ? 'Complete' : `Choose ${target}`}
+                    </Badge>
+                  )}
+                </div>
 
                 {group.allowNoAddOn && (
                   <div className="flex items-center justify-between text-sm">
@@ -246,6 +287,12 @@ export function AddOnsDialog({
                   </div>
                 ))}
 
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary" aria-hidden="true">
+                  <div
+                    className={cn('h-full transition-all', assigned >= target ? 'bg-success' : 'bg-primary')}
+                    style={{ width: `${target > 0 ? Math.min(100, (assigned / target) * 100) : 0}%` }}
+                  />
+                </div>
                 <p className={`text-xs ${assigned === target ? 'text-muted-foreground' : 'font-medium text-destructive'}`}>
                   Assigned {assigned} / {target}
                 </p>
@@ -254,7 +301,7 @@ export function AddOnsDialog({
           })}
         </div>
 
-        <DialogFooter className="flex-row gap-2 sm:justify-normal">
+        <DialogFooter className="sticky bottom-0 z-10 -mx-4 -mb-4 flex-row gap-2 border-t bg-card px-4 pb-4 pt-3 sm:-mx-6 sm:-mb-6 sm:justify-normal sm:px-6 sm:pb-6">
           <Button type="button" variant="outline" className="touch-target flex-1" onClick={onCancel}>
             Cancel
           </Button>

@@ -1,7 +1,7 @@
 'use client';
 
 import { memo } from 'react';
-import { CheckCircle2, Receipt } from 'lucide-react';
+import { CheckCircle2, Loader2, Receipt } from 'lucide-react';
 import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -64,6 +64,14 @@ interface PaymentFooterProps {
  * financially sensitive, to safely useCallback here) — so React.memo mostly
  * just documents "this subtree owns its own props," not a guaranteed
  * render-skip.
+ *
+ * Task 196 (visual redesign) — stronger totals hierarchy, a Charge button
+ * with a visible spinner + "Processing…" while pending (on top of the
+ * existing disabled={!canCharge} guard, which already covers double-submit —
+ * see terminal/page.tsx's handleCharge belt-and-suspenders comment), and
+ * aria-live status text so screen readers hear the disabled reason/charge
+ * error without extra navigation. No amount, discount, payment-method, or
+ * charge-handler logic changed.
  */
 export const PaymentFooter = memo(function PaymentFooter({
   subtotal,
@@ -95,7 +103,7 @@ export const PaymentFooter = memo(function PaymentFooter({
 }: PaymentFooterProps) {
   return (
     <div className="sticky bottom-0 z-10 space-y-4 border-t bg-card p-4 lg:static">
-      <div className="space-y-1.5 text-sm">
+      <div className="space-y-1.5 text-sm" aria-label="Order totals">
         <div className="flex justify-between">
           <span className="text-muted-foreground">Subtotal</span>
           <span className="tabular-nums">{formatPeso(subtotal)}</span>
@@ -105,16 +113,16 @@ export const PaymentFooter = memo(function PaymentFooter({
           <span className="tabular-nums">{formatPeso(vatAmount)}</span>
         </div>
         {discountAmount > 0 && (
-          <div className="flex justify-between text-destructive">
+          <div className="flex justify-between font-medium text-destructive">
             <span>Discount</span>
             <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
           </div>
         )}
         <Separator className="my-2" />
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-3 py-2">
           <span className="text-base font-semibold">Total</span>
-          <span className="flex items-center gap-1.5 text-2xl font-bold tabular-nums">
-            <Receipt className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          <span className="flex items-center gap-1.5 text-2xl font-bold tabular-nums text-primary">
+            <Receipt className="h-5 w-5 text-primary/70" aria-hidden="true" />
             {formatPeso(totalAmount)}
           </span>
         </div>
@@ -223,19 +231,33 @@ export const PaymentFooter = memo(function PaymentFooter({
       )}
 
       {chargeError && (
-        <Alert variant="destructive" className="px-3 py-2">
+        <Alert variant="destructive" className="px-3 py-2" role="alert">
           <AlertDescription className="text-xs">{chargeError}</AlertDescription>
         </Alert>
       )}
 
       {chargeDisabledReason && (
-        <Alert className="border-none bg-muted px-3 py-2">
+        <Alert className="border-none bg-muted px-3 py-2" role="status" aria-live="polite">
           <AlertDescription className="text-sm font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
         </Alert>
       )}
 
-      <Button variant="pos" className="touch-target w-full" size="lg" disabled={!canCharge} onClick={onCharge}>
-        {isChargePending ? 'Processing sale…' : `Charge ${formatPeso(totalAmount)}`}
+      <Button
+        variant="pos"
+        className="touch-target w-full"
+        size="lg"
+        disabled={!canCharge}
+        aria-busy={isChargePending}
+        onClick={onCharge}
+      >
+        {isChargePending ? (
+          <>
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />
+            Processing…
+          </>
+        ) : (
+          `Charge ${formatPeso(totalAmount)}`
+        )}
       </Button>
     </div>
   );

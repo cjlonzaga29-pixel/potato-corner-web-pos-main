@@ -52,6 +52,12 @@ interface CartLineItemProps {
  * `onEdit`/`onRemove`/`onQuantityChange` must stay stable (useCallback'd or
  * a direct Zustand store action) — a fresh function identity every render
  * defeats the memo the same way an unstable `line` object would.
+ *
+ * Task 196 (visual redesign) — clearer per-line hierarchy (name, variant,
+ * selected flavors/add-ons visually grouped and indented, quantity stepper
+ * at a full 44px+ touch target, line total emphasized) and compact spacing
+ * so more lines fit the cart's independent scroll region. No change to what
+ * triggers onEdit/onRemove/onQuantityChange or the values passed to them.
  */
 export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEdit, onRemove, onQuantityChange }: CartLineItemProps) {
   // Test-only visibility into actual re-render count — see product-card.tsx
@@ -59,16 +65,23 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
   const renderCountRef = useRef(0);
   renderCountRef.current += 1;
 
+  const hasOptionDetails = line.slotSelections.length > 0 || line.optionSelections.length > 0;
+
   return (
     <div data-render-count={renderCountRef.current}>
-      {showDivider && <Separator className="mb-4" />}
-      <div className="space-y-2 text-sm">
+      {showDivider && <Separator className="mb-3" />}
+      <div className="space-y-2 rounded-lg text-sm">
         <div className="flex items-start justify-between gap-2">
-          <p className="line-clamp-2 min-w-0 flex-1 font-medium leading-snug">
-            {line.productName}
-            {line.flavorName ? ` — ${line.flavorName}` : ''}
-          </p>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <p className="line-clamp-2 font-semibold leading-snug text-foreground">
+              {line.productName}
+              {line.flavorName ? ` — ${line.flavorName}` : ''}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {line.variantName} · {formatPeso(line.unitPrice)} each
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
             {line.hasOptionGroups && (
               <Button variant="ghost" size="icon" className="touch-target" onClick={() => onEdit(line.index)} aria-label="Edit">
                 <Pencil className="h-3.5 w-3.5" />
@@ -85,22 +98,30 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             </Button>
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {line.variantName} · {formatPeso(line.unitPrice)} each
-        </p>
-        {line.slotSelections.map((sel, si) => (
-          <p key={si} className="text-xs text-muted-foreground">
-            {sel.label}: {sel.snackName} — {sel.flavorName}
-          </p>
-        ))}
-        {line.optionSelections.map((opt) => (
-          <p key={opt.option_id} className="text-xs text-muted-foreground">
-            {opt.option_group_name}: {opt.option_name}
-            {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
-          </p>
-        ))}
+
+        {hasOptionDetails && (
+          // Plain text nodes (no nested elements) inside each <p> — Testing
+          // Library's getByText only concatenates an element's *direct*
+          // text-node children, not text inside nested children, so a
+          // wrapping <span> around just the label prefix would silently stop
+          // "Label: rest of the line" from matching as one string.
+          <div className="space-y-0.5 border-l-2 border-border pl-2">
+            {line.slotSelections.map((sel, si) => (
+              <p key={si} className="text-xs text-muted-foreground">
+                {sel.label}: {sel.snackName} — {sel.flavorName}
+              </p>
+            ))}
+            {line.optionSelections.map((opt) => (
+              <p key={opt.option_id} className="text-xs text-muted-foreground">
+                {opt.option_group_name}: {opt.option_name}
+                {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
+              </p>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center justify-between gap-2 pt-1">
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1.5">
             <Button
               variant="outline"
               size="icon"
@@ -113,7 +134,7 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             >
               −
             </Button>
-            <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
+            <span className="w-6 text-center font-medium tabular-nums">{line.item.quantity}</span>
             <Button
               variant="outline"
               size="icon"
@@ -127,7 +148,7 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
               +
             </Button>
           </div>
-          <p className="text-right font-semibold tabular-nums">{formatPeso(line.lineTotal)}</p>
+          <p className="text-right text-base font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
         </div>
       </div>
     </div>

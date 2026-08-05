@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useRef } from 'react';
+import { AlertTriangle, Utensils } from 'lucide-react';
 import type { PosCatalogProduct } from '@potato-corner/shared';
 import { Card, CardContent } from '@/components/ui/card';
 
@@ -23,6 +24,13 @@ interface ProductCardProps {
  * re-renders every other tile in the grid. `onTap` must stay a stable
  * (useCallback'd) reference from the caller — recreating it every render
  * would defeat the memo just as surely as an unstable `product`/`variant`.
+ *
+ * Task 196 (visual redesign) — larger touch target, a consistent icon tile
+ * standing in for a product photo (the POS catalog payload carries no image
+ * field — see packages/shared posCatalogVariantSchema — so a generated/fake
+ * image is never used here), stronger name/price typography, and a clearer
+ * unavailable state. No change to what data is read from `product`/`variant`
+ * or when `onTap` fires.
  */
 export const ProductCard = memo(function ProductCard({ product, variant, message, onTap }: ProductCardProps) {
   // Test-only visibility into actual re-render count (React.memo bails out
@@ -32,15 +40,21 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
   const renderCountRef = useRef(0);
   renderCountRef.current += 1;
 
+  const isAvailable = variant.live_ready;
+  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${message ? `, ${message}` : ''}`;
+
   return (
     <Card
       key={variant.id}
       role="button"
-      tabIndex={variant.live_ready ? 0 : -1}
-      aria-disabled={!variant.live_ready}
+      tabIndex={isAvailable ? 0 : -1}
+      aria-disabled={!isAvailable}
+      aria-label={ariaLabel}
       data-render-count={renderCountRef.current}
-      className={`flex h-full min-h-[92px] flex-col rounded-lg border shadow-none outline-none transition-colors touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-        variant.live_ready ? 'cursor-pointer hover:border-primary hover:bg-muted' : 'cursor-not-allowed opacity-60'
+      className={`group flex h-full min-h-[136px] flex-col overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+        isAvailable
+          ? 'cursor-pointer hover:-translate-y-0.5 hover:border-primary hover:shadow-md active:translate-y-0 active:scale-[0.98]'
+          : 'cursor-not-allowed opacity-60'
       }`}
       onClick={() => onTap(product, variant)}
       onKeyDown={(e) => {
@@ -50,11 +64,31 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         }
       }}
     >
-      <CardContent className="flex h-full flex-col gap-0.5 p-3">
-        <p className="line-clamp-2 min-h-[2rem] text-xs font-medium leading-tight">{product.name}</p>
-        <p className="truncate text-[11px] text-muted-foreground">{variant.name}</p>
-        <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
-        {message && <p className="line-clamp-2 text-[11px] font-medium text-destructive">{message}</p>}
+      <CardContent className="flex h-full flex-col gap-1.5 p-3">
+        <div className="flex items-center justify-between gap-1">
+          <div
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+              isAvailable ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+            }`}
+            aria-hidden="true"
+          >
+            <Utensils className="h-4 w-4" />
+          </div>
+          {!isAvailable && <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />}
+        </div>
+
+        <p className="line-clamp-2 min-h-[2.25rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
+        <p className="truncate text-xs text-muted-foreground">{variant.name}</p>
+
+        <div className="mt-auto flex items-end justify-between gap-1 pt-1">
+          <p className="text-base font-bold tabular-nums text-foreground">{formatPeso(variant.price)}</p>
+        </div>
+
+        {message && (
+          <p className="line-clamp-2 rounded-md bg-destructive/10 px-1.5 py-1 text-[11px] font-medium leading-snug text-destructive">
+            {message}
+          </p>
+        )}
       </CardContent>
     </Card>
   );

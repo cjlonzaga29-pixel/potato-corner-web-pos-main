@@ -360,11 +360,15 @@ describe('SupervisorReportsPage', () => {
       );
 
       render(<SupervisorReportsPage />);
-      expect(screen.queryByText('Receipt')).not.toBeInTheDocument();
+      // "Sale completed" is ReceiptModal's success-state title (Task 196
+      // visual redesign of the shared POS ReceiptModal component) — used
+      // here purely as a proxy for "the modal is open/closed", same as the
+      // literal "Receipt" title it replaced.
+      expect(screen.queryByText('Sale completed')).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'View Receipt' }));
 
-      expect(screen.getByText('Receipt')).toBeInTheDocument();
+      expect(screen.getByText('Sale completed')).toBeInTheDocument();
     });
 
     it('shows "No proof uploaded" instead of a View Proof button when has_payment_proof is false', () => {

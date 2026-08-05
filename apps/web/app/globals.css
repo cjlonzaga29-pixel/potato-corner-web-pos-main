@@ -118,3 +118,28 @@
     background-size: 24px 24px;
   }
 }
+
+/**
+ * Receipt printing (POS ReceiptModal, and the standalone /r/[txn] receipt
+ * page) — window.print() otherwise prints the entire app chrome (sidebar,
+ * dialog overlay, buttons). Scopes the printed page down to just the
+ * receipt content; everything else is hidden via the `print:hidden`
+ * utility already applied to the modal's non-receipt chrome. Visual/print
+ * presentation only — never touches what's rendered on screen or what data
+ * the receipt carries.
+ */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #receipt-print-area,
+  #receipt-print-area * {
+    visibility: visible;
+  }
+  #receipt-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}

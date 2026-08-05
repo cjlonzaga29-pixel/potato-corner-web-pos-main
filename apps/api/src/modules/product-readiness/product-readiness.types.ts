@@ -84,6 +84,21 @@ export interface EvaluateProductReadinessInput {
 }
 
 /**
+ * Branch-agnostic counterpart to ProductVariantReadinessResult — evaluates
+ * only the ProductComponent BOM's own structural validity (does it exist,
+ * are its rows valid), with no branch-scoped InventoryStock/availability/
+ * lifecycle checks. Used by variant approval, a global gate that runs before
+ * a variant's lifecycleStatus becomes ACTIVE and is not scoped to any branch.
+ */
+export interface VariantComponentReadinessResult {
+  productVariantId: string;
+  recipeReady: boolean;
+  componentsValid: boolean;
+  ready: boolean;
+  blockingIssues: ReadinessIssue[];
+}
+
+/**
  * Product-level aggregation over evaluateProductVariantReadinessBatch — a
  * new roll-up layer, not a duplicate of the per-variant engine. Only
  * "eligible" variants (isActive && lifecycleStatus === 'ACTIVE') count toward

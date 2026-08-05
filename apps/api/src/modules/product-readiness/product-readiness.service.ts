@@ -10,6 +10,7 @@ import type {
   ProductVariantReadinessSummary,
   ReadinessChecks,
   ReadinessIssue,
+  VariantComponentReadinessResult,
 } from './product-readiness.types.js';
 
 type SaleVariantRow = Awaited<ReturnType<typeof transactionsRepository.findVariantsForSale>>[number];
@@ -84,6 +85,11 @@ async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]):
     componentsByVariant,
     stockedItemIds: new Set(stockRows.map((r) => r.inventoryItemId)),
   };
+}
+
+/** Shared by buildReadinessResult and evaluateVariantComponentReadiness so both check the exact same validity rule. */
+function findInvalidComponentItemIds(components: ComponentRow[]): string[] {
+  return [...new Set(components.filter((c) => c.quantityRequired.lessThanOrEqualTo(0) || c.inventoryItem.deletedAt !== null).map((c) => c.inventoryItemId))];
 }
 
 function issue(
@@ -217,9 +223,7 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
     );
   }
 
-  const invalidItemIds = [
-    ...new Set(components.filter((c) => c.quantityRequired.lessThanOrEqualTo(0) || c.inventoryItem.deletedAt !== null).map((c) => c.inventoryItemId)),
-  ];
+  const invalidItemIds = findInvalidComponentItemIds(components);
   const componentsValid = invalidItemIds.length === 0;
   if (!componentsValid) {
     blockingIssues.push(
@@ -464,6 +468,62 @@ export const productReadinessService = {
 
   /** Same evaluation as evaluateProductVariantReadinessBatch, but reuses a findVariantsForSale result the caller already fetched. */
   evaluateProductVariantReadinessForVariants: evaluateFromLoadedVariants,
+
+  /**
+   * Branch-agnostic BOM structural readiness — the same RECIPE_MISSING /
+   * INVALID_COMPONENT rules buildReadinessResult evaluates, minus every
+   * branch-scoped check (InventoryStock, branch availability) and the
+   * variant's own lifecycleStatus. Used by variant approval (Task 191):
+   * approval is a global, not-branch-scoped gate that runs while the variant
+   * is still PENDING_APPROVAL, so gating on variantLifecycleActive (as
+   * evaluateProductVariantReadiness does) would always fail.
+   */
+  async evaluateVariantComponentReadiness(productVariantId: string): Promise<VariantComponentReadinessResult> {
+    const components = await prisma.productComponent.findMany({
+      where: { productVariantId, isActive: true },
+      select: {
+        productVariantId: true,
+        inventoryItemId: true,
+        quantityRequired: true,
+        inventoryItem: { select: { deletedAt: true } },
+      },
+    });
+
+    const blockingIssues: ReadinessIssue[] = [];
+
+    const recipeReady = components.length > 0;
+    if (!recipeReady) {
+      blockingIssues.push(
+        issue(
+          'RECIPE_MISSING',
+          'blocking',
+          'product_variant',
+          productVariantId,
+          'Variant has no active Recipe/BOM (ProductComponent) rows.',
+          'Configure a Recipe/BOM for this variant.',
+          { productVariantId },
+        ),
+      );
+    }
+
+    const invalidItemIds = findInvalidComponentItemIds(components);
+    const componentsValid = invalidItemIds.length === 0;
+    if (!componentsValid) {
+      blockingIssues.push(
+        issue(
+          'INVALID_COMPONENT',
+          'blocking',
+          'product_variant',
+          productVariantId,
+          'Variant has a Recipe/BOM component with an invalid quantity or a deleted inventory item.',
+          'Fix or remove the invalid Recipe/BOM component(s).',
+          { productVariantId },
+        ),
+      );
+    }
+
+    return { productVariantId, recipeReady, componentsValid, ready: recipeReady && componentsValid, blockingIssues };
+  },
 
   /** Product-level readiness for the Admin Readiness panel (Phase D1) — see buildProductReadinessResult. */
   async evaluateProductReadiness(input: EvaluateProductReadinessInput): Promise<ProductReadinessResult> {

@@ -46,14 +46,6 @@ vi.mock('./products.repository.js', () => ({
   },
 }));
 
-vi.mock('../product-inventory/product-inventory.repository.js', () => ({
-  productInventoryRepository: {
-    hasMappingForVariant: vi.fn().mockResolvedValue(true),
-    hasAnyActiveMappingForVariant: vi.fn().mockResolvedValue(true),
-    findActiveMappingsForVariants: vi.fn().mockResolvedValue([]),
-  },
-}));
-
 // Phase B (CR-008) — getPosCatalog delegates readiness computation to
 // productReadinessService instead of its former inline logic. Mocked here
 // (rather than mocking its transactionsRepository/prisma.productComponent
@@ -64,6 +56,8 @@ vi.mock('../product-readiness/product-readiness.service.js', () => ({
   productReadinessService: {
     evaluateProductVariantReadinessBatch: vi.fn(),
     evaluateProductReadiness: vi.fn(),
+    // Task 191 — approveVariant's ProductComponent BOM gate.
+    evaluateVariantComponentReadiness: vi.fn(),
   },
 }));
 
@@ -160,7 +154,6 @@ const { productsRepository } = await import('./products.repository.js');
 const { productsService } = await import('./products.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
-const { productInventoryRepository } = await import('../product-inventory/product-inventory.repository.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 const { prisma } = await import('../../lib/prisma.js');
 
@@ -168,6 +161,14 @@ const { prisma } = await import('../../lib/prisma.js');
 // (e.g. the Mix & Max snack_options tests below) don't need to stub this.
 vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockImplementation(async ({ branchId, productVariantIds }) =>
   productVariantIds.map((id) => readyResult(branchId, id)),
+);
+
+/** Task 191 — default: approveVariant's ProductComponent BOM gate passes. */
+function componentReadyResult(productVariantId: string) {
+  return { productVariantId, recipeReady: true, componentsValid: true, ready: true, blockingIssues: [] };
+}
+vi.mocked(productReadinessService.evaluateVariantComponentReadiness).mockImplementation(async (productVariantId) =>
+  componentReadyResult(productVariantId),
 );
 
 function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
@@ -929,7 +930,9 @@ describe('productsService.submitVariantForApproval', () => {
 describe('productsService.approveVariant', () => {
   beforeEach(() => {
     vi.mocked(productsRepository.listVariantFlavorSlots).mockResolvedValue([]);
-    vi.mocked(productInventoryRepository.hasAnyActiveMappingForVariant).mockResolvedValue(true);
+    vi.mocked(productReadinessService.evaluateVariantComponentReadiness).mockImplementation(async (productVariantId) =>
+      componentReadyResult(productVariantId),
+    );
     vi.mocked(productsRepository.allActiveBranches).mockResolvedValue([
       { id: 'branch-a', code: 'PC-A-001', name: 'Branch A', city: 'Manila' },
     ] as never);
@@ -954,8 +957,8 @@ describe('productsService.approveVariant', () => {
     );
     expect(notifyBranch).toHaveBeenCalledWith('branch-a', SOCKET_EVENTS.VARIANT_APPROVED, expect.anything());
     expect(notifySuperAdmin).toHaveBeenCalledWith(SOCKET_EVENTS.VARIANT_APPROVED, expect.anything());
-    expect(productInventoryRepository.hasAnyActiveMappingForVariant).toHaveBeenCalledWith('variant-1');
-    expect(productInventoryRepository.hasMappingForVariant).not.toHaveBeenCalled();
+    expect(productReadinessService.evaluateVariantComponentReadiness).toHaveBeenCalledWith('variant-1');
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'VARIANT_APPROVED' }));
   });
 
   it('supervisor gets 403', async () => {
@@ -1002,17 +1005,84 @@ describe('productsService.approveVariant', () => {
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
   });
 
-  it('Guarantee 6 gate blocks approval when the variant has no active ProductInventory mapping in any branch', async () => {
+  // --- Task 191: ProductComponent BOM gate replacing the legacy ProductInventory gate ---
+
+  it('approves a fully configured ProductComponent variant with zero ProductInventory rows', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
-    vi.mocked(productInventoryRepository.hasAnyActiveMappingForVariant).mockResolvedValue(false);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+    // No ProductInventory-related mock exists anywhere in this suite — the
+    // legacy repository isn't even imported by products.service.ts anymore.
+    vi.mocked(productReadinessService.evaluateVariantComponentReadiness).mockResolvedValue(componentReadyResult('variant-1'));
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).resolves.toBeDefined();
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalledWith('variant-1', expect.objectContaining({ lifecycleStatus: 'ACTIVE' }));
+  });
+
+  it('blocks approval when the variant has no active ProductComponent BOM rows', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productReadinessService.evaluateVariantComponentReadiness).mockResolvedValue({
+      productVariantId: 'variant-1',
+      recipeReady: false,
+      componentsValid: true,
+      ready: false,
+      blockingIssues: [
+        {
+          code: 'RECIPE_MISSING',
+          severity: 'blocking',
+          entityType: 'product_variant',
+          entityId: 'variant-1',
+          message: 'Variant has no active Recipe/BOM (ProductComponent) rows.',
+          recommendedAction: 'Configure a Recipe/BOM for this variant.',
+        },
+      ],
+    });
 
     await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
       code: 'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
       statusCode: 409,
     });
-    expect(productInventoryRepository.hasAnyActiveMappingForVariant).toHaveBeenCalledWith('variant-1');
-    expect(productInventoryRepository.hasMappingForVariant).not.toHaveBeenCalled();
+    expect(productReadinessService.evaluateVariantComponentReadiness).toHaveBeenCalledWith('variant-1');
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+    expect(recordAuditLog).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'VARIANT_APPROVED' }));
+  });
+
+  it('blocks approval when a ProductComponent references an inactive/deleted inventory item', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productReadinessService.evaluateVariantComponentReadiness).mockResolvedValue({
+      productVariantId: 'variant-1',
+      recipeReady: true,
+      componentsValid: false,
+      ready: false,
+      blockingIssues: [
+        {
+          code: 'INVALID_COMPONENT',
+          severity: 'blocking',
+          entityType: 'product_variant',
+          entityId: 'variant-1',
+          message: 'Variant has a Recipe/BOM component with an invalid quantity or a deleted inventory item.',
+          recommendedAction: 'Fix or remove the invalid Recipe/BOM component(s).',
+        },
+      ],
+    });
+
+    await expect(productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
+      statusCode: 409,
+    });
+    expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('does not call the legacy ProductInventory repository', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'PENDING_APPROVAL' }) as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+
+    await productsService.approveVariant('variant-1', undefined, SUPER_ADMIN, null);
+
+    // products.service.ts no longer imports product-inventory.repository.js at
+    // all (see the removed vi.mock at the top of this file) — the absence of
+    // that mock is itself the regression guard: approveVariant calling into
+    // the legacy repository would throw here, not silently no-op.
+    expect(productReadinessService.evaluateVariantComponentReadiness).toHaveBeenCalledWith('variant-1');
   });
 });
 
@@ -1361,7 +1431,7 @@ describe('productsService.updateFlavorSlot', () => {
 });
 
 describe('productsService.removeFlavorSlot', () => {
-  it('removes a slot and shifts higher indices down, without touching recipesRepository or ProductInventory', async () => {
+  it('removes a slot and shifts higher indices down, without touching recipesRepository', async () => {
     vi.mocked(productsRepository.findFlavorSlotById).mockResolvedValue(
       buildFlavorSlot({ id: 'slot-2', productVariantId: 'variant-1', slotIndex: 1 }) as never,
     );
@@ -1372,8 +1442,6 @@ describe('productsService.removeFlavorSlot', () => {
     expect(productsRepository.deleteFlavorSlot).toHaveBeenCalledWith('slot-2', prisma);
     expect(productsRepository.shiftFlavorSlotIndicesDown).toHaveBeenCalledWith('variant-1', 1, prisma);
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
-    expect(productInventoryRepository.hasMappingForVariant).not.toHaveBeenCalled();
-    expect(productInventoryRepository.hasAnyActiveMappingForVariant).not.toHaveBeenCalled();
   });
 
   it('removing on an ACTIVE variant bumps version and writes ChangeLog', async () => {
@@ -1421,7 +1489,7 @@ describe('productsService.reorderFlavorSlots', () => {
     expect((result as { id: string }[]).map((s) => s.id)).toEqual(['s2', 's0', 's1']);
   });
 
-  it('reorder does not call recipesRepository or touch ProductInventory mappings', async () => {
+  it('reorder does not call recipesRepository', async () => {
     const s0 = buildFlavorSlot({ id: 's0', slotIndex: 0, label: 'A' });
     const s1 = buildFlavorSlot({ id: 's1', slotIndex: 1, label: 'B' });
     const s2 = buildFlavorSlot({ id: 's2', slotIndex: 2, label: 'C' });
@@ -1437,8 +1505,6 @@ describe('productsService.reorderFlavorSlots', () => {
     await productsService.reorderFlavorSlots('variant-1', { slotIds: ['s2', 's0', 's1'] }, undefined, SUPERVISOR, null);
 
     expect(productsRepository.rewriteFlavorSlotOrder).toHaveBeenCalledWith('variant-1', ['s2', 's0', 's1'], prisma);
-    expect(productInventoryRepository.hasMappingForVariant).not.toHaveBeenCalled();
-    expect(productInventoryRepository.hasAnyActiveMappingForVariant).not.toHaveBeenCalled();
   });
 
   it('length mismatch is rejected', async () => {

@@ -11,7 +11,6 @@ import {
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
-import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
@@ -70,18 +69,25 @@ async function notifyVariantBranches(productId: string, event: string, payload: 
 }
 
 /**
- * CR-005 Guarantee 6 gate for approveVariant: the variant must have at least
- * one ProductInventory mapping — computeDeduction's actual data source —
- * before it can go ACTIVE. Replaces the former Recipe-resolvability check;
- * Product approval no longer depends on Recipe. Uses the branch-agnostic
- * lookup since approval is a global gate, not scoped to any one branch.
+ * Task 191 — CR-005 Guarantee 6 gate for approveVariant, re-pointed at the
+ * live BOM architecture: checkout deduction (transactions.service.ts
+ * resolveCartItems) and the POS readiness gate have both read
+ * ProductComponent since Task 100, but this gate still checked the legacy
+ * ProductInventory table — which production has zero rows in — so every
+ * fully-configured ProductComponent variant failed approval. Delegates to
+ * productReadinessService, the same engine checkout uses, via its
+ * branch-agnostic BOM-only method (approval is a global gate, not scoped to
+ * any one branch, and runs before lifecycleStatus is ACTIVE — see that
+ * method's own doc for why the branch-scoped readiness check can't be reused
+ * here directly).
  */
 async function assertRecipesResolvableSomewhere(productVariantId: string): Promise<void> {
-  const hasMapping = await productInventoryRepository.hasAnyActiveMappingForVariant(productVariantId);
-  if (!hasMapping) {
+  const readiness = await productReadinessService.evaluateVariantComponentReadiness(productVariantId);
+  if (!readiness.ready) {
     throw new ProductError(
       'VARIANT_APPROVAL_BLOCKED_UNRESOLVABLE_INGREDIENT',
-      'Variant has no ProductInventory mapping — approval blocked until at least one ingredient mapping is provisioned',
+      readiness.blockingIssues.map((i) => i.message).join(' ') ||
+        'Variant has no valid Recipe/BOM (ProductComponent) configuration — approval blocked until its recipe is complete',
       409,
     );
   }

@@ -788,49 +788,84 @@ async function deductInventoryForSale(
     }
   }
 
+  // Deterministic order (sorted by inventoryItemId) for every pass below,
+  // locks included — two transactions deducting an overlapping ingredient
+  // set must always request their advisory locks in the same order, or
+  // Postgres can deadlock them against each other instead of one simply
+  // waiting for the other.
+  const sortedEntries = [...totals.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const inventoryItemIds = sortedEntries.map(([id]) => id);
+
   const itemNames = new Map(
-    (await tx.inventoryItem.findMany({ where: { id: { in: [...totals.keys()] } }, select: { id: true, name: true } })).map((i) => [
+    (await tx.inventoryItem.findMany({ where: { id: { in: inventoryItemIds } }, select: { id: true, name: true } })).map((i) => [
       i.id,
       i.name,
     ]),
   );
 
-  const effects: Array<() => Promise<void>> = [];
-
-  for (const [inventoryItemId, { quantity, baseUnitId }] of totals) {
-    const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
+  // One pg_advisory_xact_lock call per ingredient (same primitive as
+  // before), now taken up front in sorted order before any read — every
+  // concurrent sale touching an overlapping ingredient set serializes on
+  // this same lock order instead of racing.
+  for (const inventoryItemId of inventoryItemIds) {
     const lockId = hashToLockId(sha256Hex(inventoryItemId));
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+  }
 
-    const stock = await tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
+  // One batched read for every InventoryStock row instead of one
+  // findUnique per ingredient — safe to treat as a single snapshot because
+  // every row's advisory lock is already held above, so nothing else can
+  // change them out from under this pass.
+  const stockRows = await tx.inventoryStock.findMany({
+    where: { branchId, inventoryItemId: { in: inventoryItemIds } },
+  });
+  const stockByItemId = new Map(stockRows.map((row) => [row.inventoryItemId, row]));
+
+  // Validate every row before writing any of them — a shortfall anywhere in
+  // the cart must still roll back the whole sale, never leave a partial
+  // deduction behind.
+  for (const [inventoryItemId, { quantity }] of sortedEntries) {
+    const stock = stockByItemId.get(inventoryItemId);
     const currentStock = stock?.quantityOnHand.toNumber() ?? 0;
     if (!stock || currentStock < quantity) {
+      const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
       throw new TransactionError(
         'INSUFFICIENT_STOCK',
         `Insufficient stock for ${itemName}: need ${quantity}, have ${currentStock}`,
         409,
       );
     }
+  }
+
+  // Prisma has no single-call bulk update for rows that each decrement by a
+  // different quantity, so this pass still costs one `update` per
+  // ingredient — the locks taken above already make each of these safe
+  // against a concurrent writer, so the round trips saved were entirely in
+  // the read and ledger-insert passes around it.
+  const effects: Array<() => Promise<void>> = [];
+  const movementInputs: Parameters<typeof universalInventoryRepository.createStockMovements>[0] = [];
+
+  for (const [inventoryItemId, { quantity, baseUnitId }] of sortedEntries) {
+    const stock = stockByItemId.get(inventoryItemId);
+    if (!stock) continue; // unreachable — every row was validated above
+    const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
 
     const updated = await tx.inventoryStock.update({
       where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
       data: { quantityOnHand: { decrement: quantity }, version: { increment: 1 } },
     });
 
-    await universalInventoryRepository.createStockMovement(
-      {
-        branchId,
-        inventoryItemId,
-        movementType: 'SALE',
-        quantityChange: new Prisma.Decimal(quantity).negated(),
-        quantityBefore: stock.quantityOnHand,
-        quantityAfter: updated.quantityOnHand,
-        unitId: baseUnitId,
-        referenceType: 'transaction',
-        referenceId: transactionId,
-      },
-      tx,
-    );
+    movementInputs.push({
+      branchId,
+      inventoryItemId,
+      movementType: 'SALE',
+      quantityChange: new Prisma.Decimal(quantity).negated(),
+      quantityBefore: stock.quantityOnHand,
+      quantityAfter: updated.quantityOnHand,
+      unitId: baseUnitId,
+      referenceType: 'transaction',
+      referenceId: transactionId,
+    });
 
     effects.push(() =>
       recordAuditLog({
@@ -865,6 +900,12 @@ async function deductInventoryForSale(
         }),
       );
     }
+  }
+
+  // One batched insert for every SALE movement row instead of one `create`
+  // per ingredient.
+  if (movementInputs.length > 0) {
+    await universalInventoryRepository.createStockMovements(movementInputs, tx);
   }
 
   await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx);

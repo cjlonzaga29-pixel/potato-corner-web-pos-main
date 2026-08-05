@@ -1,22 +1,22 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Fingerprint, Loader2, LogOut, MapPin, Pencil, Receipt, ShoppingCart, Trash2, User } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fingerprint, Loader2, LogOut, MapPin, ShoppingCart, User } from 'lucide-react';
 import { ROLES } from '@potato-corner/shared';
-import type { CreateTransactionInput, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
+import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
+import { ProductCard } from '@/components/pos/product-card';
+import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
+import { PaymentFooter, type DiscountChoice } from '@/components/pos/payment-footer';
 import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import type { PosCartSelectedOption } from '@/stores/cart.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
@@ -44,13 +44,6 @@ function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
-// Signed display for a price adjustment, e.g. "(+₱5.00)" or "(-₱5.00)" —
-// formatPeso alone can't express the sign since toFixed already carries a
-// leading "-" for negative amounts.
-function formatAdjustment(amount: number): string {
-  return amount >= 0 ? ` (+${formatPeso(amount)})` : ` (-${formatPeso(Math.abs(amount))})`;
-}
-
 function round2(amount: number): number {
   return Math.round(amount * 100) / 100;
 }
@@ -62,15 +55,60 @@ function resolveGroupLabel(group: { name: string; pos_button_label: string | nul
   return group.pos_button_label?.trim() || group.name;
 }
 
-type DiscountChoice = 'none' | 'pwd' | 'senior_citizen' | 'employee' | 'promotional';
+// Task 107 — only groups with at least one active option are cashier-facing;
+// a group left with zero active options is invisible at the POS. Pure
+// function of `variant` alone (module scope, not a component method) so it
+// stays referentially irrelevant to any memoized child's props — nothing
+// here reads component state/props via closure.
+function activeOptionGroups(variant: PosCatalogProduct['variants'][number]) {
+  return variant.option_groups
+    .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
+    .filter((group) => group.options.length > 0);
+}
 
-const DISCOUNT_LABELS: Record<DiscountChoice, string> = {
-  none: 'No discount',
-  pwd: 'PWD (20%)',
-  senior_citizen: 'Senior Citizen (20%)',
-  employee: 'Employee (20%)',
-  promotional: 'Promotional',
-};
+// Task 131 — groups the Add-ons dialog for a variant: groups matching the
+// Add-ons naming rule (isAddOnsGroup) render as the simplified optional
+// multi-select; every other group keeps the original per-choice quantity
+// allocator (label/allowNoAddOn computed exactly as before).
+// Task 182 — selectionType/required/minSelections/maxSelections passed
+// through so the dialog can render a required SINGLE-selection group
+// (e.g. Flavor) as checkbox-style single-select instead of an allocator.
+function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOnsDialogGroup[] {
+  return activeOptionGroups(variant).map((group) => ({
+    id: group.id,
+    name: resolveGroupLabel(group),
+    label: resolveGroupLabel(group),
+    allowNoAddOn: group.min_selections === 0,
+    simplified: isAddOnsGroup(group),
+    selectionType: group.selection_type,
+    required: group.required,
+    minSelections: group.min_selections,
+    maxSelections: group.max_selections,
+    options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
+  }));
+}
+
+function readinessMessage(variant: PosCatalogProduct['variants'][number]): string | null {
+  if (variant.live_ready) return null;
+  if (variant.readiness_code === 'MISSING_FLAVOR_MAPPING') {
+    const flavorNames = variant.blocking_issues.map((issue) => issue.flavor_name).filter((name): name is string => Boolean(name));
+    if (flavorNames.length > 0) return `Not ready: missing setup for ${flavorNames.join(', ')}.`;
+    return 'Flavor inventory mapping incomplete.';
+  }
+  switch (variant.readiness_code) {
+    case 'NOT_AVAILABLE_IN_BRANCH':
+      return 'Not available at this branch.';
+    case 'INACTIVE':
+      return 'Currently unavailable.';
+    case 'PRICE_MISSING':
+      return 'Price not set.';
+    case 'MIX_MAX_INCOMPLETE':
+      return 'Mix & Max setup incomplete.';
+    case 'MISSING_BASE_MAPPING':
+    default:
+      return 'Inventory setup incomplete.';
+  }
+}
 
 /**
  * Client-side preview only — mirrors transactions.service's computeAmounts
@@ -304,7 +342,10 @@ export default function TerminalPage() {
     () => [...new Set(catalog.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort(),
     [catalog],
   );
-  const visibleProducts = activeCategory === 'all' ? catalog : catalog.filter((p) => p.category === activeCategory);
+  const visibleProducts = useMemo(
+    () => (activeCategory === 'all' ? catalog : catalog.filter((p) => p.category === activeCategory)),
+    [catalog, activeCategory],
+  );
 
   const variantIndex = useMemo(() => {
     const map = new Map<string, { product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] }>();
@@ -314,85 +355,48 @@ export default function TerminalPage() {
     return map;
   }, [catalog]);
 
-  function readinessMessage(variant: PosCatalogProduct['variants'][number]): string | null {
-    if (variant.live_ready) return null;
-    if (variant.readiness_code === 'MISSING_FLAVOR_MAPPING') {
-      const flavorNames = variant.blocking_issues.map((issue) => issue.flavor_name).filter((name): name is string => Boolean(name));
-      if (flavorNames.length > 0) return `Not ready: missing setup for ${flavorNames.join(', ')}.`;
-      return 'Flavor inventory mapping incomplete.';
-    }
-    switch (variant.readiness_code) {
-      case 'NOT_AVAILABLE_IN_BRANCH':
-        return 'Not available at this branch.';
-      case 'INACTIVE':
-        return 'Currently unavailable.';
-      case 'PRICE_MISSING':
-        return 'Price not set.';
-      case 'MIX_MAX_INCOMPLETE':
-        return 'Mix & Max setup incomplete.';
-      case 'MISSING_BASE_MAPPING':
-      default:
-        return 'Inventory setup incomplete.';
-    }
-  }
-
-  // Task 107 — only groups with at least one active option are cashier-
-  // facing; a group left with zero active options is invisible at the POS.
-  function activeOptionGroups(variant: PosCatalogProduct['variants'][number]) {
-    return variant.option_groups
-      .map((group) => ({ ...group, options: group.options.filter((option) => option.is_active) }))
-      .filter((group) => group.options.length > 0);
-  }
-
-  // Task 131 — groups the Add-ons dialog for a variant: groups matching the
-  // Add-ons naming rule (isAddOnsGroup) render as the simplified optional
-  // multi-select; every other group keeps the original per-choice quantity
-  // allocator (label/allowNoAddOn computed exactly as before).
-  // Task 182 — selectionType/required/minSelections/maxSelections passed
-  // through so the dialog can render a required SINGLE-selection group
-  // (e.g. Flavor) as checkbox-style single-select instead of an allocator.
-  function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOnsDialogGroup[] {
-    return activeOptionGroups(variant).map((group) => ({
-      id: group.id,
-      name: resolveGroupLabel(group),
-      label: resolveGroupLabel(group),
-      allowNoAddOn: group.min_selections === 0,
-      simplified: isAddOnsGroup(group),
-      selectionType: group.selection_type,
-      required: group.required,
-      minSelections: group.min_selections,
-      maxSelections: group.max_selections,
-      options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
-    }));
-  }
-
   // Opens the Add-ons dialog for a product about to be added to the cart —
   // called only after any flavor/slot choice is already resolved. Returns
   // true when the dialog was opened (caller must not addItem directly).
-  function maybeOpenAddOnsPrompt(
-    product: PosCatalogProduct,
-    variant: PosCatalogProduct['variants'][number],
-    extra: { flavorId?: string; selectedFlavors?: { slot_index: number; snack_product_variant_id: string; flavor_id: string }[] },
-  ): boolean {
-    const groups = activeOptionGroups(variant);
-    if (groups.length === 0) return false;
-    setAddOnsPrompt({ product, variant, ...extra, quantity: 1, assignments: {}, selectedOptionIds: {} });
-    return true;
-  }
+  // useCallback'd (empty deps — every dependency below is itself a stable
+  // setState setter) so it stays a stable prop wherever it's forwarded,
+  // most notably into handleProductTap below and ultimately ProductCard's
+  // memoized onTap.
+  const maybeOpenAddOnsPrompt = useCallback(
+    (
+      product: PosCatalogProduct,
+      variant: PosCatalogProduct['variants'][number],
+      extra: { flavorId?: string; selectedFlavors?: { slot_index: number; snack_product_variant_id: string; flavor_id: string }[] },
+    ): boolean => {
+      const groups = activeOptionGroups(variant);
+      if (groups.length === 0) return false;
+      setAddOnsPrompt({ product, variant, ...extra, quantity: 1, assignments: {}, selectedOptionIds: {} });
+      return true;
+    },
+    [],
+  );
 
-  function handleProductTap(product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) {
-    if (!variant.live_ready) return;
-    if (variant.flavor_slots.length > 0) {
-      setSlotPrompt({ product, variant, selections: {} });
-      return;
-    }
-    if (variant.flavors.length > 0) {
-      setFlavorPrompt({ product, variant });
-      return;
-    }
-    if (maybeOpenAddOnsPrompt(product, variant, {})) return;
-    addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
-  }
+  // Task 194A — useCallback'd so ProductCard (React.memo) can treat onTap as
+  // a stable prop: every dependency here (maybeOpenAddOnsPrompt, addItem,
+  // the setState setters) is itself stable, so this never changes identity
+  // across renders, including ones triggered by unrelated state like
+  // Cash Tendered or an in-progress cart edit.
+  const handleProductTap = useCallback(
+    (product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) => {
+      if (!variant.live_ready) return;
+      if (variant.flavor_slots.length > 0) {
+        setSlotPrompt({ product, variant, selections: {} });
+        return;
+      }
+      if (variant.flavors.length > 0) {
+        setFlavorPrompt({ product, variant });
+        return;
+      }
+      if (maybeOpenAddOnsPrompt(product, variant, {})) return;
+      addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
+    },
+    [maybeOpenAddOnsPrompt, addItem],
+  );
 
   function handleAddOnsAssignmentChange(groupId: string, choiceKey: string, quantity: number) {
     setAddOnsPrompt((prev) => {
@@ -525,10 +529,6 @@ export default function TerminalPage() {
     setAddOnsPrompt(null);
   }
 
-  function handleRemoveLine(index: number) {
-    removeItem(index);
-  }
-
   // Task 108 — "Edit" on a cart line reopens the same Add-ons dialog used
   // pre-add, preloaded with that line's product/variant/flavor, quantity,
   // and current option choices. Only offered for lines whose variant
@@ -543,41 +543,47 @@ export default function TerminalPage() {
   // (multi-slot) groups still preload into per-choice assignments (the
   // inverse of splitAddOnLines), tallying how many times each option
   // appears rather than assuming a single choice.
-  function handleEditLine(index: number) {
-    const item = items[index];
-    if (!item) return;
-    const info = variantIndex.get(item.product_variant_id);
-    if (!info) return;
-    const { product, variant } = info;
-    const groups = dialogGroupsFor(variant);
-    if (groups.length === 0) return;
-    const assignments: AddOnAssignments = {};
-    const selectedOptionIds: AddOnSelections = {};
-    for (const group of groups) {
-      const selectedForGroup = (item.selected_options ?? []).filter((option) => option.option_group_id === group.id);
-      if (group.simplified || group.selectionType === 'SINGLE') {
-        selectedOptionIds[group.id] = selectedForGroup.map((option) => option.option_id);
-        continue;
+  // Task 194A — useCallback'd (deps: items, variantIndex) so CartLineItem
+  // (React.memo) can treat onEdit as a stable prop across renders that
+  // don't touch the cart itself.
+  const handleEditLine = useCallback(
+    (index: number) => {
+      const item = items[index];
+      if (!item) return;
+      const info = variantIndex.get(item.product_variant_id);
+      if (!info) return;
+      const { product, variant } = info;
+      const groups = dialogGroupsFor(variant);
+      if (groups.length === 0) return;
+      const assignments: AddOnAssignments = {};
+      const selectedOptionIds: AddOnSelections = {};
+      for (const group of groups) {
+        const selectedForGroup = (item.selected_options ?? []).filter((option) => option.option_group_id === group.id);
+        if (group.simplified || group.selectionType === 'SINGLE') {
+          selectedOptionIds[group.id] = selectedForGroup.map((option) => option.option_id);
+          continue;
+        }
+        if (selectedForGroup.length > 0) {
+          const counts: Record<string, number> = {};
+          for (const option of selectedForGroup) counts[option.option_id] = (counts[option.option_id] ?? 0) + 1;
+          assignments[group.id] = counts;
+        } else if (group.allowNoAddOn) {
+          assignments[group.id] = { [NO_ADD_ON_KEY]: multiGroupTarget(group) };
+        }
       }
-      if (selectedForGroup.length > 0) {
-        const counts: Record<string, number> = {};
-        for (const option of selectedForGroup) counts[option.option_id] = (counts[option.option_id] ?? 0) + 1;
-        assignments[group.id] = counts;
-      } else if (group.allowNoAddOn) {
-        assignments[group.id] = { [NO_ADD_ON_KEY]: multiGroupTarget(group) };
-      }
-    }
-    setAddOnsPrompt({
-      product,
-      variant,
-      ...(item.flavor_id ? { flavorId: item.flavor_id } : {}),
-      ...(item.selected_flavors ? { selectedFlavors: item.selected_flavors } : {}),
-      quantity: item.quantity,
-      assignments,
-      selectedOptionIds,
-      editingIndex: index,
-    });
-  }
+      setAddOnsPrompt({
+        product,
+        variant,
+        ...(item.flavor_id ? { flavorId: item.flavor_id } : {}),
+        ...(item.selected_flavors ? { selectedFlavors: item.selected_flavors } : {}),
+        quantity: item.quantity,
+        assignments,
+        selectedOptionIds,
+        editingIndex: index,
+      });
+    },
+    [items, variantIndex],
+  );
 
   function handleFlavorPick(flavorId: string) {
     if (!flavorPrompt) return;
@@ -629,7 +635,7 @@ export default function TerminalPage() {
   // Memoized so it only recomputes when the cart or catalog actually change —
   // without this, every keystroke in an unrelated field (cash tendered,
   // discount ID, payment reference) re-derived every cart line from scratch.
-  const cartLines = useMemo(
+  const cartLines = useMemo<CartLine[]>(
     () =>
       items.map((item, index) => {
         const info = variantIndex.get(item.product_variant_id);
@@ -702,6 +708,21 @@ export default function TerminalPage() {
   })();
 
   const canCharge = Boolean(branchId) && chargeDisabledReason === null;
+
+  const openVoidRefund = useCallback(() => setIsVoidRefundOpen(true), []);
+
+  function handleProofSelected(file: File, type: ImageProofType) {
+    if (!branchId) return;
+    void uploadPaymentProof.mutateAsync({ branchId, shiftId: shift?.id, type, file }).then((result) => {
+      setPaymentProofKey(result.payment_proof_key);
+      setPaymentProofType(result.payment_proof_type);
+    });
+  }
+
+  function handleClearProof() {
+    setPaymentProofKey(null);
+    setPaymentProofType(null);
+  }
 
   function resetPaymentFields() {
     setDiscountType('none');
@@ -920,36 +941,9 @@ export default function TerminalPage() {
 
         <div className="grid grid-cols-2 content-start gap-2 p-4 sm:grid-cols-2 md:grid-cols-3 lg:flex-1 lg:grid-cols-4 lg:overflow-y-auto xl:grid-cols-5 2xl:grid-cols-6">
           {visibleProducts.map((product) =>
-            product.variants.map((variant) => {
-              const message = readinessMessage(variant);
-              return (
-                <Card
-                  key={variant.id}
-                  role="button"
-                  tabIndex={variant.live_ready ? 0 : -1}
-                  aria-disabled={!variant.live_ready}
-                  className={`flex h-full min-h-[92px] flex-col rounded-lg border shadow-none outline-none transition-colors touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
-                    variant.live_ready
-                      ? 'cursor-pointer hover:border-primary hover:bg-muted'
-                      : 'cursor-not-allowed opacity-60'
-                  }`}
-                  onClick={() => handleProductTap(product, variant)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleProductTap(product, variant);
-                    }
-                  }}
-                >
-                  <CardContent className="flex h-full flex-col gap-0.5 p-3">
-                    <p className="line-clamp-2 min-h-[2rem] text-xs font-medium leading-tight">{product.name}</p>
-                    <p className="truncate text-[11px] text-muted-foreground">{variant.name}</p>
-                    <p className="mt-auto text-sm font-semibold tabular-nums">{formatPeso(variant.price)}</p>
-                    {message && <p className="line-clamp-2 text-[11px] font-medium text-destructive">{message}</p>}
-                  </CardContent>
-                </Card>
-              );
-            }),
+            product.variants.map((variant) => (
+              <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />
+            )),
           )}
           {visibleProducts.length === 0 && (
             <p className="col-span-full p-6 text-center text-sm text-muted-foreground">
@@ -1086,254 +1080,46 @@ export default function TerminalPage() {
           )}
           <div className="space-y-4">
             {cartLines.map((line, i) => (
-              <div key={line.index}>
-                {i > 0 && <Separator className="mb-4" />}
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="line-clamp-2 min-w-0 flex-1 font-medium leading-snug">
-                      {line.productName}
-                      {line.flavorName ? ` — ${line.flavorName}` : ''}
-                    </p>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {line.hasOptionGroups && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="touch-target"
-                          onClick={() => handleEditLine(line.index)}
-                          aria-label="Edit"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="touch-target text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => handleRemoveLine(line.index)}
-                        aria-label={`Remove ${line.productName} from cart`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {line.variantName} · {formatPeso(line.unitPrice)} each
-                  </p>
-                  {line.slotSelections.map((sel, si) => (
-                    <p key={si} className="text-xs text-muted-foreground">
-                      {sel.label}: {sel.snackName} — {sel.flavorName}
-                    </p>
-                  ))}
-                  {line.optionSelections.map((opt) => (
-                    <p key={opt.option_id} className="text-xs text-muted-foreground">
-                      {opt.option_group_name}: {opt.option_name}
-                      {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
-                    </p>
-                  ))}
-                  <div className="flex items-center justify-between gap-2 pt-1">
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        className="touch-target"
-                        aria-label={`Decrease ${line.productName} quantity`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateItemQuantity(line.index, line.item.quantity - 1);
-                        }}
-                      >
-                        −
-                      </Button>
-                      <span className="w-6 text-center tabular-nums">{line.item.quantity}</span>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        className="touch-target"
-                        aria-label={`Increase ${line.productName} quantity`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateItemQuantity(line.index, line.item.quantity + 1);
-                        }}
-                      >
-                        +
-                      </Button>
-                    </div>
-                    <p className="text-right font-semibold tabular-nums">{formatPeso(line.lineTotal)}</p>
-                  </div>
-                </div>
-              </div>
+              <CartLineItem
+                key={line.index}
+                line={line}
+                showDivider={i > 0}
+                onEdit={handleEditLine}
+                onRemove={removeItem}
+                onQuantityChange={updateItemQuantity}
+              />
             ))}
           </div>
         </div>
 
-        <div className="sticky bottom-0 z-10 space-y-4 border-t bg-card p-4 lg:static">
-          <div className="space-y-1.5 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Subtotal</span>
-              <span className="tabular-nums">{formatPeso(subtotal)}</span>
-            </div>
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>VAT (12%)</span>
-              <span className="tabular-nums">{formatPeso(vatAmount)}</span>
-            </div>
-            {discountAmount > 0 && (
-              <div className="flex justify-between text-destructive">
-                <span>Discount</span>
-                <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
-              </div>
-            )}
-            <Separator className="my-2" />
-            <div className="flex items-baseline justify-between">
-              <span className="text-base font-semibold">Total</span>
-              <span className="flex items-center gap-1.5 text-2xl font-bold tabular-nums">
-                <Receipt className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
-                {formatPeso(totalAmount)}
-              </span>
-            </div>
-          </div>
-
-          {canManageVoidRefund && (
-            <Button
-              type="button"
-              variant="outline"
-              className="touch-target w-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => setIsVoidRefundOpen(true)}
-            >
-              Void / Refund Sale
-            </Button>
-          )}
-
-          <Select value={discountType} onValueChange={(v) => setDiscountType(v as DiscountChoice)}>
-            <SelectTrigger className="touch-target">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(DISCOUNT_LABELS) as DiscountChoice[]).map((value) => (
-                <SelectItem key={value} value={value}>
-                  {DISCOUNT_LABELS[value]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          {(discountType === 'pwd' || discountType === 'senior_citizen') && (
-            <Input
-              className="touch-target"
-              placeholder="PWD / Senior Citizen ID number"
-              value={discountIdReference}
-              onChange={(e) => setDiscountIdReference(e.target.value)}
-            />
-          )}
-          {discountType === 'promotional' && (
-            <Input
-              className="touch-target"
-              type="number"
-              min={0}
-              placeholder="Promo discount amount"
-              value={promoAmount}
-              onChange={(e) => setPromoAmount(e.target.value)}
-            />
-          )}
-
-          <Tabs value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as 'cash' | 'gcash' | 'maya' | 'other')}>
-            <TabsList className="h-11 w-full">
-              <TabsTrigger value="cash" className="h-9 flex-1">
-                Cash
-              </TabsTrigger>
-              <TabsTrigger value="gcash" className="h-9 flex-1" disabled={!isOnline}>
-                GCash
-              </TabsTrigger>
-              <TabsTrigger value="maya" className="h-9 flex-1" disabled={!isOnline}>
-                Maya
-              </TabsTrigger>
-              <TabsTrigger value="other" className="h-9 flex-1" disabled={!isOnline}>
-                Other
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-          {!isOnline && paymentMethod === 'cash' && (
-            <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — payment proof can only be captured while connected.</p>
-          )}
-
-          {paymentMethod === 'cash' && (
-            <div className="space-y-1">
-              <Input
-                className="touch-target"
-                type="number"
-                min={0}
-                placeholder="Cash tendered"
-                value={cashTendered}
-                onChange={(e) => setCashTendered(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">Change: {formatPeso(change)}</p>
-            </div>
-          )}
-
-          {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
-            <Card className="rounded-lg shadow-none">
-              <CardContent className="space-y-3 p-3">
-                {paymentProofKey ? (
-                  <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      Payment proof attached
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-auto shrink-0 p-0 text-xs underline"
-                      onClick={() => {
-                        setPaymentProofKey(null);
-                        setPaymentProofType(null);
-                      }}
-                    >
-                      Replace
-                    </Button>
-                  </div>
-                ) : (
-                  <ImageUpload
-                    label="Payment Proof"
-                    description="Upload a clear screenshot or photo of the successful payment."
-                    required
-                    onImageSelected={(file, type) => {
-                      if (!branchId) return;
-                      void uploadPaymentProof
-                        .mutateAsync({ branchId, shiftId: shift?.id, type, file })
-                        .then((result) => {
-                          setPaymentProofKey(result.payment_proof_key);
-                          setPaymentProofType(result.payment_proof_type);
-                        });
-                    }}
-                  />
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {chargeError && (
-            <Alert variant="destructive" className="px-3 py-2">
-              <AlertDescription className="text-xs">{chargeError}</AlertDescription>
-            </Alert>
-          )}
-
-          {chargeDisabledReason && (
-            <Alert className="border-none bg-muted px-3 py-2">
-              <AlertDescription className="text-sm font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
-            </Alert>
-          )}
-
-          <Button
-            variant="pos"
-            className="touch-target w-full"
-            size="lg"
-            disabled={!canCharge}
-            onClick={() => void handleCharge()}
-          >
-            {createTransaction.isPending ? 'Processing sale…' : `Charge ${formatPeso(totalAmount)}`}
-          </Button>
-        </div>
+        <PaymentFooter
+          subtotal={subtotal}
+          vatAmount={vatAmount}
+          discountAmount={discountAmount}
+          totalAmount={totalAmount}
+          canManageVoidRefund={canManageVoidRefund}
+          onOpenVoidRefund={openVoidRefund}
+          discountType={discountType}
+          onDiscountTypeChange={setDiscountType}
+          discountIdReference={discountIdReference}
+          onDiscountIdReferenceChange={setDiscountIdReference}
+          promoAmount={promoAmount}
+          onPromoAmountChange={setPromoAmount}
+          paymentMethod={paymentMethod}
+          onPaymentMethodChange={setPaymentMethod}
+          isOnline={isOnline}
+          cashTendered={cashTendered}
+          onCashTenderedChange={setCashTendered}
+          change={change}
+          paymentProofKey={paymentProofKey}
+          onProofSelected={handleProofSelected}
+          onClearProof={handleClearProof}
+          chargeError={chargeError}
+          chargeDisabledReason={chargeDisabledReason}
+          canCharge={canCharge}
+          isChargePending={createTransaction.isPending}
+          onCharge={() => void handleCharge()}
+        />
       </div>
       </div>
 

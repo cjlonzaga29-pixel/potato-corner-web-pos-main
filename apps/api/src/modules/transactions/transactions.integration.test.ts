@@ -2,15 +2,18 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 /**
- * Integration tests exercise the real Prisma + Redis stack end to end,
+ * Integration tests exercise the real Prisma + Postgres stack end to end,
  * following the same convention as cash.integration.test.ts and
  * inventory.integration.test.ts. They require a real, disposable Postgres
- * database (migrations applied) and a real Redis instance, isolated from
- * the local dev database so these tests never touch seeded dev data.
+ * database (migrations applied), isolated from the local dev database so
+ * these tests never touch seeded dev data.
  *
- * Set TEST_DATABASE_URL and TEST_REDIS_URL to enable this suite.
+ * Gated on TEST_DATABASE_URL alone (NOT `&& TEST_REDIS_URL`) — Redis was
+ * fully removed in Phase 21; this module has no Redis dependency.
+ *
+ * Set TEST_DATABASE_URL to enable this suite.
  */
-const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL && process.env.TEST_REDIS_URL);
+const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL);
 
 // Imported unconditionally (not gated behind canRunIntegrationTests) so the
 // CR-004 suite below can use them at describe-body scope — `describe`
@@ -22,8 +25,8 @@ const { transactionsService } = await import('./transactions.service.js');
 
 describe.skipIf(!canRunIntegrationTests)('transactions integration', () => {
   beforeAll(async () => {
-    // TODO: point `prisma` at TEST_DATABASE_URL and `redis` at TEST_REDIS_URL,
-    // run `prisma migrate deploy` against the test database, and seed one
+    // TODO: point `prisma` at TEST_DATABASE_URL, run `prisma migrate deploy`
+    // against the test database, and seed one
     // branch, one super_admin, one supervisor (assigned to branch A only),
     // one staff member at branch A, an active product/variant/flavor with a
     // branch_product_availability row, and an open shift at branch A owned
@@ -33,7 +36,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration', () => {
   afterAll(async () => {
     // TODO: truncate transaction_items, transactions, shift_cash_denominations,
     // shifts, and audit_logs (in that order, respecting FKs), then close the
-    // Prisma/Redis connections opened for this suite.
+    // Prisma connection opened for this suite.
   });
 
   it('POST /api/transactions with a cash payment records the sale and returns a BIR-format receipt number', async () => {
@@ -304,5 +307,73 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
 
     expect(await prisma.transaction.count({ where: { branchId: branchD.branchId } })).toBe(0);
     await prisma.productVariant.delete({ where: { id: unrecipedVariant.id } });
+  });
+
+  // Task 194A Part B — deductInventoryForSale now takes a per-(branch, item)
+  // advisory lock, batch-reads every InventoryStock row in one query, and
+  // batch-inserts every InventoryStockMovement row in one query, instead of
+  // one read/insert per ingredient. These two tests are the only coverage
+  // that actually exercises two real, concurrently-committing Postgres
+  // transactions racing for the same InventoryStock row — proving the
+  // advisory lock still fully serializes them (no lost update / oversell)
+  // after that refactor, which a mocked unit test can't demonstrate.
+  it('two concurrent sales against stock sufficient for exactly one cannot both succeed', async () => {
+    const branchE = await createStockedBranch(200); // exactly one 200g sale's worth
+
+    const results = await Promise.allSettled([
+      transactionsService.createTransaction(
+        { branchId: branchE.branchId, shiftId: branchE.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', cashTendered: 100, isOfflineTransaction: false },
+        null,
+      ),
+      transactionsService.createTransaction(
+        { branchId: branchE.branchId, shiftId: branchE.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', cashTendered: 100, isOfflineTransaction: false },
+        null,
+      ),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+
+    const stockE = await prisma.inventoryStock.findUniqueOrThrow({
+      where: { branchId_inventoryItemId: { branchId: branchE.branchId, inventoryItemId: potatoId } },
+    });
+    expect(stockE.quantityOnHand.toNumber()).toBe(0); // exactly one 200g deduction, never both
+
+    const movementCount = await prisma.inventoryStockMovement.count({
+      where: { branchId: branchE.branchId, inventoryItemId: potatoId, movementType: 'SALE' },
+    });
+    expect(movementCount).toBe(1); // the losing attempt persisted no movement row at all
+  });
+
+  it('five concurrent sales against stock sufficient for exactly two succeed exactly twice, with matching movement rows', async () => {
+    const branchF = await createStockedBranch(500); // two 200g sales fit (400), a third does not
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () =>
+        transactionsService.createTransaction(
+          { branchId: branchF.branchId, shiftId: branchF.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', cashTendered: 100, isOfflineTransaction: false },
+          null,
+        ),
+      ),
+    );
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+    expect(fulfilled).toHaveLength(2);
+    expect(rejected).toHaveLength(3);
+    for (const r of rejected) expect(r.reason).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+
+    const stockF = await prisma.inventoryStock.findUniqueOrThrow({
+      where: { branchId_inventoryItemId: { branchId: branchF.branchId, inventoryItemId: potatoId } },
+    });
+    expect(stockF.quantityOnHand.toNumber()).toBe(100); // 500 - (2 * 200), never negative
+
+    const movementCount = await prisma.inventoryStockMovement.count({
+      where: { branchId: branchF.branchId, inventoryItemId: potatoId, movementType: 'SALE' },
+    });
+    expect(movementCount).toBe(2); // exactly one movement row per successful deduction, none for the losers
   });
 });

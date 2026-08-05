@@ -288,6 +288,32 @@ export const universalInventoryRepository = {
     });
   },
 
+  /**
+   * Batched counterpart to createStockMovement — one round trip for many
+   * ledger rows instead of one `create` per row. No `include`/return rows
+   * (createMany can't return them); use this only where callers don't need
+   * the created movement rows back (e.g. deductInventoryForSale, which
+   * already has everything it needs from the paired InventoryStock.update
+   * result).
+   */
+  createStockMovements(inputs: CreateStockMovementInput[], tx: Prisma.TransactionClient) {
+    return tx.inventoryStockMovement.createMany({
+      data: inputs.map((input) => ({
+        branchId: input.branchId,
+        inventoryItemId: input.inventoryItemId,
+        movementType: input.movementType,
+        quantityChange: input.quantityChange,
+        quantityBefore: input.quantityBefore,
+        quantityAfter: input.quantityAfter,
+        unitId: input.unitId,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        notes: input.notes,
+        performedByUserId: input.performedByUserId,
+      })),
+    });
+  },
+
   /** Every active, tracked InventoryItem's stock row at this branch — the sole Branch Inventory list data source (brief §2). */
   findBranchStockRows(branchId: string) {
     return prisma.inventoryStock.findMany({

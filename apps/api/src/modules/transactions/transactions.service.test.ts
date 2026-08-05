@@ -147,6 +147,9 @@ vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
 vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
   universalInventoryRepository: {
     createStockMovement: vi.fn().mockResolvedValue({ id: 'movement-1' }),
+    // Batched counterpart deductInventoryForSale now uses for its SALE
+    // ledger rows — createMany-shaped, so no rows are returned.
+    createStockMovements: vi.fn().mockResolvedValue({ count: 0 }),
     // Read by convertQuantity (unit-conversion.util.js) for Product Option
     // inventory deduction (Task 79) whenever a mapping's deductionUnitId
     // differs from the mapped InventoryItem's baseUnitId. No conversion row
@@ -197,6 +200,15 @@ const { transactionsService } = await import('./transactions.service.js');
 function decimal(value: number) {
   return { toNumber: () => value };
 }
+
+// deductInventoryForSale's batched InventoryStock read shares the same
+// prisma.inventoryStock.findMany mock as productReadinessService's
+// existence-only stock check (see the beforeEach implementation below,
+// which tells the two calls apart by whether `select` is present). Tests
+// that care about a specific starting quantity for the deduction pass set
+// inventoryItemId -> quantityOnHand here instead of mocking findMany
+// directly; anything left unset defaults to an auto-sufficient quantity.
+let inventoryStockLevels: Record<string, number> = {};
 
 function variantRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -324,6 +336,7 @@ const baseInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  inventoryStockLevels = {};
   mutableConfig.shadowBomDeductionEnabled = false;
   mutableConfig.shadowBomDeductionBranchIds = [];
   vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
@@ -369,8 +382,20 @@ beforeEach(() => {
   };
   vi.mocked(prisma.productComponent.findMany).mockImplementation((async () => buildComponentRows()) as never);
   vi.mocked(prisma.inventoryStock.findMany).mockImplementation((async (args: unknown) => {
-    const ids = ((args as { where?: { inventoryItemId?: { in?: string[] } } })?.where?.inventoryItemId?.in ?? []) as string[];
-    return ids.map((id) => ({ inventoryItemId: id }));
+    const call = args as { where?: { inventoryItemId?: { in?: string[] } }; select?: unknown };
+    const ids = (call?.where?.inventoryItemId?.in ?? []) as string[];
+    if (call?.select) {
+      // productReadinessService's existence-only stock check — unchanged shape.
+      return ids.map((id) => ({ inventoryItemId: id }));
+    }
+    // deductInventoryForSale's batched read — auto-sufficient unless a test
+    // sets inventoryStockLevels[id] itself.
+    return ids.map((id) => ({
+      inventoryItemId: id,
+      quantityOnHand: decimal(inventoryStockLevels[id] ?? 1_000_000),
+      lowStockThreshold: null,
+      criticalThreshold: null,
+    }));
   }) as never);
   vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
@@ -1889,9 +1914,7 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([
       { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
     ] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
-      quantityOnHand: decimal(10),
-    } as never);
+    inventoryStockLevels['item-flour'] = 10;
     vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
       id: 'stock-1',
       quantityOnHand: decimal(8),
@@ -1905,15 +1928,17 @@ describe('transactionsService.createTransaction — branch inventory cutover led
       where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: 'item-flour' } },
       data: { quantityOnHand: { decrement: 2 }, version: { increment: 1 } },
     });
-    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
-      expect.objectContaining({
-        branchId: 'branch-1',
-        inventoryItemId: 'item-flour',
-        movementType: 'SALE',
-        unitId: 'unit-g',
-        referenceType: 'transaction',
-        referenceId: 'txn-1',
-      }),
+    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          branchId: 'branch-1',
+          inventoryItemId: 'item-flour',
+          movementType: 'SALE',
+          unitId: 'unit-g',
+          referenceType: 'transaction',
+          referenceId: 'txn-1',
+        }),
+      ],
       expect.anything(),
     );
   });
@@ -1922,15 +1947,13 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([
       { inventoryItemId: 'item-flour', quantity: 5, baseUnitId: 'unit-g' },
     ] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
-      quantityOnHand: decimal(1),
-    } as never);
+    inventoryStockLevels['item-flour'] = 1;
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
       code: 'INSUFFICIENT_STOCK',
     });
     expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
-    expect(universalInventoryRepository.createStockMovement).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
   });
 
   it('increments InventoryStock and records a SALE_REVERSAL movement when voiding a transaction with a stock-shaped deduction snapshot', async () => {
@@ -1990,11 +2013,7 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
 
   beforeEach(() => {
     vi.mocked(computeBomDeduction).mockResolvedValue(bomLines as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockImplementation((async (args: unknown) => {
-      const id = (args as { where: { branchId_inventoryItemId: { inventoryItemId: string } } }).where.branchId_inventoryItemId
-        .inventoryItemId;
-      return { quantityOnHand: decimal(stockOnHand[id] ?? 0) };
-    }) as never);
+    Object.assign(inventoryStockLevels, stockOnHand);
     vi.mocked(prisma.inventoryStock.update).mockImplementation((async (args: unknown) => {
       const call = args as {
         where: { branchId_inventoryItemId: { inventoryItemId: string } };
@@ -2034,13 +2053,20 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
     }
   });
 
-  // Test C
-  it('creates exactly one InventoryStockMovement row per BOM component', async () => {
+  // Test C — one batched createMany call instead of one `create` per
+  // component, but still exactly one InventoryStockMovement row per BOM
+  // component in that call's payload.
+  it('creates exactly one InventoryStockMovement row per BOM component, in a single batched call', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledTimes(bomLines.length);
+    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledTimes(1);
+    const [movementInputs] = vi.mocked(universalInventoryRepository.createStockMovements).mock.calls[0] as never as [
+      Record<string, unknown>[],
+      unknown,
+    ];
+    expect(movementInputs).toHaveLength(bomLines.length);
     for (const line of bomLines) {
-      expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
+      expect(movementInputs).toContainEqual(
         expect.objectContaining({
           branchId: 'branch-1',
           inventoryItemId: line.inventoryItemId,
@@ -2048,7 +2074,6 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
           unitId: line.baseUnitId,
           referenceType: 'transaction',
         }),
-        expect.anything(),
       );
     }
   });
@@ -2114,7 +2139,7 @@ describe('transactionsService.createTransaction — forced transaction-timeout h
 
   it('still surfaces INSUFFICIENT_STOCK as-is (409) rather than reclassifying it as a timeout', async () => {
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 5, baseUnitId: 'unit-g' }] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(1) } as never);
+    inventoryStockLevels['item-flour'] = 1;
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({
       code: 'INSUFFICIENT_STOCK',
@@ -2185,7 +2210,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
     ] as never);
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
     vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([]);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(10) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
@@ -2210,7 +2234,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
     ] as never);
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] as never);
     vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([inventoryMappingRow()] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
@@ -2240,7 +2263,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
     vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
       inventoryMappingRow({ productOptionId: 'option-bbq', inventoryItemId: 'item-bbq-seasoning' }),
     ] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 2, selectedOptionIds: ['option-bbq'] }] },
@@ -2267,7 +2289,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
     vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
       inventoryMappingRow({ inventoryItemId: 'item-cheese', quantityRequired: 3, deductionUnitId: 'unit-g', inventoryItem: { baseUnitId: 'unit-g', deletedAt: null } }),
     ] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(10) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-cheese'] }] },
@@ -2300,7 +2321,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
       }),
     ] as never);
     vi.mocked(universalInventoryRepository.findConversion).mockResolvedValueOnce({ factor: 15 } as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(100) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
@@ -2334,7 +2354,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
       }),
     ] as never);
     vi.mocked(universalInventoryRepository.findItemConversion).mockResolvedValueOnce({ factor: 6 } as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(100) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-bbq'] }] },
@@ -2385,7 +2404,7 @@ describe('transactionsService.createTransaction — Product Option inventory ded
         inventoryItem: { baseUnitId: 'unit-g', deletedAt: null },
       }),
     ] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(1) } as never);
+    inventoryStockLevels['item-cheese-topping'] = 1;
 
     await expect(
       transactionsService.createTransaction(
@@ -2394,7 +2413,7 @@ describe('transactionsService.createTransaction — Product Option inventory ded
       ),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
     expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
-    expect(universalInventoryRepository.createStockMovement).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
   });
 
   it('rejects with a checkout-safe TransactionError, not a raw UnitConversionError, when no UnitConversion row bridges the mapping unit to the inventory item base unit', async () => {
@@ -2446,7 +2465,6 @@ describe('transactionsService.createTransaction — Product Option inventory ded
     ] as never);
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
     vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([inventoryMappingRow()] as never);
-    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValue({ quantityOnHand: decimal(1000) } as never);
 
     await transactionsService.createTransaction(
       { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: cartQuantity, selectedOptionIds: ['option-cheese'] }] },

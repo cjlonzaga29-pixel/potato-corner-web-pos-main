@@ -71,6 +71,17 @@ function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
+// Single source of truth for the product grid's column breakpoints, shared
+// by the real grid and the loading-skeleton grid so they can never drift out
+// of sync. Column counts target the task's example breakpoints: 2 on phones,
+// 3 from tablet (lg, 1024px — where the cart panel also switches from a
+// bottom Sheet to an inline side panel) through approaching laptop widths,
+// 4 from xl (1280px), 5 from 2xl (1536px, desktop). `pb-24`/`lg:pb-4` leaves
+// room for the mobile sticky "View Cart" bar, which overlaps the bottom of
+// this scroll region below `lg`.
+const PRODUCT_GRID_CLASSES =
+  'grid grid-cols-2 content-start gap-1.5 p-3 pb-24 md:grid-cols-3 lg:grid-cols-3 lg:gap-2 lg:p-4 lg:pb-4 xl:grid-cols-4 2xl:grid-cols-5';
+
 function round2(amount: number): number {
   return Math.round(amount * 100) / 100;
 }
@@ -728,7 +739,10 @@ export default function TerminalPage() {
     [items, variantIndex],
   );
 
-  const subtotal = round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0));
+  // Memoized alongside cartLines/previewAmounts below — same reasoning: this
+  // used to recompute on every render (e.g. every Cash Tendered keystroke)
+  // even though its only real inputs are cartLines, which are already memoized.
+  const subtotal = useMemo(() => round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0)), [cartLines]);
   const { discountAmount, vatAmount, totalAmount } = useMemo(
     () => previewAmounts(cartLines, discountType, Number(promoAmount)),
     [cartLines, discountType, promoAmount],
@@ -997,7 +1011,7 @@ export default function TerminalPage() {
   );
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="absolute inset-0 flex flex-col overflow-hidden bg-background">
       {!isOnline && (
         <div className="bg-warning px-4 py-1 text-center text-xs font-medium text-warning-foreground">
           Offline — sales will be queued and synced automatically once you reconnect.
@@ -1053,12 +1067,9 @@ export default function TerminalPage() {
 
         <div className="lg:flex-1 lg:overflow-y-auto">
           {isCatalogLoading && catalog.length === 0 ? (
-            <div
-              className="grid grid-cols-2 content-start gap-2 p-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
-              aria-hidden="true"
-            >
+            <div className={PRODUCT_GRID_CLASSES} aria-hidden="true">
               {Array.from({ length: 12 }, (_, i) => (
-                <Skeleton key={i} className="h-[136px] rounded-xl" />
+                <Skeleton key={i} className="h-[104px] rounded-xl" />
               ))}
             </div>
           ) : isCatalogError && catalog.length === 0 ? (
@@ -1080,7 +1091,7 @@ export default function TerminalPage() {
               }
             />
           ) : (
-            <div className="grid grid-cols-2 content-start gap-2 p-4 pb-24 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 lg:pb-4 xl:grid-cols-5 2xl:grid-cols-6">
+            <div className={PRODUCT_GRID_CLASSES}>
               {visibleProducts.map((product) =>
                 product.variants.map((variant) => (
                   <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />
@@ -1209,7 +1220,7 @@ export default function TerminalPage() {
       {/* RIGHT PANEL — cart + payment. ~34% width on desktop (lg:w-1/3), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone. */}
       {isDesktop && (
         <div className="hidden flex-col border-t lg:flex lg:w-1/3 lg:flex-none lg:overflow-hidden lg:border-t-0">
-          <div className="p-4 lg:flex-1 lg:overflow-y-auto">
+          <div className="p-3 lg:flex-1 lg:overflow-y-auto">
             <h2 className="sr-only">Cart</h2>
             {cartLinesList}
           </div>
@@ -1237,10 +1248,10 @@ export default function TerminalPage() {
 
           <Sheet open={isCartSheetOpen} onOpenChange={setIsCartSheetOpen}>
             <SheetContent side="bottom" className="flex h-[92vh] flex-col gap-0 p-0">
-              <SheetHeader className="border-b p-4 text-left">
+              <SheetHeader className="border-b p-3 text-left">
                 <SheetTitle>Cart</SheetTitle>
               </SheetHeader>
-              <div className="flex-1 overflow-y-auto p-4">{cartLinesList}</div>
+              <div className="flex-1 overflow-y-auto p-3">{cartLinesList}</div>
               {paymentFooterElement}
             </SheetContent>
           </Sheet>

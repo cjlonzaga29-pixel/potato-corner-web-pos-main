@@ -49,7 +49,17 @@ export default function BranchLayout({ children }: { children: ReactNode }) {
           profileHref="/branch/profile"
           fallbackInitials="BR"
         />
-        <main className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8">{children}</main>
+        {/*
+          `relative` lets a full-bleed page (currently only /branch/terminal)
+          opt out of this padding/scroll box via `absolute inset-0` on its own
+          root element — CSS positions an absolutely-positioned descendant
+          against the padding edge, so it fills exactly this <main>'s box
+          ignoring the padding, and this <main>'s own overflow-y-auto becomes
+          inert for that page since nothing then overflows it. Every other
+          route is unaffected — `relative` with no absolutely-positioned
+          child changes nothing visually.
+        */}
+        <main className="relative flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
     </div>
   );

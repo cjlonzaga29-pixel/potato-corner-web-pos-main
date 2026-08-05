@@ -51,7 +51,7 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
       aria-disabled={!isAvailable}
       aria-label={ariaLabel}
       data-render-count={renderCountRef.current}
-      className={`group flex h-full min-h-[136px] flex-col overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+      className={`group flex h-full min-h-[104px] flex-col overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isAvailable
           ? 'cursor-pointer hover:-translate-y-0.5 hover:border-primary hover:shadow-md active:translate-y-0 active:scale-[0.98]'
           : 'cursor-not-allowed opacity-60'
@@ -64,24 +64,24 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         }
       }}
     >
-      <CardContent className="flex h-full flex-col gap-1.5 p-3">
+      <CardContent className="flex h-full flex-col gap-1 p-2.5">
         <div className="flex items-center justify-between gap-1">
           <div
-            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${
               isAvailable ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
             }`}
             aria-hidden="true"
           >
-            <Utensils className="h-4 w-4" />
+            <Utensils className="h-3.5 w-3.5" />
           </div>
-          {!isAvailable && <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />}
+          {!isAvailable && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-hidden="true" />}
         </div>
 
-        <p className="line-clamp-2 min-h-[2.25rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
+        <p className="line-clamp-2 min-h-[2rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
         <p className="truncate text-xs text-muted-foreground">{variant.name}</p>
 
-        <div className="mt-auto flex items-end justify-between gap-1 pt-1">
-          <p className="text-base font-bold tabular-nums text-foreground">{formatPeso(variant.price)}</p>
+        <div className="mt-auto flex items-end justify-between gap-1 pt-0.5">
+          <p className="text-sm font-bold tabular-nums text-foreground">{formatPeso(variant.price)}</p>
         </div>
 
         {message && (

@@ -69,8 +69,8 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
 
   return (
     <div data-render-count={renderCountRef.current}>
-      {showDivider && <Separator className="mb-3" />}
-      <div className="space-y-2 rounded-lg text-sm">
+      {showDivider && <Separator className="mb-2" />}
+      <div className="space-y-1.5 rounded-lg text-sm">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
             <p className="line-clamp-2 font-semibold leading-snug text-foreground">

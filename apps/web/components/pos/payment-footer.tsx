@@ -102,8 +102,8 @@ export const PaymentFooter = memo(function PaymentFooter({
   onCharge,
 }: PaymentFooterProps) {
   return (
-    <div className="sticky bottom-0 z-10 space-y-4 border-t bg-card p-4 lg:static">
-      <div className="space-y-1.5 text-sm" aria-label="Order totals">
+    <div className="sticky bottom-0 z-10 space-y-2.5 border-t bg-card p-3 lg:static">
+      <div className="space-y-1 text-sm" aria-label="Order totals">
         <div className="flex justify-between">
           <span className="text-muted-foreground">Subtotal</span>
           <span className="tabular-nums">{formatPeso(subtotal)}</span>
@@ -118,11 +118,11 @@ export const PaymentFooter = memo(function PaymentFooter({
             <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
           </div>
         )}
-        <Separator className="my-2" />
-        <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-3 py-2">
-          <span className="text-base font-semibold">Total</span>
-          <span className="flex items-center gap-1.5 text-2xl font-bold tabular-nums text-primary">
-            <Receipt className="h-5 w-5 text-primary/70" aria-hidden="true" />
+        <Separator className="my-1.5" />
+        <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-2.5 py-1.5">
+          <span className="text-sm font-semibold">Total</span>
+          <span className="flex items-center gap-1.5 text-xl font-bold tabular-nums text-primary">
+            <Receipt className="h-4 w-4 text-primary/70" aria-hidden="true" />
             {formatPeso(totalAmount)}
           </span>
         </div>

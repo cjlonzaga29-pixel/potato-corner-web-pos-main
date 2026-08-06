@@ -118,7 +118,7 @@ export default function ProductOptionGroupDetailPage({ params }: { params: Promi
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" onClick={() => router.push('/admin/product-options')} className="-ml-2">
         <ArrowLeft className="mr-2 h-4 w-4" />
         Back to Option Groups
@@ -126,7 +126,7 @@ export default function ProductOptionGroupDetailPage({ params }: { params: Promi
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">{group.name}</h1>
+          <h1 className="app-title font-bold">{group.name}</h1>
           <p className="text-sm text-muted-foreground">
             {group.code} · {group.selection_type === 'SINGLE' ? 'Single selection' : 'Multiple selection'} · min {group.min_selections} / max{' '}
             {group.max_selections ?? '∞'}

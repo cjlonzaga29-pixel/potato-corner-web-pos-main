@@ -61,12 +61,13 @@ export function SupervisorSidebar() {
   return (
     <>
     <aside
-      className={cn(
-        'glass-panel hidden h-screen flex-col border-r transition-all duration-200 lg:flex',
-        collapsed ? 'w-16' : 'w-64',
-      )}
+      className="glass-panel hidden h-screen flex-col border-r transition-all duration-200 lg:flex"
+      style={{ width: collapsed ? 'var(--app-sidebar-collapsed-width)' : 'var(--app-sidebar-width)' }}
     >
-      <div className="flex h-16 items-center justify-between border-b border-border/60 px-3">
+      <div
+        className="flex items-center justify-between border-b border-border/60 px-3"
+        style={{ height: 'var(--app-header-height)' }}
+      >
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">

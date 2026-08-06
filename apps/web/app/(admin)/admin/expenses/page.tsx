@@ -88,10 +88,10 @@ function ExpensesPageContent() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold">Expenses</h1>
+          <h1 className="app-title font-bold">Expenses</h1>
           <p className="text-sm text-muted-foreground">Branch operating expenses and receipts</p>
         </div>
         <div className="flex items-center gap-2">
@@ -105,7 +105,7 @@ function ExpensesPageContent() {
       <Card>
         <CardContent className="pt-6">
           <p className="text-sm text-muted-foreground">Total</p>
-          <p className="text-2xl font-bold">{formatCurrency(data?.total_amount ?? 0)}</p>
+          <p className="app-kpi-value font-bold">{formatCurrency(data?.total_amount ?? 0)}</p>
         </CardContent>
       </Card>
 

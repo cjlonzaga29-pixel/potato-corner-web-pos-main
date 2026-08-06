@@ -63,7 +63,10 @@ export function DashboardHeader({ navItems, homeHref, homeLabel, profileHref, fa
   const lastFallback = fallbackInitials.charAt(1) || 'D';
 
   return (
-    <header className="flex h-16 shrink-0 items-center gap-2 border-b border-border/60 bg-card/60 px-3 backdrop-blur-xl sm:gap-4 sm:px-4 lg:px-6">
+    <header
+      className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-card/60 px-3 backdrop-blur-xl sm:gap-4 sm:px-4 lg:px-6"
+      style={{ height: 'var(--app-header-height)' }}
+    >
       <Button
         type="button"
         variant="ghost"

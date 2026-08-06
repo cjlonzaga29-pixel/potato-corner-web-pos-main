@@ -43,6 +43,133 @@
     --chart-4: 42 96% 48%;
     --chart-5: 0 0% 53%;
     --chart-6: 271 60% 58%;
+
+    /*
+     * Adaptive density tokens for the authenticated app shell (admin/
+     * supervisor/branch/POS). clamp() lets each value scale continuously
+     * with viewport width instead of jumping at breakpoints, so 1366x768
+     * and 1920x1080 both land somewhere sane without a step function.
+     * The height-aware override below (`@media ... and (max-height)`)
+     * further compresses these for short-viewport laptops where width
+     * alone doesn't capture the "not enough vertical room" problem.
+     */
+    --app-sidebar-width: clamp(13rem, 11.3rem + 3.5vw, 16rem);
+    --app-sidebar-collapsed-width: 4rem;
+    --app-header-height: clamp(3rem, 2.75rem + 0.6vw, 4rem);
+    --app-page-padding-x: clamp(1rem, 0.7rem + 1vw, 2rem);
+    --app-page-padding-y: clamp(0.75rem, 0.55rem + 0.6vw, 1.5rem);
+    --app-section-gap: clamp(0.75rem, 0.6rem + 0.5vw, 1.5rem);
+    --app-card-padding: clamp(0.875rem, 0.7rem + 0.6vw, 1.5rem);
+    --app-card-min-height: clamp(120px, 100px + 4vh, 168px);
+    --app-control-height: clamp(2.25rem, 2.1rem + 0.3vw, 2.5rem);
+    --app-table-row-height: clamp(2.5rem, 2.3rem + 0.3vw, 3rem);
+    --app-dialog-padding: clamp(1rem, 0.8rem + 0.8vw, 1.5rem);
+    --app-radius: var(--radius);
+    --app-title-size: clamp(1.25rem, 1.05rem + 0.7vw, 1.75rem);
+    --app-subtitle-size: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+    --app-body-size: 0.875rem;
+    --app-kpi-value-size: clamp(1.5rem, 1.25rem + 1vw, 2.25rem);
+    --app-kpi-label-size: 0.8125rem;
+    --app-icon-size: clamp(1rem, 0.94rem + 0.25vw, 1.25rem);
+    /* POS terminal product tile height and cart/checkout panel width — same
+     * continuous-scaling treatment as the tokens above. */
+    --app-pos-card-min-height: clamp(100px, 88px + 1vw, 116px);
+    --app-pos-cart-width: 30%;
+  }
+
+  /*
+   * Height-aware compact mode: laptops/desktops that report >=1024px wide
+   * but <=820px tall (1366x768, 1280x720, 1280x800, 1536x864 with browser
+   * chrome eating into viewport height, etc). Width-only breakpoints miss
+   * this case entirely, so this is what actually fixes the "oversized at
+   * 100% zoom on a common laptop" complaint. Never applies to touch
+   * tablet/mobile layouts (those key off width, not height, elsewhere).
+   */
+  @media (min-width: 1024px) and (max-height: 820px) {
+    :root {
+      --app-sidebar-width: 13rem;
+      --app-header-height: 3rem;
+      --app-page-padding-x: 1rem;
+      --app-page-padding-y: 0.625rem;
+      --app-section-gap: 0.625rem;
+      --app-card-padding: 0.875rem;
+      --app-card-min-height: 128px;
+      --app-control-height: 2.25rem;
+      --app-table-row-height: 2.375rem;
+      --app-dialog-padding: 1rem;
+      --app-title-size: 1.25rem;
+      --app-kpi-value-size: 1.75rem;
+      --app-icon-size: 1rem;
+      --app-pos-card-min-height: 90px;
+      --app-pos-cart-width: 30%;
+    }
+  }
+
+  /*
+   * Task 200 (adaptive density engine) — full 5-tier system. The two blocks
+   * above (`:root` defaults + the height-aware media query) already cover
+   * `standard` and `compact` and stay exactly as they were — this JS-driven
+   * `data-density` attribute (set by <DensityAttribute> on <html>, see
+   * components/shared/density-attribute.tsx) adds the 3 tiers a pure media
+   * query can't reach on its own: `comfortable` (a lot of room), and the two
+   * pointer/touch-aware tiers `compact-touch` and `mobile` (which also key
+   * off touch/hover capability, not just width/height).
+   *
+   * Every block below uses an attribute selector on `:root`
+   * (`:root[data-density="..."]`), which is more specific than the plain
+   * `:root` selector the two blocks above use — so these always win over
+   * the CSS-only defaults once JS has classified the viewport, regardless
+   * of source order or which media query also happens to match.
+   */
+  :root[data-density='comfortable'] {
+    --app-sidebar-width: 16rem;
+    --app-sidebar-collapsed-width: 4rem;
+    --app-header-height: 3.75rem;
+    --app-page-padding-x: 1.75rem;
+    --app-page-padding-y: 1.5rem;
+    --app-section-gap: 1.25rem;
+    --app-card-padding: 1.375rem;
+    --app-card-min-height: 158px;
+    --app-control-height: 2.75rem;
+    --app-table-row-height: 2.875rem;
+    --app-dialog-padding: 1.5rem;
+    --app-title-size: 1.75rem;
+    --app-kpi-value-size: 2.25rem;
+    --app-icon-size: 1.25rem;
+    --app-pos-card-min-height: 122px;
+    --app-pos-cart-width: 30%;
+  }
+
+  /*
+   * Touch-first: controls/rows are pinned at the 44px non-negotiable touch
+   * target regardless of how much width is available (a touch laptop at
+   * 1920px still gets 44px controls, not the fine-pointer `comfortable`
+   * sizing) — pointer precision, not screen size, drives this tier.
+   */
+  :root[data-density='compact-touch'] {
+    --app-page-padding-x: 1rem;
+    --app-page-padding-y: 0.875rem;
+    --app-section-gap: 0.875rem;
+    --app-card-padding: 1rem;
+    --app-control-height: 2.75rem;
+    --app-table-row-height: 2.875rem;
+    --app-dialog-padding: 1.25rem;
+    --app-pos-card-min-height: 108px;
+    --app-pos-cart-width: 32%;
+  }
+
+  :root[data-density='mobile'] {
+    --app-sidebar-width: 100vw;
+    --app-page-padding-x: 0.75rem;
+    --app-page-padding-y: 0.75rem;
+    --app-section-gap: 0.75rem;
+    --app-card-padding: 0.875rem;
+    --app-card-min-height: 132px;
+    --app-control-height: 2.75rem;
+    --app-table-row-height: 2.875rem;
+    --app-dialog-padding: 1rem;
+    --app-title-size: 1.375rem;
+    --app-pos-card-min-height: 92px;
   }
 
   .dark {
@@ -116,6 +243,156 @@
   .bg-grid-fade {
     background-image: radial-gradient(circle at 1px 1px, hsl(var(--border) / 0.4) 1px, transparent 0);
     background-size: 24px 24px;
+  }
+
+  /*
+   * Shared density primitives (Task 200). Every authenticated route pulls
+   * spacing/type sizing from these instead of hardcoding p-4/p-8/text-2xl
+   * etc, so one token edit (see :root above) redensifies the whole app —
+   * no per-page overrides to hunt down later.
+   */
+  .app-page {
+    padding-inline: var(--app-page-padding-x);
+    padding-block: var(--app-page-padding-y);
+  }
+
+  .app-page-header {
+    padding-block-end: 0.25rem;
+  }
+
+  .app-title {
+    font-size: var(--app-title-size);
+    line-height: 1.25;
+  }
+
+  .app-subtitle {
+    font-size: var(--app-subtitle-size);
+  }
+
+  .app-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .app-section-gap {
+    gap: var(--app-section-gap);
+  }
+
+  .app-card {
+    padding: var(--app-card-padding);
+  }
+
+  .app-card-padding {
+    padding: var(--app-card-padding);
+  }
+
+  .app-kpi-card {
+    min-height: var(--app-card-min-height);
+  }
+
+  .app-kpi-value {
+    font-size: var(--app-kpi-value-size);
+  }
+
+  .app-kpi-label {
+    font-size: var(--app-kpi-label-size);
+  }
+
+  /*
+   * Task 200 — KPI grid column counts, density-aware. `.app-kpi-grid-4/3/2`
+   * replace the hardcoded `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4`-style
+   * strings the Admin/Supervisor/Branch dashboards used to carry inline,
+   * named for the max column count each reaches at desktop width. Under
+   * `compact-touch` and `mobile`, the attribute-selector overrides below win
+   * regardless of viewport width (specificity: an attribute selector on
+   * `:root` beats a bare class selector, even one scoped to a wider media
+   * query) — compact-touch is pinned to exactly 2 columns (bigger tap
+   * targets, not more of them) and mobile collapses to 1.
+   */
+  .app-kpi-grid-4,
+  .app-kpi-grid-3,
+  .app-kpi-grid-2 {
+    display: grid;
+    gap: var(--app-section-gap);
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+
+  @media (min-width: 640px) {
+    .app-kpi-grid-4,
+    .app-kpi-grid-3 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .app-kpi-grid-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .app-kpi-grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .app-kpi-grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  :root[data-density='compact-touch'] .app-kpi-grid-4,
+  :root[data-density='compact-touch'] .app-kpi-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root[data-density='mobile'] .app-kpi-grid-4,
+  :root[data-density='mobile'] .app-kpi-grid-3,
+  :root[data-density='mobile'] .app-kpi-grid-2 {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+
+  .app-control {
+    height: var(--app-control-height);
+  }
+
+  .app-table-density th,
+  .app-table-density td {
+    height: var(--app-table-row-height);
+  }
+
+  .app-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .app-form-grid {
+    display: grid;
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+    gap: var(--app-section-gap);
+  }
+
+  @media (min-width: 640px) {
+    .app-form-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .app-dialog-padding {
+    padding: var(--app-dialog-padding);
+  }
+
+  /* POS terminal product tile min-height and the desktop cart/checkout panel width — density-aware equivalents of the old hardcoded `min-h-[104px]` / `lg:w-[30%]`. */
+  .app-pos-card {
+    min-height: var(--app-pos-card-min-height);
+  }
+
+  .app-pos-cart-width {
+    width: var(--app-pos-cart-width);
+  }
+
+  /* Opt-in escape hatch for one-off elements that need to shrink under the height-aware breakpoint but aren't covered by a token above. */
+  @media (min-width: 1024px) and (max-height: 820px) {
+    .compact-height {
+      padding-block: 0.5rem;
+    }
   }
 }
 

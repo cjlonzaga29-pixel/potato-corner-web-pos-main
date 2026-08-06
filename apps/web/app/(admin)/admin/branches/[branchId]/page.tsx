@@ -55,7 +55,7 @@ export default function BranchDetailPage({ params }: BranchDetailPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
         <Link href="/admin/branches">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -66,7 +66,7 @@ export default function BranchDetailPage({ params }: BranchDetailPageProps) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">{branch.name}</h1>
+            <h1 className="app-title font-bold">{branch.name}</h1>
             <StatusBadge status={branch.status} />
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

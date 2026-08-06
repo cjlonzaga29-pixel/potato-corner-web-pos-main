@@ -52,10 +52,10 @@ export default function UnitsOfMeasurePage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold">Units</h1>
+          <h1 className="app-title font-bold">Units</h1>
           <p className="text-sm text-muted-foreground">Measurement units for Universal Inventory items and their conversions.</p>
         </div>
         <Button onClick={() => setDialogOpen(true)} className="w-full sm:w-auto">

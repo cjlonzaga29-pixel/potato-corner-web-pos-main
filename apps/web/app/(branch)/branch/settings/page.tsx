@@ -37,9 +37,9 @@ export default function BranchSettingsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Branch Settings</h1>
+        <h1 className="app-title font-bold">Branch Settings</h1>
         <p className="text-sm text-muted-foreground">Your branch&apos;s profile. Contact Super Admin to change any of this.</p>
       </div>
 

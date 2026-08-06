@@ -3,11 +3,11 @@
 import { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
+import { ChartSkeleton } from '@/components/shared/charts/chart-skeleton';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
 import {
   useDashboardSalesTrendReport,
@@ -134,7 +134,7 @@ export function SalesAnalyticsSection({ branchId, inventoryCostTooltip }: SalesA
             <CardTitle className="text-sm font-medium">Gross Sales ({PERIOD_LABEL[period]})</CardTitle>
           </CardHeader>
           <CardContent>
-            {isLoading ? <Skeleton className="h-[300px] w-full" /> : (
+            {isLoading ? <ChartSkeleton /> : (
               <AreaChart
                 data={trendData}
                 areas={[{ dataKey: 'gross_sales', color: paletteColor(0), name: 'Gross Sales' }]}
@@ -150,7 +150,7 @@ export function SalesAnalyticsSection({ branchId, inventoryCostTooltip }: SalesA
             <CardTitle className="text-sm font-medium">Payment Breakdown</CardTitle>
           </CardHeader>
           <CardContent>
-            {isLoading ? <Skeleton className="h-[300px] w-full" /> : <DonutChart data={paymentBreakdownData} animate={false} />}
+            {isLoading ? <ChartSkeleton /> : <DonutChart data={paymentBreakdownData} animate={false} />}
           </CardContent>
         </Card>
       </div>

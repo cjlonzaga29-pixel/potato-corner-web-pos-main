@@ -22,7 +22,7 @@ interface DashboardKpiRowProps {
  */
 export function DashboardKpiRow({ grossSalesToday, grossSalesMonth, transactionsToday, averageOrderValue, isLoading }: DashboardKpiRowProps) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="app-kpi-grid-4">
       <KpiCard
         title="Gross Sales Today"
         value={grossSalesToday ?? 0}

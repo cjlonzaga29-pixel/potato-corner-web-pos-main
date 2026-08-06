@@ -39,7 +39,7 @@ export default function FlavorDetailPage({ params }: FlavorDetailPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
         <Link href="/admin/flavors">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -52,7 +52,7 @@ export default function FlavorDetailPage({ params }: FlavorDetailPageProps) {
           <FlavorColorSwatch colorHex={flavor.color_hex} className="h-8 w-8" />
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold">{flavor.name}</h1>
+              <h1 className="app-title font-bold">{flavor.name}</h1>
               <Badge variant={flavor.is_active ? 'active' : 'inactive'}>{flavor.is_active ? 'Active' : 'Inactive'}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">{flavor.color_hex}</p>

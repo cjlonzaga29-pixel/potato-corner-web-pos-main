@@ -84,7 +84,7 @@ function AdminDashboardPageContent() {
   const inactiveBranchCount = branchList?.branches.filter((b) => b.status !== 'active').length;
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <DashboardPageHeader
         title="Super Admin Dashboard"
         subtitle="Live overview across every branch."
@@ -104,7 +104,7 @@ function AdminDashboardPageContent() {
         isLoading={isLoadingBranchStats || monthTrend.isLoading}
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="app-kpi-grid-4">
         <KpiCard title="Today's Expenses" value={todayExpenses ?? 0} prefix="₱" isLoading={isLoadingBranchStats} icon={TrendingDown} />
         <KpiCard title="Staff Clocked In" value={staffClockedIn ?? 0} isLoading={isLoadingBranchStats} icon={Users} />
         <KpiCard

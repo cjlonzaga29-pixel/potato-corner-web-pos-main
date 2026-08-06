@@ -60,7 +60,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
         <Link href="/admin/products">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -71,7 +71,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold">{product.name}</h1>
+            <h1 className="app-title font-bold">{product.name}</h1>
             <ProductStatusBadge status={product.status} />
             <SeasonalBadge isSeasonal={product.is_seasonal} />
           </div>

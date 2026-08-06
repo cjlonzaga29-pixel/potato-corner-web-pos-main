@@ -68,12 +68,12 @@ export function KpiCard({
 }: KpiCardProps) {
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+      <Card className="app-kpi-card">
+        <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
           <Skeleton className="h-4 w-24" />
-          {Icon && <Skeleton className="h-9 w-9 rounded-xl" />}
+          {Icon && <Skeleton className="h-8 w-8 rounded-xl" />}
         </CardHeader>
-        <CardContent>
+        <CardContent className="app-card-padding pt-0">
           <Skeleton className={cn('w-32', emphasize ? 'h-9' : 'h-8')} />
         </CardContent>
       </Card>
@@ -86,9 +86,9 @@ export function KpiCard({
   const percentageChange = previousValue !== undefined ? calculatePercentageChange(value, previousValue) : null;
 
   return (
-    <Card className={cn('hover-elevate', tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`)}>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+    <Card className={cn('app-kpi-card hover-elevate', tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`)}>
+      <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="app-kpi-label flex items-center gap-1.5 font-medium text-muted-foreground">
           {title}
           {tooltip && (
             <TooltipProvider>
@@ -102,13 +102,13 @@ export function KpiCard({
           )}
         </CardTitle>
         {Icon && (
-          <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl', TONE_ICON_CHIP[tone])}>
-            <Icon className="h-4 w-4" />
+          <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-xl', TONE_ICON_CHIP[tone])}>
+            <Icon style={{ height: 'var(--app-icon-size)', width: 'var(--app-icon-size)' }} />
           </div>
         )}
       </CardHeader>
-      <CardContent>
-        <div className={cn(emphasize ? 'text-3xl' : 'text-2xl', 'font-bold', TONE_TEXT[tone])}>
+      <CardContent className="app-card-padding pt-0">
+        <div className={cn('app-kpi-value font-bold', emphasize && 'font-extrabold', TONE_TEXT[tone])}>
           {prefix}
           <span className="tabular-nums">
             {Intl.NumberFormat('en-US', {
@@ -119,7 +119,7 @@ export function KpiCard({
           {suffix}
         </div>
         {resolvedTrend && TrendIcon && (
-          <div className="mt-2 flex items-center gap-1.5">
+          <div className="mt-1.5 flex items-center gap-1.5">
             <span className={cn('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium', TREND_BADGE[resolvedTrend])}>
               <TrendIcon className="h-3 w-3" />
               {percentageChange !== null && `${Math.abs(percentageChange).toFixed(1)}%`}

@@ -4,9 +4,9 @@ import { Badge } from '@/components/ui/badge';
 
 export default function MayaQrPage() {
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-3xl app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Maya / PayMaya QR</h1>
+        <h1 className="app-title font-bold">Maya / PayMaya QR</h1>
         <p className="text-sm text-muted-foreground">Maya payment QR setup will be available soon.</p>
       </div>
 

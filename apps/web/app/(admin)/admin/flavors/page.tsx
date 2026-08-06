@@ -71,9 +71,9 @@ export default function FlavorManagementPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Flavor Management</h1>
+        <h1 className="app-title font-bold">Flavor Management</h1>
         <p className="text-sm text-muted-foreground">Manage flavors, their colors, and branch-level availability.</p>
       </div>
 

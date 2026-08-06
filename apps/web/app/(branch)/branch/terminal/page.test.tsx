@@ -1732,19 +1732,25 @@ describe('TerminalPage — Void / Refund Sale entry point (Task 140)', () => {
   });
 });
 
-// Task 196 (visual redesign) — below the `lg` breakpoint, the cart/checkout
+// Task 196 (visual redesign) / Task 200 (adaptive density engine) — below
+// the `lg` breakpoint (or on a `mobile`-density viewport), the cart/checkout
 // panel moves into a Sheet opened from a sticky "View Cart" button instead
 // of rendering inline (desktop keeps the exact previous inline layout,
 // covered by every test above, all of which run under the default/no-op
-// matchMedia — see useIsDesktop's comment in page.tsx). These tests simulate
-// a real matchMedia result to exercise the narrow-viewport branch, which is
+// matchMedia — see useDensityMode's and useHasRoomForInlineCart's comments
+// in page.tsx). These tests simulate real matchMedia results, keyed by query
+// string, to exercise the narrow-viewport/touch branches, which are
 // otherwise never reached by this suite.
-describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign)', () => {
+describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200 density engine)', () => {
   const originalMatchMedia = window.matchMedia;
 
-  function mockMatchMedia(matches: boolean) {
+  // Each of the density engine's 4 queries (plus the page's own
+  // >=1024px "room for inline panel" check) defaults to not-matching unless
+  // explicitly overridden — mirrors how a real browser only ever reports
+  // `true` for the query describing its actual current state.
+  function mockMatchMedia(overrides: Record<string, boolean>) {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches,
+      matches: overrides[query] ?? false,
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -1767,16 +1773,16 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign)', () => 
     window.matchMedia = originalMatchMedia;
   });
 
-  it('keeps the inline cart panel (no View Cart button) when matchMedia reports a desktop-width viewport', () => {
-    mockMatchMedia(true);
+  it('keeps the inline cart panel (no View Cart button) on a desktop-width, fine-pointer viewport (standard density)', () => {
+    mockMatchMedia({ '(min-width: 1024px)': true });
     render(<TerminalPage />);
 
     expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
   });
 
-  it('shows a sticky View Cart button instead of the inline panel on a narrow viewport, and opens the cart in a Sheet on tap', () => {
-    mockMatchMedia(false);
+  it('shows a sticky View Cart button instead of the inline panel on a mobile-density viewport, and opens the cart in a Sheet on tap', () => {
+    mockMatchMedia({ '(max-width: 767px)': true });
     render(<TerminalPage />);
 
     const viewCartButton = screen.getByRole('button', { name: /View Cart/ });
@@ -1786,6 +1792,22 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign)', () => 
     expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
 
     fireEvent.click(viewCartButton);
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+
+  it('falls back to the Sheet on a narrow compact-touch viewport (touch tablet, no room for the inline panel)', () => {
+    mockMatchMedia({ '(pointer: coarse), (hover: none)': true });
+    render(<TerminalPage />);
+
+    expect(screen.getByRole('button', { name: /View Cart/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps the inline panel on a wide compact-touch viewport (touch laptop/2-in-1 with room for the panel)', () => {
+    mockMatchMedia({ '(pointer: coarse), (hover: none)': true, '(min-width: 1024px)': true });
+    render(<TerminalPage />);
+
+    expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
   });
 });

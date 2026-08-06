@@ -74,9 +74,9 @@ export default function AdminAttendancePage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Attendance Monitoring</h1>
+        <h1 className="app-title font-bold">Attendance Monitoring</h1>
         <p className="text-sm text-muted-foreground">Clock-in/out records for any branch. Read-only — corrections are made from the supervisor console.</p>
       </div>
 

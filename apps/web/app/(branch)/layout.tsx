@@ -59,7 +59,7 @@ export default function BranchLayout({ children }: { children: ReactNode }) {
           route is unaffected — `relative` with no absolutely-positioned
           child changes nothing visually.
         */}
-        <main className="relative flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8">{children}</main>
+        <main className="app-page relative flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
       </div>
     </div>
   );

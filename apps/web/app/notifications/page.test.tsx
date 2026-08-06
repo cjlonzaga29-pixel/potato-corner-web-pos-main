@@ -1,20 +1,30 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import NotificationsPage from './page';
 import type { NotificationItem } from '@/components/shared/notification-bell';
 
-const { mockUseNotifications, mockUseMarkNotificationRead, mockUseMarkAllNotificationsRead, mockMarkAllMutate } =
-  vi.hoisted(() => ({
-    mockUseNotifications: vi.fn(),
-    mockUseMarkNotificationRead: vi.fn(),
-    mockUseMarkAllNotificationsRead: vi.fn(),
-    mockMarkAllMutate: vi.fn(),
-  }));
+const {
+  mockUseNotifications,
+  mockUseMarkNotificationRead,
+  mockUseMarkAllNotificationsRead,
+  mockMarkAllMutate,
+  mockUseAuth,
+} = vi.hoisted(() => ({
+  mockUseNotifications: vi.fn(),
+  mockUseMarkNotificationRead: vi.fn(),
+  mockUseMarkAllNotificationsRead: vi.fn(),
+  mockMarkAllMutate: vi.fn(),
+  mockUseAuth: vi.fn(),
+}));
 
 vi.mock('@/hooks/queries/use-notifications', () => ({
   useNotifications: mockUseNotifications,
   useMarkNotificationRead: mockUseMarkNotificationRead,
   useMarkAllNotificationsRead: mockUseMarkAllNotificationsRead,
+}));
+
+vi.mock('@/hooks/use-auth', () => ({
+  useAuth: mockUseAuth,
 }));
 
 function notification(overrides: Partial<NotificationItem> = {}): NotificationItem {
@@ -49,6 +59,7 @@ function setup(overrides: NotificationsQueryOverrides = {}) {
   });
   mockUseMarkNotificationRead.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseMarkAllNotificationsRead.mockReturnValue({ mutate: mockMarkAllMutate, isPending: false });
+  mockUseAuth.mockReturnValue({ user: { role: 'branch' } });
 }
 
 describe('NotificationsPage', () => {
@@ -113,6 +124,7 @@ describe('NotificationsPage', () => {
     });
     mockUseMarkNotificationRead.mockReturnValue({ mutate: vi.fn(), isPending: false });
     mockUseMarkAllNotificationsRead.mockReturnValue({ mutate: mockMarkAllMutate, isPending: false });
+    mockUseAuth.mockReturnValue({ user: { role: 'branch' } });
 
     render(<NotificationsPage />);
 
@@ -123,5 +135,62 @@ describe('NotificationsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /next/i }));
 
     expect(mockUseNotifications).toHaveBeenLastCalledWith(2, 25);
+  });
+
+  it('links "Back to dashboard" and the breadcrumb to the signed-in user\'s role dashboard', () => {
+    setup();
+    mockUseAuth.mockReturnValue({ user: { role: 'supervisor' } });
+
+    render(<NotificationsPage />);
+
+    const backLink = screen.getByRole('link', { name: /back to dashboard/i });
+    expect(backLink).toHaveAttribute('href', '/supervisor/dashboard');
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/supervisor/dashboard');
+  });
+
+  it('falls back to /login for the back link when there is no signed-in user', () => {
+    setup();
+    mockUseAuth.mockReturnValue({ user: null });
+
+    render(<NotificationsPage />);
+
+    expect(screen.getByRole('link', { name: /back to dashboard/i })).toHaveAttribute('href', '/login');
+  });
+
+  it('filters the list to unread notifications only via the read-status tabs', async () => {
+    setup({
+      items: [
+        notification({ id: 'n-1', message: 'Stock is low', read: false }),
+        notification({ id: 'n-2', message: 'Shift closed', read: true }),
+      ],
+    });
+
+    render(<NotificationsPage />);
+
+    expect(screen.getByText('Stock is low')).toBeInTheDocument();
+    expect(screen.getByText('Shift closed')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unread' }));
+
+    expect(screen.queryByText('Shift closed')).not.toBeInTheDocument();
+    expect(screen.getByText('Stock is low')).toBeInTheDocument();
+  });
+
+  it('filters the list by search text against the notification message', async () => {
+    setup({
+      items: [
+        notification({ id: 'n-1', message: 'Stock is low', read: false }),
+        notification({ id: 'n-2', message: 'Shift closed', read: true }),
+      ],
+    });
+
+    render(<NotificationsPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Search notifications…'), { target: { value: 'shift' } });
+
+    // SearchInput debounces onChange (default 300ms) before it reaches this
+    // component's filter state.
+    await waitFor(() => expect(screen.queryByText('Stock is low')).not.toBeInTheDocument());
+    expect(screen.getByText('Shift closed')).toBeInTheDocument();
   });
 });

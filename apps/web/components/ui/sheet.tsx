@@ -20,7 +20,7 @@ const SheetOverlay = React.forwardRef<
 SheetOverlay.displayName = SheetPrimitive.Overlay.displayName;
 
 const sheetVariants = cva(
-  'fixed z-50 gap-4 bg-card p-6 shadow-2xl shadow-black/10 transition ease-in-out dark:shadow-black/50',
+  'app-dialog-padding fixed z-50 gap-4 bg-card shadow-2xl shadow-black/10 transition ease-in-out dark:shadow-black/50',
   {
     variants: {
       side: {

@@ -1,8 +1,10 @@
 'use client';
 
 import { Area, AreaChart as RechartsAreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useDensityMode } from '@/hooks/use-density-mode';
+import { DENSITY_CHART_HEIGHT } from '@/lib/density-tokens';
 import { EmptyState } from '../feedback/empty-state';
-import { CHART_DEFAULT_HEIGHT, chartAxisStyle, chartGridStroke, chartTooltipContentStyle } from './chart-theme';
+import { chartAxisStyle, chartGridStroke, chartTooltipContentStyle } from './chart-theme';
 
 interface AreaSeries {
   dataKey: string;
@@ -25,17 +27,20 @@ export function AreaChart({
   data,
   areas,
   xAxisKey,
-  height = CHART_DEFAULT_HEIGHT,
+  height,
   showGrid = true,
   gradient = true,
   animate = true,
 }: AreaChartProps) {
+  const densityMode = useDensityMode();
+  const resolvedHeight = height ?? DENSITY_CHART_HEIGHT[densityMode];
+
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
   }
 
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer width="100%" height={resolvedHeight}>
       <RechartsAreaChart data={data}>
         {gradient && (
           <defs>

@@ -51,7 +51,7 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
       aria-disabled={!isAvailable}
       aria-label={ariaLabel}
       data-render-count={renderCountRef.current}
-      className={`group flex h-full min-h-[104px] flex-col overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+      className={`group app-pos-card flex h-full flex-col overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isAvailable
           ? 'cursor-pointer hover:-translate-y-0.5 hover:border-primary hover:shadow-md active:translate-y-0 active:scale-[0.98]'
           : 'cursor-not-allowed opacity-60'

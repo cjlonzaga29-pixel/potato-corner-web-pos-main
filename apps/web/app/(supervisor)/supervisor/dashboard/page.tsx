@@ -128,14 +128,14 @@ export default function SupervisorDashboardPage() {
   const alertCount = alertsData?.alerts.length ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <DashboardPageHeader
         title="Supervisor Dashboard"
         subtitle={`${activeBranch?.name ?? activeBranchId} — ${formatDate(new Date())}`}
         actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="app-kpi-grid-4">
         <KpiCard
           title="Gross Sales Today"
           value={todayStats?.todayGrossSales ?? 0}
@@ -157,7 +157,7 @@ export default function SupervisorDashboardPage() {
         <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isStatsLoading} icon={BadgeDollarSign} />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="app-kpi-grid-4">
         <KpiCard
           title="Today's Expenses"
           value={todayStats?.todayExpenses ?? 0}

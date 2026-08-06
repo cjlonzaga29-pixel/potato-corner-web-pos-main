@@ -28,9 +28,9 @@ export default function PaymentSettingsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(PAYMENT_METHODS[0]?.id ?? null);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-3xl app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Payment Settings</h1>
+        <h1 className="app-title font-bold">Payment Settings</h1>
         <p className="text-sm text-muted-foreground">Configure payment methods available across branches.</p>
       </div>
 

@@ -155,10 +155,10 @@ export default function UniversalInventoryPage() {
   const hasFilters = search.trim().length > 0 || category !== ALL_CATEGORIES;
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold">Universal Inventory</h1>
+          <h1 className="app-title font-bold">Universal Inventory</h1>
           <p className="text-sm text-muted-foreground">
             The single, company-wide inventory identity. Branches reference these items — they never create their own.
           </p>

@@ -41,10 +41,10 @@ export default function MigrationReportPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold">Legacy Migration Report</h1>
+          <h1 className="app-title font-bold">Legacy Migration Report</h1>
           <p className="text-sm text-muted-foreground">Generated {new Date(r.generatedAt).toLocaleString()} — advisory only, no data is migrated automatically.</p>
         </div>
         <Badge variant={r.migrationReadiness ? 'active' : 'inactive'} className="shrink-0">{r.migrationReadiness ? 'Ready' : 'Not Ready'}</Badge>
@@ -96,7 +96,7 @@ export default function MigrationReportPage() {
             <CardTitle>Exact Match Candidates</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-semibold">{r.identityCandidates.length}</p>
+            <p className="app-kpi-value font-semibold">{r.identityCandidates.length}</p>
           </CardContent>
         </Card>
         <Card>
@@ -104,7 +104,7 @@ export default function MigrationReportPage() {
             <CardTitle>Ambiguous Groups</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-semibold">{r.ambiguousGroups.length}</p>
+            <p className="app-kpi-value font-semibold">{r.ambiguousGroups.length}</p>
           </CardContent>
         </Card>
         <Card>
@@ -112,7 +112,7 @@ export default function MigrationReportPage() {
             <CardTitle>SKU / Barcode Collisions</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-semibold">{r.skuCollisions.length + r.barcodeCollisions.length}</p>
+            <p className="app-kpi-value font-semibold">{r.skuCollisions.length + r.barcodeCollisions.length}</p>
           </CardContent>
         </Card>
         <Card>
@@ -120,7 +120,7 @@ export default function MigrationReportPage() {
             <CardTitle>Invalid / Unmapped Records</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-semibold">{r.invalidRecords.length}</p>
+            <p className="app-kpi-value font-semibold">{r.invalidRecords.length}</p>
           </CardContent>
         </Card>
       </div>

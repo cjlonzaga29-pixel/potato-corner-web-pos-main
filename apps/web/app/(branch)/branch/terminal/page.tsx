@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
+import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
+import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
 import { Fingerprint, Loader2, LogOut, MapPin, ShoppingCart, User } from 'lucide-react';
 import { ROLES } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
@@ -42,45 +45,56 @@ import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 // here only to decide whether the POS entry point is worth showing at all.
 const VOID_REFUND_ENTRY_ROLES: readonly string[] = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH];
 
-// Task 196 (visual redesign) — desktop keeps the cart/checkout panel inline
-// (unchanged layout); below the `lg` breakpoint it moves into a Sheet opened
-// from a sticky "View Cart" bar instead, per the redesign spec's mobile
-// requirements. Same defaulting pattern already used by
-// (admin)/admin/reports and (admin)/admin/inventory's useIsDesktop: starts
+// Task 200 (adaptive density engine) — the inline-cart-vs-Sheet split used to
+// be a single raw `useIsDesktop('(min-width: 1024px)')` width check. It's
+// now `shouldShowInlineCart(densityMode, hasRoomForInlinePanel)` (see
+// lib/pos/cart-layout.ts): mobile always gets the Sheet, comfortable/
+// standard/compact always get the inline panel, and compact-touch (touch
+// input, but width varies a lot — a touch laptop vs. a tablet) falls back to
+// this same >=1024px width check to decide whether there's room for the
+// panel. Kept as its own tiny matchMedia hook (not merged into
+// useDensityMode) because "is there room for a second panel" is a layout
+// concern specific to this one page, not part of the shared density
+// classification every other surface reads.
+//
+// Same defaulting pattern as before (and as useDensityMode itself): starts
 // `true` (matches server render and every test environment, since jsdom has
 // no matchMedia) and only ever flips based on a real matchMedia result, so
 // no existing test needs to simulate opening a drawer to reach the cart —
 // they keep seeing the same inline panel as before.
-function useIsDesktop(query = '(min-width: 1024px)'): boolean {
-  const [isDesktop, setIsDesktop] = useState(true);
+function useHasRoomForInlineCart(query = '(min-width: 1024px)'): boolean {
+  const [hasRoom, setHasRoom] = useState(true);
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const mql = window.matchMedia(query);
-    setIsDesktop(mql.matches);
-    const listener = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
+    setHasRoom(mql.matches);
+    const listener = (event: MediaQueryListEvent) => setHasRoom(event.matches);
     mql.addEventListener('change', listener);
     return () => mql.removeEventListener('change', listener);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- query is effectively static per call site
   }, []);
 
-  return isDesktop;
+  return hasRoom;
 }
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
-// Single source of truth for the product grid's column breakpoints, shared
-// by the real grid and the loading-skeleton grid so they can never drift out
-// of sync. Column counts target the task's example breakpoints: 2 on phones,
-// 3 from tablet (lg, 1024px — where the cart panel also switches from a
-// bottom Sheet to an inline side panel) through approaching laptop widths,
-// 4 from xl (1280px), 5 from 2xl (1536px, desktop). `pb-24`/`lg:pb-4` leaves
-// room for the mobile sticky "View Cart" bar, which overlaps the bottom of
-// this scroll region below `lg`.
-const PRODUCT_GRID_CLASSES =
-  'grid grid-cols-2 content-start gap-1.5 p-3 pb-24 md:grid-cols-3 lg:grid-cols-3 lg:gap-2 lg:p-4 lg:pb-4 xl:grid-cols-4 2xl:grid-cols-5';
+// Task 200 (adaptive density engine) — single source of truth for the
+// product grid's column count, shared by the real grid and the
+// loading-skeleton grid so they can never drift out of sync. Used to be a
+// hardcoded Tailwind breakpoint string (`md:grid-cols-3 lg:grid-cols-3
+// xl:grid-cols-4 2xl:grid-cols-5`) keyed only on width; now keyed on the
+// full density classification via DENSITY_POS_GRID_COLUMNS (comfortable: 5,
+// standard/compact: 4, compact-touch: 3, mobile: 2), which also accounts for
+// pointer/touch capability, not just viewport width. `pb-24`/`lg:pb-4`
+// leaves room for the mobile sticky "View Cart" bar, which overlaps the
+// bottom of this scroll region below `lg`.
+function productGridClasses(densityMode: DensityMode): string {
+  return `grid content-start gap-1.5 p-3 pb-24 lg:gap-2 lg:p-4 lg:pb-4 ${DENSITY_POS_GRID_COLUMNS[densityMode]}`;
+}
 
 function round2(amount: number): number {
   return Math.round(amount * 100) / 100;
@@ -274,10 +288,17 @@ export default function TerminalPage() {
   // filter below; never touches catalog fetching, ordering, or category
   // derivation logic.
   const [productSearch, setProductSearch] = useState('');
+  // Task 200 (adaptive density engine) — the app-wide density classification
+  // (see hooks/use-density-mode.ts), used here to pick the product grid's
+  // column count and, combined with useHasRoomForInlineCart below, whether
+  // the cart renders inline or in a Sheet.
+  const densityMode = useDensityMode();
   // Task 196 (visual redesign) — mobile cart access: a sticky "View Cart"
   // bar opens this Sheet instead of the inline desktop panel. See
-  // useIsDesktop above for why this never changes existing test behavior.
-  const isDesktop = useIsDesktop();
+  // useHasRoomForInlineCart above for why this never changes existing test
+  // behavior.
+  const hasRoomForInlineCart = useHasRoomForInlineCart();
+  const isDesktop = shouldShowInlineCart(densityMode, hasRoomForInlineCart);
   const [isCartSheetOpen, setIsCartSheetOpen] = useState(false);
   const [flavorPrompt, setFlavorPrompt] = useState<{ product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] } | null>(null);
   const [slotPrompt, setSlotPrompt] = useState<{
@@ -864,9 +885,9 @@ export default function TerminalPage() {
   // STATE 2/3 below without the Branch Account ever losing its own session.
   if (isBranchAccount && !activeEmployee) {
     return (
-      <div className="mx-auto max-w-3xl space-y-6 overflow-y-auto p-6">
+      <div className="mx-auto max-w-3xl app-section app-section-gap overflow-y-auto p-6">
         <div>
-          <h1 className="text-2xl font-bold">Who&apos;s working?</h1>
+          <h1 className="app-title font-bold">Who&apos;s working?</h1>
           <p className="text-sm text-muted-foreground">Select the employee operating the POS Terminal right now.</p>
         </div>
 
@@ -1067,9 +1088,9 @@ export default function TerminalPage() {
 
         <div className="lg:flex-1 lg:overflow-y-auto">
           {isCatalogLoading && catalog.length === 0 ? (
-            <div className={PRODUCT_GRID_CLASSES} aria-hidden="true">
+            <div className={productGridClasses(densityMode)} aria-hidden="true">
               {Array.from({ length: 12 }, (_, i) => (
-                <Skeleton key={i} className="h-[104px] rounded-xl" />
+                <Skeleton key={i} className="app-pos-card rounded-xl" />
               ))}
             </div>
           ) : isCatalogError && catalog.length === 0 ? (
@@ -1091,7 +1112,7 @@ export default function TerminalPage() {
               }
             />
           ) : (
-            <div className={PRODUCT_GRID_CLASSES}>
+            <div className={productGridClasses(densityMode)}>
               {visibleProducts.map((product) =>
                 product.variants.map((variant) => (
                   <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />
@@ -1217,9 +1238,9 @@ export default function TerminalPage() {
         )}
       </div>
 
-      {/* RIGHT PANEL — cart + payment. ~34% width on desktop (lg:w-1/3), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone. */}
+      {/* RIGHT PANEL — cart + payment. Width is density-aware via --app-pos-cart-width (Task 200: standard/comfortable ~30%, compact-touch ~32% for bigger touch targets), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone. */}
       {isDesktop && (
-        <div className="hidden flex-col border-t lg:flex lg:w-1/3 lg:flex-none lg:overflow-hidden lg:border-t-0">
+        <div className="app-pos-cart-width hidden flex-col border-t lg:flex lg:flex-none lg:overflow-hidden lg:border-t-0">
           <div className="p-3 lg:flex-1 lg:overflow-y-auto">
             <h2 className="sr-only">Cart</h2>
             {cartLinesList}
@@ -1229,7 +1250,7 @@ export default function TerminalPage() {
       )}
       </div>
 
-      {/* Mobile cart access — sticky bar + Sheet, only below `lg`. isDesktop defaults true (see useIsDesktop), so this branch never mounts in a non-browser/test environment. */}
+      {/* Mobile cart access — sticky bar + Sheet, only below `lg`. isDesktop defaults true (see shouldShowInlineCart / useHasRoomForInlineCart), so this branch never mounts in a non-browser/test environment. */}
       {!isDesktop && (
         <>
           <div className="sticky bottom-0 z-20 border-t bg-card p-3 lg:hidden">

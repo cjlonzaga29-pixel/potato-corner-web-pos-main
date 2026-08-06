@@ -1,8 +1,10 @@
 'use client';
 
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
+import { useDensityMode } from '@/hooks/use-density-mode';
+import { DENSITY_CHART_HEIGHT } from '@/lib/density-tokens';
 import { EmptyState } from '../feedback/empty-state';
-import { CHART_DEFAULT_HEIGHT, chartTooltipContentStyle } from './chart-theme';
+import { chartTooltipContentStyle } from './chart-theme';
 
 interface DonutDatum {
   name: string;
@@ -19,7 +21,10 @@ interface DonutChartProps {
 }
 
 /** Wrapper around Recharts PieChart configured as a donut — used for payment method breakdown and category performance. */
-export function DonutChart({ data, height = CHART_DEFAULT_HEIGHT, showLegend = true, centerLabel, animate = true }: DonutChartProps) {
+export function DonutChart({ data, height, showLegend = true, centerLabel, animate = true }: DonutChartProps) {
+  const densityMode = useDensityMode();
+  const resolvedHeight = height ?? DENSITY_CHART_HEIGHT[densityMode];
+
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
   }
@@ -27,7 +32,7 @@ export function DonutChart({ data, height = CHART_DEFAULT_HEIGHT, showLegend = t
   const total = data.reduce((sum, entry) => sum + entry.value, 0);
 
   return (
-    <div className="relative" style={{ height }}>
+    <div className="relative" style={{ height: resolvedHeight }}>
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
           <Pie

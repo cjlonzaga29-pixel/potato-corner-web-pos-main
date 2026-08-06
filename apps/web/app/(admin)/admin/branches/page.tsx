@@ -90,10 +90,10 @@ export default function BranchListPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold">Branch Management</h1>
+          <h1 className="app-title font-bold">Branch Management</h1>
           <p className="text-sm text-muted-foreground">Manage branches, GPS settings, and supervisor assignments.</p>
         </div>
         <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">

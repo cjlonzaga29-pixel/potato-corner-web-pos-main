@@ -72,9 +72,9 @@ export default function BranchSalesPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Sales</h1>
+        <h1 className="app-title font-bold">Sales</h1>
         <p className="text-sm text-muted-foreground">Every transaction recorded at your branch.</p>
       </div>
 

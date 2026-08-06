@@ -5,6 +5,7 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ChartSkeleton } from '@/components/shared/charts/chart-skeleton';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
@@ -110,7 +111,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <Skeleton className="h-[300px] w-full" />
+            <ChartSkeleton />
           ) : wasteTrendData.length === 0 ? (
             <EmptyState title="No data" description="There's nothing to chart yet." />
           ) : (

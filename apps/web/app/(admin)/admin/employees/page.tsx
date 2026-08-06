@@ -93,9 +93,9 @@ export default function EmployeeListPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Employees</h1>
+        <h1 className="app-title font-bold">Employees</h1>
         <p className="text-sm text-muted-foreground">Read-only overview across all branches. Creation and management happen in the Supervisor console.</p>
       </div>
 

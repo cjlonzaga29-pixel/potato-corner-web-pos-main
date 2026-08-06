@@ -1,8 +1,10 @@
 'use client';
 
 import { CartesianGrid, Legend, Line, LineChart as RechartsLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useDensityMode } from '@/hooks/use-density-mode';
+import { DENSITY_CHART_HEIGHT } from '@/lib/density-tokens';
 import { EmptyState } from '../feedback/empty-state';
-import { CHART_DEFAULT_HEIGHT, chartAxisStyle, chartGridStroke, chartTooltipContentStyle } from './chart-theme';
+import { chartAxisStyle, chartGridStroke, chartTooltipContentStyle } from './chart-theme';
 
 interface LineSeries {
   dataKey: string;
@@ -26,18 +28,21 @@ export function LineChart({
   data,
   lines,
   xAxisKey,
-  height = CHART_DEFAULT_HEIGHT,
+  height,
   showGrid = true,
   showTooltip = true,
   showLegend = false,
   animate = true,
 }: LineChartProps) {
+  const densityMode = useDensityMode();
+  const resolvedHeight = height ?? DENSITY_CHART_HEIGHT[densityMode];
+
   if (data.length === 0) {
     return <EmptyState title="No data" description="There's nothing to chart yet." />;
   }
 
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer width="100%" height={resolvedHeight}>
       <RechartsLineChart data={data}>
         {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} vertical={false} />}
         <XAxis dataKey={xAxisKey} tick={chartAxisStyle} axisLine={{ stroke: chartGridStroke }} tickLine={false} />

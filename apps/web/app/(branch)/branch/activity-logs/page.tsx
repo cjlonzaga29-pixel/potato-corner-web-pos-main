@@ -32,9 +32,9 @@ export default function BranchActivityLogsPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Activity Logs</h1>
+        <h1 className="app-title font-bold">Activity Logs</h1>
         <p className="text-sm text-muted-foreground">Every recorded action taken at your branch.</p>
       </div>
 

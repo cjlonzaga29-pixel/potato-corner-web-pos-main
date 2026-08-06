@@ -1,6 +1,15 @@
 /** Shared styling constants so every chart wrapper renders with identical axis/grid/tooltip treatment. */
 export const CHART_DEFAULT_HEIGHT = 300;
 
+/**
+ * @deprecated Task 200 replaced the single compact/non-compact boolean with
+ * the full density engine — see `DENSITY_CHART_HEIGHT` in
+ * `@/lib/density-tokens`, which every chart wrapper (bar/line/donut/area)
+ * now reads via `useDensityMode()`. Kept only so nothing that still imports
+ * this constant breaks; do not wire up any new call site to it.
+ */
+export const CHART_COMPACT_HEIGHT = 220;
+
 export const chartGridStroke = 'hsl(var(--border))';
 
 export const chartAxisStyle = { fontSize: 12, fill: 'hsl(var(--muted-foreground))' };

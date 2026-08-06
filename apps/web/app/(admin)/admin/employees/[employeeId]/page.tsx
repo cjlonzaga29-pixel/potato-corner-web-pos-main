@@ -44,7 +44,7 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
         <Link href="/admin/employees">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -55,7 +55,7 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">
+            <h1 className="app-title font-bold">
               {employee.first_name} {employee.last_name}
             </h1>
             <Badge variant="secondary">{ROLE_LABELS[employee.role]}</Badge>

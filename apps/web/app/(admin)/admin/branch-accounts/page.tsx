@@ -12,9 +12,9 @@ export default function BranchAccountsPage() {
   const { data, isLoading, isError, refetch } = useBranchAccountsOverview();
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Branch Accounts</h1>
+        <h1 className="app-title font-bold">Branch Accounts</h1>
         <p className="text-sm text-muted-foreground">Every user account and the branch it&apos;s assigned to</p>
       </div>
 

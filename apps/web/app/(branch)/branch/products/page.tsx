@@ -102,9 +102,9 @@ export default function BranchProductsPage() {
   const rows = flattenCatalog(data?.products ?? []);
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Products</h1>
+        <h1 className="app-title font-bold">Products</h1>
         <p className="text-sm text-muted-foreground">Your branch&apos;s current catalog, pricing, and availability.</p>
       </div>
 

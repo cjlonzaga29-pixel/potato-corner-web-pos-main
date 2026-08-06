@@ -46,7 +46,7 @@ export default function ExpenseDetailPage({ params }: ExpenseDetailPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
         <Link href="/admin/expenses">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -55,7 +55,7 @@ export default function ExpenseDetailPage({ params }: ExpenseDetailPageProps) {
       </Button>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">Edit Expense</h1>
+        <h1 className="app-title font-bold">Edit Expense</h1>
         {isSuperAdmin && (
           <Button variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
             Delete Expense

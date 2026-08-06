@@ -115,9 +115,9 @@ export default function ReceiptsPage() {
   }
 
   return (
-    <div className="space-y-6 overflow-y-auto p-6">
+    <div className="app-section app-section-gap overflow-y-auto p-6">
       <div>
-        <h1 className="text-2xl font-bold">Receipts</h1>
+        <h1 className="app-title font-bold">Receipts</h1>
         <p className="text-sm text-muted-foreground">Look up a past sale from this branch and reprint its receipt.</p>
       </div>
 

@@ -32,7 +32,7 @@ export default function SupervisorProductActivationPage({ params }: SupervisorPr
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
         <Link href="/supervisor/products">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -42,7 +42,7 @@ export default function SupervisorProductActivationPage({ params }: SupervisorPr
 
       <div className="space-y-1">
         <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-bold">{product.name}</h1>
+          <h1 className="app-title font-bold">{product.name}</h1>
           <ProductStatusBadge status={product.status} />
           <SeasonalBadge isSeasonal={product.is_seasonal} />
         </div>

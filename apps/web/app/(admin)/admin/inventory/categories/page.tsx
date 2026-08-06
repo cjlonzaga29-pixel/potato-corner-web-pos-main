@@ -47,10 +47,10 @@ export default function InventoryCategoriesPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold">Inventory Categories</h1>
+          <h1 className="app-title font-bold">Inventory Categories</h1>
           <p className="text-sm text-muted-foreground">Groupings for Universal Inventory items — admin-managed, shared company-wide.</p>
         </div>
         <Button onClick={() => setDialogOpen(true)} className="w-full sm:w-auto">

@@ -41,9 +41,9 @@ export default function InventoryItemDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">{item.name}</h1>
+        <h1 className="app-title font-bold">{item.name}</h1>
         <p className="text-sm text-muted-foreground">
           {item.sku ?? 'No SKU'} · Base unit: {item.base_unit_code} · Category: {item.category_name ?? 'Uncategorized'}
         </p>

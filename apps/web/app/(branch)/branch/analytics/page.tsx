@@ -88,9 +88,9 @@ export default function BranchAnalyticsPage() {
   const analytics = inventoryAnalytics.data;
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Analytics</h1>
+        <h1 className="app-title font-bold">Analytics</h1>
         <p className="text-sm text-muted-foreground">Performance and inventory analytics for your branch.</p>
       </div>
 

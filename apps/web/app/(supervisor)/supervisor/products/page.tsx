@@ -16,9 +16,9 @@ export default function SupervisorProductsPage() {
   const { data, isLoading, isError, refetch } = useProducts({ search: search || undefined, limit: 100 });
 
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div>
-        <h1 className="text-2xl font-bold">Product Activation</h1>
+        <h1 className="app-title font-bold">Product Activation</h1>
         <p className="text-sm text-muted-foreground">Activate or deactivate products for the branches you manage.</p>
       </div>
 

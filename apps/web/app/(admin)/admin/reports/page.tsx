@@ -37,6 +37,7 @@ import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
 import { FinancialSummaryPanel } from '@/components/reports/financial-summary-panel';
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
+import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { expenseColumns } from '@/components/admin/expense-columns';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
@@ -394,6 +395,7 @@ function AdminReportsPageContent() {
   const isDesktop = useIsDesktop();
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSocketConnected = useSocketStore((s) => s.isConnected);
+  const isSocketReconnecting = useSocketStore((s) => s.isReconnecting);
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   useExpensesRealtimeSync();
@@ -498,20 +500,14 @@ function AdminReportsPageContent() {
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
   }
 
-  const connectionLabel = isSocketConnected ? 'Connected' : 'Disconnected';
-
   return (
-    <div className="space-y-6">
+    <div className="app-section app-section-gap">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold">Reports</h1>
-          <p className="text-muted-foreground text-sm">Real-time and pre-computed reporting across all branches.</p>
+          <h1 className="app-title font-semibold">Reports</h1>
+          <p className="app-subtitle text-muted-foreground">Real-time and pre-computed reporting across all branches.</p>
         </div>
-        <span
-          title={connectionLabel}
-          aria-label={connectionLabel}
-          className={`h-2.5 w-2.5 shrink-0 rounded-full ${isSocketConnected ? 'bg-success' : 'bg-destructive'}`}
-        />
+        <DashboardConnectionBadge isConnected={isSocketConnected} isReconnecting={isSocketReconnecting} />
       </div>
 
       <ReportFilterBar

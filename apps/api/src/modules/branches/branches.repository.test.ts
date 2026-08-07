@@ -108,8 +108,12 @@ describe('branchesRepository.findAllStatsGrouped', () => {
 
     await branchesRepository.findAllStatsGrouped();
 
-    const txnCall = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => !args.by?.includes('paymentMethod') && args.where?.status !== 'refunded')![0];
-    const paymentCall = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('paymentMethod'))![0];
+    const txnCallEntry = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => !args.by?.includes('paymentMethod') && args.where?.status !== 'refunded');
+    if (!txnCallEntry) throw new Error('expected a transaction.groupBy call for the non-payment, non-refund query');
+    const paymentCallEntry = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('paymentMethod'));
+    if (!paymentCallEntry) throw new Error('expected a transaction.groupBy call keyed by paymentMethod');
+    const txnCall = txnCallEntry[0];
+    const paymentCall = paymentCallEntry[0];
 
     expect(txnCall.where?.status).toBe('completed');
     expect(paymentCall.where?.status).toBe('completed');
@@ -312,7 +316,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     });
 
     const rows = await branchesRepository.findAllStatsGrouped();
-    const branch1 = rows.find((r) => r.branchId === 'branch-1')!;
+    const branch1 = rows.find((r) => r.branchId === 'branch-1');
+    if (!branch1) throw new Error('expected a row for branch-1');
 
     const breakdownSum = Object.values(branch1.paymentBreakdown).reduce((sum, m) => sum + m.total, 0);
     expect(breakdownSum).toBe(branch1.todayGrossSales);
@@ -354,8 +359,12 @@ describe('branchesRepository.branchStats', () => {
   it('regression: gross-sales aggregate and payment-breakdown groupBy use the identical branchId/status filter and Manila day window (single branch)', async () => {
     await branchesRepository.branchStats('branch-1');
 
-    const aggregateCall = vi.mocked(prisma.transaction.aggregate).mock.calls.find(([args]) => args.where?.status !== 'refunded')![0];
-    const paymentCall = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('paymentMethod'))![0];
+    const aggregateCallEntry = vi.mocked(prisma.transaction.aggregate).mock.calls.find(([args]) => args.where?.status !== 'refunded');
+    if (!aggregateCallEntry) throw new Error('expected a transaction.aggregate call for the non-refund query');
+    const paymentCallEntry = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('paymentMethod'));
+    if (!paymentCallEntry) throw new Error('expected a transaction.groupBy call keyed by paymentMethod');
+    const aggregateCall = aggregateCallEntry[0];
+    const paymentCall = paymentCallEntry[0];
 
     expect(aggregateCall.where?.status).toBe('completed');
     expect(paymentCall.where?.status).toBe('completed');

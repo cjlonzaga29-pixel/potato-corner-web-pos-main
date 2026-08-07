@@ -34,9 +34,9 @@ export default function PublicReceiptPage() {
   }
 
   return (
-    <div className="flex min-h-screen justify-center bg-muted/30 p-4">
-      <Card className="h-fit w-full max-w-sm">
-        <CardContent className="space-y-3 p-6 text-sm">
+    <div className="flex min-h-screen justify-center bg-muted/30 p-4 print:block print:min-h-0 print:bg-transparent print:p-0">
+      <Card className="h-fit w-full max-w-sm print:max-w-none print:border-none print:shadow-none print:rounded-none">
+        <CardContent className="space-y-3 p-6 text-sm print:p-0">
           <div id="receipt-print-area" className="space-y-3">
             <div className="text-center">
               <p className="font-semibold">Potato Corner</p>

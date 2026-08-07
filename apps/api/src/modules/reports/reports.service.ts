@@ -4,7 +4,7 @@ import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
 import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS } from './reports.columns.js';
+import { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS } from './reports.columns.js';
 import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
 import { generatePdf } from '../../lib/reports/pdf.js';
@@ -378,11 +378,11 @@ export const reportsService = {
       let buffer: Buffer;
       let contentType: 'text/csv' | 'application/pdf';
       if (format === 'csv') {
-        buffer = generateCsv(rows, DAILY_SALES_TRANSACTION_COLUMNS);
+        buffer = generateCsv(rows, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS);
         contentType = 'text/csv';
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, DAILY_SALES_TRANSACTION_COLUMNS, branch?.name ?? null);
+        buffer = await generatePdf(reportType, resolvedFilters, rows, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, branch?.name ?? null);
         contentType = 'application/pdf';
       }
 

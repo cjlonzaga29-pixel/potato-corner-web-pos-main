@@ -150,6 +150,28 @@ describe('apiClient refresh race', () => {
 
     expect(clearAuth).toHaveBeenCalled();
   });
+
+  it('surfaces a plain-language session-expired message, never the raw backend token code, once refresh fails', async () => {
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
+      accessToken: 'stale-token',
+      user: { id: 'u1' },
+      setAuth: vi.fn(),
+      clearAuth: vi.fn(),
+    });
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/auth/refresh')) {
+        return Promise.resolve(jsonResponse(401, { data: null, error: { code: 'REFRESH_INVALID' }, meta: null }));
+      }
+      // Mirrors authenticate.ts's unauthorized() — a bare code, no `message`.
+      return Promise.resolve(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
+    });
+
+    const result = await apiClient('/api/transactions', { method: 'POST', body: '{}' });
+
+    expect(result.error).toEqual({ code: 'SESSION_EXPIRED', message: 'Session expired. Please sign in again.' });
+  });
 });
 
 describe('apiClient safe response parsing', () => {

@@ -33,7 +33,7 @@ import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products
 import { useIsClockedIn, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
-import { useCreateTransaction, useUploadPaymentProof } from '@/hooks/queries/use-transactions';
+import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof } from '@/hooks/queries/use-transactions';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
@@ -87,9 +87,11 @@ function formatPeso(amount: number): string {
 // loading-skeleton grid so they can never drift out of sync. Used to be a
 // hardcoded Tailwind breakpoint string (`md:grid-cols-3 lg:grid-cols-3
 // xl:grid-cols-4 2xl:grid-cols-5`) keyed only on width; now keyed on the
-// full density classification via DENSITY_POS_GRID_COLUMNS (comfortable: 5,
-// standard/compact: 4, compact-touch: 3, mobile: 2), which also accounts for
-// pointer/touch capability, not just viewport width. `pb-24`/`lg:pb-4`
+// full density classification via DENSITY_POS_GRID_COLUMNS (comfortable/
+// standard/compact: 5, compact-touch: 3, mobile: 2 — Task 209.8 raised
+// standard/compact from 4 to 5 for a denser catalog at the 1366x768 priority
+// viewport), which also accounts for pointer/touch capability, not just
+// viewport width. `pb-24`/`lg:pb-4`
 // leaves room for the mobile sticky "View Cart" bar, which overlaps the
 // bottom of this scroll region below `lg`.
 function productGridClasses(densityMode: DensityMode): string {
@@ -251,6 +253,7 @@ export default function TerminalPage() {
   const { isOnline } = useOffline();
   const createTransaction = useCreateTransaction(operatorToken);
   const uploadPaymentProof = useUploadPaymentProof(operatorToken);
+  const uploadDiscountProof = useUploadDiscountProof(operatorToken);
   const clockIn = useClockIn(operatorToken);
   const clockOut = useClockOut(operatorToken);
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -336,6 +339,11 @@ export default function TerminalPage() {
   // payment proof — no reference number/note collected (Task 139).
   const [paymentProofKey, setPaymentProofKey] = useState<string | null>(null);
   const [paymentProofType, setPaymentProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
+  // Task 209.5 — PWD/Senior Citizen discount compliance evidence. Optional:
+  // no proof-required policy exists yet (DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING),
+  // so this never blocks Charge the way paymentProofKey does above.
+  const [discountProofKey, setDiscountProofKey] = useState<string | null>(null);
+  const [discountProofType, setDiscountProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
   const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
@@ -796,17 +804,33 @@ export default function TerminalPage() {
 
   const openVoidRefund = useCallback(() => setIsVoidRefundOpen(true), []);
 
-  function handleProofSelected(file: File, type: ImageProofType) {
+  // Async and re-throwing (rather than a fire-and-forget `.then()`) so
+  // ImageUpload can await this, show "Upload Failed"/Retry on rejection, and
+  // keep the captured file for a retry — cart, payment method, and cash
+  // tendered all live in separate state above and are never touched here.
+  async function handleProofSelected(file: File, type: ImageProofType) {
     if (!branchId) return;
-    void uploadPaymentProof.mutateAsync({ branchId, shiftId: shift?.id, type, file }).then((result) => {
-      setPaymentProofKey(result.payment_proof_key);
-      setPaymentProofType(result.payment_proof_type);
-    });
+    const result = await uploadPaymentProof.mutateAsync({ branchId, shiftId: shift?.id, type, file });
+    setPaymentProofKey(result.payment_proof_key);
+    setPaymentProofType(result.payment_proof_type);
   }
 
   function handleClearProof() {
     setPaymentProofKey(null);
     setPaymentProofType(null);
+  }
+
+  /** Same async/re-throw contract as handleProofSelected above — ImageUpload shows "Upload Failed"/Retry Upload on rejection and keeps the captured file. */
+  async function handleDiscountProofSelected(file: File, type: ImageProofType) {
+    if (!branchId) return;
+    const result = await uploadDiscountProof.mutateAsync({ branchId, shiftId: shift?.id, type, file });
+    setDiscountProofKey(result.discount_proof_key);
+    setDiscountProofType(result.discount_proof_type);
+  }
+
+  function handleClearDiscountProof() {
+    setDiscountProofKey(null);
+    setDiscountProofType(null);
   }
 
   function resetPaymentFields() {
@@ -816,6 +840,8 @@ export default function TerminalPage() {
     setCashTendered('');
     setPaymentProofKey(null);
     setPaymentProofType(null);
+    setDiscountProofKey(null);
+    setDiscountProofType(null);
   }
 
   async function handleCharge() {
@@ -851,6 +877,10 @@ export default function TerminalPage() {
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       payment_proof_key: paymentMethod !== 'cash' ? (paymentProofKey ?? undefined) : undefined,
       payment_proof_type: paymentMethod !== 'cash' ? (paymentProofType ?? undefined) : undefined,
+      discount_proof_key:
+        discountType === 'pwd' || discountType === 'senior_citizen' ? (discountProofKey ?? undefined) : undefined,
+      discount_proof_type:
+        discountType === 'pwd' || discountType === 'senior_citizen' ? (discountProofType ?? undefined) : undefined,
       is_offline_transaction: !isOnline,
     };
 
@@ -984,7 +1014,7 @@ export default function TerminalPage() {
   // in the DOM at a time, same as before the redesign.
   const cartLinesList =
     cartLines.length === 0 ? (
-      <EmptyState icon={ShoppingCart} title="Your cart is empty" description="Tap a product to start a sale." />
+      <EmptyState compact icon={ShoppingCart} title="Cart is empty" description="Tap a product to start a sale." />
     ) : (
       <div className="space-y-3">
         {cartLines.map((line, i) => (
@@ -1012,6 +1042,9 @@ export default function TerminalPage() {
       onDiscountTypeChange={setDiscountType}
       discountIdReference={discountIdReference}
       onDiscountIdReferenceChange={setDiscountIdReference}
+      discountProofKey={discountProofKey}
+      onDiscountProofSelected={handleDiscountProofSelected}
+      onClearDiscountProof={handleClearDiscountProof}
       promoAmount={promoAmount}
       onPromoAmountChange={setPromoAmount}
       paymentMethod={paymentMethod}
@@ -1072,13 +1105,16 @@ export default function TerminalPage() {
             onChange={setProductSearch}
             placeholder="Search products…"
             className="max-w-md"
+            inputClassName="app-control"
           />
-          {/* Category pills — only ever built from categories actually present on the catalog (no fabricated categories). TabsList already scrolls horizontally on narrow screens. */}
+          {/* Category pills — only ever built from categories actually present on the catalog (no fabricated categories). TabsList already scrolls horizontally on narrow screens.
+              Task 209.8B — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-9,
+              and triggers stretch to fill it (`h-full`) so the clickable area always matches the visible chip. */}
           <Tabs value={activeCategory} onValueChange={setActiveCategory}>
-            <TabsList aria-label="Filter by category">
-              <TabsTrigger value="all">All</TabsTrigger>
+            <TabsList aria-label="Filter by category" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
+              <TabsTrigger value="all" className="h-full">All</TabsTrigger>
               {categories.map((category) => (
-                <TabsTrigger key={category} value={category}>
+                <TabsTrigger key={category} value={category} className="h-full">
                   {category}
                 </TabsTrigger>
               ))}
@@ -1101,6 +1137,7 @@ export default function TerminalPage() {
             />
           ) : visibleProducts.length === 0 ? (
             <EmptyState
+              compact
               icon={ShoppingCart}
               title={productSearch || activeCategory !== 'all' ? 'No matching products' : 'No products available'}
               description={
@@ -1109,6 +1146,13 @@ export default function TerminalPage() {
                   : activeCategory !== 'all'
                     ? 'No products in this category yet.'
                     : 'This branch has no catalog items yet.'
+              }
+              action={
+                productSearch ? (
+                  <Button variant="outline" size="sm" onClick={() => setProductSearch('')}>
+                    Clear search
+                  </Button>
+                ) : undefined
               }
             />
           ) : (

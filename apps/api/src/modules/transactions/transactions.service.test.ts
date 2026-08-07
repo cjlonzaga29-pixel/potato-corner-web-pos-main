@@ -283,6 +283,9 @@ function transactionRow(overrides: Record<string, unknown> = {}) {
     paymentProofKey: null,
     paymentProofType: null,
     paymentProofUploadedAt: null,
+    discountProofKey: null,
+    discountProofType: null,
+    discountProofUploadedAt: null,
     receiptPrinted: false,
     inventoryDeductionStatus: 'pending',
     isOfflineTransaction: false,
@@ -581,6 +584,167 @@ describe('transactionsService.getPaymentProofUrl', () => {
       payment_proof_type: 'live_capture',
       uploaded_at: '2026-07-25T10:00:00.000Z',
     });
+  });
+});
+
+// Task 209.5 — discount-proof upload/read, mirroring the payment-proof
+// tests above 1:1 (same "no Prisma write here" upload service and
+// tolerant-nulls read service).
+describe('transactionsService.uploadDiscountProof', () => {
+  it('compresses the image and uploads it to the discount-proofs bucket, returning the storage key and type', async () => {
+    const result = await transactionsService.uploadDiscountProof(
+      { branchId: 'branch-1', shiftId: 'shift-1', type: 'live_capture' },
+      { buffer: Buffer.from('img'), originalname: 'proof.jpg' },
+      { id: 'user-1', role: 'staff' },
+    );
+
+    expect(storageMock.upload).toHaveBeenCalledWith(
+      expect.stringMatching(/^branch-1\/shift-1\/user-1-\d+-proof\.jpg\.webp$/),
+      Buffer.from('fake-image'),
+      { contentType: 'image/webp', upsert: true },
+    );
+    expect(result).toEqual({
+      discount_proof_key: expect.stringMatching(/^branch-1\/shift-1\/user-1-\d+-proof\.jpg\.webp$/),
+      discount_proof_type: 'live_capture',
+    });
+  });
+
+  it('records a DISCOUNT_PROOF_UPLOADED audit log entry', async () => {
+    await transactionsService.uploadDiscountProof(
+      { branchId: 'branch-1', shiftId: 'shift-1', type: 'gallery_upload' },
+      { buffer: Buffer.from('img'), originalname: 'proof.jpg' },
+      { id: 'user-1', role: 'staff' },
+    );
+
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'DISCOUNT_PROOF_UPLOADED',
+        entityType: 'transaction',
+        actorId: 'user-1',
+        branchId: 'branch-1',
+      }),
+    );
+  });
+
+  it('throws DISCOUNT_PROOF_UPLOAD_FAILED when Storage returns an error', async () => {
+    storageMock.upload.mockResolvedValueOnce({ error: new Error('bucket unreachable') });
+
+    await expect(
+      transactionsService.uploadDiscountProof(
+        { branchId: 'branch-1', shiftId: 'shift-1', type: 'gallery_upload' },
+        { buffer: Buffer.from('img'), originalname: 'proof.jpg' },
+        { id: 'user-1', role: 'staff' },
+      ),
+    ).rejects.toMatchObject({ code: 'DISCOUNT_PROOF_UPLOAD_FAILED' });
+  });
+});
+
+describe('transactionsService.getDiscountProofUrl', () => {
+  it('throws TRANSACTION_NOT_FOUND for an unknown transaction', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(null);
+
+    await expect(transactionsService.getDiscountProofUrl('missing-txn')).rejects.toMatchObject({
+      code: 'TRANSACTION_NOT_FOUND',
+    });
+  });
+
+  it('returns nulls rather than throwing for a transaction with no proof attached', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ discountProofKey: null }) as never);
+
+    const result = await transactionsService.getDiscountProofUrl('txn-1');
+
+    expect(result).toEqual({ discount_proof_url: null, discount_proof_type: null, uploaded_at: null });
+  });
+
+  it('returns a freshly-signed URL for a transaction with proof attached', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({
+        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
+        discountProofType: 'live_capture',
+        discountProofUploadedAt: new Date('2026-08-06T10:00:00.000Z'),
+      }) as never,
+    );
+
+    const result = await transactionsService.getDiscountProofUrl('txn-1');
+
+    expect(storageMock.createSignedUrl).toHaveBeenCalledWith('branch-1/shift-1/user-1-123.webp', 60 * 60);
+    expect(result).toEqual({
+      discount_proof_url: 'https://example.com/proof.webp',
+      discount_proof_type: 'live_capture',
+      uploaded_at: '2026-08-06T10:00:00.000Z',
+    });
+  });
+});
+
+describe('transactionsService.createTransaction — discount proof linking', () => {
+  it('never attaches discount proof fields for a non-PWD/Senior discount, even if proof fields are somehow supplied', async () => {
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        discountType: 'none',
+        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
+        discountProofType: 'live_capture',
+      } as never,
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
+      expect.anything(),
+    );
+  });
+
+  it('does not require discount proof for a PWD/Senior discount — optional per DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING', async () => {
+    await transactionsService.createTransaction(
+      { ...baseInput, discountType: 'senior_citizen', discountIdReference: 'REF-1' },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
+      expect.anything(),
+    );
+  });
+
+  it('links the discount proof key/type/uploadedAt exactly once when a PWD/Senior discount includes both proof fields', async () => {
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        discountType: 'pwd',
+        discountIdReference: 'REF-1',
+        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
+        discountProofType: 'live_capture',
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
+        discountProofType: 'live_capture',
+        discountProofUploadedAt: expect.any(Date),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('drops a partial proof (key without type) back to no-proof rather than persisting an inconsistent pair', async () => {
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        discountType: 'pwd',
+        discountIdReference: 'REF-1',
+        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
+        discountProofType: undefined,
+      } as never,
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
+      expect.anything(),
+    );
   });
 });
 

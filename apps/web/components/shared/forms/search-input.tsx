@@ -13,6 +13,15 @@ interface SearchInputProps {
   debounceMs?: number;
   isLoading?: boolean;
   className?: string;
+  /**
+   * Task 209.8B — optional extra classes for the inner `<Input>` only (the
+   * outer wrapper still takes `className`). Opt-in and additive via `cn`, so
+   * every existing caller renders byte-identical to before; the POS terminal
+   * passes `app-control` here to make the product search field's height
+   * density-aware (36-40px compact/standard, 44px touch/comfortable)
+   * instead of the fixed h-9 every other caller keeps.
+   */
+  inputClassName?: string;
 }
 
 export function SearchInput({
@@ -22,6 +31,7 @@ export function SearchInput({
   debounceMs = 300,
   isLoading,
   className,
+  inputClassName,
 }: SearchInputProps) {
   const [localValue, setLocalValue] = useState(value);
 
@@ -44,7 +54,7 @@ export function SearchInput({
         value={localValue}
         onChange={(event) => setLocalValue(event.target.value)}
         placeholder={placeholder}
-        className="pl-9 pr-9"
+        className={cn('pl-9 pr-9', inputClassName)}
       />
       {isLoading ? (
         <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />

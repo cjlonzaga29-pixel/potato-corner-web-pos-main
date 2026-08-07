@@ -22,7 +22,7 @@ vi.mock('./reports.repository.js', () => ({
 }));
 
 const { reportsRepository } = await import('./reports.repository.js');
-const { getReportRows, REPORT_COLUMNS } = await import('./reports.columns.js');
+const { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS } = await import('./reports.columns.js');
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -49,5 +49,24 @@ describe('REPORT_COLUMNS', () => {
     for (const type of types) {
       expect(REPORT_COLUMNS[type].length).toBeGreaterThan(0);
     }
+  });
+});
+
+// Task 209.5 — DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS is a separate array
+// from DAILY_SALES_TRANSACTION_COLUMNS so the Daily Sales tab's own export
+// is never affected by adding the Proof Available column.
+describe('DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS', () => {
+  it('includes a Yes/No Proof Available column, never the raw storage key or a signed URL', () => {
+    const keys = DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS.map((c) => c.key);
+    expect(keys).toContain('discount_proof_available');
+    expect(keys).not.toContain('discount_proof_key');
+    expect(keys).not.toContain('discount_proof_url');
+    const proofColumn = DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS.find((c) => c.key === 'discount_proof_available');
+    expect(proofColumn?.header).toBe('Proof Available');
+  });
+
+  it('is a distinct array from DAILY_SALES_TRANSACTION_COLUMNS, so Daily Sales export columns are unchanged', () => {
+    expect(DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS).not.toBe(DAILY_SALES_TRANSACTION_COLUMNS);
+    expect(DAILY_SALES_TRANSACTION_COLUMNS.map((c) => c.key)).not.toContain('discount_proof_available');
   });
 });

@@ -114,6 +114,7 @@ function product(overrides: Partial<ProductDetailResponse> = {}): ProductDetailR
     category: 'Snacks',
     category_id: null,
     category_name: null,
+    has_image: false,
     status: 'active',
     status_label: 'Active',
     display_order: 0,

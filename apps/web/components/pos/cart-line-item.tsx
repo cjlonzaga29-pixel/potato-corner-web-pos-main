@@ -58,6 +58,12 @@ interface CartLineItemProps {
  * at a full 44px+ touch target, line total emphasized) and compact spacing
  * so more lines fit the cart's independent scroll region. No change to what
  * triggers onEdit/onRemove/onQuantityChange or the values passed to them.
+ *
+ * Task 209.8B — further vertical compaction: edit/remove/quantity controls
+ * moved off the fixed-48px `.touch-target` onto the density-aware
+ * `.app-control-square` (still >=44px on compact-touch/mobile, 36-40px on
+ * fine-pointer standard/compact), tighter line-height on modifier rows, and
+ * smaller row gaps. No change to what data is shown or the handlers' args.
  */
 export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEdit, onRemove, onQuantityChange }: CartLineItemProps) {
   // Test-only visibility into actual re-render count — see product-card.tsx
@@ -69,11 +75,11 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
 
   return (
     <div data-render-count={renderCountRef.current}>
-      {showDivider && <Separator className="mb-2" />}
-      <div className="space-y-1.5 rounded-lg text-sm">
+      {showDivider && <Separator className="mb-1.5" />}
+      <div className="space-y-1 rounded-lg text-sm">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 font-semibold leading-snug text-foreground">
+            <p className="line-clamp-2 text-[13px] font-semibold leading-snug text-foreground">
               {line.productName}
               {line.flavorName ? ` — ${line.flavorName}` : ''}
             </p>
@@ -83,14 +89,14 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             {line.hasOptionGroups && (
-              <Button variant="ghost" size="icon" className="touch-target" onClick={() => onEdit(line.index)} aria-label="Edit">
+              <Button variant="ghost" size="icon" className="app-control-square" onClick={() => onEdit(line.index)} aria-label="Edit">
                 <Pencil className="h-3.5 w-3.5" />
               </Button>
             )}
             <Button
               variant="ghost"
               size="icon"
-              className="touch-target text-destructive hover:bg-destructive/10 hover:text-destructive"
+              className="app-control-square text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => onRemove(line.index)}
               aria-label={`Remove ${line.productName} from cart`}
             >
@@ -105,14 +111,14 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
           // text-node children, not text inside nested children, so a
           // wrapping <span> around just the label prefix would silently stop
           // "Label: rest of the line" from matching as one string.
-          <div className="space-y-0.5 border-l-2 border-border pl-2">
+          <div className="space-y-0 border-l-2 border-border pl-2">
             {line.slotSelections.map((sel, si) => (
-              <p key={si} className="text-xs text-muted-foreground">
+              <p key={si} className="text-xs leading-tight text-muted-foreground">
                 {sel.label}: {sel.snackName} — {sel.flavorName}
               </p>
             ))}
             {line.optionSelections.map((opt) => (
-              <p key={opt.option_id} className="text-xs text-muted-foreground">
+              <p key={opt.option_id} className="text-xs leading-tight text-muted-foreground">
                 {opt.option_group_name}: {opt.option_name}
                 {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
               </p>
@@ -120,12 +126,12 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
           </div>
         )}
 
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex items-center justify-between gap-2 pt-0.5">
+          <div className="flex shrink-0 items-center gap-1">
             <Button
               variant="outline"
               size="icon"
-              className="touch-target"
+              className="app-control-square"
               aria-label={`Decrease ${line.productName} quantity`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -138,7 +144,7 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             <Button
               variant="outline"
               size="icon"
-              className="touch-target"
+              className="app-control-square"
               aria-label={`Increase ${line.productName} quantity`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -148,7 +154,7 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
               +
             </Button>
           </div>
-          <p className="text-right text-base font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
+          <p className="text-right text-sm font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
         </div>
       </div>
     </div>

@@ -76,6 +76,13 @@ export const createTransactionSchema = z
     // — required together for GCash/Maya/Other (see superRefine below).
     payment_proof_key: z.string().min(1).optional(),
     payment_proof_type: z.enum(imageProofTypeValues).optional(),
+    // Task 209.5 — storage key + capture mode returned by POST
+    // /api/transactions/discount-proof, for PWD/Senior Citizen discount
+    // compliance evidence. Always optional: no proof-required policy exists
+    // for discounts yet (DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING), so this
+    // is never enforced via superRefine the way payment_proof_key is.
+    discount_proof_key: z.string().min(1).optional(),
+    discount_proof_type: z.enum(imageProofTypeValues).optional(),
     is_offline_transaction: z.boolean().default(false),
     offline_provisional_number: z.string().optional(),
   })
@@ -189,6 +196,12 @@ export const transactionResponseSchema = z.object({
   has_payment_proof: z.boolean(),
   payment_proof_type: z.enum(imageProofTypeValues).nullable(),
   payment_proof_uploaded_at: z.iso.datetime().nullable(),
+  // Task 209.5 — same existence-flag pattern as has_payment_proof above; the
+  // signed URL is fetched lazily via GET /:transactionId/discount-proof only
+  // when an authorized viewer opens the Discount Compliance report's dialog.
+  has_discount_proof: z.boolean(),
+  discount_proof_type: z.enum(imageProofTypeValues).nullable(),
+  discount_proof_uploaded_at: z.iso.datetime().nullable(),
   receipt_printed: z.boolean(),
   inventory_deduction_status: z.enum(['pending', 'completed', 'failed']),
   is_offline_transaction: z.boolean(),
@@ -336,5 +349,31 @@ export const paymentProofUploadResponseSchema = z.object({
 export const paymentProofResponseSchema = z.object({
   payment_proof_url: z.url().nullable(),
   payment_proof_type: z.enum(imageProofTypeValues).nullable(),
+  uploaded_at: z.iso.datetime().nullable(),
+});
+
+/**
+ * Task 209.5 — POST /api/transactions/discount-proof multipart fields (the
+ * `proof` file itself is parsed by multer, not Zod). Same shape and
+ * upload-before-create rationale as paymentProofUploadRequestSchema above,
+ * but for PWD/Senior Citizen discount compliance evidence — kept as its own
+ * schema/endpoint/bucket rather than reusing the payment-proof one, so
+ * payment and discount evidence are never ambiguous in storage or in the
+ * request contract.
+ */
+export const discountProofUploadRequestSchema = z.object({
+  branch_id: z.uuid(),
+  shift_id: z.uuid().optional(),
+  type: z.enum(imageProofTypeValues),
+});
+
+export const discountProofUploadResponseSchema = z.object({
+  discount_proof_key: z.string(),
+  discount_proof_type: z.enum(imageProofTypeValues),
+});
+
+export const discountProofResponseSchema = z.object({
+  discount_proof_url: z.url().nullable(),
+  discount_proof_type: z.enum(imageProofTypeValues).nullable(),
   uploaded_at: z.iso.datetime().nullable(),
 });

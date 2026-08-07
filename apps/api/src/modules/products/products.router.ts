@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import {
   createProductSchema,
@@ -30,6 +31,20 @@ import { requirePasswordChange } from '../../middleware/require-password-change.
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
+
+// Task 209.6 — Product Image Management (Admin Only). Same limits/shape as
+// expenses.router.ts's receiptUpload: 5MB cap, JPEG/PNG/WebP only.
+const productImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      callback(new ProductError('INVALID_IMAGE_TYPE', 'Image must be JPEG, PNG, or WebP', 422));
+      return;
+    }
+    callback(null, true);
+  },
+});
 
 const productStatusValues = Object.values(PRODUCT_STATUS) as [ProductStatus, ...ProductStatus[]];
 
@@ -148,6 +163,69 @@ router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, asy
     if (!requireUser(req, res)) return;
     await productsService.deleteProduct(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
     res.status(204).send();
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+// Task 209.6 — Product Image Management (Admin Only). Read mirrors
+// GET /:productId (adminSupervisorOrBranch); upload/delete are write
+// operations restricted to Admin, the same posture as every other
+// product-identity write route (POST/PATCH/DELETE /:productId above).
+
+router.get('/:productId/image', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const result = await productsService.getProductImage(req.params.productId as string);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+router.post(
+  '/:productId/image',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  (req: Request, res: Response, next: NextFunction) => {
+    productImageUpload.single('image')(req, res, (error: unknown) => {
+      if (error) {
+        handleModuleError(
+          error instanceof multer.MulterError ? new ProductError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422) : error,
+          res,
+          next,
+        );
+        return;
+      }
+      next();
+    });
+  },
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A product image file is required' }, meta: null });
+        return;
+      }
+      const result = await productsService.uploadProductImage(
+        req.params.productId as string,
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.delete('/:productId/image', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const result = await productsService.deleteProductImage(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+    res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
   }

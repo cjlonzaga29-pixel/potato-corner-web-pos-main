@@ -37,6 +37,9 @@ interface PaymentFooterProps {
   onDiscountTypeChange: (value: DiscountChoice) => void;
   discountIdReference: string;
   onDiscountIdReferenceChange: (value: string) => void;
+  discountProofKey: string | null;
+  onDiscountProofSelected: (file: File, type: ImageProofType) => Promise<void>;
+  onClearDiscountProof: () => void;
   promoAmount: string;
   onPromoAmountChange: (value: string) => void;
   paymentMethod: 'cash' | 'gcash' | 'maya' | 'other';
@@ -46,7 +49,7 @@ interface PaymentFooterProps {
   onCashTenderedChange: (value: string) => void;
   change: number;
   paymentProofKey: string | null;
-  onProofSelected: (file: File, type: ImageProofType) => void;
+  onProofSelected: (file: File, type: ImageProofType) => Promise<void>;
   onClearProof: () => void;
   chargeError: string | null;
   chargeDisabledReason: string | null;
@@ -72,6 +75,12 @@ interface PaymentFooterProps {
  * aria-live status text so screen readers hear the disabled reason/charge
  * error without extra navigation. No amount, discount, payment-method, or
  * charge-handler logic changed.
+ *
+ * Task 209.8 (compact redesign) — reordered to Subtotal, Discount, VAT,
+ * TOTAL, then Payment Method, Discount Type (+ its conditional ID/proof/promo
+ * fields), Cash Tendered/Payment Reference, Change, Charge button — purely a
+ * visual reorder of the same rows/fields; every value, handler, and
+ * validation rule is unchanged.
  */
 export const PaymentFooter = memo(function PaymentFooter({
   subtotal,
@@ -84,6 +93,9 @@ export const PaymentFooter = memo(function PaymentFooter({
   onDiscountTypeChange,
   discountIdReference,
   onDiscountIdReferenceChange,
+  discountProofKey,
+  onDiscountProofSelected,
+  onClearDiscountProof,
   promoAmount,
   onPromoAmountChange,
   paymentMethod,
@@ -108,16 +120,16 @@ export const PaymentFooter = memo(function PaymentFooter({
           <span className="text-muted-foreground">Subtotal</span>
           <span className="tabular-nums">{formatPeso(subtotal)}</span>
         </div>
-        <div className="flex justify-between text-xs text-muted-foreground">
-          <span>VAT (12%)</span>
-          <span className="tabular-nums">{formatPeso(vatAmount)}</span>
-        </div>
         {discountAmount > 0 && (
           <div className="flex justify-between font-medium text-destructive">
             <span>Discount</span>
             <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
           </div>
         )}
+        <div className="flex justify-between text-xs text-muted-foreground">
+          <span>VAT (12%)</span>
+          <span className="tabular-nums">{formatPeso(vatAmount)}</span>
+        </div>
         <Separator className="my-1.5" />
         <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-2.5 py-1.5">
           <span className="text-sm font-semibold">Total</span>
@@ -139,38 +151,7 @@ export const PaymentFooter = memo(function PaymentFooter({
         </Button>
       )}
 
-      <Select value={discountType} onValueChange={(v) => onDiscountTypeChange(v as DiscountChoice)}>
-        <SelectTrigger className="touch-target">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {(Object.keys(DISCOUNT_LABELS) as DiscountChoice[]).map((value) => (
-            <SelectItem key={value} value={value}>
-              {DISCOUNT_LABELS[value]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {(discountType === 'pwd' || discountType === 'senior_citizen') && (
-        <Input
-          className="touch-target"
-          placeholder="PWD / Senior Citizen ID number"
-          value={discountIdReference}
-          onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
-        />
-      )}
-      {discountType === 'promotional' && (
-        <Input
-          className="touch-target"
-          type="number"
-          min={0}
-          placeholder="Promo discount amount"
-          value={promoAmount}
-          onChange={(e) => onPromoAmountChange(e.target.value)}
-        />
-      )}
-
+      {/* Task 209.8 — Payment Method surfaces before Discount Type: the cashier picks how the customer is paying first, then applies any discount on top of that. Purely a visual reorder; onPaymentMethodChange/onDiscountTypeChange and every value they carry are unchanged. */}
       <Tabs value={paymentMethod} onValueChange={(v) => onPaymentMethodChange(v as 'cash' | 'gcash' | 'maya' | 'other')}>
         <TabsList className="h-11 w-full">
           <TabsTrigger value="cash" className="h-9 flex-1">
@@ -189,6 +170,61 @@ export const PaymentFooter = memo(function PaymentFooter({
       </Tabs>
       {!isOnline && paymentMethod === 'cash' && (
         <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — payment proof can only be captured while connected.</p>
+      )}
+
+      <Select value={discountType} onValueChange={(v) => onDiscountTypeChange(v as DiscountChoice)}>
+        <SelectTrigger className="touch-target">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {(Object.keys(DISCOUNT_LABELS) as DiscountChoice[]).map((value) => (
+            <SelectItem key={value} value={value}>
+              {DISCOUNT_LABELS[value]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {(discountType === 'pwd' || discountType === 'senior_citizen') && (
+        <>
+          <Input
+            className="touch-target"
+            placeholder="PWD / Senior Citizen ID number"
+            value={discountIdReference}
+            onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
+          />
+          <Card className="rounded-lg shadow-none">
+            <CardContent className="space-y-3 p-3">
+              {discountProofKey ? (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    Discount ID proof attached
+                  </span>
+                  <Button type="button" variant="ghost" size="sm" className="h-auto shrink-0 p-0 text-xs underline" onClick={onClearDiscountProof}>
+                    Replace
+                  </Button>
+                </div>
+              ) : (
+                <ImageUpload
+                  label="Discount ID Proof"
+                  description="Optional — a clear photo of the PWD/Senior Citizen ID for compliance records."
+                  onImageSelected={onDiscountProofSelected}
+                />
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+      {discountType === 'promotional' && (
+        <Input
+          className="touch-target"
+          type="number"
+          min={0}
+          placeholder="Promo discount amount"
+          value={promoAmount}
+          onChange={(e) => onPromoAmountChange(e.target.value)}
+        />
       )}
 
       {paymentMethod === 'cash' && (

@@ -48,7 +48,7 @@ const EMPTY_PAYMENT_BREAKDOWN = {
  */
 interface TransactionQueryArgs {
   by?: string[];
-  where?: { status?: string };
+  where?: { status?: string; createdAt?: unknown };
 }
 
 function asGroupByMock(fn: unknown): Mock<(args: TransactionQueryArgs) => Promise<unknown[]>> {
@@ -103,6 +103,21 @@ beforeEach(() => {
 });
 
 describe('branchesRepository.findAllStatsGrouped', () => {
+  it('regression: gross-sales aggregate and payment-breakdown groupBy use the identical status filter and Manila day window, so voided/pending sales are excluded from both alike', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
+
+    await branchesRepository.findAllStatsGrouped();
+
+    const txnCall = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => !args.by?.includes('paymentMethod') && args.where?.status !== 'refunded')![0];
+    const paymentCall = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('paymentMethod'))![0];
+
+    expect(txnCall.where?.status).toBe('completed');
+    expect(paymentCall.where?.status).toBe('completed');
+    // Same createdAt window object reference-equal-in-value guarantees no
+    // separately-computed day boundary can drift between the two queries.
+    expect(paymentCall.where?.createdAt).toEqual(txnCall.where?.createdAt);
+  });
+
   it('REGRESSION: returns a row for every active branch even when it has zero activity', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }, { id: 'branch-2' }] as never);
 
@@ -265,8 +280,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
     mockTransactionGroupBy({
       payment: [
-        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { totalAmount: decimal(500) }, _count: { _all: 3 } },
-        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { totalAmount: decimal(200) }, _count: { _all: 1 } },
+        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { subtotal: decimal(500) }, _count: { _all: 3 } },
+        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { subtotal: decimal(200) }, _count: { _all: 1 } },
       ],
     });
 
@@ -280,6 +295,28 @@ describe('branchesRepository.findAllStatsGrouped', () => {
         other: { total: 0, count: 0 },
       },
     });
+  });
+
+  it('regression: paymentBreakdown sums to exactly todayGrossSales even when a discount makes subtotal !== totalAmount (org-wide)', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
+    mockTransactionGroupBy({
+      txn: [
+        { branchId: 'branch-1', _sum: { subtotal: decimal(700), discountAmount: decimal(100), vatAmount: decimal(75) }, _count: { _all: 2 } },
+      ],
+      payment: [
+        // Post-discount totalAmount (600) intentionally differs from subtotal (700) — the groupBy
+        // must still be keyed on subtotal so the breakdown reconciles with todayGrossSales.
+        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { subtotal: decimal(400), totalAmount: decimal(340) }, _count: { _all: 1 } },
+        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { subtotal: decimal(300), totalAmount: decimal(260) }, _count: { _all: 1 } },
+      ],
+    });
+
+    const rows = await branchesRepository.findAllStatsGrouped();
+    const branch1 = rows.find((r) => r.branchId === 'branch-1')!;
+
+    const breakdownSum = Object.values(branch1.paymentBreakdown).reduce((sum, m) => sum + m.total, 0);
+    expect(breakdownSum).toBe(branch1.todayGrossSales);
+    expect(branch1.todayGrossSales).toBe(700);
   });
 
   it('does not leak one branch\'s transactions/items/expenses into another branch\'s totals (no double counting)', async () => {
@@ -314,6 +351,17 @@ describe('branchesRepository.findAllStatsGrouped', () => {
 });
 
 describe('branchesRepository.branchStats', () => {
+  it('regression: gross-sales aggregate and payment-breakdown groupBy use the identical branchId/status filter and Manila day window (single branch)', async () => {
+    await branchesRepository.branchStats('branch-1');
+
+    const aggregateCall = vi.mocked(prisma.transaction.aggregate).mock.calls.find(([args]) => args.where?.status !== 'refunded')![0];
+    const paymentCall = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('paymentMethod'))![0];
+
+    expect(aggregateCall.where?.status).toBe('completed');
+    expect(paymentCall.where?.status).toBe('completed');
+    expect(paymentCall.where?.createdAt).toEqual(aggregateCall.where?.createdAt);
+  });
+
   it('returns todayExpenses correctly for a branch with logged expenses today', async () => {
     mockTransactionAggregate(
       { _count: { _all: 3 }, _sum: { subtotal: decimal(1120), discountAmount: decimal(0), vatAmount: decimal(120) } },
@@ -376,8 +424,8 @@ describe('branchesRepository.branchStats', () => {
   it('builds a payment-method breakdown of today\'s completed sales, keyed by cash/gcash/maya/other', async () => {
     mockTransactionGroupBy({
       payment: [
-        { paymentMethod: 'cash', _sum: { totalAmount: decimal(300) }, _count: { _all: 2 } },
-        { paymentMethod: 'maya', _sum: { totalAmount: decimal(150) }, _count: { _all: 1 } },
+        { paymentMethod: 'cash', _sum: { subtotal: decimal(300) }, _count: { _all: 2 } },
+        { paymentMethod: 'maya', _sum: { subtotal: decimal(150) }, _count: { _all: 1 } },
       ],
     });
 
@@ -389,6 +437,26 @@ describe('branchesRepository.branchStats', () => {
       maya: { total: 150, count: 1 },
       other: { total: 0, count: 0 },
     });
+  });
+
+  it('regression: paymentBreakdown sums to exactly todayGrossSales for a single branch when a discounted sale makes subtotal !== totalAmount', async () => {
+    mockTransactionAggregate(
+      { _count: { _all: 2 }, _sum: { subtotal: decimal(700), discountAmount: decimal(100), vatAmount: decimal(75) } },
+      { _sum: { totalAmount: null } },
+    );
+    mockTransactionGroupBy({
+      payment: [
+        // Post-discount totalAmount (340/260) intentionally differs from subtotal (400/300).
+        { paymentMethod: 'cash', _sum: { subtotal: decimal(400), totalAmount: decimal(340) }, _count: { _all: 1 } },
+        { paymentMethod: 'gcash', _sum: { subtotal: decimal(300), totalAmount: decimal(260) }, _count: { _all: 1 } },
+      ],
+    });
+
+    const stats = await branchesRepository.branchStats('branch-1');
+
+    const breakdownSum = Object.values(stats.paymentBreakdown).reduce((sum, m) => sum + m.total, 0);
+    expect(breakdownSum).toBe(stats.todayGrossSales);
+    expect(stats.todayGrossSales).toBe(700);
   });
 
   it('no longer returns a duplicate todayRevenue field (Simple Operational Audit §4)', async () => {

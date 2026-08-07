@@ -1224,3 +1224,57 @@ describe('reportsRepository.getAuditLog', () => {
     );
   });
 });
+
+// Task 209.5 — discount-proof availability on the per-transaction row used
+// by both the Daily Sales PDF and the Discount Compliance CSV/PDF exports.
+describe('reportsRepository.getDailySalesTransactions', () => {
+  function transactionRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'txn-1',
+      transactionNumber: 'PC-B1-20260806-0001',
+      paymentMethod: 'cash',
+      totalAmount: decimal(100),
+      vatAmount: decimal(0),
+      discountAmount: decimal(20),
+      discountType: 'senior_citizen',
+      createdAt: new Date('2026-08-06T10:00:00.000Z'),
+      cashier: { firstName: 'Jane', lastName: 'Doe' },
+      branch: { name: 'Branch One' },
+      discountProofKey: null,
+      ...overrides,
+    };
+  }
+
+  it("maps discount_proof_available to 'Yes' when a discount proof key is present", async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([transactionRow({ discountProofKey: 'branch-1/shift-1/user-1-123.webp' })] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]?.discount_proof_available).toBe('Yes');
+  });
+
+  it("maps discount_proof_available to 'No' when no discount proof key is present", async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([transactionRow({ discountProofKey: null })] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]?.discount_proof_available).toBe('No');
+  });
+
+  it('never selects the raw storage key onto the returned row shape — only the derived Yes/No flag', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([transactionRow({ discountProofKey: 'branch-1/shift-1/user-1-123.webp' })] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]).not.toHaveProperty('discount_proof_key');
+    expect(rows[0]).not.toHaveProperty('discountProofKey');
+  });
+
+  it('includes transaction_id and branch_name for the Discount Compliance column set', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([transactionRow()] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]).toMatchObject({ transaction_id: 'txn-1', branch_name: 'Branch One' });
+  });
+});

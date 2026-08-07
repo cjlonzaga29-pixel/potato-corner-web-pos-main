@@ -22,6 +22,7 @@ import {
   type SyncOfflineTransactionsData,
   type DiscountAuditFilters,
   type UploadPaymentProofData,
+  type UploadDiscountProofData,
 } from './transactions.types.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
@@ -64,6 +65,21 @@ const PAYMENT_PROOF_BUCKET = 'payment-proofs';
 /** GCash, Maya, and Other all require a payment proof photo — only cash does not (Task 139). */
 const PROOF_REQUIRED_METHODS: readonly string[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA, PAYMENT_METHOD.OTHER];
 
+/**
+ * Task 209.5 — PWD/Senior Citizen discount compliance evidence. Deliberately
+ * a separate bucket from PAYMENT_PROOF_BUCKET: payment proof and discount
+ * proof must never share a path prefix or be ambiguous about which evidence
+ * a given object is.
+ */
+const DISCOUNT_PROOF_BUCKET = 'discount-proofs';
+/**
+ * No proof-required policy exists yet for PWD/Senior Citizen discounts (no
+ * settings model wires into discount eligibility today — see
+ * STATUTORY_DISCOUNT_RATE above). Proof capture stays optional until such a
+ * policy is introduced; see DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING in
+ * createTransaction below.
+ */
+
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
 }
@@ -76,6 +92,13 @@ function sanitizeFilename(name: string): string {
 async function getSignedPaymentProofUrl(key: string): Promise<string> {
   const { data, error } = await supabaseAdmin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(key, 60 * 60);
   if (error || !data) throw new TransactionError('PAYMENT_PROOF_URL_FAILED', 'Could not generate payment proof URL', 500);
+  return data.signedUrl;
+}
+
+/** Same fresh-signed-URL rule as getSignedPaymentProofUrl, scoped to the discount-proofs bucket. */
+async function getSignedDiscountProofUrl(key: string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(DISCOUNT_PROOF_BUCKET).createSignedUrl(key, 60 * 60);
+  if (error || !data) throw new TransactionError('DISCOUNT_PROOF_URL_FAILED', 'Could not generate discount proof URL', 500);
   return data.signedUrl;
 }
 
@@ -128,6 +151,9 @@ interface TransactionRow {
   paymentProofKey: string | null;
   paymentProofType: string | null;
   paymentProofUploadedAt: Date | null;
+  discountProofKey: string | null;
+  discountProofType: string | null;
+  discountProofUploadedAt: Date | null;
   receiptPrinted: boolean;
   inventoryDeductionStatus: string;
   isOfflineTransaction: boolean;
@@ -170,6 +196,9 @@ function toTransactionResponse(row: TransactionRow) {
     has_payment_proof: row.paymentProofKey !== null,
     payment_proof_type: row.paymentProofType,
     payment_proof_uploaded_at: row.paymentProofUploadedAt?.toISOString() ?? null,
+    has_discount_proof: row.discountProofKey !== null,
+    discount_proof_type: row.discountProofType,
+    discount_proof_uploaded_at: row.discountProofUploadedAt?.toISOString() ?? null,
     receipt_printed: row.receiptPrinted,
     inventory_deduction_status: row.inventoryDeductionStatus,
     is_offline_transaction: row.isOfflineTransaction,
@@ -554,8 +583,18 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     : [];
   const flavorAvailabilityMap = new Map(flavorAvailability.map((r) => [r.flavorId, r.isAvailable]));
 
-  const resolved: ResolvedItem[] = [];
-  for (const item of items) {
+  // Task 209.3 — each item's resolution (recipe-version lookup + BOM
+  // deduction computation) only reads data already snapshotted above
+  // (variantMap/readinessMap/productAvailabilityMap/flavorAvailabilityMap)
+  // plus its own pure, side-effect-free DB reads (getVersionForVariant,
+  // computeBomDeduction, computeOptionDeductionLines) — nothing here writes,
+  // locks, or depends on another item's result, and this all runs before the
+  // atomic write transaction below, so resolving every cart line concurrently
+  // instead of one-by-one is safe. This was the dominant serial cost for a
+  // multi-item cart (one recipe-version + BOM round trip per line, back to
+  // back).
+  const resolved: ResolvedItem[] = await Promise.all(
+    items.map(async (item) => {
     const variant = variantMap.get(item.productVariantId);
     if (!variant || variant.productId !== item.productId) {
       throw new TransactionError('PRODUCT_UNAVAILABLE', `Product variant ${item.productVariantId} is not available for sale`, 422);
@@ -664,7 +703,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     const unitPrice = round2(basePrice + pricePremium + optionsPremium);
     const lineTotal = round2(unitPrice * item.quantity);
 
-    resolved.push({
+    return {
       id: randomUUID(),
       productId: variant.productId,
       productVariantId: variant.id,
@@ -680,8 +719,9 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       deductionLines,
       selectedFlavors,
       selectedOptions: selectedOptions.length > 0 ? selectedOptions : null,
-    });
-  }
+    };
+    }),
+  );
   return resolved;
 }
 
@@ -1127,11 +1167,73 @@ export const transactionsService = {
     };
   },
 
+  /**
+   * Task 209.5 — uploads a PWD/Senior Citizen discount-proof photo ahead of
+   * transaction creation, same "no Prisma write here" rationale as
+   * uploadPaymentProof above (a Storage upload must not happen inside the
+   * atomic transaction-create write, and the key is only persisted once the
+   * cashier submits it with POST /api/transactions). Same v1-orphan
+   * acceptance as payment proof: an uploaded-but-never-submitted object gets
+   * no sweep job, matching every other proof-photo bucket in this codebase.
+   * Audited as DISCOUNT_PROOF_UPLOADED regardless of whether this is the
+   * cashier's first capture or a Replace — the server has no way to
+   * distinguish the two (each call writes a fresh, uniquely-named object),
+   * exactly like payment proof's Replace flow.
+   */
+  async uploadDiscountProof(data: UploadDiscountProofData, file: { buffer: Buffer; originalname: string }, actor: ActorContext) {
+    const compressed = await sharp(file.buffer)
+      .resize({ width: 1200, withoutEnlargement: true })
+      .webp({ quality: 85 })
+      .toBuffer();
+
+    const path = `${data.branchId}/${data.shiftId}/${actor.id}-${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
+    const { error } = await supabaseAdmin.storage
+      .from(DISCOUNT_PROOF_BUCKET)
+      .upload(path, compressed, { contentType: 'image/webp', upsert: true });
+    if (error) {
+      throw new TransactionError('DISCOUNT_PROOF_UPLOAD_FAILED', 'Failed to upload the discount proof image', 502);
+    }
+
+    await recordAuditLog({
+      action: 'DISCOUNT_PROOF_UPLOADED',
+      entityType: 'transaction',
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: { storageKey: path, type: data.type },
+    });
+
+    return { discount_proof_key: path, discount_proof_type: data.type };
+  },
+
+  /**
+   * Freshly-signed URL for an already-attached discount proof — same
+   * tolerant-nulls behavior as getPaymentProofUrl above.
+   */
+  async getDiscountProofUrl(transactionId: string) {
+    const transaction = (await transactionsRepository.findTransactionById(transactionId)) as TransactionRow | null;
+    if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
+    if (!transaction.discountProofKey) {
+      return { discount_proof_url: null, discount_proof_type: null, uploaded_at: null };
+    }
+    return {
+      discount_proof_url: await getSignedDiscountProofUrl(transaction.discountProofKey),
+      discount_proof_type: transaction.discountProofType,
+      uploaded_at: transaction.discountProofUploadedAt?.toISOString() ?? null,
+    };
+  },
+
   async createTransaction(data: CreateTransactionData, ipAddress: string | null) {
-    const branch = await transactionsRepository.findBranch(data.branchId);
+    // Task 209.3 — branch and shift are looked up by independent ids
+    // (branchId vs shiftId) with no data dependency between them; running
+    // them concurrently instead of back-to-back saves one round trip off
+    // every checkout's critical path without changing either validation.
+    const [branch, shift] = await Promise.all([
+      transactionsRepository.findBranch(data.branchId),
+      cashRepository.findShiftById(data.shiftId),
+    ]);
     if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
 
-    const shift = await cashRepository.findShiftById(data.shiftId);
     if (!shift || shift.branchId !== data.branchId) {
       throw new TransactionError('INVALID_SHIFT', 'shift_id does not belong to branch_id', 422);
     }
@@ -1174,6 +1276,13 @@ export const transactionsService = {
     if ((data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) && !data.discountIdReference) {
       throw new TransactionError('DISCOUNT_ID_REQUIRED', 'discount_id_reference is required for PWD/Senior Citizen discounts', 422);
     }
+    // Task 209.5 — no proof-required policy exists yet for PWD/Senior
+    // Citizen discounts (DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING), so
+    // discount_proof_key is accepted and linked when present but never
+    // enforced here the way PAYMENT_PROOF_REQUIRED is above. A future
+    // settings-driven policy would gate on the same discountType check.
+    const isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
+    const hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
 
     const resolvedItems = await resolveCartItems(data.branchId, data.items);
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
@@ -1246,6 +1355,9 @@ export const transactionsService = {
               paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
               paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
               paymentProofUploadedAt: requiresProof ? new Date() : null,
+              discountProofKey: hasDiscountProof ? (data.discountProofKey as string) : null,
+              discountProofType: hasDiscountProof ? (data.discountProofType as ImageProofType) : null,
+              discountProofUploadedAt: hasDiscountProof ? new Date() : null,
               isOfflineTransaction: data.isOfflineTransaction,
               offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
               items: resolvedItems.map((item, itemIndex) => ({

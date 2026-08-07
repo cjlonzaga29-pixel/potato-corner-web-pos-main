@@ -61,6 +61,9 @@ interface CreateTransactionRow {
   paymentProofKey: string | null;
   paymentProofType: ImageProofType | null;
   paymentProofUploadedAt: Date | null;
+  discountProofKey: string | null;
+  discountProofType: ImageProofType | null;
+  discountProofUploadedAt: Date | null;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber: string | null;
   items: {
@@ -275,6 +278,9 @@ export const transactionsRepository = {
           paymentProofKey: data.paymentProofKey,
           paymentProofType: data.paymentProofType,
           paymentProofUploadedAt: data.paymentProofUploadedAt,
+          discountProofKey: data.discountProofKey,
+          discountProofType: data.discountProofType,
+          discountProofUploadedAt: data.discountProofUploadedAt,
           isOfflineTransaction: data.isOfflineTransaction,
           offlineProvisionalNumber: data.offlineProvisionalNumber,
           items: {

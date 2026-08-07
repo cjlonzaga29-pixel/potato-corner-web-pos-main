@@ -13,7 +13,7 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  */
 export default function AdminLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-screen overflow-hidden bg-background print:hidden">
       <SocketInitializer />
       <AdminSidebar />
       <div className="flex min-w-0 flex-1 flex-col">

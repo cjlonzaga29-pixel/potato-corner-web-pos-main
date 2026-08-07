@@ -90,6 +90,12 @@ export function multiGroupTarget(group: AddOnsDialogGroup): number {
  * required-selection progress readout per group, and card-style highlighting
  * for every selected/checked row. Every group's selection logic, isValid
  * rule, and the exact "Assigned N / M" text are unchanged.
+ *
+ * Task 209.8B — tighter vertical rhythm: option/choice rows moved off the
+ * fixed-48px `.touch-target` onto the density-aware `.app-control`
+ * (option rows) / `.app-control-square` (allocator +/- buttons), smaller
+ * inter-group spacing, and slightly reduced header/footer padding. Group
+ * ordering, selection semantics, and payload shape are unchanged.
  */
 export function AddOnsDialog({
   productName,
@@ -129,16 +135,16 @@ export function AddOnsDialog({
       }}
     >
       <DialogContent className="max-w-md">
-        <DialogHeader className="sticky top-0 z-10 -mx-4 -mt-4 border-b bg-card px-4 pb-3 pt-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6">
+        <DialogHeader className="sticky top-0 z-10 -mx-4 -mt-4 border-b bg-card px-4 pb-2.5 pt-3.5 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-5">
           <DialogTitle>{productName}</DialogTitle>
           <DialogDescription>{variantName}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-1">
+        <div className="space-y-3 py-1">
           {simplifiedGroups.map((group) => {
             const selected = selectedOptionIds[group.id] ?? [];
             return (
-              <div key={group.id} className="space-y-2 border-t pt-3">
+              <div key={group.id} className="space-y-1.5 border-t pt-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold">{group.label}</p>
                   <Badge variant="secondary" className="text-[10px] font-medium">
@@ -148,7 +154,7 @@ export function AddOnsDialog({
 
                 <label
                   className={cn(
-                    'touch-target flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                    'app-control flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
                     selected.length === 0 ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                   )}
                 >
@@ -162,7 +168,7 @@ export function AddOnsDialog({
                     <label
                       key={option.id}
                       className={cn(
-                        'touch-target flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                        'app-control flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
                         isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                       )}
                     >
@@ -181,7 +187,7 @@ export function AddOnsDialog({
           {singleGroups.map((group) => {
             const selectedId = (selectedOptionIds[group.id] ?? [])[0];
             return (
-              <div key={group.id} className="space-y-2 border-t pt-3">
+              <div key={group.id} className="space-y-1.5 border-t pt-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold">{group.label}</p>
                   {group.required && (
@@ -191,14 +197,14 @@ export function AddOnsDialog({
                   )}
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {group.options.map((option) => {
                     const isSelected = selectedId === option.id;
                     return (
                       <label
                         key={option.id}
                         className={cn(
-                          'touch-target flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                          'app-control flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
                           isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                         )}
                       >
@@ -220,7 +226,7 @@ export function AddOnsDialog({
             const groupAssignment = assignments[group.id] ?? {};
             const assigned = assignedQuantity(groupAssignment);
             return (
-              <div key={group.id} className="space-y-2 border-t pt-3">
+              <div key={group.id} className="space-y-1.5 border-t pt-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold">{group.label}</p>
                   {group.required && (
@@ -237,7 +243,7 @@ export function AddOnsDialog({
                       <Button
                         type="button"
                         variant="outline"
-                        className="touch-target h-7 w-7 p-0"
+                        className="app-control-square p-0"
                         aria-label="Decrease No Add-ons quantity"
                         onClick={() => bump(group.id, NO_ADD_ON_KEY, -1, groupAssignment[NO_ADD_ON_KEY] ?? 0)}
                       >
@@ -247,7 +253,7 @@ export function AddOnsDialog({
                       <Button
                         type="button"
                         variant="outline"
-                        className="touch-target h-7 w-7 p-0"
+                        className="app-control-square p-0"
                         aria-label="Increase No Add-ons quantity"
                         onClick={() => bump(group.id, NO_ADD_ON_KEY, 1, groupAssignment[NO_ADD_ON_KEY] ?? 0)}
                       >
@@ -267,7 +273,7 @@ export function AddOnsDialog({
                       <Button
                         type="button"
                         variant="outline"
-                        className="touch-target h-7 w-7 p-0"
+                        className="app-control-square p-0"
                         aria-label={`Decrease ${option.name} quantity`}
                         onClick={() => bump(group.id, option.id, -1, groupAssignment[option.id] ?? 0)}
                       >
@@ -277,7 +283,7 @@ export function AddOnsDialog({
                       <Button
                         type="button"
                         variant="outline"
-                        className="touch-target h-7 w-7 p-0"
+                        className="app-control-square p-0"
                         aria-label={`Increase ${option.name} quantity`}
                         onClick={() => bump(group.id, option.id, 1, groupAssignment[option.id] ?? 0)}
                       >
@@ -301,7 +307,7 @@ export function AddOnsDialog({
           })}
         </div>
 
-        <DialogFooter className="sticky bottom-0 z-10 -mx-4 -mb-4 flex-row gap-2 border-t bg-card px-4 pb-4 pt-3 sm:-mx-6 sm:-mb-6 sm:justify-normal sm:px-6 sm:pb-6">
+        <DialogFooter className="sticky bottom-0 z-10 -mx-4 -mb-4 flex-row gap-2 border-t bg-card px-4 pb-3.5 pt-2.5 sm:-mx-6 sm:-mb-6 sm:justify-normal sm:px-6 sm:pb-5">
           <Button type="button" variant="outline" className="touch-target flex-1" onClick={onCancel}>
             Cancel
           </Button>

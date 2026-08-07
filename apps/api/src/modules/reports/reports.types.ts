@@ -92,4 +92,11 @@ export type DailySalesTransactionRow = {
   discount_type: string | null;
   created_at: string;
   cashier_name: string;
+  // Task 209.5 — carried on every row for reuse by the Discount Compliance
+  // CSV/PDF export (see DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS in
+  // reports.columns.ts). Not part of DAILY_SALES_TRANSACTION_COLUMNS, so the
+  // Daily Sales tab's own export is unaffected by these fields' presence.
+  transaction_id: string;
+  branch_name: string;
+  discount_proof_available: 'Yes' | 'No';
 } & Record<string, unknown>;

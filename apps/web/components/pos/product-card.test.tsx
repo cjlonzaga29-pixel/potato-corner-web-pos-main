@@ -28,17 +28,32 @@ function variant(overrides: Partial<PosCatalogProduct['variants'][number]> = {})
 }
 
 const firstVariant = variant();
-const product: PosCatalogProduct = { id: 'product-1', name: 'Regular Fries', category: 'Snacks', variants: [firstVariant] };
+const product: PosCatalogProduct = {
+  id: 'product-1',
+  name: 'Regular Fries',
+  category: 'Snacks',
+  has_image: false,
+  image_url: null,
+  variants: [firstVariant],
+};
 
 /** Wraps ProductCard in a parent that re-renders on an unrelated counter — proves React.memo bails out unless product/variant/message/onTap actually change. */
-function Harness({ onTap, message = null }: { onTap: (p: PosCatalogProduct, v: PosCatalogProduct['variants'][number]) => void; message?: string | null }) {
+function Harness({
+  onTap,
+  message = null,
+  product: productOverride = product,
+}: {
+  onTap: (p: PosCatalogProduct, v: PosCatalogProduct['variants'][number]) => void;
+  message?: string | null;
+  product?: PosCatalogProduct;
+}) {
   const [unrelatedTick, setUnrelatedTick] = useState(0);
   return (
     <div>
       <button type="button" onClick={() => setUnrelatedTick((t) => t + 1)} data-testid="unrelated-trigger">
         tick {unrelatedTick}
       </button>
-      <ProductCard product={product} variant={firstVariant} message={message} onTap={onTap} />
+      <ProductCard product={productOverride} variant={productOverride.variants[0] ?? firstVariant} message={message} onTap={onTap} />
     </div>
   );
 }
@@ -81,5 +96,90 @@ describe('ProductCard', () => {
 
     expect(document.querySelector('[data-render-count]')?.getAttribute('data-render-count')).toBe('2');
     expect(screen.getByText('₱65.00')).toBeInTheDocument();
+  });
+
+  it('re-renders when only the product image_url changes (e.g. catalog refetch minted a new signed URL)', () => {
+    const onTap = vi.fn();
+    const withImage: PosCatalogProduct = { ...product, has_image: true, image_url: 'https://storage.example/a.webp' };
+    const { rerender } = render(<ProductCard product={withImage} variant={firstVariant} message={null} onTap={onTap} />);
+    expect(document.querySelector('[data-render-count]')?.getAttribute('data-render-count')).toBe('1');
+
+    rerender(
+      <ProductCard
+        product={{ ...withImage, image_url: 'https://storage.example/b.webp' }}
+        variant={firstVariant}
+        message={null}
+        onTap={onTap}
+      />,
+    );
+
+    expect(document.querySelector('[data-render-count]')?.getAttribute('data-render-count')).toBe('2');
+  });
+
+  describe('product image', () => {
+    const withImage: PosCatalogProduct = {
+      ...product,
+      has_image: true,
+      image_url: 'https://storage.example/product-1.webp',
+    };
+
+    it('renders the image when image_url exists', () => {
+      render(<Harness onTap={vi.fn()} product={withImage} />);
+
+      const img = screen.getByRole('img');
+      expect(img).toHaveAttribute('src', 'https://storage.example/product-1.webp');
+    });
+
+    it('uses "<Product Name> - <Variant>" alt text', () => {
+      render(<Harness onTap={vi.fn()} product={withImage} />);
+
+      expect(screen.getByRole('img', { name: 'Regular Fries - Regular' })).toBeInTheDocument();
+    });
+
+    it('renders the placeholder icon when the product has no image', () => {
+      render(<Harness onTap={vi.fn()} product={product} />);
+
+      expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    });
+
+    it('falls back to the placeholder after the image fails to load', () => {
+      render(<Harness onTap={vi.fn()} product={withImage} />);
+
+      const img = screen.getByRole('img');
+      fireEvent.error(img);
+
+      expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    });
+
+    it('remains clickable after an image load failure', () => {
+      const onTap = vi.fn();
+      render(<Harness onTap={onTap} product={withImage} />);
+
+      fireEvent.error(screen.getByRole('img'));
+      fireEvent.click(screen.getByText('Regular Fries'));
+
+      expect(onTap).toHaveBeenCalledWith(withImage, withImage.variants[0]);
+    });
+
+    it('keeps product name, variant, and price visible alongside the image', () => {
+      render(<Harness onTap={vi.fn()} product={withImage} />);
+
+      expect(screen.getByText('Regular Fries')).toBeInTheDocument();
+      expect(screen.getByText('Regular')).toBeInTheDocument();
+      expect(screen.getByText('₱59.00')).toBeInTheDocument();
+    });
+  });
+
+  it('marks the card unavailable and keeps it keyboard-focusable when not-ready', () => {
+    const onTap = vi.fn();
+    const notReady = variant({ live_ready: false });
+    render(<Harness onTap={onTap} message="Inventory setup incomplete." product={{ ...product, variants: [notReady] }} />);
+
+    const card = screen.getByRole('button', { name: /Regular Fries/ });
+    expect(card).toHaveAttribute('aria-disabled', 'true');
+    expect(card).toHaveAttribute('tabindex', '-1');
+
+    fireEvent.keyDown(screen.getByText('Regular Fries'), { key: 'Enter' });
+    expect(onTap).toHaveBeenCalled();
   });
 });

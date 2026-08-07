@@ -323,6 +323,7 @@ export const reportsRepository = {
         ...(createdAt && { createdAt }),
       },
       select: {
+        id: true,
         transactionNumber: true,
         paymentMethod: true,
         totalAmount: true,
@@ -331,11 +332,19 @@ export const reportsRepository = {
         discountType: true,
         createdAt: true,
         cashier: { select: { firstName: true, lastName: true } },
+        branch: { select: { name: true } },
+        // Task 209.5 — carried on every row (Daily Sales included) but only
+        // ever rendered via DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS below,
+        // which is the only column set that references transaction_id/
+        // branch_name/discount_proof_available — DAILY_SALES_TRANSACTION_COLUMNS
+        // is untouched, so the Daily Sales tab's PDF/CSV is unaffected.
+        discountProofKey: true,
       },
       orderBy: { createdAt: 'desc' },
       take: filters.limit,
     });
     return rows.map((row) => ({
+      transaction_id: row.id,
       receipt_number: row.transactionNumber,
       payment_method: row.paymentMethod,
       total_amount: row.totalAmount.toNumber(),
@@ -344,6 +353,8 @@ export const reportsRepository = {
       discount_type: row.discountType,
       created_at: row.createdAt.toISOString(),
       cashier_name: `${row.cashier.firstName} ${row.cashier.lastName}`,
+      branch_name: row.branch.name,
+      discount_proof_available: row.discountProofKey !== null ? 'Yes' : 'No',
     }));
   },
 

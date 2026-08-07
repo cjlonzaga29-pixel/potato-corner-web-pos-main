@@ -4,15 +4,17 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { ProductCategoryResponse } from '@potato-corner/shared';
 import { CreateProductDialog } from './create-product-dialog';
 
-const { mockUseCreateProduct, mockUseBranches, mockUseProductCategories, mockPush } = vi.hoisted(() => ({
+const { mockUseCreateProduct, mockUseBranches, mockUseProductCategories, mockUseUploadProductImage, mockPush } = vi.hoisted(() => ({
   mockUseCreateProduct: vi.fn(),
   mockUseBranches: vi.fn(),
   mockUseProductCategories: vi.fn(),
+  mockUseUploadProductImage: vi.fn(),
   mockPush: vi.fn(),
 }));
 
 vi.mock('@/hooks/queries/use-products', () => ({
   useCreateProduct: mockUseCreateProduct,
+  useUploadProductImage: mockUseUploadProductImage,
 }));
 
 vi.mock('@/hooks/queries/use-branches', () => ({
@@ -25,6 +27,19 @@ vi.mock('@/hooks/queries/use-product-categories', () => ({
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
+}));
+
+// Task 209.6 — ImageUpload's own capture/compress/validate/retry behavior
+// (camera, canvas, MIME/size validation) is already covered end-to-end by
+// image-upload.test.tsx; stubbed here to a single button so these tests
+// stay focused on how CreateProductDialog wires the staged file into the
+// create → upload sequence.
+vi.mock('@/components/shared/forms/image-upload', () => ({
+  ImageUpload: ({ onImageSelected, label }: { onImageSelected: (file: File, type: 'gallery_upload') => void | Promise<void>; label?: string }) => (
+    <button type="button" onClick={() => onImageSelected(new File(['fake'], 'photo.jpg', { type: 'image/jpeg' }), 'gallery_upload')}>
+      {label ?? 'Product Image'}
+    </button>
+  ),
 }));
 
 /** Flat, always-rendered list — same approach as recipe-component-form-dialog.test.tsx for the real Radix Select. */
@@ -99,8 +114,10 @@ function setup(categories: ProductCategoryResponse[] = CATEGORIES, categoriesLoa
   mockUseProductCategories.mockReturnValue({ data: { categories, total: categories.length, page: 1, limit: 100 }, isLoading: categoriesLoading });
   const mutateAsync = vi.fn().mockResolvedValue({ id: 'product-1' });
   mockUseCreateProduct.mockReturnValue({ mutateAsync, isPending: false });
+  const uploadImageMutateAsync = vi.fn().mockResolvedValue({ image_url: 'https://example.com/signed.webp' });
+  mockUseUploadProductImage.mockReturnValue({ mutateAsync: uploadImageMutateAsync, isPending: false });
   render(<CreateProductDialog open onOpenChange={vi.fn()} />);
-  return { mutateAsync };
+  return { mutateAsync, uploadImageMutateAsync };
 }
 
 describe('CreateProductDialog — Category field', () => {
@@ -160,5 +177,76 @@ describe('CreateProductDialog — Category field', () => {
     const [payload] = mutateAsync.mock.calls[0] as [Record<string, unknown>];
     expect(payload.category_id).toBeUndefined();
     expect(payload.category).toBeUndefined();
+  });
+});
+
+describe('CreateProductDialog — Product Image (Task 209.6)', () => {
+  it('creates the product without an image when none is attached', async () => {
+    const { mutateAsync, uploadImageMutateAsync } = setup();
+
+    fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
+
+    await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(uploadImageMutateAsync).not.toHaveBeenCalled();
+    expect(mockPush).toHaveBeenCalledWith('/admin/products/product-1');
+  });
+
+  it('stages an image via ImageUpload and uploads it to the newly created product on submit', async () => {
+    const { mutateAsync, uploadImageMutateAsync } = setup();
+
+    fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Product Image' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
+
+    await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    await vi.waitFor(() => expect(uploadImageMutateAsync).toHaveBeenCalled());
+    const [uploadArgs] = uploadImageMutateAsync.mock.calls[0] as [{ productId: string; file: File }];
+    expect(uploadArgs.productId).toBe('product-1');
+    expect(uploadArgs.file.name).toBe('photo.jpg');
+    expect(mockPush).toHaveBeenCalledWith('/admin/products/product-1');
+  });
+
+  it('staging an image replaces the picker with a Remove/Replace preview instead of calling the network', () => {
+    setup();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Product Image' }));
+
+    expect(screen.queryByRole('button', { name: 'Product Image' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replace Image' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove image' })).toBeInTheDocument();
+  });
+
+  it('Remove clears the staged image and brings back the picker', () => {
+    setup();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Product Image' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Image' }));
+
+    expect(screen.getByRole('button', { name: 'Product Image' })).toBeInTheDocument();
+  });
+
+  it('keeps the dialog open and offers Retry Image Upload when the post-create upload fails, without re-creating the product or losing the entered name', async () => {
+    const { mutateAsync, uploadImageMutateAsync } = setup();
+    uploadImageMutateAsync.mockRejectedValueOnce(new Error('Network error'));
+
+    fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Product Image' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
+
+    await vi.waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    // Upload failure preserves form state — the name the cashier/admin typed is still there.
+    expect(screen.getByLabelText(/product name/i)).toHaveValue('Cheese Fries');
+
+    const retryButton = screen.getByRole('button', { name: 'Retry Image Upload' });
+    uploadImageMutateAsync.mockResolvedValueOnce({ image_url: 'https://example.com/signed.webp' });
+    fireEvent.click(retryButton);
+
+    await vi.waitFor(() => expect(mockPush).toHaveBeenCalledWith('/admin/products/product-1'));
+    // Retry re-uses the already-created product — createProduct is never called a second time.
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    expect(uploadImageMutateAsync).toHaveBeenCalledTimes(2);
   });
 });

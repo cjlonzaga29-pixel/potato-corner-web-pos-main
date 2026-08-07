@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   CreateTransactionInput,
+  DiscountProofResponse,
+  DiscountProofUploadResponse,
   PaymentProofResponse,
   PaymentProofUploadResponse,
   RefundTransactionRequest,
@@ -161,6 +163,53 @@ export function usePaymentProof(transactionId: string | null, enabled: boolean) 
     queryFn: async () => {
       const response = await apiClient<PaymentProofResponse>(`/api/transactions/${transactionId}/payment-proof`);
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load payment proof'));
+      return response.data;
+    },
+    enabled: Boolean(transactionId) && enabled,
+  });
+}
+
+interface UploadDiscountProofInput {
+  branchId: string;
+  /** Optional — same shiftGuard fallback reasoning as UploadPaymentProofInput above. */
+  shiftId?: string;
+  type: 'live_capture' | 'gallery_upload';
+  file: File;
+}
+
+/**
+ * Task 209.5 — uploads a PWD/Senior Citizen discount-proof photo ahead of
+ * checkout. Same "not persisted here" contract as useUploadPaymentProof
+ * above: the returned key/type are held in terminal component state and
+ * submitted with the transaction-create payload.
+ */
+export function useUploadDiscountProof(accessTokenOverride?: string) {
+  return useMutation({
+    mutationFn: async ({ branchId, shiftId, type, file }: UploadDiscountProofInput) => {
+      const formData = new FormData();
+      formData.set('branch_id', branchId);
+      if (shiftId) formData.set('shift_id', shiftId);
+      formData.set('type', type);
+      formData.set('proof', file);
+      const response = await apiClient<DiscountProofUploadResponse>(
+        '/api/transactions/discount-proof',
+        { method: 'POST', body: formData },
+        accessTokenOverride,
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload discount proof'));
+      return response.data;
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Fetches a freshly-signed discount-proof URL — only enabled while the Discount Compliance report's View Proof dialog is open. */
+export function useDiscountProof(transactionId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['transaction-discount-proof', transactionId],
+    queryFn: async () => {
+      const response = await apiClient<DiscountProofResponse>(`/api/transactions/${transactionId}/discount-proof`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load discount proof'));
       return response.data;
     },
     enabled: Boolean(transactionId) && enabled,

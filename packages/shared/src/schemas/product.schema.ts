@@ -211,6 +211,11 @@ export const productResponseSchema = z.object({
   category: z.string().nullable(),
   category_id: z.uuid().nullable(),
   category_name: z.string().nullable(),
+  // Task 209.6 — true when the product has a stored image object key.
+  // Never the signed URL itself; fetch that separately via
+  // GET /api/products/:productId/image so list/detail payloads stay cheap
+  // and short-lived signed URLs aren't minted for products no one is viewing.
+  has_image: z.boolean(),
   status: z.enum(productStatusValues),
   status_label: z.string(),
   display_order: z.number().int().nullable(),
@@ -340,6 +345,12 @@ export const posCatalogProductSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   category: z.string().nullable(),
+  // Task 209.7 — image lives on the product (one stored object per product,
+  // not per variant). image_url is a short-lived signed Supabase Storage
+  // URL, batch-minted per catalog request; null whenever has_image is false
+  // or signing failed, so the terminal always has a safe fallback.
+  has_image: z.boolean(),
+  image_url: z.string().nullable(),
   variants: z.array(posCatalogVariantSchema),
 });
 
@@ -420,4 +431,14 @@ export const publishProductSchema = z.object({
 
 export const unpublishProductSchema = z.object({
   branch_id: z.uuid(),
+});
+
+// ---------------------------------------------------------------------------
+// Task 209.6 — Product Image Management (Admin Only). image_url is always a
+// short-lived Supabase Storage signed URL, minted per-request — never a
+// public URL and never stored/cached beyond the response that carried it.
+// ---------------------------------------------------------------------------
+
+export const productImageResponseSchema = z.object({
+  image_url: z.string().nullable(),
 });

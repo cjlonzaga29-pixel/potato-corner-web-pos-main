@@ -549,6 +549,13 @@ model Product {
   // reads it). New admin UI writes categoryId; `category` is no longer required.
   categoryId String? @map("category_id")
 
+  // Task 209.6: Supabase Storage object key for the admin-managed product
+  // photo (bucket "product-images", key "<product-id>/image.webp") — never a
+  // public URL and never a base64 blob. Reads always go through a
+  // short-lived signed URL minted on request (see products.service.ts's
+  // getSignedProductImageUrl). Nullable — a product with no image is valid.
+  imagePath String? @map("image_path")
+
   creator            User?                       @relation(fields: [createdBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
   productCategory    ProductCategory?            @relation(fields: [categoryId], references: [id])
@@ -1495,6 +1502,15 @@ model Transaction {
   // find repeated IDs; it is never decrypted and never returned in any API
   // response.
   discountCustomerIdHash      String?                  @map("discount_customer_id_hash")
+  // Task 209.5 — PWD/Senior Citizen discount proof photo (compliance
+  // evidence), mirrors paymentProofKey/Type/UploadedAt above but stored in a
+  // dedicated `discount-proofs` bucket, never mixed with payment-proof
+  // storage. Optional: no proof-required policy exists yet for discounts
+  // (see transactions.service.ts DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING).
+  // Storage KEY only, never a public/signed URL — same rule as payment proof.
+  discountProofKey            String?                  @map("discount_proof_key")
+  discountProofType           ImageProofType?          @map("discount_proof_type")
+  discountProofUploadedAt     DateTime?                @map("discount_proof_uploaded_at")
   inventoryDeductionStatus    InventoryDeductionStatus @default(pending) @map("inventory_deduction_status")
   isOfflineTransaction        Boolean                  @default(false) @map("is_offline_transaction")
   offlineProvisionalNumber    String?                  @map("offline_provisional_number")

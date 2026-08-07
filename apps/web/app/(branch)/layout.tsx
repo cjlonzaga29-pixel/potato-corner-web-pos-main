@@ -37,7 +37,7 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  */
 export default function BranchLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-screen overflow-hidden bg-background print:hidden">
       <SocketInitializer />
       <BranchContextSync />
       <BranchSidebar />

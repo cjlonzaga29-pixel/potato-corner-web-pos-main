@@ -21,6 +21,8 @@ vi.mock('./transactions.service.js', () => ({
     syncOfflineTransactions: vi.fn(),
     uploadPaymentProof: vi.fn(),
     getPaymentProofUrl: vi.fn(),
+    uploadDiscountProof: vi.fn(),
+    getDiscountProofUrl: vi.fn(),
   },
 }));
 
@@ -144,6 +146,8 @@ describe('transactions routes — authentication', () => {
     { method: 'post', path: '/:transactionId/receipt-printed' },
     { method: 'post', path: '/payment-proof' },
     { method: 'get', path: '/:transactionId/payment-proof' },
+    { method: 'post', path: '/discount-proof' },
+    { method: 'get', path: '/:transactionId/discount-proof' },
   ];
 
   it.each(protectedRoutes)('$method $path returns 401 with no Authorization header', async ({ method, path }) => {
@@ -568,6 +572,139 @@ describe('GET /:transactionId/payment-proof — branch protection', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(transactionsService.getPaymentProofUrl).toHaveBeenCalledWith(TXN_1);
+  });
+});
+
+// Task 209.5 — discount-proof upload/read routes. Same route shape and
+// middleware chain as the payment-proof tests above; mirrored 1:1.
+describe('POST /discount-proof', () => {
+  it('rejects an invalid capture type before reaching the service — 422', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/discount-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'not_a_real_type' },
+    } as never);
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(transactionsService.uploadDiscountProof).not.toHaveBeenCalled();
+  });
+
+  it('returns 422 IMAGE_REQUIRED when no file was attached', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/discount-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'live_capture' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'IMAGE_REQUIRED', message: expect.any(String) } }));
+    expect(transactionsService.uploadDiscountProof).not.toHaveBeenCalled();
+  });
+
+  it('a staff member uploading for a branch they are not assigned to gets 403 from branchGuard', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/discount-proof'));
+    const token = generateStaffToken(BRANCH_2);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(transactionsService.uploadDiscountProof).not.toHaveBeenCalled();
+  });
+
+  it('a valid request reaches the service and returns 200 with the storage key', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/discount-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, shift_id: SHIFT_1, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+    vi.mocked(transactionsService.uploadDiscountProof).mockResolvedValue({
+      discount_proof_key: 'branch-1/shift-1/user-1-123.webp',
+      discount_proof_type: 'live_capture',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.uploadDiscountProof).toHaveBeenCalledWith(
+      { branchId: BRANCH_1, shiftId: SHIFT_1, type: 'live_capture' },
+      expect.objectContaining({ originalname: 'proof.jpg' }),
+      expect.objectContaining({ role: expect.any(String) }),
+    );
+  });
+
+  it('resolves shiftId from shiftGuard even when the client omits shift_id entirely — proof capture never needs a client-known shift id', async () => {
+    const handlers = skipMulter(getRouteHandlers(transactionsRouter, 'post', '/discount-proof'));
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      file: { buffer: Buffer.from('x'), originalname: 'proof.jpg' },
+      body: { branch_id: BRANCH_1, type: 'live_capture' },
+    } as never);
+    const res = mockRes();
+    vi.mocked(transactionsService.uploadDiscountProof).mockResolvedValue({
+      discount_proof_key: 'branch-1/shift-1/user-1-123.webp',
+      discount_proof_type: 'live_capture',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.uploadDiscountProof).toHaveBeenCalledWith(
+      { branchId: BRANCH_1, shiftId: SHIFT_1, type: 'live_capture' },
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+});
+
+describe('GET /:transactionId/discount-proof — branch protection', () => {
+  it("blocks a supervisor from another branch's transaction — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'get', '/:transactionId/discount-proof');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { transactionId: TXN_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.getTransactionById).mockResolvedValue({ id: TXN_1, branch_id: BRANCH_2 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(transactionsService.getDiscountProofUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns the signed URL for a transaction in the caller branch', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'get', '/:transactionId/discount-proof');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { transactionId: TXN_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.getTransactionById).mockResolvedValue({ id: TXN_1, branch_id: BRANCH_1 } as never);
+    vi.mocked(transactionsService.getDiscountProofUrl).mockResolvedValue({
+      discount_proof_url: 'https://signed.example/proof.webp',
+      discount_proof_type: 'live_capture',
+      uploaded_at: '2026-08-06T10:00:00.000Z',
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.getDiscountProofUrl).toHaveBeenCalledWith(TXN_1);
   });
 });
 

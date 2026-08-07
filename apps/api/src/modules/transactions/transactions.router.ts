@@ -9,6 +9,7 @@ import {
   createHoldOrderSchema,
   syncOfflineTransactionsSchema,
   paymentProofUploadRequestSchema,
+  discountProofUploadRequestSchema,
   ROLES,
   type CartItem,
   type OfflineTransactionItem,
@@ -29,6 +30,19 @@ import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access
 const router: Router = Router();
 
 const paymentProofUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      callback(new TransactionError('INVALID_IMAGE_TYPE', 'Image must be JPEG, PNG, or WebP', 422));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
+/** Task 209.5 — same limits/mime allowlist as paymentProofUpload above, kept as its own multer instance since it backs a separate route/bucket. */
+const discountProofUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
@@ -70,6 +84,8 @@ interface CreateTransactionBody {
   other_reference_note?: string;
   payment_proof_key?: string;
   payment_proof_type?: ImageProofType;
+  discount_proof_key?: string;
+  discount_proof_type?: ImageProofType;
   is_offline_transaction: boolean;
   offline_provisional_number?: string;
 }
@@ -144,6 +160,8 @@ router.post(
           otherReferenceNote: body.other_reference_note,
           paymentProofKey: body.payment_proof_key,
           paymentProofType: body.payment_proof_type,
+          discountProofKey: body.discount_proof_key,
+          discountProofType: body.discount_proof_type,
           isOfflineTransaction: body.is_offline_transaction,
           offlineProvisionalNumber: body.offline_provisional_number,
         },
@@ -262,6 +280,57 @@ router.post(
         return;
       }
       const result = await transactionsService.uploadPaymentProof(
+        { branchId: body.branch_id, shiftId, type: body.type },
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        { id: req.user.user_id, role: req.user.role },
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// Task 209.5 — PWD/Senior Citizen discount-proof upload. Same middleware
+// order and shift-resolution trust pattern as POST /payment-proof above.
+router.post(
+  '/discount-proof',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  (req: Request, res: Response, next: NextFunction) => {
+    discountProofUpload.single('proof')(req, res, (error: unknown) => {
+      if (error) {
+        handleModuleError(
+          error instanceof multer.MulterError
+            ? new TransactionError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422)
+            : error,
+          res,
+          next,
+        );
+        return;
+      }
+      next();
+    });
+  },
+  validate(discountProofUploadRequestSchema),
+  branchGuard,
+  shiftGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A discount proof image file is required' }, meta: null });
+        return;
+      }
+      const body = req.body as { branch_id: string; shift_id?: string; type: ImageProofType };
+      const shiftId = req.activeShift?.id ?? body.shift_id;
+      if (!shiftId) {
+        res.status(422).json({ data: null, error: { code: 'INVALID_SHIFT', message: 'No active shift could be resolved for this upload' }, meta: null });
+        return;
+      }
+      const result = await transactionsService.uploadDiscountProof(
         { branchId: body.branch_id, shiftId, type: body.type },
         { buffer: req.file.buffer, originalname: req.file.originalname },
         { id: req.user.user_id, role: req.user.role },
@@ -449,6 +518,25 @@ router.get('/:transactionId/payment-proof', authenticate, allRoles, requireActiv
       return;
     }
     const result = await transactionsService.getPaymentProofUrl(req.params.transactionId as string);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+// Task 209.5 — signed discount-proof URL. Same authorization stack and
+// branch-scope check as GET /:transactionId/payment-proof above: any
+// authenticated, active employee with access to the transaction's branch
+// (the Discount Compliance report's View Proof dialog is the caller).
+router.get('/:transactionId/discount-proof', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
+    if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
+      res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+      return;
+    }
+    const result = await transactionsService.getDiscountProofUrl(req.params.transactionId as string);
     res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

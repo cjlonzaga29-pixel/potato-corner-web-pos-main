@@ -45,6 +45,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
   useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
   usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
+  useDiscountProof: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
@@ -294,6 +295,9 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
     has_payment_proof: false,
     payment_proof_type: null,
     payment_proof_uploaded_at: null,
+    has_discount_proof: false,
+    discount_proof_type: null,
+    discount_proof_uploaded_at: null,
     receipt_printed: false,
     inventory_deduction_status: 'completed',
     is_offline_transaction: false,

@@ -83,6 +83,24 @@ const UNREADABLE_RESPONSE_ERROR = {
   message: 'Checkout could not be confirmed. Please check Receipts before trying again.',
 } as const;
 
+/**
+ * Task 209.3 — authenticate.ts's `unauthorized()` (apps/api/src/middleware/
+ * authenticate.ts) responds with `{ error: { code } }` and no `message`
+ * field for TOKEN_EXPIRED/TOKEN_MISSING/TOKEN_INVALID/TOKEN_REVOKED. Every
+ * caller's error surface (errorMessage() in use-transactions.ts and
+ * elsewhere) falls back to `error.code` when `error.message` is absent, so
+ * without this a confirmed-dead session (refresh already failed, logout
+ * already broadcast below) would show the raw backend code — e.g. literally
+ * the string "TOKEN_EXPIRED" — as the cashier-facing Charge error, instead
+ * of a plain-language message. This is the one card-safe, stable message
+ * used everywhere a request fails because the session could not be
+ * refreshed, regardless of which specific token error triggered it.
+ */
+const SESSION_EXPIRED_ERROR = {
+  code: 'SESSION_EXPIRED',
+  message: 'Session expired. Please sign in again.',
+} as const;
+
 function buildHeaders(init?: RequestInit, accessTokenOverride?: string): Headers {
   const headers = new Headers(init?.headers);
   // FormData (multipart uploads, e.g. payment proof photos) must not get a
@@ -198,6 +216,19 @@ export async function fetchAuthenticated(
     if (typeof window !== 'undefined') {
       broadcastLogout();
     }
+
+    // The session is now confirmed dead (refresh failed) and logout has
+    // already been broadcast — return a synthetic response carrying the
+    // cashier-safe SESSION_EXPIRED_ERROR instead of the original response,
+    // whose body only ever carries a bare backend code with no `message`
+    // (see SESSION_EXPIRED_ERROR's comment above). Callers that already
+    // navigated away via subscribeToLogout never see this render, but any
+    // caller still awaiting this promise (e.g. the Charge mutation's own
+    // catch block) gets the plain-language message instead of a raw code.
+    return new Response(JSON.stringify({ data: null, error: SESSION_EXPIRED_ERROR, meta: null }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    });
   }
 
   return response;

@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS, type JwtPayload, type PosReadinessCode, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
@@ -10,6 +11,7 @@ import {
 } from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
@@ -205,6 +207,9 @@ function toProductBase(product: {
   description: string | null;
   category: string | null;
   categoryId: string | null;
+  // Task 209.6 — optional so pre-existing call sites building a partial
+  // product shape (e.g. tests, cascade audit snapshots) don't need updating.
+  imagePath?: string | null;
   status: ProductStatus;
   displayOrder: number | null;
   isSeasonal: boolean;
@@ -225,6 +230,7 @@ function toProductBase(product: {
     category: product.category,
     category_id: product.categoryId,
     category_name: product.productCategory?.name ?? null,
+    has_image: Boolean(product.imagePath),
     status: product.status,
     status_label: STATUS_LABELS[product.status],
     display_order: product.displayOrder,
@@ -546,6 +552,46 @@ function toLegacyReadiness(result: ProductVariantReadinessResult) {
     blocking_issues: result.blockingIssues.map(toReadinessIssueResponse),
     readiness_warnings: result.warnings.map(toReadinessIssueResponse),
   };
+}
+
+// --- Task 209.6 — Product Image Management (Admin Only) ---
+// Mirrors expenses.service.ts's receipt-image storage pattern exactly:
+// same supabaseAdmin client, same sharp compression shape, same
+// short-lived-signed-URL-only read contract. A separate bucket
+// ("product-images") keeps this asset class isolated from expense
+// receipts/payment proofs/adjustment photos already living in Storage.
+const PRODUCT_IMAGE_BUCKET = 'product-images';
+const PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS = 60 * 60;
+
+function productImageKey(productId: string): string {
+  return `${PRODUCT_IMAGE_BUCKET}/${productId}/image.webp`;
+}
+
+async function getSignedProductImageUrl(imagePath: string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrl(imagePath, PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS);
+  if (error || !data) throw new ProductError('PRODUCT_IMAGE_URL_FAILED', 'Could not generate the product image URL', 500);
+  return data.signedUrl;
+}
+
+/**
+ * Task 209.7 — POS catalog image resolution. Batches every image-bearing
+ * product into a single Storage call (createSignedUrls) instead of minting
+ * one signed URL per product, so a catalog of N products costs one Storage
+ * round trip regardless of how many have images. Never throws: if signing
+ * fails outright or storage is unavailable, callers get an empty map and
+ * every product falls back to has_image-with-no-url, which the terminal
+ * already renders as a placeholder — a signing outage must not remove
+ * products from the catalog.
+ */
+async function getSignedProductImageUrls(imagePaths: string[]): Promise<Map<string, string>> {
+  if (imagePaths.length === 0) return new Map();
+  try {
+    const { data, error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrls(imagePaths, PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS);
+    if (error || !data) return new Map();
+    return new Map(data.filter((row) => row.signedUrl).map((row) => [row.path as string, row.signedUrl as string]));
+  } catch {
+    return new Map();
+  }
 }
 
 export const productsService = {
@@ -1358,6 +1404,11 @@ export const productsService = {
     const readinessResults = await productReadinessService.evaluateProductVariantReadinessBatch({ branchId, productVariantIds: variantIds });
     const readinessByVariantId = new Map(readinessResults.map((result) => [result.productVariantId, result]));
 
+    // Task 209.7 — one batched Storage call for every image-bearing product
+    // on this branch's catalog, instead of an N+1 signed-URL mint per product.
+    const imagePaths = products.map((product) => product.imagePath).filter((path): path is string => Boolean(path));
+    const signedImageUrlByPath = await getSignedProductImageUrls(imagePaths);
+
     const catalogProducts = products.map((product) => {
       const variants = product.variants.map((variant) => ({
         id: variant.id,
@@ -1440,6 +1491,8 @@ export const productsService = {
         id: product.id,
         name: product.name,
         category: product.category,
+        has_image: Boolean(product.imagePath),
+        image_url: (product.imagePath && signedImageUrlByPath.get(product.imagePath)) || null,
         variants,
       };
     });
@@ -1644,5 +1697,83 @@ export const productsService = {
     if (!variant) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
 
     return productsRepository.listVariantFlavorSlots(variantId);
+  },
+
+  // --- Task 209.6 — Product Image Management (Admin Only) ---
+  // Deliberately isolated from every other product mutation: no shared
+  // transaction, no cascade, and the repository call is a single-column
+  // update — Variants, Recipes, ProductComponent, Inventory, Pricing, and
+  // Sales rows are never touched by any method below.
+
+  /** Read access mirrors GET /:productId (adminSupervisorOrBranch at the router) — Supervisor/Branch may view, only Admin may write (see upload/delete below). */
+  async getProductImage(productId: string): Promise<{ image_url: string | null }> {
+    const product = await productsRepository.findImagePath(productId);
+    if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+    return { image_url: product.imagePath ? await getSignedProductImageUrl(product.imagePath) : null };
+  },
+
+  async uploadProductImage(
+    productId: string,
+    file: { buffer: Buffer; originalname: string },
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<{ image_url: string | null }> {
+    const existing = await productsRepository.findImagePath(productId);
+    if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    const compressed = await sharp(file.buffer)
+      .resize({ width: 1200, withoutEnlargement: true })
+      .webp({ quality: 85 })
+      .toBuffer();
+
+    const imagePath = productImageKey(productId);
+    const { error } = await supabaseAdmin.storage
+      .from(PRODUCT_IMAGE_BUCKET)
+      .upload(imagePath, compressed, { contentType: 'image/webp', upsert: true });
+    if (error) {
+      throw new ProductError('PRODUCT_IMAGE_UPLOAD_FAILED', 'Failed to upload the product image', 502);
+    }
+
+    await productsRepository.updateImagePath(productId, imagePath);
+    const response = { image_url: await getSignedProductImageUrl(imagePath) };
+
+    await recordAuditLog({
+      action: existing.imagePath ? 'PRODUCT_IMAGE_REPLACED' : 'PRODUCT_IMAGE_UPLOADED',
+      entityType: 'product',
+      entityId: productId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: { image_path: existing.imagePath },
+      afterState: { image_path: imagePath },
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async deleteProductImage(productId: string, actor: ActorContext, ipAddress: string | null): Promise<{ image_url: null }> {
+    const existing = await productsRepository.findImagePath(productId);
+    if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+    if (!existing.imagePath) throw new ProductError('NO_PRODUCT_IMAGE', 'This product has no image to delete', 404);
+
+    const { error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).remove([existing.imagePath]);
+    if (error) {
+      throw new ProductError('PRODUCT_IMAGE_DELETE_FAILED', 'Failed to delete the product image', 502);
+    }
+
+    await productsRepository.updateImagePath(productId, null);
+
+    await recordAuditLog({
+      action: 'PRODUCT_IMAGE_DELETED',
+      entityType: 'product',
+      entityId: productId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      beforeState: { image_path: existing.imagePath },
+      afterState: { image_path: null },
+      ipAddress,
+    });
+
+    return { image_url: null };
   },
 };

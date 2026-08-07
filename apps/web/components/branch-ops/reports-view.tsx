@@ -24,6 +24,7 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
+import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
 import { formatCurrency, formatDateTime, formatDuration, formatTimeAgo } from '@/lib/utils';
@@ -288,18 +289,53 @@ const voidRefundColumns: ColumnDef<VoidRefundRow>[] = [
   },
 ];
 
-const discountComplianceColumns: ColumnDef<TransactionResponse>[] = [
-  { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
-  {
-    id: 'discount_type',
-    header: 'Discount Type',
-    cell: ({ row }) =>
-      row.original.discount_type ? <Badge variant="secondary">{humanizeSnake(row.original.discount_type)}</Badge> : '—',
-  },
-  { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
-  { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
-  { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-];
+/**
+ * Task 209.5 — Proof Available/View Proof columns only render for
+ * `withActions` (Supervisor), same authorization gate getDailySalesColumns'
+ * payment_proof column already uses: branch role sees the compliance rows
+ * without any proof indicator, matching this report's existing permission
+ * model for proof-photo access.
+ */
+function getDiscountComplianceColumns(
+  withActions: boolean,
+  onViewProof: (transactionId: string) => void,
+  employeeNames: Map<string, string>,
+): ColumnDef<TransactionResponse>[] {
+  const columns: ColumnDef<TransactionResponse>[] = [
+    { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
+    {
+      id: 'discount_type',
+      header: 'Discount Type',
+      cell: ({ row }) =>
+        row.original.discount_type ? <Badge variant="secondary">{humanizeSnake(row.original.discount_type)}</Badge> : '—',
+    },
+    { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
+    { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
+    { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
+  ];
+  if (!withActions) return columns;
+  return [
+    ...columns,
+    {
+      id: 'cashier',
+      header: 'Cashier',
+      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+    },
+    {
+      id: 'discount_proof',
+      header: 'Proof Available',
+      cell: ({ row }) => {
+        const txn = row.original;
+        if (!txn.has_discount_proof) return <span className="text-xs text-muted-foreground">No</span>;
+        return (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onViewProof(txn.id)}>
+            Yes · View Proof
+          </Button>
+        );
+      },
+    },
+  ];
+}
 
 function createInventoryStockMovementColumns(
   unitCodes: Map<string, string>,
@@ -406,6 +442,7 @@ export function ReportsView() {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [receiptTransactionId, setReceiptTransactionId] = useState<string | null>(null);
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
+  const [discountProofTransactionId, setDiscountProofTransactionId] = useState<string | null>(null);
   const [viewItemsTransaction, setViewItemsTransaction] = useState<TransactionResponse | null>(null);
   const [viewDetailTransaction, setViewDetailTransaction] = useState<TransactionResponse | null>(null);
   const { data: receiptTransaction } = useTransaction(receiptTransactionId);
@@ -560,6 +597,15 @@ export function ReportsView() {
   const pwdDiscounts = discountedTransactions.filter((t) => t.discount_type === 'pwd').length;
   const seniorCitizenDiscounts = discountedTransactions.filter((t) => t.discount_type === 'senior_citizen').length;
   const totalDiscountAmount = discountedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
+  // Task 209.5 — compact proof-compliance summary, added to this tab's
+  // existing KPI row (no new dashboard widget, no redesign). Proof is only
+  // ever meaningful for PWD/Senior Citizen rows — Employee/Promotional
+  // discounts have no proof-capture UI, so they're excluded from the
+  // denominator rather than counted as "missing".
+  const proofEligibleDiscounts = discountedTransactions.filter((t) => t.discount_type === 'pwd' || t.discount_type === 'senior_citizen');
+  const proofAvailableCount = proofEligibleDiscounts.filter((t) => t.has_discount_proof).length;
+  const proofMissingCount = proofEligibleDiscounts.length - proofAvailableCount;
+  const proofComplianceRate = proofEligibleDiscounts.length > 0 ? (proofAvailableCount / proofEligibleDiscounts.length) * 100 : 0;
 
   // Inventory Movement
   const movements = movementsQuery.data?.movements ?? [];
@@ -840,8 +886,15 @@ export function ReportsView() {
             <KpiCard title="Senior Citizen Discounts" value={seniorCitizenDiscounts} isLoading={completedQuery.isLoading} />
             <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
+          {isSupervisor && (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <KpiCard title="Proof Available" value={proofAvailableCount} isLoading={completedQuery.isLoading} />
+              <KpiCard title="Proof Missing" value={proofMissingCount} isLoading={completedQuery.isLoading} />
+              <KpiCard title="Proof Compliance Rate" value={proofComplianceRate} suffix="%" isLoading={completedQuery.isLoading} />
+            </div>
+          )}
           <DataTable
-            columns={discountComplianceColumns}
+            columns={getDiscountComplianceColumns(isSupervisor, setDiscountProofTransactionId, employeeNames)}
             data={discountedTransactions}
             isLoading={completedQuery.isLoading}
             isError={completedQuery.isError}
@@ -917,6 +970,7 @@ export function ReportsView() {
         <>
           <ReceiptModal transaction={receiptTransaction ?? null} onClose={() => setReceiptTransactionId(null)} />
           <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
+          <ViewDiscountProofDialog transactionId={discountProofTransactionId} onOpenChange={(o) => !o && setDiscountProofTransactionId(null)} />
           <ViewTransactionItemsDialog transaction={viewItemsTransaction} onClose={() => setViewItemsTransaction(null)} />
           <ViewTransactionDetailDialog
             transaction={viewDetailTransaction}

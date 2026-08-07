@@ -148,6 +148,9 @@ describe('transactionsRepository.createTransaction', () => {
       paymentProofKey: null,
       paymentProofType: null,
       paymentProofUploadedAt: null,
+      discountProofKey: null,
+      discountProofType: null,
+      discountProofUploadedAt: null,
       isOfflineTransaction: false,
       offlineProvisionalNumber: null,
       items: [
@@ -217,6 +220,9 @@ describe('transactionsRepository.createTransaction', () => {
       paymentProofKey: 'branch-1/shift-1/user-1-123-proof.webp',
       paymentProofType: 'live_capture',
       paymentProofUploadedAt: uploadedAt,
+      discountProofKey: null,
+      discountProofType: null,
+      discountProofUploadedAt: null,
       isOfflineTransaction: false,
       offlineProvisionalNumber: null,
       items: [

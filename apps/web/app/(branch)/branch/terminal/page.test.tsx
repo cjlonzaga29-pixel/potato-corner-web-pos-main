@@ -21,6 +21,9 @@ const {
   mockUseClockOut,
   mockUseCreateTransaction,
   mockUploadPaymentProofMutateAsync,
+  mockUploadDiscountProofMutateAsync,
+  mockCreateTransactionIsPending,
+  mockClearCart,
 } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockReplaceItem: vi.fn(),
@@ -47,6 +50,17 @@ const {
   mockUploadPaymentProofMutateAsync: vi
     .fn()
     .mockResolvedValue({ payment_proof_key: 'branch-1/shift-1/user-1-123.webp', payment_proof_type: 'gallery_upload' }),
+  // Task 209.5
+  mockUploadDiscountProofMutateAsync: vi
+    .fn()
+    .mockResolvedValue({ discount_proof_key: 'branch-1/shift-1/user-1-456.webp', discount_proof_type: 'gallery_upload' }),
+  // Task 209.3 — defaults to false (matching every existing test's
+  // assumption that the mutation is never mid-flight), overridable per test
+  // via mockCreateTransactionIsPending.mockReturnValue(true) to exercise the
+  // Charge button's disabled/"Processing…" state without needing a real
+  // useMutation instance.
+  mockCreateTransactionIsPending: vi.fn(() => false),
+  mockClearCart: vi.fn(),
 }));
 
 // jsdom implements neither createImageBitmap nor canvas 2D drawing/encoding —
@@ -110,7 +124,7 @@ vi.mock('@/hooks/use-cart', () => ({
     removeItem: vi.fn(),
     updateItemQuantity: vi.fn(),
     replaceItem: mockReplaceItem,
-    clearCart: vi.fn(),
+    clearCart: mockClearCart,
   }),
 }));
 
@@ -143,9 +157,10 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
 vi.mock('@/hooks/queries/use-transactions', () => ({
   useCreateTransaction: (accessTokenOverride?: string) => {
     mockUseCreateTransaction(accessTokenOverride);
-    return { mutateAsync: mockCreateTransactionMutateAsync, isPending: false };
+    return { mutateAsync: mockCreateTransactionMutateAsync, isPending: mockCreateTransactionIsPending() };
   },
   useUploadPaymentProof: () => ({ mutateAsync: mockUploadPaymentProofMutateAsync }),
+  useUploadDiscountProof: () => ({ mutateAsync: mockUploadDiscountProofMutateAsync }),
 }));
 
 vi.mock('@/lib/offline/cache', () => ({
@@ -223,7 +238,7 @@ function slotVariant(overrides: Partial<PosCatalogProduct['variants'][number]> =
 
 function catalogWith(variants: PosCatalogProduct['variants'][number][]): { products: PosCatalogProduct[] } {
   return {
-    products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', variants }],
+    products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', has_image: false, image_url: null, variants }],
   };
 }
 
@@ -1347,6 +1362,212 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
     expect(payload).not.toHaveProperty('other_reference_note');
     expect(payload).not.toHaveProperty('gcash_manually_verified');
   });
+
+  it('preserves cart and payment method when the proof upload fails, and allows retry without recapturing', async () => {
+    mockUploadPaymentProofMutateAsync.mockRejectedValueOnce(new Error('Network error'));
+    render(<TerminalPage />);
+    selectTab('Other');
+
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+    // Cart and payment method tab are untouched by the failed upload —
+    // nothing was lost, and the selected photo is still attached for retry.
+    expect(screen.getByRole('tab', { name: 'Other' })).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+    expect(screen.getByAltText('Preview')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Upload' }));
+    await waitFor(() => expect(mockUploadPaymentProofMutateAsync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled());
+  });
+
+  it('preserves cash tendered when switching to an online method and back', () => {
+    render(<TerminalPage />);
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+
+    selectTab('Other');
+    expect(screen.queryByPlaceholderText('Cash tendered')).not.toBeInTheDocument();
+
+    selectTab('Cash');
+    expect(screen.getByPlaceholderText('Cash tendered')).toHaveValue(100);
+  });
+
+  it('never requires payment proof for cash — cash charge is unaffected by the proof-capture flow', () => {
+    render(<TerminalPage />);
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+
+    expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+    expect(mockUploadPaymentProofMutateAsync).not.toHaveBeenCalled();
+  });
+});
+
+// Task 209.5 — PWD/Senior Citizen discount-proof capture, reusing the same
+// ImageUpload component and Confirm/Retry flow as the payment-proof tests
+// above. Proof is optional (no proof-required policy exists yet — see
+// DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING), so Charge must never be
+// gated on it.
+describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5)', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockUploadDiscountProofMutateAsync.mockClear();
+    mockCreateTransactionMutateAsync.mockClear();
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+  });
+
+  afterEach(() => cleanup());
+
+  function selectDiscount(label: string) {
+    fireEvent.click(screen.getByRole('button', { name: label }));
+  }
+
+  it('shows the PWD/Senior ID input and an optional Discount ID Proof upload once PWD is selected', () => {
+    render(<TerminalPage />);
+    selectDiscount('PWD (20%)');
+
+    expect(screen.getByPlaceholderText('PWD / Senior Citizen ID number')).toBeInTheDocument();
+    expect(screen.getByText('Discount ID Proof')).toBeInTheDocument();
+    expect(screen.getByText(/Optional/i)).toBeInTheDocument();
+  });
+
+  it('never shows the discount ID input or proof upload for a non-PWD/Senior discount (e.g. Employee)', () => {
+    render(<TerminalPage />);
+    selectDiscount('Employee (20%)');
+
+    expect(screen.queryByPlaceholderText('PWD / Senior Citizen ID number')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
+  });
+
+  it('enables Charge for a PWD discount once the ID number and cash tendered are filled, with no proof attached — proof is optional', () => {
+    render(<TerminalPage />);
+    selectDiscount('PWD (20%)');
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+    expect(mockUploadDiscountProofMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('still blocks Charge on a missing PWD/Senior ID number even when no proof is required', () => {
+    render(<TerminalPage />);
+    selectDiscount('Senior Citizen (20%)');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+  });
+
+  it('uploads a gallery photo as discount proof and sends discount_proof_key/type alongside discount_type/discount_id_reference', async () => {
+    render(<TerminalPage />);
+    selectDiscount('Senior Citizen (20%)');
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'SC-000456' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(mockUploadDiscountProofMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText('Discount ID proof attached')).toBeInTheDocument());
+    // Optional proof never blocks Charge either before or after capture.
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync) as CreateTransactionInput;
+    expect(payload.discount_type).toBe('senior_citizen');
+    expect(payload.discount_id_reference).toBe('SC-000456');
+    expect(payload.discount_proof_key).toBe('branch-1/shift-1/user-1-456.webp');
+    expect(payload.discount_proof_type).toBe('gallery_upload');
+  });
+
+  it('preserves the discount selection and cart when the discount-proof upload fails, and allows retry without recapturing', async () => {
+    mockUploadDiscountProofMutateAsync.mockRejectedValueOnce(new Error('Network error'));
+    render(<TerminalPage />);
+    selectDiscount('PWD (20%)');
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+    // Discount selection, ID number, and cart are untouched by the failed
+    // upload — same as payment proof's failure-preservation behavior.
+    expect(screen.getByPlaceholderText('PWD / Senior Citizen ID number')).toHaveValue('PWD-000123');
+    expect(screen.queryByText('Discount ID proof attached')).not.toBeInTheDocument();
+    // Charge stays enabled throughout — a failed optional-proof upload must
+    // never block an otherwise-valid PWD/Senior sale.
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Upload' }));
+    await waitFor(() => expect(mockUploadDiscountProofMutateAsync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('Discount ID proof attached')).toBeInTheDocument());
+  });
+
+  it('Replace clears the attached proof and shows the upload control again', async () => {
+    render(<TerminalPage />);
+    selectDiscount('PWD (20%)');
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
+
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(screen.getByText('Discount ID proof attached')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+
+    expect(screen.queryByText('Discount ID proof attached')).not.toBeInTheDocument();
+    expect(screen.getByText('Discount ID Proof')).toBeInTheDocument();
+  });
+
+  it('never sends discount_proof_key/type when the discount type is switched away from PWD/Senior, even if a proof was already attached', async () => {
+    render(<TerminalPage />);
+    selectDiscount('PWD (20%)');
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
+
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(mockUploadDiscountProofMutateAsync).toHaveBeenCalledTimes(1));
+
+    selectDiscount('No discount');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync) as CreateTransactionInput;
+    expect(payload.discount_type).toBeUndefined();
+    expect(payload.discount_proof_key).toBeUndefined();
+    expect(payload.discount_proof_type).toBeUndefined();
+  });
+
+  it('never requires discount proof for a cash sale with no discount at all', () => {
+    render(<TerminalPage />);
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+    expect(mockUploadDiscountProofMutateAsync).not.toHaveBeenCalled();
+  });
 });
 
 // Single clean cashier workflow (Phase 4-9, finalized): Clock In -> Ready to
@@ -1556,6 +1777,89 @@ describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () =
     expect(firstOf(payload.items)).toEqual(
       expect.objectContaining({ product_id: 'product-1', product_variant_id: 'variant-1', flavor_id: 'flavor-1' }),
     );
+  });
+});
+
+// Task 209.3 — Charge reliability: the cart/payment selections a cashier
+// already entered must never be silently thrown away on a failed charge
+// (auth failure, network failure, or a server-side rejection all surface as
+// a rejected mutateAsync the same way — see api-client.ts's error mapping),
+// and a confirmed success must clear the cart exactly once. Processing state
+// must disable Charge and make a second submit impossible.
+describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)', () => {
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    mockCreateTransactionMutateAsync.mockClear();
+    mockClearCart.mockClear();
+    mockCreateTransactionIsPending.mockReturnValue(false);
+  });
+
+  // Reset the pending-flag override back to the file-wide default (false)
+  // after every test in this block — otherwise the "Processing…" test's
+  // override leaks into later describe blocks that assume Charge always
+  // reads "Charge" (mocks are module-scoped, not reset automatically
+  // between describes without this).
+  afterEach(() => {
+    mockCreateTransactionIsPending.mockReturnValue(false);
+    cleanup();
+  });
+
+  it('keeps the cart intact and shows a human-readable error when the charge is rejected (session expired)', async () => {
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Session expired. Please sign in again.'));
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText('Session expired. Please sign in again.')).toBeInTheDocument());
+
+    // Cart must not be cleared on a failed charge — the cashier still has the
+    // same line items and can retry (or, for a session-expired failure,
+    // re-login and manually press Charge again — never auto-resubmitted).
+    expect(mockClearCart).not.toHaveBeenCalled();
+    // No raw JWT/backend internals in the surfaced message.
+    expect(screen.queryByText(/jwt|token|prisma|stack/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the cart intact when the charge fails on a network error', async () => {
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server. Please check your connection before trying again.'));
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText(/Could not reach the server/)).toBeInTheDocument());
+    expect(mockClearCart).not.toHaveBeenCalled();
+  });
+
+  it('clears the cart exactly once, only after a confirmed successful charge', async () => {
+    mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-1', receipt_number: 'BR-001' });
+    render(<TerminalPage />);
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockClearCart).toHaveBeenCalledTimes(1));
+  });
+
+  it('disables Charge and shows "Processing…" while the mutation is pending, so a second click cannot submit again', () => {
+    mockCreateTransactionIsPending.mockReturnValue(true);
+    render(<TerminalPage />);
+
+    const chargeButton = screen.getByRole('button', { name: /Processing/ });
+    expect(chargeButton).toBeDisabled();
+
+    fireEvent.click(chargeButton);
+    fireEvent.click(chargeButton);
+    expect(mockCreateTransactionMutateAsync).not.toHaveBeenCalled();
   });
 });
 

@@ -52,6 +52,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
   useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
   usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
+  useDiscountProof: () => ({ data: undefined, isLoading: false, isError: false }),
   useVoidTransaction: () => ({ mutate: vi.fn(), isPending: false }),
   useRefundTransaction: () => ({ mutate: vi.fn(), isPending: false }),
 }));
@@ -134,6 +135,9 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
     has_payment_proof: false,
     payment_proof_type: null,
     payment_proof_uploaded_at: null,
+    has_discount_proof: false,
+    discount_proof_type: null,
+    discount_proof_uploaded_at: null,
     receipt_printed: true,
     inventory_deduction_status: 'completed',
     is_offline_transaction: false,
@@ -405,6 +409,116 @@ describe('SupervisorReportsPage', () => {
 
       expect(screen.queryByRole('button', { name: 'View Receipt' })).not.toBeInTheDocument();
       expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
+    });
+  });
+
+  // Task 209.5 — Discount Compliance's Proof Available/View Proof column
+  // and KPIs, gated to the supervisor role the same way the Daily Sales
+  // tab's Payment Proof column already is (see the Phase 10-11 block above).
+  describe('Discount Compliance — discount-proof viewing (Task 209.5)', () => {
+    function openDiscountCompliance() {
+      fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Compliance' }));
+    }
+
+    it('shows a Proof Available "Yes · View Proof" button for a PWD/Senior row with a proof attached', () => {
+      mockTransactionsByStatus({
+        completed: {
+          data: [transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true })],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+
+      expect(screen.getByRole('button', { name: 'Yes · View Proof' })).toBeInTheDocument();
+    });
+
+    it('shows a plain "No" instead of a View Proof button when has_discount_proof is false', () => {
+      mockTransactionsByStatus({
+        completed: {
+          data: [transaction({ id: 't1', discount_type: 'senior_citizen', discount_amount: 20, has_discount_proof: false })],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+
+      expect(screen.getByText('No')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Yes · View Proof' })).not.toBeInTheDocument();
+    });
+
+    it('opens the View Discount Proof dialog when the Yes · View Proof button is clicked', () => {
+      mockTransactionsByStatus({
+        completed: {
+          data: [transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true })],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+      fireEvent.click(screen.getByRole('button', { name: 'Yes · View Proof' }));
+
+      expect(screen.getByText('Discount Proof')).toBeInTheDocument();
+    });
+
+    it('does not show the Proof Available column or Cashier column for a non-supervisor role', () => {
+      mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+        selector({ user: { id: 'user-1', role: 'branch' } }),
+      );
+      mockTransactionsByStatus({
+        completed: {
+          data: [transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true })],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+
+      expect(screen.queryByText('Proof Available')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Yes · View Proof' })).not.toBeInTheDocument();
+    });
+
+    it('computes Proof Available/Proof Missing/Proof Compliance Rate KPIs from PWD/Senior rows only, excluding Employee/Promotional discounts', () => {
+      mockTransactionsByStatus({
+        completed: {
+          data: [
+            transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true }),
+            transaction({ id: 't2', discount_type: 'senior_citizen', discount_amount: 20, has_discount_proof: false }),
+            transaction({ id: 't3', discount_type: 'employee', discount_amount: 10, has_discount_proof: false }),
+          ],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+
+      // "Proof Available" also labels the table column header, so this KPI
+      // card's title is one of two matches — assert presence, not uniqueness.
+      expect(screen.getAllByText('Proof Available').length).toBeGreaterThan(0);
+      expect(screen.getByText('Proof Missing')).toBeInTheDocument();
+      expect(screen.getByText('Proof Compliance Rate')).toBeInTheDocument();
+      // 1 of 2 PWD/Senior rows has proof — Employee is excluded from the
+      // denominator entirely, so the rate is 50%, not 33%. (The KpiCard
+      // mock above renders only prefix+value, not suffix, so the raw
+      // computed value "50" is what appears — the "%" itself is real
+      // KpiCard markup this mock doesn't reproduce.)
+      expect(screen.getByText('50')).toBeInTheDocument();
+    });
+
+    it('does not render the Proof KPI row at all for a non-supervisor role', () => {
+      mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+        selector({ user: { id: 'user-1', role: 'branch' } }),
+      );
+      mockTransactionsByStatus({
+        completed: {
+          data: [transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true })],
+        },
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+
+      expect(screen.queryByText('Proof Compliance Rate')).not.toBeInTheDocument();
     });
   });
 

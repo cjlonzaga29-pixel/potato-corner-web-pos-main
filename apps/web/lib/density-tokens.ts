@@ -55,11 +55,21 @@ export const TOUCH_SAFE_MIN_PX = 44;
  * express. The loading skeleton grid reuses this exact map so the two can
  * never drift out of sync (Task 200 requirement: "one shared
  * responsive/density definition").
+ *
+ * Task 209.8 (compact POS redesign) — `standard` and `compact` raised from 4
+ * to 5 columns: at the priority 1366x768 laptop viewport (which classifies as
+ * `compact` — see classifyDensity's height-aware branch) a 30% cart leaves
+ * ~890px of product width after grid padding/gaps, which comfortably fits 5
+ * cards >=170px wide while still keeping >=3 full rows visible before
+ * scrolling. `compact-touch` stays at 3 (not raised to 4): it's the one
+ * bucket that has to serve both a touch laptop/2-in-1 (room for 4) and a
+ * narrower portrait tablet (room for only 2-3) since density classification
+ * doesn't split touch by orientation — 3 is the safe overlap of both ranges.
  */
 export const DENSITY_POS_GRID_COLUMNS: Record<DensityMode, string> = {
   comfortable: 'grid-cols-5',
-  standard: 'grid-cols-4',
-  compact: 'grid-cols-4',
+  standard: 'grid-cols-5',
+  compact: 'grid-cols-5',
   'compact-touch': 'grid-cols-3',
   mobile: 'grid-cols-2',
 };

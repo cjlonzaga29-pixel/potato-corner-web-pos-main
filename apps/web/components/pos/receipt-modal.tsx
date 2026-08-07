@@ -126,6 +126,12 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
               <span>Total</span>
               <span className="tabular-nums">{formatPeso(transaction.total_amount)}</span>
             </div>
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Payment Method</span>
+              <Badge variant="outline" className="font-medium">
+                {PAYMENT_METHOD_LABEL[transaction.payment_method]}
+              </Badge>
+            </div>
             {transaction.payment_method === 'cash' ? (
               <>
                 <div className="flex justify-between text-xs text-muted-foreground">

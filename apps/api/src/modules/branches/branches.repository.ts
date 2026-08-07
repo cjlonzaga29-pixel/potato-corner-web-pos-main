@@ -217,7 +217,9 @@ export const branchesRepository = {
       prisma.transaction.groupBy({
         by: ['paymentMethod'],
         where: { branchId, createdAt: todayRange, status: 'completed' },
-        _sum: { totalAmount: true },
+        // subtotal, not totalAmount — must match todayGrossSales's field exactly
+        // (same where-clause too) so Σ(paymentBreakdown) === todayGrossSales.
+        _sum: { subtotal: true },
         _count: { _all: true },
       }),
       prisma.transactionItem.findMany({
@@ -277,7 +279,7 @@ export const branchesRepository = {
     const paymentBreakdown = emptyPaymentBreakdown();
     for (const group of paymentGroups) {
       paymentBreakdown[group.paymentMethod] = {
-        total: round2(Number(group._sum.totalAmount ?? 0)),
+        total: round2(Number(group._sum.subtotal ?? 0)),
         count: group._count._all,
       };
     }
@@ -371,7 +373,9 @@ export const branchesRepository = {
       prisma.transaction.groupBy({
         by: ['branchId', 'paymentMethod'],
         where: { status: 'completed', createdAt: todayRange },
-        _sum: { totalAmount: true },
+        // subtotal, not totalAmount — must match todayGrossSales's field exactly
+        // (same where-clause too) so Σ(paymentBreakdown) === todayGrossSales.
+        _sum: { subtotal: true },
         _count: { _all: true },
       }),
       prisma.transactionItem.findMany({
@@ -432,7 +436,7 @@ export const branchesRepository = {
       const paymentBreakdown = emptyPaymentBreakdown();
       for (const group of paymentGroups.filter((g) => g.branchId === b.id)) {
         paymentBreakdown[group.paymentMethod] = {
-          total: round2(Number(group._sum.totalAmount ?? 0)),
+          total: round2(Number(group._sum.subtotal ?? 0)),
           count: group._count._all,
         };
       }

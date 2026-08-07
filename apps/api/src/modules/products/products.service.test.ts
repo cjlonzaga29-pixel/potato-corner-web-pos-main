@@ -43,7 +43,40 @@ vi.mock('./products.repository.js', () => ({
     // Phase 10 POS catalog
     findCatalogForBranch: vi.fn().mockResolvedValue([]),
     findDisabledFlavorIds: vi.fn().mockResolvedValue([]),
+    // Task 209.6 — Product Image Management (Admin Only)
+    findImagePath: vi.fn(),
+    updateImagePath: vi.fn(),
   },
+}));
+
+// Task 209.6 — mirrors expenses.service.test.ts's storageMock/sharp mocks
+// exactly, for the same reason: image upload/delete go through the same
+// supabaseAdmin Storage client and sharp compression pipeline.
+const storageMock = {
+  upload: vi.fn().mockResolvedValue({ error: null }),
+  createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: 'https://example.com/product-image.webp' }, error: null }),
+  // Task 209.7 — POS catalog batches every image-bearing product into one
+  // createSignedUrls call; default to an empty batch so pre-existing
+  // getPosCatalog tests (whose catalogProduct() fixture has no imagePath)
+  // never invoke it at all.
+  createSignedUrls: vi.fn().mockResolvedValue({ data: [], error: null }),
+  remove: vi.fn().mockResolvedValue({ error: null }),
+};
+
+vi.mock('../../lib/supabase.js', () => ({
+  supabaseAdmin: {
+    storage: {
+      from: vi.fn(() => storageMock),
+    },
+  },
+}));
+
+vi.mock('sharp', () => ({
+  default: vi.fn(() => ({
+    resize: vi.fn().mockReturnThis(),
+    webp: vi.fn().mockReturnThis(),
+    toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake-image')),
+  })),
 }));
 
 // Phase B (CR-008) — getPosCatalog delegates readiness computation to
@@ -2146,5 +2179,286 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
 
     expect(result.products[0]?.variants).toHaveLength(1);
     expect(result.products[0]?.variants[0]?.live_ready).toBe(false);
+  });
+});
+
+// Task 209.6 — Product Image Management (Admin Only). Router-level
+// authorization (adminOnly for upload/delete, adminSupervisorOrBranch for
+// read) is covered by products.router — these tests exercise only the
+// service's own logic: existence checks, the storage/compression call
+// shape, the single-column repository update, and audit logging. Every
+// assertion here stays isolated from variants/recipes/inventory/pricing —
+// none of those repository methods are ever called by these three service
+// methods.
+describe('productsService.getProductById — has_image mapping', () => {
+  it('reports has_image true when the product has a stored image key, without exposing the key itself', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ imagePath: 'product-images/prod-1/image.webp' }) as never);
+
+    const result = await productsService.getProductById('prod-1', { user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never);
+
+    expect(result.has_image).toBe(true);
+    expect(result).not.toHaveProperty('imagePath');
+    expect(result).not.toHaveProperty('image_path');
+  });
+
+  it('reports has_image false when the product has no image', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ imagePath: null }) as never);
+
+    const result = await productsService.getProductById('prod-1', { user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never);
+
+    expect(result.has_image).toBe(false);
+  });
+});
+
+describe('productsService.getProductImage', () => {
+  it('returns a signed URL when the product has an image', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+
+    const result = await productsService.getProductImage('prod-1');
+
+    expect(result).toEqual({ image_url: 'https://example.com/product-image.webp' });
+    expect(storageMock.createSignedUrl).toHaveBeenCalledWith('product-images/prod-1/image.webp', 60 * 60);
+  });
+
+  it('returns null image_url when the product has no image, without calling Storage', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null } as never);
+
+    const result = await productsService.getProductImage('prod-1');
+
+    expect(result).toEqual({ image_url: null });
+    expect(storageMock.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('throws PRODUCT_NOT_FOUND for a missing product', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue(null);
+
+    await expect(productsService.getProductImage('missing')).rejects.toMatchObject({ code: 'PRODUCT_NOT_FOUND', statusCode: 404 });
+  });
+});
+
+describe('productsService.uploadProductImage', () => {
+  it('compresses the file, uploads to the product-images bucket, and updates only imagePath', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null } as never);
+    vi.mocked(productsRepository.updateImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+
+    const result = await productsService.uploadProductImage(
+      'prod-1',
+      { buffer: Buffer.from('input-bytes'), originalname: 'photo.png' },
+      SUPER_ADMIN,
+      null,
+    );
+
+    expect(result).toEqual({ image_url: 'https://example.com/product-image.webp' });
+    expect(storageMock.upload).toHaveBeenCalledWith(
+      'product-images/prod-1/image.webp',
+      Buffer.from('fake-image'),
+      { contentType: 'image/webp', upsert: true },
+    );
+    expect(productsRepository.updateImagePath).toHaveBeenCalledWith('prod-1', 'product-images/prod-1/image.webp');
+    expect(productsRepository.updateImagePath).toHaveBeenCalledTimes(1);
+  });
+
+  it('records PRODUCT_IMAGE_UPLOADED for a first upload and PRODUCT_IMAGE_REPLACED when one already existed', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null } as never);
+    vi.mocked(productsRepository.updateImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+
+    await productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPER_ADMIN, null);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_UPLOADED', entityId: 'prod-1' }));
+
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    await productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPER_ADMIN, null);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_REPLACED', entityId: 'prod-1' }));
+  });
+
+  it('throws PRODUCT_NOT_FOUND for a missing product and never calls Storage', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue(null);
+
+    await expect(
+      productsService.uploadProductImage('missing', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_NOT_FOUND', statusCode: 404 });
+    expect(storageMock.upload).not.toHaveBeenCalled();
+  });
+
+  it('surfaces PRODUCT_IMAGE_UPLOAD_FAILED (502) when Storage upload errors, and never touches imagePath', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null } as never);
+    storageMock.upload.mockResolvedValueOnce({ error: { message: 'storage down' } });
+
+    await expect(
+      productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_IMAGE_UPLOAD_FAILED', statusCode: 502 });
+    expect(productsRepository.updateImagePath).not.toHaveBeenCalled();
+  });
+});
+
+describe('productsService.deleteProductImage', () => {
+  it('removes the Storage object and clears imagePath, recording PRODUCT_IMAGE_DELETED', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    vi.mocked(productsRepository.updateImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null } as never);
+
+    const result = await productsService.deleteProductImage('prod-1', SUPER_ADMIN, null);
+
+    expect(result).toEqual({ image_url: null });
+    expect(storageMock.remove).toHaveBeenCalledWith(['product-images/prod-1/image.webp']);
+    expect(productsRepository.updateImagePath).toHaveBeenCalledWith('prod-1', null);
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_IMAGE_DELETED', entityId: 'prod-1' }));
+  });
+
+  it('throws NO_PRODUCT_IMAGE (404) when the product has no image to delete', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null } as never);
+
+    await expect(productsService.deleteProductImage('prod-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'NO_PRODUCT_IMAGE',
+      statusCode: 404,
+    });
+    expect(storageMock.remove).not.toHaveBeenCalled();
+  });
+
+  it('throws PRODUCT_NOT_FOUND for a missing product', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue(null);
+
+    await expect(productsService.deleteProductImage('missing', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_NOT_FOUND',
+      statusCode: 404,
+    });
+  });
+
+  it('surfaces PRODUCT_IMAGE_DELETE_FAILED (502) when Storage remove errors, and never clears imagePath', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    storageMock.remove.mockResolvedValueOnce({ error: { message: 'storage down' } });
+
+    await expect(productsService.deleteProductImage('prod-1', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_IMAGE_DELETE_FAILED',
+      statusCode: 502,
+    });
+    expect(productsRepository.updateImagePath).not.toHaveBeenCalled();
+  });
+});
+
+// Task 209.7 — POS catalog image delivery. getPosCatalog reuses the same
+// createSignedUrls batching contract as the rest of Task 209.6's image
+// pipeline, but resolves every image-bearing product in a single Storage
+// call instead of one signed URL per product.
+describe('productsService.getPosCatalog — product images (Task 209.7)', () => {
+  function catalogVariant(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'variant-1',
+      name: 'Regular',
+      sizeLabel: 'Regular',
+      basePrice: { toNumber: () => 100 },
+      vatableCapAmount: null,
+      variantFlavors: [],
+      optionGroupAssignments: [],
+      flavorSlots: [],
+      ...overrides,
+    };
+  }
+
+  function catalogProductWithImage(imagePath: string | null, overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'product-1',
+      name: 'Mega Mix',
+      category: 'Snacks',
+      imagePath,
+      variants: [catalogVariant()],
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([]);
+  });
+
+  it('returns has_image=true and a signed image_url for a product with an image', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProductWithImage('product-images/product-1/image.webp')] as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({
+      data: [{ path: 'product-images/product-1/image.webp', signedUrl: 'https://example.com/product-1.webp', error: null }],
+      error: null,
+    });
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]).toMatchObject({ has_image: true, image_url: 'https://example.com/product-1.webp' });
+    expect(storageMock.createSignedUrls).toHaveBeenCalledWith(['product-images/product-1/image.webp'], 60 * 60);
+    expect(storageMock.createSignedUrls).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns has_image=false and image_url=null for a product with no image, without calling Storage', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProductWithImage(null)] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]).toMatchObject({ has_image: false, image_url: null });
+    expect(storageMock.createSignedUrls).not.toHaveBeenCalled();
+  });
+
+  it('resolves every image-bearing product in a single batched Storage call, not one call per product', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      catalogProductWithImage('product-images/product-1/image.webp', { id: 'product-1' }),
+      catalogProductWithImage(null, { id: 'product-2', name: 'No Image Product' }),
+      catalogProductWithImage('product-images/product-3/image.webp', { id: 'product-3', name: 'Third Product' }),
+    ] as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({
+      data: [
+        { path: 'product-images/product-1/image.webp', signedUrl: 'https://example.com/1.webp', error: null },
+        { path: 'product-images/product-3/image.webp', signedUrl: 'https://example.com/3.webp', error: null },
+      ],
+      error: null,
+    });
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(storageMock.createSignedUrls).toHaveBeenCalledTimes(1);
+    expect(storageMock.createSignedUrls).toHaveBeenCalledWith(
+      ['product-images/product-1/image.webp', 'product-images/product-3/image.webp'],
+      60 * 60,
+    );
+    expect(result.products.map((p) => [p.has_image, p.image_url])).toEqual([
+      [true, 'https://example.com/1.webp'],
+      [false, null],
+      [true, 'https://example.com/3.webp'],
+    ]);
+  });
+
+  it('never exposes the raw storage path — only has_image and a signed image_url', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProductWithImage('product-images/product-1/image.webp')] as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({
+      data: [{ path: 'product-images/product-1/image.webp', signedUrl: 'https://example.com/product-1.webp', error: null }],
+      error: null,
+    });
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]).not.toHaveProperty('imagePath');
+    expect(result.products[0]).not.toHaveProperty('image_path');
+  });
+
+  it('keeps every other catalog field unchanged when image fields are added', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProductWithImage(null)] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products[0]).toMatchObject({ id: 'product-1', name: 'Mega Mix', category: 'Snacks' });
+    expect(result.products[0]?.variants[0]?.id).toBe('variant-1');
+  });
+
+  it('does not remove the product from the catalog when signed-URL generation fails outright', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProductWithImage('product-images/product-1/image.webp')] as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({ data: null, error: { message: 'storage down' } as never });
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products).toHaveLength(1);
+    expect(result.products[0]).toMatchObject({ has_image: true, image_url: null });
+  });
+
+  it('does not remove the product from the catalog when Storage throws', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([catalogProductWithImage('product-images/product-1/image.webp')] as never);
+    storageMock.createSignedUrls.mockRejectedValueOnce(new Error('network error'));
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products).toHaveLength(1);
+    expect(result.products[0]).toMatchObject({ has_image: true, image_url: null });
   });
 });

@@ -54,6 +54,9 @@ export type PosCatalogResponse = z.infer<typeof schemas.posCatalogResponseSchema
 export type PosCatalogProduct = z.infer<typeof schemas.posCatalogProductSchema>;
 export type PosCatalogVariant = z.infer<typeof schemas.posCatalogVariantSchema>;
 
+// Task 209.6 — Product Image Management (Admin Only)
+export type ProductImageResponse = z.infer<typeof schemas.productImageResponseSchema>;
+
 // Phase D1 — Admin Readiness panel & product-level publish/unpublish
 export type ReadinessIssueResponse = z.infer<typeof schemas.readinessIssueSchema>;
 export type ProductVariantReadinessSummary = z.infer<typeof schemas.productVariantReadinessSummarySchema>;
@@ -157,6 +160,9 @@ export type SyncOfflineTransactionsResponse = z.infer<typeof schemas.syncOffline
 export type PaymentProofUploadRequest = z.infer<typeof schemas.paymentProofUploadRequestSchema>;
 export type PaymentProofUploadResponse = z.infer<typeof schemas.paymentProofUploadResponseSchema>;
 export type PaymentProofResponse = z.infer<typeof schemas.paymentProofResponseSchema>;
+export type DiscountProofUploadRequest = z.infer<typeof schemas.discountProofUploadRequestSchema>;
+export type DiscountProofUploadResponse = z.infer<typeof schemas.discountProofUploadResponseSchema>;
+export type DiscountProofResponse = z.infer<typeof schemas.discountProofResponseSchema>;
 
 export type OpenShiftInput = z.infer<typeof schemas.openShiftSchema>;
 export type CloseShiftInput = z.infer<typeof schemas.closeShiftSchema>;

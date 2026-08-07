@@ -39,11 +39,19 @@ export interface CreateTransactionData {
   otherReferenceNote?: string;
   paymentProofKey?: string;
   paymentProofType?: ImageProofType;
+  discountProofKey?: string;
+  discountProofType?: ImageProofType;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber?: string;
 }
 
 export interface UploadPaymentProofData {
+  branchId: string;
+  shiftId: string;
+  type: ImageProofType;
+}
+
+export interface UploadDiscountProofData {
   branchId: string;
   shiftId: string;
   type: ImageProofType;

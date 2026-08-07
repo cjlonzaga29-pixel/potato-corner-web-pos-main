@@ -19,6 +19,25 @@ export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransaction
   { key: 'cashier_name', header: 'Cashier' },
 ];
 
+/**
+ * Task 209.5 — Discount Compliance's own column set for the Supervisor/
+ * Branch CSV/PDF export (see reports.service.ts's DISCOUNT_COMPLIANCE
+ * redirect branch), sourced from the same getDailySalesTransactions rows as
+ * DAILY_SALES_TRANSACTION_COLUMNS above but never sharing that array — this
+ * keeps the Daily Sales tab's own export exactly as it was before this
+ * task. discount_proof_available is Yes/No only: never the storage key, a
+ * signed URL, or the image itself (see requestExport's export policy).
+ */
+export const DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransactionRow>[] = [
+  { key: 'receipt_number', header: 'Receipt #' },
+  { key: 'created_at', header: 'Date/Time' },
+  { key: 'branch_name', header: 'Branch' },
+  { key: 'cashier_name', header: 'Cashier' },
+  { key: 'discount_type', header: 'Discount Type' },
+  { key: 'discount_amount', header: 'Discount Amount' },
+  { key: 'discount_proof_available', header: 'Proof Available' },
+];
+
 export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unknown>>[]> = {
   DAILY_SALES: [
     { key: 'report_date', header: 'Date' },

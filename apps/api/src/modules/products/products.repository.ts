@@ -502,4 +502,16 @@ export const productsRepository = {
   countVariantFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
     return tx.productFlavorSlot.count({ where: { productVariantId } });
   },
+
+  // --- Task 209.6 — Product Image Management (Admin Only) ---
+
+  /** Narrow lookup for the image endpoints — avoids detailInclude's variant/flavor/branch joins when only imagePath is needed. */
+  findImagePath(productId: string) {
+    return prisma.product.findUnique({ where: { id: productId }, select: { id: true, imagePath: true } });
+  },
+
+  /** Single-column update — never touches variants, recipes, inventory, pricing, or availability rows. No transaction needed: one row, one column. */
+  updateImagePath(productId: string, imagePath: string | null) {
+    return prisma.product.update({ where: { id: productId }, data: { imagePath }, select: { id: true, imagePath: true } });
+  },
 };

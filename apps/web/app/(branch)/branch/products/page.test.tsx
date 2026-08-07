@@ -36,7 +36,10 @@ function variant(overrides: Partial<PosCatalogProduct['variants'][number]> = {})
 }
 
 function catalogWith(variants: PosCatalogProduct['variants'][number][]) {
-  return { categories: ['Snacks'], products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', variants }] };
+  return {
+    categories: ['Snacks'],
+    products: [{ id: 'product-1', name: 'Mega Mix Fries', category: 'Snacks', has_image: false, image_url: null, variants }],
+  };
 }
 
 afterEach(() => cleanup());

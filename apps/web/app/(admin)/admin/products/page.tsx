@@ -16,6 +16,7 @@ import { ProductStatusBadge } from '@/components/admin/products/product-status-b
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { BranchExclusiveBadge } from '@/components/admin/products/branch-exclusive-badge';
 import { CreateProductDialog } from '@/components/admin/products/create-product-dialog';
+import { ProductImageThumbnail } from '@/components/admin/products/product-image-thumbnail';
 
 const STATUS_FILTERS = [
   { value: 'all', label: 'All' },
@@ -48,6 +49,11 @@ export default function ProductCatalogPage() {
   });
 
   const columns: ColumnDef<ProductResponse>[] = [
+    {
+      id: 'image',
+      header: 'Image',
+      cell: ({ row }) => <ProductImageThumbnail productId={row.original.id} hasImage={row.original.has_image} productName={row.original.name} />,
+    },
     { accessorKey: 'name', header: 'Product' },
     { accessorKey: 'category', header: 'Category', cell: ({ row }) => row.original.category ?? '—' },
     { accessorKey: 'status', header: 'Status', cell: ({ row }) => <ProductStatusBadge status={row.original.status} /> },

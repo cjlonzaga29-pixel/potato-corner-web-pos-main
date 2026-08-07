@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useRef } from 'react';
+import { memo, useRef, useState } from 'react';
 import { AlertTriangle, Utensils } from 'lucide-react';
 import type { PosCatalogProduct } from '@potato-corner/shared';
 import { Card, CardContent } from '@/components/ui/card';
@@ -26,11 +26,15 @@ interface ProductCardProps {
  * would defeat the memo just as surely as an unstable `product`/`variant`.
  *
  * Task 196 (visual redesign) — larger touch target, a consistent icon tile
- * standing in for a product photo (the POS catalog payload carries no image
- * field — see packages/shared posCatalogVariantSchema — so a generated/fake
- * image is never used here), stronger name/price typography, and a clearer
- * unavailable state. No change to what data is read from `product`/`variant`
- * or when `onTap` fires.
+ * standing in for a product photo, stronger name/price typography, and a
+ * clearer unavailable state. No change to what data is read from
+ * `product`/`variant` or when `onTap` fires.
+ *
+ * Task 209.7 — product.image_url (a short-lived signed Storage URL, present
+ * whenever product.has_image is true) renders in the tile's image area when
+ * available. Falls back to the same Utensils icon tile used before this
+ * task whenever there's no image, the image fails to load, or the signed
+ * URL expired — a broken photo never blocks a sale.
  */
 export const ProductCard = memo(function ProductCard({ product, variant, message, onTap }: ProductCardProps) {
   // Test-only visibility into actual re-render count (React.memo bails out
@@ -39,6 +43,12 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
   // production code path.
   const renderCountRef = useRef(0);
   renderCountRef.current += 1;
+
+  // Tracks the last image_url that failed to load so a fresh signed URL
+  // (e.g. after a catalog refetch) automatically gets a clean retry instead
+  // of staying stuck on the placeholder.
+  const [erroredImageUrl, setErroredImageUrl] = useState<string | null>(null);
+  const showImage = product.has_image && Boolean(product.image_url) && product.image_url !== erroredImageUrl;
 
   const isAvailable = variant.live_ready;
   const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${message ? `, ${message}` : ''}`;
@@ -64,19 +74,35 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         }
       }}
     >
-      <CardContent className="flex h-full flex-col gap-1 p-2.5">
-        <div className="flex items-center justify-between gap-1">
+      <div className="app-pos-card-image relative flex shrink-0 items-center justify-center overflow-hidden bg-muted/40">
+        {showImage ? (
+          // eslint-disable-next-line @next/next/no-img-element -- short-lived signed Supabase Storage URL, not an optimizable static/remote asset (see next.config.ts)
+          <img
+            src={product.image_url ?? undefined}
+            alt={`${product.name} - ${variant.name}`}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            onError={() => setErroredImageUrl(product.image_url)}
+          />
+        ) : (
           <div
-            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${
+            className={`flex h-6 w-6 items-center justify-center rounded-lg ${
               isAvailable ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
             }`}
             aria-hidden="true"
           >
             <Utensils className="h-3.5 w-3.5" />
           </div>
-          {!isAvailable && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-hidden="true" />}
-        </div>
+        )}
+        {!isAvailable && (
+          <div className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-background/90 shadow-sm" aria-hidden="true">
+            <AlertTriangle className="h-3 w-3 text-destructive" />
+          </div>
+        )}
+      </div>
 
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-1 p-2.5">
         <p className="line-clamp-2 min-h-[2rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
         <p className="truncate text-xs text-muted-foreground">{variant.name}</p>
 

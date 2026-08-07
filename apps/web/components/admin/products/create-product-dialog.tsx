@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2 } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
@@ -15,7 +15,9 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-import { useCreateProduct } from '@/hooks/queries/use-products';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ImageUpload } from '@/components/shared/forms/image-upload';
+import { useCreateProduct, useUploadProductImage } from '@/hooks/queries/use-products';
 import { useBranches } from '@/hooks/queries/use-branches';
 import { useProductCategories } from '@/hooks/queries/use-product-categories';
 
@@ -81,32 +83,92 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
   const isSeasonal = form.watch('is_seasonal');
   const branchExclusive = form.watch('branch_exclusive');
 
+  // Task 209.6 — image upload needs a product id, which doesn't exist until
+  // the product itself is created. onSubmit stages the create first, then
+  // uploads the image as a second, isolated step (never a shared
+  // transaction) — see onSubmit below. createdProductId only becomes
+  // non-null if that second step fails, so the dialog can stay open and
+  // retry the upload without re-creating the product.
+  const [pendingImage, setPendingImage] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [createdProductId, setCreatedProductId] = useState<string | null>(null);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const uploadImage = useUploadProductImage();
+
   useEffect(() => {
-    if (open) form.reset(DEFAULT_VALUES);
+    if (open) {
+      form.reset(DEFAULT_VALUES);
+      setPendingImage(null);
+      setCreatedProductId(null);
+      setImageUploadError(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync when the dialog opens
   }, [open]);
+
+  useEffect(() => {
+    if (!pendingImage) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(pendingImage);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pendingImage]);
 
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
   }
 
+  function handleImageStaged(file: File) {
+    setPendingImage(file);
+    setImageUploadError(null);
+  }
+
+  function handleImageRemove() {
+    setPendingImage(null);
+    setImageUploadError(null);
+  }
+
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
-    const created = await createProduct.mutateAsync({
-      name: parsed.name,
-      description: parsed.description || undefined,
-      category_id: parsed.category_id || undefined,
-      status: parsed.status,
-      display_order: parsed.display_order,
-      is_seasonal: parsed.is_seasonal,
-      seasonal_start_date: parsed.is_seasonal ? parsed.seasonal_start_date : undefined,
-      seasonal_end_date: parsed.is_seasonal ? parsed.seasonal_end_date : undefined,
-      branch_exclusive: parsed.branch_exclusive,
-      exclusive_branch_id: parsed.branch_exclusive ? parsed.exclusive_branch_id : undefined,
-    });
+    let productId = createdProductId;
+
+    if (!productId) {
+      const created = await createProduct.mutateAsync({
+        name: parsed.name,
+        description: parsed.description || undefined,
+        category_id: parsed.category_id || undefined,
+        status: parsed.status,
+        display_order: parsed.display_order,
+        is_seasonal: parsed.is_seasonal,
+        seasonal_start_date: parsed.is_seasonal ? parsed.seasonal_start_date : undefined,
+        seasonal_end_date: parsed.is_seasonal ? parsed.seasonal_end_date : undefined,
+        branch_exclusive: parsed.branch_exclusive,
+        exclusive_branch_id: parsed.branch_exclusive ? parsed.exclusive_branch_id : undefined,
+      });
+      productId = created.id;
+      setCreatedProductId(created.id);
+    }
+
+    if (pendingImage) {
+      try {
+        await uploadImage.mutateAsync({ productId, file: pendingImage });
+      } catch (error) {
+        // Product creation already succeeded — only the image step failed.
+        // Keep the dialog open (createdProductId is now set) so the primary
+        // button becomes "Retry Image Upload" instead of re-creating the
+        // product or silently dropping the image.
+        setImageUploadError(error instanceof Error ? error.message : 'Image upload failed — try again.');
+        return;
+      }
+    }
+
     handleOpenChange(false);
-    router.push(`/admin/products/${created.id}`);
+    router.push(`/admin/products/${productId}`);
   }
+
+  const isRetryingImage = Boolean(createdProductId) && Boolean(imageUploadError);
+  const isSubmitting = createProduct.isPending || uploadImage.isPending;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -227,13 +289,51 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               </div>
             )}
 
+            <div className="space-y-2">
+              {!pendingImage ? (
+                <ImageUpload
+                  label="Product Image"
+                  description="Optional — JPEG, PNG, or WebP, up to 5MB. Shown in the product list and POS."
+                  onImageSelected={handleImageStaged}
+                />
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Product Image</p>
+                  <div className="relative w-full overflow-hidden rounded-md border">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview of a not-yet-uploaded file */}
+                    {previewUrl && <img src={previewUrl} alt="Product preview" className="w-full" />}
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="icon"
+                      className="absolute right-2 top-2 h-7 w-7"
+                      aria-label="Remove image"
+                      onClick={handleImageRemove}
+                      disabled={isSubmitting}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={handleImageRemove} disabled={isSubmitting}>
+                    Replace Image
+                  </Button>
+                </div>
+              )}
+
+              {imageUploadError && (
+                <Alert variant="destructive" className="px-3 py-2">
+                  <AlertDescription>{imageUploadError}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={createProduct.isPending}>
-                {createProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Create Product
+              <Button type="submit" disabled={isSubmitting}>
+                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {isRetryingImage ? 'Retry Image Upload' : 'Create Product'}
               </Button>
             </DialogFooter>
           </form>

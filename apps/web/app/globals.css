@@ -74,6 +74,9 @@
     /* POS terminal product tile height and cart/checkout panel width — same
      * continuous-scaling treatment as the tokens above. */
     --app-pos-card-min-height: clamp(100px, 88px + 1vw, 116px);
+    /* Task 209.7 — product image area, ~46% of the card's min-height so
+     * the photo stays a compact accent rather than dominating the tile. */
+    --app-pos-card-image-height: clamp(46px, 40px + 0.5vw, 54px);
     --app-pos-cart-width: 30%;
   }
 
@@ -101,6 +104,7 @@
       --app-kpi-value-size: 1.75rem;
       --app-icon-size: 1rem;
       --app-pos-card-min-height: 90px;
+      --app-pos-card-image-height: 42px;
       --app-pos-cart-width: 30%;
     }
   }
@@ -137,6 +141,7 @@
     --app-kpi-value-size: 2.25rem;
     --app-icon-size: 1.25rem;
     --app-pos-card-min-height: 122px;
+    --app-pos-card-image-height: 56px;
     --app-pos-cart-width: 30%;
   }
 
@@ -155,6 +160,7 @@
     --app-table-row-height: 2.875rem;
     --app-dialog-padding: 1.25rem;
     --app-pos-card-min-height: 108px;
+    --app-pos-card-image-height: 50px;
     --app-pos-cart-width: 32%;
   }
 
@@ -170,6 +176,7 @@
     --app-dialog-padding: 1rem;
     --app-title-size: 1.375rem;
     --app-pos-card-min-height: 92px;
+    --app-pos-card-image-height: 44px;
   }
 
   .dark {
@@ -351,6 +358,21 @@
     height: var(--app-control-height);
   }
 
+  /*
+   * Task 209.8B — square counterpart to `.app-control` for icon-only POS
+   * buttons (cart quantity stepper, edit/remove, add-ons allocator +/-).
+   * Same token, so it never drifts from `.app-control`'s height, and it
+   * never goes below 44px on `compact-touch`/`mobile` (var already holds
+   * 44px there) — only fine-pointer `standard`/`compact` shrink toward
+   * 36-40px. Replaces `.touch-target` (fixed 48px, always) on these two
+   * components only; `.touch-target` itself is untouched and still applies
+   * everywhere else it's already used.
+   */
+  .app-control-square {
+    height: var(--app-control-height);
+    width: var(--app-control-height);
+  }
+
   .app-table-density th,
   .app-table-density td {
     height: var(--app-table-row-height);
@@ -384,6 +406,11 @@
     min-height: var(--app-pos-card-min-height);
   }
 
+  /* Task 209.7 — POS product tile image area, density-aware like the card's own min-height above. */
+  .app-pos-card-image {
+    height: var(--app-pos-card-image-height);
+  }
+
   .app-pos-cart-width {
     width: var(--app-pos-cart-width);
   }
@@ -401,9 +428,17 @@
  * page) — window.print() otherwise prints the entire app chrome (sidebar,
  * dialog overlay, buttons). Scopes the printed page down to just the
  * receipt content; everything else is hidden via the `print:hidden`
- * utility already applied to the modal's non-receipt chrome. Visual/print
- * presentation only — never touches what's rendered on screen or what data
- * the receipt carries.
+ * utility already applied to the modal's non-receipt chrome and the
+ * (branch)/(admin)/(supervisor) shells. Visual/print presentation only —
+ * never touches what's rendered on screen or what data the receipt carries.
+ *
+ * Task 209.2: `visibility: hidden` (unlike `display: none`) keeps hidden
+ * elements' layout boxes in the flow. The app shells are `h-screen`
+ * (100vh) and the public receipt page's wrapper is `min-h-screen` — before
+ * those got `print:hidden`/were reset, their full-viewport invisible boxes
+ * were still being paginated, producing a blank leading page (ReceiptModal)
+ * or an unnecessary trailing page (/r/[txn]). Confirmed by rendering both
+ * DOM shapes to PDF via Chromium print emulation before/after: 2 pages -> 1.
  */
 @media print {
   body * {
@@ -414,9 +449,16 @@
     visibility: visible;
   }
   #receipt-print-area {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
+    position: static;
+    inset: auto;
+    transform: none;
+    overflow: visible;
+    max-height: none;
+    max-width: 80mm;
+    margin: 0 auto;
   }
+}
+
+@page {
+  margin: 3mm;
 }

@@ -12,6 +12,7 @@ import {
   type LinkVariantFlavorInput,
   type PosCatalogResponse,
   type ProductDetailResponse,
+  type ProductImageResponse,
   type ProductListResponse,
   type ProductReadiness,
   type ProductStatus,
@@ -146,6 +147,77 @@ export function useUpdateProduct(productId: string) {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] });
       void queryClient.invalidateQueries({ queryKey: ['products'] });
       toast.success('Product updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Task 209.6 — Product Image Management (Admin Only). image_url is always a
+// short-lived signed URL minted server-side per request — never cached
+// beyond this query's own staleTime, and never a public URL.
+// ---------------------------------------------------------------------------
+
+/** enabled defaults to true so a direct GET works standalone, but callers (list thumbnail, edit dialog) pass has_image so a product known to have no image never fires a request. */
+export function useProductImage(productId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['product', productId, 'image'],
+    queryFn: async () => {
+      const response = await apiClient<ProductImageResponse>(`/api/products/${productId}/image`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load the product image'));
+      return response.data;
+    },
+    enabled: Boolean(productId) && enabled,
+    staleTime: 30 * 1000,
+  });
+}
+
+/**
+ * productId is a per-call mutation variable, not a hook argument — unlike
+ * most mutations in this file, the Create Product dialog doesn't know the
+ * product's id until the product itself has just been created in the same
+ * submit, so binding productId at hook-creation time (a stale closure by
+ * the time the mutation actually fires) would silently upload to the wrong
+ * URL. The Edit Product dialog, which does have a stable id, just passes it
+ * through on every call instead.
+ */
+export function useUploadProductImage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ productId, file }: { productId: string; file: File }) => {
+      const formData = new FormData();
+      formData.set('image', file);
+      const response = await apiClient<ProductImageResponse>(`/api/products/${productId}/image`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload the product image'));
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['product', variables.productId, 'image'] });
+      void queryClient.invalidateQueries({ queryKey: ['product', variables.productId] });
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Product image uploaded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Same productId-as-mutation-variable shape as useUploadProductImage, for the same reason. */
+export function useDeleteProductImage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ productId }: { productId: string }) => {
+      const response = await apiClient<ProductImageResponse>(`/api/products/${productId}/image`, { method: 'DELETE' });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to delete the product image'));
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['product', variables.productId, 'image'] });
+      void queryClient.invalidateQueries({ queryKey: ['product', variables.productId] });
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+      toast.success('Product image deleted');
     },
     onError: (error: Error) => toast.error(error.message),
   });

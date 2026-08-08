@@ -585,6 +585,7 @@ function AdminReportsPageContent() {
                 <KpiCard title="Refunded" value={(dailySales.data?.data ?? []).reduce((sum, r) => sum + r.refunded_count, 0)} isLoading={dailySales.isLoading} tone="warning" />
               </div>
               <DataTable
+                stickyHeader
                 columns={getDailySalesColumns(setDrilldownRow)}
                 data={dailySales.data?.data ?? []}
                 isLoading={dailySales.isLoading}
@@ -614,6 +615,7 @@ function AdminReportsPageContent() {
                 />
               </div>
               <DataTable
+                stickyHeader
                 columns={cashReconciliationColumns}
                 data={cashReconciliation.data?.data ?? []}
                 isLoading={cashReconciliation.isLoading}
@@ -629,6 +631,7 @@ function AdminReportsPageContent() {
                 <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
               </div>
               <DataTable
+                stickyHeader
                 columns={expenseColumns}
                 data={expenses.data?.expenses ?? []}
                 isLoading={expenses.isLoading}
@@ -652,7 +655,13 @@ function AdminReportsPageContent() {
                 <KpiCard title="Refunded" value={(voidRefund.data?.data ?? []).filter((r) => r.status === 'refunded').length} isLoading={voidRefund.isLoading} />
                 <KpiCard title="Total Amount" value={(voidRefund.data?.data ?? []).reduce((sum, r) => sum + r.total_amount, 0)} isLoading={voidRefund.isLoading} tone="warning" />
               </div>
-              <DataTable columns={voidRefundColumns} data={voidRefund.data?.data ?? []} isLoading={voidRefund.isLoading} emptyState={<EmptyState title="No voids or refunds in this range" />} />
+              <DataTable
+                stickyHeader
+                columns={voidRefundColumns}
+                data={voidRefund.data?.data ?? []}
+                isLoading={voidRefund.isLoading}
+                emptyState={<EmptyState title="No voids or refunds in this range" />}
+              />
               </>}
             </TabsContent>
 
@@ -673,6 +682,7 @@ function AdminReportsPageContent() {
                 />
               </div>
               <DataTable
+                stickyHeader
                 columns={fraudAlertSummaryColumns}
                 data={fraudAlertSummary.data?.data ?? []}
                 isLoading={fraudAlertSummary.isLoading}
@@ -708,6 +718,7 @@ function AdminReportsPageContent() {
                 />
               </div>
               <DataTable
+                stickyHeader
                 columns={discountComplianceColumns}
                 data={discountCompliance.data?.data ?? []}
                 isLoading={discountCompliance.isLoading}
@@ -736,6 +747,7 @@ function AdminReportsPageContent() {
                 />
               </div>
               <DataTable
+                stickyHeader
                 columns={inventoryMovementColumns}
                 data={inventoryMovement.data?.data ?? []}
                 isLoading={inventoryMovement.isLoading}
@@ -762,6 +774,7 @@ function AdminReportsPageContent() {
                       <IngredientWeightKgMobileCards rows={ingredientWeightKg} />
                     ) : (
                       <DataTable
+                        stickyHeader
                         columns={ingredientWeightKgColumns}
                         data={ingredientWeightKg}
                         isLoading={inventorySummary.isLoading}
@@ -782,6 +795,7 @@ function AdminReportsPageContent() {
                       <PackagingPcMobileCards rows={packagingPc} />
                     ) : (
                       <DataTable
+                        stickyHeader
                         columns={packagingPcColumns}
                         data={packagingPc}
                         isLoading={inventorySummary.isLoading}
@@ -812,6 +826,7 @@ function AdminReportsPageContent() {
                 />
               </div>
               <DataTable
+                stickyHeader
                 columns={attendanceSummaryColumns}
                 data={attendanceSummary.data?.data ?? []}
                 isLoading={attendanceSummary.isLoading}

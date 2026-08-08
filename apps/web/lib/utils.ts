@@ -80,6 +80,25 @@ export function formatDuration(minutes: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function trimQuantity(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+/**
+ * Presentation-only inventory quantity formatter — grams (unit code 'g')
+ * auto-convert to kilograms at the 1000g threshold (kg = grams / 1000,
+ * exact, no rounding beyond 2dp display). Every other unit (pc, kg, L, mL,
+ * ...) is rendered in its given unit, untouched — TASK 209.9 explicitly
+ * forbids inventing conversions for non-gram units. Never mutates the
+ * underlying stored quantity.
+ */
+export function formatInventoryQuantity(quantity: number, unit: string): string {
+  if (unit === 'g' && Math.abs(quantity) >= 1000) {
+    return `${trimQuantity(quantity / 1000)} kg`;
+  }
+  return `${trimQuantity(quantity)} ${unit}`;
+}
+
 /** Percentage change from previous to current. Returns 0 when previous is 0 to avoid Infinity/NaN. */
 export function calculatePercentageChange(current: number, previous: number): number {
   if (previous === 0) return 0;

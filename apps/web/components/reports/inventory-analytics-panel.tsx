@@ -131,6 +131,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
         </CardHeader>
         <CardContent>
           <DataTable
+            stickyHeader
             columns={fastMoverColumns}
             data={topConsumed}
             isLoading={isLoading}

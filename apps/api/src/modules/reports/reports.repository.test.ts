@@ -1277,4 +1277,39 @@ describe('reportsRepository.getDailySalesTransactions', () => {
 
     expect(rows[0]).toMatchObject({ transaction_id: 'txn-1', branch_name: 'Branch One' });
   });
+
+  // Task 209.10 — Sold Product Transactions export-parity fix: the tab's
+  // client-side cashier/payment-method/status/search filters must reach the
+  // same where-clause the on-screen query uses, or the export silently
+  // returns a different result set than what's visible.
+  it('defaults status to completed when the caller passes no status filter', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([transactionRow()] as never);
+
+    await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ status: 'completed' }) }));
+  });
+
+  it('passes cashierId, paymentMethod, status, and search through to the where clause when provided', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([transactionRow()] as never);
+
+    await reportsRepository.getDailySalesTransactions({
+      ...baseFilters,
+      cashierId: 'cashier-1',
+      paymentMethod: 'gcash',
+      status: 'voided',
+      search: 'PC-0002',
+    });
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          cashierId: 'cashier-1',
+          paymentMethod: 'gcash',
+          status: 'voided',
+          transactionNumber: { contains: 'PC-0002', mode: 'insensitive' },
+        }),
+      }),
+    );
+  });
 });

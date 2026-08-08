@@ -1,9 +1,15 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
-  ({ className, ...props }, ref) => (
-    <div className="relative w-full overflow-auto">
+interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
+  /** Extra classes/style on the scroll container div (the element that already owns horizontal overflow) — used by DataTable's `stickyHeader` to also bound its height for vertical scroll. Omitted everywhere else, so default behavior is unchanged. */
+  containerClassName?: string;
+  containerStyle?: React.CSSProperties;
+}
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(
+  ({ className, containerClassName, containerStyle, ...props }, ref) => (
+    <div className={cn('relative w-full overflow-auto', containerClassName)} style={containerStyle}>
       <table ref={ref} className={cn('w-full caption-bottom text-sm', className)} {...props} />
     </div>
   ),

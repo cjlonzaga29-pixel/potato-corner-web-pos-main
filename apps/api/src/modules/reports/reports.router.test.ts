@@ -370,6 +370,33 @@ describe('POST /export', () => {
     });
   });
 
+  it('TASK 209.10 — forwards cashier_id, payment_method, status, and search from the request body into ReportFilters', async () => {
+    const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const cashierId = randomUUID();
+    const req = mockReq({
+      ...authHeader(token),
+      body: {
+        report_type: 'DAILY_SALES',
+        filters: { branch_id: BRANCH_1, page: 1, limit: 25, cashier_id: cashierId, payment_method: 'gcash', status: 'voided', search: 'PC-0002' },
+        format: 'csv',
+      },
+    });
+    const res = mockRes();
+    vi.mocked(reportsService.requestExport).mockResolvedValue({ kind: 'file', buffer: Buffer.from('a'), filename: 'x.csv', contentType: 'text/csv' });
+
+    await runHandlers(handlers, req, res);
+
+    expect(reportsService.requestExport).toHaveBeenCalledWith(
+      'DAILY_SALES',
+      expect.objectContaining({ cashierId, paymentMethod: 'gcash', status: 'voided', search: 'PC-0002' }),
+      'csv',
+      expect.any(String),
+      'supervisor',
+      BRANCH_1,
+    );
+  });
+
   it('sets application/pdf (no charset) and the matching filename for a PDF file result', async () => {
     const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
     const token = generateSupervisorToken([BRANCH_1]);

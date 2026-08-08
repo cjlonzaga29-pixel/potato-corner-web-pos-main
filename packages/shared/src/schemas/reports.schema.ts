@@ -1,9 +1,11 @@
 // packages/shared/src/schemas/reports.schema.ts
 import { z } from 'zod';
-import { REPORT_TYPE, type ReportType } from '../constants/status.js';
+import { REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
 import { MAX_LIST_LIMIT } from '../constants/pagination.js';
 
 const reportTypeValues = Object.values(REPORT_TYPE) as [ReportType, ...ReportType[]];
+const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [TransactionStatus, ...TransactionStatus[]];
+const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
 
 export const ReportFiltersSchema = z.object({
   branch_id: z.uuid().optional(),
@@ -19,6 +21,14 @@ export const ReportFiltersSchema = z.object({
     .optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(MAX_LIST_LIMIT).default(25),
+  // Sold Product Transactions tab (branch-ops/reports-view.tsx) — the only
+  // report screen with filter controls beyond branch/date. Optional so
+  // every other report_type's export request (which never sets these) is
+  // unaffected.
+  cashier_id: z.uuid().optional(),
+  payment_method: z.enum(paymentMethodValues).optional(),
+  status: z.enum(transactionStatusValues).optional(),
+  search: z.string().max(100).optional(),
 });
 export type ReportFiltersInput = z.infer<typeof ReportFiltersSchema>;
 

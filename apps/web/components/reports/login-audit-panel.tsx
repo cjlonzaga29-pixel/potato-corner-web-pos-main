@@ -66,6 +66,7 @@ export function LoginAuditPanel() {
       />
 
       <DataTable
+        stickyHeader
         columns={columns}
         data={data?.data ?? []}
         isLoading={isLoading}

@@ -27,7 +27,7 @@ import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-pa
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
-import { formatCurrency, formatDateTime, formatDuration, formatTimeAgo } from '@/lib/utils';
+import { formatCurrency, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
 import { manilaEndOfDayISO, manilaStartOfDayISO } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
@@ -69,7 +69,7 @@ const consumptionSummaryColumns: ColumnDef<ConsumptionSummaryRow>[] = [
   {
     id: 'quantity_consumed',
     header: 'Consumed',
-    cell: ({ row }) => `${row.original.quantity_consumed} ${row.original.unit}`,
+    cell: ({ row }) => formatInventoryQuantity(row.original.quantity_consumed, row.original.unit),
   },
   { accessorKey: 'movement_count', header: 'Sales Movements' },
 ];
@@ -543,9 +543,31 @@ export function ReportsView() {
   function handleExport(format: 'csv' | 'pdf') {
     const setIsExporting = format === 'csv' ? setIsExportingCsv : setIsExportingPdf;
     setIsExporting(true);
+    // Sold Product Transactions shares DAILY_SALES's report_type (no
+    // dedicated backend ReportType — see TAB_TO_REPORT_TYPE's comment
+    // above) but has its own filter bar; forwarding those filters here is
+    // what keeps the CSV/PDF population matching what's on screen for this
+    // tab specifically. Every other tab keeps sending just branch/date, same
+    // as before.
+    const soldTabFilters =
+      activeTab === 'sold-product-transactions'
+        ? {
+            cashier_id: soldCashierFilter !== 'all' ? soldCashierFilter : undefined,
+            payment_method: soldPaymentMethodFilter !== 'all' ? (soldPaymentMethodFilter as ExportRequestInput['filters']['payment_method']) : undefined,
+            status: soldStatusFilter !== 'all' ? (soldStatusFilter as ExportRequestInput['filters']['status']) : undefined,
+            search: soldReceiptSearch.trim() || undefined,
+          }
+        : {};
     const input: ExportRequestInput = {
       report_type: TAB_TO_REPORT_TYPE[activeTab] ?? 'DAILY_SALES',
-      filters: { branch_id: activeBranchId ?? undefined, date_from: dateRange.from, date_to: dateRange.to, page: 1, limit: QUERY_LIMIT },
+      filters: {
+        branch_id: activeBranchId ?? undefined,
+        date_from: dateRange.from,
+        date_to: dateRange.to,
+        page: 1,
+        limit: QUERY_LIMIT,
+        ...soldTabFilters,
+      },
       format,
     };
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
@@ -554,7 +576,14 @@ export function ReportsView() {
   // Daily Sales
   const completedTransactions = completedQuery.data?.transactions ?? [];
   const totalTransactions = completedTransactions.length;
-  const grossSales = completedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
+  // Task 209.10 (Step 11, follow-up A) — this is a sum of total_amount
+  // (post-discount, what was actually charged), not the canonical
+  // subtotal-based Gross Sales that lib/financial-metrics.ts and the Admin
+  // Reports/Financial Summary "Gross Sales" figures use. Left as
+  // total_amount rather than switched to subtotal (that's a Gross Sales
+  // formula change, out of scope here) — instead labeled "Total Sales"
+  // below so it no longer claims to be the same metric.
+  const totalSalesCollected = completedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
   const vatCollected = completedTransactions.reduce((sum, t) => sum + t.vat_amount, 0);
   const discountsGiven = completedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
 
@@ -640,7 +669,9 @@ export function ReportsView() {
     }
   }
   const consumptionRows = Array.from(consumptionByItem.values()).sort((a, b) => b.quantity_consumed - a.quantity_consumed);
-  const totalConsumedQuantity = consumptionRows.reduce((sum, r) => sum + r.quantity_consumed, 0);
+  // TASK 209.9: no overall quantity total — consumptionRows mixes grams, kg,
+  // and pc across ingredients, so summing quantity_consumed across rows is
+  // mathematically meaningless (can't add grams and pieces).
   const totalConsumptionMovements = consumptionRows.reduce((sum, r) => sum + r.movement_count, 0);
 
   // Attendance Summary
@@ -703,16 +734,17 @@ export function ReportsView() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Transactions" value={totalTransactions} isLoading={completedQuery.isLoading} />
             <KpiCard
-              title="Gross Sales — Selected Period"
-              value={grossSales}
+              title="Total Sales — Selected Period"
+              value={totalSalesCollected}
               prefix="₱"
               isLoading={completedQuery.isLoading}
-              tooltip={`Completed sales from ${fromInput} to ${toInput}.`}
+              tooltip={`Completed transaction totals, after discounts, from ${fromInput} to ${toInput}. For pre-discount Gross Sales, see Admin Reports > Financial Summary.`}
             />
             <KpiCard title="VAT Collected" value={vatCollected} prefix="₱" isLoading={completedQuery.isLoading} />
             <KpiCard title="Discounts Given" value={discountsGiven} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
           <DataTable
+            stickyHeader
             columns={getDailySalesColumns(isSupervisor, setReceiptTransactionId, setProofTransactionId, employeeNames)}
             data={completedTransactions}
             isLoading={completedQuery.isLoading}
@@ -828,6 +860,7 @@ export function ReportsView() {
             </div>
           </div>
           <DataTable
+            stickyHeader
             columns={getSoldProductTransactionsColumns(
               isSupervisor,
               employeeNames,
@@ -863,6 +896,7 @@ export function ReportsView() {
             <KpiCard title="Refunded Amount" value={refundedAmount} prefix="₱" isLoading={voidRefundLoading} />
           </div>
           <DataTable
+            stickyHeader
             columns={voidRefundColumns}
             data={voidRefundRows}
             isLoading={voidRefundLoading}
@@ -894,6 +928,7 @@ export function ReportsView() {
             </div>
           )}
           <DataTable
+            stickyHeader
             columns={getDiscountComplianceColumns(isSupervisor, setDiscountProofTransactionId, employeeNames)}
             data={discountedTransactions}
             isLoading={completedQuery.isLoading}
@@ -915,6 +950,7 @@ export function ReportsView() {
             <KpiCard title="Adjustments" value={adjustmentsCount} isLoading={movementsQuery.isLoading} />
           </div>
           <DataTable
+            stickyHeader
             columns={inventoryMovementColumns}
             data={movements}
             isLoading={movementsQuery.isLoading}
@@ -929,12 +965,12 @@ export function ReportsView() {
             timestamp={movementsQuery.dataUpdatedAt ? new Date(movementsQuery.dataUpdatedAt).toISOString() : undefined}
             isLoading={movementsQuery.isLoading}
           />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Ingredients Consumed" value={consumptionRows.length} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Total Quantity Consumed" value={totalConsumedQuantity} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Sales Movements" value={totalConsumptionMovements} isLoading={movementsQuery.isLoading} />
           </div>
           <DataTable
+            stickyHeader
             columns={consumptionSummaryColumns}
             data={consumptionRows}
             isLoading={movementsQuery.isLoading}
@@ -956,6 +992,7 @@ export function ReportsView() {
             <KpiCard title="Overtime Hours" value={overtimeMinutesSum / 60} suffix="h" isLoading={attendanceQuery.isLoading} />
           </div>
           <DataTable
+            stickyHeader
             columns={attendanceSummaryColumns}
             data={attendanceRecords}
             isLoading={attendanceQuery.isLoading}

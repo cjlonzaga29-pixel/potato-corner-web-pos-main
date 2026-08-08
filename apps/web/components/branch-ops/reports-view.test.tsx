@@ -272,6 +272,65 @@ describe('ReportsView — Inventory Movement tab (aligned InventoryStockMovement
   });
 });
 
+function openConsumptionSummaryTab() {
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Consumption Summary' }));
+}
+
+describe('ReportsView — Consumption Summary tab (TASK 209.9 mixed-unit total removal)', () => {
+  it('TEST G — never renders a combined quantity total across incompatible units', () => {
+    mockUseUnitsOfMeasure.mockReturnValue({
+      data: [unitOfMeasure({ id: 'unit-g', code: 'g', dimension: 'WEIGHT' }), unitOfMeasure({ id: 'unit-pc', code: 'pc', dimension: 'COUNT' })],
+      isLoading: false,
+    });
+    mockMovements([
+      stockMovement({ id: 'm1', inventory_item_id: 'item-flavor', inventory_item_name: 'Cheese Flavor', movement_type: 'SALE', quantity_change: -13620, unit_id: 'unit-g' }),
+      stockMovement({ id: 'm2', inventory_item_id: 'item-packaging', inventory_item_name: 'Paper Bag', movement_type: 'SALE', quantity_change: -135, unit_id: 'unit-pc' }),
+    ]);
+
+    render(<ReportsView />);
+    openConsumptionSummaryTab();
+
+    expect(screen.queryByText('Total Quantity Consumed')).not.toBeInTheDocument();
+    expect(screen.queryByText('148.62')).not.toBeInTheDocument();
+  });
+
+  it('TEST H — auto-converts a gram quantity at or above 1000g to kg, exactly (13620g -> 13.62 kg)', () => {
+    mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure({ id: 'unit-g', code: 'g', dimension: 'WEIGHT' })], isLoading: false });
+    mockMovements([
+      stockMovement({ id: 'm1', inventory_item_id: 'item-flavor', inventory_item_name: 'Cheese Flavor', movement_type: 'SALE', quantity_change: -13620, unit_id: 'unit-g' }),
+    ]);
+
+    render(<ReportsView />);
+    openConsumptionSummaryTab();
+
+    expect(screen.getByText('13.62 kg')).toBeInTheDocument();
+  });
+
+  it('TEST I — a sub-1000g quantity stays in grams (999g stays "999 g")', () => {
+    mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure({ id: 'unit-g', code: 'g', dimension: 'WEIGHT' })], isLoading: false });
+    mockMovements([
+      stockMovement({ id: 'm1', inventory_item_id: 'item-flavor', inventory_item_name: 'Cheese Flavor', movement_type: 'SALE', quantity_change: -999, unit_id: 'unit-g' }),
+    ]);
+
+    render(<ReportsView />);
+    openConsumptionSummaryTab();
+
+    expect(screen.getByText('999 g')).toBeInTheDocument();
+  });
+
+  it('TEST J — count-based (pc) inventory is never converted, stays in its own unit', () => {
+    mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure({ id: 'unit-pc', code: 'pc', dimension: 'COUNT' })], isLoading: false });
+    mockMovements([
+      stockMovement({ id: 'm1', inventory_item_id: 'item-packaging', inventory_item_name: 'Paper Bag', movement_type: 'SALE', quantity_change: -135, unit_id: 'unit-pc' }),
+    ]);
+
+    render(<ReportsView />);
+    openConsumptionSummaryTab();
+
+    expect(screen.getByText('135 pc')).toBeInTheDocument();
+  });
+});
+
 function transaction(overrides: Partial<TransactionResponse> = {}): TransactionResponse {
   return {
     id: 'txn-1',
@@ -379,6 +438,49 @@ describe('ReportsView — Reports §8/§9/§10 (shift removal, Sold Product Tran
 
     expect(screen.queryByText('PC-0001')).not.toBeInTheDocument();
     expect(screen.getByText('PC-0002')).toBeInTheDocument();
+  });
+
+  it('TASK 209.10 — export parity: includes the active Sold Product Transactions search filter in the export request', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [transaction()], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
+    fireEvent.change(screen.getByPlaceholderText('Search receipt number'), { target: { value: 'PC-0002' } });
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ filters: expect.objectContaining({ search: 'PC-0002' }) }),
+      expect.anything(),
+    );
+  });
+
+  it('TASK 209.10 — export parity: Daily Sales export request never carries a search filter (Sold Product Transactions state stays scoped to its own tab)', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [transaction()], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
+    fireEvent.change(screen.getByPlaceholderText('Search receipt number'), { target: { value: 'PC-0002' } });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Daily Sales' }));
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ filters: expect.not.objectContaining({ search: 'PC-0002' }) }),
+      expect.anything(),
+    );
   });
 });
 

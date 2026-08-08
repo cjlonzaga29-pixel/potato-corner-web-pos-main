@@ -44,6 +44,10 @@ export interface DataTableProps<TData, TValue> {
   columnVisibility?: VisibilityState;
   onColumnVisibilityChange?: (visibility: VisibilityState) => void;
   onRowClick?: (row: TData) => void;
+  /** Report tables opt in: header stays pinned while the body scrolls vertically inside a bounded-height container, instead of pushing the page down. Off by default so every non-report table (37+ call sites) is unaffected. */
+  stickyHeader?: boolean;
+  /** Scroll-container max-height when `stickyHeader` is set. Defaults to a viewport-relative value that leaves room for the page header/toolbar/pagination around it. */
+  maxBodyHeight?: string;
 }
 
 /**
@@ -73,6 +77,8 @@ export function DataTable<TData, TValue>({
   columnVisibility,
   onColumnVisibilityChange,
   onRowClick,
+  stickyHeader = false,
+  maxBodyHeight = '65vh',
 }: DataTableProps<TData, TValue>) {
   const table = useReactTable({
     data,
@@ -123,10 +129,13 @@ export function DataTable<TData, TValue>({
             <LoadingSpinner size="lg" />
           </div>
         )}
-        <Table>
-          <TableHeader>
+        <Table
+          containerClassName={stickyHeader ? 'overflow-y-auto' : undefined}
+          containerStyle={stickyHeader ? { maxHeight: maxBodyHeight } : undefined}
+        >
+          <TableHeader className={stickyHeader ? 'sticky top-0 z-20 bg-muted shadow-[0_1px_0_0_hsl(var(--border))]' : undefined}>
             {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
+              <TableRow key={headerGroup.id} className={stickyHeader ? 'hover:bg-transparent' : undefined}>
                 {headerGroup.headers.map((header) => (
                   <TableHead key={header.id}>
                     {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}

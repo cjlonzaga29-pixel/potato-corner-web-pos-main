@@ -189,6 +189,7 @@ function FraudAlertManagementPanelContent() {
       </div>
 
       <DataTable
+        stickyHeader
         columns={columns}
         data={alerts}
         isLoading={isLoading}

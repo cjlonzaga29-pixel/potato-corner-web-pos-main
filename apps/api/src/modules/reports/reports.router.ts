@@ -53,6 +53,10 @@ function parseFilters(query: unknown): { ok: true; filters: ReportFilters } | { 
       dateTo: toBoundaryDate(parsed.data.date_to, 'end'),
       page: parsed.data.page,
       limit: parsed.data.limit,
+      cashierId: parsed.data.cashier_id,
+      paymentMethod: parsed.data.payment_method,
+      status: parsed.data.status,
+      search: parsed.data.search,
     },
   };
 }
@@ -219,6 +223,10 @@ router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordCha
       dateTo: toBoundaryDate(body.filters.date_to, 'end'),
       page: body.filters.page,
       limit: body.filters.limit,
+      cashierId: body.filters.cashier_id,
+      paymentMethod: body.filters.payment_method,
+      status: body.filters.status,
+      search: body.filters.search,
     };
     const branchId = filters.branchId ?? null;
     const result = await reportsService.requestExport(body.report_type as ReportType, filters, body.format, req.user.user_id, req.user.role, branchId);

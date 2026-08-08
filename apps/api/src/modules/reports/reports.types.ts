@@ -60,6 +60,13 @@ export interface ReportFilters {
   dateTo?: Date;
   page: number;
   limit: number;
+  // Sold Product Transactions export-parity fields (Task 209.10) — only
+  // getDailySalesTransactions reads these; every other report/repository
+  // method ignores them, same as an absent branchId/dateFrom today.
+  cashierId?: string;
+  paymentMethod?: 'cash' | 'gcash' | 'maya' | 'other';
+  status?: 'completed' | 'voided' | 'refunded';
+  search?: string;
 }
 
 export interface ExportRequest {

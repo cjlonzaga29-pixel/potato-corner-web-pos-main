@@ -308,19 +308,35 @@ export const reportsRepository = {
   },
 
   /**
-   * One row per completed transaction, same where-clause shape as
-   * transactions.repository.ts's buildListWhere with status: 'completed' —
-   * matches exactly what the Supervisor/Branch Reports page's Daily Sales
-   * tab renders (see reports.types.ts's DailySalesTransactionRow doc
-   * comment). Used only by DAILY_SALES's PDF export for that tab.
+   * One row per transaction, same where-clause shape as
+   * transactions.repository.ts's buildListWhere — matches exactly what the
+   * Supervisor/Branch Reports page's Daily Sales tab renders (see
+   * reports.types.ts's DailySalesTransactionRow doc comment). Used by
+   * DAILY_SALES's CSV/PDF export for that tab, and (Task 209.10) also
+   * backs the Sold Product Transactions tab's export, which shares the same
+   * DAILY_SALES report_type (no dedicated backend ReportType exists for it —
+   * see TAB_TO_REPORT_TYPE's comment in reports-view.tsx) and needs
+   * cashier/payment method/search/status filtering to match its own
+   * on-screen filter bar.
+   *
+   * status defaults to 'completed' when the caller doesn't pass one —
+   * preserving the Daily Sales tab's exact original export contract. The
+   * Sold Product Transactions tab only overrides it when its own Status
+   * filter is narrowed to one value; left on "All" it still exports
+   * completed-only (a known gap: fully closing it needs a dedicated
+   * ReportType so the two tabs' exports can be told apart server-side,
+   * which is a schema-adjacent change out of this task's scope).
    */
   async getDailySalesTransactions(filters: ReportFilters): Promise<DailySalesTransactionRow[]> {
     const createdAt = dateRangeFilter(filters);
     const rows = await prisma.transaction.findMany({
       where: {
-        status: 'completed',
+        status: filters.status ?? 'completed',
         ...(filters.branchId && { branchId: filters.branchId }),
         ...(createdAt && { createdAt }),
+        ...(filters.cashierId && { cashierId: filters.cashierId }),
+        ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
+        ...(filters.search && { transactionNumber: { contains: filters.search, mode: 'insensitive' } }),
       },
       select: {
         id: true,

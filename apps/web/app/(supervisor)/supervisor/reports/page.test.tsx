@@ -332,7 +332,10 @@ describe('SupervisorReportsPage', () => {
 
     expect(screen.getByText('Total Transactions')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('Gross Sales — Selected Period')).toBeInTheDocument();
+    // Task 209.10 (Step 11, follow-up A) — relabeled from "Gross Sales" since
+    // this KPI sums total_amount (post-discount), not the canonical
+    // subtotal-based Gross Sales figure used elsewhere.
+    expect(screen.getByText('Total Sales — Selected Period')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();
     expect(screen.getByText('VAT Collected')).toBeInTheDocument();
     expect(screen.getByText('₱30')).toBeInTheDocument();

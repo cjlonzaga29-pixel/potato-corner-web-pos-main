@@ -187,6 +187,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
 
           <div className="mt-4">
             <DataTable
+              stickyHeader
               columns={columns}
               data={filtered}
               isLoading={isLoading}

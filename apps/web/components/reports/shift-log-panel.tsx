@@ -86,6 +86,7 @@ export function ShiftLogPanel() {
       </Select>
 
       <DataTable
+        stickyHeader
         columns={columns}
         data={data?.shifts ?? []}
         isLoading={isLoading}

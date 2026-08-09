@@ -31,7 +31,8 @@ import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
-import { useIsClockedIn, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
+import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
+import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof } from '@/hooks/queries/use-transactions';
@@ -222,17 +223,34 @@ export default function TerminalPage() {
   // this Employee (clock-in/out, checkout, payment-proof upload), because
   // the API derives cashier/attendance attribution from the request's
   // bearer token server-side.
+  //
+  // Task 209.27 — this local state is still wiped on every remount (route
+  // navigation unmounts this page), which used to force "Who's working?"
+  // back up even for a still-clocked-in Employee. useTerminalOperator below
+  // restores it from a branch-scoped sessionStorage hint, but only once
+  // it has re-validated that Employee against live attendance.
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [selectingEmployeeId, setSelectingEmployeeId] = useState<string | null>(null);
   const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
   const [activeEmployee, setActiveEmployee] = useState<{ id: string; firstName: string; lastName: string; role: string } | null>(null);
   const [activeEmployeeToken, setActiveEmployeeToken] = useState<string | null>(null);
 
-  // The operator actually running this terminal session — the selected
-  // Employee when a Branch Account picked one, otherwise the authenticated
-  // user itself (a genuine `staff` login). Drives attendance/checkout calls
-  // below; never the authenticated-user identity shown in the shell chrome.
-  const operatorId = isBranchAccount ? activeEmployee?.id : user?.id;
+  const {
+    operatorId,
+    isClockedIn,
+    record: attendanceRecord,
+    isAttendanceLoading,
+    isRestoringOperator,
+    clearTerminalOperator,
+  } = useTerminalOperator({
+    isBranchAccount,
+    branchId,
+    userId: user?.id,
+    activeEmployee,
+    activeEmployeeToken,
+    setActiveEmployee,
+    setActiveEmployeeToken,
+  });
   const operatorToken = isBranchAccount ? (activeEmployeeToken ?? undefined) : undefined;
   const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
 
@@ -244,7 +262,6 @@ export default function TerminalPage() {
     refetch: refetchCatalog,
   } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
-  const { isClockedIn, record: attendanceRecord, isLoading: isAttendanceLoading } = useIsClockedIn(operatorId);
   // Informational only below (payment-proof storage path fallback) — never
   // gates the Charge button. The API resolves and auto-opens the cashier's
   // own active shift server-side via shiftGuard, so checkout is never
@@ -267,7 +284,7 @@ export default function TerminalPage() {
     refetch: refetchEmployees,
   } = useEmployees(
     { role: ROLES.STAFF, isActive: true, search: employeeSearch || undefined, limit: 100 },
-    { enabled: isBranchAccount && !activeEmployee },
+    { enabled: isBranchAccount && !activeEmployee && !isRestoringOperator },
   );
 
   async function handleSelectEmployee(employeeId: string) {
@@ -433,6 +450,7 @@ export default function TerminalPage() {
     if (isBranchAccount) {
       setActiveEmployee(null);
       setActiveEmployeeToken(null);
+      clearTerminalOperator();
     }
   }
 
@@ -989,7 +1007,19 @@ export default function TerminalPage() {
   // Branch shell (sidebar/header) never unmounts and the authenticated user
   // never changes. Once activeEmployee is set, this falls through to
   // STATE 2/3 below without the Branch Account ever losing its own session.
+  //
+  // Task 209.27 — while useTerminalOperator is still validating a persisted
+  // operator hint against live attendance, show the same loading skeleton
+  // STATE 2 already uses below instead of this picker, so a still
+  // clocked-in Employee is never flashed "Who's working?" on remount.
   if (isBranchAccount && !activeEmployee) {
+    if (isRestoringOperator) {
+      return (
+        <div className="flex justify-center py-16">
+          <LoadingSpinner size="lg" />
+        </div>
+      );
+    }
     return (
       <div className="mx-auto max-w-3xl app-section app-section-gap overflow-y-auto p-6">
         <div>

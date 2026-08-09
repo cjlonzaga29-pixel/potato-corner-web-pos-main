@@ -4,6 +4,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import TerminalPage from './page';
 import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
 import { useAuthStore } from '@/stores/auth.store';
+import { useTerminalOperatorStore } from '@/stores/terminal-operator.store';
 
 const {
   mockAddItem,
@@ -2038,6 +2039,170 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     // Branch Account was never signed out of at any point in this flow.
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
+  });
+});
+
+// Task 209.27 — a still clocked-in Employee must survive navigating away from
+// and back to /branch/terminal (and a refresh) without "Who's working?"
+// reappearing. Each test below unmounts and re-renders TerminalPage to
+// simulate the route remount a real navigation causes, relying on the
+// sessionStorage-backed terminal-operator store (unlike component state,
+// this survives across separate render() calls the same way it survives
+// across a real unmount/remount).
+describe('TerminalPage — active operator restoration across navigation (Task 209.27)', () => {
+  function employee(overrides: Record<string, unknown> = {}) {
+    return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
+  }
+
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
+    useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
+    useTerminalOperatorStore.setState({
+      branchId: null,
+      employeeId: null,
+      employeeToken: null,
+      firstName: undefined,
+      lastName: undefined,
+      role: undefined,
+      hasHydrated: true,
+    });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
+    mockCartItems.mockReturnValue([]);
+    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
+    mockUseClockIn.mockClear();
+    mockUseClockOut.mockClear();
+    mockUseCreateTransaction.mockClear();
+  });
+
+  afterEach(() => cleanup());
+
+  async function clockInAsJane() {
+    mockSelectEmployee.mockResolvedValue({
+      user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
+      accessToken: 'employee-token',
+    });
+    mockClockInMutateAsync.mockResolvedValue({ id: 'attendance-1' });
+
+    const { rerender } = render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Jane Doe'));
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Clock In' }));
+    await waitFor(() => expect(mockClockInMutateAsync).toHaveBeenCalled());
+    // The mutation resolving flips attendance to clocked-in (mirroring the
+    // real query invalidation/refetch) — re-render so the terminal-operator
+    // hook's own effect observes it and syncs the sessionStorage-backed
+    // store before this simulated "navigate away" unmount.
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    rerender(<TerminalPage />);
+    await waitFor(() => expect(useTerminalOperatorStore.getState().employeeId).toBe('employee-1'));
+    cleanup();
+  }
+
+  it('2. an active (clocked-in) operator is restored on a fresh terminal mount', async () => {
+    await clockInAsJane();
+
+    render(<TerminalPage />);
+
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+  });
+
+  it('3. survives multiple route round-trips (Dashboard -> Inventory -> Sales -> POS)', async () => {
+    await clockInAsJane();
+
+    // Each render()/cleanup() pair simulates leaving to another route and
+    // TerminalPage fully unmounting; only sessionStorage carries state across.
+    render(<TerminalPage />);
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    cleanup();
+
+    render(<TerminalPage />);
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    cleanup();
+
+    render(<TerminalPage />);
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+  });
+
+  it('4. a full refresh (fresh module state, only sessionStorage persists) still restores the operator', async () => {
+    await clockInAsJane();
+
+    // Simulate a hard refresh: local component/query state is gone, but the
+    // persisted store rehydrates from sessionStorage exactly like a real reload.
+    useTerminalOperatorStore.persist.rehydrate();
+    render(<TerminalPage />);
+
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+  });
+
+  it('5. a direct visit to /branch/terminal restores the operator the same as a navigated return', async () => {
+    await clockInAsJane();
+
+    // No different from any other fresh mount from this component's point of
+    // view — there is no separate "direct URL" code path to exercise.
+    render(<TerminalPage />);
+
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+  });
+
+  it('6/7. Clock Out clears the persisted operator so it is never resurrected on refresh or return', async () => {
+    await clockInAsJane();
+
+    render(<TerminalPage />);
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+
+    mockClockOutMutateAsync.mockResolvedValue({ id: 'attendance-1' });
+    fireEvent.click(screen.getByRole('button', { name: /Clock Out/ }));
+    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(useTerminalOperatorStore.getState().employeeId).toBeNull();
+
+    // Clocked out — attendance now says so for anyone who mounts next.
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
+    cleanup();
+
+    render(<TerminalPage />);
+    // Back to STATE 1 (Who's working?) — never straight back into the
+    // catalog/cart, and no lingering Clock Out button for the old operator.
+    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Clock Out/ })).not.toBeInTheDocument();
+  });
+
+  it('9. a persisted operator scoped to a different branch is never restored', async () => {
+    useTerminalOperatorStore.getState().setTerminalOperator({
+      branchId: 'branch-2',
+      employeeId: 'employee-1',
+      employeeToken: 'employee-token',
+      firstName: 'Jane',
+      lastName: 'Doe',
+      role: 'staff',
+    });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
+
+    render(<TerminalPage />);
+
+    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(useTerminalOperatorStore.getState().employeeId).toBeNull();
+  });
+
+  it('10. never flashes "Who\'s working?" while a persisted operator is still being validated', () => {
+    useTerminalOperatorStore.getState().setTerminalOperator({
+      branchId: 'branch-1',
+      employeeId: 'employee-1',
+      employeeToken: 'employee-token',
+      firstName: 'Jane',
+      lastName: 'Doe',
+      role: 'staff',
+    });
+    // Attendance query still in flight for the persisted candidate.
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: true });
+
+    render(<TerminalPage />);
+
+    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
   });
 });
 

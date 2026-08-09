@@ -180,6 +180,20 @@ afterEach(() => {
 });
 
 describe('ProductDetailPage', () => {
+  // Task 209.14 — `.app-section` is `display:flex; flex-direction:column`,
+  // whose default `align-items: stretch` was stretching the back button to
+  // the full page width (and its own `justify-center` then centered the
+  // label inside that stretched width). `self-start` opts the button out of
+  // the stretch so it stays a normal compact, left-aligned nav control.
+  it('renders "Back to products" as a compact, left-aligned control rather than a full-width stretched button', async () => {
+    await renderPage();
+
+    const backLink = screen.getByRole('link', { name: /Back to products/ });
+    expect(backLink).toHaveClass('self-start');
+    expect(backLink).not.toHaveClass('w-full');
+    expect(backLink).toHaveAttribute('href', '/admin/products');
+  });
+
   it('passes the selected branch ID unchanged to VariantCard', async () => {
     await renderPage();
     fireEvent.click(screen.getByRole('tab', { name: 'Variants & Flavors' }));

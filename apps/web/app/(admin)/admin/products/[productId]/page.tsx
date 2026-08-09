@@ -61,7 +61,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
 
   return (
     <div className="app-section app-section-gap">
-      <Button variant="ghost" size="sm" asChild className="-ml-2">
+      <Button variant="ghost" size="sm" asChild className="-ml-2 self-start">
         <Link href="/admin/products">
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back to products

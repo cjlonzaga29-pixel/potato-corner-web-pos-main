@@ -13,8 +13,6 @@ import type {
   InventoryMovementReportRow,
   IngredientWeightKgRow,
   PackagingPcRow,
-  IngredientWeightTotalsKg,
-  PackagingTotalsPc,
   AttendanceSummaryReportRow,
   FraudAlertSummaryReportRow,
   ExportReadyPayload,
@@ -302,22 +300,6 @@ function PackagingPcMobileCards({ rows }: { rows: PackagingPcRow[] }) {
     </div>
   );
 }
-
-const ingredientWeightKgTotalsColumns: ColumnDef<IngredientWeightTotalsKg & { label: string }>[] = [
-  { accessorKey: 'label', header: 'Ingredient' },
-  { accessorKey: 'opening_stock_kg', header: 'Opening Stock (KG)' },
-  { accessorKey: 'consumed_today_kg', header: 'Consumed Today (KG)' },
-  { accessorKey: 'consumed_this_month_kg', header: 'Consumed This Month (KG)' },
-  { accessorKey: 'remaining_kg', header: 'Remaining (KG)' },
-];
-
-const packagingPcTotalsColumns: ColumnDef<PackagingTotalsPc & { label: string }>[] = [
-  { accessorKey: 'label', header: 'Packaging' },
-  { accessorKey: 'opening_stock_pc', header: 'Opening Stock (PC)' },
-  { accessorKey: 'consumed_today_pc', header: 'Consumed Today (PC)' },
-  { accessorKey: 'consumed_this_month_pc', header: 'Consumed This Month (PC)' },
-  { accessorKey: 'remaining_pc', header: 'Remaining (PC)' },
-];
 
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { accessorKey: 'employee_name', header: 'Employee' },
@@ -764,8 +746,6 @@ function AdminReportsPageContent() {
               {(() => {
                 const ingredientWeightKg = inventorySummary.data?.ingredient_weight_kg ?? [];
                 const packagingPc = inventorySummary.data?.packaging_pc ?? [];
-                const weightTotals = inventorySummary.data?.ingredient_weight_totals_kg;
-                const packagingTotals = inventorySummary.data?.packaging_totals_pc;
                 const excludedCount = inventorySummary.data?.excluded_ingredient_count ?? 0;
                 return (
                   <>
@@ -780,9 +760,6 @@ function AdminReportsPageContent() {
                         isLoading={inventorySummary.isLoading}
                         emptyState={<EmptyState title="No weighable ingredients" description="No KG-convertible ingredients at this branch." />}
                       />
-                    )}
-                    {weightTotals && (
-                      <DataTable columns={ingredientWeightKgTotalsColumns} data={[{ label: 'Total', ...weightTotals }]} isLoading={inventorySummary.isLoading} />
                     )}
                     {excludedCount > 0 && (
                       <p className="mt-2 text-sm text-muted-foreground">
@@ -801,9 +778,6 @@ function AdminReportsPageContent() {
                         isLoading={inventorySummary.isLoading}
                         emptyState={<EmptyState title="No packaging items" description="No packaging items at this branch." />}
                       />
-                    )}
-                    {packagingTotals && (
-                      <DataTable columns={packagingPcTotalsColumns} data={[{ label: 'Total', ...packagingTotals }]} isLoading={inventorySummary.isLoading} />
                     )}
                   </>
                 );

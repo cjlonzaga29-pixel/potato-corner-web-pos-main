@@ -61,7 +61,7 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
       aria-disabled={!isAvailable}
       aria-label={ariaLabel}
       data-render-count={renderCountRef.current}
-      className={`group app-pos-card flex h-full flex-col overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+      className={`group app-pos-card flex flex-col self-start overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isAvailable
           ? 'cursor-pointer hover:-translate-y-0.5 hover:border-primary hover:shadow-md active:translate-y-0 active:scale-[0.98]'
           : 'cursor-not-allowed opacity-60'
@@ -74,7 +74,7 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         }
       }}
     >
-      <div className="app-pos-card-image relative flex shrink-0 items-center justify-center overflow-hidden bg-muted/40">
+      <div className="app-pos-card-image relative flex items-center justify-center overflow-hidden bg-muted/40">
         {showImage ? (
           // eslint-disable-next-line @next/next/no-img-element -- short-lived signed Supabase Storage URL, not an optimizable static/remote asset (see next.config.ts)
           <img
@@ -87,12 +87,12 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
           />
         ) : (
           <div
-            className={`flex h-6 w-6 items-center justify-center rounded-lg ${
+            className={`flex h-1/3 w-1/3 items-center justify-center rounded-lg ${
               isAvailable ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
             }`}
             aria-hidden="true"
           >
-            <Utensils className="h-3.5 w-3.5" />
+            <Utensils className="h-1/2 w-1/2" />
           </div>
         )}
         {!isAvailable && (

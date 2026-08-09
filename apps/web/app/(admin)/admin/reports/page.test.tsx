@@ -294,10 +294,8 @@ describe('AdminReportsPage', () => {
     expect(screen.getByRole('columnheader', { name: 'Status' })).toBeInTheDocument();
     expect(screen.queryByText('Total Ingredient Weight (KG)')).not.toBeInTheDocument();
 
-    // Totals appear as a final row inside each table, matching each table's own totals.
-    expect(screen.getAllByText('Total')).toHaveLength(2);
-    expect(screen.getByText(11.32)).toBeInTheDocument();
-    expect(screen.getByText(700)).toBeInTheDocument();
+    // TASK 209.14 — total rows underneath each table are removed entirely, no combined total either.
+    expect(screen.queryByText('Total')).not.toBeInTheDocument();
   });
 
   it('shows the missing-conversion warning when excluded_ingredient_count > 0, and omits it when zero', () => {

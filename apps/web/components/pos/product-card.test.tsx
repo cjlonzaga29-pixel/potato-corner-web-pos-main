@@ -170,6 +170,20 @@ describe('ProductCard', () => {
     });
   });
 
+  // Task 209.14 — cards were long horizontal rectangles at typical grid
+  // column widths (short fixed min-height vs. a much wider column). Swapping
+  // to an aspect-ratio-driven box (`self-start` instead of `h-full`, so the
+  // grid's row-stretch never overrides it) gives a near-square tile with the
+  // image on top instead.
+  it('uses a near-square box/tile presentation instead of a stretched full-height rectangle', () => {
+    render(<Harness onTap={vi.fn()} />);
+
+    const card = screen.getByRole('button', { name: /Regular Fries/ });
+    expect(card).toHaveClass('app-pos-card');
+    expect(card).toHaveClass('self-start');
+    expect(card).not.toHaveClass('h-full');
+  });
+
   it('marks the card unavailable and keeps it keyboard-focusable when not-ready', () => {
     const onTap = vi.fn();
     const notReady = variant({ live_ready: false });

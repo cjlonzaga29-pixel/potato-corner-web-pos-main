@@ -74,9 +74,6 @@
     /* POS terminal product tile height and cart/checkout panel width — same
      * continuous-scaling treatment as the tokens above. */
     --app-pos-card-min-height: clamp(100px, 88px + 1vw, 116px);
-    /* Task 209.7 — product image area, ~46% of the card's min-height so
-     * the photo stays a compact accent rather than dominating the tile. */
-    --app-pos-card-image-height: clamp(46px, 40px + 0.5vw, 54px);
     --app-pos-cart-width: 30%;
   }
 
@@ -104,7 +101,6 @@
       --app-kpi-value-size: 1.75rem;
       --app-icon-size: 1rem;
       --app-pos-card-min-height: 90px;
-      --app-pos-card-image-height: 42px;
       --app-pos-cart-width: 30%;
     }
   }
@@ -141,7 +137,6 @@
     --app-kpi-value-size: 2.25rem;
     --app-icon-size: 1.25rem;
     --app-pos-card-min-height: 122px;
-    --app-pos-card-image-height: 56px;
     --app-pos-cart-width: 30%;
   }
 
@@ -160,7 +155,6 @@
     --app-table-row-height: 2.875rem;
     --app-dialog-padding: 1.25rem;
     --app-pos-card-min-height: 108px;
-    --app-pos-card-image-height: 50px;
     --app-pos-cart-width: 32%;
   }
 
@@ -176,7 +170,6 @@
     --app-dialog-padding: 1rem;
     --app-title-size: 1.375rem;
     --app-pos-card-min-height: 92px;
-    --app-pos-card-image-height: 44px;
   }
 
   .dark {
@@ -404,11 +397,20 @@
   /* POS terminal product tile min-height and the desktop cart/checkout panel width — density-aware equivalents of the old hardcoded `min-h-[104px]` / `lg:w-[30%]`. */
   .app-pos-card {
     min-height: var(--app-pos-card-min-height);
+    /* Task 209.14 — near-square box/tile instead of a wide short rectangle.
+     * `height: auto` (not stretched by the grid, see product-card.tsx's
+     * `self-start`) means this is a preferred size only: a card whose
+     * content genuinely needs more room (e.g. the unavailable-reason
+     * message) still grows past it instead of clipping. */
+    aspect-ratio: 4 / 5;
   }
 
-  /* Task 209.7 — POS product tile image area, density-aware like the card's own min-height above. */
+  /* Task 209.7/209.14 — POS product tile image area occupies the upper
+   * portion of the box as a proportion of the card's own height (not a
+   * fixed density-tier pixel value), so it scales with the aspect-ratio
+   * box above at every density tier automatically. */
   .app-pos-card-image {
-    height: var(--app-pos-card-image-height);
+    flex: 0 0 55%;
   }
 
   .app-pos-cart-width {

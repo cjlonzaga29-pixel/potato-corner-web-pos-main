@@ -114,8 +114,8 @@ export const PaymentFooter = memo(function PaymentFooter({
   onCharge,
 }: PaymentFooterProps) {
   return (
-    <div className="sticky bottom-0 z-10 space-y-2.5 border-t bg-card p-3 lg:static">
-      <div className="space-y-1 text-sm" aria-label="Order totals">
+    <div className="sticky bottom-0 z-10 space-y-2.5 border-t bg-card p-3 lg:static lg:space-y-1.5 lg:p-2.5">
+      <div className="space-y-0.5 text-sm lg:space-y-0" aria-label="Order totals">
         <div className="flex justify-between">
           <span className="text-muted-foreground">Subtotal</span>
           <span className="tabular-nums">{formatPeso(subtotal)}</span>
@@ -130,8 +130,8 @@ export const PaymentFooter = memo(function PaymentFooter({
           <span>VAT (12%)</span>
           <span className="tabular-nums">{formatPeso(vatAmount)}</span>
         </div>
-        <Separator className="my-1.5" />
-        <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-2.5 py-1.5">
+        <Separator className="my-1.5 lg:my-1" />
+        <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-2.5 py-1.5 lg:py-1">
           <span className="text-sm font-semibold">Total</span>
           <span className="flex items-center gap-1.5 text-xl font-bold tabular-nums text-primary">
             <Receipt className="h-4 w-4 text-primary/70" aria-hidden="true" />
@@ -144,26 +144,27 @@ export const PaymentFooter = memo(function PaymentFooter({
         <Button
           type="button"
           variant="outline"
-          className="touch-target w-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive"
+          className="app-control w-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive"
           onClick={onOpenVoidRefund}
         >
           Void / Refund Sale
         </Button>
       )}
 
-      {/* Task 209.8 — Payment Method surfaces before Discount Type: the cashier picks how the customer is paying first, then applies any discount on top of that. Purely a visual reorder; onPaymentMethodChange/onDiscountTypeChange and every value they carry are unchanged. */}
+      {/* Task 209.8 — Payment Method surfaces before Discount Type: the cashier picks how the customer is paying first, then applies any discount on top of that. Purely a visual reorder; onPaymentMethodChange/onDiscountTypeChange and every value they carry are unchanged.
+          Task 209.14 — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-11/h-9, same pattern as the terminal page's category filter tabs. */}
       <Tabs value={paymentMethod} onValueChange={(v) => onPaymentMethodChange(v as 'cash' | 'gcash' | 'maya' | 'other')}>
-        <TabsList className="h-11 w-full">
-          <TabsTrigger value="cash" className="h-9 flex-1">
+        <TabsList className="app-control w-full items-stretch">
+          <TabsTrigger value="cash" className="h-full flex-1">
             Cash
           </TabsTrigger>
-          <TabsTrigger value="gcash" className="h-9 flex-1" disabled={!isOnline}>
+          <TabsTrigger value="gcash" className="h-full flex-1" disabled={!isOnline}>
             GCash
           </TabsTrigger>
-          <TabsTrigger value="maya" className="h-9 flex-1" disabled={!isOnline}>
+          <TabsTrigger value="maya" className="h-full flex-1" disabled={!isOnline}>
             Maya
           </TabsTrigger>
-          <TabsTrigger value="other" className="h-9 flex-1" disabled={!isOnline}>
+          <TabsTrigger value="other" className="h-full flex-1" disabled={!isOnline}>
             Other
           </TabsTrigger>
         </TabsList>
@@ -173,7 +174,7 @@ export const PaymentFooter = memo(function PaymentFooter({
       )}
 
       <Select value={discountType} onValueChange={(v) => onDiscountTypeChange(v as DiscountChoice)}>
-        <SelectTrigger className="touch-target">
+        <SelectTrigger className="app-control">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -188,13 +189,13 @@ export const PaymentFooter = memo(function PaymentFooter({
       {(discountType === 'pwd' || discountType === 'senior_citizen') && (
         <>
           <Input
-            className="touch-target"
+            className="app-control"
             placeholder="PWD / Senior Citizen ID number"
             value={discountIdReference}
             onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
           />
           <Card className="rounded-lg shadow-none">
-            <CardContent className="space-y-3 p-3">
+            <CardContent className="space-y-3 p-3 lg:space-y-2 lg:p-2.5">
               {discountProofKey ? (
                 <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
                   <span className="flex min-w-0 items-center gap-1.5">
@@ -218,7 +219,7 @@ export const PaymentFooter = memo(function PaymentFooter({
       )}
       {discountType === 'promotional' && (
         <Input
-          className="touch-target"
+          className="app-control"
           type="number"
           min={0}
           placeholder="Promo discount amount"
@@ -230,7 +231,7 @@ export const PaymentFooter = memo(function PaymentFooter({
       {paymentMethod === 'cash' && (
         <div className="space-y-1">
           <Input
-            className="touch-target"
+            className="app-control"
             type="number"
             min={0}
             placeholder="Cash tendered"
@@ -267,13 +268,13 @@ export const PaymentFooter = memo(function PaymentFooter({
       )}
 
       {chargeError && (
-        <Alert variant="destructive" className="px-3 py-2" role="alert">
+        <Alert variant="destructive" className="px-3 py-2 lg:py-1.5" role="alert">
           <AlertDescription className="text-xs">{chargeError}</AlertDescription>
         </Alert>
       )}
 
       {chargeDisabledReason && (
-        <Alert className="border-none bg-muted px-3 py-2" role="status" aria-live="polite">
+        <Alert className="border-none bg-muted px-3 py-2 lg:py-1.5" role="status" aria-live="polite">
           <AlertDescription className="text-sm font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
         </Alert>
       )}

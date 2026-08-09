@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { transactionResponseSchema } from '@potato-corner/shared';
 import { UnitConversionError } from '../product-components/unit-conversion.util.js';
+import { inventoryStockLockId } from '../../lib/pg-lock.js';
 
 vi.mock('../../lib/notify.js', () => ({
   notifyBranch: vi.fn(),
@@ -2144,6 +2145,28 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     );
   });
 
+  // Task 209.30 — sale deduction must take the same branch-scoped advisory
+  // lock as the manual inventory path (universal-inventory.repository.ts's
+  // lockAndGetStock), not the bare item-only key it used before.
+  it('takes the advisory lock on the canonical branch-scoped key (matches the manual inventory path)', async () => {
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
+    ] as never);
+    inventoryStockLevels['item-flour'] = 10;
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
+      id: 'stock-1',
+      quantityOnHand: decimal(8),
+      lowStockThreshold: null,
+      criticalThreshold: null,
+    } as never);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    const expectedLockId = inventoryStockLockId('branch-1', 'item-flour');
+    const lockCalls = vi.mocked(prisma.$executeRaw).mock.calls.map((call) => call[1]);
+    expect(lockCalls).toContain(expectedLockId);
+  });
+
   it('rejects with INSUFFICIENT_STOCK and records no movement when InventoryStock cannot cover the sale', async () => {
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([
       { inventoryItemId: 'item-flour', quantity: 5, baseUnitId: 'unit-g' },
@@ -2196,6 +2219,94 @@ describe('transactionsService.createTransaction — branch inventory cutover led
       }),
       expect.anything(),
     );
+
+    // Task 209.30 — reversal must take the same canonical branch-scoped
+    // lock key as the sale deduction and the manual inventory path.
+    const expectedLockId = inventoryStockLockId('branch-1', 'item-flour');
+    const lockCalls = vi.mocked(prisma.$executeRaw).mock.calls.map((call) => call[1]);
+    expect(lockCalls).toContain(expectedLockId);
+  });
+
+  // Task 209.31 — the stockTotals reversal pass must acquire every
+  // InventoryStock advisory lock in sorted order up front, mirroring
+  // deductInventoryForSale's pattern, instead of locking/reading/writing one
+  // item at a time in Map-insertion order (a reversal racing a sale or
+  // another reversal over an overlapping item set could otherwise deadlock).
+  it('acquires reversal advisory locks in sorted order, all before any InventoryStock read', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+
+    // Insertion order deliberately unsorted (sugar, flour, butter) so a
+    // Map-insertion-order bug would lock in that same wrong order instead of
+    // the required sorted order (butter, flour, sugar).
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-sugar', quantity: 1, baseUnitId: 'unit-g' }],
+      },
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }],
+      },
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-butter', quantity: 3, baseUnitId: 'unit-g' }],
+      },
+    ] as never);
+
+    const stockOnHand: Record<string, number> = { 'item-sugar': 5, 'item-flour': 8, 'item-butter': 3 };
+    vi.mocked(prisma.inventoryStock.findUnique).mockImplementation((async (args: unknown) => {
+      const call = args as { where: { branchId_inventoryItemId: { inventoryItemId: string } } };
+      const id = call.where.branchId_inventoryItemId.inventoryItemId;
+      return { quantityOnHand: decimal(stockOnHand[id]) };
+    }) as never);
+    vi.mocked(prisma.inventoryStock.update).mockImplementation((async (args: unknown) => {
+      const call = args as {
+        where: { branchId_inventoryItemId: { inventoryItemId: string } };
+        data: { quantityOnHand: { increment: number } };
+      };
+      const id = call.where.branchId_inventoryItemId.inventoryItemId;
+      const after = stockOnHand[id] + call.data.quantityOnHand.increment;
+      stockOnHand[id] = after;
+      return { id: `stock-${id}`, quantityOnHand: decimal(after) };
+    }) as never);
+
+    await transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null);
+
+    // Same canonical helper as Task 209.30, one lock per unique item.
+    const sortedIds = ['item-butter', 'item-flour', 'item-sugar'];
+    const lockCalls = vi.mocked(prisma.$executeRaw).mock;
+    const lockCallOrders = sortedIds.map((id) => {
+      const lockId = inventoryStockLockId('branch-1', id);
+      const matches = lockCalls.calls
+        .map((call, index) => ({ call, index }))
+        .filter(({ call }) => call[1] === lockId);
+      expect(matches).toHaveLength(1);
+      return lockCalls.invocationCallOrder[matches[0].index];
+    });
+
+    // Sorted ascending by inventoryItemId (butter, flour, sugar) — not
+    // insertion order (sugar, flour, butter).
+    expect(lockCallOrders[0]).toBeLessThan(lockCallOrders[1]);
+    expect(lockCallOrders[1]).toBeLessThan(lockCallOrders[2]);
+
+    // All three locks acquired before the first InventoryStock read.
+    const firstReadOrder = vi.mocked(prisma.inventoryStock.findUnique).mock.invocationCallOrder[0];
+    expect(Math.max(...lockCallOrders)).toBeLessThan(firstReadOrder);
+
+    // Reversal quantity math is unchanged — each item still increments by
+    // exactly its snapshot quantity.
+    expect(stockOnHand['item-sugar']).toBe(6);
+    expect(stockOnHand['item-flour']).toBe(10);
+    expect(stockOnHand['item-butter']).toBe(6);
   });
 });
 

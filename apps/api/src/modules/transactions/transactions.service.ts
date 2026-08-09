@@ -40,7 +40,7 @@ import { productReadinessService } from '../product-readiness/product-readiness.
 import type { ProductVariantReadinessResult } from '../product-readiness/product-readiness.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
-import { hashToLockId } from '../../lib/pg-lock.js';
+import { hashToLockId, inventoryStockLockId } from '../../lib/pg-lock.js';
 import { sha256Hex } from '../../lib/hash.js';
 import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
 import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
@@ -846,9 +846,12 @@ async function deductInventoryForSale(
   // One pg_advisory_xact_lock call per ingredient (same primitive as
   // before), now taken up front in sorted order before any read — every
   // concurrent sale touching an overlapping ingredient set serializes on
-  // this same lock order instead of racing.
+  // this same lock order instead of racing. Branch-scoped key (matches
+  // universal-inventory.repository.ts's lockAndGetStock) so a sale
+  // deduction and a manual stock operation against the same branch+item
+  // always contend on the same advisory lock.
   for (const inventoryItemId of inventoryItemIds) {
-    const lockId = hashToLockId(sha256Hex(inventoryItemId));
+    const lockId = inventoryStockLockId(branchId, inventoryItemId);
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
   }
 
@@ -1043,10 +1046,19 @@ async function reverseInventoryForTransaction(
     );
   }
 
-  for (const [inventoryItemId, { quantity, baseUnitId }] of stockTotals) {
-    const lockId = hashToLockId(sha256Hex(inventoryItemId));
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+  // Deterministic order (sorted by inventoryItemId) for lock acquisition,
+  // same pattern as deductInventoryForSale — every InventoryStock lock is
+  // taken up front in sorted order before any read, so a reversal racing a
+  // sale (or another reversal) against an overlapping item set serializes on
+  // one consistent lock order instead of risking a Postgres deadlock.
+  const sortedStockEntries = [...stockTotals.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
+  for (const [inventoryItemId] of sortedStockEntries) {
+    const lockId = inventoryStockLockId(branchId, inventoryItemId);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+  }
+
+  for (const [inventoryItemId, { quantity, baseUnitId }] of sortedStockEntries) {
     const stock = await tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
     const quantityBefore = stock?.quantityOnHand ?? new Prisma.Decimal(0);
 

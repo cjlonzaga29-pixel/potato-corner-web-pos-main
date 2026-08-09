@@ -1,7 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { hashToLockId } from '../../lib/pg-lock.js';
-import { sha256Hex } from '../../lib/hash.js';
+import { inventoryStockLockId } from '../../lib/pg-lock.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -257,7 +256,7 @@ export const universalInventoryRepository = {
    * transactions.service.ts's deductInventoryForSale).
    */
   async lockAndGetStock(branchId: string, inventoryItemId: string, tx: Prisma.TransactionClient) {
-    const lockId = hashToLockId(sha256Hex(`${branchId}:${inventoryItemId}`));
+    const lockId = inventoryStockLockId(branchId, inventoryItemId);
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
     return tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
   },

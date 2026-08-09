@@ -57,4 +57,17 @@ describe('middleware /login redirect preserves returnTo', () => {
 
     expect(response.headers.get('location')).toBeNull();
   });
+
+  it('bounds the refresh fetch with an abort signal and fails open when it times out, instead of hanging the invocation', async () => {
+    fetchMock.mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError'));
+
+    const request = makeRequest('https://app.potatocorner.test/supervisor/reports', 'refresh_token=some-token');
+    const response = await middleware(request);
+
+    expect(response.headers.get('location')).toBeNull(); // same fail-open path as any transient failure
+    expect(fetchMock).toHaveBeenCalledTimes(2); // retried once, per the existing transient-failure path
+    for (const [, init] of fetchMock.mock.calls) {
+      expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 });

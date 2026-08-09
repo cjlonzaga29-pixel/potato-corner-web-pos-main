@@ -94,6 +94,12 @@ interface RefreshResult {
 }
 
 const REFRESH_RETRY_DELAY_MS = 300;
+// Vercel kills the whole middleware invocation at 25s (MIDDLEWARE_INVOCATION_TIMEOUT)
+// if it hasn't responded yet. Without a bound here, a slow/cold-starting backend
+// (e.g. Render spinning back up) leaves this fetch — and the retry below — hanging
+// past that limit instead of falling through to the existing transientError path.
+// Two attempts at this ceiling plus the retry delay stay well under 25s.
+const REFRESH_FETCH_TIMEOUT_MS = 8000;
 
 async function callRefreshEndpoint(
   cookie: string,
@@ -104,6 +110,7 @@ async function callRefreshEndpoint(
       method: 'POST',
       headers: { 'Content-Type': 'application/json', cookie },
       body: JSON.stringify({ device_id: deviceId ?? '' }),
+      signal: AbortSignal.timeout(REFRESH_FETCH_TIMEOUT_MS),
     });
     return { response, setCookies: response.headers.getSetCookie?.() ?? [] };
   } catch {

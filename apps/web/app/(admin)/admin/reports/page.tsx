@@ -29,6 +29,7 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { DailySalesDrilldown } from '@/components/reports/daily-sales-drilldown';
+import { DiscountComplianceDrilldown } from '@/components/reports/discount-compliance-drilldown';
 import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
 import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
 import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
@@ -181,21 +182,40 @@ const fraudAlertSummaryColumns: ColumnDef<FraudAlertSummaryReportRow>[] = [
   { accessorKey: 'created_at', header: 'Created', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
-const discountComplianceColumns: ColumnDef<DiscountComplianceReportRow>[] = [
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { id: 'discount_type', header: 'Discount Type', cell: ({ row }) => humanize(row.original.discount_type) },
-  { accessorKey: 'transaction_count', header: 'Transactions' },
-  {
-    accessorKey: 'total_discount_amount',
-    header: 'Discount Amount',
-    cell: ({ row }) => formatCurrency(row.original.total_discount_amount),
-  },
-  {
-    accessorKey: 'total_vat_exempt_amount',
-    header: 'VAT Exempt Amount',
-    cell: ({ row }) => formatCurrency(row.original.total_vat_exempt_amount),
-  },
-];
+/**
+ * Task 209.16 — "View Transactions" opens DiscountComplianceDrilldown, the
+ * per-transaction breakdown (receipt #, cashier, customer ID/reference,
+ * Proof Available/View Proof) behind this branch+discount_type aggregate
+ * row. This aggregate table has no row-level proof data of its own by
+ * design (see DiscountComplianceReportRowSchema) — the drill-down is what
+ * actually answers "is there a discount ID photo for this row".
+ */
+function getDiscountComplianceColumns(onViewTransactions: (row: DiscountComplianceReportRow) => void): ColumnDef<DiscountComplianceReportRow>[] {
+  return [
+    { accessorKey: 'branch_name', header: 'Branch' },
+    { id: 'discount_type', header: 'Discount Type', cell: ({ row }) => humanize(row.original.discount_type) },
+    { accessorKey: 'transaction_count', header: 'Transactions' },
+    {
+      accessorKey: 'total_discount_amount',
+      header: 'Discount Amount',
+      cell: ({ row }) => formatCurrency(row.original.total_discount_amount),
+    },
+    {
+      accessorKey: 'total_vat_exempt_amount',
+      header: 'VAT Exempt Amount',
+      cell: ({ row }) => formatCurrency(row.original.total_vat_exempt_amount),
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => (
+        <Button type="button" variant="outline" size="sm" onClick={() => onViewTransactions(row.original)}>
+          View Transactions
+        </Button>
+      ),
+    },
+  ];
+}
 
 const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
   { accessorKey: 'branch_name', header: 'Branch' },
@@ -405,6 +425,7 @@ function AdminReportsPageContent() {
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [drilldownRow, setDrilldownRow] = useState<DailySalesReportRow | null>(null);
+  const [discountDrilldownRow, setDiscountDrilldownRow] = useState<DiscountComplianceReportRow | null>(null);
 
   const requestExport = useRequestExport();
 
@@ -701,7 +722,7 @@ function AdminReportsPageContent() {
               </div>
               <DataTable
                 stickyHeader
-                columns={discountComplianceColumns}
+                columns={getDiscountComplianceColumns(setDiscountDrilldownRow)}
                 data={discountCompliance.data?.data ?? []}
                 isLoading={discountCompliance.isLoading}
                 emptyState={<EmptyState title="No discounted transactions in this range" />}
@@ -820,6 +841,16 @@ function AdminReportsPageContent() {
         branchId={drilldownRow?.branch_id ?? null}
         branchName={drilldownRow?.branch_name ?? ''}
         reportDate={drilldownRow?.report_date ?? ''}
+      />
+
+      <DiscountComplianceDrilldown
+        open={discountDrilldownRow !== null}
+        onOpenChange={(o) => !o && setDiscountDrilldownRow(null)}
+        branchId={discountDrilldownRow?.branch_id ?? null}
+        branchName={discountDrilldownRow?.branch_name ?? ''}
+        discountType={discountDrilldownRow?.discount_type ?? null}
+        dateFrom={dateFrom}
+        dateTo={dateTo}
       />
     </div>
   );

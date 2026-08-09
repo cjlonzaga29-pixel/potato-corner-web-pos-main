@@ -1102,10 +1102,31 @@ export const transactionsService = {
         decrypted = true;
       }
 
-      // Every other money field returned by this module goes through
-      // .toNumber() (see toTransactionResponse above) — this one was missed,
-      // leaving a raw Prisma Decimal in the JSON response instead of a number.
-      return { ...row, discountAmount: row.discountAmount.toNumber(), discountCustomerId, fraudFlagged };
+      // Task 209.16 — built field-by-field rather than `...row` so two raw
+      // values never leak into the response: `discountProofKey` (the report's
+      // privacy rule is proof existence only, never the storage key — same
+      // has_discount_proof pattern GET /transactions already uses) and
+      // `discountCustomerIdEncrypted` (the ciphertext itself; only the
+      // conditionally-decrypted discountCustomerId above should ever leave
+      // the server).
+      return {
+        id: row.id,
+        branchId: row.branchId,
+        transactionNumber: row.transactionNumber,
+        cashierId: row.cashierId,
+        discountType: row.discountType,
+        // Every other money field returned by this module goes through
+        // .toNumber() (see toTransactionResponse above) — this one was
+        // missed, leaving a raw Prisma Decimal in the JSON response instead
+        // of a number.
+        discountAmount: row.discountAmount.toNumber(),
+        discountCustomerId,
+        discountCustomerIdHash: row.discountCustomerIdHash,
+        hasDiscountProof: Boolean(row.discountProofKey),
+        discountProofType: row.discountProofType,
+        fraudFlagged,
+        createdAt: row.createdAt,
+      };
     });
 
     if (decrypted) {

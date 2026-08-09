@@ -138,6 +138,43 @@ export const discountAuditQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
+/**
+ * Task 209.16 — GET /api/transactions/discount-audit's per-transaction row
+ * (transactionsService.getDiscountAuditTrail), which is what powers the
+ * Discount Compliance report's Admin drill-down. Field names stay camelCase
+ * (unlike transactionResponseSchema's snake_case) because this endpoint
+ * returns the service's row shape as-is rather than going through a
+ * dedicated toXResponse mapper.
+ *
+ * discountCustomerId is populated only for a super_admin actor (see the
+ * service) — null for every other role, by design, not a bug. hasDiscountProof
+ * is an existence flag only, same as transactionResponseSchema's
+ * has_discount_proof: the raw discount_proof_key never leaves the server.
+ */
+export const discountAuditTransactionRowSchema = z.object({
+  id: z.uuid(),
+  branchId: z.uuid(),
+  transactionNumber: z.string(),
+  cashierId: z.uuid(),
+  discountType: z.enum(discountTypeValues).nullable(),
+  discountAmount: z.number(),
+  discountCustomerId: z.string().nullable(),
+  discountCustomerIdHash: z.string().nullable(),
+  hasDiscountProof: z.boolean(),
+  discountProofType: z.enum(imageProofTypeValues).nullable(),
+  fraudFlagged: z.boolean(),
+  createdAt: z.iso.datetime(),
+});
+export type DiscountAuditTransactionRow = z.infer<typeof discountAuditTransactionRowSchema>;
+
+export const discountAuditTrailResponseSchema = z.object({
+  data: z.array(discountAuditTransactionRowSchema),
+  total: z.number().int(),
+  page: z.number().int(),
+  limit: z.number().int(),
+});
+export type DiscountAuditTrailResponse = z.infer<typeof discountAuditTrailResponseSchema>;
+
 /** Task 93 — the sale-time snapshot of one Product Option selected on a transaction line, as returned in transactionItemResponseSchema.selected_options. */
 export const transactionItemSelectedOptionSchema = z.object({
   option_id: z.uuid(),

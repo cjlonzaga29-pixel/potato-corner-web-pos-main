@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   CreateTransactionInput,
+  DiscountAuditTrailResponse,
   DiscountProofResponse,
   DiscountProofUploadResponse,
   PaymentProofResponse,
@@ -213,6 +214,42 @@ export function useDiscountProof(transactionId: string | null, enabled: boolean)
       return response.data;
     },
     enabled: Boolean(transactionId) && enabled,
+  });
+}
+
+export interface DiscountAuditTrailFilters {
+  branchId?: string;
+  discountType?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Task 209.16 — GET /api/transactions/discount-audit (super_admin/supervisor
+ * only), the existing per-transaction audit trail behind the Discount
+ * Compliance report's Admin drill-down (see discount-compliance-drilldown.tsx).
+ * Disabled until a branchId is supplied, same "don't fetch org-wide by
+ * accident" guard as useTransactions.
+ */
+export function useDiscountAuditTrail(filters: DiscountAuditTrailFilters, enabled: boolean) {
+  return useQuery({
+    queryKey: ['transactions', 'discount-audit', filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters.branchId) params.set('branch_id', filters.branchId);
+      if (filters.discountType) params.set('discount_type', filters.discountType);
+      if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+      if (filters.dateTo) params.set('date_to', filters.dateTo);
+      params.set('page', String(filters.page ?? 1));
+      params.set('limit', String(filters.limit ?? 100));
+      const response = await apiClient<DiscountAuditTrailResponse>(`/api/transactions/discount-audit?${params.toString()}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load discount audit trail'));
+      return response.data;
+    },
+    enabled: Boolean(filters.branchId) && enabled,
+    placeholderData: keepPreviousData,
   });
 }
 

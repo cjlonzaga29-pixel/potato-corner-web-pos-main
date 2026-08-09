@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { Camera, Check, ImageIcon, Loader2, RotateCcw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -84,9 +84,34 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     setIsCameraActive(false);
   }
 
+  // Task 209.16 — a cashier can close the payment/discount dialog (Esc,
+  // backdrop click, completing the sale) while the live camera is still
+  // active without ever hitting Cancel. Without this, the MediaStream (and
+  // the device's camera light) keeps running after the component unmounts.
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    };
+  }, []);
+
   async function startCamera() {
     setCameraError(null);
     setValidationError(null);
+
+    // Task 209.16 — getUserMedia is unavailable by spec on an insecure
+    // origin (plain http, not localhost); without this check that shows up
+    // to the cashier as the generic "not supported" message below, which is
+    // misleading on a branch terminal that's simply not on HTTPS yet.
+    // Checked against `=== false` specifically (not just falsy) because
+    // every real browser always sets this to a boolean, but jsdom (tests)
+    // leaves it `undefined` — that must not be treated as insecure.
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      setCameraStatus('unsupported');
+      setCameraError('Camera requires a secure HTTPS connection. Use Upload from Gallery instead.');
+      captureFallbackRef.current?.click();
+      return;
+    }
 
     if (cameraStatus === 'permission_denied' || cameraStatus === 'unsupported' || !hasCameraSupport()) {
       // Already known bad (or never supported) — go straight to the
@@ -102,7 +127,10 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      // Task 209.16 — `ideal` (not `exact`) so a device with only a
+      // front-facing camera (most laptop/desktop POS terminals) still opens
+      // the camera it has instead of throwing OverconstrainedError.
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -121,6 +149,15 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
       if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
         setCameraStatus('permission_denied');
         setCameraError('Camera permission denied — switching to the fallback camera/upload picker.');
+      } else if (name === 'NotFoundError') {
+        setCameraStatus('unsupported');
+        setCameraError('No camera found on this device — switching to the fallback camera/upload picker.');
+      } else if (name === 'NotReadableError') {
+        setCameraStatus('unsupported');
+        setCameraError('Camera is already in use or unavailable — switching to the fallback camera/upload picker.');
+      } else if (name === 'OverconstrainedError') {
+        setCameraStatus('unsupported');
+        setCameraError('Requested camera unavailable — switching to the fallback camera/upload picker.');
       } else {
         setCameraStatus('unsupported');
         setCameraError('Camera not supported on this device or browser — switching to the fallback camera/upload picker.');
@@ -130,9 +167,28 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
   }
 
   async function handleCapture() {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
+    // Task 209.16 — `createImageBitmap(video)` used to drive the capture
+    // here; on several real-world browsers/webviews it either throws or
+    // silently grabs a blank frame for a *live* <video> source, especially
+    // if called before the stream has decoded a frame. Drawing the video
+    // straight into a canvas sized from its actual current dimensions is
+    // universally supported and is the concrete "Take Photo does not work"
+    // fix — a zero-sized video (stream not ready yet) is now reported as a
+    // camera-not-ready state instead of silently uploading an empty image.
+    if (!video.videoWidth || !video.videoHeight) {
+      setCameraError('Camera is still starting up — wait a moment and try again.');
+      return;
+    }
     try {
-      const canvas = await drawToCanvas(videoRef.current);
+      const scale = Math.min(1, MAX_DIMENSION / Math.max(video.videoWidth, video.videoHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas 2D context unavailable');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const blob = await compressCanvas(canvas);
       const file = new File([blob], `capture-${Date.now()}.jpg`, { type: 'image/jpeg' });
       setPendingFile(file);

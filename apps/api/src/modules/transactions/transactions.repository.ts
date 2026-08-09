@@ -131,10 +131,18 @@ export const transactionsRepository = {
           id: true,
           branchId: true,
           transactionNumber: true,
+          cashierId: true,
           discountType: true,
           discountAmount: true,
           discountCustomerIdEncrypted: true,
           discountCustomerIdHash: true,
+          // Task 209.16 — existence flag + capture mode for the Discount
+          // Compliance report's Proof Available/View Proof column, same
+          // has_discount_proof pattern toTransactionResponse already uses
+          // elsewhere. The signed URL itself is still only ever fetched
+          // lazily via GET /:transactionId/discount-proof, never from here.
+          discountProofKey: true,
+          discountProofType: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'desc' },

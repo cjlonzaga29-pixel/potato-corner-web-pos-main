@@ -1,0 +1,140 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, cleanup } from '@testing-library/react';
+
+const mockUseDiscountAuditTrail = vi.fn();
+const mockUseDiscountProof = vi.fn();
+const mockUseEmployees = vi.fn();
+
+vi.mock('@/hooks/queries/use-transactions', () => ({
+  useDiscountAuditTrail: (...args: unknown[]) => mockUseDiscountAuditTrail(...args),
+  useDiscountProof: (...args: unknown[]) => mockUseDiscountProof(...args),
+}));
+
+vi.mock('@/hooks/queries/use-employees', () => ({
+  useEmployees: (...args: unknown[]) => mockUseEmployees(...args),
+}));
+
+const { DiscountComplianceDrilldown } = await import('./discount-compliance-drilldown');
+
+const PWD_ROW = {
+  id: 'txn-1',
+  branchId: 'branch-1',
+  transactionNumber: 'PC-GMA-001-20260731-000001',
+  cashierId: 'cashier-1',
+  discountType: 'pwd',
+  discountAmount: 20,
+  discountCustomerId: 'PWD-12345',
+  discountCustomerIdHash: 'hashed(PWD-12345)',
+  hasDiscountProof: true,
+  discountProofType: 'live_capture',
+  fraudFlagged: false,
+  createdAt: '2026-07-30T23:07:29.056Z',
+};
+
+const SENIOR_ROW = {
+  ...PWD_ROW,
+  id: 'txn-2',
+  transactionNumber: 'PC-GMA-001-20260731-000002',
+  discountType: 'senior_citizen',
+  discountCustomerId: null,
+  hasDiscountProof: false,
+  discountProofType: null,
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockUseDiscountAuditTrail.mockReturnValue({
+    data: { data: [PWD_ROW, SENIOR_ROW], total: 2, page: 1, limit: 100 },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  });
+  mockUseDiscountProof.mockReturnValue({ data: undefined, isLoading: false, isError: false });
+  mockUseEmployees.mockReturnValue({ data: { employees: [{ id: 'cashier-1', first_name: 'Juan', last_name: 'Cruz' }] } });
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('DiscountComplianceDrilldown', () => {
+  it('renders every discount transaction behind the summary row', () => {
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('PC-GMA-001-20260731-000001')).toBeInTheDocument();
+    expect(screen.getByText('PC-GMA-001-20260731-000002')).toBeInTheDocument();
+  });
+
+  it('resolves the cashier name from the employees lookup', () => {
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('Juan Cruz')).toHaveLength(2);
+  });
+
+  it('shows "Yes · View Proof" only for the row with a captured proof', () => {
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByRole('button', { name: /Yes · View Proof/ })).toHaveLength(1);
+    expect(screen.getAllByText('No')).toHaveLength(1);
+  });
+
+  it('shows the customer ID/reference only when the actor is authorized to see it', () => {
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('PWD-12345')).toBeInTheDocument();
+  });
+
+  it('scopes the query to the given branch, discount type, and date range', () => {
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(mockUseDiscountAuditTrail).toHaveBeenCalledWith(
+      expect.objectContaining({ branchId: 'branch-1', discountType: 'pwd', dateFrom: '2026-07-01', dateTo: '2026-07-31' }),
+      true,
+    );
+  });
+});

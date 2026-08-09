@@ -434,6 +434,14 @@ export function ReportsView() {
 
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSupervisor = useAuthStore((s) => s.user?.role === ROLES.SUPERVISOR);
+  // Task 209.16 — Discount Compliance's Proof Available/View Proof column
+  // and KPIs were supervisor-only; the owner explicitly requires Admin
+  // (super_admin) to see discount ID proof here too. Scoped to just this
+  // tab's `withActions` gate (see getDiscountComplianceColumns below), not
+  // every other `isSupervisor` check in this component — those gate
+  // unrelated actions this task doesn't touch.
+  const isSuperAdmin = useAuthStore((s) => s.user?.role === ROLES.SUPER_ADMIN);
+  const canViewDiscountProof = isSupervisor || isSuperAdmin;
   const requestExport = useRequestExport();
   const [activeTab, setActiveTab] = useState('daily-sales');
   const [refreshDisabled, setRefreshDisabled] = useState(false);
@@ -920,7 +928,7 @@ export function ReportsView() {
             <KpiCard title="Senior Citizen Discounts" value={seniorCitizenDiscounts} isLoading={completedQuery.isLoading} />
             <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
-          {isSupervisor && (
+          {canViewDiscountProof && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <KpiCard title="Proof Available" value={proofAvailableCount} isLoading={completedQuery.isLoading} />
               <KpiCard title="Proof Missing" value={proofMissingCount} isLoading={completedQuery.isLoading} />
@@ -929,7 +937,7 @@ export function ReportsView() {
           )}
           <DataTable
             stickyHeader
-            columns={getDiscountComplianceColumns(isSupervisor, setDiscountProofTransactionId, employeeNames)}
+            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames)}
             data={discountedTransactions}
             isLoading={completedQuery.isLoading}
             isError={completedQuery.isError}

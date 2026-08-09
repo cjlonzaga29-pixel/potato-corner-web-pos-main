@@ -403,6 +403,21 @@
      * content genuinely needs more room (e.g. the unavailable-reason
      * message) still grows past it instead of clipping. */
     aspect-ratio: 4 / 5;
+    /* Task 209.16 — `self-start` only opts the card out of *vertical* grid
+     * stretch; the grid still stretches its *width* to fill the column
+     * track (default `justify-items: stretch`). With no upper bound, a wide
+     * desktop monitor produces a wide column, and `aspect-ratio` above then
+     * scales height right along with it — the actual root cause of the
+     * owner-reported giant product tiles/images (min-height is a floor
+     * only, never a ceiling). Capping width here bounds height too, since
+     * they're locked together by the aspect-ratio; `margin-inline: auto`
+     * keeps the now-narrower-than-its-column card centered in its cell
+     * instead of hugging the left edge. 200px comfortably covers every
+     * tier's own natural width at its own design viewport (so this is a
+     * no-op there) while stopping runaway growth on wider screens.
+     */
+    max-width: 200px;
+    margin-inline: auto;
   }
 
   /* Task 209.7/209.14 — POS product tile image area occupies the upper

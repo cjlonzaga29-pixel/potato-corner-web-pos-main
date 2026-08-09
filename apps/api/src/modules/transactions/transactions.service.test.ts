@@ -1672,10 +1672,13 @@ describe('transactionsService.getDiscountAuditTrail', () => {
       id: 'txn-1',
       branchId: 'branch-1',
       transactionNumber: 'MNL001-20260714-000001',
+      cashierId: 'cashier-1',
       discountType: 'pwd',
       discountAmount: decimal(20),
       discountCustomerIdEncrypted: null,
       discountCustomerIdHash: 'hashed(PWD-12345)',
+      discountProofKey: null,
+      discountProofType: null,
       createdAt: new Date('2026-07-14T10:00:00.000Z'),
       ...overrides,
     };
@@ -1789,6 +1792,40 @@ describe('transactionsService.getDiscountAuditTrail', () => {
     await transactionsService.getDiscountAuditTrail(baseFilters, staffActor, null);
 
     expect(recordAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('reports hasDiscountProof true and never leaks the raw storage key', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountProofKey: 'branch-1/shift-1/proof.webp', discountProofType: 'live_capture' })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data[0]).toMatchObject({ hasDiscountProof: true, discountProofType: 'live_capture' });
+    expect(result.data[0]).not.toHaveProperty('discountProofKey');
+  });
+
+  it('reports hasDiscountProof false when no proof was captured', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountProofKey: null })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data[0]).toMatchObject({ hasDiscountProof: false });
+  });
+
+  it('never returns the raw discountCustomerIdEncrypted ciphertext', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data[0]).not.toHaveProperty('discountCustomerIdEncrypted');
   });
 
   // NOTE: skip/take and the branchId where-clause are actually built inside

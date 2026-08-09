@@ -41,6 +41,12 @@ vi.mock('@/hooks/queries/use-expenses', () => ({
 vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransaction: vi.fn(() => ({ data: undefined })),
   useTransactions: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  useDiscountAuditTrail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  useDiscountProof: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+}));
+
+vi.mock('@/hooks/queries/use-employees', () => ({
+  useEmployees: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({

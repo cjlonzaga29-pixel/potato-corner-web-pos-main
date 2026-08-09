@@ -39,6 +39,12 @@ beforeEach(() => {
     writable: true,
   });
   HTMLVideoElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+  // Task 209.16 — handleCapture now reads the video element's actual
+  // decoded frame size directly (see image-upload.tsx), so tests that
+  // drive a real Capture click need a non-zero size, same as a real camera
+  // stream that has produced at least one frame.
+  Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { value: 1280, configurable: true });
+  Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { value: 720, configurable: true });
 });
 
 afterEach(() => {
@@ -57,7 +63,9 @@ describe('ImageUpload — camera available', () => {
     render(<ImageUpload label="Payment Proof" required onImageSelected={onImageSelected} />);
     fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
 
-    await waitFor(() => expect(getUserMedia).toHaveBeenCalledWith({ video: { facingMode: 'environment' } }));
+    await waitFor(() =>
+      expect(getUserMedia).toHaveBeenCalledWith({ video: { facingMode: { ideal: 'environment' } }, audio: false }),
+    );
     await waitFor(() => expect(screen.getByText('Live capture')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
@@ -65,6 +73,37 @@ describe('ImageUpload — camera available', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Confirm/ }));
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(expect.any(File), 'live_capture'));
+  });
+
+  it('stops the camera stream when the component unmounts without Cancel/Capture', async () => {
+    const stop = vi.fn();
+    const tracks = [{ stop }];
+    getUserMedia.mockResolvedValue({ getTracks: () => tracks });
+
+    const { unmount } = render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+    await waitFor(() => expect(screen.getByText('Live capture')).toBeInTheDocument());
+
+    unmount();
+    expect(stop).toHaveBeenCalled();
+  });
+
+  it('shows a camera-not-ready message instead of capturing a zero-sized frame', async () => {
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { value: 0, configurable: true });
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { value: 0, configurable: true });
+    const tracks = [{ stop: vi.fn() }];
+    getUserMedia.mockResolvedValue({ getTracks: () => tracks });
+    const onImageSelected = vi.fn();
+
+    render(<ImageUpload label="Payment Proof" required onImageSelected={onImageSelected} />);
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+    await waitFor(() => expect(screen.getByText('Live capture')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    await waitFor(() => expect(screen.getByText(/still starting up/i)).toBeInTheDocument());
+    expect(onImageSelected).not.toHaveBeenCalled();
+    // Camera stays active so the cashier can just try Capture again.
+    expect(screen.getByText('Live capture')).toBeInTheDocument();
   });
 });
 
@@ -79,6 +118,18 @@ describe('ImageUpload — camera denied', () => {
     fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
 
     await waitFor(() => expect(screen.getByText(/permission denied/i)).toBeInTheDocument());
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it('labels a NotReadableError (camera already in use) distinctly and falls back', async () => {
+    getUserMedia.mockRejectedValue(new DOMException('busy', 'NotReadableError'));
+    const clickSpy = vi.fn();
+
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    captureFallbackInput().addEventListener('click', clickSpy);
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+
+    await waitFor(() => expect(screen.getByText(/already in use/i)).toBeInTheDocument());
     expect(clickSpy).toHaveBeenCalled();
   });
 });

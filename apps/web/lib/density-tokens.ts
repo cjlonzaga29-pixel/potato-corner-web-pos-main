@@ -65,9 +65,17 @@ export const TOUCH_SAFE_MIN_PX = 44;
  * bucket that has to serve both a touch laptop/2-in-1 (room for 4) and a
  * narrower portrait tablet (room for only 2-3) since density classification
  * doesn't split touch by orientation — 3 is the safe overlap of both ranges.
+ *
+ * Task 209.16 — `comfortable` (>=1800px wide desktop monitors) raised from 5
+ * to 6: at 5 columns the leftover width on a 1920/2560px monitor stretched
+ * each column (and, via `.app-pos-card`'s `aspect-ratio`, its height) far
+ * past every other tier — the actual owner-reported "giant card" complaint.
+ * 6 columns plus the new `.app-pos-card` `max-width` cap (globals.css) is
+ * the fix; this column bump alone isn't sufficient on its own on very wide
+ * monitors, hence the cap.
  */
 export const DENSITY_POS_GRID_COLUMNS: Record<DensityMode, string> = {
-  comfortable: 'grid-cols-5',
+  comfortable: 'grid-cols-6',
   standard: 'grid-cols-5',
   compact: 'grid-cols-5',
   'compact-touch': 'grid-cols-3',

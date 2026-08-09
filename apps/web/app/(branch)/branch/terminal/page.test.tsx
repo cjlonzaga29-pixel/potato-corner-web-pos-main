@@ -2134,4 +2134,27 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     expect(cartPanel).toHaveClass('app-pos-cart-width');
     expect(cartPanel).toHaveClass('min-h-0');
   });
+
+  // Task 209.23 — the owner-reported "cart items barely visible, checkout
+  // eats too much height" complaint. Guards the actual flex contract: the
+  // cart-items list is the ONE region marked flex-1/min-h-0/overflow-y-auto
+  // (so it's what actually shrinks/scrolls under pressure), while the
+  // checkout footer stays shrink-0 (content-sized only, never competing for
+  // the flexible space) — no arbitrary fixed/percentage height split between
+  // the two.
+  it('gives the cart items region flex-1/min-h-0/overflow-y-auto and keeps the checkout footer shrink-0 (content-sized only)', () => {
+    mockMatchMedia({ '(min-width: 1024px)': true });
+    render(<TerminalPage />);
+
+    const cartHeading = screen.getByRole('heading', { name: 'Cart' });
+    const header = cartHeading.parentElement;
+    const itemsRegion = header?.nextElementSibling;
+    expect(itemsRegion).toHaveClass('min-h-0');
+    expect(itemsRegion).toHaveClass('lg:flex-1');
+    expect(itemsRegion).toHaveClass('lg:overflow-y-auto');
+
+    const footer = itemsRegion?.nextElementSibling;
+    expect(footer).toHaveClass('app-pos-footer');
+    expect(footer).toHaveClass('shrink-0');
+  });
 });

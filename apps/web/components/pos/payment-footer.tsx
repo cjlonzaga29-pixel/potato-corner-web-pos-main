@@ -255,7 +255,15 @@ export const PaymentFooter = memo(function PaymentFooter({
             onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
           />
           <Card className="rounded-lg shadow-none">
-            <CardContent className="app-pos-proof-padding space-y-2">
+            {/* Task 209.23 — `CardContent`'s own default `p-4 sm:p-6` (card.tsx)
+                is a plain Tailwind utility class, and `.app-pos-proof-padding`
+                is not one twMerge recognizes as conflicting with it — both
+                would otherwise sit side by side in the DOM with the winner
+                decided by CSS cascade order rather than intent. An inline
+                style has unconditional priority over any class-based rule, so
+                the density token is the only thing that can ever govern this
+                padding. */}
+            <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
               {discountProofKey ? (
                 <ProofSummary label="Discount ID proof attached" previewUrl={discountProofPreviewUrl} onClear={onClearDiscountProof} />
               ) : (
@@ -296,7 +304,7 @@ export const PaymentFooter = memo(function PaymentFooter({
 
       {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
         <Card className="rounded-lg shadow-none">
-          <CardContent className="app-pos-proof-padding space-y-2">
+          <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
             {paymentProofKey ? (
               <ProofSummary label="Payment proof attached" previewUrl={paymentProofPreviewUrl} onClear={onClearProof} />
             ) : (

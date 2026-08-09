@@ -367,8 +367,17 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
             <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-destructive' : 'bg-info')} />
             {mode === 'live_capture' ? 'Live capture' : 'Gallery upload'}
           </div>
+          {/* Task 209.23 — this pending-confirm preview (captured/selected,
+              not yet uploaded) used to render at the photo's full natural
+              size with no cap, unlike the live camera preview below it
+              (already capped via this same token) — the "giant preview"
+              complaint applied here too, since a cashier sees this between
+              every capture and Confirm. Reusing `.app-pos-proof-preview-height`
+              (a max-height) keeps it within the same density-appropriate
+              budget as the live camera; width still scales down with it
+              (no distortion) since the img has no explicit height of its own. */}
           {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}
-          <img src={previewUrl} alt="Preview" className="w-full rounded-md" />
+          <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
 
           {uploadError && (
             <Alert variant="destructive" className="px-3 py-2">

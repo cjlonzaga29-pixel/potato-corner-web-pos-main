@@ -202,6 +202,20 @@ describe('ImageUpload — upload image (gallery)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Confirm/ }));
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(expect.any(File), 'gallery_upload'));
   });
+
+  // Task 209.23 — the pending-confirm preview (captured/selected, awaiting
+  // Retake/Remove/Confirm) used to render at the photo's full natural size
+  // with no cap, unlike the live camera preview just above it in the
+  // component (already capped via this same token — see the
+  // "camera available" describe block above). Reuses the identical token so
+  // this state can never eat more of the cart than an active camera can.
+  it('caps the pending-confirm preview via the same density-aware app-pos-proof-preview-height token as the live camera', async () => {
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile()] } });
+    const preview = await screen.findByAltText('Preview');
+    expect(preview).toHaveClass('app-pos-proof-preview-height');
+  });
 });
 
 describe('ImageUpload — replace image', () => {

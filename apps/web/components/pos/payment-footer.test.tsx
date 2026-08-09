@@ -175,3 +175,26 @@ describe('PaymentFooter — collapsed proof summary (Task 209.20)', () => {
     expect(screen.queryByText('Payment proof attached')).not.toBeInTheDocument();
   });
 });
+
+// Task 209.23 — the discount/payment proof wrapper is shadcn's Card/
+// CardContent, whose own default className already bakes in `p-4 sm:p-6`
+// (card.tsx). `.app-pos-proof-padding` is a plain custom class, not a
+// Tailwind utility twMerge recognizes as conflicting with that default, so
+// merging it in via `cn()` left both paddings sitting on the same element
+// with the winner decided by CSS cascade order instead of the density
+// token. An inline style always wins over any class-based rule regardless
+// of source order, so this guards that the token — not Card's built-in
+// padding — is what actually governs this wrapper's spacing.
+describe('PaymentFooter — proof card padding governed by the density token (Task 209.23)', () => {
+  it('applies --app-pos-proof-padding as an inline style on the discount proof card, overriding CardContent defaults', () => {
+    render(<PaymentFooter {...baseProps()} discountType="pwd" discountProofKey={null} />);
+    const proofCard = screen.getByText('Discount ID Proof').closest('.app-pos-proof-padding');
+    expect(proofCard).toHaveStyle({ padding: 'var(--app-pos-proof-padding)' });
+  });
+
+  it('applies --app-pos-proof-padding as an inline style on the payment proof card, overriding CardContent defaults', () => {
+    render(<PaymentFooter {...baseProps()} paymentMethod="gcash" paymentProofKey={null} />);
+    const proofCard = screen.getByText('Payment Proof').closest('.app-pos-proof-padding');
+    expect(proofCard).toHaveStyle({ padding: 'var(--app-pos-proof-padding)' });
+  });
+});

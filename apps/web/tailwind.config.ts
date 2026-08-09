@@ -4,6 +4,18 @@ import tailwindcssAnimate from 'tailwindcss-animate';
 const config: Config = {
   darkMode: 'class',
   content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}'],
+  /**
+   * Task 209.18 — `DENSITY_POS_GRID_COLUMNS` (lib/density-tokens.ts) assembles
+   * its `grid-cols-N` classes in a file outside the `content` globs above, so
+   * Tailwind's scanner never saw the bare `grid-cols-5`/`grid-cols-6` tokens
+   * and silently never generated those rules — the POS product grid fell
+   * back to a single implicit column at every density tier except mobile/
+   * compact-touch (whose classes happened to already appear literally in a
+   * scanned .tsx file). Safelisting the exact literal set that map can
+   * produce guarantees the CSS ships regardless of which file assembles the
+   * string.
+   */
+  safelist: ['grid-cols-2', 'grid-cols-3', 'grid-cols-5', 'grid-cols-6'],
   theme: {
     container: {
       center: true,

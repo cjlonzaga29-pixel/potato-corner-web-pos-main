@@ -75,6 +75,13 @@
      * continuous-scaling treatment as the tokens above. */
     --app-pos-card-min-height: clamp(100px, 88px + 1vw, 116px);
     --app-pos-cart-width: 30%;
+    /* Task 209.18 — Charge button height. Previously a hardcoded
+     * `min-h-[56px]` on the `pos` Button variant regardless of density,
+     * which is the "Charge unnecessarily 50px+ tall" complaint. Same
+     * clamp/override pattern as --app-control-height, just ~2px taller at
+     * every tier so the strongest CTA still reads as slightly bigger than a
+     * regular control. */
+    --app-pos-cta-height: clamp(2.375rem, 2.2rem + 0.3vw, 2.625rem);
   }
 
   /*
@@ -102,6 +109,7 @@
       --app-icon-size: 1rem;
       --app-pos-card-min-height: 90px;
       --app-pos-cart-width: 30%;
+      --app-pos-cta-height: 2.375rem;
     }
   }
 
@@ -138,6 +146,7 @@
     --app-icon-size: 1.25rem;
     --app-pos-card-min-height: 122px;
     --app-pos-cart-width: 30%;
+    --app-pos-cta-height: 2.75rem;
   }
 
   /*
@@ -156,6 +165,7 @@
     --app-dialog-padding: 1.25rem;
     --app-pos-card-min-height: 108px;
     --app-pos-cart-width: 32%;
+    --app-pos-cta-height: 2.75rem;
   }
 
   :root[data-density='mobile'] {
@@ -170,6 +180,7 @@
     --app-dialog-padding: 1rem;
     --app-title-size: 1.375rem;
     --app-pos-card-min-height: 92px;
+    --app-pos-cta-height: 2.75rem;
   }
 
   .dark {
@@ -430,6 +441,10 @@
 
   .app-pos-cart-width {
     width: var(--app-pos-cart-width);
+  }
+
+  .app-pos-cta {
+    min-height: var(--app-pos-cta-height);
   }
 
   /* Opt-in escape hatch for one-off elements that need to shrink under the height-aware breakpoint but aren't covered by a token above. */

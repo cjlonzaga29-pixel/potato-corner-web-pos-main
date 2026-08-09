@@ -75,6 +75,27 @@ describe('ImageUpload — camera available', () => {
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(expect.any(File), 'live_capture'));
   });
 
+  it('attaches the live stream to the actual mounted video element (Task 209.18 — black preview regression)', async () => {
+    // Task 209.18 — the reported bug was that startCamera() assigned
+    // srcObject/called play() on videoRef.current *before* isCameraActive's
+    // state flip had re-rendered the <video> element into existence, so the
+    // assignment silently hit null and the preview stayed black even though
+    // getUserMedia had a live stream. This asserts the stream actually lands
+    // on the DOM node the cashier sees, not just that getUserMedia resolved.
+    const tracks = [{ stop: vi.fn() }];
+    const stream = { getTracks: () => tracks };
+    getUserMedia.mockResolvedValue(stream);
+
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+
+    await waitFor(() => expect(screen.getByText('Live capture')).toBeInTheDocument());
+    const video = document.querySelector('video');
+    expect(video).not.toBeNull();
+    await waitFor(() => expect(video?.srcObject).toBe(stream));
+    expect(HTMLVideoElement.prototype.play).toHaveBeenCalled();
+  });
+
   it('stops the camera stream when the component unmounts without Cancel/Capture', async () => {
     const stop = vi.fn();
     const tracks = [{ stop }];

@@ -95,6 +95,25 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     };
   }, []);
 
+  // Task 209.18 — the confirmed "camera preview is black" defect. The
+  // <video> element below is only mounted once isCameraActive is true, so
+  // assigning srcObject/calling play() inside startCamera() itself (which
+  // runs *before* that state flip has re-rendered) always hit a null
+  // videoRef and silently no-op'd — the stream was live, but nothing was
+  // ever attached to the element that reached the screen. Doing the
+  // attach-and-play here, keyed on isCameraActive, guarantees videoRef.current
+  // is the real mounted node by the time this runs.
+  useEffect(() => {
+    if (!isCameraActive) return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream) return;
+    video.srcObject = stream;
+    void video.play().catch(() => {
+      setCameraError('Could not start the camera preview — try again.');
+    });
+  }, [isCameraActive]);
+
   async function startCamera() {
     setCameraError(null);
     setValidationError(null);
@@ -132,10 +151,8 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
       // the camera it has instead of throwing OverconstrainedError.
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      // srcObject/play() happen in the isCameraActive effect below, once the
+      // <video> element this stream needs is actually mounted.
       setMode('live_capture');
       setIsCameraActive(true);
       setCameraStatus('active');
@@ -325,7 +342,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
             <span className="h-2 w-2 rounded-full bg-destructive" />
             Live capture
           </div>
-          <video ref={videoRef} className="w-full rounded-md bg-black" muted playsInline />
+          <video ref={videoRef} className="aspect-video max-h-40 w-full rounded-md bg-black object-cover" autoPlay muted playsInline />
           <div className="flex gap-2">
             <Button type="button" className="touch-target flex-1" onClick={() => void handleCapture()}>
               Capture

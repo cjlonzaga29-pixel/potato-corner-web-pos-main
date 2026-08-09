@@ -74,7 +74,10 @@
     /* POS terminal product tile height and cart/checkout panel width — same
      * continuous-scaling treatment as the tokens above. */
     --app-pos-card-min-height: clamp(100px, 88px + 1vw, 116px);
-    --app-pos-cart-width: 30%;
+    /* Task 209.20 — narrowed from 30% toward the owner's 27-29% fine-pointer
+     * target (the cart reading as "dominant" against the product grid);
+     * compact-touch/mobile keep their own wider touch-safe overrides below. */
+    --app-pos-cart-width: 28%;
     /* Task 209.18 — Charge button height. Previously a hardcoded
      * `min-h-[56px]` on the `pos` Button variant regardless of density,
      * which is the "Charge unnecessarily 50px+ tall" complaint. Same
@@ -82,6 +85,26 @@
      * every tier so the strongest CTA still reads as slightly bigger than a
      * regular control. */
     --app-pos-cta-height: clamp(2.375rem, 2.2rem + 0.3vw, 2.625rem);
+
+    /*
+     * Task 209.20 — POS cart/checkout vertical-density tokens. The cart
+     * panel (terminal/page.tsx) and its checkout footer (payment-footer.tsx)
+     * used to hardcode spacing with a single `lg:` (width-only) breakpoint,
+     * so a 1920x1080 monitor and a 1366x768 laptop — both >=1024px wide —
+     * rendered identical padding/gaps despite the latter having far less
+     * vertical room. These vary per-tier exactly like the tokens above (via
+     * the height-aware media query and the `data-density` blocks below), so
+     * the cart's own internal spacing finally responds to available height,
+     * not just width.
+     */
+    --app-pos-panel-gap: 0.625rem;
+    --app-pos-footer-gap: 0.625rem;
+    --app-pos-section-padding: 0.75rem;
+    --app-pos-proof-padding: 0.75rem;
+    --app-pos-proof-preview-height: 160px;
+    --app-pos-helper-font-size: 0.75rem;
+    --app-pos-cart-header-height: 2.25rem;
+    --app-pos-total-row-height: 1.5rem;
   }
 
   /*
@@ -108,8 +131,16 @@
       --app-kpi-value-size: 1.75rem;
       --app-icon-size: 1rem;
       --app-pos-card-min-height: 90px;
-      --app-pos-cart-width: 30%;
+      --app-pos-cart-width: 28%;
       --app-pos-cta-height: 2.375rem;
+      --app-pos-panel-gap: 0.5rem;
+      --app-pos-footer-gap: 0.5rem;
+      --app-pos-section-padding: 0.5rem;
+      --app-pos-proof-padding: 0.5rem;
+      --app-pos-proof-preview-height: 120px;
+      --app-pos-helper-font-size: 0.6875rem;
+      --app-pos-cart-header-height: 2rem;
+      --app-pos-total-row-height: 1.25rem;
     }
   }
 
@@ -145,8 +176,16 @@
     --app-kpi-value-size: 2.25rem;
     --app-icon-size: 1.25rem;
     --app-pos-card-min-height: 122px;
-    --app-pos-cart-width: 30%;
+    --app-pos-cart-width: 28%;
     --app-pos-cta-height: 2.75rem;
+    --app-pos-panel-gap: 0.875rem;
+    --app-pos-footer-gap: 0.75rem;
+    --app-pos-section-padding: 0.875rem;
+    --app-pos-proof-padding: 0.875rem;
+    --app-pos-proof-preview-height: 170px;
+    --app-pos-helper-font-size: 0.8125rem;
+    --app-pos-cart-header-height: 2.5rem;
+    --app-pos-total-row-height: 1.75rem;
   }
 
   /*
@@ -166,6 +205,14 @@
     --app-pos-card-min-height: 108px;
     --app-pos-cart-width: 32%;
     --app-pos-cta-height: 2.75rem;
+    --app-pos-panel-gap: 0.75rem;
+    --app-pos-footer-gap: 0.625rem;
+    --app-pos-section-padding: 0.75rem;
+    --app-pos-proof-padding: 0.75rem;
+    --app-pos-proof-preview-height: 150px;
+    --app-pos-helper-font-size: 0.75rem;
+    --app-pos-cart-header-height: 2.75rem;
+    --app-pos-total-row-height: 1.75rem;
   }
 
   :root[data-density='mobile'] {
@@ -181,6 +228,14 @@
     --app-title-size: 1.375rem;
     --app-pos-card-min-height: 92px;
     --app-pos-cta-height: 2.75rem;
+    --app-pos-panel-gap: 0.75rem;
+    --app-pos-footer-gap: 0.625rem;
+    --app-pos-section-padding: 0.75rem;
+    --app-pos-proof-padding: 0.75rem;
+    --app-pos-proof-preview-height: 180px;
+    --app-pos-helper-font-size: 0.75rem;
+    --app-pos-cart-header-height: 2.75rem;
+    --app-pos-total-row-height: 1.75rem;
   }
 
   .dark {
@@ -445,6 +500,40 @@
 
   .app-pos-cta {
     min-height: var(--app-pos-cta-height);
+  }
+
+  /* Task 209.20 — POS cart/checkout vertical-density utilities. See the
+   * `--app-pos-*` token block in `:root` above for why these vary by
+   * density tier instead of a single `lg:` width breakpoint. */
+  .app-pos-panel-gap {
+    gap: var(--app-pos-panel-gap);
+  }
+
+  .app-pos-footer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--app-pos-footer-gap);
+    padding: var(--app-pos-section-padding);
+  }
+
+  .app-pos-proof-padding {
+    padding: var(--app-pos-proof-padding);
+  }
+
+  .app-pos-proof-preview-height {
+    max-height: var(--app-pos-proof-preview-height);
+  }
+
+  .app-pos-helper-text {
+    font-size: var(--app-pos-helper-font-size);
+  }
+
+  .app-pos-cart-header {
+    min-height: var(--app-pos-cart-header-height);
+  }
+
+  .app-pos-total-row {
+    min-height: var(--app-pos-total-row-height);
   }
 
   /* Opt-in escape hatch for one-off elements that need to shrink under the height-aware breakpoint but aren't covered by a token above. */

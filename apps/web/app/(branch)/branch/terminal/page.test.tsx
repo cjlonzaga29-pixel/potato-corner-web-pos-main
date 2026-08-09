@@ -2114,4 +2114,24 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
   });
+
+  // Task 209.20 — a flex item's default min-height is `auto` (its content
+  // size), which lets it grow past its row's real available height instead
+  // of clipping to it — the actual mechanism behind "controls only reachable
+  // after excessive scrolling." This pins that the row/panel/scroll-region
+  // all opt out via min-h-0, and that the cart header uses the new
+  // density-aware `.app-pos-cart-header` token instead of a fixed py-2.
+  it('gives the inline desktop cart panel a min-h-0 flex column and a density-aware compact header', () => {
+    mockMatchMedia({ '(min-width: 1024px)': true });
+    render(<TerminalPage />);
+
+    const cartHeading = screen.getByRole('heading', { name: 'Cart' });
+    const header = cartHeading.parentElement;
+    expect(header).toHaveClass('app-pos-cart-header');
+    expect(header).toHaveClass('shrink-0');
+
+    const cartPanel = header?.parentElement;
+    expect(cartPanel).toHaveClass('app-pos-cart-width');
+    expect(cartPanel).toHaveClass('min-h-0');
+  });
 });

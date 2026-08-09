@@ -1,7 +1,7 @@
 'use client';
 
 import { memo } from 'react';
-import { CheckCircle2, Loader2, Receipt } from 'lucide-react';
+import { CheckCircle2, Eye, Loader2, Receipt, X } from 'lucide-react';
 import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -10,10 +10,59 @@ import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
+}
+
+/**
+ * Task 209.20 — the collapsed "attached" row a captured discount/payment
+ * proof renders as, instead of ImageUpload's own (now-unmounted) full-size
+ * preview staying visible for the rest of checkout. `previewUrl` is the
+ * terminal page's locally-held object URL for the just-captured file (lost
+ * on refresh, same as ImageUpload's own preview always was) — when present,
+ * "View" opens it full-size in a Dialog; when absent (nothing to show), the
+ * button is omitted rather than opening an empty dialog. `onClear` backs
+ * both "Replace" and "Remove": both return to the same pre-capture
+ * ImageUpload state, since a discount/payment proof has no distinct "empty
+ * but was once removed" state to preserve — the API contract is unchanged.
+ */
+function ProofSummary({ label, previewUrl, onClear }: { label: string; previewUrl: string | null; onClear: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+        {label}
+      </span>
+      <span className="flex shrink-0 items-center gap-2">
+        {previewUrl && (
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" className="h-auto p-0 text-xs underline">
+                <Eye className="mr-1 h-3 w-3" aria-hidden="true" />
+                View
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>{label}</DialogTitle>
+              </DialogHeader>
+              {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}
+              <img src={previewUrl} alt={label} className="w-full rounded-md" />
+            </DialogContent>
+          </Dialog>
+        )}
+        <Button type="button" variant="ghost" size="sm" className="h-auto p-0 text-xs underline" onClick={onClear}>
+          Replace
+        </Button>
+        <Button type="button" variant="ghost" size="sm" className="h-auto p-0 text-xs underline" onClick={onClear} aria-label={`Remove ${label.toLowerCase()}`}>
+          <X className="h-3 w-3" aria-hidden="true" />
+        </Button>
+      </span>
+    </div>
+  );
 }
 
 export type DiscountChoice = 'none' | 'pwd' | 'senior_citizen' | 'employee' | 'promotional';
@@ -38,6 +87,7 @@ interface PaymentFooterProps {
   discountIdReference: string;
   onDiscountIdReferenceChange: (value: string) => void;
   discountProofKey: string | null;
+  discountProofPreviewUrl: string | null;
   onDiscountProofSelected: (file: File, type: ImageProofType) => Promise<void>;
   onClearDiscountProof: () => void;
   promoAmount: string;
@@ -49,6 +99,7 @@ interface PaymentFooterProps {
   onCashTenderedChange: (value: string) => void;
   change: number;
   paymentProofKey: string | null;
+  paymentProofPreviewUrl: string | null;
   onProofSelected: (file: File, type: ImageProofType) => Promise<void>;
   onClearProof: () => void;
   chargeError: string | null;
@@ -94,6 +145,7 @@ export const PaymentFooter = memo(function PaymentFooter({
   discountIdReference,
   onDiscountIdReferenceChange,
   discountProofKey,
+  discountProofPreviewUrl,
   onDiscountProofSelected,
   onClearDiscountProof,
   promoAmount,
@@ -105,6 +157,7 @@ export const PaymentFooter = memo(function PaymentFooter({
   onCashTenderedChange,
   change,
   paymentProofKey,
+  paymentProofPreviewUrl,
   onProofSelected,
   onClearProof,
   chargeError,
@@ -114,14 +167,21 @@ export const PaymentFooter = memo(function PaymentFooter({
   onCharge,
 }: PaymentFooterProps) {
   return (
-    <div className="sticky bottom-0 z-10 space-y-2.5 border-t bg-card p-3 lg:static lg:space-y-1.5 lg:p-2.5">
-      <div className="space-y-0.5 text-sm lg:space-y-0" aria-label="Order totals">
-        <div className="flex justify-between">
+    // Task 209.20 — `.app-pos-footer` replaces the old fixed `p-3 lg:p-2.5` /
+    // `space-y-2.5 lg:space-y-1.5` pair, which keyed density purely off the
+    // `lg` *width* breakpoint (so a 1920x1080 monitor and a 1366x768 laptop,
+    // both >=1024px wide, got identical padding despite very different
+    // vertical room). `shrink-0` keeps this footer at its natural height
+    // even under pressure — the cart-items region above it is the one
+    // flex-1/min-h-0 region that actually gives up space first.
+    <div className="app-pos-footer sticky bottom-0 z-10 shrink-0 border-t bg-card lg:static">
+      <div className="text-sm" aria-label="Order totals">
+        <div className="app-pos-total-row flex items-center justify-between">
           <span className="text-muted-foreground">Subtotal</span>
           <span className="tabular-nums">{formatPeso(subtotal)}</span>
         </div>
         {discountAmount > 0 && (
-          <div className="flex justify-between font-medium text-destructive">
+          <div className="app-pos-total-row flex items-center justify-between font-medium text-destructive">
             <span>Discount</span>
             <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
           </div>
@@ -131,7 +191,7 @@ export const PaymentFooter = memo(function PaymentFooter({
           <span className="tabular-nums">{formatPeso(vatAmount)}</span>
         </div>
         <Separator className="my-1.5 lg:my-1" />
-        <div className="flex items-baseline justify-between rounded-lg bg-primary/5 px-2.5 py-1.5 lg:py-1">
+        <div className="app-pos-total-row flex items-center justify-between rounded-lg bg-primary/5 px-2.5">
           <span className="text-sm font-semibold">Total</span>
           <span className="flex items-center gap-1.5 text-xl font-bold tabular-nums text-primary">
             <Receipt className="h-4 w-4 text-primary/70" aria-hidden="true" />
@@ -195,17 +255,9 @@ export const PaymentFooter = memo(function PaymentFooter({
             onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
           />
           <Card className="rounded-lg shadow-none">
-            <CardContent className="space-y-3 p-3 lg:space-y-2 lg:p-2.5">
+            <CardContent className="app-pos-proof-padding space-y-2">
               {discountProofKey ? (
-                <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    Discount ID proof attached
-                  </span>
-                  <Button type="button" variant="ghost" size="sm" className="h-auto shrink-0 p-0 text-xs underline" onClick={onClearDiscountProof}>
-                    Replace
-                  </Button>
-                </div>
+                <ProofSummary label="Discount ID proof attached" previewUrl={discountProofPreviewUrl} onClear={onClearDiscountProof} />
               ) : (
                 <ImageUpload
                   label="Discount ID Proof"
@@ -238,23 +290,15 @@ export const PaymentFooter = memo(function PaymentFooter({
             value={cashTendered}
             onChange={(e) => onCashTenderedChange(e.target.value)}
           />
-          <p className="text-xs text-muted-foreground">Change: {formatPeso(change)}</p>
+          <p className="app-pos-helper-text text-muted-foreground">Change: {formatPeso(change)}</p>
         </div>
       )}
 
       {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
         <Card className="rounded-lg shadow-none">
-          <CardContent className="space-y-3 p-3">
+          <CardContent className="app-pos-proof-padding space-y-2">
             {paymentProofKey ? (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-success bg-success/10 px-3 py-2 text-xs text-success">
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  Payment proof attached
-                </span>
-                <Button type="button" variant="ghost" size="sm" className="h-auto shrink-0 p-0 text-xs underline" onClick={onClearProof}>
-                  Replace
-                </Button>
-              </div>
+              <ProofSummary label="Payment proof attached" previewUrl={paymentProofPreviewUrl} onClear={onClearProof} />
             ) : (
               <ImageUpload
                 label="Payment Proof"
@@ -268,21 +312,30 @@ export const PaymentFooter = memo(function PaymentFooter({
       )}
 
       {chargeError && (
-        <Alert variant="destructive" className="px-3 py-2 lg:py-1.5" role="alert">
-          <AlertDescription className="text-xs">{chargeError}</AlertDescription>
+        <Alert variant="destructive" className="px-3 py-1.5" role="alert">
+          <AlertDescription className="app-pos-helper-text">{chargeError}</AlertDescription>
         </Alert>
       )}
 
       {chargeDisabledReason && (
-        <Alert className="border-none bg-muted px-3 py-2 lg:py-1.5" role="status" aria-live="polite">
-          <AlertDescription className="text-sm font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
+        <Alert className="border-none bg-muted px-3 py-1.5" role="status" aria-live="polite">
+          <AlertDescription className="app-pos-helper-text font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
         </Alert>
       )}
 
+      {/* Task 209.20 — `touch-target` (a fixed 48px floor) used to sit
+          alongside `.app-pos-cta` (the density-aware token the `pos` variant
+          already applies), and `min-height:48px` always won regardless of
+          density — the Charge button was never actually shrinking on
+          fine-pointer laptops/desktops the way every other checkout control
+          already had been. Dropping both `touch-target` and the fixed `lg`
+          size lets `.app-pos-cta` (38-42px fine-pointer, 44px touch/
+          comfortable — see globals.css) govern its height like everywhere
+          else; touch/mobile tiers are untouched since 44px was already
+          their floor either way. */}
       <Button
         variant="pos"
-        className="touch-target w-full"
-        size="lg"
+        className="w-full"
         disabled={!canCharge}
         aria-busy={isChargePending}
         onClick={onCharge}

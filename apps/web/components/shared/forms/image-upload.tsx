@@ -342,7 +342,14 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
             <span className="h-2 w-2 rounded-full bg-destructive" />
             Live capture
           </div>
-          <video ref={videoRef} className="aspect-video max-h-40 w-full rounded-md bg-black object-cover" autoPlay muted playsInline />
+          {/* Task 209.20 — max-height was a fixed 160px (`max-h-40`) regardless
+              of density; `.app-pos-proof-preview-height` scales it with the
+              same tier the rest of checkout responds to (120px on a short
+              1366x768/1280x720 laptop up to 170-180px on a tall desktop/
+              mobile) so an active camera never eats more of the cart than
+              the tier can actually spare, while still collapsing back to the
+              compact attached summary the instant Capture finishes. */}
+          <video ref={videoRef} className="app-pos-proof-preview-height aspect-video w-full rounded-md bg-black object-cover" autoPlay muted playsInline />
           <div className="flex gap-2">
             <Button type="button" className="touch-target flex-1" onClick={() => void handleCapture()}>
               Capture

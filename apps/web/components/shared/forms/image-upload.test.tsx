@@ -75,6 +75,25 @@ describe('ImageUpload — camera available', () => {
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(expect.any(File), 'live_capture'));
   });
 
+  // Task 209.20 — the camera-active preview used to be a fixed `max-h-40`
+  // (160px) at every density tier; a short 1366x768/1280x720 laptop and a
+  // tall desktop must not reserve the same amount of cart height for an
+  // active camera. `.app-pos-proof-preview-height` (globals.css) is the
+  // shared token every density tier overrides, same mechanism as the rest
+  // of the checkout footer.
+  it('sizes the live camera preview via the density-aware app-pos-proof-preview-height token instead of a fixed max-height', async () => {
+    const tracks = [{ stop: vi.fn() }];
+    getUserMedia.mockResolvedValue({ getTracks: () => tracks });
+
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+
+    await waitFor(() => expect(screen.getByText('Live capture')).toBeInTheDocument());
+    const video = document.querySelector('video');
+    expect(video).toHaveClass('app-pos-proof-preview-height');
+    expect(video).not.toHaveClass('max-h-40');
+  });
+
   it('attaches the live stream to the actual mounted video element (Task 209.18 — black preview regression)', async () => {
     // Task 209.18 — the reported bug was that startCamera() assigned
     // srcObject/called play() on videoRef.current *before* isCameraActive's

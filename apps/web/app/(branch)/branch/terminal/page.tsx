@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
@@ -339,11 +339,19 @@ export default function TerminalPage() {
   // payment proof — no reference number/note collected (Task 139).
   const [paymentProofKey, setPaymentProofKey] = useState<string | null>(null);
   const [paymentProofType, setPaymentProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
+  // Task 209.20 — a local, revocable object URL for the just-captured file,
+  // kept alive only so the collapsed "attached" summary in PaymentFooter can
+  // offer a "View" button without a network round-trip. Never sent anywhere
+  // and never the source of truth for the actual proof (paymentProofKey is);
+  // this is display-only and lost on refresh, same as ImageUpload's own
+  // preview was before it unmounted.
+  const [paymentProofPreviewUrl, setPaymentProofPreviewUrl] = useState<string | null>(null);
   // Task 209.5 — PWD/Senior Citizen discount compliance evidence. Optional:
   // no proof-required policy exists yet (DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING),
   // so this never blocks Charge the way paymentProofKey does above.
   const [discountProofKey, setDiscountProofKey] = useState<string | null>(null);
   const [discountProofType, setDiscountProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
+  const [discountProofPreviewUrl, setDiscountProofPreviewUrl] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
@@ -359,6 +367,24 @@ export default function TerminalPage() {
       setPaymentMethod('cash');
     }
   }, [isOnline, paymentMethod]);
+
+  // Task 209.20 — the two proof preview object URLs above are display-only
+  // and never revoked by React itself; every setter above already revokes
+  // its *previous* URL on the next capture/clear, but the *last* one set
+  // before an unmount (e.g. navigating away mid-sale) is never freed
+  // otherwise. Refs (not the state values themselves) so this effect's
+  // cleanup — which only runs once, on unmount — always reads the latest
+  // URL rather than the one from whichever render registered it.
+  const paymentProofPreviewUrlRef = useRef(paymentProofPreviewUrl);
+  paymentProofPreviewUrlRef.current = paymentProofPreviewUrl;
+  const discountProofPreviewUrlRef = useRef(discountProofPreviewUrl);
+  discountProofPreviewUrlRef.current = discountProofPreviewUrl;
+  useEffect(() => {
+    return () => {
+      if (paymentProofPreviewUrlRef.current) URL.revokeObjectURL(paymentProofPreviewUrlRef.current);
+      if (discountProofPreviewUrlRef.current) URL.revokeObjectURL(discountProofPreviewUrlRef.current);
+    };
+  }, []);
 
   // Single clean cashier workflow: Clock In -> Ready to Sell, both inside
   // this page. The shift itself is auto-managed (opened transparently on
@@ -813,11 +839,19 @@ export default function TerminalPage() {
     const result = await uploadPaymentProof.mutateAsync({ branchId, shiftId: shift?.id, type, file });
     setPaymentProofKey(result.payment_proof_key);
     setPaymentProofType(result.payment_proof_type);
+    setPaymentProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
   }
 
   function handleClearProof() {
     setPaymentProofKey(null);
     setPaymentProofType(null);
+    setPaymentProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   }
 
   /** Same async/re-throw contract as handleProofSelected above — ImageUpload shows "Upload Failed"/Retry Upload on rejection and keeps the captured file. */
@@ -826,11 +860,19 @@ export default function TerminalPage() {
     const result = await uploadDiscountProof.mutateAsync({ branchId, shiftId: shift?.id, type, file });
     setDiscountProofKey(result.discount_proof_key);
     setDiscountProofType(result.discount_proof_type);
+    setDiscountProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
   }
 
   function handleClearDiscountProof() {
     setDiscountProofKey(null);
     setDiscountProofType(null);
+    setDiscountProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   }
 
   function resetPaymentFields() {
@@ -842,6 +884,14 @@ export default function TerminalPage() {
     setPaymentProofType(null);
     setDiscountProofKey(null);
     setDiscountProofType(null);
+    setPaymentProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setDiscountProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   }
 
   async function handleCharge() {
@@ -1043,6 +1093,7 @@ export default function TerminalPage() {
       discountIdReference={discountIdReference}
       onDiscountIdReferenceChange={setDiscountIdReference}
       discountProofKey={discountProofKey}
+      discountProofPreviewUrl={discountProofPreviewUrl}
       onDiscountProofSelected={handleDiscountProofSelected}
       onClearDiscountProof={handleClearDiscountProof}
       promoAmount={promoAmount}
@@ -1054,6 +1105,7 @@ export default function TerminalPage() {
       onCashTenderedChange={setCashTendered}
       change={change}
       paymentProofKey={paymentProofKey}
+      paymentProofPreviewUrl={paymentProofPreviewUrl}
       onProofSelected={handleProofSelected}
       onClearProof={handleClearProof}
       chargeError={chargeError}
@@ -1095,9 +1147,17 @@ export default function TerminalPage() {
         </Button>
       </div>
 
-      <div className="flex flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+      {/* Task 209.20 — `lg:min-h-0` on this row (and the two panels below) is
+          the actual fix for controls only reachable after excessive
+          scrolling: a flex item's default min-height is `auto` (its content
+          size), which lets it grow past the row's real available height
+          instead of clipping to it — the row/panel/scroll-region trio must
+          all opt out of that via min-h-0 for the *inner* overflow-y-auto
+          regions (product grid, cart items) to actually be what scrolls,
+          rather than the whole page. */}
+      <div className="flex flex-1 flex-col overflow-y-auto lg:min-h-0 lg:flex-row lg:overflow-hidden">
       {/* LEFT PANEL — product catalog. ~66% width on desktop (lg:w-2/3), independent scroll region below the toolbar. */}
-      <div className="relative flex flex-col lg:w-2/3 lg:flex-none lg:overflow-hidden lg:border-r">
+      <div className="relative flex flex-col lg:min-h-0 lg:w-2/3 lg:flex-none lg:overflow-hidden lg:border-r">
         <div className="space-y-2 border-b bg-card p-3">
           <h1 className="sr-only">POS Terminal — product catalog</h1>
           <SearchInput
@@ -1282,10 +1342,15 @@ export default function TerminalPage() {
         )}
       </div>
 
-      {/* RIGHT PANEL — cart + payment. Width is density-aware via --app-pos-cart-width (Task 200: standard/comfortable ~30%, compact-touch ~32% for bigger touch targets), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone. */}
+      {/* RIGHT PANEL — cart + payment. Width is density-aware via --app-pos-cart-width (Task 209.20: ~28% fine-pointer, 32% compact-touch for bigger touch targets), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone.
+          Task 209.20 — `min-h-0`/`lg:min-h-0` on this panel and its scroll
+          region (below) so only the cart-items list scrolls internally; the
+          compact header (`.app-pos-cart-header`) and the checkout footer
+          (`paymentFooterElement`) stay `flex-shrink-0` so Charge is never
+          pushed offscreen by a long cart. */}
       {isDesktop && (
-        <div className="app-pos-cart-width hidden flex-col border-t lg:flex lg:flex-none lg:overflow-hidden lg:border-t-0">
-          <div className="flex items-center justify-between border-b bg-card px-3 py-2">
+        <div className="app-pos-cart-width hidden min-h-0 flex-col border-t lg:flex lg:min-h-0 lg:flex-none lg:overflow-hidden lg:border-t-0">
+          <div className="app-pos-cart-header flex shrink-0 items-center justify-between border-b bg-card px-3">
             <h2 className="text-sm font-semibold">Cart</h2>
             {cartLines.length > 0 && (
               <span className="text-xs text-muted-foreground">
@@ -1293,7 +1358,7 @@ export default function TerminalPage() {
               </span>
             )}
           </div>
-          <div className="p-3 lg:flex-1 lg:overflow-y-auto">
+          <div className="min-h-0 p-3 lg:flex-1 lg:overflow-y-auto">
             {cartLinesList}
           </div>
           {paymentFooterElement}

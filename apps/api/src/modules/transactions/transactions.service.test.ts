@@ -2266,7 +2266,7 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     vi.mocked(prisma.inventoryStock.findUnique).mockImplementation((async (args: unknown) => {
       const call = args as { where: { branchId_inventoryItemId: { inventoryItemId: string } } };
       const id = call.where.branchId_inventoryItemId.inventoryItemId;
-      return { quantityOnHand: decimal(stockOnHand[id]) };
+      return { quantityOnHand: decimal(stockOnHand[id] ?? 0) };
     }) as never);
     vi.mocked(prisma.inventoryStock.update).mockImplementation((async (args: unknown) => {
       const call = args as {
@@ -2274,7 +2274,7 @@ describe('transactionsService.createTransaction — branch inventory cutover led
         data: { quantityOnHand: { increment: number } };
       };
       const id = call.where.branchId_inventoryItemId.inventoryItemId;
-      const after = stockOnHand[id] + call.data.quantityOnHand.increment;
+      const after = (stockOnHand[id] ?? 0) + call.data.quantityOnHand.increment;
       stockOnHand[id] = after;
       return { id: `stock-${id}`, quantityOnHand: decimal(after) };
     }) as never);
@@ -2284,22 +2284,31 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     // Same canonical helper as Task 209.30, one lock per unique item.
     const sortedIds = ['item-butter', 'item-flour', 'item-sugar'];
     const lockCalls = vi.mocked(prisma.$executeRaw).mock;
-    const lockCallOrders = sortedIds.map((id) => {
+    const lockCallOrders: number[] = sortedIds.map((id) => {
       const lockId = inventoryStockLockId('branch-1', id);
       const matches = lockCalls.calls
         .map((call, index) => ({ call, index }))
         .filter(({ call }) => call[1] === lockId);
       expect(matches).toHaveLength(1);
-      return lockCalls.invocationCallOrder[matches[0].index];
+      const [match] = matches;
+      if (!match) throw new Error(`expected exactly one lock call for ${id}`);
+      const callOrder = lockCalls.invocationCallOrder[match.index];
+      if (callOrder === undefined) throw new Error(`expected a recorded call order for ${id}`);
+      return callOrder;
     });
+    const [butterLockOrder, flourLockOrder, sugarLockOrder] = lockCallOrders;
+    if (butterLockOrder === undefined || flourLockOrder === undefined || sugarLockOrder === undefined) {
+      throw new Error('expected all three lock call orders to be recorded');
+    }
 
     // Sorted ascending by inventoryItemId (butter, flour, sugar) — not
     // insertion order (sugar, flour, butter).
-    expect(lockCallOrders[0]).toBeLessThan(lockCallOrders[1]);
-    expect(lockCallOrders[1]).toBeLessThan(lockCallOrders[2]);
+    expect(butterLockOrder).toBeLessThan(flourLockOrder);
+    expect(flourLockOrder).toBeLessThan(sugarLockOrder);
 
     // All three locks acquired before the first InventoryStock read.
-    const firstReadOrder = vi.mocked(prisma.inventoryStock.findUnique).mock.invocationCallOrder[0];
+    const [firstReadOrder] = vi.mocked(prisma.inventoryStock.findUnique).mock.invocationCallOrder;
+    if (firstReadOrder === undefined) throw new Error('expected at least one InventoryStock read');
     expect(Math.max(...lockCallOrders)).toBeLessThan(firstReadOrder);
 
     // Reversal quantity math is unchanged — each item still increments by

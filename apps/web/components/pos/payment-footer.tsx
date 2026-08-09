@@ -1,12 +1,11 @@
 'use client';
 
 import { memo } from 'react';
-import { CheckCircle2, Eye, Loader2, Receipt, X } from 'lucide-react';
+import { CheckCircle2, Eye, Loader2, X } from 'lucide-react';
 import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -76,12 +75,7 @@ export const DISCOUNT_LABELS: Record<DiscountChoice, string> = {
 };
 
 interface PaymentFooterProps {
-  subtotal: number;
-  vatAmount: number;
-  discountAmount: number;
   totalAmount: number;
-  canManageVoidRefund: boolean;
-  onOpenVoidRefund: () => void;
   discountType: DiscountChoice;
   onDiscountTypeChange: (value: DiscountChoice) => void;
   discountIdReference: string;
@@ -110,36 +104,44 @@ interface PaymentFooterProps {
 }
 
 /**
- * Task 194A — the totals/discount/payment/charge panel, split out of the
- * terminal page purely for readability and isolation from the product grid
- * and cart list above it. Unlike ProductCard/CartLineItem this is a single
- * instance (not N-per-render), and `onCharge` intentionally stays a fresh
- * closure from the caller (checkout's dependency list is too wide, and too
+ * Task 194A — the discount/payment/charge panel, split out of the terminal
+ * page purely for readability and isolation from the product grid and cart
+ * list above it. Unlike ProductCard/CartLineItem this is a single instance
+ * (not N-per-render), and `onCharge` intentionally stays a fresh closure
+ * from the caller (checkout's dependency list is too wide, and too
  * financially sensitive, to safely useCallback here) — so React.memo mostly
  * just documents "this subtree owns its own props," not a guaranteed
  * render-skip.
  *
- * Task 196 (visual redesign) — stronger totals hierarchy, a Charge button
- * with a visible spinner + "Processing…" while pending (on top of the
- * existing disabled={!canCharge} guard, which already covers double-submit —
- * see terminal/page.tsx's handleCharge belt-and-suspenders comment), and
- * aria-live status text so screen readers hear the disabled reason/charge
- * error without extra navigation. No amount, discount, payment-method, or
- * charge-handler logic changed.
+ * Task 196 (visual redesign) — a Charge button with a visible spinner +
+ * "Processing…" while pending (on top of the existing disabled={!canCharge}
+ * guard, which already covers double-submit — see terminal/page.tsx's
+ * handleCharge belt-and-suspenders comment), and aria-live status text so
+ * screen readers hear the disabled reason/charge error without extra
+ * navigation. No amount, discount, payment-method, or charge-handler logic
+ * changed.
  *
- * Task 209.8 (compact redesign) — reordered to Subtotal, Discount, VAT,
- * TOTAL, then Payment Method, Discount Type (+ its conditional ID/proof/promo
- * fields), Cash Tendered/Payment Reference, Change, Charge button — purely a
- * visual reorder of the same rows/fields; every value, handler, and
- * validation rule is unchanged.
+ * Task 209.8 (compact redesign) — reordered to Payment Method, Discount Type
+ * (+ its conditional ID/proof/promo fields), Cash Tendered/Payment
+ * Reference, Change, Charge button — purely a visual reorder of the same
+ * rows/fields; every value, handler, and validation rule is unchanged.
+ *
+ * Task 209.25 (checkout workspace architecture) — the Subtotal/Discount/
+ * VAT/TOTAL breakdown that used to sit above these fields moved to
+ * OrderReviewPanel (checkout-workspace.tsx): this component only ever
+ * rendered inline within the permanent side cart before, and now only ever
+ * renders as the Payment pane's content inside CheckoutWorkspace, so a
+ * second totals readout right above the same fields would be redundant.
+ * `totalAmount` is kept only to label the Charge/Confirm button itself.
+ * Void/Refund Sale also moved out of this component: it's sale-level
+ * functionality independent of the current cart (a supervisor must be able
+ * to void a *previous* sale with an empty cart, before Checkout is even
+ * reachable), so it's now a standalone entry point in the permanent cart
+ * panel's header (terminal/page.tsx) instead of living inside a workspace
+ * an empty cart can't open.
  */
 export const PaymentFooter = memo(function PaymentFooter({
-  subtotal,
-  vatAmount,
-  discountAmount,
   totalAmount,
-  canManageVoidRefund,
-  onOpenVoidRefund,
   discountType,
   onDiscountTypeChange,
   discountIdReference,
@@ -171,46 +173,12 @@ export const PaymentFooter = memo(function PaymentFooter({
     // `space-y-2.5 lg:space-y-1.5` pair, which keyed density purely off the
     // `lg` *width* breakpoint (so a 1920x1080 monitor and a 1366x768 laptop,
     // both >=1024px wide, got identical padding despite very different
-    // vertical room). `shrink-0` keeps this footer at its natural height
-    // even under pressure — the cart-items region above it is the one
-    // flex-1/min-h-0 region that actually gives up space first.
-    <div className="app-pos-footer sticky bottom-0 z-10 shrink-0 border-t bg-card lg:static">
-      <div className="text-sm" aria-label="Order totals">
-        <div className="app-pos-total-row flex items-center justify-between">
-          <span className="text-muted-foreground">Subtotal</span>
-          <span className="tabular-nums">{formatPeso(subtotal)}</span>
-        </div>
-        {discountAmount > 0 && (
-          <div className="app-pos-total-row flex items-center justify-between font-medium text-destructive">
-            <span>Discount</span>
-            <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
-          </div>
-        )}
-        <div className="flex justify-between text-xs text-muted-foreground">
-          <span>VAT (12%)</span>
-          <span className="tabular-nums">{formatPeso(vatAmount)}</span>
-        </div>
-        <Separator className="my-1.5 lg:my-1" />
-        <div className="app-pos-total-row flex items-center justify-between rounded-lg bg-primary/5 px-2.5">
-          <span className="text-sm font-semibold">Total</span>
-          <span className="flex items-center gap-1.5 text-xl font-bold tabular-nums text-primary">
-            <Receipt className="h-4 w-4 text-primary/70" aria-hidden="true" />
-            {formatPeso(totalAmount)}
-          </span>
-        </div>
-      </div>
-
-      {canManageVoidRefund && (
-        <Button
-          type="button"
-          variant="outline"
-          className="app-control w-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive"
-          onClick={onOpenVoidRefund}
-        >
-          Void / Refund Sale
-        </Button>
-      )}
-
+    // vertical room).
+    // Task 209.25 — no longer `sticky`/`border-t`: this now renders as the
+    // sole content of CheckoutWorkspace's Payment pane (which owns its own
+    // scroll region), not as a footer pinned below a separately-scrolling
+    // cart-items list.
+    <div className="app-pos-footer">
       {/* Task 209.8 — Payment Method surfaces before Discount Type: the cashier picks how the customer is paying first, then applies any discount on top of that. Purely a visual reorder; onPaymentMethodChange/onDiscountTypeChange and every value they carry are unchanged.
           Task 209.14 — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-11/h-9, same pattern as the terminal page's category filter tabs. */}
       <Tabs value={paymentMethod} onValueChange={(v) => onPaymentMethodChange(v as 'cash' | 'gcash' | 'maya' | 'other')}>

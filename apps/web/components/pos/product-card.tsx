@@ -102,8 +102,14 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         )}
       </div>
 
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-1 p-2.5">
-        <p className="line-clamp-2 min-h-[2rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
+      {/* Task 209.24 — p-2 (was p-2.5) and min-h-[2.25rem] (was 2rem, one
+          rounding tick short of a real 2-line `leading-tight` text-sm block)
+          free up the few px this region needs to stop clipping against the
+          Card's `overflow-hidden` at the tightest (5-column `compact`)
+          grid tier — paired with the image-area/aspect-ratio share change
+          in globals.css's `.app-pos-card`/`.app-pos-card-image`. */}
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-1 p-2">
+        <p className="line-clamp-2 min-h-[2.25rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
         <p className="truncate text-xs text-muted-foreground">{variant.name}</p>
 
         <div className="mt-auto flex items-end justify-between gap-1 pt-0.5">

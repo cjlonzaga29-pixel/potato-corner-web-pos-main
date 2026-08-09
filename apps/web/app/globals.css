@@ -105,6 +105,15 @@
     --app-pos-helper-font-size: 0.75rem;
     --app-pos-cart-header-height: 2.25rem;
     --app-pos-total-row-height: 1.5rem;
+    /* Task 209.24 — cart line-item quantity stepper / edit / remove
+     * controls. Reusing `--app-control-height` (36-40px fine-pointer) put a
+     * full control-height row *twice* per simple cart line (once for
+     * edit/remove alongside the name, once for the qty stepper alongside
+     * the price) -> ~76-84px/row against the owner's ~50-64px target.
+     * Fine-pointer tiers get their own smaller floor here; compact-touch/
+     * mobile below override this back to the 44px touch-safe floor,
+     * matching `--app-control-height` there exactly. */
+    --app-pos-cart-control-height: clamp(1.75rem, 1.65rem + 0.25vw, 2rem);
   }
 
   /*
@@ -141,6 +150,7 @@
       --app-pos-helper-font-size: 0.6875rem;
       --app-pos-cart-header-height: 2rem;
       --app-pos-total-row-height: 1.25rem;
+      --app-pos-cart-control-height: 1.75rem;
     }
   }
 
@@ -186,6 +196,7 @@
     --app-pos-helper-font-size: 0.8125rem;
     --app-pos-cart-header-height: 2.5rem;
     --app-pos-total-row-height: 1.75rem;
+    --app-pos-cart-control-height: 2rem;
   }
 
   /*
@@ -213,6 +224,9 @@
     --app-pos-helper-font-size: 0.75rem;
     --app-pos-cart-header-height: 2.75rem;
     --app-pos-total-row-height: 1.75rem;
+    /* Touch floor — same value as `--app-control-height` in this tier, not
+     * the smaller fine-pointer cart-row sizing above. */
+    --app-pos-cart-control-height: 2.75rem;
   }
 
   :root[data-density='mobile'] {
@@ -236,6 +250,7 @@
     --app-pos-helper-font-size: 0.75rem;
     --app-pos-cart-header-height: 2.75rem;
     --app-pos-total-row-height: 1.75rem;
+    --app-pos-cart-control-height: 2.75rem;
   }
 
   .dark {
@@ -432,6 +447,17 @@
     width: var(--app-control-height);
   }
 
+  /* Task 209.24 — cart line-item qty stepper / edit / remove buttons only.
+   * Deliberately smaller than `.app-control-square` on fine-pointer tiers
+   * (see `--app-pos-cart-control-height` above) so a simple cart row's
+   * *one* row of interactive controls doesn't alone force ~36-40px; still
+   * floors at 44px on compact-touch/mobile, identical to `.app-control-square`
+   * there. */
+  .app-pos-cart-control {
+    height: var(--app-pos-cart-control-height);
+    width: var(--app-pos-cart-control-height);
+  }
+
   .app-table-density th,
   .app-table-density td {
     height: var(--app-table-row-height);
@@ -467,8 +493,15 @@
      * `height: auto` (not stretched by the grid, see product-card.tsx's
      * `self-start`) means this is a preferred size only: a card whose
      * content genuinely needs more room (e.g. the unavailable-reason
-     * message) still grows past it instead of clipping. */
-    aspect-ratio: 4 / 5;
+     * message) still grows past it instead of clipping.
+     * Task 209.24 — 4/5 measured out to name/variant/price genuinely not
+     * fitting the ~45% leftover after the image at the 1366x768 `compact`
+     * tier's 5-column grid (~142px card width -> 177px tall card, ~78px
+     * left for content against a ~97-102px real need). 3/4 buys back ~12px
+     * of height at that same width without re-inflating cards toward the
+     * "giant" complaint 209.16 fixed — see `.app-pos-card-image` below for
+     * the matching image-share reduction that does the rest. */
+    aspect-ratio: 3 / 4;
     /* Task 209.16 — `self-start` only opts the card out of *vertical* grid
      * stretch; the grid still stretches its *width* to fill the column
      * track (default `justify-items: stretch`). With no upper bound, a wide
@@ -489,13 +522,39 @@
   /* Task 209.7/209.14 — POS product tile image area occupies the upper
    * portion of the box as a proportion of the card's own height (not a
    * fixed density-tier pixel value), so it scales with the aspect-ratio
-   * box above at every density tier automatically. */
+   * box above at every density tier automatically.
+   * Task 209.24 — 55% left name/variant/price too little of the box at the
+   * tightest (compact, 5-column) tier, and the Card's `overflow-hidden`
+   * (product-card.tsx) clipped whatever didn't fit rather than growing.
+   * 45% (within the owner's 45-52% image / 48-55% content target) plus the
+   * aspect-ratio change above gives content genuine room across every
+   * tier while keeping real-image and placeholder tiles identical, since
+   * both render inside this same region. */
   .app-pos-card-image {
-    flex: 0 0 55%;
+    flex: 0 0 45%;
   }
 
   .app-pos-cart-width {
     width: var(--app-pos-cart-width);
+  }
+
+  /* Task 209.25 — Checkout Workspace two-pane layout (desktop/laptop with
+   * adequate width). Order Review ~45-52%, Payment ~48-55% (owner target) —
+   * the dialog itself is sized via Tailwind arbitrary-value w-/h- utilities
+   * directly on DialogContent (checkout-workspace.tsx) so twMerge can
+   * reliably dedupe against DialogContent's own default sizing classes;
+   * these two panes have no competing default classes, so a plain
+   * flex-basis rule here is unambiguous. Never scrolls at the page level —
+   * only the two panes themselves each own one internal scroll region. Both
+   * reuse the same `--app-pos-*` vertical-density tokens as the rest of POS
+   * checkout (padding/gaps/proof sizing), so a short-height laptop compacts
+   * the workspace exactly like it already compacts the permanent cart. */
+  .app-checkout-review-pane {
+    flex: 0 0 48%;
+  }
+
+  .app-checkout-payment-pane {
+    flex: 1 1 auto;
   }
 
   .app-pos-cta {
@@ -507,6 +566,14 @@
    * density tier instead of a single `lg:` width breakpoint. */
   .app-pos-panel-gap {
     gap: var(--app-pos-panel-gap);
+  }
+
+  /* Task 209.25 — standalone version of the padding `.app-pos-footer`
+   * already applies, for the Checkout Workspace's other density-aware
+   * regions (dialog header, pane headings) that don't want its flex/gap
+   * behavior too. */
+  .app-pos-section-padding {
+    padding: var(--app-pos-section-padding);
   }
 
   .app-pos-footer {

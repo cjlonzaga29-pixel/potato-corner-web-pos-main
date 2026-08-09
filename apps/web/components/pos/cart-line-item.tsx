@@ -76,34 +76,26 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
   return (
     <div data-render-count={renderCountRef.current}>
       {showDivider && <Separator className="mb-1.5" />}
+      {/* Task 209.24 — edit/remove used to share the name row and the qty
+          stepper shared the price row, so a "simple" line (no modifiers)
+          forced *two* full control-height rows (~76-84px total against the
+          owner's ~50-64px target). Grouping every interactive control onto
+          one bottom row — matching the owner's mockup — leaves the name/
+          price and variant rows as pure text, only as tall as their own
+          line-height, with `.app-pos-cart-control` (smaller than
+          `.app-control-square` on fine-pointer tiers, same 44px floor on
+          touch) sizing the one row that still needs to be tappable. */}
       <div className="space-y-1 rounded-lg text-sm">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 text-[13px] font-semibold leading-snug text-foreground">
-              {line.productName}
-              {line.flavorName ? ` — ${line.flavorName}` : ''}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {line.variantName} · {formatPeso(line.unitPrice)} each
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            {line.hasOptionGroups && (
-              <Button variant="ghost" size="icon" className="app-control-square" onClick={() => onEdit(line.index)} aria-label="Edit">
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="app-control-square text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => onRemove(line.index)}
-              aria-label={`Remove ${line.productName} from cart`}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+          <p className="line-clamp-2 min-w-0 flex-1 text-[13px] font-semibold leading-snug text-foreground">
+            {line.productName}
+            {line.flavorName ? ` — ${line.flavorName}` : ''}
+          </p>
+          <p className="shrink-0 text-right text-sm font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
         </div>
+        <p className="text-xs text-muted-foreground">
+          {line.variantName} · {formatPeso(line.unitPrice)} each
+        </p>
 
         {hasOptionDetails && (
           // Plain text nodes (no nested elements) inside each <p> — Testing
@@ -131,7 +123,7 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             <Button
               variant="outline"
               size="icon"
-              className="app-control-square"
+              className="app-pos-cart-control"
               aria-label={`Decrease ${line.productName} quantity`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -144,7 +136,7 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             <Button
               variant="outline"
               size="icon"
-              className="app-control-square"
+              className="app-pos-cart-control"
               aria-label={`Increase ${line.productName} quantity`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -154,7 +146,22 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
               +
             </Button>
           </div>
-          <p className="text-right text-sm font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {line.hasOptionGroups && (
+              <Button variant="ghost" size="icon" className="app-pos-cart-control" onClick={() => onEdit(line.index)} aria-label="Edit">
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="app-pos-cart-control text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => onRemove(line.index)}
+              aria-label={`Remove ${line.productName} from cart`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>

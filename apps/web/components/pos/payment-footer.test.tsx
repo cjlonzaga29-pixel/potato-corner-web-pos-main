@@ -6,12 +6,7 @@ afterEach(() => cleanup());
 
 function baseProps() {
   return {
-    subtotal: 100,
-    vatAmount: 12,
-    discountAmount: 0,
     totalAmount: 100,
-    canManageVoidRefund: true,
-    onOpenVoidRefund: vi.fn(),
     discountType: 'none' as const,
     onDiscountTypeChange: vi.fn(),
     discountIdReference: '',
@@ -49,10 +44,6 @@ describe('PaymentFooter — compact density controls (Task 209.14)', () => {
   it('renders checkout controls with the density-aware app-control class instead of the fixed touch-target floor', () => {
     render(<PaymentFooter {...baseProps()} />);
 
-    const voidButton = screen.getByRole('button', { name: 'Void / Refund Sale' });
-    expect(voidButton).toHaveClass('app-control');
-    expect(voidButton).not.toHaveClass('touch-target');
-
     const cashInput = screen.getByPlaceholderText('Cash tendered');
     expect(cashInput).toHaveClass('app-control');
 
@@ -70,11 +61,6 @@ describe('PaymentFooter — compact density controls (Task 209.14)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
     expect(props.onCharge).toHaveBeenCalled();
-  });
-
-  it('still shows Void / Refund Sale only when canManageVoidRefund is true', () => {
-    render(<PaymentFooter {...baseProps()} canManageVoidRefund={false} />);
-    expect(screen.queryByRole('button', { name: 'Void / Refund Sale' })).not.toBeInTheDocument();
   });
 
   it('keeps the Charge button visually prominent via the pos button variant', () => {

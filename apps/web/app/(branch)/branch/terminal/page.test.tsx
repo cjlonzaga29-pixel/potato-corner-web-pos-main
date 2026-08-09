@@ -247,6 +247,20 @@ beforeEach(() => {
   mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
 });
 
+// Task 209.25 (checkout workspace architecture) — payment method, discount,
+// proof, Cash Tendered, Void/Refund, and the final Charge control all moved
+// out of the permanent cart into a dedicated CheckoutWorkspace opened by the
+// compact cart's own "Checkout ₱XXX.XX" button. Every test in this file
+// still runs at the default (desktop, fine-pointer) density — see
+// useDensityMode/useHasRoomForInlineCart's documented `true`/`'standard'`
+// defaults — so the workspace always opens in its two-pane layout, with
+// Order Review and Payment visible together and no separate "Continue to
+// Payment" step. Call this once before interacting with anything that used
+// to render directly in the sidebar footer.
+function openCheckout() {
+  fireEvent.click(screen.getByRole('button', { name: /^Checkout/ }));
+}
+
 describe('TerminalPage — live POS readiness', () => {
   beforeEach(() => {
     mockAddItem.mockClear();
@@ -722,6 +736,7 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     render(<TerminalPage />);
 
     expect(screen.getByText('Size: Large (+₱20.00)')).toBeInTheDocument();
+    openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '80' } });
     expect(screen.getByText('Cash tendered is ₱20.00 short.')).toBeInTheDocument();
   });
@@ -1044,6 +1059,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     render(<TerminalPage />);
 
     // unit price 80 + 10 = 90; ×3 = 270, short ₱20 of a ₱250 cash tender.
+    openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '250' } });
     expect(screen.getByText('Cash tendered is ₱20.00 short.')).toBeInTheDocument();
   });
@@ -1295,6 +1311,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('shows GCash with only a Payment Proof upload — no reference number field', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectTab('GCash');
 
     expect(screen.getByText('Payment Proof')).toBeInTheDocument();
@@ -1307,6 +1324,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('shows Maya with only a Payment Proof upload — no reference number field', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectTab('Maya');
 
     expect(screen.getByText('Payment Proof')).toBeInTheDocument();
@@ -1317,6 +1335,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('shows Other with only a Payment Proof upload — no reference/note field, same as GCash/Maya', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectTab('Other');
 
     expect(screen.getByText('Payment Proof')).toBeInTheDocument();
@@ -1328,6 +1347,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('keeps Charge disabled for GCash/Maya/Other until payment proof is captured, with cash unaffected', () => {
     render(<TerminalPage />);
+    openCheckout();
     // Cash is unchanged — still gated on cash tendered alone.
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
@@ -1339,6 +1359,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('uploads a gallery photo as payment proof for Other and enables Charge, sending payment_proof_key/type with no reference fields', async () => {
     render(<TerminalPage />);
+    openCheckout();
     selectTab('Other');
 
     const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
@@ -1366,6 +1387,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
   it('preserves cart and payment method when the proof upload fails, and allows retry without recapturing', async () => {
     mockUploadPaymentProofMutateAsync.mockRejectedValueOnce(new Error('Network error'));
     render(<TerminalPage />);
+    openCheckout();
     selectTab('Other');
 
     const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
@@ -1388,6 +1410,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('preserves cash tendered when switching to an online method and back', () => {
     render(<TerminalPage />);
+    openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
 
     selectTab('Other');
@@ -1399,6 +1422,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 
   it('never requires payment proof for cash — cash charge is unaffected by the proof-capture flow', () => {
     render(<TerminalPage />);
+    openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
 
     expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
@@ -1431,6 +1455,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('shows the PWD/Senior ID input and an optional Discount ID Proof upload once PWD is selected', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('PWD (20%)');
 
     expect(screen.getByPlaceholderText('PWD / Senior Citizen ID number')).toBeInTheDocument();
@@ -1440,6 +1465,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('never shows the discount ID input or proof upload for a non-PWD/Senior discount (e.g. Employee)', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('Employee (20%)');
 
     expect(screen.queryByPlaceholderText('PWD / Senior Citizen ID number')).not.toBeInTheDocument();
@@ -1448,6 +1474,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('enables Charge for a PWD discount once the ID number and cash tendered are filled, with no proof attached — proof is optional', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('PWD (20%)');
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
@@ -1458,6 +1485,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('still blocks Charge on a missing PWD/Senior ID number even when no proof is required', () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('Senior Citizen (20%)');
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
 
@@ -1466,6 +1494,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('uploads a gallery photo as discount proof and sends discount_proof_key/type alongside discount_type/discount_id_reference', async () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('Senior Citizen (20%)');
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'SC-000456' } });
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
@@ -1495,6 +1524,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
   it('preserves the discount selection and cart when the discount-proof upload fails, and allows retry without recapturing', async () => {
     mockUploadDiscountProofMutateAsync.mockRejectedValueOnce(new Error('Network error'));
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('PWD (20%)');
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
@@ -1521,6 +1551,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('Replace clears the attached proof and shows the upload control again', async () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('PWD (20%)');
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
 
@@ -1539,6 +1570,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('never sends discount_proof_key/type when the discount type is switched away from PWD/Senior, even if a proof was already attached', async () => {
     render(<TerminalPage />);
+    openCheckout();
     selectDiscount('PWD (20%)');
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
 
@@ -1562,6 +1594,7 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   it('never requires discount proof for a cash sale with no discount at all', () => {
     render(<TerminalPage />);
+    openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
 
     expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
@@ -1614,6 +1647,7 @@ describe('TerminalPage — attendance guard and inline Clock In', () => {
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
 
     render(<TerminalPage />);
+    openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
 
     expect(screen.getAllByText('Mega Mix Fries').length).toBeGreaterThan(0);
@@ -1641,17 +1675,19 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
 
   afterEach(() => cleanup());
 
-  it('disables Charge with "Add items to the cart to start a sale." for an empty cart', () => {
+  it('disables Checkout with "Add items to the cart to start a sale." for an empty cart, never reaching the workspace\'s Charge control', () => {
     mockCartItems.mockReturnValue([]);
     render(<TerminalPage />);
 
     expect(screen.getByText('Add items to the cart to start a sale.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Checkout/ })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
   });
 
   it('disables Charge with "Enter cash tendered." when cash is selected and tendered is blank', () => {
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 13 }]);
     render(<TerminalPage />);
+    openCheckout();
 
     expect(screen.getByText('Enter cash tendered.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
@@ -1661,6 +1697,7 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
     // 13 x price 100 = 1300 total (no VAT-cap flavors involved here).
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 13 }]);
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
 
@@ -1671,6 +1708,7 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
   it('enables Charge and shows change once cash tendered covers the total exactly', () => {
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
 
@@ -1681,6 +1719,7 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
   it('enables Charge and computes change when cash tendered exceeds the total', () => {
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '150' } });
 
@@ -1726,6 +1765,7 @@ describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () =
       },
     ]);
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '120' } });
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
@@ -1749,6 +1789,7 @@ describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () =
   it('omits selected_option_ids for a cart item with no options selected', async () => {
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
@@ -1768,6 +1809,7 @@ describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () =
       },
     ]);
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
@@ -1812,6 +1854,7 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
   it('keeps the cart intact and shows a human-readable error when the charge is rejected (session expired)', async () => {
     mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Session expired. Please sign in again.'));
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
@@ -1830,6 +1873,7 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
   it('keeps the cart intact when the charge fails on a network error', async () => {
     mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server. Please check your connection before trying again.'));
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
@@ -1842,6 +1886,7 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
   it('clears the cart exactly once, only after a confirmed successful charge', async () => {
     mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-1', receipt_number: 'BR-001' });
     render(<TerminalPage />);
+    openCheckout();
 
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
     fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
@@ -1853,6 +1898,7 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
   it('disables Charge and shows "Processing…" while the mutation is pending, so a second click cannot submit again', () => {
     mockCreateTransactionIsPending.mockReturnValue(true);
     render(<TerminalPage />);
+    openCheckout();
 
     const chargeButton = screen.getByRole('button', { name: /Processing/ });
     expect(chargeButton).toBeDisabled();
@@ -2082,7 +2128,7 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     render(<TerminalPage />);
 
     expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Checkout/ })).toBeInTheDocument();
   });
 
   it('shows a sticky View Cart button instead of the inline panel on a mobile-density viewport, and opens the cart in a Sheet on tap', () => {
@@ -2092,11 +2138,12 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     const viewCartButton = screen.getByRole('button', { name: /View Cart/ });
     expect(viewCartButton).toBeInTheDocument();
     // Single source of truth for the cart content — not duplicated in the
-    // DOM: the Charge button only exists once the Sheet is opened.
-    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+    // DOM: the compact cart's own Checkout button only exists once the
+    // Sheet is opened.
+    expect(screen.queryByRole('button', { name: /^Checkout/ })).not.toBeInTheDocument();
 
     fireEvent.click(viewCartButton);
-    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Checkout/ })).toBeInTheDocument();
   });
 
   it('falls back to the Sheet on a narrow compact-touch viewport (touch tablet, no room for the inline panel)', () => {
@@ -2104,7 +2151,7 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     render(<TerminalPage />);
 
     expect(screen.getByRole('button', { name: /View Cart/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Checkout/ })).not.toBeInTheDocument();
   });
 
   it('keeps the inline panel on a wide compact-touch viewport (touch laptop/2-in-1 with room for the panel)', () => {
@@ -2112,7 +2159,7 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     render(<TerminalPage />);
 
     expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Checkout/ })).toBeInTheDocument();
   });
 
   // Task 209.20 — a flex item's default min-height is `auto` (its content

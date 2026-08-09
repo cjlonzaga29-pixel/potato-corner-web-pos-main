@@ -14,7 +14,8 @@ import { Badge } from '@/components/ui/badge';
 import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { ProductCard } from '@/components/pos/product-card';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
-import { PaymentFooter, type DiscountChoice } from '@/components/pos/payment-footer';
+import type { DiscountChoice } from '@/components/pos/payment-footer';
+import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
 import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import type { PosCartSelectedOption } from '@/stores/cart.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -303,6 +304,14 @@ export default function TerminalPage() {
   const hasRoomForInlineCart = useHasRoomForInlineCart();
   const isDesktop = shouldShowInlineCart(densityMode, hasRoomForInlineCart);
   const [isCartSheetOpen, setIsCartSheetOpen] = useState(false);
+  // Task 209.25 — the dedicated Checkout Workspace (checkout-workspace.tsx)
+  // that now owns payment method/discount/proof/Cash Tendered/Charge; the
+  // permanent cart panel and mobile cart Sheet only ever show cart lines +
+  // a compact subtotal + this Checkout button. Opening it never creates a
+  // transaction, clears the cart, or touches any payment/discount/proof
+  // state — all of that still lives below, unchanged, and is only ever
+  // submitted by the workspace's own Charge/Confirm control.
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [flavorPrompt, setFlavorPrompt] = useState<{ product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] } | null>(null);
   const [slotPrompt, setSlotPrompt] = useState<{
     product: PosCatalogProduct;
@@ -830,6 +839,16 @@ export default function TerminalPage() {
 
   const openVoidRefund = useCallback(() => setIsVoidRefundOpen(true), []);
 
+  // Task 209.25 — Checkout button entry point, shared by the desktop inline
+  // cart panel and the mobile cart Sheet. Closes the mobile Sheet (Part O:
+  // "transition into the dedicated full-screen/step checkout" instead of
+  // squeezing payment UI into the bottom sheet) — a no-op on desktop, where
+  // the Sheet is never rendered.
+  const openCheckout = useCallback(() => {
+    setIsCheckoutOpen(true);
+    setIsCartSheetOpen(false);
+  }, []);
+
   // Async and re-throwing (rather than a fire-and-forget `.then()`) so
   // ImageUpload can await this, show "Upload Failed"/Retry on rejection, and
   // keep the captured file for a retry — cart, payment method, and cash
@@ -940,6 +959,12 @@ export default function TerminalPage() {
       const provisionalId = await enqueueOfflineTransaction(branchId.slice(0, 8), payload);
       clearCart();
       resetPaymentFields();
+      // Task 209.25 — close the workspace on a confirmed outcome (queued
+      // offline or, below, a successful sync online): the cart it was
+      // reviewing no longer exists. Left open on failure (the catch branch
+      // below never calls this) so the cashier lands back in Payment with
+      // the cart and every field exactly as entered, ready to retry.
+      setIsCheckoutOpen(false);
       setQueuedNotice(provisionalId);
       return;
     }
@@ -948,6 +973,7 @@ export default function TerminalPage() {
       const transaction = await createTransaction.mutateAsync(payload);
       clearCart();
       resetPaymentFields();
+      setIsCheckoutOpen(false);
       setReceipt(transaction);
     } catch (error) {
       setChargeError(error instanceof Error ? error.message : 'Failed to record transaction');
@@ -1080,14 +1106,52 @@ export default function TerminalPage() {
       </div>
     );
 
-  const paymentFooterElement = (
-    <PaymentFooter
+  // Task 209.25 — the permanent cart's own footer: compact subtotal + the
+  // Checkout button that opens the dedicated workspace below. Never renders
+  // payment method, discount, proof, Cash Tendered, or the final Charge
+  // control — see checkoutWorkspaceElement for those. Disabled purely on an
+  // empty cart; the deeper per-payment-method validation
+  // (chargeDisabledReason) only ever gates the workspace's own Confirm
+  // button, not this entry point.
+  const checkoutBarElement = (
+    <div className="app-pos-footer shrink-0 border-t bg-card">
+      <div className="app-pos-total-row flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">Subtotal</span>
+        <span className="tabular-nums text-base font-semibold">{formatPeso(subtotal)}</span>
+      </div>
+      {/* The one validation rule that actually blocks *reaching* checkout
+          (an empty cart) surfaces here, next to the control it disables.
+          Every payment-method/discount-specific reason below that still
+          gates the workspace's own Confirm button (chargeDisabledReason)
+          only makes sense once the cashier is inside the workspace, so it
+          stays there instead of duplicating here. */}
+      {cartLines.length === 0 && (
+        <Alert className="border-none bg-muted px-3 py-1.5" role="status" aria-live="polite">
+          <AlertDescription className="app-pos-helper-text font-medium text-foreground">Add items to the cart to start a sale.</AlertDescription>
+        </Alert>
+      )}
+      <Button variant="pos" className="w-full" disabled={cartLines.length === 0} onClick={openCheckout}>
+        Checkout {formatPeso(totalAmount)}
+      </Button>
+    </div>
+  );
+
+  // Task 209.25 — consumes the same cart/payment/discount/proof state and
+  // totals/validation/charge-handler as before (no duplicated pricing or
+  // transaction logic); only which pane is visible responsively is new.
+  const checkoutWorkspaceElement = (
+    <CheckoutWorkspace
+      open={isCheckoutOpen}
+      onOpenChange={setIsCheckoutOpen}
+      layout={isDesktop ? 'two-pane' : 'stepped'}
+      cartLines={cartLines}
+      onEditLine={handleEditLine}
+      onRemoveLine={removeItem}
+      onQuantityChange={updateItemQuantity}
       subtotal={subtotal}
       vatAmount={vatAmount}
       discountAmount={discountAmount}
       totalAmount={totalAmount}
-      canManageVoidRefund={canManageVoidRefund}
-      onOpenVoidRefund={openVoidRefund}
       discountType={discountType}
       onDiscountTypeChange={setDiscountType}
       discountIdReference={discountIdReference}
@@ -1342,31 +1406,57 @@ export default function TerminalPage() {
         )}
       </div>
 
-      {/* RIGHT PANEL — cart + payment. Width is density-aware via --app-pos-cart-width (Task 209.20: ~28% fine-pointer, 32% compact-touch for bigger touch targets), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone.
+      {/* RIGHT PANEL — compact order-building cart only (Task 209.25): cart
+          lines, a compact subtotal, and the Checkout button. Payment method,
+          discount, proof, Cash Tendered, and the final Charge control all
+          moved to CheckoutWorkspace (rendered once, below, alongside
+          ReceiptModal/VoidRefundSaleDialog) — never rendered permanently
+          here regardless of payment method, discount type, or proof/camera
+          state. Width is density-aware via --app-pos-cart-width (Task
+          209.20: ~28% fine-pointer, 32% compact-touch for bigger touch
+          targets), independent scroll region. Below `lg`, this panel is
+          replaced by a sticky "View Cart" bar + Sheet (rendered further
+          down) so the product catalog is what a cashier sees first on a
+          phone.
           Task 209.20 — `min-h-0`/`lg:min-h-0` on this panel and its scroll
           region (below) so only the cart-items list scrolls internally; the
           compact header (`.app-pos-cart-header`) and the checkout footer
-          (`paymentFooterElement`) stay `flex-shrink-0` so Charge is never
+          (`checkoutBarElement`) stay `flex-shrink-0` so Checkout is never
           pushed offscreen by a long cart. */}
       {isDesktop && (
         <div className="app-pos-cart-width hidden min-h-0 flex-col border-t lg:flex lg:min-h-0 lg:flex-none lg:overflow-hidden lg:border-t-0">
-          <div className="app-pos-cart-header flex shrink-0 items-center justify-between border-b bg-card px-3">
+          <div className="app-pos-cart-header flex shrink-0 items-center justify-between gap-2 border-b bg-card px-3">
             <h2 className="text-sm font-semibold">Cart</h2>
-            {cartLines.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                {cartLines.reduce((sum, l) => sum + l.quantity, 0)} item{cartLines.reduce((sum, l) => sum + l.quantity, 0) === 1 ? '' : 's'}
-              </span>
-            )}
+            <span className="flex shrink-0 items-center gap-2">
+              {cartLines.length > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {cartLines.reduce((sum, l) => sum + l.quantity, 0)} item{cartLines.reduce((sum, l) => sum + l.quantity, 0) === 1 ? '' : 's'}
+                </span>
+              )}
+              {/* Task 209.25 (Part M) — Void/Refund is sale-level
+                  functionality on a *previous* sale, independent of the
+                  current cart, so it stays reachable here rather than inside
+                  CheckoutWorkspace (which an empty cart can't even open). */}
+              {canManageVoidRefund && (
+                <Button type="button" variant="ghost" className="app-control px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={openVoidRefund}>
+                  Void / Refund Sale
+                </Button>
+              )}
+            </span>
           </div>
           <div className="min-h-0 p-3 lg:flex-1 lg:overflow-y-auto">
             {cartLinesList}
           </div>
-          {paymentFooterElement}
+          {checkoutBarElement}
         </div>
       )}
       </div>
 
-      {/* Mobile cart access — sticky bar + Sheet, only below `lg`. isDesktop defaults true (see shouldShowInlineCart / useHasRoomForInlineCart), so this branch never mounts in a non-browser/test environment. */}
+      {/* Mobile cart access — sticky bar + Sheet, only below `lg`. isDesktop defaults true (see shouldShowInlineCart / useHasRoomForInlineCart), so this branch never mounts in a non-browser/test environment.
+          Task 209.25 (Part O) — the Sheet stays cart-review-only (lines +
+          compact subtotal + Checkout), same as the desktop panel; Checkout
+          closes the Sheet and opens the full-screen/step CheckoutWorkspace
+          instead of squeezing payment UI into the bottom sheet. */}
       {!isDesktop && (
         <>
           <div className="sticky bottom-0 z-20 border-t bg-card p-3 lg:hidden">
@@ -1385,15 +1475,22 @@ export default function TerminalPage() {
 
           <Sheet open={isCartSheetOpen} onOpenChange={setIsCartSheetOpen}>
             <SheetContent side="bottom" className="flex h-[92vh] flex-col gap-0 p-0">
-              <SheetHeader className="border-b p-3 text-left">
+              <SheetHeader className="flex-row items-center justify-between gap-2 space-y-0 border-b p-3 text-left">
                 <SheetTitle>Cart</SheetTitle>
+                {canManageVoidRefund && (
+                  <Button type="button" variant="ghost" className="app-control shrink-0 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={openVoidRefund}>
+                    Void / Refund Sale
+                  </Button>
+                )}
               </SheetHeader>
               <div className="flex-1 overflow-y-auto p-3">{cartLinesList}</div>
-              {paymentFooterElement}
+              {checkoutBarElement}
             </SheetContent>
           </Sheet>
         </>
       )}
+
+      {checkoutWorkspaceElement}
 
       <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />
 

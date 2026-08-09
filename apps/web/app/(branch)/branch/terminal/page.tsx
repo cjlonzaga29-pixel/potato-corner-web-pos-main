@@ -1285,8 +1285,15 @@ export default function TerminalPage() {
       {/* RIGHT PANEL — cart + payment. Width is density-aware via --app-pos-cart-width (Task 200: standard/comfortable ~30%, compact-touch ~32% for bigger touch targets), independent scroll region, sticky checkout summary. Below `lg`, this panel is replaced by a sticky "View Cart" bar + Sheet (rendered further down) so the product catalog is what a cashier sees first on a phone. */}
       {isDesktop && (
         <div className="app-pos-cart-width hidden flex-col border-t lg:flex lg:flex-none lg:overflow-hidden lg:border-t-0">
+          <div className="flex items-center justify-between border-b bg-card px-3 py-2">
+            <h2 className="text-sm font-semibold">Cart</h2>
+            {cartLines.length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {cartLines.reduce((sum, l) => sum + l.quantity, 0)} item{cartLines.reduce((sum, l) => sum + l.quantity, 0) === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
           <div className="p-3 lg:flex-1 lg:overflow-y-auto">
-            <h2 className="sr-only">Cart</h2>
             {cartLinesList}
           </div>
           {paymentFooterElement}

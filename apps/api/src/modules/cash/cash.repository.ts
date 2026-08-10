@@ -32,8 +32,9 @@ export const cashRepository = {
     });
   },
 
-  findShiftById(id: string) {
-    return prisma.shift.findUnique({ where: { id }, include: shiftInclude });
+  findShiftById(id: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.shift.findUnique({ where: { id }, include: shiftInclude });
   },
 
   findUserById(id: string) {

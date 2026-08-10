@@ -95,6 +95,18 @@ describe('cashRepository.findShiftById', () => {
 
     expect(prisma.shift.findUnique).toHaveBeenCalledWith({ where: { id: 'shift-1' }, include: { denominations: true } });
   });
+
+  // Task 209.52A — closeShift's post-lock re-check must read through the
+  // same tx client the lock was taken on, not root prisma.
+  it('reads through the given transaction client instead of root prisma when one is passed', async () => {
+    const txFindUnique = vi.fn().mockResolvedValue(null);
+    const tx = { shift: { findUnique: txFindUnique } };
+
+    await cashRepository.findShiftById('shift-1', tx as never);
+
+    expect(txFindUnique).toHaveBeenCalledWith({ where: { id: 'shift-1' }, include: { denominations: true } });
+    expect(prisma.shift.findUnique).not.toHaveBeenCalled();
+  });
 });
 
 describe('cashRepository.createShift', () => {

@@ -514,6 +514,17 @@ export const cashService = {
     const { updated, sales, counts, expectedClosingCash, cashVariance, status } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${branchShiftLockId(shift.branchId)})`;
 
+      // Re-check status after acquiring the lock (Task 209.52A) — a second
+      // concurrent closeShift for this same shift can pass the pre-lock
+      // check above and then block on the lock while the first call closes
+      // it; without re-reading here (through the SAME tx client) the second
+      // call would proceed to double-close and double-write denomination
+      // rows once the lock is released.
+      const lockedShift = (await cashRepository.findShiftById(id, tx)) as ShiftRow | null;
+      if (!lockedShift || lockedShift.status !== 'active') {
+        throw new CashError('SHIFT_NOT_OPEN', 'Only an open shift can be closed', 409);
+      }
+
       const [sales, counts, cashRefundsProcessedDuringShift] = await Promise.all([
         cashRepository.sumTransactionsForShift(id, tx),
         cashRepository.sumTransactionCountsForShift(id, tx),

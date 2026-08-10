@@ -749,6 +749,53 @@ describe('cashService.closeShift', () => {
 
     expect(notifyBranch).not.toHaveBeenCalledWith(expect.anything(), 'cash:variance_flagged', expect.anything());
   });
+
+  // Task 209.52A — the Postgres advisory lock (branchShiftLockId) is what
+  // actually serializes two real concurrent closeShift calls; that can't be
+  // observed through this fully-mocked repository/prisma. What's under test
+  // here is the service-level consequence once the lock has done its job:
+  // call A's pre-lock check and call B's pre-lock check can both observe
+  // 'active' (that's the race), but only one of them can win the lock and
+  // commit first. The loser's re-read *through the same tx client*, taken
+  // immediately after it finally acquires the lock, must see call A's
+  // already-'closed' status and abort — never reaching cashRepository.closeShift
+  // a second time.
+  it('rejects the losing side of a concurrent close race with 409 SHIFT_NOT_OPEN once the lock reveals the shift was already closed (Task 209.52A)', async () => {
+    const activeShift = shiftRow({ status: 'active' });
+    const closedShift = shiftRow({ status: 'closed', closedBy: SUPERVISOR.id });
+
+    vi.mocked(cashRepository.findShiftById)
+      .mockResolvedValueOnce(activeShift as never) // call A — pre-lock check
+      .mockResolvedValueOnce(activeShift as never) // call A — post-lock re-check
+      .mockResolvedValueOnce(activeShift as never) // call B — pre-lock check (raced ahead of A's commit)
+      .mockResolvedValueOnce(closedShift as never); // call B — post-lock re-check (A has since committed)
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0, gcashSalesCount: 0, mayaSalesCount: 0, otherSalesCount: 0, voidedCount: 0, refundedCount: 0,
+      totalTransactionCount: 0, totalDiscountAmount: 0, pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
+
+    const denominations = [{ denomination: 1000, quantity: 1 }];
+    const resultA = await cashService.closeShift('shift-1', { denominations }, SUPERVISOR, null);
+    await expect(cashService.closeShift('shift-1', { denominations }, SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'SHIFT_NOT_OPEN',
+      statusCode: 409,
+    });
+
+    expect(resultA.status).toBe('closed');
+    // Only call A's close reached the write — no double-close, and therefore
+    // no duplicate ShiftCashDenomination rows and no second overwrite of
+    // expectedClosingCash/closingCashAmount/cashVariance.
+    expect(cashRepository.closeShift).toHaveBeenCalledTimes(1);
+  });
 });
 
 // Task 209.41 Parts E/F/G/H — CASH refunds paid out of this shift's drawer
@@ -814,8 +861,12 @@ describe('cashService.closeShift — CASH refund processing-shift accounting (Ta
 
     await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 300, quantity: 1 }] }, SUPERVISOR, null);
 
-    expect(cashRepository.findShiftById).toHaveBeenCalledTimes(1);
-    expect(cashRepository.findShiftById).toHaveBeenCalledWith('shift-1');
+    // Called twice for this same shift — the pre-lock status check, and the
+    // post-lock re-check (Task 209.52A) — never for any other shift.
+    expect(cashRepository.findShiftById).toHaveBeenCalledTimes(2);
+    for (const call of vi.mocked(cashRepository.findShiftById).mock.calls) {
+      expect(call[0]).toBe('shift-1');
+    }
     expect(cashRepository.closeShift).toHaveBeenCalledTimes(1);
     expect(vi.mocked(cashRepository.closeShift).mock.calls[0]?.[0]).toBe('shift-1');
   });

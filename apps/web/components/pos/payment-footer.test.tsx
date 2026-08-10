@@ -184,3 +184,48 @@ describe('PaymentFooter — proof card padding governed by the density token (Ta
     expect(proofCard).toHaveStyle({ padding: 'var(--app-pos-proof-padding)' });
   });
 });
+
+// Task 209.29 — the `section` prop lets the stepped/mobile checkout render
+// this form across separate steps (Payment fields, a scrollable Proof area,
+// and a structurally distinct Confirm action bar) instead of one long form.
+// `section` undefined (every test above) must keep rendering every group
+// together, unchanged — these guard the 3 new subsets in isolation.
+describe('PaymentFooter — section prop splits fields/proof/confirm for the stepped checkout (Task 209.29)', () => {
+  it('section="fields" renders payment method/discount/cash fields but no proof cards or Charge button', () => {
+    render(<PaymentFooter {...baseProps()} section="fields" discountType="pwd" paymentMethod="gcash" />);
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('PWD / Senior Citizen ID number')).toBeInTheDocument();
+    expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
+    expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+  });
+
+  it('section="proof" renders only the applicable proof cards — no fields, no Charge button', () => {
+    render(<PaymentFooter {...baseProps()} section="proof" discountType="pwd" paymentMethod="gcash" />);
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.getByText('Discount ID Proof')).toBeInTheDocument();
+    expect(screen.getByText('Payment Proof')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+  });
+
+  it('section="proof" renders nothing for cash + no discount (no proof requirement)', () => {
+    const { container } = render(<PaymentFooter {...baseProps()} section="proof" />);
+    expect(container.querySelector('.app-pos-footer')).toBeEmptyDOMElement();
+  });
+
+  it('section="confirm" renders only the validation alerts and Charge button — no fields, no proof cards', () => {
+    render(<PaymentFooter {...baseProps()} section="confirm" discountType="pwd" paymentMethod="gcash" chargeDisabledReason="Upload payment proof before continuing." />);
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
+    expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
+    expect(screen.getByText('Upload payment proof before continuing.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+
+  it('fires onCharge from section="confirm" just like the unsplit form', () => {
+    const props = baseProps();
+    render(<PaymentFooter {...props} section="confirm" />);
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+    expect(props.onCharge).toHaveBeenCalled();
+  });
+});

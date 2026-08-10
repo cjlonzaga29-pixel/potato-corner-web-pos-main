@@ -115,6 +115,16 @@ export function PaymentPanel(props: PaymentFooterProps & { className?: string })
   );
 }
 
+// Task 209.29 — whether the stepped/mobile checkout needs a dedicated Proof
+// step at all, purely a function of the same discountType/paymentMethod
+// PaymentFooter itself already branches on (no new validation rule). When
+// neither a discount ID proof nor a payment proof applies (e.g. no discount,
+// paying cash), the Payment step's own CTA becomes Confirm directly — an
+// empty "Proof" step with nothing to attach would just be an extra tap.
+function needsProofStep(discountType: PaymentFooterProps['discountType'], paymentMethod: PaymentFooterProps['paymentMethod']): boolean {
+  return discountType === 'pwd' || discountType === 'senior_citizen' || paymentMethod !== 'cash';
+}
+
 interface CheckoutWorkspaceProps extends PaymentFooterProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -160,8 +170,9 @@ export function CheckoutWorkspace({
   discountAmount,
   ...paymentFooterProps
 }: CheckoutWorkspaceProps) {
-  const { totalAmount, isChargePending } = paymentFooterProps;
-  const [step, setStep] = useState<'review' | 'payment'>('review');
+  const { totalAmount, isChargePending, discountType, paymentMethod } = paymentFooterProps;
+  const [step, setStep] = useState<'review' | 'payment' | 'proof'>('review');
+  const requiresProofStep = needsProofStep(discountType, paymentMethod);
 
   // Task 209.25 — every reopen starts back on Order Review, same as a fresh
   // checkout would; this never touches cart/payment/discount/proof state,
@@ -204,11 +215,25 @@ export function CheckoutWorkspace({
         // that reliably wins regardless of CSS source order; the workspace
         // manages its own section padding per-region instead (header/panes/
         // footer each carry `.app-pos-section-padding`/`.app-pos-footer`).
+        // Task 209.29 — the base DialogContent className (dialog.tsx) always
+        // carries `overflow-y-auto` for its own default max-h-[calc(100vh-2rem)]
+        // sizing; neither layout variant below overrides it, so every
+        // checkout dialog was quietly getting a SECOND, outer scroll
+        // container around the workspace's own intentional scroll regions
+        // (OrderReviewPanel's list, PaymentPanel/PaymentFooter's proof-step
+        // area). On real touch devices this nested-scroll setup is exactly
+        // what produced "can't reliably scroll" / "bottom action not
+        // reachable" — the outer auto-scroll region and the inner one fight
+        // over the same touch gesture. `overflow-hidden` here (twMerge
+        // removes the base `overflow-y-auto` for it — same `overflow`/
+        // `overflow-y` conflict group tailwind-merge already resolves
+        // elsewhere in this file) makes the workspace's inner regions the
+        // only things that ever scroll, in both layouts.
         style={{ padding: 0 }}
         className={
           layout === 'two-pane'
-            ? 'flex h-[min(88vh,800px)] max-h-[min(88vh,800px)] w-[min(96vw,1200px)] max-w-[min(96vw,1200px)] flex-col gap-0'
-            : 'flex h-[100dvh] max-h-[100dvh] w-screen max-w-none flex-col gap-0 rounded-none sm:h-[90vh] sm:max-h-[90vh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl'
+            ? 'flex h-[min(88dvh,800px)] max-h-[min(88dvh,800px)] w-[min(96vw,1200px)] max-w-[min(96vw,1200px)] flex-col gap-0 overflow-hidden'
+            : 'flex h-[100dvh] max-h-[100dvh] w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none sm:h-[90dvh] sm:max-h-[90dvh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl'
         }
       >
         <DialogHeader className="app-pos-section-padding shrink-0 border-b text-left">
@@ -229,7 +254,7 @@ export function CheckoutWorkspace({
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            {step === 'review' ? (
+            {step === 'review' && (
               <>
                 {reviewPanel}
                 <div className="app-pos-footer shrink-0 border-t">
@@ -238,14 +263,51 @@ export function CheckoutWorkspace({
                   </Button>
                 </div>
               </>
-            ) : (
+            )}
+            {step === 'payment' && (
               <>
                 <div className="app-pos-section-padding shrink-0 border-b py-2">
                   <Button variant="ghost" size="sm" className="app-control -ml-2" onClick={() => setStep('review')}>
                     ← Back
                   </Button>
                 </div>
-                {paymentPanel}
+                <PaymentPanel {...paymentFooterProps} section="fields" />
+                {/* Task 209.29 (Part D/N) — a structurally separate,
+                    shrink-0 action bar below the scrollable fields, same
+                    pattern as OrderReviewPanel's totals footer. When no
+                    discount ID or payment proof applies, this step is
+                    already the last one, so it renders the real Confirm
+                    control (section="confirm": validation alerts + Charge)
+                    instead of an extra "Continue" tap into an empty Proof
+                    step. PaymentFooter's own root already carries
+                    `.app-pos-footer` (padding+gap), so the "Continue"
+                    button — the one branch with no PaymentFooter inside —
+                    is the only one that needs it added on the wrapper
+                    itself; adding it to both would double the padding. */}
+                {requiresProofStep ? (
+                  <div className="app-pos-footer shrink-0 border-t">
+                    <Button variant="pos" className="w-full" onClick={() => setStep('proof')}>
+                      Continue
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="shrink-0 border-t">
+                    <PaymentFooter {...paymentFooterProps} section="confirm" />
+                  </div>
+                )}
+              </>
+            )}
+            {step === 'proof' && (
+              <>
+                <div className="app-pos-section-padding shrink-0 border-b py-2">
+                  <Button variant="ghost" size="sm" className="app-control -ml-2" onClick={() => setStep('payment')}>
+                    ← Back
+                  </Button>
+                </div>
+                <PaymentPanel {...paymentFooterProps} section="proof" />
+                <div className="shrink-0 border-t">
+                  <PaymentFooter {...paymentFooterProps} section="confirm" />
+                </div>
               </>
             )}
           </div>

@@ -64,7 +64,18 @@ const VOID_REFUND_ENTRY_ROLES: readonly string[] = [ROLES.SUPER_ADMIN, ROLES.SUP
 // no matchMedia) and only ever flips based on a real matchMedia result, so
 // no existing test needs to simulate opening a drawer to reach the cart —
 // they keep seeing the same inline panel as before.
-function useHasRoomForInlineCart(query = '(min-width: 1024px)'): boolean {
+//
+// Task 209.29 (Part F) — the query used to be width-only, so a coarse-
+// pointer (compact-touch) tablet in landscape at, say, 1024x500 (a
+// constrained/split-screen tablet) was classified as "has room" purely on
+// width and got the full two-pane Checkout Workspace squeezed into a short
+// viewport. `min-height` is added so 2-pane is only ever chosen when BOTH
+// dimensions actually have room — a genuinely short landscape tablet now
+// falls back to the same stepped checkout phones/portrait tablets already
+// get. 640px is comfortably below common tablet landscape heights (a 1024x768
+// iPad landscape, 1280x800 Android tablets) while still catching real
+// constrained/split-screen cases.
+function useHasRoomForInlineCart(query = '(min-width: 1024px) and (min-height: 640px)'): boolean {
   const [hasRoom, setHasRoom] = useState(true);
 
   useEffect(() => {
@@ -1504,7 +1515,13 @@ export default function TerminalPage() {
           </div>
 
           <Sheet open={isCartSheetOpen} onOpenChange={setIsCartSheetOpen}>
-            <SheetContent side="bottom" className="flex h-[92vh] flex-col gap-0 p-0">
+            {/* Task 209.29 — `dvh` instead of `vh`: a fixed `vh` is measured
+                against the viewport with mobile browser chrome (URL bar/nav)
+                collapsed, so once that chrome is showing, `92vh` can extend
+                past what's actually visible and push `checkoutBarElement`'s
+                Checkout button below the fold. `dvh` tracks the browser's
+                actual visible viewport as chrome shows/hides. */}
+            <SheetContent side="bottom" className="flex h-[92dvh] flex-col gap-0 p-0">
               <SheetHeader className="flex-row items-center justify-between gap-2 space-y-0 border-b p-3 text-left">
                 <SheetTitle>Cart</SheetTitle>
                 {canManageVoidRefund && (

@@ -101,6 +101,20 @@ interface PaymentFooterProps {
   canCharge: boolean;
   isChargePending: boolean;
   onCharge: () => void;
+  /**
+   * Task 209.29 — lets the stepped/mobile checkout split this single form
+   * across steps (Payment fields, then a scrollable Proof area, then a
+   * structurally separate Confirm control) instead of rendering everything
+   * in one long scroll behind a compressed desktop sidebar. `'confirm'` is
+   * its own group (not bundled with `'proof'`) so the Charge button can sit
+   * in a `shrink-0` action bar outside whatever scrolls, per the owner's
+   * "bottom action always reachable" requirement. `undefined` (the
+   * two-pane/desktop default) renders every group together in the same
+   * order as before this task — no behavior change there. No value/handler/
+   * validation logic is duplicated between groups; this only ever gates
+   * which JSX renders.
+   */
+  section?: 'fields' | 'proof' | 'confirm';
 }
 
 /**
@@ -167,7 +181,11 @@ export const PaymentFooter = memo(function PaymentFooter({
   canCharge,
   isChargePending,
   onCharge,
+  section,
 }: PaymentFooterProps) {
+  const showFields = section === undefined || section === 'fields';
+  const showProof = section === undefined || section === 'proof';
+  const showConfirm = section === undefined || section === 'confirm';
   return (
     // Task 209.20 — `.app-pos-footer` replaces the old fixed `p-3 lg:p-2.5` /
     // `space-y-2.5 lg:space-y-1.5` pair, which keyed density purely off the
@@ -179,152 +197,165 @@ export const PaymentFooter = memo(function PaymentFooter({
     // scroll region), not as a footer pinned below a separately-scrolling
     // cart-items list.
     <div className="app-pos-footer">
-      {/* Task 209.8 — Payment Method surfaces before Discount Type: the cashier picks how the customer is paying first, then applies any discount on top of that. Purely a visual reorder; onPaymentMethodChange/onDiscountTypeChange and every value they carry are unchanged.
-          Task 209.14 — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-11/h-9, same pattern as the terminal page's category filter tabs. */}
-      <Tabs value={paymentMethod} onValueChange={(v) => onPaymentMethodChange(v as 'cash' | 'gcash' | 'maya' | 'other')}>
-        <TabsList className="app-control w-full items-stretch">
-          <TabsTrigger value="cash" className="h-full flex-1">
-            Cash
-          </TabsTrigger>
-          <TabsTrigger value="gcash" className="h-full flex-1" disabled={!isOnline}>
-            GCash
-          </TabsTrigger>
-          <TabsTrigger value="maya" className="h-full flex-1" disabled={!isOnline}>
-            Maya
-          </TabsTrigger>
-          <TabsTrigger value="other" className="h-full flex-1" disabled={!isOnline}>
-            Other
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-      {!isOnline && paymentMethod === 'cash' && (
-        <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — payment proof can only be captured while connected.</p>
-      )}
-
-      <Select value={discountType} onValueChange={(v) => onDiscountTypeChange(v as DiscountChoice)}>
-        <SelectTrigger className="app-control">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {(Object.keys(DISCOUNT_LABELS) as DiscountChoice[]).map((value) => (
-            <SelectItem key={value} value={value}>
-              {DISCOUNT_LABELS[value]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {(discountType === 'pwd' || discountType === 'senior_citizen') && (
+      {showFields && (
         <>
-          <Input
-            className="app-control"
-            placeholder="PWD / Senior Citizen ID number"
-            value={discountIdReference}
-            onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
-          />
-          <Card className="rounded-lg shadow-none">
-            {/* Task 209.23 — `CardContent`'s own default `p-4 sm:p-6` (card.tsx)
-                is a plain Tailwind utility class, and `.app-pos-proof-padding`
-                is not one twMerge recognizes as conflicting with it — both
-                would otherwise sit side by side in the DOM with the winner
-                decided by CSS cascade order rather than intent. An inline
-                style has unconditional priority over any class-based rule, so
-                the density token is the only thing that can ever govern this
-                padding. */}
-            <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
-              {discountProofKey ? (
-                <ProofSummary label="Discount ID proof attached" previewUrl={discountProofPreviewUrl} onClear={onClearDiscountProof} />
-              ) : (
-                <ImageUpload
-                  label="Discount ID Proof"
-                  description="Optional — a clear photo of the PWD/Senior Citizen ID for compliance records."
-                  onImageSelected={onDiscountProofSelected}
-                />
-              )}
-            </CardContent>
-          </Card>
+          {/* Task 209.8 — Payment Method surfaces before Discount Type: the cashier picks how the customer is paying first, then applies any discount on top of that. Purely a visual reorder; onPaymentMethodChange/onDiscountTypeChange and every value they carry are unchanged.
+              Task 209.14 — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-11/h-9, same pattern as the terminal page's category filter tabs. */}
+          <Tabs value={paymentMethod} onValueChange={(v) => onPaymentMethodChange(v as 'cash' | 'gcash' | 'maya' | 'other')}>
+            <TabsList className="app-control w-full items-stretch">
+              <TabsTrigger value="cash" className="h-full flex-1">
+                Cash
+              </TabsTrigger>
+              <TabsTrigger value="gcash" className="h-full flex-1" disabled={!isOnline}>
+                GCash
+              </TabsTrigger>
+              <TabsTrigger value="maya" className="h-full flex-1" disabled={!isOnline}>
+                Maya
+              </TabsTrigger>
+              <TabsTrigger value="other" className="h-full flex-1" disabled={!isOnline}>
+                Other
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {!isOnline && paymentMethod === 'cash' && (
+            <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — payment proof can only be captured while connected.</p>
+          )}
+
+          <Select value={discountType} onValueChange={(v) => onDiscountTypeChange(v as DiscountChoice)}>
+            <SelectTrigger className="app-control">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(DISCOUNT_LABELS) as DiscountChoice[]).map((value) => (
+                <SelectItem key={value} value={value}>
+                  {DISCOUNT_LABELS[value]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {(discountType === 'pwd' || discountType === 'senior_citizen') && (
+            <Input
+              className="app-control"
+              placeholder="PWD / Senior Citizen ID number"
+              value={discountIdReference}
+              onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
+            />
+          )}
+          {discountType === 'promotional' && (
+            <Input
+              className="app-control"
+              type="number"
+              min={0}
+              placeholder="Promo discount amount"
+              value={promoAmount}
+              onChange={(e) => onPromoAmountChange(e.target.value)}
+            />
+          )}
+
+          {paymentMethod === 'cash' && (
+            <div className="space-y-1">
+              <Input
+                className="app-control"
+                type="number"
+                min={0}
+                placeholder="Cash tendered"
+                value={cashTendered}
+                onChange={(e) => onCashTenderedChange(e.target.value)}
+              />
+              <p className="app-pos-helper-text text-muted-foreground">Change: {formatPeso(change)}</p>
+            </div>
+          )}
         </>
       )}
-      {discountType === 'promotional' && (
-        <Input
-          className="app-control"
-          type="number"
-          min={0}
-          placeholder="Promo discount amount"
-          value={promoAmount}
-          onChange={(e) => onPromoAmountChange(e.target.value)}
-        />
+
+      {showProof && (
+        <>
+          {(discountType === 'pwd' || discountType === 'senior_citizen') && (
+            <Card className="rounded-lg shadow-none">
+              {/* Task 209.23 — `CardContent`'s own default `p-4 sm:p-6` (card.tsx)
+                  is a plain Tailwind utility class, and `.app-pos-proof-padding`
+                  is not one twMerge recognizes as conflicting with it — both
+                  would otherwise sit side by side in the DOM with the winner
+                  decided by CSS cascade order rather than intent. An inline
+                  style has unconditional priority over any class-based rule, so
+                  the density token is the only thing that can ever govern this
+                  padding. */}
+              <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
+                {discountProofKey ? (
+                  <ProofSummary label="Discount ID proof attached" previewUrl={discountProofPreviewUrl} onClear={onClearDiscountProof} />
+                ) : (
+                  <ImageUpload
+                    label="Discount ID Proof"
+                    description="Optional — a clear photo of the PWD/Senior Citizen ID for compliance records."
+                    onImageSelected={onDiscountProofSelected}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
+            <Card className="rounded-lg shadow-none">
+              <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
+                {paymentProofKey ? (
+                  <ProofSummary label="Payment proof attached" previewUrl={paymentProofPreviewUrl} onClear={onClearProof} />
+                ) : (
+                  <ImageUpload
+                    label="Payment Proof"
+                    description="Upload a clear screenshot or photo of the successful payment."
+                    required
+                    onImageSelected={onProofSelected}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
-      {paymentMethod === 'cash' && (
-        <div className="space-y-1">
-          <Input
-            className="app-control"
-            type="number"
-            min={0}
-            placeholder="Cash tendered"
-            value={cashTendered}
-            onChange={(e) => onCashTenderedChange(e.target.value)}
-          />
-          <p className="app-pos-helper-text text-muted-foreground">Change: {formatPeso(change)}</p>
-        </div>
-      )}
+      {showConfirm && (
+        <>
+          {chargeError && (
+            <Alert variant="destructive" className="px-3 py-1.5" role="alert">
+              <AlertDescription className="app-pos-helper-text">{chargeError}</AlertDescription>
+            </Alert>
+          )}
 
-      {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
-        <Card className="rounded-lg shadow-none">
-          <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
-            {paymentProofKey ? (
-              <ProofSummary label="Payment proof attached" previewUrl={paymentProofPreviewUrl} onClear={onClearProof} />
+          {chargeDisabledReason && (
+            <Alert className="border-none bg-muted px-3 py-1.5" role="status" aria-live="polite">
+              <AlertDescription className="app-pos-helper-text font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
+            </Alert>
+          )}
+
+          {/* Task 209.20 — `touch-target` (a fixed 48px floor) used to sit
+              alongside `.app-pos-cta` (the density-aware token the `pos` variant
+              already applies), and `min-height:48px` always won regardless of
+              density — the Charge button was never actually shrinking on
+              fine-pointer laptops/desktops the way every other checkout control
+              already had been. Dropping both `touch-target` and the fixed `lg`
+              size lets `.app-pos-cta` (38-42px fine-pointer, 44px touch/
+              comfortable — see globals.css) govern its height like everywhere
+              else; touch/mobile tiers are untouched since 44px was already
+              their floor either way. */}
+          <Button
+            variant="pos"
+            className="w-full"
+            disabled={!canCharge}
+            aria-busy={isChargePending}
+            onClick={onCharge}
+          >
+            {isChargePending ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />
+                Processing…
+              </>
             ) : (
-              <ImageUpload
-                label="Payment Proof"
-                description="Upload a clear screenshot or photo of the successful payment."
-                required
-                onImageSelected={onProofSelected}
-              />
+              `Charge ${formatPeso(totalAmount)}`
             )}
-          </CardContent>
-        </Card>
+          </Button>
+        </>
       )}
-
-      {chargeError && (
-        <Alert variant="destructive" className="px-3 py-1.5" role="alert">
-          <AlertDescription className="app-pos-helper-text">{chargeError}</AlertDescription>
-        </Alert>
-      )}
-
-      {chargeDisabledReason && (
-        <Alert className="border-none bg-muted px-3 py-1.5" role="status" aria-live="polite">
-          <AlertDescription className="app-pos-helper-text font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
-        </Alert>
-      )}
-
-      {/* Task 209.20 — `touch-target` (a fixed 48px floor) used to sit
-          alongside `.app-pos-cta` (the density-aware token the `pos` variant
-          already applies), and `min-height:48px` always won regardless of
-          density — the Charge button was never actually shrinking on
-          fine-pointer laptops/desktops the way every other checkout control
-          already had been. Dropping both `touch-target` and the fixed `lg`
-          size lets `.app-pos-cta` (38-42px fine-pointer, 44px touch/
-          comfortable — see globals.css) govern its height like everywhere
-          else; touch/mobile tiers are untouched since 44px was already
-          their floor either way. */}
-      <Button
-        variant="pos"
-        className="w-full"
-        disabled={!canCharge}
-        aria-busy={isChargePending}
-        onClick={onCharge}
-      >
-        {isChargePending ? (
-          <>
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />
-            Processing…
-          </>
-        ) : (
-          `Charge ${formatPeso(totalAmount)}`
-        )}
-      </Button>
     </div>
   );
 });

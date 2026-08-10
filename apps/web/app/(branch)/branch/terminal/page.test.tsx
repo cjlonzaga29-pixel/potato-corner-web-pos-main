@@ -2319,12 +2319,32 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     expect(screen.queryByRole('button', { name: /^Checkout/ })).not.toBeInTheDocument();
   });
 
-  it('keeps the inline panel on a wide compact-touch viewport (touch laptop/2-in-1 with room for the panel)', () => {
-    mockMatchMedia({ '(pointer: coarse), (hover: none)': true, '(min-width: 1024px)': true });
+  it('keeps the inline panel on a wide, tall compact-touch viewport (touch laptop/2-in-1 with room for the panel)', () => {
+    mockMatchMedia({ '(pointer: coarse), (hover: none)': true, '(min-width: 1024px) and (min-height: 640px)': true });
     render(<TerminalPage />);
 
     expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Checkout/ })).toBeInTheDocument();
+  });
+
+  // Task 209.29 (Part F) — the "room for the inline panel" check used to be
+  // width-only, so a coarse-pointer tablet that's wide enough (>=1024px) but
+  // too short (a constrained/split-screen landscape) was wrongly classified
+  // as having room and got the two-pane Checkout Workspace squeezed into it.
+  // Guards that the room check itself now queries width AND height together
+  // (not just width) — a mock that only satisfies the old width-only string
+  // must NOT be enough to unlock the inline panel/two-pane layout.
+  it('does not treat width alone as "room for the inline panel" — the room check requires height too (Part F)', () => {
+    mockMatchMedia({ '(pointer: coarse), (hover: none)': true, '(min-width: 1024px)': true });
+    render(<TerminalPage />);
+
+    expect(screen.getByRole('button', { name: /View Cart/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Checkout/ })).not.toBeInTheDocument();
+
+    const queriedMinHeight = (window.matchMedia as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
+      (call) => typeof call[0] === 'string' && call[0].includes('min-width: 1024px') && call[0].includes('min-height'),
+    );
+    expect(queriedMinHeight).toBe(true);
   });
 
   // Task 209.20 — a flex item's default min-height is `auto` (its content

@@ -141,4 +141,64 @@ describe('CheckoutWorkspace — stepped layout (Task 209.25, mobile/tablet portr
     expect(screen.getByRole('button', { name: 'Continue to Payment' })).toBeInTheDocument();
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   });
+
+  // Task 209.29 — Part D's 3-step target flow: Payment fields render on
+  // their own step (no proof cards, no Charge button mixed in), and a
+  // separate, structurally distinct Proof & Confirm step holds the proof
+  // cards + the real Charge control. `baseProps()` is cash/no-discount, so
+  // no proof is ever required — the Payment step's own CTA becomes the real
+  // Confirm control directly instead of an extra tap into an empty step.
+  it('Payment step shows only fields (no proof cards, no Charge button); cash + no discount confirms directly from Payment, no separate Proof step', () => {
+    render(<CheckoutWorkspace {...baseProps()} layout="stepped" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to Payment' }));
+
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+
+  it('a proof-requiring payment method (GCash) gets its own Proof & Confirm step, reachable via Continue and back via Back', () => {
+    render(<CheckoutWorkspace {...baseProps()} layout="stepped" paymentMethod="gcash" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to Payment' }));
+
+    // Payment step: fields only, Charge not reachable yet.
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Charge/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // Proof step: payment proof card + Charge, no payment method fields.
+    expect(screen.getByText('Payment Proof')).toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Back/ }));
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+    expect(screen.queryByText('Payment Proof')).not.toBeInTheDocument();
+  });
+
+  it('a PWD discount also routes through the Proof step, showing the discount ID proof card', () => {
+    render(<CheckoutWorkspace {...baseProps()} layout="stepped" discountType="pwd" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to Payment' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(screen.getByText('Discount ID Proof')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+
+  // Task 209.29 (Part A root cause) — the base DialogContent className
+  // (dialog.tsx) carries `overflow-y-auto`; both checkout layouts must
+  // override it so the dialog chrome itself never becomes a second,
+  // outer scroll container fighting the workspace's own inner scroll
+  // regions (this was the real cause of "can't scroll" / "bottom action
+  // unreachable" on real touch devices).
+  it('the dialog element itself never scrolls (overflow-hidden) in either layout — only its inner regions do', () => {
+    const { rerender } = render(<CheckoutWorkspace {...baseProps()} layout="two-pane" />);
+    expect(screen.getByRole('dialog')).toHaveClass('overflow-hidden');
+    expect(screen.getByRole('dialog')).not.toHaveClass('overflow-y-auto');
+
+    rerender(<CheckoutWorkspace {...baseProps()} layout="stepped" />);
+    expect(screen.getByRole('dialog')).toHaveClass('overflow-hidden');
+    expect(screen.getByRole('dialog')).not.toHaveClass('overflow-y-auto');
+  });
 });

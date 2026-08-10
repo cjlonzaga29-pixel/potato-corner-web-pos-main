@@ -815,6 +815,37 @@ async function generateReceiptNumber(branchCode: string): Promise<string> {
 }
 
 /**
+ * Task 209.47 — narrowly recognizes the transactions_branch_device_offline_number_key
+ * unique-constraint violation (P2002) so syncOfflineTransactions can treat
+ * only *that* conflict as "someone else already synced this exact offline
+ * sale" and replay the winner. Any other P2002 (e.g. the transactionNumber
+ * unique constraint, or an unrelated model entirely) must keep surfacing as
+ * a real, unhandled error — swallowing every P2002 into a fake idempotent
+ * success would silently hide real bugs.
+ */
+function isOfflineSyncUniqueConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  if (typeof target === 'string') return target.includes('transactions_branch_device_offline_number_key');
+  if (Array.isArray(target)) {
+    const fields = new Set(target);
+    // Verified against a real disposable Postgres instance (Task 209.47
+    // verification): Prisma's Postgres connector reports `meta.target` as
+    // the mapped DB *column* names from the unique index (branch_id,
+    // device_id, offline_provisional_number), not the Prisma camelCase
+    // field names — every field on this constraint uses @map. Checking only
+    // the camelCase names meant this helper always returned false for the
+    // real conflict it exists to detect. Both spellings are checked so this
+    // stays correct if a future Prisma/connector version ever reports
+    // schema field names instead.
+    const hasColumnNames = fields.has('branch_id') && fields.has('device_id') && fields.has('offline_provisional_number');
+    const hasFieldNames = fields.has('branchId') && fields.has('deviceId') && fields.has('offlineProvisionalNumber');
+    return hasColumnNames || hasFieldNames;
+  }
+  return false;
+}
+
+/**
  * Runs inside the same DB transaction as the sale itself (Phase 8's deduction
  * moved from a fire-and-forget queue job to here) so a stock shortfall rolls
  * back the whole sale instead of leaving a completed transaction with no
@@ -1402,6 +1433,11 @@ export const transactionsService = {
             discountProofUploadedAt: hasDiscountProof ? new Date() : null,
             isOfflineTransaction: data.isOfflineTransaction,
             offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
+            // Task 209.47 — only persisted for offline-synced sales (the
+            // idempotency key this backs is offlineProvisionalNumber-scoped
+            // and that field is itself only ever set for offline sales); a
+            // live online checkout leaves this null same as before.
+            deviceId: data.isOfflineTransaction ? (data.deviceId ?? null) : null,
             items: resolvedItems.map((item, itemIndex) => ({
               id: item.id,
               productId: item.productId,
@@ -1559,24 +1595,83 @@ export const transactionsService = {
 
     for (const item of ordered) {
       try {
-        const transaction = await transactionsService.createTransaction(
-          {
-            branchId: data.branchId,
-            shiftId: item.shiftId,
-            cashierId: data.cashierId,
-            items: item.items,
-            paymentMethod: item.paymentMethod,
-            discountType: item.discountType,
-            discountIdReference: item.discountIdReference,
-            discountAmount: item.discountAmount,
-            cashTendered: item.cashTendered,
-            gcashReferenceNumber: item.gcashReferenceNumber,
-            gcashManuallyVerified: item.gcashManuallyVerified,
-            isOfflineTransaction: true,
-            offlineProvisionalNumber: item.offlineProvisionalNumber,
-          },
-          ipAddress,
-        );
+        // Idempotent replay guard (Task 209.47): a prior sync attempt for
+        // this same (branch, device, offline provisional number) identity
+        // may have already committed server-side even if the client never
+        // saw the response (dropped connection, tab closed mid-request) —
+        // the client-side queue only clears an item once it observes a
+        // 'synced' result, so an unacknowledged success gets resent verbatim
+        // on the next reconnect. Without this check that resend would create
+        // a second transaction (double receipt, double inventory
+        // deduction). Replay the prior result instead of re-creating.
+        //
+        // Only attempted when deviceId is present — without it there is no
+        // (branchId, deviceId, offlineProvisionalNumber) identity to look
+        // up, so every item just falls through to createTransaction as
+        // before (unchanged behavior for legacy/no-device-header clients).
+        // This lookup is the fast path only: it narrows the window but
+        // cannot close it under true concurrency (two requests can both
+        // miss here before either inserts) — the unique index added in
+        // 20260810120000_add_transaction_device_id_offline_sync_idempotency
+        // is the actual concurrency authority, enforced in the catch below.
+        if (data.deviceId) {
+          const existing = await transactionsRepository.findByOfflineIdentity(data.branchId, data.deviceId, item.offlineProvisionalNumber);
+          if (existing) {
+            results.push({
+              offline_provisional_number: item.offlineProvisionalNumber,
+              status: 'synced',
+              transaction: toTransactionResponse(existing as TransactionRow),
+            });
+            continue;
+          }
+        }
+
+        let transaction: ReturnType<typeof toTransactionResponse>;
+        try {
+          transaction = await transactionsService.createTransaction(
+            {
+              branchId: data.branchId,
+              shiftId: item.shiftId,
+              cashierId: data.cashierId,
+              items: item.items,
+              paymentMethod: item.paymentMethod,
+              discountType: item.discountType,
+              discountIdReference: item.discountIdReference,
+              discountAmount: item.discountAmount,
+              cashTendered: item.cashTendered,
+              gcashReferenceNumber: item.gcashReferenceNumber,
+              gcashManuallyVerified: item.gcashManuallyVerified,
+              isOfflineTransaction: true,
+              offlineProvisionalNumber: item.offlineProvisionalNumber,
+              deviceId: data.deviceId,
+            },
+            ipAddress,
+          );
+        } catch (error) {
+          // Race loser: another request for this exact identity won the
+          // insert first (both can pass the lookup above before either
+          // commits). createTransaction's Transaction.create() is the first
+          // write in its interactive $transaction — deductInventoryForSale
+          // runs strictly after it — so a P2002 here means that request's
+          // whole $transaction (transaction insert + inventory deduction +
+          // movements) was rolled back before any inventory effect
+          // committed. Never true of an unrelated P2002 (e.g. the
+          // transactionNumber unique constraint), which isOfflineSyncUniqueConflict
+          // narrowly excludes and which falls through to the outer catch
+          // unchanged.
+          if (data.deviceId && isOfflineSyncUniqueConflict(error)) {
+            const winner = await transactionsRepository.findByOfflineIdentity(data.branchId, data.deviceId, item.offlineProvisionalNumber);
+            if (winner) {
+              results.push({
+                offline_provisional_number: item.offlineProvisionalNumber,
+                status: 'synced',
+                transaction: toTransactionResponse(winner as TransactionRow),
+              });
+              continue;
+            }
+          }
+          throw error;
+        }
         results.push({ offline_provisional_number: item.offlineProvisionalNumber, status: 'synced', transaction });
       } catch (error) {
         results.push({

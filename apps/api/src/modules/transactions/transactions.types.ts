@@ -43,6 +43,8 @@ export interface CreateTransactionData {
   discountProofType?: ImageProofType;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber?: string;
+  /** Task 209.47 — X-Device-ID request header, already sent on every request by apps/web/lib/api-client.ts. Persisted only when isOfflineTransaction is true. */
+  deviceId?: string | null;
 }
 
 export interface UploadPaymentProofData {
@@ -101,6 +103,8 @@ export interface OfflineTransactionItemInput {
 export interface SyncOfflineTransactionsData {
   branchId: string;
   cashierId: string;
+  /** Task 209.47 — X-Device-ID request header; every queued item in one sync batch comes from the same device (same reasoning branchGuard/shiftGuard already apply to branch_id/shift_id). */
+  deviceId: string | null;
   transactions: OfflineTransactionItemInput[];
 }
 

@@ -18,6 +18,7 @@ vi.mock('./transactions.repository.js', () => ({
     findBranchFlavorAvailabilityMap: vi.fn(),
     createTransaction: vi.fn(),
     findTransactionById: vi.fn(),
+    findByOfflineIdentity: vi.fn().mockResolvedValue(null),
     listTransactions: vi.fn(),
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
@@ -1432,6 +1433,65 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
   });
 });
 
+// Task 209.47 case 7 — an online (non-offline) checkout must remain
+// unaffected by the deviceId plumbing: even if a device header is present
+// (every request carries X-Device-ID per apps/web/lib/api-client.ts), the
+// online path never sets isOfflineTransaction, so deviceId is never
+// persisted on that row — the (branchId, deviceId, offlineProvisionalNumber)
+// unique index never applies to online sales regardless.
+describe('transactionsService.createTransaction — device id persistence (Task 209.47)', () => {
+  it('does not persist deviceId for an online (non-offline) transaction even when one is provided', async () => {
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
+    vi.mocked(nextCounterValue).mockResolvedValue(1);
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
+
+    await transactionsService.createTransaction(
+      {
+        branchId: 'branch-1',
+        shiftId: 'shift-1',
+        cashierId: 'user-1',
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
+        paymentMethod: 'cash',
+        cashTendered: 200,
+        isOfflineTransaction: false,
+        deviceId: 'device-1',
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ deviceId: null }), expect.anything());
+  });
+
+  it('persists deviceId for an offline-synced transaction', async () => {
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
+    vi.mocked(nextCounterValue).mockResolvedValue(1);
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
+
+    await transactionsService.createTransaction(
+      {
+        branchId: 'branch-1',
+        shiftId: 'shift-1',
+        cashierId: 'user-1',
+        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
+        paymentMethod: 'cash',
+        cashTendered: 200,
+        isOfflineTransaction: true,
+        offlineProvisionalNumber: 'PC-MNL001-20260810-OFFLINE-0001',
+        deviceId: 'device-1',
+      },
+      null,
+    );
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'device-1' }), expect.anything());
+  });
+});
+
 describe('transactionsService.getTransactionById', () => {
   it('throws TRANSACTION_NOT_FOUND for a missing id', async () => {
     vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(null);
@@ -1849,7 +1909,10 @@ describe('transactionsService.syncOfflineTransactions', () => {
     const later = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0003', clientCreatedAt: 2000 });
 
     // Submitted out of order — later item first.
-    await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [later, earlier] }, null);
+    await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [later, earlier] },
+      null,
+    );
 
     const calls = vi.mocked(transactionsRepository.createTransaction).mock.calls;
     const [firstCall, secondCall] = calls;
@@ -1857,12 +1920,33 @@ describe('transactionsService.syncOfflineTransactions', () => {
     expect(secondCall?.[0]).toMatchObject({ offlineProvisionalNumber: later.offlineProvisionalNumber });
   });
 
+  // Case 1 (Task 209.47 test plan) — the ordinary, non-retried path: no
+  // existing row for this identity, so the fast-path lookup misses and a
+  // real transaction is created, with deviceId threaded through to the
+  // repository so it lands on the persisted row.
+  it('creates a new transaction on the first offline sync for an identity (Task 209.47 case 1)', async () => {
+    const first = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0100' });
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [first] },
+      null,
+    );
+
+    expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledWith('branch-1', 'device-1', first.offlineProvisionalNumber);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId: 'device-1', offlineProvisionalNumber: first.offlineProvisionalNumber }),
+      expect.anything(),
+    );
+    expect(result.results).toEqual([expect.objectContaining({ offline_provisional_number: first.offlineProvisionalNumber, status: 'synced' })]);
+  });
+
   it('marks a failed item without stopping the rest of the batch from syncing', async () => {
     const insufficientCash = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0004', cashTendered: 1, clientCreatedAt: 1000 });
     const valid = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0005', cashTendered: 100, clientCreatedAt: 2000 });
 
     const result = await transactionsService.syncOfflineTransactions(
-      { branchId: 'branch-1', cashierId: 'user-1', transactions: [insufficientCash, valid] },
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [insufficientCash, valid] },
       null,
     );
 
@@ -1877,7 +1961,10 @@ describe('transactionsService.syncOfflineTransactions', () => {
   });
 
   it('enqueues offline_transactions_synced with the synced count when at least one item syncs', async () => {
-    await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [offlineItem()] }, null);
+    await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [offlineItem()] },
+      null,
+    );
 
     expect(enqueueNotification).toHaveBeenCalledWith('offline_transactions_synced', {
       type: 'offline_transactions_synced',
@@ -1889,9 +1976,143 @@ describe('transactionsService.syncOfflineTransactions', () => {
   it('does not enqueue offline_transactions_synced when every item in the batch fails', async () => {
     const insufficientCash = offlineItem({ cashTendered: 1 });
 
-    await transactionsService.syncOfflineTransactions({ branchId: 'branch-1', cashierId: 'user-1', transactions: [insufficientCash] }, null);
+    await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [insufficientCash] },
+      null,
+    );
 
     expect(enqueueNotification).not.toHaveBeenCalledWith('offline_transactions_synced', expect.anything());
+  });
+
+  // Case 2/3/4 (Task 209.47 test plan) — reproduces: server committed a
+  // prior sync (e.g. the client dropped the connection or the tab closed
+  // before the response arrived), so the local queue item is retried
+  // verbatim on the next reconnect. Without the fast-path lookup this
+  // re-created the transaction — a second receipt number and a second
+  // inventory deduction for one real sale.
+  it('replays the existing transaction instead of creating a duplicate when (branch, device, offline provisional number) was already synced', async () => {
+    const alreadySynced = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0009' });
+    const existingRow = transactionRow({ id: 'txn-existing', transactionNumber: 'MNL001-20260719-000042', offlineProvisionalNumber: alreadySynced.offlineProvisionalNumber });
+    vi.mocked(transactionsRepository.findByOfflineIdentity).mockResolvedValueOnce(existingRow as never);
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [alreadySynced] },
+      null,
+    );
+
+    // Case 2 — replay, not a fresh row.
+    expect(result.results).toEqual([expect.objectContaining({ offline_provisional_number: alreadySynced.offlineProvisionalNumber, status: 'synced' })]);
+    expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledWith('branch-1', 'device-1', alreadySynced.offlineProvisionalNumber);
+    // Case 3/4 — createTransaction (the single path that performs inventory
+    // deduction + universalInventoryRepository.createStockMovements) is
+    // never invoked on replay, so neither can run a second time.
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
+    // Case 12/13 — the replayed identifiers are the original ones, not new ones.
+    expect(result.results[0]?.transaction).toMatchObject({ id: 'txn-existing', receipt_number: 'MNL001-20260719-000042' });
+  });
+
+  // Case 5 — a different device retrying the same provisional number is a
+  // genuinely different logical sale (two terminals independently reaching
+  // sequence 0001 for the day), so it must not be treated as a replay.
+  it('treats the same branch + different device + same provisional number as independent (Task 209.47 case 5)', async () => {
+    const item = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0001' });
+    vi.mocked(transactionsRepository.findByOfflineIdentity).mockImplementation((async (_branchId: string, deviceId: string) =>
+      deviceId === 'device-A' ? transactionRow({ id: 'txn-device-a' }) : null) as never);
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-B', transactions: [item] },
+      null,
+    );
+
+    expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledWith('branch-1', 'device-B', item.offlineProvisionalNumber);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+    expect(result.results).toEqual([expect.objectContaining({ status: 'synced' })]);
+  });
+
+  // Case 6 — same device + same provisional number but a different branch
+  // is also a different logical sale; findByOfflineIdentity is always
+  // called with the batch's own branchId, so a different branch's existing
+  // row (if any) can never be the lookup target.
+  it('treats a different branch + same device + same provisional number as independent (Task 209.47 case 6)', async () => {
+    const item = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0001' });
+
+    await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-2', cashierId: 'user-1', deviceId: 'device-1', transactions: [item] },
+      null,
+    );
+
+    expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledWith('branch-2', 'device-1', item.offlineProvisionalNumber);
+  });
+
+  // Case 8 — legacy/no-device-header clients (deviceId null) must keep
+  // working exactly as before this change: no fast-path lookup attempted
+  // (there's no identity to look up), straight through to createTransaction.
+  it('remains compatible with a legacy/no-device-header sync (deviceId null) (Task 209.47 case 8)', async () => {
+    const item = offlineItem();
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: null, transactions: [item] },
+      null,
+    );
+
+    expect(transactionsRepository.findByOfflineIdentity).not.toHaveBeenCalled();
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ deviceId: null }), expect.anything());
+    expect(result.results).toEqual([expect.objectContaining({ status: 'synced' })]);
+  });
+
+  // Case 11 — two requests for the same identity both miss the fast-path
+  // lookup before either inserts (true concurrency, not just a slow retry).
+  // The DB unique index is the real authority here: this test simulates its
+  // enforcement by having the repository's createTransaction reject with
+  // the exact P2002 shape Postgres/Prisma raise for
+  // transactions_branch_device_offline_number_key, and asserts the race
+  // loser fetches and replays the winner instead of surfacing the raw error.
+  it('replays the winning transaction when createTransaction loses the unique-index race (Task 209.47 case 11)', async () => {
+    const item = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0055' });
+    const winner = transactionRow({ id: 'txn-winner', offlineProvisionalNumber: item.offlineProvisionalNumber });
+
+    const conflict = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { target: ['branchId', 'deviceId', 'offlineProvisionalNumber'] },
+    });
+    vi.mocked(transactionsRepository.createTransaction).mockRejectedValueOnce(conflict);
+    vi.mocked(transactionsRepository.findByOfflineIdentity).mockResolvedValueOnce(null).mockResolvedValueOnce(winner as never);
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [item] },
+      null,
+    );
+
+    expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledTimes(2);
+    expect(result.results).toEqual([expect.objectContaining({ offline_provisional_number: item.offlineProvisionalNumber, status: 'synced' })]);
+    expect(result.results[0]?.transaction).toMatchObject({ id: 'txn-winner' });
+  });
+
+  // Case 10 — an unrelated P2002 (e.g. the transactionNumber unique
+  // constraint colliding, which is a real pre-existing possibility) must
+  // never be reinterpreted as an idempotent replay — it's a genuine failure
+  // and must surface as one.
+  it('does not swallow an unrelated P2002 as an idempotent replay (Task 209.47 case 10)', async () => {
+    const item = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0056' });
+
+    const unrelatedConflict = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { target: ['transactionNumber'] },
+    });
+    vi.mocked(transactionsRepository.createTransaction).mockRejectedValueOnce(unrelatedConflict);
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [item] },
+      null,
+    );
+
+    expect(result.results).toEqual([expect.objectContaining({ offline_provisional_number: item.offlineProvisionalNumber, status: 'failed', error: { code: 'SYNC_FAILED' } })]);
+    // Only one lookup — the pre-insert fast-path check. No second lookup for
+    // a "winner", since this was never recognized as the offline-identity conflict.
+    expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledTimes(1);
   });
 });
 

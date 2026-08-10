@@ -15,6 +15,7 @@ vi.mock('../../lib/prisma.js', () => {
     transaction: {
       count: vi.fn(),
       create: vi.fn(),
+      findFirst: vi.fn(),
       findUnique: vi.fn(),
       findUniqueOrThrow: vi.fn(),
       findMany: vi.fn(),
@@ -154,6 +155,7 @@ describe('transactionsRepository.createTransaction', () => {
       discountProofUploadedAt: null,
       isOfflineTransaction: false,
       offlineProvisionalNumber: null,
+      deviceId: null,
       items: [
         {
           productId: 'product-1',
@@ -226,6 +228,7 @@ describe('transactionsRepository.createTransaction', () => {
       discountProofUploadedAt: null,
       isOfflineTransaction: false,
       offlineProvisionalNumber: null,
+      deviceId: null,
       items: [
         {
           productId: 'product-1',
@@ -251,6 +254,90 @@ describe('transactionsRepository.createTransaction', () => {
         }),
       }),
     );
+  });
+
+  // Task 209.47 — deviceId is a plain pass-through field on the create
+  // call, same as offlineProvisionalNumber above; asserting it separately
+  // since it's the field the new (branchId, deviceId,
+  // offlineProvisionalNumber) unique index actually keys off.
+  it('round-trips deviceId for an offline-synced sale', async () => {
+    vi.mocked(prisma.transaction.create).mockResolvedValue({ id: 'txn-3' } as never);
+
+    await transactionsRepository.createTransaction({
+      branchId: 'branch-1',
+      shiftId: 'shift-1',
+      cashierId: 'user-1',
+      receiptNumber: 'MNL001-20260714-000003',
+      paymentMethod: 'cash',
+      subtotal: 100,
+      discountAmount: 0,
+      discountType: null,
+      discountCustomerIdEncrypted: null,
+      discountCustomerIdHash: null,
+      vatAmount: 10.71,
+      vatExemptAmount: 0,
+      totalAmount: 100,
+      cashTendered: 100,
+      changeAmount: 0,
+      gcashReference: null,
+      gcashManuallyVerified: null,
+      paymentProofKey: null,
+      paymentProofType: null,
+      paymentProofUploadedAt: null,
+      discountProofKey: null,
+      discountProofType: null,
+      discountProofUploadedAt: null,
+      isOfflineTransaction: true,
+      offlineProvisionalNumber: 'PC-MNL001-20260810-OFFLINE-0001',
+      deviceId: 'device-1',
+      items: [
+        {
+          productId: 'product-1',
+          productVariantId: 'variant-1',
+          flavorId: null,
+          productName: 'Original',
+          variantName: 'Regular',
+          flavorName: null,
+          unitPrice: 100,
+          quantity: 1,
+          lineTotal: 100,
+          recipeVersion: 1,
+        },
+      ],
+    });
+
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          deviceId: 'device-1',
+          offlineProvisionalNumber: 'PC-MNL001-20260810-OFFLINE-0001',
+        }),
+      }),
+    );
+  });
+});
+
+describe('transactionsRepository.findByOfflineIdentity', () => {
+  it('looks up a transaction by the exact (branchId, deviceId, offlineProvisionalNumber) triple', async () => {
+    vi.mocked(prisma.transaction.findFirst).mockResolvedValue(null);
+
+    await transactionsRepository.findByOfflineIdentity('branch-1', 'device-1', 'PC-MNL001-20260810-OFFLINE-0001');
+
+    expect(prisma.transaction.findFirst).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', deviceId: 'device-1', offlineProvisionalNumber: 'PC-MNL001-20260810-OFFLINE-0001' },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+    });
+  });
+
+  it('never passes a null deviceId or offlineProvisionalNumber through — the fast-path caller only calls this once both are known non-null', async () => {
+    vi.mocked(prisma.transaction.findFirst).mockResolvedValue(null);
+
+    await transactionsRepository.findByOfflineIdentity('branch-1', 'device-1', 'PC-MNL001-20260810-OFFLINE-0002');
+
+    const [call] = vi.mocked(prisma.transaction.findFirst).mock.calls;
+    const where = (call?.[0] as { where: { deviceId: unknown; offlineProvisionalNumber: unknown } }).where;
+    expect(where.deviceId).not.toBeNull();
+    expect(where.offlineProvisionalNumber).not.toBeNull();
   });
 });
 

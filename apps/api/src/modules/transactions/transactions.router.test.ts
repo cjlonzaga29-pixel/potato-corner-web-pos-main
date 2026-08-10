@@ -368,6 +368,41 @@ describe('POST /sync-offline', () => {
     );
   });
 
+  // Task 209.47 — X-Device-ID is already sent on every request by
+  // apps/web/lib/api-client.ts; the router must forward it to the service
+  // as deviceId so syncOfflineTransactions can key its idempotency lookup
+  // off (branchId, deviceId, offlineProvisionalNumber).
+  it('forwards the X-Device-ID header to the service as deviceId', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      headers: { ...authHeader(token).headers, 'x-device-id': 'device-abc-123' },
+      body: validSyncOfflineBody(),
+    });
+    const res = mockRes();
+    vi.mocked(transactionsService.syncOfflineTransactions).mockResolvedValue({ results: [], synced_count: 0 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(transactionsService.syncOfflineTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId: 'device-abc-123' }),
+      null,
+    );
+  });
+
+  it('passes deviceId null when no X-Device-ID header is present', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody() });
+    const res = mockRes();
+    vi.mocked(transactionsService.syncOfflineTransactions).mockResolvedValue({ results: [], synced_count: 0 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(transactionsService.syncOfflineTransactions).toHaveBeenCalledWith(expect.objectContaining({ deviceId: null }), null);
+  });
+
   it('an empty transactions array gets 422 before reaching the service', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
     const token = generateStaffToken(BRANCH_1);

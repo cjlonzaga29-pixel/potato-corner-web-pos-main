@@ -54,6 +54,12 @@ const discountProofUpload = multer({
   },
 });
 
+/** Task 209.47 — same X-Device-ID header auth.router.ts already reads for session listing; apps/web/lib/api-client.ts attaches it to every request. */
+function getDeviceIdHeader(req: Request): string | null {
+  const header = req.headers['x-device-id'];
+  return typeof header === 'string' ? header : null;
+}
+
 function requireUser(req: Request, res: Response): req is Request & { user: NonNullable<Request['user']> } {
   if (!req.user) {
     res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
@@ -164,6 +170,7 @@ router.post(
           discountProofType: body.discount_proof_type,
           isOfflineTransaction: body.is_offline_transaction,
           offlineProvisionalNumber: body.offline_provisional_number,
+          deviceId: getDeviceIdHeader(req),
         },
         req.ip ?? null,
       );
@@ -203,6 +210,7 @@ router.post(
         {
           branchId: body.branch_id,
           cashierId: req.user.user_id,
+          deviceId: getDeviceIdHeader(req),
           transactions: body.transactions.map((item) => ({
             offlineProvisionalNumber: item.offline_provisional_number,
             shiftId: item.shift_id,

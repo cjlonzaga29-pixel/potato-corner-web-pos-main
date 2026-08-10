@@ -2248,14 +2248,49 @@ describe('transactionsService.holdOrder — expiry scheduling', () => {
 });
 
 describe('transactionsService.listHoldOrders', () => {
-  it('returns only active (held) orders for the given shift', async () => {
+  it('returns only active (held) orders for the given shift when the shift belongs to the given branch', async () => {
     vi.mocked(transactionsRepository.listActiveHoldOrdersForShift).mockResolvedValue([holdOrderRow()] as never);
 
-    const result = await transactionsService.listHoldOrders('shift-1');
+    const result = await transactionsService.listHoldOrders('shift-1', 'branch-1');
 
     expect(transactionsRepository.listActiveHoldOrdersForShift).toHaveBeenCalledWith('shift-1');
     expect(result.hold_orders).toHaveLength(1);
     expect(result.hold_orders[0]).toMatchObject({ id: 'hold-1', status: 'held' });
+  });
+
+  // Task 209.51 audit finding — regression for a real IDOR: this method used
+  // to take only shiftId, with no verification that the shift actually
+  // belonged to the caller's (branchGuard-checked) branch_id. A branch/staff
+  // actor from Branch A could pass their own branch_id alongside a foreign
+  // Branch B shift_id and see Branch B's held carts.
+  it('rejects a shift_id that belongs to a different branch than the requested branch_id', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-2', status: 'active' } as never);
+
+    await expect(transactionsService.listHoldOrders('shift-1', 'branch-1')).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED' });
+    expect(transactionsRepository.listActiveHoldOrdersForShift).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the shift does not exist', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(null);
+
+    await expect(transactionsService.listHoldOrders('missing-shift', 'branch-1')).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED' });
+    expect(transactionsRepository.listActiveHoldOrdersForShift).not.toHaveBeenCalled();
+  });
+});
+
+describe('transactionsService.getHoldOrderById', () => {
+  it('returns the hold order response for an existing id', async () => {
+    vi.mocked(transactionsRepository.findHoldOrderById).mockResolvedValue(holdOrderRow() as never);
+
+    const result = await transactionsService.getHoldOrderById('hold-1');
+
+    expect(result).toMatchObject({ id: 'hold-1', branch_id: 'branch-1' });
+  });
+
+  it('throws HOLD_ORDER_NOT_FOUND for a missing id', async () => {
+    vi.mocked(transactionsRepository.findHoldOrderById).mockResolvedValue(null);
+
+    await expect(transactionsService.getHoldOrderById('missing')).rejects.toMatchObject({ code: 'HOLD_ORDER_NOT_FOUND' });
   });
 });
 

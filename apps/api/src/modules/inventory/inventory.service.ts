@@ -307,21 +307,26 @@ export const inventoryService = {
     const ingredient = await inventoryRepository.findIngredientById(ingredientId);
     if (!ingredient) throw new IngredientError('INGREDIENT_NOT_FOUND', 'Ingredient not found', 404);
 
-    if (data.quantity_delta < 0) {
-      const currentStock = await inventoryRepository.getCurrentStock(ingredientId);
-      if (currentStock.toNumber() + data.quantity_delta < 0) {
-        throw new IngredientError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
-      }
-    }
-
-    const movement = await inventoryRepository.appendMovement({
-      branchId: ingredient.branchId,
-      ingredientId,
-      movementType: MOVEMENT_TYPE.MANUAL_ADJUSTMENT,
-      quantityChange: data.quantity_delta,
-      notes: `Reason: ${data.reason_code}${data.notes ? ` — ${data.notes}` : ''}`,
-      recordedBy: actor.id,
-    });
+    // Validated inside appendMovementLocked's advisory lock, against the
+    // freshly-read ledger sum — not a separate pre-check against a value a
+    // concurrent adjustment/waste could have already moved out from under
+    // this read (see appendMovementLocked's doc comment).
+    const movement = await inventoryRepository.appendMovementLocked(
+      {
+        branchId: ingredient.branchId,
+        ingredientId,
+        movementType: MOVEMENT_TYPE.MANUAL_ADJUSTMENT,
+        notes: `Reason: ${data.reason_code}${data.notes ? ` — ${data.notes}` : ''}`,
+        recordedBy: actor.id,
+      },
+      (currentStock) => {
+        if (data.quantity_delta < 0 && currentStock.toNumber() + data.quantity_delta < 0) {
+          throw new IngredientError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
+        }
+        return data.quantity_delta;
+      },
+    );
+    if (!movement) throw new Error('unreachable: adjustment resolve never returns null');
     const response = toMovementResponse(movement);
 
     await recordAuditLog({
@@ -376,21 +381,26 @@ export const inventoryService = {
     const ingredient = await inventoryRepository.findIngredientById(ingredientId);
     if (!ingredient) throw new IngredientError('INGREDIENT_NOT_FOUND', 'Ingredient not found', 404);
 
-    const currentStock = await inventoryRepository.getCurrentStock(ingredientId);
-    if (currentStock.toNumber() - data.quantity < 0) {
-      throw new IngredientError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
-    }
-
-    const movement = await inventoryRepository.appendMovement({
-      branchId: ingredient.branchId,
-      ingredientId,
-      movementType: MOVEMENT_TYPE.WASTE,
-      quantityChange: -data.quantity,
-      notes: `Reason: ${data.reason_code}${data.notes ? ` — ${data.notes}` : ''}`,
-      imageProofUrl: data.image_proof_url,
-      imageProofType: data.image_proof_type,
-      recordedBy: actor.id,
-    });
+    // Validated inside appendMovementLocked's advisory lock — see its doc
+    // comment and adjustIngredient's identical reasoning above.
+    const movement = await inventoryRepository.appendMovementLocked(
+      {
+        branchId: ingredient.branchId,
+        ingredientId,
+        movementType: MOVEMENT_TYPE.WASTE,
+        notes: `Reason: ${data.reason_code}${data.notes ? ` — ${data.notes}` : ''}`,
+        imageProofUrl: data.image_proof_url,
+        imageProofType: data.image_proof_type,
+        recordedBy: actor.id,
+      },
+      (currentStock) => {
+        if (currentStock.toNumber() - data.quantity < 0) {
+          throw new IngredientError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
+        }
+        return -data.quantity;
+      },
+    );
+    if (!movement) throw new Error('unreachable: waste resolve never returns null');
     const response = toMovementResponse(movement);
 
     await recordAuditLog({
@@ -450,20 +460,28 @@ export const inventoryService = {
         throw new IngredientError('INGREDIENT_NOT_FOUND', `Ingredient ${count.ingredient_id} not found in this branch`, 404);
       }
 
-      const previousStock = await inventoryRepository.getCurrentStock(count.ingredient_id);
-      const previousQuantity = previousStock.toNumber();
-      const variance = count.counted_quantity - previousQuantity;
-
-      if (variance !== 0) {
-        await inventoryRepository.appendMovement({
+      // Physical count is absolute-set semantics (final quantity must equal
+      // counted_quantity, not the pre-count value plus/minus it), so the
+      // variance has to be computed from the same locked, freshly-read
+      // ledger sum appendMovementLocked writes against — not an earlier
+      // unlocked read that a concurrent sale/adjustment/waste could move out
+      // from under this count between the read and the write.
+      let previousQuantity = 0;
+      let variance = 0;
+      await inventoryRepository.appendMovementLocked(
+        {
           branchId,
           ingredientId: count.ingredient_id,
           movementType: MOVEMENT_TYPE.PHYSICAL_COUNT,
-          quantityChange: variance,
           notes: data.notes,
           recordedBy: actor.id,
-        });
-      }
+        },
+        (currentStock) => {
+          previousQuantity = currentStock.toNumber();
+          variance = count.counted_quantity - previousQuantity;
+          return variance === 0 ? null : variance;
+        },
+      );
 
       results.push({
         ingredient_id: count.ingredient_id,

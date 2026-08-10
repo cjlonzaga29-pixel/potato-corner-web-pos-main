@@ -1985,9 +1985,30 @@ export const transactionsService = {
     return response;
   },
 
-  async listHoldOrders(shiftId: string) {
+  /**
+   * Task 209.51 audit finding (ported from henlin-pos's Task 209.49 fix) —
+   * branchGuard on GET /hold only ever validated the branch_id query param
+   * against the caller's own scope; it never checked that shiftId (the
+   * value this method actually queries by) belongs to that same branch. A
+   * branch/staff actor could pass their own valid branch_id alongside an
+   * arbitrary foreign shiftId and list another branch's held carts. branchId
+   * is now required and the shift is verified to resolve to it — the same
+   * check holdOrder() above already performs.
+   */
+  async listHoldOrders(shiftId: string, branchId: string) {
+    const shift = await cashRepository.findShiftById(shiftId);
+    if (!shift || shift.branchId !== branchId) {
+      throw new TransactionError('BRANCH_ACCESS_DENIED', 'This shift does not belong to the requested branch', 403);
+    }
     const holdOrders = await transactionsRepository.listActiveHoldOrdersForShift(shiftId);
     return { hold_orders: (holdOrders as HoldOrderRow[]).map(toHoldOrderResponse) };
+  },
+
+  /** Task 209.51 audit finding — lets the router branch-check a hold order before releasing it, same read-then-authorize pattern as getTransactionById. */
+  async getHoldOrderById(id: string) {
+    const holdOrder = (await transactionsRepository.findHoldOrderById(id)) as HoldOrderRow | null;
+    if (!holdOrder) throw new TransactionError('HOLD_ORDER_NOT_FOUND', 'Hold order not found', 404);
+    return toHoldOrderResponse(holdOrder);
   },
 
   async releaseHoldOrder(id: string, actor: ActorContext, ipAddress: string | null) {

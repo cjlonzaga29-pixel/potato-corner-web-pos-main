@@ -394,6 +394,13 @@ router.post(
   },
 );
 
+// Task 209.51 audit finding — branchGuard here only ever validated the
+// branch_id query param against the caller's own scope; it never checked
+// that shift_id (the value the handler actually queries by) belongs to that
+// same branch. A branch/staff actor could pass their own valid branch_id
+// alongside an arbitrary foreign shift_id and list another branch's held
+// carts. listHoldOrders now takes branch_id too and verifies the shift
+// resolves to it (same check already done in POST /hold's holdOrder()).
 router.get('/hold', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
@@ -402,13 +409,23 @@ router.get('/hold', authenticate, allRoles, requireActiveEmployee, requirePasswo
       res.status(400).json({ data: null, error: { code: 'SHIFT_ID_REQUIRED' }, meta: null });
       return;
     }
-    const result = await transactionsService.listHoldOrders(shiftId);
+    const branchId = (req.query.branch_id as string | undefined) ?? (req.query.branchId as string | undefined);
+    if (!branchId) {
+      res.status(400).json({ data: null, error: { code: 'BRANCH_ID_REQUIRED' }, meta: null });
+      return;
+    }
+    const result = await transactionsService.listHoldOrders(shiftId, branchId);
     res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
   }
 });
 
+// Task 209.51 audit finding — this route previously had no branch check at
+// all (not even an inline one): any authenticated, active employee/branch
+// account could release (and thereby view + effectively cancel) another
+// branch's held order by ID. Same inline fetch-then-check pattern as
+// POST /:transactionId/void and /refund below.
 router.post(
   '/hold/:holdOrderId/release',
   authenticate,
@@ -418,6 +435,11 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      const holdOrder = await transactionsService.getHoldOrderById(req.params.holdOrderId as string);
+      if (!(await hasBranchAccess(req.user, holdOrder.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
       const released = await transactionsService.releaseHoldOrder(
         req.params.holdOrderId as string,
         { id: req.user.user_id, role: req.user.role },

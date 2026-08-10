@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+﻿import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 vi.mock('./inventory.repository.js', () => ({
@@ -12,6 +12,7 @@ vi.mock('./inventory.repository.js', () => ({
     getCurrentStock: vi.fn(),
     getCurrentStockMap: vi.fn(),
     appendMovement: vi.fn(),
+    appendMovementLocked: vi.fn(),
     transferStock: vi.fn(),
     findMovements: vi.fn(),
     provisionIngredient: vi.fn(),
@@ -76,6 +77,27 @@ function movementRow(overrides: Partial<Record<string, unknown>> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+/**
+ * Mimics appendMovementLocked's real contract (see inventory.repository.ts):
+ * invokes the caller's `resolve` with a Decimal-shaped currentStock — a
+ * thrown IngredientError propagates out of the mock the same way it would
+ * out of the real Prisma transaction — and returns null when `resolve`
+ * returns null (physical count's zero-variance skip), otherwise a
+ * movementRow reflecting the resolved quantityChange.
+ */
+function mockLockedAppend(currentStock: number) {
+  vi.mocked(inventoryRepository.appendMovementLocked).mockImplementation(async (input, resolve) => {
+    const quantityChange = resolve(decimal(currentStock) as never);
+    if (quantityChange === null) return null;
+    return movementRow({
+      movementType: input.movementType,
+      quantityChange: decimal(quantityChange),
+      quantityBefore: decimal(currentStock),
+      quantityAfter: decimal(currentStock + quantityChange),
+    }) as never;
+  });
+}
 
 describe('inventoryService.createIngredient', () => {
   it('rejects a duplicate (branch, name) with 409, not an uncaught 500', async () => {
@@ -213,36 +235,33 @@ describe('inventoryService.stockIn', () => {
 describe('inventoryService.adjustIngredient', () => {
   it('accepts a positive quantity_delta and includes the reason in the movement notes', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+    mockLockedAppend(100);
 
     await inventoryService.adjustIngredient('ing-1', { quantity_delta: 5, reason_code: 'count_correction' }, ACTOR, null);
 
-    expect(inventoryRepository.appendMovement).toHaveBeenCalledWith(
-      expect.objectContaining({ movementType: 'manual_adjustment', quantityChange: 5, notes: expect.stringContaining('count_correction') }),
+    expect(inventoryRepository.appendMovementLocked).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'manual_adjustment', notes: expect.stringContaining('count_correction') }),
+      expect.any(Function),
     );
   });
 
   it('accepts a negative quantity_delta when it does not take stock below zero', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(10) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+    mockLockedAppend(10);
 
-    await inventoryService.adjustIngredient('ing-1', { quantity_delta: -4, reason_code: 'damaged' }, ACTOR, null);
+    const movement = await inventoryService.adjustIngredient('ing-1', { quantity_delta: -4, reason_code: 'damaged' }, ACTOR, null);
 
-    expect(inventoryRepository.appendMovement).toHaveBeenCalledWith(
-      expect.objectContaining({ movementType: 'manual_adjustment', quantityChange: -4 }),
-    );
+    expect(movement.quantity_change).toBe(-4);
   });
 
   it('rejects a negative quantity_delta that would take stock below zero — 409', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(3) as never);
+    mockLockedAppend(3);
 
     await expect(inventoryService.adjustIngredient('ing-1', { quantity_delta: -4, reason_code: 'damaged' }, ACTOR, null)).rejects.toMatchObject({
       code: 'INSUFFICIENT_STOCK',
       statusCode: 409,
     });
-    expect(inventoryRepository.appendMovement).not.toHaveBeenCalled();
   });
 
   // reason_code presence is enforced by adjustIngredientSchema at the router's
@@ -252,7 +271,7 @@ describe('inventoryService.adjustIngredient', () => {
 
   it('enqueues large_adjustment_approval_needed when |quantity_delta| * unitCost meets the ₱5,000 threshold', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: decimal(20) }) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ id: 'mov-9', movementType: 'manual_adjustment' }) as never);
+    vi.mocked(inventoryRepository.appendMovementLocked).mockResolvedValue(movementRow({ id: 'mov-9', movementType: 'manual_adjustment' }) as never);
 
     await inventoryService.adjustIngredient('ing-1', { quantity_delta: 300, reason_code: 'count_correction' }, ACTOR, null);
 
@@ -267,8 +286,7 @@ describe('inventoryService.adjustIngredient', () => {
 
   it('uses the absolute value of a negative quantity_delta when computing the adjustment amount', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: decimal(20) }) as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(1000) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+    mockLockedAppend(1000);
 
     await inventoryService.adjustIngredient('ing-1', { quantity_delta: -300, reason_code: 'damaged' }, ACTOR, null);
 
@@ -277,7 +295,7 @@ describe('inventoryService.adjustIngredient', () => {
 
   it('does not enqueue large_adjustment_approval_needed when the adjustment amount is below the threshold', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: decimal(20) }) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+    vi.mocked(inventoryRepository.appendMovementLocked).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
 
     await inventoryService.adjustIngredient('ing-1', { quantity_delta: 5, reason_code: 'count_correction' }, ACTOR, null);
 
@@ -286,7 +304,7 @@ describe('inventoryService.adjustIngredient', () => {
 
   it('does not enqueue large_adjustment_approval_needed when the ingredient has no recorded unitCost', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow({ unitCost: null }) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
+    vi.mocked(inventoryRepository.appendMovementLocked).mockResolvedValue(movementRow({ movementType: 'manual_adjustment' }) as never);
 
     await inventoryService.adjustIngredient('ing-1', { quantity_delta: 1000, reason_code: 'count_correction' }, ACTOR, null);
 
@@ -297,19 +315,20 @@ describe('inventoryService.adjustIngredient', () => {
 describe('inventoryService.wasteIngredient', () => {
   it('stores quantityChange as negative and movementType WASTE', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(20) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'waste' }) as never);
+    mockLockedAppend(20);
 
-    await inventoryService.wasteIngredient('ing-1', { quantity: 6, reason_code: 'spoilage' }, ACTOR, null);
+    const movement = await inventoryService.wasteIngredient('ing-1', { quantity: 6, reason_code: 'spoilage' }, ACTOR, null);
 
-    expect(inventoryRepository.appendMovement).toHaveBeenCalledWith(
-      expect.objectContaining({ movementType: 'waste', quantityChange: -6 }),
+    expect(inventoryRepository.appendMovementLocked).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'waste' }),
+      expect.any(Function),
     );
+    expect(movement.quantity_change).toBe(-6);
   });
 
   it('rejects a waste quantity exceeding current stock — 409', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(5) as never);
+    mockLockedAppend(5);
 
     await expect(inventoryService.wasteIngredient('ing-1', { quantity: 6, reason_code: 'spoilage' }, ACTOR, null)).rejects.toMatchObject({
       code: 'INSUFFICIENT_STOCK',
@@ -321,8 +340,7 @@ describe('inventoryService.wasteIngredient', () => {
 describe('inventoryService.submitPhysicalCount', () => {
   it('computes variance as counted_quantity - currentStock and appends a PHYSICAL_COUNT movement for a nonzero variance', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(40) as never);
-    vi.mocked(inventoryRepository.appendMovement).mockResolvedValue(movementRow({ movementType: 'physical_count' }) as never);
+    mockLockedAppend(40);
 
     const result = await inventoryService.submitPhysicalCount(
       'branch-1',
@@ -332,14 +350,15 @@ describe('inventoryService.submitPhysicalCount', () => {
     );
 
     expect(result.results[0]).toMatchObject({ ingredient_id: 'ing-1', counted_quantity: 35, previous_quantity: 40, variance: -5 });
-    expect(inventoryRepository.appendMovement).toHaveBeenCalledWith(
-      expect.objectContaining({ movementType: 'physical_count', quantityChange: -5 }),
+    expect(inventoryRepository.appendMovementLocked).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'physical_count' }),
+      expect.any(Function),
     );
   });
 
   it('does not append a movement when the count matches current stock exactly (variance zero)', async () => {
     vi.mocked(inventoryRepository.findIngredientById).mockResolvedValue(ingredientRow() as never);
-    vi.mocked(inventoryRepository.getCurrentStock).mockResolvedValue(decimal(40) as never);
+    mockLockedAppend(40);
 
     const result = await inventoryService.submitPhysicalCount(
       'branch-1',
@@ -349,7 +368,6 @@ describe('inventoryService.submitPhysicalCount', () => {
     );
 
     expect(result.results[0]?.variance).toBe(0);
-    expect(inventoryRepository.appendMovement).not.toHaveBeenCalled();
   });
 
   it('throws 404 when a counted ingredient does not belong to the branch', async () => {

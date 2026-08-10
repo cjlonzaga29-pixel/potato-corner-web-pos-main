@@ -2,7 +2,10 @@ import { Prisma, type IngredientCategory } from '@prisma/client';
 import type { InventoryDeductionStatus, MovementType } from '@potato-corner/shared';
 import { config } from '../../config/index.js';
 import { prisma } from '../../lib/prisma.js';
+import { hashToLockId } from '../../lib/pg-lock.js';
+import { sha256Hex } from '../../lib/hash.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
+import { IngredientError } from './inventory.types.js';
 import type { AppendMovementInput, CreateIngredientData, MovementListFilters, UpdateIngredientData } from './inventory.types.js';
 
 const movementInclude = {
@@ -43,6 +46,66 @@ export interface CascadeAffectedProduct {
 export interface OutOfStockCascadeResult {
   affectedFlavors: CascadeAffectedFlavor[];
   affectedProducts: CascadeAffectedProduct[];
+}
+
+/**
+ * Acquires the same per-ingredient advisory lock
+ * transactions.service.ts's reverseInventoryForTransaction already takes
+ * for legacy-snapshot void/refund reversals (hashToLockId(sha256Hex(ingredientId)))
+ * before reading the current ledger sum, then lets the caller validate or
+ * compute the movement's quantityChange against that value — `resolve`
+ * returns either the quantityChange to record or null to skip (e.g. a
+ * physical count with zero variance). Without this lock, stockIn/adjust/
+ * waste/physicalCount previously read the ledger sum and wrote a new
+ * movement as two unguarded steps: two concurrent calls against the same
+ * ingredient (e.g. two wastes, or an adjustment racing a waste) could both
+ * read the same "before" stock, both pass an insufficient-stock check that
+ * should only have let one of them through, and both write — driving stock
+ * negative despite the explicit guards, and leaving the quantityBefore/
+ * quantityAfter ledger snapshots inconsistent with the true running total.
+ */
+async function appendMovementLocked(
+  input: Omit<AppendMovementInput, 'quantityChange'>,
+  resolve: (currentStock: Prisma.Decimal) => number | null,
+  tx?: Prisma.TransactionClient,
+) {
+  const run = async (client: Prisma.TransactionClient) => {
+    const lockId = hashToLockId(sha256Hex(input.ingredientId));
+    await client.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+    const sumResult = await client.inventoryMovement.aggregate({
+      where: { ingredientId: input.ingredientId },
+      _sum: { quantityChange: true },
+    });
+    const quantityBefore = sumResult._sum.quantityChange ?? new Prisma.Decimal(0);
+
+    const quantityChange = resolve(quantityBefore);
+    if (quantityChange === null) return null;
+
+    const quantityAfter = quantityBefore.plus(quantityChange);
+
+    const movement = await client.inventoryMovement.create({
+      data: {
+        branchId: input.branchId,
+        ingredientId: input.ingredientId,
+        movementType: input.movementType,
+        quantityChange,
+        quantityBefore,
+        quantityAfter,
+        referenceId: input.referenceId,
+        notes: input.notes,
+        imageProofUrl: input.imageProofUrl,
+        imageProofType: input.imageProofType,
+        approvedBy: input.approvedBy,
+        recordedBy: input.recordedBy,
+      },
+      include: movementInclude,
+    });
+    await createProjectionOutboxRow(movement.id, client);
+    return movement;
+  };
+  if (tx) return run(tx);
+  return prisma.$transaction(run);
 }
 
 export const inventoryRepository = {
@@ -158,40 +221,22 @@ export const inventoryRepository = {
    * deduction worker). Computes quantityBefore/quantityAfter from the
    * current ledger sum inside the same transaction as the insert, so the
    * snapshot on the row is always consistent with the sum it was derived
-   * from at write time.
+   * from at write time. quantityChange is fixed (stock-in, transfer legs) —
+   * see appendMovementLocked for callers that need to validate or compute
+   * quantityChange against a value nothing else can change out from under
+   * them.
    */
   async appendMovement(input: AppendMovementInput, tx?: Prisma.TransactionClient) {
-    const run = async (client: Prisma.TransactionClient) => {
-      const sumResult = await client.inventoryMovement.aggregate({
-        where: { ingredientId: input.ingredientId },
-        _sum: { quantityChange: true },
-      });
-      const quantityBefore = sumResult._sum.quantityChange ?? new Prisma.Decimal(0);
-      const quantityAfter = quantityBefore.plus(input.quantityChange);
-
-      const movement = await client.inventoryMovement.create({
-        data: {
-          branchId: input.branchId,
-          ingredientId: input.ingredientId,
-          movementType: input.movementType,
-          quantityChange: input.quantityChange,
-          quantityBefore,
-          quantityAfter,
-          referenceId: input.referenceId,
-          notes: input.notes,
-          imageProofUrl: input.imageProofUrl,
-          imageProofType: input.imageProofType,
-          approvedBy: input.approvedBy,
-          recordedBy: input.recordedBy,
-        },
-        include: movementInclude,
-      });
-      await createProjectionOutboxRow(movement.id, client);
-      return movement;
-    };
-    if (tx) return run(tx);
-    return prisma.$transaction(run);
+    const movement = await appendMovementLocked(input, () => input.quantityChange, tx);
+    // resolve is `() => input.quantityChange`, a fixed number — it never
+    // returns null, so this call never actually skips the write. Only
+    // appendMovementLocked's other caller (physical count, whose resolve can
+    // skip a zero-variance write) can hit that case.
+    if (!movement) throw new Error('unreachable: appendMovement resolve never returns null');
+    return movement;
   },
+
+  appendMovementLocked,
 
   /**
    * Both legs of a branch-to-branch transfer in one transaction — either
@@ -207,11 +252,30 @@ export const inventoryRepository = {
     recordedBy: string;
   }) {
     return prisma.$transaction(async (tx) => {
+      // Sorted lock order (by ingredient ID) — matches the anti-deadlock
+      // pattern transactions.service.ts's sale deduction and
+      // universal-inventory.service.ts's transferStock already use: two
+      // transfers touching an overlapping ingredient pair must always
+      // acquire their locks in the same order, or Postgres can deadlock them
+      // against each other instead of one simply waiting for the other.
+      const lockIngredientIds = [params.fromIngredientId, params.toIngredientId].sort();
+      for (const ingredientId of lockIngredientIds) {
+        const lockId = hashToLockId(sha256Hex(ingredientId));
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+      }
+
       const outSum = await tx.inventoryMovement.aggregate({
         where: { ingredientId: params.fromIngredientId },
         _sum: { quantityChange: true },
       });
       const outBefore = outSum._sum.quantityChange ?? new Prisma.Decimal(0);
+      // Authoritative recheck under lock — the service layer's pre-check
+      // (inventoryService.transferStock) reads current stock before this
+      // transaction and can go stale under a concurrent writer; this is the
+      // check that actually prevents the source from going negative.
+      if (outBefore.toNumber() - params.quantity < 0) {
+        throw new IngredientError('INSUFFICIENT_STOCK', 'Transfer quantity exceeds current stock at the source branch', 409);
+      }
       const outAfter = outBefore.minus(params.quantity);
 
       const transferOut = await tx.inventoryMovement.create({

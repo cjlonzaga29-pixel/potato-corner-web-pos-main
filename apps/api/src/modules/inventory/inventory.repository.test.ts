@@ -35,6 +35,10 @@ vi.mock('../../lib/prisma.js', () => {
     transaction: {
       update: vi.fn(),
     },
+    // Advisory-lock acquisition (SELECT pg_advisory_xact_lock(...)) — a
+    // real Postgres tagged-template raw query, stubbed as a no-op here since
+    // this suite mocks Prisma itself rather than hitting a real DB.
+    $executeRaw: vi.fn().mockResolvedValue(undefined),
     $transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
@@ -278,6 +282,73 @@ describe('inventoryRepository.appendMovement', () => {
     expect(call.data.quantityAfter.toNumber()).toBe(75);
   });
 
+  it('acquires the per-ingredient advisory lock before reading the ledger sum (Task 209.51 concurrency fix)', async () => {
+    vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(100) } } as never);
+    vi.mocked(prisma.inventoryMovement.create).mockResolvedValue({ id: 'mov-1' } as never);
+
+    await inventoryRepository.appendMovement({
+      branchId: 'branch-1',
+      ingredientId: 'ing-1',
+      movementType: 'stock_in',
+      quantityChange: 10,
+      recordedBy: 'user-1',
+    });
+
+    expect(prisma.$executeRaw).toHaveBeenCalledOnce();
+    const lockCallOrder = vi.mocked(prisma.$executeRaw).mock.invocationCallOrder[0] ?? Infinity;
+    const aggregateCallOrder = vi.mocked(prisma.inventoryMovement.aggregate).mock.invocationCallOrder[0] ?? -Infinity;
+    expect(lockCallOrder).toBeLessThan(aggregateCallOrder);
+  });
+
+  describe('appendMovementLocked', () => {
+    it('passes the freshly-read ledger sum to resolve() and records the returned quantityChange', async () => {
+      vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(40) } } as never);
+      vi.mocked(prisma.inventoryMovement.create).mockImplementation((async (args: unknown) => args) as never);
+      const resolve = vi.fn((currentStock: Prisma.Decimal) => {
+        expect(currentStock.toNumber()).toBe(40);
+        return -6;
+      });
+
+      await inventoryRepository.appendMovementLocked(
+        { branchId: 'branch-1', ingredientId: 'ing-1', movementType: 'waste', recordedBy: 'user-1' },
+        resolve,
+      );
+
+      expect(resolve).toHaveBeenCalledOnce();
+      const call = vi.mocked(prisma.inventoryMovement.create).mock.calls[0]?.[0] as {
+        data: { quantityChange: number; quantityBefore: Prisma.Decimal; quantityAfter: Prisma.Decimal };
+      };
+      expect(call.data.quantityChange).toBe(-6);
+      expect(call.data.quantityAfter.toNumber()).toBe(34);
+    });
+
+    it('skips the write entirely when resolve() returns null (e.g. a zero-variance physical count)', async () => {
+      vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(40) } } as never);
+
+      const result = await inventoryRepository.appendMovementLocked(
+        { branchId: 'branch-1', ingredientId: 'ing-1', movementType: 'physical_count', recordedBy: 'user-1' },
+        () => null,
+      );
+
+      expect(result).toBeNull();
+      expect(prisma.inventoryMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('propagates a validation error thrown from resolve() without writing a movement (negative-stock guard)', async () => {
+      vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValue({ _sum: { quantityChange: decimal(3) } } as never);
+
+      await expect(
+        inventoryRepository.appendMovementLocked(
+          { branchId: 'branch-1', ingredientId: 'ing-1', movementType: 'waste', recordedBy: 'user-1' },
+          () => {
+            throw new Error('INSUFFICIENT_STOCK');
+          },
+        ),
+      ).rejects.toThrow('INSUFFICIENT_STOCK');
+      expect(prisma.inventoryMovement.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe('projection outbox (CR-010A.1)', () => {
     const outboxMovementTypes = ['stock_in', 'sale_deduction', 'manual_adjustment', 'waste'] as const;
 
@@ -336,6 +407,48 @@ describe('inventoryRepository.appendMovement', () => {
 });
 
 describe('inventoryRepository.transferStock', () => {
+  it('acquires both ingredients\' advisory locks, in sorted order, before reading either leg\'s ledger sum (Task 209.51 concurrency fix)', async () => {
+    vi.mocked(prisma.inventoryMovement.aggregate)
+      .mockResolvedValueOnce({ _sum: { quantityChange: decimal(100) } } as never)
+      .mockResolvedValueOnce({ _sum: { quantityChange: decimal(20) } } as never);
+    vi.mocked(prisma.inventoryMovement.create)
+      .mockResolvedValueOnce({ id: 'mov-out' } as never)
+      .mockResolvedValueOnce({ id: 'mov-in' } as never);
+
+    await inventoryRepository.transferStock({
+      fromBranchId: 'branch-a',
+      fromIngredientId: 'ing-z', // deliberately lexicographically after ing-a
+      toBranchId: 'branch-b',
+      toIngredientId: 'ing-a',
+      quantity: 15,
+      recordedBy: 'user-1',
+    });
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    const lockCallOrders = vi.mocked(prisma.$executeRaw).mock.invocationCallOrder;
+    const firstAggregateCallOrder = vi.mocked(prisma.inventoryMovement.aggregate).mock.invocationCallOrder[0] ?? -Infinity;
+    // Both locks (source + destination, sorted by ingredient ID so an
+    // overlapping-pair concurrent transfer can never deadlock against this
+    // one) must be acquired before either leg's ledger sum is read.
+    expect(Math.max(...lockCallOrders)).toBeLessThan(firstAggregateCallOrder);
+  });
+
+  it('rejects when the source has insufficient stock, rechecked under lock, and writes neither leg', async () => {
+    vi.mocked(prisma.inventoryMovement.aggregate).mockResolvedValueOnce({ _sum: { quantityChange: decimal(5) } } as never);
+
+    await expect(
+      inventoryRepository.transferStock({
+        fromBranchId: 'branch-a',
+        fromIngredientId: 'ing-a',
+        toBranchId: 'branch-b',
+        toIngredientId: 'ing-b',
+        quantity: 15,
+        recordedBy: 'user-1',
+      }),
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK', statusCode: 409 });
+    expect(prisma.inventoryMovement.create).not.toHaveBeenCalled();
+  });
+
   it('records transfer_out (negative) on the source and transfer_in (positive) on the destination, in one transaction', async () => {
     vi.mocked(prisma.inventoryMovement.aggregate)
       .mockResolvedValueOnce({ _sum: { quantityChange: decimal(100) } } as never) // source current stock

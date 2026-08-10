@@ -101,6 +101,29 @@ export const totpVerifyLimiter = rateLimit({
   handler: rateLimitHandler,
 });
 
+/**
+ * Task 209.48 — 20 requests per 10 minutes per IP, applied to
+ * GET /api/receipts/:transactionNumber. Receipt numbers are sequential
+ * per branch/day (see generateReceiptNumber in transactions.service.ts —
+ * `{branchCode}-{date}-{counter}`, counter zero-padded to 6 digits), so
+ * the generic 100/min apiLimiter is loose enough that an attacker could
+ * still walk hundreds of neighboring receipt numbers per hour. This
+ * limiter is IP-keyed (there's no authenticated user on a public,
+ * unauthenticated endpoint) and deliberately more generous per-window
+ * than it looks tight — 20 requests covers a customer reloading/sharing
+ * a link several times, or several customers behind one branch/mall
+ * NAT'd IP each looking up their own receipt — while still capping
+ * sequential-number enumeration to a crawl.
+ */
+export const receiptLookupLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => req.ip ?? 'unknown',
+  handler: rateLimitHandler,
+});
+
 /** 100 requests per minute — applied globally; keyed by authenticated user when available, else IP. */
 export const apiLimiter = rateLimit({
   windowMs: 60 * 1000,

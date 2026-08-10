@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { receiptsService } from './receipts.service.js';
 import { ReceiptError } from './receipts.types.js';
+import { receiptLookupLimiter } from '../../middleware/rate-limiter.js';
 
 const router: Router = Router();
 
@@ -12,8 +13,12 @@ const router: Router = Router();
  * because the caller is a customer, not a logged-in user; the response
  * shape (receiptsService.getPublicReceipt) already excludes anything not
  * already printed on the paper receipt.
+ *
+ * Task 209.48 — receiptLookupLimiter caps sequential-number enumeration
+ * (see rate-limiter.ts) on top of the generic apiLimiter already applied
+ * globally in app.ts; both run, the tighter one wins.
  */
-router.get('/:transactionNumber', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:transactionNumber', receiptLookupLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const receipt = await receiptsService.getPublicReceipt(req.params.transactionNumber as string);
     res.status(200).json({ data: receipt, error: null, meta: null });

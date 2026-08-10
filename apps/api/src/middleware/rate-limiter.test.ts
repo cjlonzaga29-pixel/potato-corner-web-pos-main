@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
 
-const { loginLimiter, selectEmployeeLimiter } = await import('./rate-limiter.js');
+const { loginLimiter, selectEmployeeLimiter, receiptLookupLimiter, apiLimiter } = await import('./rate-limiter.js');
 
 function mockReq(overrides: Partial<Request> = {}): Request {
   return {
@@ -133,5 +133,50 @@ describe('selectEmployeeLimiter', () => {
     const blocked = await hit(selectEmployeeLimiter, mockReq({ ip: randomUUID(), user: session }));
     expect(blocked.allowed).toBe(false);
     expect(blocked.status).toBe(429);
+  });
+});
+
+/** Task 209.48 — dedicated limiter for GET /api/receipts/:transactionNumber (public, unauthenticated). */
+describe('receiptLookupLimiter', () => {
+  it('allows 20 requests then blocks the 21st from the same IP within the window', async () => {
+    const ip = randomUUID();
+
+    for (let i = 0; i < 20; i++) {
+      const result = await hit(receiptLookupLimiter, mockReq({ ip }));
+      expect(result.allowed).toBe(true);
+    }
+    const blocked = await hit(receiptLookupLimiter, mockReq({ ip }));
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.status).toBe(429);
+  });
+
+  it('is keyed per IP — a different IP has its own untouched budget (branch/mall NAT does not share one bucket with an attacker)', async () => {
+    const attackerIp = randomUUID();
+    const legitimateIp = randomUUID();
+
+    for (let i = 0; i < 20; i++) {
+      const result = await hit(receiptLookupLimiter, mockReq({ ip: attackerIp }));
+      expect(result.allowed).toBe(true);
+    }
+    const exhausted = await hit(receiptLookupLimiter, mockReq({ ip: attackerIp }));
+    expect(exhausted.allowed).toBe(false);
+
+    const stillAllowed = await hit(receiptLookupLimiter, mockReq({ ip: legitimateIp }));
+    expect(stillAllowed.allowed).toBe(true);
+  });
+
+  it('is a separate bucket from the generic apiLimiter — exhausting one does not exhaust the other for the same IP', async () => {
+    const ip = randomUUID();
+
+    for (let i = 0; i < 20; i++) {
+      const result = await hit(receiptLookupLimiter, mockReq({ ip }));
+      expect(result.allowed).toBe(true);
+    }
+    const receiptBlocked = await hit(receiptLookupLimiter, mockReq({ ip }));
+    expect(receiptBlocked.allowed).toBe(false);
+
+    // apiLimiter (used by every other /api route) still has its own, separate 100/min budget for this IP.
+    const apiStillAllowed = await hit(apiLimiter, mockReq({ ip }));
+    expect(apiStillAllowed.allowed).toBe(true);
   });
 });

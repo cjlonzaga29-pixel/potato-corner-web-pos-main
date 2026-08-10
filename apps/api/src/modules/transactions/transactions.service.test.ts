@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { transactionResponseSchema } from '@potato-corner/shared';
 import { UnitConversionError } from '../product-components/unit-conversion.util.js';
-import { inventoryStockLockId } from '../../lib/pg-lock.js';
+import { inventoryStockLockId, branchShiftLockId } from '../../lib/pg-lock.js';
 
 vi.mock('../../lib/notify.js', () => ({
   notifyBranch: vi.fn(),
@@ -16,7 +16,6 @@ vi.mock('./transactions.repository.js', () => ({
     findVariantsForSale: vi.fn(),
     findBranchProductAvailabilityMap: vi.fn(),
     findBranchFlavorAvailabilityMap: vi.fn(),
-    countTransactionsWithPrefix: vi.fn(),
     createTransaction: vi.fn(),
     findTransactionById: vi.fn(),
     listTransactions: vi.fn(),
@@ -38,6 +37,10 @@ vi.mock('./transactions.repository.js', () => ({
     // exercise option inventory deduction) sees "no mapping for any option".
     findOptionInventoryMappings: vi.fn().mockResolvedValue([]),
   },
+}));
+
+vi.mock('../../lib/id-counter.js', () => ({
+  nextCounterValue: vi.fn(),
 }));
 
 vi.mock('../../lib/prisma.js', () => {
@@ -80,6 +83,7 @@ vi.mock('../product-components/product-components.repository.js', () => ({
 vi.mock('../cash/cash.repository.js', () => ({
   cashRepository: {
     findShiftById: vi.fn(),
+    findActiveShiftByBranch: vi.fn(),
     findCashiersWithClosedShifts: vi.fn().mockResolvedValue([]),
     findLastNClosedShiftsForCashier: vi.fn().mockResolvedValue([]),
   },
@@ -181,6 +185,7 @@ vi.mock('sharp', () => ({
 }));
 
 const { transactionsRepository } = await import('./transactions.repository.js');
+const { nextCounterValue } = await import('../../lib/id-counter.js');
 const { productComponentsRepository } = await import('../product-components/product-components.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
@@ -345,6 +350,12 @@ beforeEach(() => {
   mutableConfig.shadowBomDeductionBranchIds = [];
   vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
   vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
+  // Task 209.41 — a CASH refund requires a currently active processing
+  // shift at the transaction's branch. Defaults to "one is active" so every
+  // pre-existing refund fixture (which doesn't care about this new guard)
+  // keeps passing; the dedicated describe block below overrides this
+  // per-test to exercise the guard itself.
+  vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: 'shift-101', branchId: 'branch-1', status: 'active' } as never);
   vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
   vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
   vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([] as never);
@@ -401,7 +412,7 @@ beforeEach(() => {
       criticalThreshold: null,
     }));
   }) as never);
-  vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
+  vi.mocked(nextCounterValue).mockResolvedValue(1);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
   vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(0);
   vi.mocked(transactionsRepository.createHoldOrder).mockResolvedValue(holdOrderRow() as never);
@@ -1285,7 +1296,7 @@ describe('transactionsService.createTransaction — receipt number Manila date p
 
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(transactionsRepository.countTransactionsWithPrefix).toHaveBeenCalledWith('MNL001-20260717-');
+    expect(nextCounterValue).toHaveBeenCalledWith('receipt_counter:MNL001-20260717-');
   });
 
   it('dates the receipt prefix by the same Manila day for a sale well inside the business day', async () => {
@@ -1295,7 +1306,68 @@ describe('transactionsService.createTransaction — receipt number Manila date p
 
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(transactionsRepository.countTransactionsWithPrefix).toHaveBeenCalledWith('MNL001-20260717-');
+    expect(nextCounterValue).toHaveBeenCalledWith('receipt_counter:MNL001-20260717-');
+  });
+});
+
+describe('transactionsService.createTransaction — receipt number allocation via atomic counter (Task 209.37 #5)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-17T04:00:00.000Z')); // noon in Manila — fixes the date component of the prefix
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('builds the receipt number from nextCounterValue\'s returned sequence, zero-padded to 6 digits', async () => {
+    vi.mocked(nextCounterValue).mockResolvedValueOnce(42);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ receiptNumber: 'MNL001-20260717-000042' }),
+      expect.anything(),
+    );
+  });
+
+  it('allocates sequential numbers for consecutive sales at the same branch on the same day', async () => {
+    vi.mocked(nextCounterValue).mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+
+    await transactionsService.createTransaction(baseInput, null);
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ receiptNumber: 'MNL001-20260717-000001' }),
+      expect.anything(),
+    );
+    expect(transactionsRepository.createTransaction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ receiptNumber: 'MNL001-20260717-000002' }),
+      expect.anything(),
+    );
+  });
+
+  it('isolates the counter namespace per branch — a different branch code produces a different counter key', async () => {
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValueOnce({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
+    await transactionsService.createTransaction(baseInput, null);
+
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValueOnce({ id: 'branch-1', code: 'CEB001', status: 'active' } as never);
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(nextCounterValue).toHaveBeenNthCalledWith(1, 'receipt_counter:MNL001-20260717-');
+    expect(nextCounterValue).toHaveBeenNthCalledWith(2, 'receipt_counter:CEB001-20260717-');
+  });
+
+  it('resets into a new counter namespace on a new Manila calendar day — no explicit reset job needed, the date is part of the key', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    vi.setSystemTime(new Date('2026-07-18T04:00:00.000Z'));
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(nextCounterValue).toHaveBeenNthCalledWith(1, 'receipt_counter:MNL001-20260717-');
+    expect(nextCounterValue).toHaveBeenNthCalledWith(2, 'receipt_counter:MNL001-20260718-');
   });
 });
 
@@ -1305,7 +1377,7 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
     vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
     vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
-    vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
+    vi.mocked(nextCounterValue).mockResolvedValue(1);
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ discountType: 'pwd' }) as never);
 
     await transactionsService.createTransaction(
@@ -1337,7 +1409,7 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
     vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
     vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
     vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
-    vi.mocked(transactionsRepository.countTransactionsWithPrefix).mockResolvedValue(0);
+    vi.mocked(nextCounterValue).mockResolvedValue(1);
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
 
     await transactionsService.createTransaction(
@@ -1523,6 +1595,241 @@ describe('transactionsService.refundTransaction', () => {
     };
     expect(notifyBranch).toHaveBeenCalledWith(branchId, 'transaction:refunded', expectedPayload);
     expect(notifySuperAdmin).toHaveBeenCalledWith('transaction:refunded', expectedPayload);
+  });
+
+  // Task 209.39 — refunds are intentionally shift-status-agnostic (unlike
+  // voidTransaction, which is restricted to an active shift). A legitimate
+  // refund may happen after the original cashier's shift has closed, so
+  // refundTransaction must never throw SHIFT_CLOSED solely because the
+  // original shift is no longer active.
+  describe('shift-status independence (owner policy: refunds allowed after original shift closes)', () => {
+    it('succeeds when the original transaction shift is still active', async () => {
+      vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+        transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+      );
+      vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(
+        transactionRow({ status: 'refunded', refundedById: 'admin-1', refundReason: 'defective' }) as never,
+      );
+
+      await expect(
+        transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
+      ).resolves.toMatchObject({ status: 'refunded' });
+    });
+
+    it('succeeds when the original transaction shift has been closed', async () => {
+      vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+        transactionRow({ shift: { id: 'shift-1', status: 'closed', branchId: 'branch-1' } }) as never,
+      );
+      vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(
+        transactionRow({ status: 'refunded', refundedById: 'admin-1', refundReason: 'defective' }) as never,
+      );
+
+      await expect(
+        transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
+      ).resolves.toMatchObject({ status: 'refunded' });
+    });
+
+    it('does not throw SHIFT_CLOSED solely because the original shift is closed', async () => {
+      vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+        transactionRow({ shift: { id: 'shift-1', status: 'closed', branchId: 'branch-1' } }) as never,
+      );
+      vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(
+        transactionRow({ status: 'refunded', refundedById: 'admin-1', refundReason: 'defective' }) as never,
+      );
+
+      let caughtError: unknown;
+      try {
+        await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+      } catch (err) {
+        caughtError = err;
+      }
+      expect(caughtError).toBeUndefined();
+    });
+
+    // voidTransaction's SHIFT_CLOSED guard (asserted above in the
+    // voidTransaction describe block) must remain unchanged by this task —
+    // reasserted here, side-by-side with the refund cases, so a future
+    // refactor that accidentally shares logic between the two methods trips
+    // this regression immediately.
+    it('leaves voidTransaction rejecting a closed-shift transaction with SHIFT_CLOSED', async () => {
+      vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+        transactionRow({ shift: { id: 'shift-1', status: 'closed', branchId: 'branch-1' } }) as never,
+      );
+
+      await expect(
+        transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null),
+      ).rejects.toMatchObject({ code: 'SHIFT_CLOSED' });
+    });
+  });
+
+  // Task 209.39 — refund financial calculation must remain untouched: the
+  // service returns exactly what the repository persisted, with no
+  // recomputation based on shift status.
+  it('does not alter the persisted refund financial totals regardless of shift status', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'closed', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(
+      transactionRow({
+        status: 'refunded',
+        refundedById: 'admin-1',
+        refundReason: 'defective',
+        subtotal: decimal(100),
+        vatAmount: decimal(10.71),
+        totalAmount: decimal(100),
+      }) as never,
+    );
+
+    const result = await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(result.subtotal).toBe(100);
+    expect(result.vat_amount).toBe(10.71);
+    expect(result.total_amount).toBe(100);
+  });
+
+  // Task 209.39 — refund inventory reversal must run the same
+  // reverseInventoryForTransaction path (and increment InventoryStock the
+  // same way) whether or not the original shift is still active, mirroring
+  // the void-side coverage above for the same code path with kind: 'refund'.
+  it('increments InventoryStock and records a SALE_REVERSAL movement when refunding a transaction whose shift is closed', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'closed', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded' }) as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }],
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
+      quantityOnHand: decimal(8),
+    } as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
+      id: 'stock-1',
+      quantityOnHand: decimal(10),
+    } as never);
+
+    await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
+      where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: 'item-flour' } },
+      data: { quantityOnHand: { increment: 2 }, version: { increment: 1 } },
+    });
+    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchId: 'branch-1',
+        inventoryItemId: 'item-flour',
+        movementType: 'SALE_REVERSAL',
+        quantityChange: 2,
+        unitId: 'unit-g',
+        referenceType: 'transaction',
+        referenceId: 'txn-1',
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+// Task 209.41 — CASH_REFUND_MUST_BE_ACCOUNTED_TO_PROCESSING_SHIFT. A CASH
+// refund pays out of whichever shift's drawer is physically open right now
+// (the current active processing shift), never the — possibly long closed —
+// shift the original sale belonged to. Non-cash refunds never touch a
+// physical drawer and remain independent of shift state entirely.
+describe('transactionsService.refundTransaction — CASH refund processing-shift accounting (Task 209.41)', () => {
+  it('allows a CASH refund when the original sale shift is still active (Part K #1)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ paymentMethod: 'cash', shiftId: 'shift-100', shift: { id: 'shift-100', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: 'shift-100', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded', paymentMethod: 'cash' }) as never);
+
+    await expect(
+      transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
+    ).resolves.toMatchObject({ status: 'refunded' });
+  });
+
+  it('allows a CASH refund when the original sale shift is closed but a different shift is currently active (Part K #2, #3)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ paymentMethod: 'cash', shiftId: 'shift-100', shift: { id: 'shift-100', status: 'closed', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: 'shift-101', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded', paymentMethod: 'cash' }) as never);
+
+    await expect(
+      transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
+    ).resolves.toMatchObject({ status: 'refunded' });
+    expect(cashRepository.findActiveShiftByBranch).toHaveBeenCalledWith('branch-1', expect.anything());
+  });
+
+  // Part F / Part K #8 — refundTransaction must never read or write the
+  // Shift table by id at all; the only shift-related repository call it may
+  // make is the read-only branch-wide active-shift lookup.
+  it('never touches the original sale shift row while attributing a cash refund to the current active processing shift', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ paymentMethod: 'cash', shiftId: 'shift-100', shift: { id: 'shift-100', status: 'closed', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: 'shift-101', branchId: 'branch-1', status: 'active' } as never);
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded', paymentMethod: 'cash' }) as never);
+
+    await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(cashRepository.findShiftById).not.toHaveBeenCalled();
+  });
+
+  it('rejects a CASH refund with ACTIVE_SHIFT_REQUIRED_FOR_CASH_REFUND when no shift is currently active at the branch (Part K #4)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ paymentMethod: 'cash' }) as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null as never);
+
+    await expect(
+      transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'ACTIVE_SHIFT_REQUIRED_FOR_CASH_REFUND' });
+    expect(transactionsRepository.refundTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each(['gcash', 'maya', 'other'] as const)(
+    'allows a %s refund with no active shift at the branch — non-cash never touches drawer cash (Part K #5-7)',
+    async (paymentMethod) => {
+      vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ paymentMethod }) as never);
+      vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null as never);
+      vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded', paymentMethod }) as never);
+
+      await expect(
+        transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null),
+      ).resolves.toMatchObject({ status: 'refunded' });
+      // Non-cash refunds must never consult the active-shift guard at all.
+      expect(cashRepository.findActiveShiftByBranch).not.toHaveBeenCalled();
+    },
+  );
+
+  // Part H / Part K #17 — the branch-scoped advisory lock (same key
+  // cashService.closeShift takes) must be acquired before the active-shift
+  // lookup, so a concurrent closeShift can't interleave between the two.
+  it('takes the branch-scoped advisory lock before checking for an active shift, for a CASH refund', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ paymentMethod: 'cash', branchId: 'branch-9' }) as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: 'shift-9', branchId: 'branch-9', status: 'active' } as never);
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded', paymentMethod: 'cash' }) as never);
+
+    await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    const expectedLockId = branchShiftLockId('branch-9');
+    const lockCalls = vi.mocked(prisma.$executeRaw).mock.calls.map((call) => call[1]);
+    expect(lockCalls).toContain(expectedLockId);
+
+    const lockCallOrder = vi.mocked(prisma.$executeRaw).mock.invocationCallOrder[0];
+    const activeShiftCallOrder = vi.mocked(cashRepository.findActiveShiftByBranch).mock.invocationCallOrder[0];
+    expect(lockCallOrder).toBeLessThan(activeShiftCallOrder as number);
+  });
+
+  it('does not take the branch-shift advisory lock for a non-cash refund', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ paymentMethod: 'gcash' }) as never);
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(transactionRow({ status: 'refunded', paymentMethod: 'gcash' }) as never);
+
+    await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 });
 
@@ -2449,13 +2756,31 @@ describe('transactionsService.createTransaction — forced transaction-timeout h
     expect(notifySuperAdmin).not.toHaveBeenCalled();
   });
 
-  it('does not retry a P2028 failure the way it retries a receipt-number collision (P2002)', async () => {
+  it('does not retry a P2028 failure', async () => {
     const p2028 = new Prisma.PrismaClientKnownRequestError('Transaction already closed', { code: 'P2028', clientVersion: '5.0.0' });
     vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2028);
 
     await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'CHECKOUT_TIMEOUT' });
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  // Task 209.37 #5 — generateReceiptNumber now allocates its sequence from
+  // the atomic id_counters table (nextCounterValue), so two concurrent sales
+  // at the same branch/day can never be handed the same receipt number in
+  // the first place. The old COUNT-then-increment approach could collide
+  // under concurrency and relied on this P2002 branch to retry with a
+  // bumped sequence; that retry loop is gone, so any P2002 here (now
+  // necessarily an unrelated constraint, not a receipt-number collision)
+  // must propagate immediately rather than trigger a second attempt.
+  it('does not retry a P2002 failure — the retry-on-receipt-collision loop was removed', async () => {
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.0.0' });
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2002);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toBe(p2002);
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(nextCounterValue).toHaveBeenCalledTimes(1);
   });
 
   it('still surfaces INSUFFICIENT_STOCK as-is (409) rather than reclassifying it as a timeout', async () => {

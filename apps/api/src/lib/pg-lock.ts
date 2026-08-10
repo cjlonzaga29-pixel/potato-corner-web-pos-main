@@ -26,3 +26,17 @@ export function hashToLockId(hexDigest: string): bigint {
 export function inventoryStockLockId(branchId: string, inventoryItemId: string): bigint {
   return hashToLockId(sha256Hex(`${branchId}:${inventoryItemId}`));
 }
+
+/**
+ * Canonical advisory-lock key for a branch's active-shift state (Task
+ * 209.41). Serializes cashService.closeShift against a concurrent CASH
+ * refund on the same branch (transactionsService.refundTransaction) — both
+ * take this same lock before determining/using "the current active shift",
+ * so a shift can never close in the gap between a refund observing it as
+ * active and the refund actually being committed. Only one lock key is ever
+ * involved on either path (no second resource is locked afterward), so
+ * there is no lock-ordering/deadlock concern between the two call sites.
+ */
+export function branchShiftLockId(branchId: string): bigint {
+  return hashToLockId(sha256Hex(`shift:${branchId}`));
+}

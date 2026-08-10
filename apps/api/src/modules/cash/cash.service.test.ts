@@ -17,6 +17,7 @@ vi.mock('./cash.repository.js', () => ({
     createAutoShift: vi.fn(),
     sumTransactionsForShift: vi.fn(),
     sumTransactionCountsForShift: vi.fn(),
+    sumCashRefundsProcessedDuringShift: vi.fn(),
     countAnyTransactionsForShift: vi.fn(),
     closeShift: vi.fn(),
     approveVariance: vi.fn(),
@@ -33,6 +34,27 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// closeShift now opens its own transaction (Task 209.37 #3) so the
+// sales-total reads and the close write share one snapshot — cashRepository
+// itself is fully mocked below, so passing `tx` through to its calls doesn't
+// depend on tx's real shape, only that it's the SAME object every call sees
+// and is distinct from the root `prisma` client (asserted below — a real tx
+// must never leak the un-scoped root client). closeShift now also takes a
+// branch-scoped advisory lock directly on `tx.$executeRaw` (Task 209.41 Part
+// H), so this stand-in tx client needs its own working $executeRaw, separate
+// from root prisma's. Tests that need to assert on tx.$executeRaw capture
+// the tx object from a cashRepository call's arguments (e.g.
+// sumTransactionsForShift's 2nd arg) rather than importing it directly,
+// since it isn't part of the real prisma module's exported shape.
+vi.mock('../../lib/prisma.js', () => {
+  const txClient = { $executeRaw: vi.fn().mockResolvedValue(undefined) };
+  const prismaMock = {
+    $executeRaw: vi.fn().mockResolvedValue(undefined),
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txClient)),
+  };
+  return { prisma: prismaMock };
+});
+
 vi.mock('../../queues/notification.queue.js', () => ({
   enqueueNotification: vi.fn().mockResolvedValue(undefined),
 }));
@@ -47,6 +69,7 @@ const { cashRepository } = await import('./cash.repository.js');
 const { attendanceRepository } = await import('../attendance/attendance.repository.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { cashService } = await import('./cash.service.js');
 
 const SUPERVISOR = { id: 'supervisor-1', role: 'supervisor' };
@@ -111,6 +134,11 @@ beforeEach(() => {
   // tests aren't exercising the attendance-link guard (§6), only the
   // dedicated ATTENDANCE_REQUIRED test below overrides this.
   vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-1' } as never);
+  // Task 209.41 — default to "no cash refunds during this shift" so every
+  // pre-existing closeShift/getShiftSummary fixture (which predates this
+  // term) keeps computing the same expected_cash/expectedClosingCash it did
+  // before; the dedicated describe block below overrides this per-test.
+  vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(0));
 });
 
 describe('cashService.openShift', () => {
@@ -207,6 +235,34 @@ describe('cashService.openShift', () => {
     expect(notifyBranch).toHaveBeenCalledWith(branchId, 'cash:shift_opened', result);
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:shift_opened', result);
     expect(shiftResponseSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('converts a P2002 race on createShift (two terminals manually opening at once) into 409 SHIFT_ALREADY_OPEN instead of a raw 500', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    vi.mocked(cashRepository.findUserById).mockResolvedValue({ id: 'cashier-1', isActive: true } as never);
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the fields: (`branch_id`)', { code: 'P2002', clientVersion: '5.22.0' });
+    vi.mocked(cashRepository.createShift).mockRejectedValue(p2002);
+
+    await expect(
+      cashService.openShift(
+        { branchId: 'branch-1', cashierId: 'cashier-1', openedBy: 'supervisor-1', startingCash: 1000, denominations: [{ denomination: 1000, quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'SHIFT_ALREADY_OPEN', statusCode: 409 });
+  });
+
+  it('rethrows non-P2002 errors from createShift untouched', async () => {
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue(null);
+    vi.mocked(cashRepository.findUserById).mockResolvedValue({ id: 'cashier-1', isActive: true } as never);
+    const dbError = new Error('connection lost');
+    vi.mocked(cashRepository.createShift).mockRejectedValue(dbError);
+
+    await expect(
+      cashService.openShift(
+        { branchId: 'branch-1', cashierId: 'cashier-1', openedBy: 'supervisor-1', startingCash: 1000, denominations: [{ denomination: 1000, quantity: 1 }] },
+        null,
+      ),
+    ).rejects.toBe(dbError);
   });
 });
 
@@ -421,7 +477,44 @@ describe('cashService.closeShift', () => {
       'shift-1',
       expect.anything(),
       expect.objectContaining({ expectedClosingCash: 1500, cashSalesTotal: 500, gcashSalesTotal: 300, transactionCount: 4 }),
+      expect.anything(),
     );
+  });
+
+  it('reads sales totals and writes the close inside the same transaction client, never through root prisma', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
+
+    await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const sumTx = vi.mocked(cashRepository.sumTransactionsForShift).mock.calls[0]?.[1];
+    const countsTx = vi.mocked(cashRepository.sumTransactionCountsForShift).mock.calls[0]?.[1];
+    const closeTx = vi.mocked(cashRepository.closeShift).mock.calls[0]?.[3];
+
+    expect(sumTx).toBeDefined();
+    expect(sumTx).toBe(countsTx);
+    expect(sumTx).toBe(closeTx);
+    expect(sumTx).not.toBe(prisma);
   });
 
   it('computes and persists all 7 summary count/total fields, and returns them on the shift response plus in `summary`', async () => {
@@ -477,6 +570,7 @@ describe('cashService.closeShift', () => {
         totalDiscountAmount: 40,
         pwdScTransactionCount: 2,
       }),
+      expect.anything(),
     );
     expect(result.cash_sales_count).toBe(3);
     expect(result.gcash_sales_count).toBe(2);
@@ -654,6 +748,177 @@ describe('cashService.closeShift', () => {
     await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPERVISOR, null);
 
     expect(notifyBranch).not.toHaveBeenCalledWith(expect.anything(), 'cash:variance_flagged', expect.anything());
+  });
+});
+
+// Task 209.41 Parts E/F/G/H — CASH refunds paid out of this shift's drawer
+// (for sales belonging to an earlier, already-closed shift) reduce
+// expectedClosingCash at close time. A same-shift sale+refund must not
+// double-subtract — that's proven at the repository layer (see
+// cash.repository.test.ts's sumCashRefundsProcessedDuringShift describe,
+// which asserts the shiftId-exclusion clause); here we prove the service
+// correctly folds whatever the repository returns into the persisted
+// formula, and never touches the original (earlier) shift to do it.
+describe('cashService.closeShift — CASH refund processing-shift accounting (Task 209.41)', () => {
+  function baseMocks() {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(500),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 1,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 1,
+      gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 1,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
+  }
+
+  it('subtracts a prior-shift cash refund from expectedClosingCash: opening 1000 + cash sales 500 - refunds 200 = 1300 (Part E, Part K #9)', async () => {
+    baseMocks();
+    vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(200));
+
+    const result = await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 300, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(result.expected_closing_cash).toBe(1300);
+    expect(cashRepository.closeShift).toHaveBeenCalledWith(
+      'shift-1',
+      expect.anything(),
+      expect.objectContaining({ expectedClosingCash: 1300 }),
+      expect.anything(),
+    );
+  });
+
+  it('leaves expectedClosingCash unchanged when there are no cash refunds during the shift (Part K #10 baseline)', async () => {
+    baseMocks();
+    vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(0));
+
+    const result = await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 500, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(result.expected_closing_cash).toBe(1500);
+  });
+
+  it('never reads or writes any shift other than the one being closed — the earlier original sale shift is never touched (Part F)', async () => {
+    baseMocks();
+    vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(200));
+
+    await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 300, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(cashRepository.findShiftById).toHaveBeenCalledTimes(1);
+    expect(cashRepository.findShiftById).toHaveBeenCalledWith('shift-1');
+    expect(cashRepository.closeShift).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(cashRepository.closeShift).mock.calls[0]?.[0]).toBe('shift-1');
+  });
+
+  it('passes this shift\'s id/branchId/startedAt and a closing-time window end into the refund-attribution query', async () => {
+    const startedAt = new Date('2026-08-01T08:00:00.000Z');
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-7', startedAt, openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
+
+    const before = new Date();
+    await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPERVISOR, null);
+    const after = new Date();
+
+    expect(cashRepository.sumCashRefundsProcessedDuringShift).toHaveBeenCalledTimes(1);
+    const [shiftArg, windowEndArg] = vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mock.calls[0] ?? [];
+    expect(shiftArg).toEqual({ id: 'shift-1', branchId: 'branch-7', startedAt });
+    expect((windowEndArg as Date).getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect((windowEndArg as Date).getTime()).toBeLessThanOrEqual(after.getTime());
+  });
+
+  // Part G / Part K #11 — the worked example from the task spec: opening
+  // ₱1,000, a ₱500 cash sale, then a same-shift refund of that same sale.
+  // sumTransactionsForShift already excludes the refunded transaction from
+  // cashSalesTotal (its status is no longer 'completed'), and
+  // sumCashRefundsProcessedDuringShift's shiftId-exclusion clause (proven in
+  // cash.repository.test.ts) excludes it too — so neither term carries it,
+  // and the drawer nets to exactly the opening float, not ₱500 short.
+  it('does not double-subtract a same-shift cash sale + refund — expected drawer stays at the opening float', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      // The ₱500 sale was refunded within this same shift, so it's already
+      // excluded here (status is no longer 'completed').
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 1,
+      totalTransactionCount: 1,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+    // Real query excludes shiftId === this shift's own id, so a same-shift
+    // refund never appears in this sum either.
+    vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(0));
+    vi.mocked(cashRepository.closeShift).mockImplementation((_id, _data, computed) => Promise.resolve(asShiftRow(computed) as never));
+
+    const result = await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPERVISOR, null);
+
+    expect(result.expected_closing_cash).toBe(1000);
+    expect(result.cash_variance).toBe(0);
+  });
+
+  // Part H — the same branch-scoped advisory lock transactionsService.
+  // refundTransaction takes for a CASH refund must be taken here too, before
+  // the sales/refund totals are read, so the two can't interleave.
+  it('takes the branch-scoped advisory lock before reading sales/refund totals or writing the close', async () => {
+    baseMocks();
+    vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(0));
+
+    // opening 1000 + cash sales 500 - refunds 0 = expected 1500, matched exactly by the count below.
+    await cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }, { denomination: 500, quantity: 1 }] }, SUPERVISOR, null);
+
+    // Capture the tx object cashRepository actually saw (its identity, not
+    // its import path — see the vi.mock('../../lib/prisma.js', ...) comment
+    // above for why it isn't imported directly).
+    const tx = vi.mocked(cashRepository.sumTransactionsForShift).mock.calls[0]?.[1] as unknown as { $executeRaw: ReturnType<typeof vi.fn> };
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    const lockCallOrder = vi.mocked(tx.$executeRaw).mock.invocationCallOrder[0] ?? -1;
+    const sumCallOrder = vi.mocked(cashRepository.sumTransactionsForShift).mock.invocationCallOrder[0] ?? -1;
+    const refundSumCallOrder = vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mock.invocationCallOrder[0] ?? -1;
+    const writeCallOrder = vi.mocked(cashRepository.closeShift).mock.invocationCallOrder[0] ?? -1;
+    expect(lockCallOrder).toBeGreaterThanOrEqual(0);
+    expect(lockCallOrder).toBeLessThan(sumCallOrder);
+    expect(lockCallOrder).toBeLessThan(refundSumCallOrder);
+    expect(lockCallOrder).toBeLessThan(writeCallOrder);
   });
 });
 
@@ -858,6 +1123,49 @@ describe('cashService.getShiftSummary', () => {
     const result = await cashService.getShiftSummary('shift-1');
 
     expect(result.summary.variance_status).toBe('PENDING_REVIEW');
+  });
+
+  // Task 209.41 Part E/I — the live (still-open) expected_cash figure must
+  // also subtract cash refunds processed during this shift, the same way
+  // closeShift's persisted formula does.
+  it('subtracts a live cash-refund total from expected_cash for an OPEN shift', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active', openingCashAmount: decimal(1000) }) as never);
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(500),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 1,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 1,
+      gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 1,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(200));
+
+    const result = await cashService.getShiftSummary('shift-1');
+
+    // 1000 opening + 500 cash sales - 200 prior-shift cash refund = 1300.
+    expect(result.summary.expected_cash).toBe(1300);
+  });
+
+  it('does not recompute a live cash-refund total for a CLOSED shift — its persisted expected_closing_cash is already final (Part F)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(
+      shiftRow({ status: 'closed', expectedClosingCash: decimal(1300), closingCashAmount: decimal(1300), cashVariance: decimal(0) }) as never,
+    );
+
+    const result = await cashService.getShiftSummary('shift-1');
+
+    expect(cashRepository.sumCashRefundsProcessedDuringShift).not.toHaveBeenCalled();
+    expect(result.summary.expected_cash).toBe(1300);
   });
 });
 

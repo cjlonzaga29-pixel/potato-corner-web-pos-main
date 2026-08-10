@@ -703,8 +703,8 @@ export const universalInventoryService = {
         throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
       }
       const quantityBefore = stock.quantityOnHand;
-      const quantityAfter = quantityBefore.plus(baseQuantity);
-      await repo.updateStockQuantity(data.branchId, data.inventoryItemId, quantityAfter, tx);
+      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity, tx);
+      const quantityAfter = updated.quantityOnHand;
       return repo.createStockMovement(
         {
           branchId: data.branchId,
@@ -755,11 +755,15 @@ export const universalInventoryService = {
         throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
       }
       const quantityBefore = stock.quantityOnHand;
-      const quantityAfter = quantityBefore.plus(data.quantityDelta);
-      if (quantityAfter.lessThan(0)) {
+      // Validated against the locked read before writing — the advisory lock
+      // held since lockAndGetStock guarantees no concurrent writer can move
+      // this row between this check and the atomic increment below, so the
+      // projected value is exact, not just an estimate.
+      if (quantityBefore.plus(data.quantityDelta).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
       }
-      await repo.updateStockQuantity(data.branchId, data.inventoryItemId, quantityAfter, tx);
+      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, data.quantityDelta, tx);
+      const quantityAfter = updated.quantityOnHand;
       return repo.createStockMovement(
         {
           branchId: data.branchId,
@@ -820,11 +824,12 @@ export const universalInventoryService = {
         throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
       }
       const quantityBefore = stock.quantityOnHand;
-      const quantityAfter = quantityBefore.minus(baseQuantity);
-      if (quantityAfter.lessThan(0)) {
+      // Same locked-read-then-atomic-write reasoning as adjustStock above.
+      if (quantityBefore.minus(baseQuantity).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
       }
-      await repo.updateStockQuantity(data.branchId, data.inventoryItemId, quantityAfter, tx);
+      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity.negated(), tx);
+      const quantityAfter = updated.quantityOnHand;
       return repo.createStockMovement(
         {
           branchId: data.branchId,
@@ -907,15 +912,16 @@ export const universalInventoryService = {
       }
 
       const outBefore = sourceStock.quantityOnHand;
-      const outAfter = outBefore.minus(data.quantity);
-      if (outAfter.lessThan(0)) {
+      // Same locked-read-then-atomic-write reasoning as adjustStock above.
+      if (outBefore.minus(data.quantity).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Transfer quantity exceeds current stock at the source branch', 409);
       }
       const inBefore = destStock.quantityOnHand;
-      const inAfter = inBefore.plus(data.quantity);
 
-      await repo.updateStockQuantity(data.fromBranchId, data.inventoryItemId, outAfter, tx);
-      await repo.updateStockQuantity(data.toBranchId, data.inventoryItemId, inAfter, tx);
+      const updatedSource = await repo.incrementStockQuantity(data.fromBranchId, data.inventoryItemId, -data.quantity, tx);
+      const updatedDest = await repo.incrementStockQuantity(data.toBranchId, data.inventoryItemId, data.quantity, tx);
+      const outAfter = updatedSource.quantityOnHand;
+      const inAfter = updatedDest.quantityOnHand;
 
       const out = await repo.createStockMovement(
         {

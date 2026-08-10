@@ -248,11 +248,6 @@ export const transactionsRepository = {
     });
   },
 
-  /** Sequence source for the BIR receipt number — resets daily per branch because the prefix embeds the date. */
-  countTransactionsWithPrefix(prefix: string) {
-    return prisma.transaction.count({ where: { transactionNumber: { startsWith: prefix } } });
-  },
-
   /**
    * Transaction row + its line items are created atomically — a crash
    * partway through must never leave a transaction with zero items. Written

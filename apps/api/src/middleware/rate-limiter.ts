@@ -26,12 +26,46 @@ const rateLimitHandler: Options['handler'] = (_req: Request, res: Response) => {
   });
 };
 
-/** 10 requests per 15 minutes per IP — applied to POST /api/auth/login. */
+/**
+ * 10 requests per 15 minutes per IP + device_id combination — applied to
+ * POST /api/auth/login and /api/auth/pin/login. Keyed the same way as
+ * totpVerifyLimiter below rather than IP alone: both endpoints' schemas
+ * (loginSchema, pinLoginSchema) require device_id, so a whole branch behind
+ * one NAT'd IP no longer shares a single bucket — each device/terminal gets
+ * its own budget, while a single attacker (one device_id, or none) is still
+ * capped. Falls back to a per-IP 'unknown-device' bucket — same behavior as
+ * today — if device_id is somehow missing (this runs before `validate()`,
+ * so the field isn't guaranteed present yet).
+ */
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const deviceId = (req.body as Record<string, unknown> | undefined)?.device_id;
+    const deviceKey = typeof deviceId === 'string' ? deviceId : 'unknown-device';
+    return `${req.ip ?? 'unknown-ip'}:${deviceKey}`;
+  },
+  handler: rateLimitHandler,
+});
+
+/**
+ * 10 requests per 15 minutes per authenticated branch account — applied to
+ * POST /api/auth/select-employee. Unlike /login and /pin/login, this route
+ * always runs after `authenticate`, so req.user is the JWT-verified branch
+ * session rather than a client-supplied value by the time this key is
+ * computed. Keying on that instead of IP+device_id is strictly safer here:
+ * it can't be spoofed by omitting/rotating device_id, and it scopes the
+ * limit to the one branch session making the request rather than every
+ * terminal sharing the branch's egress IP.
+ */
+export const selectEmployeeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => req.user?.user_id ?? req.ip ?? 'unknown',
   handler: rateLimitHandler,
 });
 

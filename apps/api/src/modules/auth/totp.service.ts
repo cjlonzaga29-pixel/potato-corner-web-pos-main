@@ -103,7 +103,7 @@ export const totpService = {
     if (usedChallengeTokenHashes.has(sha256Hex(token))) return null;
 
     try {
-      const decoded = jwt.verify(token, config.jwt.refreshSecret) as ChallengeJwtPayload;
+      const decoded = jwt.verify(token, config.jwt.refreshSecret, { algorithms: ['HS256'] }) as ChallengeJwtPayload;
       if (decoded.purpose !== CHALLENGE_PURPOSE) return null;
       return { userId: decoded.user_id, deviceId: decoded.device_id };
     } catch {

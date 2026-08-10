@@ -18,9 +18,15 @@ export const cashRepository = {
     });
   },
 
-  /** Whether *any* shift is currently open at a branch — used by GET /current and the open-shift 409 guard. */
-  findActiveShiftByBranch(branchId: string) {
-    return prisma.shift.findFirst({
+  /**
+   * Whether *any* shift is currently open at a branch — used by GET /current,
+   * the open-shift 409 guard, and (Task 209.41, with `tx`) the CASH-refund
+   * active-processing-shift lookup, which must run inside the same locked
+   * transaction as the refund write — see branchShiftLockId in pg-lock.ts.
+   */
+  findActiveShiftByBranch(branchId: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.shift.findFirst({
       where: { branchId, status: 'active' },
       include: shiftInclude,
     });
@@ -67,10 +73,12 @@ export const cashRepository = {
   /**
    * Auto-managed shift, created transparently on clock-in (Phase 4-9 shift
    * removal) — no drawer count, no denomination rows, no ShiftReview rows.
-   * Unlike createShift, this is per-cashier, not per-branch: several
-   * cashiers can each hold their own concurrent active auto-shift at the
-   * same branch (one register/one-shift-at-a-time was the old manual-count
-   * model's rule, not a database constraint).
+   * Branch-scoped, like createShift: the `shift_one_open_per_branch` partial
+   * unique index (migration 20260714120000) allows exactly one ACTIVE shift
+   * per branch, full stop — never several concurrent active auto-shifts for
+   * different cashiers at the same branch. cashService.autoOpenShift checks
+   * findActiveShiftByBranch (branch-wide, not per-cashier) before calling
+   * this for exactly that reason (verified current as of Task 209.41).
    */
   createAutoShift(data: AutoOpenShiftData) {
     return prisma.shift.create({
@@ -144,7 +152,7 @@ export const cashRepository = {
    * method — voided/refunded transactions never touched the physical
    * drawer, so they're excluded from cash_sales_total on purpose.
    */
-  async sumTransactionsForShift(shiftId: string): Promise<{
+  async sumTransactionsForShift(shiftId: string, tx?: Prisma.TransactionClient): Promise<{
     cashSalesTotal: Prisma.Decimal;
     gcashSalesTotal: Prisma.Decimal;
     mayaSalesTotal: Prisma.Decimal;
@@ -152,7 +160,8 @@ export const cashRepository = {
     grossSalesTotal: Prisma.Decimal;
     transactionCount: number;
   }> {
-    const rows = await prisma.transaction.groupBy({
+    const client = tx ?? prisma;
+    const rows = await client.transaction.groupBy({
       by: ['paymentMethod'],
       where: { shiftId, status: 'completed' },
       _sum: { totalAmount: true },
@@ -183,21 +192,22 @@ export const cashRepository = {
    * pwdScTransactionCount are COMPLETED-only (a voided PWD sale never
    * happened for reporting purposes).
    */
-  async sumTransactionCountsForShift(shiftId: string): Promise<ShiftCloseComputedCounts> {
+  async sumTransactionCountsForShift(shiftId: string, tx?: Prisma.TransactionClient): Promise<ShiftCloseComputedCounts> {
+    const client = tx ?? prisma;
     const [statusRows, discountAgg, pwdScCount, totalCount] = await Promise.all([
-      prisma.transaction.groupBy({
+      client.transaction.groupBy({
         by: ['paymentMethod', 'status'],
         where: { shiftId },
         _count: { _all: true },
       }),
-      prisma.transaction.aggregate({
+      client.transaction.aggregate({
         where: { shiftId, status: 'completed' },
         _sum: { discountAmount: true },
       }),
-      prisma.transaction.count({
+      client.transaction.count({
         where: { shiftId, status: 'completed', discountType: { in: ['pwd', 'senior_citizen'] } },
       }),
-      prisma.transaction.count({ where: { shiftId } }),
+      client.transaction.count({ where: { shiftId } }),
     ]);
 
     const cashSalesCount = statusRows.find((r) => r.paymentMethod === 'cash' && r.status === 'completed')?._count._all ?? 0;
@@ -220,11 +230,59 @@ export const cashRepository = {
     };
   },
 
+  /**
+   * CASH refunds this shift's drawer physically paid out as the PROCESSING
+   * shift (Task 209.41 Part D) — never the shift the original sale belonged
+   * to (Transaction.shiftId, which sumTransactionsForShift above keys off
+   * of). Attribution is entirely by refundedAt falling inside this shift's
+   * [startedAt, windowEnd] time window plus branch/payment-method/status —
+   * the same fields sumTransactionsForShift already treats as authoritative
+   * for "did this touch the physical drawer".
+   *
+   * Excludes rows where Transaction.shiftId === this shift's own id. This is
+   * NOT refund-to-shift attribution (that's the time-window above) — it's a
+   * double-count guard. A cash sale rung up and refunded within the same
+   * still-active shift already drops out of sumTransactionsForShift's
+   * cashSalesTotal the instant its status flips off 'completed', so its net
+   * drawer effect (+X then -X) is already zero without this method's help.
+   * Counting that same refund here too would subtract X a second time for a
+   * transaction that never actually left the drawer short. A refund whose
+   * original sale belongs to an earlier (already-closed) shift has no such
+   * exclusion from cashSalesTotal to begin with (different shiftId, so it
+   * was never in this shift's cashSalesTotal), so it's included here as a
+   * real deduction against this shift's expected cash.
+   */
+  async sumCashRefundsProcessedDuringShift(
+    shift: { id: string; branchId: string; startedAt: Date },
+    windowEnd: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<Prisma.Decimal> {
+    const client = tx ?? prisma;
+    const result = await client.transaction.aggregate({
+      where: {
+        branchId: shift.branchId,
+        paymentMethod: 'cash',
+        status: 'refunded',
+        refundedAt: { gte: shift.startedAt, lte: windowEnd },
+        shiftId: { not: shift.id },
+      },
+      _sum: { totalAmount: true },
+    });
+    return result._sum.totalAmount ?? new Prisma.Decimal(0);
+  },
+
   /** Any transaction at all (regardless of status) counts toward the void guard — even a voided one means the shift wasn't untouched. */
   countAnyTransactionsForShift(shiftId: string) {
     return prisma.transaction.count({ where: { shiftId } });
   },
 
+  /**
+   * Requires an already-open transaction client rather than opening its own
+   * (contrast createShift/closeAutoShift above) — the caller (cashService.closeShift)
+   * owns the transaction boundary so the sales-total reads it does just before
+   * calling this can share the same snapshot as this write, closing the race
+   * where a sale lands between summing totals and committing the close.
+   */
   async closeShift(
     id: string,
     data: CloseShiftData,
@@ -251,42 +309,41 @@ export const cashRepository = {
       varianceApproved: boolean | null;
       closedBy: string;
     },
+    tx: Prisma.TransactionClient,
   ) {
-    return prisma.$transaction(async (tx) => {
-      await tx.shiftCashDenomination.createMany({
-        data: data.denominations.map((d) => denominationRow(id, d, 'closing')),
-      });
+    await tx.shiftCashDenomination.createMany({
+      data: data.denominations.map((d) => denominationRow(id, d, 'closing')),
+    });
 
-      return tx.shift.update({
-        where: { id },
-        data: {
-          closingCashAmount: computed.closingCashAmount,
-          expectedClosingCash: computed.expectedClosingCash,
-          cashVariance: computed.cashVariance,
-          cashSalesTotal: computed.cashSalesTotal,
-          gcashSalesTotal: computed.gcashSalesTotal,
-          mayaSalesTotal: computed.mayaSalesTotal,
-          otherSalesTotal: computed.otherSalesTotal,
-          grossSalesTotal: computed.grossSalesTotal,
-          transactionCount: computed.transactionCount,
-          cashSalesCount: computed.cashSalesCount,
-          gcashSalesCount: computed.gcashSalesCount,
-          mayaSalesCount: computed.mayaSalesCount,
-          otherSalesCount: computed.otherSalesCount,
-          voidedCount: computed.voidedCount,
-          refundedCount: computed.refundedCount,
-          totalTransactionCount: computed.totalTransactionCount,
-          totalDiscountAmount: computed.totalDiscountAmount,
-          pwdScTransactionCount: computed.pwdScTransactionCount,
-          status: computed.status,
-          varianceApproved: computed.varianceApproved,
-          varianceExplanation: data.varianceExplanation,
-          shiftNotes: data.notes,
-          closedBy: computed.closedBy,
-          closedAt: new Date(),
-        },
-        include: shiftInclude,
-      });
+    return tx.shift.update({
+      where: { id },
+      data: {
+        closingCashAmount: computed.closingCashAmount,
+        expectedClosingCash: computed.expectedClosingCash,
+        cashVariance: computed.cashVariance,
+        cashSalesTotal: computed.cashSalesTotal,
+        gcashSalesTotal: computed.gcashSalesTotal,
+        mayaSalesTotal: computed.mayaSalesTotal,
+        otherSalesTotal: computed.otherSalesTotal,
+        grossSalesTotal: computed.grossSalesTotal,
+        transactionCount: computed.transactionCount,
+        cashSalesCount: computed.cashSalesCount,
+        gcashSalesCount: computed.gcashSalesCount,
+        mayaSalesCount: computed.mayaSalesCount,
+        otherSalesCount: computed.otherSalesCount,
+        voidedCount: computed.voidedCount,
+        refundedCount: computed.refundedCount,
+        totalTransactionCount: computed.totalTransactionCount,
+        totalDiscountAmount: computed.totalDiscountAmount,
+        pwdScTransactionCount: computed.pwdScTransactionCount,
+        status: computed.status,
+        varianceApproved: computed.varianceApproved,
+        varianceExplanation: data.varianceExplanation,
+        shiftNotes: data.notes,
+        closedBy: computed.closedBy,
+        closedAt: new Date(),
+      },
+      include: shiftInclude,
     });
   },
 

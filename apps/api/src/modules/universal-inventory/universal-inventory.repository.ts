@@ -261,10 +261,38 @@ export const universalInventoryRepository = {
     return tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
   },
 
+  /**
+   * Absolute set — used only where the caller's new value is itself the
+   * authoritative truth being recorded, not a computed offset from the old
+   * one. Today that's exactly one case: submitPhysicalCount, where
+   * countedQuantity *is* the new on-hand quantity by definition. Every
+   * delta-based writer (receive/adjust/waste/transfer) uses
+   * incrementStockQuantity below instead.
+   */
   updateStockQuantity(branchId: string, inventoryItemId: string, quantityOnHand: Prisma.Decimal, tx: Prisma.TransactionClient) {
     return tx.inventoryStock.update({
       where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
       data: { quantityOnHand, version: { increment: 1 } },
+    });
+  },
+
+  /**
+   * Atomic relative write — `quantityOnHand: { increment: delta }` at the
+   * database layer, rather than a locally-computed absolute SET, for the
+   * naturally delta-based manual inventory operations (receive/adjust/
+   * waste/transfer). `delta` may be negative — Prisma's `increment` accepts
+   * a signed value, so this single method covers both directions (waste and
+   * transfer-out pass a negated delta). Still called only after
+   * lockAndGetStock's advisory lock like updateStockQuantity above, but the
+   * DB-level increment is a second, independent guarantee against a lost
+   * update even if the lock were ever bypassed — the same pattern
+   * transactions.service.ts's deductInventoryForSale already uses for the
+   * POS sale-deduction hot path.
+   */
+  incrementStockQuantity(branchId: string, inventoryItemId: string, delta: Prisma.Decimal | number, tx: Prisma.TransactionClient) {
+    return tx.inventoryStock.update({
+      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
+      data: { quantityOnHand: { increment: delta }, version: { increment: 1 } },
     });
   },
 

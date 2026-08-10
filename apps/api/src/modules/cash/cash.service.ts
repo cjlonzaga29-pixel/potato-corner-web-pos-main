@@ -1,5 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
+import { prisma } from '../../lib/prisma.js';
+import { branchShiftLockId } from '../../lib/pg-lock.js';
 import { cashRepository } from './cash.repository.js';
 import {
   CashError,
@@ -175,11 +177,25 @@ interface EodSummary {
  * from `status` ('flagged' -> PENDING_REVIEW, else -> AUTO_APPROVED) — see
  * the plan's "resolved ambiguities" note on why a manually-approved/
  * rejected flagged shift also reads as AUTO_APPROVED once resolved.
+ *
+ * expected_cash for an OPEN shift now subtracts cashRefundsProcessedDuringShift
+ * (Task 209.41 Part E) — CASH refunds paid out of this shift's drawer, for
+ * sales that belonged to an earlier, already-closed shift. For a
+ * closed/flagged shift, expected_cash instead reads the persisted
+ * expectedClosingCash column, which cash.service.closeShift already baked
+ * this same subtraction into at close time — a closed shift's numbers are
+ * frozen and never recomputed here (Part F).
  */
 function buildEodSummary(
   shift: ShiftRow,
   counts: ShiftCloseComputedCounts,
-  sales: { cashSalesTotal: number; gcashSalesTotal: number; mayaSalesTotal: number; otherSalesTotal: number },
+  sales: {
+    cashSalesTotal: number;
+    gcashSalesTotal: number;
+    mayaSalesTotal: number;
+    otherSalesTotal: number;
+    cashRefundsProcessedDuringShift?: number;
+  },
 ): EodSummary {
   const isOpen = shift.status === 'active';
   const grossSalesTotal = sales.cashSalesTotal + sales.gcashSalesTotal + sales.mayaSalesTotal + sales.otherSalesTotal;
@@ -199,7 +215,9 @@ function buildEodSummary(
     refunded_count: counts.refundedCount,
     total_discount_amount: counts.totalDiscountAmount,
     pwd_sc_transaction_count: counts.pwdScTransactionCount,
-    expected_cash: isOpen ? shift.openingCashAmount.toNumber() + sales.cashSalesTotal : (shift.expectedClosingCash?.toNumber() ?? 0),
+    expected_cash: isOpen
+      ? shift.openingCashAmount.toNumber() + sales.cashSalesTotal - (sales.cashRefundsProcessedDuringShift ?? 0)
+      : (shift.expectedClosingCash?.toNumber() ?? 0),
     actual_cash: isOpen ? null : (shift.closingCashAmount?.toNumber() ?? null),
     variance: isOpen ? null : (shift.cashVariance?.toNumber() ?? null),
     variance_status: isOpen ? null : shift.status === 'flagged' ? 'PENDING_REVIEW' : 'AUTO_APPROVED',
@@ -256,7 +274,23 @@ export const cashService = {
       throw new CashError('CASHIER_NOT_FOUND', 'Cashier not found or inactive', 404);
     }
 
-    const shift = (await cashRepository.createShift(data)) as ShiftRow;
+    let shift: ShiftRow;
+    try {
+      shift = (await cashRepository.createShift(data)) as ShiftRow;
+    } catch (err) {
+      // Belt-and-suspenders for the race between the existingActive check
+      // above and this create — two terminals opening at the same branch at
+      // the same instant both pass the check, then one loses the
+      // `shift_one_open_per_branch` unique index to the other. Mirrors
+      // autoOpenShift's P2002 handling, but surfaces the same SHIFT_ALREADY_OPEN
+      // domain error the pre-check throws rather than silently substituting
+      // the race winner's shift — the loser's drawer count would otherwise be
+      // discarded without the caller knowing.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new CashError('SHIFT_ALREADY_OPEN', 'A shift is already open at this branch', 409);
+      }
+      throw err;
+    }
     const response = toShiftResponse(shift);
 
     await recordAuditLog({
@@ -407,9 +441,10 @@ export const cashService = {
     if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'Shift not found', 404);
 
     if (shift.status === 'active') {
-      const [sales, counts] = await Promise.all([
+      const [sales, counts, cashRefundsProcessedDuringShift] = await Promise.all([
         cashRepository.sumTransactionsForShift(id),
         cashRepository.sumTransactionCountsForShift(id),
+        cashRepository.sumCashRefundsProcessedDuringShift({ id, branchId: shift.branchId, startedAt: shift.startedAt }, new Date()),
       ]);
       return {
         shift: toShiftResponse(shift),
@@ -418,6 +453,7 @@ export const cashService = {
           gcashSalesTotal: sales.gcashSalesTotal.toNumber(),
           mayaSalesTotal: sales.mayaSalesTotal.toNumber(),
           otherSalesTotal: sales.otherSalesTotal.toNumber(),
+          cashRefundsProcessedDuringShift: cashRefundsProcessedDuringShift.toNumber(),
         }),
       };
     }
@@ -465,60 +501,89 @@ export const cashService = {
     }
 
     const closingCashAmount = data.denominations.reduce((sum, d) => sum + d.denomination * d.quantity, 0);
-    const [sales, counts] = await Promise.all([
-      cashRepository.sumTransactionsForShift(id),
-      cashRepository.sumTransactionCountsForShift(id),
-    ]);
-    const cashSalesTotal = sales.cashSalesTotal;
-    const gcashSalesTotal = sales.gcashSalesTotal;
-    const mayaSalesTotal = sales.mayaSalesTotal;
-    const otherSalesTotal = sales.otherSalesTotal;
-    const grossSalesTotal = sales.grossSalesTotal;
-    const expectedClosingCash = new Prisma.Decimal(shift.openingCashAmount.toNumber()).plus(cashSalesTotal);
-    const cashVariance = new Prisma.Decimal(closingCashAmount).minus(expectedClosingCash);
-    const varianceCents = toCents(cashVariance.toNumber());
-    const withinTolerance = Math.abs(varianceCents) <= toCents(DEFAULT_VARIANCE_TOLERANCE);
 
-    if (!withinTolerance && !data.varianceExplanation) {
-      throw new CashError(
-        'VARIANCE_EXPLANATION_REQUIRED',
-        'A written explanation (minimum 50 characters) is required when the cash variance is outside tolerance',
-        400,
-      );
-    }
+    // Sales totals are read and the close is written inside the same
+    // transaction (both via `tx`, never the root `prisma` client) so a sale
+    // landing between the sum and the write can't leave expectedClosingCash/
+    // cashVariance computed from a stale snapshot. The same transaction also
+    // takes branchShiftLockId (Task 209.41 Part H) — the identical lock key
+    // transactionsService.refundTransaction takes for a CASH refund — so a
+    // refund can't observe this shift as active and attribute itself here
+    // while this close is simultaneously freezing this shift's totals
+    // without that refund's amount, or vice versa.
+    const { updated, sales, counts, expectedClosingCash, cashVariance, status } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${branchShiftLockId(shift.branchId)})`;
 
-    const status: 'closed' | 'flagged' = withinTolerance ? 'closed' : 'flagged';
-    const varianceApproved = withinTolerance ? true : null;
+      const [sales, counts, cashRefundsProcessedDuringShift] = await Promise.all([
+        cashRepository.sumTransactionsForShift(id, tx),
+        cashRepository.sumTransactionCountsForShift(id, tx),
+        cashRepository.sumCashRefundsProcessedDuringShift({ id, branchId: shift.branchId, startedAt: shift.startedAt }, new Date(), tx),
+      ]);
+      const cashSalesTotal = sales.cashSalesTotal;
+      const gcashSalesTotal = sales.gcashSalesTotal;
+      const mayaSalesTotal = sales.mayaSalesTotal;
+      const otherSalesTotal = sales.otherSalesTotal;
+      const grossSalesTotal = sales.grossSalesTotal;
+      // Task 209.41 Part E — CASH refunds paid out of this shift's drawer
+      // for a sale that belonged to an earlier, already-closed shift reduce
+      // what's expected in this drawer. See sumCashRefundsProcessedDuringShift
+      // for why a same-shift sale+refund does NOT double-subtract here.
+      const expectedClosingCash = new Prisma.Decimal(shift.openingCashAmount.toNumber())
+        .plus(cashSalesTotal)
+        .minus(cashRefundsProcessedDuringShift);
+      const cashVariance = new Prisma.Decimal(closingCashAmount).minus(expectedClosingCash);
+      const varianceCents = toCents(cashVariance.toNumber());
+      const withinTolerance = Math.abs(varianceCents) <= toCents(DEFAULT_VARIANCE_TOLERANCE);
 
-    const updated = (await cashRepository.closeShift(id, data, {
-      closingCashAmount,
-      expectedClosingCash: expectedClosingCash.toNumber(),
-      cashVariance: cashVariance.toNumber(),
-      cashSalesTotal: cashSalesTotal.toNumber(),
-      gcashSalesTotal: gcashSalesTotal.toNumber(),
-      mayaSalesTotal: mayaSalesTotal.toNumber(),
-      otherSalesTotal: otherSalesTotal.toNumber(),
-      grossSalesTotal: grossSalesTotal.toNumber(),
-      transactionCount: sales.transactionCount,
-      cashSalesCount: counts.cashSalesCount,
-      gcashSalesCount: counts.gcashSalesCount,
-      mayaSalesCount: counts.mayaSalesCount,
-      otherSalesCount: counts.otherSalesCount,
-      voidedCount: counts.voidedCount,
-      refundedCount: counts.refundedCount,
-      totalTransactionCount: counts.totalTransactionCount,
-      totalDiscountAmount: counts.totalDiscountAmount,
-      pwdScTransactionCount: counts.pwdScTransactionCount,
-      status,
-      varianceApproved,
-      closedBy: actor.id,
-    })) as ShiftRow;
+      if (!withinTolerance && !data.varianceExplanation) {
+        throw new CashError(
+          'VARIANCE_EXPLANATION_REQUIRED',
+          'A written explanation (minimum 50 characters) is required when the cash variance is outside tolerance',
+          400,
+        );
+      }
+
+      const status: 'closed' | 'flagged' = withinTolerance ? 'closed' : 'flagged';
+      const varianceApproved = withinTolerance ? true : null;
+
+      const updated = (await cashRepository.closeShift(
+        id,
+        data,
+        {
+          closingCashAmount,
+          expectedClosingCash: expectedClosingCash.toNumber(),
+          cashVariance: cashVariance.toNumber(),
+          cashSalesTotal: cashSalesTotal.toNumber(),
+          gcashSalesTotal: gcashSalesTotal.toNumber(),
+          mayaSalesTotal: mayaSalesTotal.toNumber(),
+          otherSalesTotal: otherSalesTotal.toNumber(),
+          grossSalesTotal: grossSalesTotal.toNumber(),
+          transactionCount: sales.transactionCount,
+          cashSalesCount: counts.cashSalesCount,
+          gcashSalesCount: counts.gcashSalesCount,
+          mayaSalesCount: counts.mayaSalesCount,
+          otherSalesCount: counts.otherSalesCount,
+          voidedCount: counts.voidedCount,
+          refundedCount: counts.refundedCount,
+          totalTransactionCount: counts.totalTransactionCount,
+          totalDiscountAmount: counts.totalDiscountAmount,
+          pwdScTransactionCount: counts.pwdScTransactionCount,
+          status,
+          varianceApproved,
+          closedBy: actor.id,
+        },
+        tx,
+      )) as ShiftRow;
+
+      return { updated, sales, counts, expectedClosingCash, cashVariance, status, varianceApproved };
+    });
+
     const response = toShiftResponse(updated);
     const summary = buildEodSummary(updated, counts, {
-      cashSalesTotal: cashSalesTotal.toNumber(),
-      gcashSalesTotal: gcashSalesTotal.toNumber(),
-      mayaSalesTotal: mayaSalesTotal.toNumber(),
-      otherSalesTotal: otherSalesTotal.toNumber(),
+      cashSalesTotal: sales.cashSalesTotal.toNumber(),
+      gcashSalesTotal: sales.gcashSalesTotal.toNumber(),
+      mayaSalesTotal: sales.mayaSalesTotal.toNumber(),
+      otherSalesTotal: sales.otherSalesTotal.toNumber(),
     });
 
     await recordAuditLog({

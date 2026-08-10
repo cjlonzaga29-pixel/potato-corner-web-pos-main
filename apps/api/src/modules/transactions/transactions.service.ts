@@ -40,7 +40,7 @@ import { productReadinessService } from '../product-readiness/product-readiness.
 import type { ProductVariantReadinessResult } from '../product-readiness/product-readiness.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
-import { hashToLockId, inventoryStockLockId } from '../../lib/pg-lock.js';
+import { hashToLockId, inventoryStockLockId, branchShiftLockId } from '../../lib/pg-lock.js';
 import { sha256Hex } from '../../lib/hash.js';
 import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
 import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
@@ -51,6 +51,7 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { attachCostToDeductionLines } from '../../lib/cogs.js';
 import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
 import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
+import { nextCounterValue } from '../../lib/id-counter.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -58,8 +59,6 @@ type ActorContext = { id: string; role: string };
 const STATUTORY_DISCOUNT_RATE = 0.2;
 /** "Employee (configurable %)" per the architecture doc — no settings model yet, so this constant is the one a future settings feature would read from instead. */
 const EMPLOYEE_DISCOUNT_RATE = 0.2;
-/** How many bumped-sequence attempts before giving up on a receipt number collision (P2002 on the daily per-branch sequence). */
-const RECEIPT_SEQUENCE_RETRY_LIMIT = 5;
 
 const PAYMENT_PROOF_BUCKET = 'payment-proofs';
 /** GCash, Maya, and Other all require a payment proof photo — only cash does not (Task 139). */
@@ -799,10 +798,19 @@ export function computeAmounts(
   return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount: totalAfterDiscount };
 }
 
-async function generateReceiptNumber(branchCode: string, attempt: number): Promise<string> {
+/**
+ * Sequence source for the BIR receipt number. Uses the same atomic Postgres
+ * counter architecture as generateBranchCode (id-counter.ts, Phase 21) rather
+ * than COUNT(*)-then-increment — two concurrent sales at the same branch on
+ * the same day can never be handed the same sequence number, since the
+ * underlying INSERT ... ON CONFLICT DO UPDATE is a single atomic statement.
+ * The counter key embeds the full prefix (branch + Manila calendar date), so
+ * a new day or a different branch naturally starts its own counter at 1 —
+ * no explicit reset/cleanup needed.
+ */
+async function generateReceiptNumber(branchCode: string): Promise<string> {
   const prefix = `${branchCode}-${isoDateCompact(new Date())}-`;
-  const count = await transactionsRepository.countTransactionsWithPrefix(prefix);
-  const sequence = count + 1 + attempt;
+  const sequence = await nextCounterValue(`receipt_counter:${prefix}`);
   return `${prefix}${String(sequence).padStart(6, '0')}`;
 }
 
@@ -1359,130 +1367,116 @@ export const transactionsService = {
       return lines;
     });
 
-    let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>> | undefined;
-    let postCommitEffects: Array<() => Promise<void>> = [];
-    let lastError: unknown;
-    for (let attempt = 0; attempt < RECEIPT_SEQUENCE_RETRY_LIMIT; attempt++) {
-      const receiptNumber = await generateReceiptNumber(branch.code, attempt);
-      try {
-        const result = await prisma.$transaction(async (tx) => {
-          const txCreated = await transactionsRepository.createTransaction(
-            {
-              branchId: data.branchId,
-              shiftId: data.shiftId,
-              cashierId: data.cashierId,
-              receiptNumber,
-              paymentMethod: data.paymentMethod,
-              subtotal,
-              discountAmount,
-              discountType: data.discountType ?? null,
-              discountCustomerIdEncrypted,
-              discountCustomerIdHash,
-              vatAmount,
-              vatExemptAmount,
-              totalAmount,
-              cashTendered: data.paymentMethod === 'cash' ? (data.cashTendered as number) : null,
-              changeAmount: changeGiven,
-              gcashReference: referenceNote,
-              gcashManuallyVerified: null,
-              paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
-              paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
-              paymentProofUploadedAt: requiresProof ? new Date() : null,
-              discountProofKey: hasDiscountProof ? (data.discountProofKey as string) : null,
-              discountProofType: hasDiscountProof ? (data.discountProofType as ImageProofType) : null,
-              discountProofUploadedAt: hasDiscountProof ? new Date() : null,
-              isOfflineTransaction: data.isOfflineTransaction,
-              offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
-              items: resolvedItems.map((item, itemIndex) => ({
-                id: item.id,
-                productId: item.productId,
-                productVariantId: item.productVariantId,
-                flavorId: item.flavorId,
-                productName: item.productName,
-                variantName: item.variantName,
-                flavorName: item.flavorName,
-                unitPrice: item.unitPrice,
-                quantity: item.quantity,
-                lineTotal: item.lineTotal,
-                recipeVersion: item.recipeVersion,
-                // Written at creation, not patched in afterward —
-                // TransactionItem rows are immutable after creation (CR-004).
-                // componentUnitCost/componentCost are additive fields on top
-                // of the original {inventoryItemId, quantity, baseUnitId}
-                // shape — safe for reverseInventoryForTransaction's
-                // 'inventoryItemId' in entry snapshot-shape discrimination.
-                deductionSnapshot: (costedDeductionLinesByItem[itemIndex] ?? []).map((line) => ({
-                  inventoryItemId: line.inventoryItemId,
-                  quantity: line.quantity,
-                  baseUnitId: line.baseUnitId,
-                  componentUnitCost: line.componentUnitCost,
-                  componentCost: line.componentCost,
-                })),
-                selectedFlavors: item.selectedFlavors,
-                selectedOptions: item.selectedOptions,
-              })),
-            },
-            tx,
-          );
-
-          const effects = await deductInventoryForSale(
-            tx,
-            data.branchId,
-            txCreated.id,
-            resolvedItems.map((item) => ({ lines: item.deductionLines })),
-          );
-
-          return { txCreated, effects };
-        }, {
-          // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
-          // un-configured defaults (2s maxWait, 5s timeout) reliably trip
-          // P2028 ("Transaction already closed") for a several-component BOM
-          // under realistic remote-DB latency, since this callback does a
-          // transaction+items insert plus a lock/read/update/movement-insert
-          // round trip per BOM component.
-          maxWait: config.posTransaction.maxWaitMs,
-          timeout: config.posTransaction.timeoutMs,
-        });
-        created = result.txCreated;
-        postCommitEffects = result.effects;
-        break;
-      } catch (error) {
-        lastError = error;
-        // P2002 = unique constraint violation on the receipt number — a
-        // concurrent sale at this branch claimed the same daily sequence
-        // number; retry with a bumped sequence instead of failing the sale.
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-          continue;
-        }
-        // P2028 = "Transaction API error: Transaction already closed" —
-        // fired when the interactive transaction exceeds maxWait/timeout
-        // (e.g. transient remote-DB latency or connection-pool contention).
-        // The transaction has already rolled back at this point (Prisma/
-        // Postgres guarantee), so no charge was made and no stock moved —
-        // surface a distinct, retryable, client-safe error instead of
-        // leaking the raw Prisma code/message, while still logging the
-        // original code server-side for diagnosis.
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2028') {
-          console.error('POS checkout transaction timed out or was closed early', {
+    let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>>;
+    let postCommitEffects: Array<() => Promise<void>>;
+    // Allocated once via the atomic counter (generateReceiptNumber) — unlike
+    // the old COUNT-then-increment approach, this can never collide with a
+    // concurrent sale, so there's no retry-on-P2002 loop here anymore.
+    const receiptNumber = await generateReceiptNumber(branch.code);
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const txCreated = await transactionsRepository.createTransaction(
+          {
             branchId: data.branchId,
             shiftId: data.shiftId,
-            attempt,
-            prismaCode: error.code,
-            prismaMessage: error.message,
-          });
-          throw new TransactionError(
-            'CHECKOUT_TIMEOUT',
-            'The sale could not be completed in time and was not charged. Please try again.',
-            503,
-          );
-        }
-        throw error;
+            cashierId: data.cashierId,
+            receiptNumber,
+            paymentMethod: data.paymentMethod,
+            subtotal,
+            discountAmount,
+            discountType: data.discountType ?? null,
+            discountCustomerIdEncrypted,
+            discountCustomerIdHash,
+            vatAmount,
+            vatExemptAmount,
+            totalAmount,
+            cashTendered: data.paymentMethod === 'cash' ? (data.cashTendered as number) : null,
+            changeAmount: changeGiven,
+            gcashReference: referenceNote,
+            gcashManuallyVerified: null,
+            paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
+            paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
+            paymentProofUploadedAt: requiresProof ? new Date() : null,
+            discountProofKey: hasDiscountProof ? (data.discountProofKey as string) : null,
+            discountProofType: hasDiscountProof ? (data.discountProofType as ImageProofType) : null,
+            discountProofUploadedAt: hasDiscountProof ? new Date() : null,
+            isOfflineTransaction: data.isOfflineTransaction,
+            offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
+            items: resolvedItems.map((item, itemIndex) => ({
+              id: item.id,
+              productId: item.productId,
+              productVariantId: item.productVariantId,
+              flavorId: item.flavorId,
+              productName: item.productName,
+              variantName: item.variantName,
+              flavorName: item.flavorName,
+              unitPrice: item.unitPrice,
+              quantity: item.quantity,
+              lineTotal: item.lineTotal,
+              recipeVersion: item.recipeVersion,
+              // Written at creation, not patched in afterward —
+              // TransactionItem rows are immutable after creation (CR-004).
+              // componentUnitCost/componentCost are additive fields on top
+              // of the original {inventoryItemId, quantity, baseUnitId}
+              // shape — safe for reverseInventoryForTransaction's
+              // 'inventoryItemId' in entry snapshot-shape discrimination.
+              deductionSnapshot: (costedDeductionLinesByItem[itemIndex] ?? []).map((line) => ({
+                inventoryItemId: line.inventoryItemId,
+                quantity: line.quantity,
+                baseUnitId: line.baseUnitId,
+                componentUnitCost: line.componentUnitCost,
+                componentCost: line.componentCost,
+              })),
+              selectedFlavors: item.selectedFlavors,
+              selectedOptions: item.selectedOptions,
+            })),
+          },
+          tx,
+        );
+
+        const effects = await deductInventoryForSale(
+          tx,
+          data.branchId,
+          txCreated.id,
+          resolvedItems.map((item) => ({ lines: item.deductionLines })),
+        );
+
+        return { txCreated, effects };
+      }, {
+        // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
+        // un-configured defaults (2s maxWait, 5s timeout) reliably trip
+        // P2028 ("Transaction already closed") for a several-component BOM
+        // under realistic remote-DB latency, since this callback does a
+        // transaction+items insert plus a lock/read/update/movement-insert
+        // round trip per BOM component.
+        maxWait: config.posTransaction.maxWaitMs,
+        timeout: config.posTransaction.timeoutMs,
+      });
+      created = result.txCreated;
+      postCommitEffects = result.effects;
+    } catch (error) {
+      // P2028 = "Transaction API error: Transaction already closed" —
+      // fired when the interactive transaction exceeds maxWait/timeout
+      // (e.g. transient remote-DB latency or connection-pool contention).
+      // The transaction has already rolled back at this point (Prisma/
+      // Postgres guarantee), so no charge was made and no stock moved —
+      // surface a distinct, retryable, client-safe error instead of
+      // leaking the raw Prisma code/message, while still logging the
+      // original code server-side for diagnosis.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2028') {
+        console.error('POS checkout transaction timed out or was closed early', {
+          branchId: data.branchId,
+          shiftId: data.shiftId,
+          prismaCode: error.code,
+          prismaMessage: error.message,
+        });
+        throw new TransactionError(
+          'CHECKOUT_TIMEOUT',
+          'The sale could not be completed in time and was not charged. Please try again.',
+          503,
+        );
       }
-    }
-    if (!created) {
-      throw lastError instanceof Error
-        ? lastError
-        : new TransactionError('RECEIPT_NUMBER_CONFLICT', 'Could not allocate a unique receipt number', 500);
+      throw error;
     }
 
     for (const effect of postCommitEffects) {
@@ -1698,6 +1692,16 @@ export const transactionsService = {
     return response;
   },
 
+  // Task 209.39 — intentionally no shift-status check here, unlike
+  // voidTransaction above. Voids are limited to the active/current shift;
+  // refunds are shift-status-agnostic by owner policy and may legitimately
+  // happen later the same day, after the original cashier's shift has
+  // closed, or on a different day entirely. Do not copy voidTransaction's
+  // `if (transaction.shift.status !== 'active') throw SHIFT_CLOSED` guard
+  // into this method — the original (now-closed) shift must not be reopened
+  // or recomputed to process a refund. Which drawer/shift the resulting cash
+  // movement is attributed to is a separate accounting concern, handled
+  // below (Task 209.41 — CASH_REFUND_MUST_BE_ACCOUNTED_TO_PROCESSING_SHIFT).
   async refundTransaction(id: string, refundReason: string, actor: ActorContext, ipAddress: string | null) {
     const transaction = (await transactionsRepository.findTransactionById(id)) as TransactionRow | null;
     if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
@@ -1706,8 +1710,35 @@ export const transactionsService = {
       throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
     }
 
+    const isCashRefund = transaction.paymentMethod === 'cash';
+
     const updated = await prisma.$transaction(
       async (tx) => {
+        // A CASH refund pays out of whichever shift's drawer is physically
+        // open right now — the CURRENT active processing shift — not the
+        // (possibly long-closed) shift the original sale belonged to. The
+        // lock, the active-shift lookup, and the refund write all share this
+        // one transaction: branchShiftLockId is the same lock
+        // cashService.closeShift takes before reading/writing shift totals,
+        // so a shift can never close in the gap between this lookup seeing
+        // it as active and the refund actually committing (Task 209.41 Part
+        // H). Non-cash refunds (GCash/Maya/Other) never touch a physical
+        // drawer, so they skip the lock and the active-shift requirement
+        // entirely — they must remain processable with no active shift at
+        // all (Part C).
+        if (isCashRefund) {
+          const lockId = branchShiftLockId(transaction.branchId);
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+          const activeShift = await cashRepository.findActiveShiftByBranch(transaction.branchId, tx);
+          if (!activeShift) {
+            throw new TransactionError(
+              'ACTIVE_SHIFT_REQUIRED_FOR_CASH_REFUND',
+              'A cash refund requires an active processing shift at this branch to pay it out of',
+              409,
+            );
+          }
+        }
+
         const updatedRow = await transactionsRepository.refundTransaction(id, { refundedById: actor.id, refundReason }, tx);
         await reverseInventoryForTransaction(
           tx,

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import jwt from 'jsonwebtoken';
 import { authenticator } from 'otplib';
+import { config } from '../../config/index.js';
 import { totpService } from './totp.service.js';
 
 describe('totpService.generateSecret', () => {
@@ -40,5 +42,35 @@ describe('totpService.verifyBackupCode', () => {
 
     expect(result.matched).toBe(true);
     expect(result.remainingCodes).toHaveLength(hashed.length - 1);
+  });
+});
+
+describe('totpService.verifyChallengeToken', () => {
+  it('accepts a token signed with the intended algorithm (HS256)', () => {
+    const token = totpService.issueChallengeToken('user-1', 'device-1');
+    const result = totpService.verifyChallengeToken(token);
+    expect(result).toEqual({ userId: 'user-1', deviceId: 'device-1' });
+  });
+
+  it('rejects a token signed with a different algorithm', () => {
+    const forged = jwt.sign(
+      { user_id: 'user-1', device_id: 'device-1', purpose: '2fa_challenge' },
+      config.jwt.refreshSecret,
+      { expiresIn: totpService.CHALLENGE_TOKEN_TTL_SECONDS, algorithm: 'HS384' },
+    );
+    expect(totpService.verifyChallengeToken(forged)).toBeNull();
+  });
+
+  it('rejects an expired challenge token', () => {
+    const expired = jwt.sign(
+      { user_id: 'user-1', device_id: 'device-1', purpose: '2fa_challenge' },
+      config.jwt.refreshSecret,
+      { expiresIn: -10, algorithm: 'HS256' },
+    );
+    expect(totpService.verifyChallengeToken(expired)).toBeNull();
+  });
+
+  it('rejects a malformed token', () => {
+    expect(totpService.verifyChallengeToken('not-a-jwt')).toBeNull();
   });
 });

@@ -70,6 +70,21 @@ describe('cashRepository.findActiveShiftByBranch', () => {
       include: { denominations: true },
     });
   });
+
+  // Task 209.41 — refundTransaction's CASH-refund active-shift lookup must
+  // run inside the same locked transaction as the refund write.
+  it('reads through the given transaction client instead of root prisma when one is passed', async () => {
+    const txFindFirst = vi.fn().mockResolvedValue(null);
+    const tx = { shift: { findFirst: txFindFirst } };
+
+    await cashRepository.findActiveShiftByBranch('branch-1', tx as never);
+
+    expect(txFindFirst).toHaveBeenCalledWith({
+      where: { branchId: 'branch-1', status: 'active' },
+      include: { denominations: true },
+    });
+    expect(prisma.shift.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe('cashRepository.findShiftById', () => {
@@ -208,6 +223,21 @@ describe('cashRepository.sumTransactionsForShift', () => {
     expect(result.gcashSalesTotal.toNumber()).toBe(0);
     expect(result.transactionCount).toBe(3);
   });
+
+  it('reads through the given transaction client instead of root prisma when one is passed', async () => {
+    const txGroupBy = vi.fn().mockResolvedValue([]);
+    const tx = { transaction: { groupBy: txGroupBy } };
+
+    await cashRepository.sumTransactionsForShift('shift-1', tx as never);
+
+    expect(txGroupBy).toHaveBeenCalledWith({
+      by: ['paymentMethod'],
+      where: { shiftId: 'shift-1', status: 'completed' },
+      _sum: { totalAmount: true },
+      _count: { _all: true },
+    });
+    expect(prisma.transaction.groupBy).not.toHaveBeenCalled();
+  });
 });
 
 describe('cashRepository.sumTransactionCountsForShift', () => {
@@ -277,6 +307,67 @@ describe('cashRepository.sumTransactionCountsForShift', () => {
       _sum: { discountAmount: true },
     });
   });
+
+  it('reads through the given transaction client instead of root prisma when one is passed', async () => {
+    const tx = {
+      transaction: {
+        groupBy: vi.fn().mockResolvedValue([]),
+        aggregate: vi.fn().mockResolvedValue({ _sum: { discountAmount: null } }),
+        count: vi.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(0),
+      },
+    };
+
+    await cashRepository.sumTransactionCountsForShift('shift-1', tx as never);
+
+    expect(tx.transaction.groupBy).toHaveBeenCalled();
+    expect(tx.transaction.aggregate).toHaveBeenCalled();
+    expect(tx.transaction.count).toHaveBeenCalledTimes(2);
+    expect(prisma.transaction.groupBy).not.toHaveBeenCalled();
+    expect(prisma.transaction.aggregate).not.toHaveBeenCalled();
+    expect(prisma.transaction.count).not.toHaveBeenCalled();
+  });
+});
+
+describe('cashRepository.sumCashRefundsProcessedDuringShift', () => {
+  const shift = { id: 'shift-101', branchId: 'branch-1', startedAt: new Date('2026-08-01T08:00:00.000Z') };
+  const windowEnd = new Date('2026-08-01T20:00:00.000Z');
+
+  it('sums CASH refunds for the branch inside the time window, excluding this shift\'s own original sales (Part D/G)', async () => {
+    vi.mocked(prisma.transaction.aggregate).mockResolvedValue({ _sum: { totalAmount: new Prisma.Decimal(500) } } as never);
+
+    const result = await cashRepository.sumCashRefundsProcessedDuringShift(shift, windowEnd);
+
+    expect(prisma.transaction.aggregate).toHaveBeenCalledWith({
+      where: {
+        branchId: 'branch-1',
+        paymentMethod: 'cash',
+        status: 'refunded',
+        refundedAt: { gte: shift.startedAt, lte: windowEnd },
+        shiftId: { not: 'shift-101' },
+      },
+      _sum: { totalAmount: true },
+    });
+    expect(result.toNumber()).toBe(500);
+  });
+
+  it('defaults to zero when there are no matching refunds', async () => {
+    vi.mocked(prisma.transaction.aggregate).mockResolvedValue({ _sum: { totalAmount: null } } as never);
+
+    const result = await cashRepository.sumCashRefundsProcessedDuringShift(shift, windowEnd);
+
+    expect(result.toNumber()).toBe(0);
+  });
+
+  it('reads through the given transaction client instead of root prisma when one is passed', async () => {
+    const txAggregate = vi.fn().mockResolvedValue({ _sum: { totalAmount: new Prisma.Decimal(200) } });
+    const tx = { transaction: { aggregate: txAggregate } };
+
+    const result = await cashRepository.sumCashRefundsProcessedDuringShift(shift, windowEnd, tx as never);
+
+    expect(txAggregate).toHaveBeenCalled();
+    expect(prisma.transaction.aggregate).not.toHaveBeenCalled();
+    expect(result.toNumber()).toBe(200);
+  });
 });
 
 describe('cashRepository.countAnyTransactionsForShift', () => {
@@ -291,7 +382,7 @@ describe('cashRepository.countAnyTransactionsForShift', () => {
 });
 
 describe('cashRepository.closeShift', () => {
-  it('writes closing denominations and updates the shift with every computed field', async () => {
+  it('writes closing denominations and updates the shift with every computed field, using the passed-in transaction client rather than root prisma', async () => {
     vi.mocked(prisma.shift.update).mockResolvedValue({ id: 'shift-1' } as never);
 
     await cashRepository.closeShift(
@@ -320,7 +411,13 @@ describe('cashRepository.closeShift', () => {
         varianceApproved: true,
         closedBy: 'user-1',
       },
+      prisma as never,
     );
+
+    // closeShift no longer opens its own $transaction — the caller (cashService)
+    // owns the transaction boundary and passes tx in, so this repository call
+    // never touches prisma.$transaction directly.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
 
     expect(prisma.shiftCashDenomination.createMany).toHaveBeenCalledWith({
       data: [{ shiftId: 'shift-1', denomination: 500, count: 2, totalValue: 1000, countType: 'closing' }],

@@ -20,7 +20,7 @@ import { AuthError } from './auth.types.js';
 import { validate } from '../../middleware/validate.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, branchOnly } from '../../middleware/authorize.js';
-import { loginLimiter, resetLimiter, totpVerifyLimiter } from '../../middleware/rate-limiter.js';
+import { loginLimiter, resetLimiter, totpVerifyLimiter, selectEmployeeLimiter } from '../../middleware/rate-limiter.js';
 import { config } from '../../config/index.js';
 import { parseDurationMs } from '../../lib/duration.js';
 
@@ -259,7 +259,7 @@ router.post(
   '/select-employee',
   authenticate,
   branchOnly,
-  loginLimiter,
+  selectEmployeeLimiter,
   validate(selectEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

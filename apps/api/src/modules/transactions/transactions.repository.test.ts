@@ -112,14 +112,15 @@ describe('transactionsRepository.findBranchProductAvailabilityMap', () => {
   });
 });
 
-describe('transactionsRepository.countTransactionsWithPrefix', () => {
-  it('counts by transactionNumber startsWith', async () => {
-    vi.mocked(prisma.transaction.count).mockResolvedValue(3);
-
-    const result = await transactionsRepository.countTransactionsWithPrefix('MNL001-20260714-');
-
-    expect(prisma.transaction.count).toHaveBeenCalledWith({ where: { transactionNumber: { startsWith: 'MNL001-20260714-' } } });
-    expect(result).toBe(3);
+// Task 209.37 #5 — the receipt-number sequence used to come from
+// countTransactionsWithPrefix (a COUNT query), which could hand two
+// concurrent sales the same number. That method is gone; the sequence now
+// comes from the atomic nextCounterValue (lib/id-counter.ts) instead —
+// transactions.service.ts calls it directly, so this repository no longer
+// exposes a COUNT-based path to receipt numbering at all.
+describe('transactionsRepository — no COUNT-based receipt sequence source', () => {
+  it('no longer exposes countTransactionsWithPrefix', () => {
+    expect((transactionsRepository as Record<string, unknown>).countTransactionsWithPrefix).toBeUndefined();
   });
 });
 

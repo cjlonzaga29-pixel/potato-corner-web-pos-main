@@ -36,6 +36,7 @@ vi.mock('./universal-inventory.repository.js', () => ({
     createStockRows: vi.fn(),
     lockAndGetStock: vi.fn(),
     updateStockQuantity: vi.fn(),
+    incrementStockQuantity: vi.fn(),
     createStockMovement: vi.fn(),
     findBranchStockRows: vi.fn(),
     getConsumedTodayByBranch: vi.fn(),
@@ -511,6 +512,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
 
   it('increases InventoryStock and records a RECEIVING movement, audit-logged with the delivery reference', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
     const result = await universalInventoryService.receiveStock(
       { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, deliveryReference: 'PO-1001' },
@@ -518,7 +520,9 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
       null,
     );
 
-    expect(repo.updateStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(15), {});
+    // Delta-based write: an atomic `increment: 5` at the DB layer, not a
+    // locally-computed absolute SET of 15.
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(5), {});
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({
         branchId: 'branch-1',
@@ -537,6 +541,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
 
   it('TASK 118 — passes the InventoryItem id to convertQuantity so an item-specific conversion is preferred', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
     await universalInventoryService.receiveStock(
       { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, enteredUnitId: 'unit-tbsp' },
@@ -559,6 +564,7 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
 
   it('records ADJUSTMENT_IN for a positive delta', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(15) }) as never);
 
     await universalInventoryService.adjustStock(
@@ -567,6 +573,8 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
       null,
     );
 
+    // Delta-based write: an atomic `increment: 5`, not a locally-computed absolute SET of 15.
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', 5, {});
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({ movementType: 'ADJUSTMENT_IN', quantityChange: 5, quantityBefore: dec(10), quantityAfter: dec(15) }),
       {},
@@ -575,6 +583,7 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
 
   it('records ADJUSTMENT_OUT for a negative delta', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(7) } as never);
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(7) }) as never);
 
     await universalInventoryService.adjustStock(
@@ -583,6 +592,7 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
       null,
     );
 
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', -3, {});
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({ movementType: 'ADJUSTMENT_OUT', quantityChange: -3 }),
       {},
@@ -595,13 +605,14 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
     await expect(
       universalInventoryService.adjustStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantityDelta: -5, reasonCode: 'damaged' }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
-    expect(repo.updateStockQuantity).not.toHaveBeenCalled();
+    expect(repo.incrementStockQuantity).not.toHaveBeenCalled();
     expect(repo.createStockMovement).not.toHaveBeenCalled();
   });
 
   it('enqueues a low-stock alert when the post-adjustment quantity is at or below the low threshold', async () => {
     const { enqueueRawNotificationJob } = await import('../../queues/notification.queue.js');
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(3) } as never);
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(3), lowStockThreshold: dec(5), criticalThreshold: dec(2) }) as never);
 
     await universalInventoryService.adjustStock(
@@ -616,6 +627,7 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
   it('does not enqueue a low-stock alert when the item has no low_stock_threshold configured', async () => {
     const { enqueueRawNotificationJob } = await import('../../queues/notification.queue.js');
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(0) } as never);
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(0), lowStockThreshold: null, criticalThreshold: null }) as never);
 
     await universalInventoryService.adjustStock(
@@ -631,6 +643,7 @@ describe('universalInventoryService.adjustStock — Test C (stock adjustment)', 
 describe('universalInventoryService.wasteStock — Test D (waste management)', () => {
   it('records a WASTE movement with a negative quantity_change', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(7) } as never);
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(7) }) as never);
 
     await universalInventoryService.wasteStock(
@@ -639,7 +652,8 @@ describe('universalInventoryService.wasteStock — Test D (waste management)', (
       null,
     );
 
-    expect(repo.updateStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(7), {});
+    // Delta-based write: an atomic `increment: -3`, not a locally-computed absolute SET of 7.
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(-3), {});
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({ movementType: 'WASTE', quantityChange: dec(-3), quantityBefore: dec(10), quantityAfter: dec(7) }),
       {},
@@ -657,6 +671,7 @@ describe('universalInventoryService.wasteStock — Test D (waste management)', (
 
   it('TASK 118 — passes the InventoryItem id to convertQuantity so an item-specific conversion is preferred', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(7) } as never);
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(7) }) as never);
 
     await universalInventoryService.wasteStock(
@@ -698,6 +713,7 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
     vi.mocked(repo.lockAndGetStock).mockImplementation(
       (branchId: string) => Promise.resolve(buildStock({ branchId, quantityOnHand: dec(20) })) as never,
     );
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(20) } as never);
 
     await universalInventoryService.transferStock(
       { inventoryItemId: 'item-1', fromBranchId: 'branch-z', toBranchId: 'branch-a', quantity: 5 },
@@ -715,6 +731,11 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
     vi.mocked(repo.lockAndGetStock).mockImplementation(
       (branchId: string) => Promise.resolve(buildStock({ branchId, quantityOnHand: dec(20) })) as never,
     );
+    // Called source-first then dest (see transferStock) — chained Once
+    // values line up with that order.
+    vi.mocked(repo.incrementStockQuantity)
+      .mockResolvedValueOnce({ quantityOnHand: dec(15) } as never)
+      .mockResolvedValueOnce({ quantityOnHand: dec(25) } as never);
 
     const result = await universalInventoryService.transferStock(
       { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
@@ -722,8 +743,10 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
       null,
     );
 
-    expect(repo.updateStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(15), {});
-    expect(repo.updateStockQuantity).toHaveBeenCalledWith('branch-2', 'item-1', dec(25), {});
+    // Delta-based writes: atomic `increment: -5` / `increment: 5`, not
+    // locally-computed absolute SETs of 15/25.
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', -5, {});
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-2', 'item-1', 5, {});
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({ branchId: 'branch-1', movementType: 'TRANSFER_OUT', quantityBefore: dec(20), quantityAfter: dec(15) }),
       {},
@@ -747,7 +770,7 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
         null,
       ),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
-    expect(repo.updateStockQuantity).not.toHaveBeenCalled();
+    expect(repo.incrementStockQuantity).not.toHaveBeenCalled();
     expect(repo.createStockMovement).not.toHaveBeenCalled();
   });
 
@@ -824,6 +847,87 @@ function buildItemConversion(overrides: Partial<Record<string, unknown>> = {}) {
     ...overrides,
   };
 }
+
+// Task 209.37 #6 — every manual inventory write (delta-based or absolute)
+// must still acquire the per-(branch, item) advisory lock before touching
+// InventoryStock, whether that write is now incrementStockQuantity (receive/
+// adjust/waste/transfer) or the unchanged absolute updateStockQuantity
+// (physical count).
+describe('universalInventoryService — manual inventory writes always lock before writing (Task 209.37 #6)', () => {
+  it('receiveStock acquires the advisory lock before writing', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
+
+    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5 }, ACTOR, null);
+
+    const lockOrder = vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder[0] as number;
+    const writeOrder = vi.mocked(repo.incrementStockQuantity).mock.invocationCallOrder[0] as number;
+    expect(lockOrder).toBeLessThan(writeOrder);
+  });
+
+  it('adjustStock acquires the advisory lock before writing', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
+
+    await universalInventoryService.adjustStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantityDelta: 5, reasonCode: 'count_correction' },
+      ACTOR,
+      null,
+    );
+
+    const lockOrder = vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder[0] as number;
+    const writeOrder = vi.mocked(repo.incrementStockQuantity).mock.invocationCallOrder[0] as number;
+    expect(lockOrder).toBeLessThan(writeOrder);
+  });
+
+  it('wasteStock acquires the advisory lock before writing', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(7) } as never);
+
+    await universalInventoryService.wasteStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage' },
+      ACTOR,
+      null,
+    );
+
+    const lockOrder = vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder[0] as number;
+    const writeOrder = vi.mocked(repo.incrementStockQuantity).mock.invocationCallOrder[0] as number;
+    expect(lockOrder).toBeLessThan(writeOrder);
+  });
+
+  it('transferStock acquires both branches\' advisory locks before writing either leg', async () => {
+    vi.mocked(repo.lockAndGetStock).mockImplementation(
+      (branchId: string) => Promise.resolve(buildStock({ branchId, quantityOnHand: dec(20) })) as never,
+    );
+    vi.mocked(repo.incrementStockQuantity)
+      .mockResolvedValueOnce({ quantityOnHand: dec(15) } as never)
+      .mockResolvedValueOnce({ quantityOnHand: dec(25) } as never);
+
+    await universalInventoryService.transferStock(
+      { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+      ACTOR,
+      null,
+    );
+
+    const lastLockOrder = Math.max(...vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder);
+    const firstWriteOrder = Math.min(...vi.mocked(repo.incrementStockQuantity).mock.invocationCallOrder);
+    expect(lastLockOrder).toBeLessThan(firstWriteOrder);
+  });
+
+  it('submitPhysicalCount acquires the advisory lock before writing (absolute set, unchanged)', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
+
+    await universalInventoryService.submitPhysicalCount(
+      { branchId: 'branch-1', counts: [{ inventoryItemId: 'item-1', countedQuantity: 12 }] },
+      ACTOR,
+      null,
+    );
+
+    const lockOrder = vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder[0] as number;
+    const writeOrder = vi.mocked(repo.updateStockQuantity).mock.invocationCallOrder[0] as number;
+    expect(lockOrder).toBeLessThan(writeOrder);
+  });
+});
 
 describe('universalInventoryService.createItemConversion — TASK 115', () => {
   it('creates a conversion scoped to one inventory item', async () => {

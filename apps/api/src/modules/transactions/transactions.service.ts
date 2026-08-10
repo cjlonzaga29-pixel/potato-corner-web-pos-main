@@ -8,6 +8,7 @@ import {
   INVENTORY_DEDUCTION_STATUS,
   PAYMENT_METHOD,
   type ImageProofType,
+  type InventoryDeductionStatus,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
 import { transactionsRepository, type SelectedOptionSnapshot } from './transactions.repository.js';
@@ -858,7 +859,7 @@ async function deductInventoryForSale(
   branchId: string,
   transactionId: string,
   items: { lines: BomDeductionLine[] }[],
-): Promise<Array<() => Promise<void>>> {
+): Promise<{ effects: Array<() => Promise<void>>; deductionStatus: InventoryDeductionStatus }> {
   const totals = new Map<string, { quantity: number; baseUnitId: string }>();
   for (const item of items) {
     for (const line of item.lines) {
@@ -990,9 +991,14 @@ async function deductInventoryForSale(
     await universalInventoryRepository.createStockMovements(movementInputs, tx);
   }
 
-  await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx);
+  // Read back the row this same write just persisted (rather than assuming
+  // COMPLETED) so the caller's response can never drift from the committed
+  // state — see transactions.service.ts createTransaction, which discarded
+  // this update and kept returning the pre-deduction "pending" INSERT
+  // snapshot instead (Task 209.47E).
+  const updated = await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx);
 
-  return effects;
+  return { effects, deductionStatus: updated.inventoryDeductionStatus };
 }
 
 /**
@@ -1470,14 +1476,19 @@ export const transactionsService = {
           tx,
         );
 
-        const effects = await deductInventoryForSale(
+        const { effects, deductionStatus } = await deductInventoryForSale(
           tx,
           data.branchId,
           txCreated.id,
           resolvedItems.map((item) => ({ lines: item.deductionLines })),
         );
 
-        return { txCreated, effects };
+        // txCreated is the original INSERT snapshot (inventoryDeductionStatus
+        // still "pending") — deductInventoryForSale's status update runs
+        // strictly after it in this same transaction, so overlay the actual
+        // persisted value here rather than returning the stale snapshot
+        // (Task 209.47E).
+        return { txCreated: { ...txCreated, inventoryDeductionStatus: deductionStatus }, effects };
       }, {
         // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
         // un-configured defaults (2s maxWait, 5s timeout) reliably trip

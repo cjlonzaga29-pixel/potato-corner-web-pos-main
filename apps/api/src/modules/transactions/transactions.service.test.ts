@@ -47,7 +47,13 @@ vi.mock('../../lib/id-counter.js', () => ({
 vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
     fraudAlert: { findMany: vi.fn() },
-    transaction: { update: vi.fn().mockResolvedValue({}) },
+    // Task 209.47E — deductInventoryForSale's status write (via
+    // inventoryRepository.updateTransactionDeductionStatus, real module,
+    // not mocked in this file) reads its own return value to build the
+    // final response, so this must reflect the status it was called with
+    // rather than an empty object — an empty object would surface as
+    // `undefined` in the response and fail transactionResponseSchema.
+    transaction: { update: vi.fn().mockResolvedValue({ inventoryDeductionStatus: 'completed' }) },
     transactionItem: { update: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) },
     // Read by productReadinessService (Phase C) — Recipe/BOM (ProductComponent)
     // is the sole inventory mapping. Default implementation set in beforeEach
@@ -1210,6 +1216,56 @@ describe('transactionsService.createTransaction — side effects', () => {
   });
 });
 
+// Task 209.47E — createTransaction previously returned repository
+// createTransaction's original INSERT snapshot verbatim, which still carried
+// inventoryDeductionStatus "pending" even though deductInventoryForSale had
+// already updated it to "completed" inside the very same DB transaction, one
+// call later. These lock in that the response now reflects the write that
+// actually happened, not the pre-deduction snapshot.
+describe('transactionsService.createTransaction — inventory deduction status response (Task 209.47E)', () => {
+  it('returns "completed" after a successful sale, not the pending pre-deduction snapshot', async () => {
+    // Matches real Prisma create() behavior: the row is still "pending" at
+    // the moment of insert, before deductInventoryForSale runs.
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ inventoryDeductionStatus: 'pending' }) as never);
+
+    const result = await transactionsService.createTransaction(baseInput, null);
+
+    expect(result.inventory_deduction_status).toBe('completed');
+  });
+
+  it('response inventory_deduction_status matches the value the in-transaction status update actually persisted', async () => {
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ inventoryDeductionStatus: 'pending' }) as never);
+    vi.mocked(prisma.transaction.update).mockResolvedValue({ inventoryDeductionStatus: 'completed' } as never);
+
+    const result = await transactionsService.createTransaction(baseInput, null);
+
+    expect(prisma.transaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { inventoryDeductionStatus: 'completed' } }),
+    );
+    expect(result.inventory_deduction_status).toBe('completed');
+  });
+
+  it('does not perform a second inventory deduction status write when building the response', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    // One status write per sale — overlaying the final status onto the
+    // response must not trigger an extra deduction pass or extra write.
+    expect(prisma.transaction.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the transaction id and receipt number while overlaying the final deduction status', async () => {
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(
+      transactionRow({ id: 'txn-209-47e', transactionNumber: 'MNL001-20260714-000077', inventoryDeductionStatus: 'pending' }) as never,
+    );
+
+    const result = await transactionsService.createTransaction(baseInput, null);
+
+    expect(result.id).toBe('txn-209-47e');
+    expect(result.receipt_number).toBe('MNL001-20260714-000077');
+    expect(result.inventory_deduction_status).toBe('completed');
+  });
+});
+
 describe('transactionsService.createTransaction — shadow BOM deduction hook (CR-012.1)', () => {
   it('produces zero shadow calculation when the feature flag is disabled', async () => {
     mutableConfig.shadowBomDeductionEnabled = false;
@@ -1941,6 +1997,22 @@ describe('transactionsService.syncOfflineTransactions', () => {
     expect(result.results).toEqual([expect.objectContaining({ offline_provisional_number: first.offlineProvisionalNumber, status: 'synced' })]);
   });
 
+  // Task 209.47E — the first offline sync for an identity goes through the
+  // exact same createTransaction path as an online sale, so it must carry
+  // the same fix: the persisted post-deduction status, not the pending
+  // pre-deduction insert snapshot.
+  it('returns "completed" inventory_deduction_status on the first offline sync for an identity', async () => {
+    const first = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0101' });
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ inventoryDeductionStatus: 'pending' }) as never);
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [first] },
+      null,
+    );
+
+    expect(result.results[0]?.transaction).toMatchObject({ inventory_deduction_status: 'completed' });
+  });
+
   it('marks a failed item without stopping the rest of the batch from syncing', async () => {
     const insufficientCash = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0004', cashTendered: 1, clientCreatedAt: 1000 });
     const valid = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0005', cashTendered: 100, clientCreatedAt: 2000 });
@@ -2010,6 +2082,28 @@ describe('transactionsService.syncOfflineTransactions', () => {
     expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
     // Case 12/13 — the replayed identifiers are the original ones, not new ones.
     expect(result.results[0]?.transaction).toMatchObject({ id: 'txn-existing', receipt_number: 'MNL001-20260719-000042' });
+  });
+
+  // Task 209.47E — the replay path (findByOfflineIdentity) already reads a
+  // fresh row straight from the DB rather than reusing an insert snapshot,
+  // so it was never subject to the stale-response bug. This locks in that
+  // a replayed sync still reports the real persisted status.
+  it('returns "completed" inventory_deduction_status on a replayed offline sync', async () => {
+    const alreadySynced = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0102' });
+    const existingRow = transactionRow({
+      id: 'txn-existing-completed',
+      offlineProvisionalNumber: alreadySynced.offlineProvisionalNumber,
+      inventoryDeductionStatus: 'completed',
+    });
+    vi.mocked(transactionsRepository.findByOfflineIdentity).mockResolvedValueOnce(existingRow as never);
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [alreadySynced] },
+      null,
+    );
+
+    expect(result.results[0]?.transaction).toMatchObject({ inventory_deduction_status: 'completed' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
   // Case 5 — a different device retrying the same provisional number is a

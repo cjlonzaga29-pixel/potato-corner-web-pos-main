@@ -79,4 +79,18 @@ describe('computeAmounts — BIR reference table', () => {
   // I: promotional discount rejection happens in createTransaction's early
   // guard, before computeAmounts is ever called — not exercised here, see
   // transactions.integration.test.ts / transactions.router.test.ts for that path.
+
+  // Task 209.50 — sub-peso decimal edge cases (audit gap: nothing previously
+  // exercised computeAmounts at the centavo floor, where a single Math.round
+  // half-cent tie or a near-zero VAT component is most likely to reveal
+  // early/late rounding drift).
+  it('J: smallest possible sale (₱0.01), no discount — VAT rounds to zero, total unaffected', () => {
+    const result = computeAmounts(0.01, [line(0.01, 1, null)], undefined);
+    expect(result).toEqual({ discountAmount: 0, vatAmount: 0, vatExemptAmount: 0, totalAmount: 0.01 });
+  });
+
+  it('K: sub-peso PWD sale (₱0.10) — 20% of the VAT-extracted base still rounds to a sane centavo total', () => {
+    const result = computeAmounts(0.1, [line(0.1, 1, null)], DISCOUNT_TYPE.PWD);
+    expect(result).toEqual({ discountAmount: 0.02, vatAmount: 0, vatExemptAmount: 0, totalAmount: 0.07 });
+  });
 });

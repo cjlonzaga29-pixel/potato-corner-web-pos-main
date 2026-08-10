@@ -20,6 +20,7 @@ vi.mock('../../lib/prisma.js', () => {
       findUniqueOrThrow: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       groupBy: vi.fn(),
     },
     transactionItem: { createMany: vi.fn() },
@@ -485,30 +486,58 @@ describe('transactionsRepository.findDiscountAuditTrail', () => {
 });
 
 describe('transactionsRepository.voidTransaction', () => {
-  it('sets status voided and stamps voidedAt/voidedById/voidReason', async () => {
-    vi.mocked(prisma.transaction.update).mockResolvedValue({ id: 'txn-1' } as never);
+  it('sets status voided and stamps voidedAt/voidedById/voidReason, guarded by a status: completed updateMany', async () => {
+    vi.mocked(prisma.transaction.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.transaction.findUnique).mockResolvedValue({ id: 'txn-1' } as never);
 
-    await transactionsRepository.voidTransaction('txn-1', { voidedById: 'admin-1', voidReason: 'customer changed their mind' });
+    const result = await transactionsRepository.voidTransaction('txn-1', { voidedById: 'admin-1', voidReason: 'customer changed their mind' });
 
-    expect(prisma.transaction.update).toHaveBeenCalledWith({
-      where: { id: 'txn-1' },
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith({
+      where: { id: 'txn-1', status: 'completed' },
       data: { status: 'voided', voidedAt: expect.any(Date), voidedById: 'admin-1', voidReason: 'customer changed their mind' },
+    });
+    expect(prisma.transaction.findUnique).toHaveBeenCalledWith({
+      where: { id: 'txn-1' },
       include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
     });
+    expect(result).toEqual({ id: 'txn-1' });
+  });
+
+  it('returns null instead of writing when a concurrent void/refund already moved the row off completed', async () => {
+    vi.mocked(prisma.transaction.updateMany).mockResolvedValue({ count: 0 } as never);
+
+    const result = await transactionsRepository.voidTransaction('txn-1', { voidedById: 'admin-1', voidReason: 'customer changed their mind' });
+
+    expect(result).toBeNull();
+    expect(prisma.transaction.findUnique).not.toHaveBeenCalled();
   });
 });
 
 describe('transactionsRepository.refundTransaction', () => {
-  it('sets status refunded and stamps refundedAt/refundedById/refundReason', async () => {
-    vi.mocked(prisma.transaction.update).mockResolvedValue({ id: 'txn-1' } as never);
+  it('sets status refunded and stamps refundedAt/refundedById/refundReason, guarded by a status: completed updateMany', async () => {
+    vi.mocked(prisma.transaction.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.transaction.findUnique).mockResolvedValue({ id: 'txn-1' } as never);
 
-    await transactionsRepository.refundTransaction('txn-1', { refundedById: 'admin-1', refundReason: 'defective product' });
+    const result = await transactionsRepository.refundTransaction('txn-1', { refundedById: 'admin-1', refundReason: 'defective product' });
 
-    expect(prisma.transaction.update).toHaveBeenCalledWith({
-      where: { id: 'txn-1' },
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith({
+      where: { id: 'txn-1', status: 'completed' },
       data: { status: 'refunded', refundedAt: expect.any(Date), refundedById: 'admin-1', refundReason: 'defective product' },
+    });
+    expect(prisma.transaction.findUnique).toHaveBeenCalledWith({
+      where: { id: 'txn-1' },
       include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
     });
+    expect(result).toEqual({ id: 'txn-1' });
+  });
+
+  it('returns null instead of writing when a concurrent void/refund already moved the row off completed', async () => {
+    vi.mocked(prisma.transaction.updateMany).mockResolvedValue({ count: 0 } as never);
+
+    const result = await transactionsRepository.refundTransaction('txn-1', { refundedById: 'admin-1', refundReason: 'defective product' });
+
+    expect(result).toBeNull();
+    expect(prisma.transaction.findUnique).not.toHaveBeenCalled();
   });
 });
 

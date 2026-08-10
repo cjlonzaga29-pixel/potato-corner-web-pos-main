@@ -357,22 +357,35 @@ export const transactionsRepository = {
     return { transactions, total };
   },
 
-  voidTransaction(id: string, data: { voidedById: string; voidReason: string }, tx?: Prisma.TransactionClient) {
+  // Uses a conditional updateMany (status: 'completed' guard) rather than a
+  // plain update-by-id: two concurrent void requests for the same
+  // transaction both pass the service layer's pre-check (both read
+  // status: 'completed' before either write lands), so without this guard
+  // both would succeed at the DB level and both would go on to run
+  // reverseInventoryForTransaction, double-crediting stock back and writing
+  // duplicate audit log / notification entries for a single void. The
+  // updateMany's affected-row count lets the caller detect the loser of the
+  // race and reject it exactly like the already-voided/refunded checks
+  // above, instead of silently double-applying the reversal.
+  async voidTransaction(id: string, data: { voidedById: string; voidReason: string }, tx?: Prisma.TransactionClient) {
     const client = tx ?? prisma;
-    return client.transaction.update({
-      where: { id },
+    const result = await client.transaction.updateMany({
+      where: { id, status: 'completed' },
       data: { status: 'voided', voidedAt: new Date(), voidedById: data.voidedById, voidReason: data.voidReason },
-      include: transactionInclude,
     });
+    if (result.count === 0) return null;
+    return client.transaction.findUnique({ where: { id }, include: transactionInclude });
   },
 
-  refundTransaction(id: string, data: { refundedById: string; refundReason: string }, tx?: Prisma.TransactionClient) {
+  // Same race guard as voidTransaction above.
+  async refundTransaction(id: string, data: { refundedById: string; refundReason: string }, tx?: Prisma.TransactionClient) {
     const client = tx ?? prisma;
-    return client.transaction.update({
-      where: { id },
+    const result = await client.transaction.updateMany({
+      where: { id, status: 'completed' },
       data: { status: 'refunded', refundedAt: new Date(), refundedById: data.refundedById, refundReason: data.refundReason },
-      include: transactionInclude,
     });
+    if (result.count === 0) return null;
+    return client.transaction.findUnique({ where: { id }, include: transactionInclude });
   },
 
   markReceiptPrinted(id: string) {

@@ -1735,6 +1735,17 @@ export const transactionsService = {
     const updated = await prisma.$transaction(
       async (tx) => {
         const updatedRow = await transactionsRepository.voidTransaction(id, { voidedById: actor.id, voidReason }, tx);
+        if (!updatedRow) {
+          // Lost a race against a concurrent void/refund of the same
+          // transaction: the pre-check above read status 'completed', but
+          // by the time this updateMany ran the row had already moved.
+          // Abort before reversing inventory so it isn't reversed twice.
+          const current = await tx.transaction.findUnique({ where: { id }, select: { status: true } });
+          if (current?.status === 'refunded') {
+            throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
+          }
+          throw new TransactionError('TRANSACTION_ALREADY_VOIDED', 'This transaction has already been voided', 409);
+        }
         await reverseInventoryForTransaction(
           tx,
           transaction.branchId,
@@ -1846,6 +1857,14 @@ export const transactionsService = {
         }
 
         const updatedRow = await transactionsRepository.refundTransaction(id, { refundedById: actor.id, refundReason }, tx);
+        if (!updatedRow) {
+          // Same race guard as voidTransaction above.
+          const current = await tx.transaction.findUnique({ where: { id }, select: { status: true } });
+          if (current?.status === 'voided') {
+            throw new TransactionError('TRANSACTION_ALREADY_VOIDED', 'This transaction has already been voided', 409);
+          }
+          throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
+        }
         await reverseInventoryForTransaction(
           tx,
           transaction.branchId,

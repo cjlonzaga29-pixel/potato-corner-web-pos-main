@@ -174,6 +174,23 @@ inventoryRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      // Task 209.49 — branchGuard can't run here (only an ingredient id is in
+      // the URL, same as GET/PATCH /ingredients/:id above), and unlike those
+      // two routes this write mutated another branch's stock ledger with no
+      // check at all: a `branch`-role actor could stock-in against any
+      // ingredient id regardless of which branch it belonged to. Same inline
+      // allow/deny check as GET /ingredients/:id, applied before the write
+      // instead of only before the read.
+      let existing;
+      try {
+        existing = await inventoryService.getIngredientById(req.params.id as string);
+      } catch (error) {
+        return handleModuleError(error, res, next);
+      }
+      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
       const movement = await inventoryService.stockIn(
         req.params.id as string,
         req.body,
@@ -196,6 +213,18 @@ inventoryRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      // Task 209.49 — same missing branch-ownership check as stock-in above;
+      // see its comment.
+      let existing;
+      try {
+        existing = await inventoryService.getIngredientById(req.params.id as string);
+      } catch (error) {
+        return handleModuleError(error, res, next);
+      }
+      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
       const movement = await inventoryService.adjustIngredient(
         req.params.id as string,
         req.body,
@@ -218,6 +247,18 @@ inventoryRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
+      // Task 209.49 — same missing branch-ownership check as stock-in above;
+      // see its comment.
+      let existing;
+      try {
+        existing = await inventoryService.getIngredientById(req.params.id as string);
+      } catch (error) {
+        return handleModuleError(error, res, next);
+      }
+      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
       const movement = await inventoryService.wasteIngredient(
         req.params.id as string,
         req.body,

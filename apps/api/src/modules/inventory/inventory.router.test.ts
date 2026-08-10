@@ -49,7 +49,7 @@ const { inventoryService } = await import('./inventory.service.js');
 const { IngredientError } = await import('./inventory.types.js');
 const { inventoryRouter, inventoryBranchRouter } = await import('./inventory.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
-const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import(
+const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken, generateBranchToken } = await import(
   '../../test-utils/auth-tokens.js'
 );
 
@@ -356,6 +356,91 @@ describe('GET /ingredients/:id — branch protection', () => {
   });
 });
 
+describe('POST /ingredients/:id/stock-in, /adjust, /waste — branch protection (Task 209.49)', () => {
+  // Same gap class as the GET /ingredients/:id fix above, but on the write
+  // path: none of these three routes checked the target ingredient's branch
+  // against the actor's accessible branches before this fix, so a `branch`-
+  // or supervisor-role actor could mutate another branch's stock ledger by
+  // guessing/enumerating an ingredient id that wasn't theirs.
+  it("blocks a supervisor from stocking in another branch's ingredient — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 10 } });
+    const res = mockRes();
+    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+    expect(inventoryService.stockIn).not.toHaveBeenCalled();
+  });
+
+  it("blocks a branch account from adjusting another branch's ingredient — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/adjust');
+    const token = generateBranchToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { id: INGREDIENT_1 },
+      body: { quantity_delta: -5, reason_code: 'count_correction' },
+    });
+    const res = mockRes();
+    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+    expect(inventoryService.adjustIngredient).not.toHaveBeenCalled();
+  });
+
+  it("blocks a branch account from wasting stock on another branch's ingredient — 403 BRANCH_ACCESS_DENIED", async () => {
+    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/waste');
+    const token = generateBranchToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { id: INGREDIENT_1 },
+      body: { quantity: 5, reason_code: 'spoilage' },
+    });
+    const res = mockRes();
+    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+    expect(inventoryService.wasteIngredient).not.toHaveBeenCalled();
+  });
+
+  it('allows a branch account to stock in an ingredient belonging to its own branch — 201', async () => {
+    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
+    const token = generateBranchToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 10 } });
+    const res = mockRes();
+    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_1 } as never);
+    vi.mocked(inventoryService.stockIn).mockResolvedValue({ id: 'mov-1' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(inventoryService.stockIn).toHaveBeenCalledOnce();
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it('allows a super_admin to stock in any ingredient regardless of branch — 201', async () => {
+    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 10 } });
+    const res = mockRes();
+    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
+    vi.mocked(inventoryService.stockIn).mockResolvedValue({ id: 'mov-1' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(inventoryService.stockIn).toHaveBeenCalledOnce();
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+});
+
 describe('POST /ingredients/:id/stock-in — validate middleware', () => {
   it('rejects a payload missing the required quantity field with 422 VALIDATION_ERROR', async () => {
     // Every route in this codebase returns 422 (not 400) for a failed
@@ -379,6 +464,7 @@ describe('POST /ingredients/:id/stock-in — validate middleware', () => {
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 25 } });
     const res = mockRes();
+    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_1 } as never);
     vi.mocked(inventoryService.stockIn).mockResolvedValue({ id: 'mov-1' } as never);
 
     await runHandlers(handlers, req, res);

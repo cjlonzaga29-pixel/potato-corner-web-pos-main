@@ -46,7 +46,7 @@ export default function SupervisorProductActivationPage({ params }: SupervisorPr
           <ProductStatusBadge status={product.status} />
           <SeasonalBadge isSeasonal={product.is_seasonal} />
         </div>
-        <p className="text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
+        <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
       </div>
 
       <BranchAvailabilityPanel product={product} />

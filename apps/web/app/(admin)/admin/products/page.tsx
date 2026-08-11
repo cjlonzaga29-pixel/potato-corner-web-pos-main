@@ -55,7 +55,7 @@ export default function ProductCatalogPage() {
       cell: ({ row }) => <ProductImageThumbnail productId={row.original.id} hasImage={row.original.has_image} productName={row.original.name} />,
     },
     { accessorKey: 'name', header: 'Product' },
-    { accessorKey: 'category', header: 'Category', cell: ({ row }) => row.original.category ?? '—' },
+    { accessorKey: 'category_name', header: 'Category', cell: ({ row }) => row.original.category_name ?? '—' },
     { accessorKey: 'status', header: 'Status', cell: ({ row }) => <ProductStatusBadge status={row.original.status} /> },
     { id: 'seasonal', header: 'Seasonal', cell: ({ row }) => <SeasonalBadge isSeasonal={row.original.is_seasonal} /> },
     {
@@ -118,7 +118,7 @@ export default function ProductCatalogPage() {
             setPagination((prev) => ({ ...prev, pageIndex: 0 }));
           }}
           placeholder="Filter by category..."
-          className="max-w-[180px]"
+          className="w-full sm:max-w-[220px]"
         />
         <Select
           value={status}

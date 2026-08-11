@@ -40,7 +40,7 @@ export default function SupervisorProductsPage() {
                 <CardContent className="flex items-center gap-3 p-4">
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{product.name}</p>
-                    <p className="truncate text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
+                    <p className="truncate text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
                   </div>
                   <ProductStatusBadge status={product.status} />
                   <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />

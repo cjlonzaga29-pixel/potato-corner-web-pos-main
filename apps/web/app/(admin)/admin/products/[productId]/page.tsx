@@ -75,7 +75,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
             <ProductStatusBadge status={product.status} />
             <SeasonalBadge isSeasonal={product.is_seasonal} />
           </div>
-          <p className="text-sm text-muted-foreground">{product.category ?? 'Uncategorized'}</p>
+          <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
         </div>
         <div className="flex gap-2">
           {product.status === 'archived' ? (

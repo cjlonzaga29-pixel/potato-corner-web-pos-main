@@ -50,23 +50,45 @@ interface RestoreAttempt {
   transientError: boolean;
 }
 
+// Task 209.54A — every mounted `useAuth()` instance (sidebar, header, and the
+// page itself all call it independently — see BranchLayout) runs its own
+// restoreSession() on a hard reload, and api-client.ts's own refreshInFlight
+// dedup doesn't cover this path (isAuthPath deliberately excludes
+// /api/auth/refresh from that wait so the refresh call itself never awaits
+// itself). Without a dedup here, N simultaneous mounts fired N concurrent
+// POST /api/auth/refresh calls, all serializing on the API's per-token
+// advisory lock inside one Prisma interactive transaction — queued callers
+// could exceed its 5s budget and 500 with P2028. Sharing one in-flight
+// Promise across concurrent callers collapses that fan-out to a single
+// network call, the same pattern refreshInFlight already uses for the
+// 401-retry path.
+let refreshAttemptInFlight: Promise<RestoreAttempt> | null = null;
+
 async function attemptRefresh(): Promise<RestoreAttempt> {
-  try {
-    const response = await apiClient<RefreshResponseData>('/api/auth/refresh', {
-      method: 'POST',
-      body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
-    });
+  if (refreshAttemptInFlight) return refreshAttemptInFlight;
 
-    if (response.data?.access_token) {
-      return { accessToken: response.data.access_token, transientError: false };
+  refreshAttemptInFlight = (async () => {
+    try {
+      const response = await apiClient<RefreshResponseData>('/api/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
+      });
+
+      if (response.data?.access_token) {
+        return { accessToken: response.data.access_token, transientError: false };
+      }
+
+      const errorCode = typeof response.error === 'object' ? response.error?.code : undefined;
+      const isInvalid = errorCode === 'REFRESH_INVALID' || errorCode === 'REFRESH_MISSING';
+      return { accessToken: null, transientError: !isInvalid };
+    } catch {
+      return { accessToken: null, transientError: true };
+    } finally {
+      refreshAttemptInFlight = null;
     }
+  })();
 
-    const errorCode = typeof response.error === 'object' ? response.error?.code : undefined;
-    const isInvalid = errorCode === 'REFRESH_INVALID' || errorCode === 'REFRESH_MISSING';
-    return { accessToken: null, transientError: !isInvalid };
-  } catch {
-    return { accessToken: null, transientError: true };
-  }
+  return refreshAttemptInFlight;
 }
 
 /**

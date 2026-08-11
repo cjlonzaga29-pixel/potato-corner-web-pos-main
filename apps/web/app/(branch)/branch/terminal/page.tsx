@@ -213,7 +213,7 @@ function previewAmounts(
 }
 
 export default function TerminalPage() {
-  const { user, selectEmployee } = useAuth();
+  const { user, selectEmployee, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const isBranchAccount = user?.role === ROLES.BRANCH;
   // Task 140 — the authenticated account's own role, never the selected
@@ -1007,6 +1007,19 @@ export default function TerminalPage() {
     } catch (error) {
       setChargeError(error instanceof Error ? error.message : 'Failed to record transaction');
     }
+  }
+
+  // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
+  // `branchId`) is briefly null on every reload while useAuth's silent
+  // refresh is in flight (the access token is memory-only). Without this
+  // gate, a correctly-staffed cashier saw "No branch assigned" flash before
+  // the terminal itself ever appeared.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
   }
 
   if (!branchId) {

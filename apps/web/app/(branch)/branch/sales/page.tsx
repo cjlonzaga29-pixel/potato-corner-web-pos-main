@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
@@ -28,7 +29,7 @@ function humanizeSnake(value: string): string {
 /** The branch role's own sales ledger — every transaction recorded at its branch, across all shifts and cashiers. */
 export default function BranchSalesPage() {
   useTransactionsRealtimeSync();
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const [status, setStatus] = useState<string>(ALL_STATUSES);
   const [dateFrom, setDateFrom] = useState('');
@@ -66,6 +67,17 @@ export default function BranchSalesPage() {
     { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },
     { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
   ];
+
+  // Task 209.54 — `branchId` is briefly undefined on every reload while
+  // useAuth's silent refresh is in flight; without this the "No branch
+  // assigned" empty state flashed for a correctly-staffed account.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
 
   if (!branchId) {
     return <EmptyState title="No branch assigned" description="Contact your supervisor to get staffed to a branch." />;

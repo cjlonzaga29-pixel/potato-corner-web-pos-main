@@ -8,6 +8,7 @@ import { ROLES } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
@@ -32,7 +33,7 @@ const PAYMENT_METHOD_LABEL: Record<TransactionResponse['payment_method'], string
 
 /** Branch/staff-facing receipt lookup/reprint — the (branch) nav's "Receipts" item. Scoped to the cashier's own branch, most recent first. */
 export default function ReceiptsPage() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -115,6 +116,17 @@ export default function ReceiptsPage() {
       ),
     },
   ];
+
+  // Task 209.54 — `branchId` is briefly undefined on every reload while
+  // useAuth's silent refresh is in flight; without this the "No branch
+  // assigned" message flashed for a correctly-staffed account.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
 
   if (!branchId) {
     return <p className="p-6 text-sm text-destructive">No branch assigned.</p>;

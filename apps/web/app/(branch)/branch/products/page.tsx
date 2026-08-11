@@ -5,6 +5,7 @@ import type { PosCatalogProduct, PosReadinessCode } from '@potato-corner/shared'
 import { Badge } from '@/components/ui/badge';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { formatCurrency } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
@@ -90,10 +91,21 @@ const columns: ColumnDef<CatalogRow>[] = [
  * account has no edit capability here today.
  */
 export default function BranchProductsPage() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const { data, isLoading, isError, refetch } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
+
+  // Task 209.54 — `branchId` is briefly undefined on every reload while
+  // useAuth's silent refresh is in flight; without this the "No branch
+  // assigned" empty state flashed for a correctly-staffed account.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
 
   if (!branchId) {
     return <EmptyState title="No branch assigned" description="Contact your supervisor to get staffed to a branch." />;

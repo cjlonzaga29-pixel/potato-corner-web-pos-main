@@ -21,7 +21,7 @@ vi.mock('@/lib/auth-broadcast', () => ({
 
 const { apiClient } = await import('@/lib/api-client');
 const { useAuthStore } = await import('@/stores/auth.store');
-const { useAuth } = await import('./use-auth.js');
+const { useAuth, refreshAuthSession } = await import('./use-auth.js');
 
 /** Builds a decodable (unsigned) JWT-shaped string — decodeJwtPayload only reads the payload segment. */
 function fakeToken(payload: Record<string, unknown>): string {
@@ -112,6 +112,50 @@ describe('useAuth restoreSession', () => {
 
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/login'));
     expect(apiClient).toHaveBeenCalledTimes(1);
+  });
+
+  // Task 209.54A — regression coverage for the auth-refresh 500 (Prisma
+  // P2028) investigation: a single page load mounts useAuth() several times
+  // (sidebar, header, page component all call it independently). Before the
+  // dedup fix, each mount fired its own POST /api/auth/refresh, and enough
+  // of them serializing on the API's per-token advisory lock inside one
+  // Prisma transaction could exceed its 5s budget. Concurrent mounts must
+  // now share exactly one in-flight refresh call.
+  it('collapses concurrent refresh calls from multiple simultaneously-mounted useAuth() instances into one network call', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { access_token: VALID_TOKEN }, error: null, meta: null });
+
+    const hooks = [renderHook(() => useAuth()), renderHook(() => useAuth()), renderHook(() => useAuth())];
+
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+    for (const { result } of hooks) {
+      expect(result.current.isAuthenticated).toBe(true);
+      expect(result.current.accessToken).toBe(VALID_TOKEN);
+    }
+    expect(apiClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapses concurrent refreshAuthSession() calls (e.g. overlapping with a mount-time restore) into one network call', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { access_token: VALID_TOKEN }, error: null, meta: null });
+
+    const [r1, r2, r3] = await Promise.all([refreshAuthSession(), refreshAuthSession(), refreshAuthSession()]);
+
+    expect(r1).toBe(true);
+    expect(r2).toBe(true);
+    expect(r3).toBe(true);
+    expect(apiClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a fresh (non-deduped) refresh call for a later, non-concurrent mount once the prior in-flight refresh has settled', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: { access_token: VALID_TOKEN }, error: null, meta: null });
+
+    renderHook(() => useAuth());
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+    expect(apiClient).toHaveBeenCalledTimes(1);
+
+    useAuthStore.setState({ user: null, accessToken: null, isAuthenticated: false, isLoading: true });
+    renderHook(() => useAuth());
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+    expect(apiClient).toHaveBeenCalledTimes(2);
   });
 });
 

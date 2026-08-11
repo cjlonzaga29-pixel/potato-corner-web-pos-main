@@ -1,8 +1,46 @@
+'use client';
+
 import type { ReactNode } from 'react';
 import { BranchSidebar, BRANCH_NAV_ITEMS } from '@/components/branch/branch-sidebar';
 import { BranchContextSync } from '@/components/branch/branch-context-sync';
 import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { useAuth } from '@/hooks/use-auth';
+import { useBranch } from '@/hooks/queries/use-branches';
+import { useBranchStore } from '@/stores/branch.store';
+
+/**
+ * Task 209.54 — every branch-ops page reused from the supervisor tree
+ * (inventory, cash, expenses, attendance, recipe-readiness, reports — see
+ * BranchContextSync's own doc comment) reads its active branch from
+ * useBranchStore, which BranchContextSync only seeds once useAuth's silent
+ * refresh AND the useBranch(branchId) fetch it triggers both resolve. Until
+ * then, `activeBranchId` is null, and every one of those pages independently
+ * renders its own "Select an active branch" / "no branch" messaging — which
+ * is correct for a supervisor who genuinely hasn't picked one, but was
+ * misleading here: a correctly-staffed branch/staff account saw it flash on
+ * every reload while that two-step sync was still in flight. Gating
+ * `children` on that same readiness here, once, is a single choke point
+ * that fixes every branch-ops page under this shell without touching the
+ * shared components themselves (which supervisor pages reuse unmodified,
+ * with their own legitimate "nothing selected yet" semantics intact).
+ * Falls through to `children` (not stuck spinning) once the account is
+ * confirmed to have no branch at all or the branch fetch errors — those are
+ * real states the individual pages already handle.
+ */
+function useBranchContextReady(): boolean {
+  const { user, isLoading: isAuthLoading } = useAuth();
+  const branchId = user?.branchIds[0];
+  const { isLoading: isBranchLoading, isError: isBranchError } = useBranch(branchId);
+  const activeBranchId = useBranchStore((s) => s.activeBranchId);
+
+  if (isAuthLoading) return false;
+  if (!branchId) return true;
+  if (isBranchError) return true;
+  if (activeBranchId !== branchId && isBranchLoading) return false;
+  return true;
+}
 
 /**
  * Branch shell — shared by both the `branch` role (full branch operations,
@@ -36,6 +74,7 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  * stale links, it is no longer part of the login flow.
  */
 export default function BranchLayout({ children }: { children: ReactNode }) {
+  const branchContextReady = useBranchContextReady();
   return (
     <div className="flex h-screen overflow-hidden bg-background print:hidden">
       <SocketInitializer />
@@ -59,7 +98,15 @@ export default function BranchLayout({ children }: { children: ReactNode }) {
           route is unaffected — `relative` with no absolutely-positioned
           child changes nothing visually.
         */}
-        <main className="app-page relative flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
+        <main className="app-page relative flex-1 overflow-y-auto overflow-x-hidden">
+          {branchContextReady ? (
+            children
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <LoadingSpinner size="lg" />
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ErrorState } from '@/components/shared/feedback/error-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useAuth } from '@/hooks/use-auth';
 import { useAttendanceByEmployee, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
@@ -34,7 +35,7 @@ function formatElapsed(startedAt: string, now: Date | null): string {
 
 export default function ClockInPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const now = useNow();
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -86,6 +87,17 @@ export default function ClockInPage() {
       branch_id: branchId,
       ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}),
     });
+  }
+
+  // Task 209.54 — `branchId` is briefly undefined on every reload while
+  // useAuth's silent refresh is in flight; without this the "No branch
+  // assigned" message flashed for a correctly-staffed account.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
   }
 
   if (!branchId) {

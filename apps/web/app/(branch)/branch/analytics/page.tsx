@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { formatCurrency, formatDuration } from '@/lib/utils';
@@ -71,7 +72,7 @@ const valuationColumns: ColumnDef<InventoryValuationReportRow>[] = [
  * an endpoint the backend has supported since Phase 16 / Step 10.
  */
 export default function BranchAnalyticsPage() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const [period, setPeriod] = useState<'7d' | '30d' | '90d' | '1yr'>('30d');
 
@@ -80,6 +81,17 @@ export default function BranchAnalyticsPage() {
   const employeePerformance = useEmployeePerformanceReport(branchId, Boolean(branchId));
   const inventoryValuation = useInventoryValuationReport(branchId, Boolean(branchId));
   const inventoryAnalytics = useInventoryAnalytics(branchId, period, Boolean(branchId));
+
+  // Task 209.54 — `branchId` is briefly undefined on every reload while
+  // useAuth's silent refresh is in flight; without this the "No branch
+  // assigned" empty state flashed for a correctly-staffed account.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
 
   if (!branchId) {
     return <EmptyState title="No branch assigned" description="Contact your supervisor to get staffed to a branch." />;

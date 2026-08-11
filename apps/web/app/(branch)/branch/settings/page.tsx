@@ -16,9 +16,20 @@ import { useBranch } from '@/hooks/queries/use-branches';
  * scope, not something to silently work around here.
  */
 export default function BranchSettingsPage() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const { data: branch, isLoading, isError, refetch } = useBranch(branchId);
+
+  // Task 209.54 — `branchId` is briefly undefined on every reload while
+  // useAuth's silent refresh is in flight; without this the "No branch
+  // assigned" empty state flashed for a correctly-staffed account.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
 
   if (!branchId) {
     return <EmptyState title="No branch assigned" description="Contact your supervisor to get staffed to a branch." />;

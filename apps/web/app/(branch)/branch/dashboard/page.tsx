@@ -18,6 +18,7 @@ import {
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { PaymentMethodGrid } from '@/components/shared/dashboard/payment-method-grid';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
@@ -66,7 +67,7 @@ const QUICK_ACTIONS = [
  */
 export default function BranchDashboardPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const isConnected = useSocketStore((s) => s.isConnected);
   const isReconnecting = useSocketStore((s) => s.isReconnecting);
@@ -92,6 +93,21 @@ export default function BranchDashboardPage() {
     limit: MAX_LIST_LIMIT,
   });
   const grossSalesMonth = monthTrend.data?.data.reduce((sum, row) => sum + row.gross_sales, 0);
+
+  // Task 209.54 — a hard reload starts with no `user` (the access token is
+  // memory-only; useAuth's silent refresh on mount is what repopulates it),
+  // so `branchId` is briefly undefined on every reload/first paint even for
+  // a correctly-staffed account. Checking `isAuthLoading` first stops that
+  // window from flashing this permission-shaped "No branch assigned" empty
+  // state — it now only ever shows once auth has actually settled and the
+  // account genuinely has no branch.
+  if (isAuthLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
 
   if (!branchId) {
     return (

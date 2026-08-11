@@ -2289,7 +2289,7 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
   });
 
   it('keeps the inline cart panel (no View Cart button) on a desktop-width, fine-pointer viewport (standard density)', () => {
-    mockMatchMedia({ '(min-width: 1024px)': true });
+    mockMatchMedia({ '(min-width: 1024px)': true, '(min-width: 1024px) and (min-height: 640px)': true });
     render(<TerminalPage />);
 
     expect(screen.queryByRole('button', { name: /View Cart/ })).not.toBeInTheDocument();
@@ -2354,7 +2354,7 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
   // all opt out via min-h-0, and that the cart header uses the new
   // density-aware `.app-pos-cart-header` token instead of a fixed py-2.
   it('gives the inline desktop cart panel a min-h-0 flex column and a density-aware compact header', () => {
-    mockMatchMedia({ '(min-width: 1024px)': true });
+    mockMatchMedia({ '(min-width: 1024px)': true, '(min-width: 1024px) and (min-height: 640px)': true });
     render(<TerminalPage />);
 
     const cartHeading = screen.getByRole('heading', { name: 'Cart' });
@@ -2375,7 +2375,7 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
   // the flexible space) — no arbitrary fixed/percentage height split between
   // the two.
   it('gives the cart items region flex-1/min-h-0/overflow-y-auto and keeps the checkout footer shrink-0 (content-sized only)', () => {
-    mockMatchMedia({ '(min-width: 1024px)': true });
+    mockMatchMedia({ '(min-width: 1024px)': true, '(min-width: 1024px) and (min-height: 640px)': true });
     render(<TerminalPage />);
 
     const cartHeading = screen.getByRole('heading', { name: 'Cart' });

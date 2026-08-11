@@ -94,6 +94,24 @@ const OTHER_BRANCH_USER = {
   exp: 9999999999,
 };
 
+const STAFF_USER = {
+  user_id: 'staff-1',
+  role: ROLES.STAFF,
+  email: 'staff@test.com',
+  branch_ids: ['branch-a'] as string[],
+  iat: 0,
+  exp: 9999999999,
+};
+
+const OTHER_BRANCH_STAFF_USER = {
+  user_id: 'staff-2',
+  role: ROLES.STAFF,
+  email: 'staff2@test.com',
+  branch_ids: ['branch-c'] as string[],
+  iat: 0,
+  exp: 9999999999,
+};
+
 const UNASSIGNED_SUPERVISOR_USER = {
   user_id: 'sup-2',
   role: ROLES.SUPERVISOR,
@@ -734,6 +752,41 @@ describe('employeesService.reactivateEmployee', () => {
       code: 'EMPLOYEE_ACCESS_DENIED',
       statusCode: 403,
     });
+  });
+});
+
+describe('employeesService.getEmployeeById — STAFF least-privilege scoping', () => {
+  it('returns only name/id fields to a staff caller in the same branch, never email/phone/notes/status', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(
+      buildEmployee({ email: 'coworker@test.com', phone: '0917', notes: 'secret note', status: 'active' }) as never,
+    );
+
+    const result = await employeesService.getEmployeeById('emp-1', STAFF_USER);
+
+    expect(result).toEqual({ id: 'emp-1', first_name: 'Juan', last_name: 'Dela Cruz', employee_id: 'PC-EMP-000001' });
+    expect(result).not.toHaveProperty('email');
+    expect(result).not.toHaveProperty('phone');
+    expect(result).not.toHaveProperty('notes');
+    expect(result).not.toHaveProperty('status');
+    expect(result).not.toHaveProperty('must_change_password');
+    expect(result).not.toHaveProperty('branch_assignments');
+  });
+
+  it('rejects a staff caller looking up an employee outside their own branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
+
+    await expect(employeesService.getEmployeeById('emp-1', OTHER_BRANCH_STAFF_USER)).rejects.toMatchObject({
+      code: 'EMPLOYEE_ACCESS_DENIED',
+      statusCode: 403,
+    });
+  });
+
+  it('still returns the full response (minus government IDs) to non-staff roles', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ email: 'coworker@test.com' }) as never);
+
+    const result = await employeesService.getEmployeeById('emp-1', BRANCH_USER);
+
+    expect(result).toMatchObject({ id: 'emp-1', email: 'coworker@test.com', first_name: 'Juan', last_name: 'Dela Cruz' });
   });
 });
 

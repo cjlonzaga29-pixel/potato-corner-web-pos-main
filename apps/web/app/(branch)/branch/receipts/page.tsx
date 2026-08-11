@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { Receipt as ReceiptIcon } from 'lucide-react';
 import type { TransactionResponse } from '@potato-corner/shared';
+import { ROLES } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -58,7 +59,12 @@ export default function ReceiptsPage() {
         return { from: from.toISOString(), to: to.toISOString() };
       })()
     : undefined;
-  const { data: attendanceData } = useAttendanceByEmployee(detailTransaction?.cashier_id, {
+  // The attendance-session cross-reference is audit context (verifying a
+  // *coworker's* clock-in window), not a cashier duty — GET
+  // /api/attendance/employee/:id is self-scoped server-side for STAFF, so a
+  // staff viewer would 403 on any receipt but their own. Skip the fetch
+  // entirely for staff rather than depend on that per-row coincidence.
+  const { data: attendanceData } = useAttendanceByEmployee(user?.role === ROLES.STAFF ? undefined : detailTransaction?.cashier_id, {
     ...attendanceWindow,
     limit: 100,
   });

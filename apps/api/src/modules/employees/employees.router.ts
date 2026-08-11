@@ -14,7 +14,7 @@ import {
 import { employeesService } from './employees.service.js';
 import { EmployeeError } from './employees.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { adminOnly, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -85,10 +85,15 @@ router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, as
   }
 });
 
+// allRoles (not adminSupervisorOrBranch): staff-facing pages (e.g. Receipts,
+// receipt printing) need to resolve a same-branch coworker's cashier_id to a
+// display name. employees.service.ts's getEmployeeById trims the response to
+// name-only fields for STAFF — branch-scoping (assertEmployeeAccess) is
+// unchanged, only the role check and the STAFF response shape differ.
 router.get(
   '/:employeeId',
   authenticate,
-  adminSupervisorOrBranch,
+  allRoles,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

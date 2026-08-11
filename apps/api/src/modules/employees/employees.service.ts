@@ -58,6 +58,14 @@ export interface EmployeeListQuery {
 
 type ActorContext = JwtPayload;
 
+/** Deliberately minimal — see getEmployeeById's STAFF branch. */
+export interface StaffEmployeeNameResponse {
+  id: string;
+  first_name: string;
+  last_name: string;
+  employee_id: string;
+}
+
 function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse {
   return {
     id: employee.id,
@@ -130,11 +138,26 @@ export const employeesService = {
     };
   },
 
-  async getEmployeeById(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeResponse> {
+  async getEmployeeById(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeResponse | StaffEmployeeNameResponse> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
 
     await assertEmployeeAccess(requestingUser, employee);
+
+    // Cashiers only need a same-branch coworker's display name (e.g. to
+    // attribute a receipt) — least privilege withholds everything else this
+    // endpoint otherwise returns (email/phone/notes/status/
+    // must_change_password/last_login/branch_assignments), which is
+    // employee-administration-grade PII outside cashier duties.
+    if (requestingUser.role === ROLES.STAFF) {
+      return {
+        id: employee.id,
+        first_name: employee.firstName,
+        last_name: employee.lastName,
+        employee_id: employee.employeeId ?? '',
+      };
+    }
+
     return toEmployeeResponse(employee);
   },
 

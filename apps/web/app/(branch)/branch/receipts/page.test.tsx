@@ -139,3 +139,28 @@ describe('ReceiptsPage — Manage Transaction (ViewTransactionDetailDialog)', ()
     expect(screen.getByTestId('receipt-modal')).toHaveTextContent('Receipt for txn-2');
   });
 });
+
+describe('ReceiptsPage — staff role skips the coworker attendance cross-reference', () => {
+  it('does not query attendance-by-employee for a staff viewer (self-scoped server-side, would 403 on a coworker\'s receipt)', () => {
+    mockUseAuth.mockReturnValue({ user: { branchIds: ['branch-1'], role: 'staff' } });
+    mockUseTransactions.mockReturnValue({ data: { transactions: [transaction()], total: 1 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseTransaction.mockImplementation((id: string | null) => ({ data: [transaction()].find((t) => t.id === id) }));
+    mockUseAttendanceByEmployee.mockReturnValue({ data: { records: [] } });
+    mockUseBranch.mockReturnValue({ data: { name: 'Main Branch' } });
+    mockUseEmployee.mockReturnValue({ data: { first_name: 'Jane', last_name: 'Doe' } });
+
+    render(<ReceiptsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Manage Transaction' }));
+
+    expect(mockUseAttendanceByEmployee).toHaveBeenLastCalledWith(undefined, expect.anything());
+  });
+
+  it('still queries attendance-by-employee for a non-staff (branch) viewer', () => {
+    setup([transaction()]);
+    render(<ReceiptsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage Transaction' }));
+
+    expect(mockUseAttendanceByEmployee).toHaveBeenLastCalledWith('employee-1', expect.anything());
+  });
+});

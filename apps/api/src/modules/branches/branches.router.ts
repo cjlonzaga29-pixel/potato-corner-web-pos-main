@@ -14,7 +14,7 @@ import {
 import { branchesService } from './branches.service.js';
 import { BranchError } from './branches.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -114,7 +114,12 @@ router.get('/stats', authenticate, adminSupervisorOrBranch, requirePasswordChang
   }
 });
 
-router.get('/:branchId', authenticate, adminSupervisorOrBranch, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
+// allRoles (not adminSupervisorOrBranch): staff-facing pages (e.g. Receipts)
+// need their own branch's display info (name/address for the printed
+// receipt). branchGuard + getBranchById's own assertBranchAccess both still
+// restrict branch/staff to exactly their JWT branch_ids — this only adds
+// STAFF to the role check, no branch-scoping is relaxed.
+router.get('/:branchId', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const branch = await branchesService.getBranchById(req.params.branchId as string, req.user);

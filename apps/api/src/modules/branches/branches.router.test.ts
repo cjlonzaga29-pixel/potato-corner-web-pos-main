@@ -262,13 +262,27 @@ describe('GET /api/branches/:branchId — role guard', () => {
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
-  it('returns 403 for staff', async () => {
+  it('allows staff to fetch their own assigned branch', async () => {
     const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
     const branchId = randomUUID();
     const token = generateStaffToken(branchId);
     const res = mockRes();
+    vi.mocked(branchesService.getBranchById).mockResolvedValue({ id: branchId, name: 'Main Branch' } as never);
 
     await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+
+    expect(branchesService.getBranchById).toHaveBeenCalledWith(branchId, expect.objectContaining({ role: 'staff' }));
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('returns 403 for staff requesting a different branch (no cross-branch access)', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
+    const ownBranchId = randomUUID();
+    const otherBranchId = randomUUID();
+    const token = generateStaffToken(ownBranchId);
+    const res = mockRes();
+
+    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId: otherBranchId } }), res);
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(branchesService.getBranchById).not.toHaveBeenCalled();

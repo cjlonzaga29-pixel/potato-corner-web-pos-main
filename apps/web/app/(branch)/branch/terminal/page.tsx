@@ -265,6 +265,33 @@ export default function TerminalPage() {
   const operatorToken = isBranchAccount ? (activeEmployeeToken ?? undefined) : undefined;
   const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
 
+  // Task 209.56C — the Employee-scoped access token above (activeEmployeeToken)
+  // has no refresh token of its own (see selectEmployee's comment in
+  // use-auth.ts) and a 15-minute TTL, so a shift running longer than that —
+  // the common case — used to hit a raw, unrecoverable TOKEN_EXPIRED on the
+  // next checkout/proof-upload/clock-out call. This silently re-mints a
+  // fresh token via the same select-employee call the "Who's working?"
+  // picker already uses (itself routed through the Branch Account's own
+  // self-refreshing global session), passed as fetchAuthenticated's
+  // refreshOverrideToken so a 401 on any operatorToken-scoped request
+  // retries exactly once with the fresh token — see api-client.ts. Only
+  // drops back to "Who's working?" (clearing the selected Employee, never
+  // the cart/branch/Branch-Account session) when the Employee itself can no
+  // longer be selected, e.g. deactivated mid-shift.
+  const refreshEmployeeToken = useCallback(async (): Promise<string | null> => {
+    if (!activeEmployee) return null;
+    try {
+      const selected = await selectEmployee(activeEmployee.id);
+      setActiveEmployeeToken(selected.accessToken);
+      return selected.accessToken;
+    } catch {
+      setActiveEmployee(null);
+      setActiveEmployeeToken(null);
+      clearTerminalOperator();
+      return null;
+    }
+  }, [activeEmployee, selectEmployee, clearTerminalOperator]);
+
   const { items, addItem, removeItem, updateItemQuantity, replaceItem, clearCart } = useCart();
   const {
     data: liveCatalog,
@@ -280,11 +307,11 @@ export default function TerminalPage() {
   const { shift } = useMyActiveShift(branchId);
   useShiftsRealtimeSync();
   const { isOnline } = useOffline();
-  const createTransaction = useCreateTransaction(operatorToken);
-  const uploadPaymentProof = useUploadPaymentProof(operatorToken);
-  const uploadDiscountProof = useUploadDiscountProof(operatorToken);
-  const clockIn = useClockIn(operatorToken);
-  const clockOut = useClockOut(operatorToken);
+  const createTransaction = useCreateTransaction(operatorToken, refreshEmployeeToken);
+  const uploadPaymentProof = useUploadPaymentProof(operatorToken, refreshEmployeeToken);
+  const uploadDiscountProof = useUploadDiscountProof(operatorToken, refreshEmployeeToken);
+  const clockIn = useClockIn(operatorToken, refreshEmployeeToken);
+  const clockOut = useClockOut(operatorToken, refreshEmployeeToken);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
 

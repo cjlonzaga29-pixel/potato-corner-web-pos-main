@@ -102,7 +102,7 @@ export function useAttendanceRealtimeSync(): void {
  * Branch session's — see terminal/page.tsx. Omitted for a genuine `staff`
  * session, unchanged from before.
  */
-export function useClockIn(accessTokenOverride?: string) {
+export function useClockIn(accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: ClockInInput) => {
@@ -110,6 +110,7 @@ export function useClockIn(accessTokenOverride?: string) {
         '/api/attendance/clock-in',
         { method: 'POST', body: JSON.stringify(input) },
         accessTokenOverride,
+        refreshOverrideToken,
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to clock in'));
       return response.data;
@@ -123,7 +124,7 @@ export function useClockIn(accessTokenOverride?: string) {
 }
 
 /** Task 120: see useClockIn's accessTokenOverride note above — same reasoning applies to clock-out. */
-export function useClockOut(accessTokenOverride?: string) {
+export function useClockOut(accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: ClockOutInput) => {
@@ -131,6 +132,7 @@ export function useClockOut(accessTokenOverride?: string) {
         '/api/attendance/clock-out',
         { method: 'POST', body: JSON.stringify(input) },
         accessTokenOverride,
+        refreshOverrideToken,
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to clock out'));
       return response.data;

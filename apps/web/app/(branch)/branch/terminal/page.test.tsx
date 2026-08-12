@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import TerminalPage from './page';
 import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
 import { useAuthStore } from '@/stores/auth.store';
@@ -21,6 +21,8 @@ const {
   mockUseClockIn,
   mockUseClockOut,
   mockUseCreateTransaction,
+  mockUseUploadPaymentProof,
+  mockUseUploadDiscountProof,
   mockUploadPaymentProofMutateAsync,
   mockUploadDiscountProofMutateAsync,
   mockCreateTransactionIsPending,
@@ -48,6 +50,8 @@ const {
   mockUseClockIn: vi.fn(),
   mockUseClockOut: vi.fn(),
   mockUseCreateTransaction: vi.fn(),
+  mockUseUploadPaymentProof: vi.fn(),
+  mockUseUploadDiscountProof: vi.fn(),
   mockUploadPaymentProofMutateAsync: vi
     .fn()
     .mockResolvedValue({ payment_proof_key: 'branch-1/shift-1/user-1-123.webp', payment_proof_type: 'gallery_upload' }),
@@ -145,23 +149,32 @@ vi.mock('@/hooks/queries/use-shifts', () => ({
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
   useIsClockedIn: mockUseIsClockedIn,
-  useClockIn: (accessTokenOverride?: string) => {
-    mockUseClockIn(accessTokenOverride);
+  useClockIn: (accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) => {
+    mockUseClockIn(accessTokenOverride, refreshOverrideToken);
     return { mutateAsync: mockClockInMutateAsync, isPending: false };
   },
-  useClockOut: (accessTokenOverride?: string) => {
-    mockUseClockOut(accessTokenOverride);
+  useClockOut: (accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) => {
+    mockUseClockOut(accessTokenOverride, refreshOverrideToken);
     return { mutateAsync: mockClockOutMutateAsync, isPending: false };
   },
 }));
 
 vi.mock('@/hooks/queries/use-transactions', () => ({
-  useCreateTransaction: (accessTokenOverride?: string) => {
-    mockUseCreateTransaction(accessTokenOverride);
+  // Task 209.56C — captures the second (refreshOverrideToken) argument too,
+  // so tests can invoke it directly to prove terminal/page.tsx wires a real
+  // Employee-token refresher through, without needing a live api-client/fetch.
+  useCreateTransaction: (accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) => {
+    mockUseCreateTransaction(accessTokenOverride, refreshOverrideToken);
     return { mutateAsync: mockCreateTransactionMutateAsync, isPending: mockCreateTransactionIsPending() };
   },
-  useUploadPaymentProof: () => ({ mutateAsync: mockUploadPaymentProofMutateAsync }),
-  useUploadDiscountProof: () => ({ mutateAsync: mockUploadDiscountProofMutateAsync }),
+  useUploadPaymentProof: (accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) => {
+    mockUseUploadPaymentProof(accessTokenOverride, refreshOverrideToken);
+    return { mutateAsync: mockUploadPaymentProofMutateAsync };
+  },
+  useUploadDiscountProof: (accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) => {
+    mockUseUploadDiscountProof(accessTokenOverride, refreshOverrideToken);
+    return { mutateAsync: mockUploadDiscountProofMutateAsync };
+  },
 }));
 
 vi.mock('@/lib/offline/cache', () => ({
@@ -2040,12 +2053,12 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     // Clock In: attendance is recorded for the selected Employee, authorized with that Employee's token.
     fireEvent.click(await screen.findByRole('button', { name: 'Clock In' }));
     await waitFor(() => expect(mockClockInMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ employee_id: 'employee-1', branch_id: 'branch-1' })));
-    expect(mockUseClockIn).toHaveBeenLastCalledWith('employee-token');
+    expect(mockUseClockIn).toHaveBeenLastCalledWith('employee-token', expect.any(Function));
 
     // Once clocked in, the POS/checkout hooks are wired to the same Employee token too.
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
     rerender(<TerminalPage />);
-    expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token');
+    expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token', expect.any(Function));
     // The active cashier shown in the attendance strip is the selected Employee, not the Branch Account.
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
 
@@ -2061,9 +2074,119 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     // was active — checked via the full call history, not the last call,
     // since STATE 1 reappearing re-renders with no active employee and no
     // token at all (the terminal-local state was correctly cleared).
-    expect(mockUseClockOut).toHaveBeenCalledWith('employee-token');
+    expect(mockUseClockOut).toHaveBeenCalledWith('employee-token', expect.any(Function));
 
     // Branch Account was never signed out of at any point in this flow.
+    expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
+    expect(useAuthStore.getState().accessToken).toBe('branch-token');
+  });
+});
+
+// Task 209.56C — the Employee-scoped access token (activeEmployeeToken,
+// minted by select-employee) has no refresh token of its own and a 15-minute
+// TTL, so a shift running longer than that used to hit a raw, unrecoverable
+// TOKEN_EXPIRED. terminal/page.tsx now threads a refreshEmployeeToken
+// callback (which re-calls select-employee) into every operatorToken-scoped
+// mutation hook as its second argument — api-client.ts invokes it on a 401.
+// These tests grab that callback straight off the mock (rather than faking a
+// 401 through a live api-client/fetch stack, already covered end-to-end in
+// api-client.test.ts) and invoke it directly to prove the wiring is real.
+describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)', () => {
+  function employee(overrides: Record<string, unknown> = {}) {
+    return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
+  }
+
+  function employeeSelection(accessToken: string) {
+    return {
+      user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
+      accessToken,
+    };
+  }
+
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
+    // Task 209.27's real (unmocked) sessionStorage-backed store restores a
+    // previously-selected Employee on mount — without resetting it here, a
+    // token this describe block leaves persisted (activeEmployee is synced
+    // into it automatically once clocked in — see use-terminal-operator.ts)
+    // gets silently restored into the NEXT test's fresh render, racing ahead
+    // of that test's own explicit employee selection.
+    useTerminalOperatorStore.setState({
+      branchId: null,
+      employeeId: null,
+      employeeToken: null,
+      firstName: undefined,
+      lastName: undefined,
+      role: undefined,
+      hasHydrated: true,
+    });
+    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
+    mockCartItems.mockReturnValue([]);
+    mockUseClockIn.mockClear();
+    mockUseClockOut.mockClear();
+    mockUseCreateTransaction.mockClear();
+    mockSelectEmployee.mockReset();
+  });
+
+  // Belt-and-suspenders alongside the per-test beforeEach reset above: every
+  // test here queues its select-employee resolutions with `...Once()`, and a
+  // queued-but-unconsumed `...Once()` value takes priority over whatever a
+  // later describe block's own `mockResolvedValue(...)` sets, which leaked a
+  // rejection into an unrelated Task 209.27 test the first time this block
+  // was written. Reset unconditionally after every test so nothing carries
+  // over regardless of exactly which assertion in a given test consumed
+  // (or didn't) its queued value.
+  afterEach(() => {
+    cleanup();
+    mockSelectEmployee.mockReset();
+  });
+
+  it('re-mints a fresh Employee token via select-employee and threads it into the next mutation call', async () => {
+    mockSelectEmployee.mockResolvedValueOnce(employeeSelection('employee-token-1')).mockResolvedValueOnce(employeeSelection('employee-token-2'));
+
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Jane Doe'));
+    await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token-1', expect.any(Function)));
+
+    // Simulate api-client.ts invoking the refresher after the current
+    // (stale) token 401s on some request.
+    const refreshEmployeeToken = mockUseCreateTransaction.mock.calls.at(-1)?.[1] as () => Promise<string | null>;
+    let refreshed: string | null = null;
+    await act(async () => {
+      refreshed = await refreshEmployeeToken();
+    });
+
+    expect(mockSelectEmployee).toHaveBeenCalledTimes(2); // once for the initial pick, once for the refresh
+    expect(mockSelectEmployee).toHaveBeenLastCalledWith('employee-1');
+    expect(refreshed).toBe('employee-token-2');
+    // Threaded into whatever mutation is wired up next — the retry itself
+    // (api-client.ts) uses the returned token directly; this proves the
+    // React-state side (activeEmployeeToken) picked it up too.
+    await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token-2', expect.any(Function)));
+    // Re-selecting the Employee never touches the Branch Account's own session.
+    expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
+    expect(useAuthStore.getState().accessToken).toBe('branch-token');
+  });
+
+  it('drops back to "Who\'s working?" — never the cart or the Branch Account session — when the Employee can no longer be selected', async () => {
+    mockSelectEmployee.mockResolvedValueOnce(employeeSelection('employee-token-1')).mockRejectedValueOnce(new Error('This employee is not active'));
+
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Jane Doe'));
+    await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token-1', expect.any(Function)));
+
+    const refreshEmployeeToken = mockUseCreateTransaction.mock.calls.at(-1)?.[1] as () => Promise<string | null>;
+    let refreshed: string | null = 'unset' as unknown as string | null;
+    await act(async () => {
+      refreshed = await refreshEmployeeToken();
+    });
+
+    expect(refreshed).toBeNull();
+    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    // A dead Employee token must never cascade into the Branch Account's own session.
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
   });

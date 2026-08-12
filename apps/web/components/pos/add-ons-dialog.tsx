@@ -96,6 +96,18 @@ export function multiGroupTarget(group: AddOnsDialogGroup): number {
  * (option rows) / `.app-control-square` (allocator +/- buttons), smaller
  * inter-group spacing, and slightly reduced header/footer padding. Group
  * ordering, selection semantics, and payload shape are unchanged.
+ *
+ * Task 209.56C — checkbox-style rows (simplified/single-selection) swapped
+ * `.app-control`'s fixed `height` for `min-h-[var(--app-control-height)]
+ * h-auto py-2`: a long flavor/add-on name wrapping to 2+ lines used to
+ * either clip against the row's fixed height or overlap the row below it
+ * instead of growing the row. Every option-name `<span>` (both those rows
+ * and the MULTIPLE-group allocator rows) gained `min-w-0 flex-1
+ * break-words`, and every counter/button column gained `shrink-0` — a flex
+ * child's default min-width is its own max-content width, which without
+ * this can push the row (and the dialog) wider than its container instead
+ * of wrapping, the root cause of a horizontal scrollbar on a long option
+ * name. Purely geometric; selection logic and payload shape are unchanged.
  */
 export function AddOnsDialog({
   productName,
@@ -154,7 +166,12 @@ export function AddOnsDialog({
 
                 <label
                   className={cn(
-                    'app-control flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                    // Task 209.56C — was the fixed-height `app-control` (a
+                    // single `height` token, no wrapping headroom); a
+                    // min-height + h-auto lets a row that wraps to 2+ lines
+                    // (a long flavor/add-on name) grow instead of clipping
+                    // or overlapping the row below it.
+                    'flex min-h-[var(--app-control-height)] h-auto cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
                     selected.length === 0 ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                   )}
                 >
@@ -168,12 +185,17 @@ export function AddOnsDialog({
                     <label
                       key={option.id}
                       className={cn(
-                        'app-control flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                        'flex min-h-[var(--app-control-height)] h-auto cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
                         isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                       )}
                     >
                       <Checkbox checked={isSelected} onCheckedChange={() => onToggleOption(group.id, option.id)} />
-                      <span className="flex-1">
+                      {/* Task 209.56C — min-w-0 is required alongside flex-1: a
+                          flex child's default min-width is its content's max-content
+                          width, which without this can push the row wider than the
+                          dialog instead of wrapping (the horizontal-scrollbar cause
+                          for a long, mostly-unbroken option name). */}
+                      <span className="min-w-0 flex-1 break-words">
                         {option.name}
                         {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
                       </span>
@@ -204,12 +226,12 @@ export function AddOnsDialog({
                       <label
                         key={option.id}
                         className={cn(
-                          'app-control flex cursor-pointer items-center gap-3 rounded-lg border px-3 text-sm transition-colors',
+                          'flex min-h-[var(--app-control-height)] h-auto cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
                           isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                         )}
                       >
                         <Checkbox checked={isSelected} onCheckedChange={() => onSelectOption(group.id, option.id)} />
-                        <span className="flex-1">
+                        <span className="min-w-0 flex-1 break-words">
                           {option.name}
                           {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
                         </span>
@@ -237,9 +259,9 @@ export function AddOnsDialog({
                 </div>
 
                 {group.allowNoAddOn && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span>No Add-ons</span>
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="min-w-0 flex-1 break-words">No Add-ons</span>
+                    <div className="flex shrink-0 items-center gap-2">
                       <Button
                         type="button"
                         variant="outline"
@@ -264,12 +286,12 @@ export function AddOnsDialog({
                 )}
 
                 {group.options.map((option) => (
-                  <div key={option.id} className="flex items-center justify-between text-sm">
-                    <span>
+                  <div key={option.id} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="min-w-0 flex-1 break-words">
                       {option.name}
                       {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
                     </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-2">
                       <Button
                         type="button"
                         variant="outline"

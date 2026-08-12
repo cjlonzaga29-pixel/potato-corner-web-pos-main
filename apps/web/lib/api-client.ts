@@ -101,6 +101,22 @@ const SESSION_EXPIRED_ERROR = {
   message: 'Session expired. Please sign in again.',
 } as const;
 
+/**
+ * Task 209.56C — the Employee-scoped access token minted by
+ * /api/auth/select-employee (see terminal/page.tsx's activeEmployeeToken)
+ * has no refresh token of its own and a 15-minute TTL (config.jwt.accessTokenTtl),
+ * so any shift running longer than that hit this same TOKEN_EXPIRED-with-no-
+ * message gap SESSION_EXPIRED_ERROR above was introduced for on the global
+ * session — except this path is scoped to just the Employee selection, not
+ * the whole Branch Account session, so it gets its own distinct code/message
+ * (the caller, terminal/page.tsx's refreshEmployeeToken, drops back to "Who's
+ * working?" rather than logging the Branch Account out).
+ */
+const EMPLOYEE_SESSION_EXPIRED_ERROR = {
+  code: 'EMPLOYEE_SESSION_EXPIRED',
+  message: 'Employee session expired. Please select the employee again.',
+} as const;
+
 function buildHeaders(init?: RequestInit, accessTokenOverride?: string): Headers {
   const headers = new Headers(init?.headers);
   // FormData (multipart uploads, e.g. payment proof photos) must not get a
@@ -142,6 +158,13 @@ export async function fetchAuthenticated(
   init?: RequestInit,
   _isRetry = false,
   accessTokenOverride?: string,
+  /**
+   * Task 209.56C — mints a fresh Employee-scoped token (re-calling
+   * /api/auth/select-employee) when the current accessTokenOverride 401s.
+   * Only ever invoked on the accessTokenOverride path below; the global
+   * session's own refresh (refreshAccessToken above) is untouched by this.
+   */
+  refreshOverrideToken?: () => Promise<string | null>,
 ): Promise<Response> {
   const isAuthPath = path === '/api/auth/refresh' || path === '/api/auth/login';
   // A caller-supplied token (e.g. the POS Terminal's active-employee token —
@@ -151,7 +174,23 @@ export async function fetchAuthenticated(
   // that would touch the Branch account's own session over an employee
   // token expiring, which selecting an employee must never do.
   if (accessTokenOverride) {
-    return fetch(`${API_URL}${path}`, { ...init, credentials: 'include', headers: buildHeaders(init, accessTokenOverride) });
+    const response = await fetch(`${API_URL}${path}`, { ...init, credentials: 'include', headers: buildHeaders(init, accessTokenOverride) });
+    if (response.status === 401 && !_isRetry && refreshOverrideToken) {
+      const newToken = await refreshOverrideToken();
+      if (newToken) {
+        return fetchAuthenticated(path, init, true, newToken, refreshOverrideToken);
+      }
+      // Employee token is dead and re-selecting the Employee itself failed
+      // (e.g. deactivated mid-shift) — same reasoning as SESSION_EXPIRED_ERROR
+      // below: the original response body only ever carries a bare backend
+      // code with no `message`, so synthesize a cashier-safe one instead of
+      // ever surfacing raw TOKEN_EXPIRED here.
+      return new Response(JSON.stringify({ data: null, error: EMPLOYEE_SESSION_EXPIRED_ERROR, meta: null }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return response;
   }
   if (refreshInFlight && !_isRetry && !isAuthPath) {
     // A refresh is already resolving elsewhere (e.g. another mutation's 401
@@ -239,10 +278,15 @@ export async function fetchAuthenticated(
  * in the app goes through this. Handles the 204-no-body case, the non-JSON-
  * response guard, JSON parse failures, and the MUST_CHANGE_PASSWORD redirect.
  */
-export async function apiClient<T>(path: string, init?: RequestInit, accessTokenOverride?: string): Promise<ApiResponse<T>> {
+export async function apiClient<T>(
+  path: string,
+  init?: RequestInit,
+  accessTokenOverride?: string,
+  refreshOverrideToken?: () => Promise<string | null>,
+): Promise<ApiResponse<T>> {
   let response: Response;
   try {
-    response = await fetchAuthenticated(path, init, false, accessTokenOverride);
+    response = await fetchAuthenticated(path, init, false, accessTokenOverride, refreshOverrideToken);
   } catch {
     return {
       data: null,

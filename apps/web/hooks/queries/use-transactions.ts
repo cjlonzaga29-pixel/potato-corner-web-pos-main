@@ -97,7 +97,7 @@ export function useTransaction(transactionId: string | null | undefined) {
  * Employee instead of the Branch account. See terminal/page.tsx. Omitted
  * for a genuine `staff` session, unchanged from before.
  */
-export function useCreateTransaction(accessTokenOverride?: string) {
+export function useCreateTransaction(accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateTransactionInput) => {
@@ -105,6 +105,7 @@ export function useCreateTransaction(accessTokenOverride?: string) {
         '/api/transactions',
         { method: 'POST', body: JSON.stringify(input) },
         accessTokenOverride,
+        refreshOverrideToken,
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to record transaction'));
       return response.data;
@@ -137,7 +138,7 @@ interface UploadPaymentProofInput {
  * payload, not persisted here. Task 120: see useCreateTransaction's
  * accessTokenOverride note above — same reasoning applies here.
  */
-export function useUploadPaymentProof(accessTokenOverride?: string) {
+export function useUploadPaymentProof(accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) {
   return useMutation({
     mutationFn: async ({ branchId, shiftId, type, file }: UploadPaymentProofInput) => {
       const formData = new FormData();
@@ -149,6 +150,7 @@ export function useUploadPaymentProof(accessTokenOverride?: string) {
         '/api/transactions/payment-proof',
         { method: 'POST', body: formData },
         accessTokenOverride,
+        refreshOverrideToken,
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to upload payment proof'));
       return response.data;
@@ -184,7 +186,7 @@ interface UploadDiscountProofInput {
  * above: the returned key/type are held in terminal component state and
  * submitted with the transaction-create payload.
  */
-export function useUploadDiscountProof(accessTokenOverride?: string) {
+export function useUploadDiscountProof(accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) {
   return useMutation({
     mutationFn: async ({ branchId, shiftId, type, file }: UploadDiscountProofInput) => {
       const formData = new FormData();
@@ -196,6 +198,7 @@ export function useUploadDiscountProof(accessTokenOverride?: string) {
         '/api/transactions/discount-proof',
         { method: 'POST', body: formData },
         accessTokenOverride,
+        refreshOverrideToken,
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to upload discount proof'));
       return response.data;

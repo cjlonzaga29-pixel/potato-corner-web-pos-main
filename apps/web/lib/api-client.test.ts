@@ -174,6 +174,73 @@ describe('apiClient refresh race', () => {
   });
 });
 
+describe('apiClient accessTokenOverride refresh (Task 209.56C — POS Terminal Employee-scoped token)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('retries once with a fresh override token when the current one 401s, and succeeds silently', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const seenAuthHeaders: (string | null)[] = [];
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      const headers = init.headers as Headers;
+      seenAuthHeaders.push(headers.get('Authorization'));
+      if (headers.get('Authorization') === 'Bearer stale-employee-token') {
+        return Promise.resolve(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
+      }
+      return Promise.resolve(jsonResponse(200, { data: { id: 'txn-1' }, error: null, meta: null }));
+    });
+
+    const refreshOverrideToken = vi.fn().mockResolvedValue('fresh-employee-token');
+    const result = await apiClient(
+      '/api/transactions',
+      { method: 'POST', body: '{}' },
+      'stale-employee-token',
+      refreshOverrideToken,
+    );
+
+    expect(refreshOverrideToken).toHaveBeenCalledTimes(1);
+    expect(seenAuthHeaders).toEqual(['Bearer stale-employee-token', 'Bearer fresh-employee-token']);
+    expect(result.data).toEqual({ id: 'txn-1' });
+    expect(result.error).toBeNull();
+  });
+
+  it('never surfaces the raw backend token code when refreshing the override token itself fails', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
+
+    const refreshOverrideToken = vi.fn().mockResolvedValue(null);
+    const result = await apiClient('/api/transactions', { method: 'POST', body: '{}' }, 'stale-employee-token', refreshOverrideToken);
+
+    expect(refreshOverrideToken).toHaveBeenCalledTimes(1);
+    expect(result.error).toEqual({ code: 'EMPLOYEE_SESSION_EXPIRED', message: 'Employee session expired. Please select the employee again.' });
+  });
+
+  it('retries the override-token request only once, even if the refreshed token also 401s (no loop)', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
+
+    const refreshOverrideToken = vi.fn().mockResolvedValue('still-dead-token');
+    await apiClient('/api/transactions', { method: 'POST', body: '{}' }, 'stale-employee-token', refreshOverrideToken);
+
+    expect(refreshOverrideToken).toHaveBeenCalledTimes(1);
+    const txnCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/transactions'));
+    expect(txnCalls.length).toBe(2); // original + exactly one retry
+  });
+
+  it('never touches the global session refresh path for an override-token 401', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
+
+    const refreshOverrideToken = vi.fn().mockResolvedValue(null);
+    await apiClient('/api/transactions', { method: 'POST', body: '{}' }, 'stale-employee-token', refreshOverrideToken);
+
+    const globalRefreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
+    expect(globalRefreshCalls.length).toBe(0);
+  });
+});
+
 describe('apiClient safe response parsing', () => {
   beforeEach(() => {
     vi.restoreAllMocks();

@@ -20,7 +20,7 @@ import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { enqueueNotification } from '../../queues/notification.queue.js';
 import { attendanceRepository } from '../attendance/attendance.repository.js';
 
-type ActorContext = { id: string; role: string };
+type ActorContext = { id: string; role: string; branchIds?: string[] };
 
 /**
  * Variance tolerance. The architecture doc (Part 9) states the tolerance
@@ -522,8 +522,23 @@ export const cashService = {
     if (shift.status !== 'active') {
       throw new CashError('SHIFT_NOT_OPEN', 'Only an open shift can be closed', 409);
     }
-    if (actor.role !== ROLES.SUPER_ADMIN && shift.openedBy !== actor.id) {
-      throw new CashError('SHIFT_UNAUTHORIZED_CLOSE', 'Only the supervisor who opened this shift, or a super_admin, may close it', 403);
+    // Task 209.55B: shift.openedBy is whichever identity was on the request
+    // that opened it — for a Branch Account operating through a selected
+    // employee (auto-open on clock-in, see attendance.service.clockIn /
+    // cash.repository.createAutoShift), that's the employee's id, never the
+    // Branch Account's own session id. The branch still operationally owns
+    // every shift at its own branch, so a `branch`-role actor may also close
+    // any shift whose branchId is in its own JWT-scoped branchIds — a set
+    // that always has exactly one entry and is never taken from client
+    // input. staff/supervisor keep the unchanged strict id match.
+    const isOwner = shift.openedBy === actor.id;
+    const isOwningBranch = actor.role === ROLES.BRANCH && !!actor.branchIds?.includes(shift.branchId);
+    if (actor.role !== ROLES.SUPER_ADMIN && !isOwner && !isOwningBranch) {
+      throw new CashError(
+        'SHIFT_UNAUTHORIZED_CLOSE',
+        "Only the employee who opened this shift, that shift's branch account, or a super_admin, may close it",
+        403,
+      );
     }
 
     const closingCashAmount = data.denominations.reduce((sum, d) => sum + d.denomination * d.quantity, 0);

@@ -1,6 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSchema, reviewShiftSchema } from '@potato-corner/shared';
+import { openShiftSchema, closeShiftSchema, approveVarianceSchema, voidShiftSchema, reviewShiftSchema, ROLES } from '@potato-corner/shared';
 import { cashService } from './cash.service.js';
 import { CashError } from './cash.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -197,7 +197,14 @@ router.post(
       const shift = await cashService.closeShift(
         req.params.shiftId as string,
         { denominations: body.denominations, notes: body.notes, varianceExplanation: body.variance_explanation },
-        { id: req.user.user_id, role: req.user.role },
+        {
+          id: req.user.user_id,
+          role: req.user.role,
+          // Task 209.55B: only `branch` gets a branch-scoped close bypass in
+          // the service — see cash.service.ts's closeShift for why. Read
+          // straight from the JWT's own branch_ids, never request input.
+          branchIds: req.user.role === ROLES.BRANCH ? req.user.branch_ids : undefined,
+        },
         req.ip ?? null,
       );
       res.status(200).json({ data: shift, error: null, meta: null });

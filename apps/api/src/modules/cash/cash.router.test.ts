@@ -46,7 +46,7 @@ const { prisma } = await import('../../lib/prisma.js');
 const { cashService } = await import('./cash.service.js');
 const { cashRouter } = await import('./cash.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
-const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
+const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken, generateBranchToken } = await import('../../test-utils/auth-tokens.js');
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
 
@@ -508,5 +508,51 @@ describe('POST /:shiftId/close — validate middleware', () => {
 
     expect(res.status).toHaveBeenCalledWith(422);
     expect(cashService.closeShift).not.toHaveBeenCalled();
+  });
+
+  // Task 209.55B — the router must thread the branch actor's own JWT
+  // branchIds through to the service (never trust a body-supplied field);
+  // the service is mocked here, so this only proves what the router passes,
+  // not the authorization decision itself (covered in cash.service.test.ts).
+  it('passes the branch actor\'s own JWT branchIds through to cashService.closeShift for a branch-role caller', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/close');
+    const token = generateBranchToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { shiftId: SHIFT_1 },
+      body: { denominations: [{ denomination: 100, quantity: 1 }] },
+    });
+    const res = mockRes();
+    vi.mocked(cashService.closeShift).mockResolvedValue({ id: SHIFT_1, status: 'closed' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(cashService.closeShift).toHaveBeenCalledWith(
+      SHIFT_1,
+      expect.anything(),
+      expect.objectContaining({ role: 'branch', branchIds: [BRANCH_1] }),
+      null,
+    );
+  });
+
+  it('passes branchIds as undefined for a staff caller (no branch-wide bypass available)', async () => {
+    const handlers = getRouteHandlers(cashRouter, 'post', '/:shiftId/close');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({
+      ...authHeader(token),
+      params: { shiftId: SHIFT_1 },
+      body: { denominations: [{ denomination: 100, quantity: 1 }] },
+    });
+    const res = mockRes();
+    vi.mocked(cashService.closeShift).mockResolvedValue({ id: SHIFT_1, status: 'closed' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(cashService.closeShift).toHaveBeenCalledWith(
+      SHIFT_1,
+      expect.anything(),
+      expect.objectContaining({ role: 'staff', branchIds: undefined }),
+      null,
+    );
   });
 });

@@ -74,6 +74,13 @@ const { cashService } = await import('./cash.service.js');
 
 const SUPERVISOR = { id: 'supervisor-1', role: 'supervisor' };
 const SUPER_ADMIN = { id: 'admin-1', role: 'super_admin' };
+// Task 209.55B fixtures: a Branch Account's own JWT id is distinct from any
+// employee id — its authorization comes entirely from branchIds, scoped to
+// its one assigned branch (matching the jwtPayloadSchema `branch` variant's
+// `branch_ids: z.array(z.uuid()).length(1)`).
+const BRANCH = { id: 'branch-account-1', role: 'branch', branchIds: ['branch-1'] };
+const FOREIGN_BRANCH = { id: 'branch-account-2', role: 'branch', branchIds: ['branch-2'] };
+const STAFF = { id: 'employee-1', role: 'staff' };
 
 function decimal(value: number): { toNumber(): number } {
   return { toNumber: () => value };
@@ -430,6 +437,79 @@ describe('cashService.closeShift', () => {
     await expect(
       cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, SUPER_ADMIN, null),
     ).resolves.toMatchObject({ status: 'closed' });
+  });
+
+  // Task 209.55B — a Branch Account operating through a selected/embedded
+  // employee auto-opens the shift under that employee's id (openedBy !==
+  // the Branch Account's own JWT id), but still operationally owns every
+  // shift at its own branch.
+  function mockSuccessfulClose() {
+    vi.mocked(cashRepository.sumTransactionsForShift).mockResolvedValue({
+      cashSalesTotal: new Prisma.Decimal(0),
+      gcashSalesTotal: new Prisma.Decimal(0),
+      mayaSalesTotal: new Prisma.Decimal(0),
+      otherSalesTotal: new Prisma.Decimal(0),
+      grossSalesTotal: new Prisma.Decimal(0),
+      transactionCount: 0,
+    });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 0,
+      gcashSalesCount: 0,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 0,
+      totalTransactionCount: 0,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
+    vi.mocked(cashRepository.closeShift).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
+  }
+
+  it('allows a Branch Account to close a shift its own selected employee opened (Task 209.55B)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', openedBy: 'embedded-employee-1' }) as never);
+    mockSuccessfulClose();
+
+    await expect(
+      cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, BRANCH, null),
+    ).resolves.toMatchObject({ status: 'closed' });
+  });
+
+  it('rejects with 403 SHIFT_UNAUTHORIZED_CLOSE when a Branch Account attempts to close a shift belonging to a different branch (Task 209.55B)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-2', openedBy: 'foreign-employee-1' }) as never);
+
+    await expect(cashService.closeShift('shift-1', { denominations: [] }, BRANCH, null)).rejects.toMatchObject({
+      code: 'SHIFT_UNAUTHORIZED_CLOSE',
+      statusCode: 403,
+    });
+    expect(cashRepository.closeShift).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 403 SHIFT_UNAUTHORIZED_CLOSE when a foreign branch account (matching branchIds elsewhere) still does not match this shift\'s branch (Task 209.55B)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', openedBy: 'embedded-employee-1' }) as never);
+
+    await expect(cashService.closeShift('shift-1', { denominations: [] }, FOREIGN_BRANCH, null)).rejects.toMatchObject({
+      code: 'SHIFT_UNAUTHORIZED_CLOSE',
+      statusCode: 403,
+    });
+  });
+
+  it('allows staff to close a shift they opened themselves (unchanged existing behavior)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openedBy: STAFF.id }) as never);
+    mockSuccessfulClose();
+
+    await expect(
+      cashService.closeShift('shift-1', { denominations: [{ denomination: 1000, quantity: 1 }] }, STAFF, null),
+    ).resolves.toMatchObject({ status: 'closed' });
+  });
+
+  it('rejects with 403 SHIFT_UNAUTHORIZED_CLOSE when staff attempts to close another employee\'s shift (Task 209.55B)', async () => {
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ openedBy: 'someone-else' }) as never);
+
+    await expect(cashService.closeShift('shift-1', { denominations: [] }, STAFF, null)).rejects.toMatchObject({
+      code: 'SHIFT_UNAUTHORIZED_CLOSE',
+      statusCode: 403,
+    });
   });
 
   it('broadcasts SHIFT_CLOSED to the branch room and Super Admin with a payload matching shiftCloseResponseSchema', async () => {

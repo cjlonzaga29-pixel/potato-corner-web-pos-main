@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
+import { config } from '../../config/index.js';
 import { branchShiftLockId } from '../../lib/pg-lock.js';
 import { cashRepository } from './cash.repository.js';
 import {
@@ -231,9 +232,25 @@ function buildEodSummary(
  * shift dashboard can show a running sales total without waiting for close.
  * Never persisted — closeShift always recomputes and writes its own.
  */
+// Task 209.55A — cash_sales_count (and every other close-time-only count:
+// gcash/maya/other_sales_count, voided_count, refunded_count,
+// total_transaction_count, total_discount_amount, pwd_sc_transaction_count)
+// used to stay at the Shift row's DB default (0) for an active shift, even
+// though cashSalesTotal/etc. above were already correctly live-overlaid —
+// reproduced directly against GET /api/cash/current on a QA shift with real
+// completed sales: cash_sales_total=3445 but cash_sales_count=0, while the
+// separate GET /:shiftId/summary endpoint (which independently calls
+// sumTransactionCountsForShift, see getShiftSummary below) correctly showed
+// cash_sales_count=4 for the same shift at the same instant. Every caller of
+// this shift object — not just the summary endpoint — must show consistent
+// live numbers while the shift is open, so the counts are now overlaid here
+// too, the same way the totals already were.
 async function withLiveSalesTotals(shift: ShiftRow) {
   if (shift.status !== 'active') return toShiftResponse(shift);
-  const sales = await cashRepository.sumTransactionsForShift(shift.id);
+  const [sales, counts] = await Promise.all([
+    cashRepository.sumTransactionsForShift(shift.id),
+    cashRepository.sumTransactionCountsForShift(shift.id),
+  ]);
   return toShiftResponse({
     ...shift,
     cashSalesTotal: sales.cashSalesTotal,
@@ -242,6 +259,15 @@ async function withLiveSalesTotals(shift: ShiftRow) {
     otherSalesTotal: sales.otherSalesTotal,
     grossSalesTotal: sales.grossSalesTotal,
     transactionCount: sales.transactionCount,
+    cashSalesCount: counts.cashSalesCount,
+    gcashSalesCount: counts.gcashSalesCount,
+    mayaSalesCount: counts.mayaSalesCount,
+    otherSalesCount: counts.otherSalesCount,
+    voidedCount: counts.voidedCount,
+    refundedCount: counts.refundedCount,
+    totalTransactionCount: counts.totalTransactionCount,
+    totalDiscountAmount: new Prisma.Decimal(counts.totalDiscountAmount),
+    pwdScTransactionCount: counts.pwdScTransactionCount,
   });
 }
 
@@ -511,6 +537,19 @@ export const cashService = {
     // refund can't observe this shift as active and attribute itself here
     // while this close is simultaneously freezing this shift's totals
     // without that refund's amount, or vice versa.
+    // Task 209.55A — closeShift does the same class of work as checkout's
+    // createTransaction $transaction (an advisory lock plus several
+    // aggregate queries and writes against the same remote pooled Supabase
+    // DB, see posTransactionTimeoutMsSchema's doc comment), but was left on
+    // Prisma's bare 5000ms interactive-transaction default instead of this
+    // codebase's already-configured POS timeout. Reproduced directly: a real
+    // close under the QA environment's realistic DB latency threw
+    // "Transaction already closed ... 5137 ms passed" and 500'd, even though
+    // the underlying work was on track to finish (the identical retry
+    // succeeded in 6602ms, still under 30s). refundTransaction/
+    // voidTransaction already use these same options for the identical
+    // reason — this brings closeShift in line rather than inventing a new
+    // timeout value.
     const { updated, sales, counts, expectedClosingCash, cashVariance, status } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${branchShiftLockId(shift.branchId)})`;
 
@@ -587,7 +626,7 @@ export const cashService = {
       )) as ShiftRow;
 
       return { updated, sales, counts, expectedClosingCash, cashVariance, status, varianceApproved };
-    });
+    }, { maxWait: config.posTransaction.maxWaitMs, timeout: config.posTransaction.timeoutMs });
 
     const response = toShiftResponse(updated);
     const summary = buildEodSummary(updated, counts, {

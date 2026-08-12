@@ -416,6 +416,20 @@ export default function TerminalPage() {
   paymentProofPreviewUrlRef.current = paymentProofPreviewUrl;
   const discountProofPreviewUrlRef = useRef(discountProofPreviewUrl);
   discountProofPreviewUrlRef.current = discountProofPreviewUrl;
+  // Task 209.55A — synchronous double-submit guard for handleCharge. The
+  // `createTransaction.isPending` check below is NOT a reliable synchronous
+  // flag: useMutation() returns a new immutable snapshot object per render
+  // (via useSyncExternalStore), so a click handler closure captured at
+  // render N keeps reading that render's `isPending` value until React
+  // actually re-renders and rebinds a new onClick. Two native click events
+  // fired back-to-back (e.g. a fast double-click/double-tap) can both
+  // invoke the SAME pre-re-render handleCharge closure before that re-render
+  // commits, so both see isPending === false and both call mutateAsync —
+  // confirmed via the same race in the Henlin codebase (two distinct
+  // completed transactions logged 14ms apart). A ref mutates in place
+  // immediately, with no dependency on React's render/commit cycle, so it
+  // closes this window.
+  const isChargingRef = useRef(false);
   useEffect(() => {
     return () => {
       if (paymentProofPreviewUrlRef.current) URL.revokeObjectURL(paymentProofPreviewUrlRef.current);
@@ -943,11 +957,12 @@ export default function TerminalPage() {
   }
 
   async function handleCharge() {
-    // Belt-and-suspenders alongside the button's disabled={..isPending} below —
-    // isPending flips synchronously on mutate, but guards here too in case a
-    // second click event is already queued (e.g. double-tap on a touchscreen)
-    // before React re-renders the disabled state.
-    if (!branchId || createTransaction.isPending) return;
+    // Belt-and-suspenders alongside the button's disabled={..isPending} below.
+    // isChargingRef is the real synchronous guard (see comment at its
+    // declaration) — createTransaction.isPending alone does not reliably
+    // block a second click event queued before React re-renders.
+    if (!branchId || createTransaction.isPending || isChargingRef.current) return;
+    isChargingRef.current = true;
     setChargeError(null);
 
     const payload: CreateTransactionInput = {
@@ -983,18 +998,22 @@ export default function TerminalPage() {
     };
 
     if (!isOnline) {
-      // Real BIR receipt numbers are only ever assigned by the server at
-      // sync time — this provisional id just needs to be locally unique.
-      const provisionalId = await enqueueOfflineTransaction(branchId.slice(0, 8), payload);
-      clearCart();
-      resetPaymentFields();
-      // Task 209.25 — close the workspace on a confirmed outcome (queued
-      // offline or, below, a successful sync online): the cart it was
-      // reviewing no longer exists. Left open on failure (the catch branch
-      // below never calls this) so the cashier lands back in Payment with
-      // the cart and every field exactly as entered, ready to retry.
-      setIsCheckoutOpen(false);
-      setQueuedNotice(provisionalId);
+      try {
+        // Real BIR receipt numbers are only ever assigned by the server at
+        // sync time — this provisional id just needs to be locally unique.
+        const provisionalId = await enqueueOfflineTransaction(branchId.slice(0, 8), payload);
+        clearCart();
+        resetPaymentFields();
+        // Task 209.25 — close the workspace on a confirmed outcome (queued
+        // offline or, below, a successful sync online): the cart it was
+        // reviewing no longer exists. Left open on failure (the catch branch
+        // below never calls this) so the cashier lands back in Payment with
+        // the cart and every field exactly as entered, ready to retry.
+        setIsCheckoutOpen(false);
+        setQueuedNotice(provisionalId);
+      } finally {
+        isChargingRef.current = false;
+      }
       return;
     }
 
@@ -1006,6 +1025,8 @@ export default function TerminalPage() {
       setReceipt(transaction);
     } catch (error) {
       setChargeError(error instanceof Error ? error.message : 'Failed to record transaction');
+    } finally {
+      isChargingRef.current = false;
     }
   }
 
@@ -1274,8 +1295,17 @@ export default function TerminalPage() {
           regions (product grid, cart items) to actually be what scrolls,
           rather than the whole page. */}
       <div className="flex flex-1 flex-col overflow-y-auto lg:min-h-0 lg:flex-row lg:overflow-hidden">
-      {/* LEFT PANEL — product catalog. ~66% width on desktop (lg:w-2/3), independent scroll region below the toolbar. */}
-      <div className="relative flex flex-col lg:min-h-0 lg:w-2/3 lg:flex-none lg:overflow-hidden lg:border-r">
+      {/* LEFT PANEL — product catalog. Task 209.55A — was a hardcoded
+          `lg:w-2/3` (66.67%) that no longer complemented the cart panel's
+          own width (`--app-pos-cart-width`, tuned to 28%/32% by Task 209.20
+          independently of this fixed fraction), leaving an unclaimed ~5-6%
+          strip of dead space between the two panels and the viewport's
+          right edge on every desktop breakpoint (measured 44-89px,
+          scaling with viewport width) that belonged to neither panel.
+          `lg:flex-1` makes this panel claim exactly whatever the flex-none
+          cart panel doesn't, so the two always sum to the full row width
+          regardless of how the cart-width token is tuned. */}
+      <div className="relative flex flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden lg:border-r">
         <div className="space-y-2 border-b bg-card p-3">
           <h1 className="sr-only">POS Terminal — product catalog</h1>
           <SearchInput

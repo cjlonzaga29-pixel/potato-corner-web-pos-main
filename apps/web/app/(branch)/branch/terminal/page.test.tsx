@@ -1908,6 +1908,33 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
     fireEvent.click(chargeButton);
     expect(mockCreateTransactionMutateAsync).not.toHaveBeenCalled();
   });
+
+  // Task 209.55A — regression test for a real double-submit reproduced via
+  // rapid double-click/double-tap: useMutation()'s `isPending` is a snapshot
+  // from the render that bound the current onClick, so it does NOT update
+  // synchronously between two click events fired back-to-back in the same
+  // tick, before React re-renders with mockCreateTransactionIsPending's next
+  // value. Both `fireEvent.click` calls below run before either awaited
+  // handleCharge() resolves, exactly reproducing that window — this test
+  // fails without the isChargingRef synchronous guard in handleCharge.
+  it('calls the charge mutation only once when the Charge button is clicked twice in rapid succession', () => {
+    let resolveMutate: (value: unknown) => void = () => {};
+    mockCreateTransactionMutateAsync.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveMutate = resolve;
+      }),
+    );
+    render(<TerminalPage />);
+    openCheckout();
+
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    const chargeButton = screen.getByRole('button', { name: /^Charge/ });
+    fireEvent.click(chargeButton);
+    fireEvent.click(chargeButton);
+
+    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+    resolveMutate({ id: 'txn-1', receipt_number: 'BR-001' });
+  });
 });
 
 // Task 120: a `branch` (Branch Account) session sees "Who is working?"

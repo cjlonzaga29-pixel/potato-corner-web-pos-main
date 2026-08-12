@@ -331,12 +331,31 @@ describe('cashService.getCurrentShift', () => {
       grossSalesTotal: new Prisma.Decimal(0),
       transactionCount: 6,
     });
+    vi.mocked(cashRepository.sumTransactionCountsForShift).mockResolvedValue({
+      cashSalesCount: 4,
+      gcashSalesCount: 1,
+      mayaSalesCount: 0,
+      otherSalesCount: 0,
+      voidedCount: 0,
+      refundedCount: 1,
+      totalTransactionCount: 6,
+      totalDiscountAmount: 0,
+      pwdScTransactionCount: 0,
+    });
 
     const result = await cashService.getCurrentShift('branch-1');
 
     expect(result.cash_sales_total).toBe(250);
     expect(result.gcash_sales_total).toBe(75);
     expect(result.transaction_count).toBe(6);
+    // Task 209.55A regression — cash_sales_count (and the other close-time-
+    // only counts) used to stay at the Shift row's persisted 0 for an active
+    // shift even though the totals above were already live-overlaid;
+    // reproduced against a real QA shift (cash_sales_total=3445,
+    // cash_sales_count=0) via GET /api/cash/current.
+    expect(result.cash_sales_count).toBe(4);
+    expect(result.gcash_sales_count).toBe(1);
+    expect(result.refunded_count).toBe(1);
   });
 });
 

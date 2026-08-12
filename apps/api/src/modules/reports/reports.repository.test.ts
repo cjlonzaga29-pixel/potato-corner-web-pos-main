@@ -503,6 +503,124 @@ describe('reportsRepository.getInventorySummarySplit', () => {
     expect(fries?.remaining_kg).toBe(0.06); // 10 tbsp x 6g = 60g = 0.06kg
   });
 
+  // TASK 209.56D — owner-confirmed Potato Corner powder density: 1 tbsp = 0.006 kg,
+  // configured as a direct item-specific tbsp->kg InventoryItemUnitConversion
+  // (not tbsp->g like the tests above), so resolveKgFactor resolves it on the
+  // first (kg-targeted) lookup without ever consulting the g-targeted or global paths.
+  describe('TASK 209.56D — Potato Corner powder tbsp->kg conversion (1 tbsp = 0.006 kg)', () => {
+    function mockBbqTbspToKgConversion() {
+      vi.mocked(prisma.inventoryItemUnitConversion.findUnique).mockImplementation((async (args: {
+        where: { inventoryItemId_fromUnitId_toUnitId: { inventoryItemId: string; fromUnitId: string; toUnitId: string } };
+      }) => {
+        const key = args.where.inventoryItemId_fromUnitId_toUnitId;
+        if (key.inventoryItemId === 'item-bbq' && key.fromUnitId === 'unit-tbsp' && key.toUnitId === 'unit-kg') {
+          return { factor: decimal(0.006) };
+        }
+        return null;
+      }) as never);
+    }
+
+    it.each([
+      [1, 0.006],
+      [2.5, 0.015],
+      [10, 0.06],
+      [100, 0.6],
+    ])('%s tbsp converts to exactly %s kg', async (tbsp, expectedKg) => {
+      vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+        {
+          branchId: 'b1',
+          inventoryItemId: 'item-bbq',
+          quantityOnHand: decimal(tbsp),
+          branch: { name: 'SM North' },
+          inventoryItem: { name: 'BBQ Flavor Powder', baseUnit: { id: 'unit-tbsp', code: 'tbsp', dimension: 'VOLUME' } },
+        },
+      ] as never);
+      mockBbqTbspToKgConversion();
+
+      const result = await reportsRepository.getInventorySummarySplit({ branchId: 'b1', page: 1, limit: 25 });
+
+      expect(result.ingredientWeightKg[0]?.remaining_kg).toBe(expectedKg);
+    });
+
+    it('matches the Inventory Summary screenshot example exactly: BBQ Flavor Powder opening 1091.34 tbsp / consumed today 1.5 / consumed month 10.16 / remaining 1089.84, all x0.006, status converted', async () => {
+      vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+        {
+          branchId: 'b1',
+          inventoryItemId: 'item-bbq',
+          quantityOnHand: decimal(1089.84),
+          branch: { name: 'SM North' },
+          inventoryItem: { name: 'BBQ Flavor Powder', baseUnit: { id: 'unit-tbsp', code: 'tbsp', dimension: 'VOLUME' } },
+        },
+      ] as never);
+      // remaining (1089.84) - todayNet (-1.5) = opening 1091.34.
+      vi.mocked(prisma.inventoryStockMovement.groupBy)
+        .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-bbq', _sum: { quantityChange: decimal(-1.5) } }] as never)
+        .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-bbq', _sum: { quantityChange: decimal(-1.5) } }] as never)
+        .mockResolvedValueOnce([{ branchId: 'b1', inventoryItemId: 'item-bbq', _sum: { quantityChange: decimal(-10.16) } }] as never);
+      mockBbqTbspToKgConversion();
+
+      const result = await reportsRepository.getInventorySummarySplit({ branchId: 'b1', page: 1, limit: 25 });
+
+      expect(result.ingredientWeightKg[0]).toMatchObject({
+        opening_stock: 1091.34,
+        consumed_today: 1.5,
+        consumed_this_month: 10.16,
+        remaining: 1089.84,
+        opening_stock_kg: 6.54804,
+        consumed_today_kg: 0.009,
+        consumed_this_month_kg: 0.06096,
+        remaining_kg: 6.53904,
+        status: 'converted',
+      });
+    });
+
+    it('a configured powder never queries the global UnitConversion table (item-specific factor short-circuits it)', async () => {
+      vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+        {
+          branchId: 'b1',
+          inventoryItemId: 'item-bbq',
+          quantityOnHand: decimal(10),
+          branch: { name: 'SM North' },
+          inventoryItem: { name: 'BBQ Flavor Powder', baseUnit: { id: 'unit-tbsp', code: 'tbsp', dimension: 'VOLUME' } },
+        },
+      ] as never);
+      mockBbqTbspToKgConversion();
+
+      await reportsRepository.getInventorySummarySplit({ branchId: 'b1', page: 1, limit: 25 });
+
+      expect(prisma.unitConversion.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('an unrelated tbsp ingredient without its own configured conversion stays Conversion Needed even while a configured powder converts — no accidental global tbsp->kg fallback', async () => {
+      vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+        {
+          branchId: 'b1',
+          inventoryItemId: 'item-bbq',
+          quantityOnHand: decimal(10),
+          branch: { name: 'SM North' },
+          inventoryItem: { name: 'BBQ Flavor Powder', baseUnit: { id: 'unit-tbsp', code: 'tbsp', dimension: 'VOLUME' } },
+        },
+        {
+          branchId: 'b1',
+          inventoryItemId: 'item-unrelated',
+          quantityOnHand: decimal(10),
+          branch: { name: 'SM North' },
+          inventoryItem: { name: 'Some Other Tbsp Ingredient', baseUnit: { id: 'unit-tbsp', code: 'tbsp', dimension: 'VOLUME' } },
+        },
+      ] as never);
+      mockBbqTbspToKgConversion();
+
+      const result = await reportsRepository.getInventorySummarySplit({ branchId: 'b1', page: 1, limit: 25 });
+
+      const bbq = result.ingredientWeightKg.find((r) => r.ingredient_id === 'item-bbq');
+      const unrelated = result.ingredientWeightKg.find((r) => r.ingredient_id === 'item-unrelated');
+      expect(bbq?.status).toBe('converted');
+      expect(bbq?.remaining_kg).toBe(0.06);
+      expect(unrelated?.status).toBe('conversion_needed');
+      expect(unrelated?.remaining_kg).toBeNull();
+    });
+  });
+
   it('still shows an item with no resolvable conversion (never invents a factor) — native columns populated, kg columns null, status conversion_needed — and increments excludedIngredientCount (excluded from KG totals only)', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       {

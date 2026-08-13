@@ -49,7 +49,7 @@ interface CreateTransactionRow {
   subtotal: number;
   discountAmount: number;
   discountType: string | null;
-  discountRateUsed: number | null;
+  discountRateUsed?: number | null;
   discountCustomerIdEncrypted: string | null;
   discountCustomerIdHash: string | null;
   vatAmount: number;

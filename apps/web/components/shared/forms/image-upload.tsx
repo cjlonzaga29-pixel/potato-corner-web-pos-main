@@ -17,7 +17,6 @@ interface ImageUploadProps {
   required?: boolean;
 }
 
-const MAX_DIMENSION = 1280;
 const JPEG_QUALITY = 0.8;
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
@@ -28,23 +27,21 @@ function validateFile(file: File): string | null {
   return null;
 }
 
+/**
+ * Only used for the desktop getUserMedia path (handleCapturePhoto), which
+ * has no other way to turn a <video> frame into a File. Mobile/tablet native
+ * capture and gallery selection never touch a canvas or `createImageBitmap`
+ * — the captured/selected File goes straight to upload. Decoding a
+ * full-resolution phone photo into a bitmap + canvas backing store client
+ * side is what produced "Unable to complete previous operation due to low
+ * memory" on real Android devices; the server (multer + sharp, see
+ * transactions.service.ts) already resizes/compresses every proof image, so
+ * duplicating that work in the browser only cost memory for no benefit.
+ */
 function compressCanvas(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Image compression failed'))), 'image/jpeg', JPEG_QUALITY);
   });
-}
-
-/** Downscales to MAX_DIMENSION on the long edge before re-encoding as JPEG — keeps clock-in/ID/proof photos small before upload. */
-async function drawToCanvas(source: ImageBitmapSource): Promise<HTMLCanvasElement> {
-  const bitmap = await createImageBitmap(source);
-  const scale = Math.min(1, MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas 2D context unavailable');
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return canvas;
 }
 
 /**
@@ -118,7 +115,21 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     if (videoRef.current) videoRef.current.srcObject = null;
   }
 
-  useEffect(() => stopCameraStream, []);
+  // Ref (not the state value) so this unmount-only cleanup always reads the
+  // latest preview URL rather than the one from whichever render registered
+  // the effect — same pattern as terminal/page.tsx's own proof-preview
+  // cleanup. Without this, closing checkout (or navigating away) while a
+  // captured-but-not-yet-confirmed photo is showing left that object URL's
+  // backing memory unreachable until the tab itself was closed.
+  const previewUrlRef = useRef<string | null>(null);
+  previewUrlRef.current = previewUrl;
+
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    };
+  }, []);
 
   async function startCamera(deviceId?: string) {
     stopCameraStream();
@@ -149,7 +160,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
       setCameraError(
         name === 'NotAllowedError' || name === 'PermissionDeniedError'
           ? 'Camera access was blocked. Allow camera permission in your browser or upload an image instead.'
-          : 'Could not access the camera. Use Upload from Gallery instead.',
+          : 'Camera could not complete the photo capture. Please close other apps and try again, or use Upload from Gallery.',
       );
     } finally {
       setIsStartingCamera(false);
@@ -198,23 +209,27 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     await loadSelectedFile(file, 'live_capture');
   }
 
-  async function loadSelectedFile(selected: File, type: CaptureMode) {
+  /**
+   * No client-side decode/re-encode: the captured/selected File is validated
+   * and handed straight to the caller's upload pipeline (FormData -> multer
+   * -> sharp on the server). Mobile native camera photos can be large, but
+   * decoding them into an ImageBitmap + canvas here — just to shrink them
+   * before upload — is the exact client-side memory spike the server-side
+   * sharp resize already makes unnecessary.
+   */
+  function loadSelectedFile(selected: File, type: CaptureMode) {
     const validationMessage = validateFile(selected);
     if (validationMessage) {
       setValidationError(validationMessage);
       return;
     }
     setValidationError(null);
-    try {
-      const canvas = await drawToCanvas(selected);
-      const blob = await compressCanvas(canvas);
-      const file = new File([blob], selected.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' });
-      setMode(type);
-      setPendingFile(file);
-      setPreviewUrl(URL.createObjectURL(file));
-    } catch {
-      setValidationError('Could not read that image — try a different file.');
-    }
+    setPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(selected);
+    });
+    setMode(type);
+    setPendingFile(selected);
   }
 
   async function handleGalleryChange(event: ChangeEvent<HTMLInputElement>) {

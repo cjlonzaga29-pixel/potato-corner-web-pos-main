@@ -298,6 +298,109 @@ describe('ImageUpload — upload image (gallery, unchanged by the camera modal)'
   });
 });
 
+describe('ImageUpload — memory-safe mobile capture pipeline (Task: camera low-memory fix)', () => {
+  it('never touches FileReader for a mobile native-capture File — no readAsDataURL/base64 detour', async () => {
+    const readAsDataURLSpy = vi.spyOn(FileReader.prototype, 'readAsDataURL');
+    setMobileUserAgent();
+    render(<ImageUpload label="Discount ID Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(captureInput(), { target: { files: [jpegFile('camera.jpg')] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+
+    expect(readAsDataURLSpy).not.toHaveBeenCalled();
+    readAsDataURLSpy.mockRestore();
+  });
+
+  it('never decodes a mobile-captured File through createImageBitmap/canvas — the File goes straight into the upload pipeline unchanged', async () => {
+    const createImageBitmapSpy = vi.fn();
+    const original = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = createImageBitmapSpy as never;
+    const onImageSelected = vi.fn().mockResolvedValue(undefined);
+    const captured = jpegFile('camera.jpg');
+    render(<ImageUpload label="Discount ID Proof" required onImageSelected={onImageSelected} />);
+
+    fireEvent.change(captureInput(), { target: { files: [captured] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Confirm/ }));
+
+    await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(captured, 'live_capture'));
+    expect(createImageBitmapSpy).not.toHaveBeenCalled();
+    globalThis.createImageBitmap = original;
+  });
+
+  it('the object URL preview is created from the exact captured File, not a re-encoded copy', async () => {
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL');
+    const captured = jpegFile('camera.jpg');
+    render(<ImageUpload label="Discount ID Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(captureInput(), { target: { files: [captured] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+
+    expect(createObjectURLSpy).toHaveBeenCalledWith(captured);
+    createObjectURLSpy.mockRestore();
+  });
+
+  it('revokes the previous object URL when a new capture replaces a pending (unconfirmed) one', async () => {
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL');
+    render(<ImageUpload label="Discount ID Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile('first.jpg')] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    const firstUrl = screen.getByAltText('Preview').getAttribute('src');
+
+    fireEvent.click(screen.getByRole('button', { name: /Retake/ }));
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile('second.jpg')] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+
+    expect(revokeSpy).toHaveBeenCalledWith(firstUrl);
+    revokeSpy.mockRestore();
+  });
+
+  it('revokes the object URL on Remove', async () => {
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL');
+    render(<ImageUpload label="Discount ID Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile()] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    const url = screen.getByAltText('Preview').getAttribute('src');
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove/ }));
+    expect(revokeSpy).toHaveBeenCalledWith(url);
+    revokeSpy.mockRestore();
+  });
+
+  it('revokes a still-pending object URL when the component unmounts (e.g. checkout closes mid-capture)', async () => {
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL');
+    const { unmount } = render(<ImageUpload label="Discount ID Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile()] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    const url = screen.getByAltText('Preview').getAttribute('src');
+
+    unmount();
+    expect(revokeSpy).toHaveBeenCalledWith(url);
+    revokeSpy.mockRestore();
+  });
+
+  it('disables Confirm/Retake/Remove while an upload is in flight so only one upload can run at a time', async () => {
+    let resolveUpload: () => void = () => {};
+    const onImageSelected = vi.fn(() => new Promise<void>((resolve) => (resolveUpload = resolve)));
+    render(<ImageUpload label="Discount ID Proof" required onImageSelected={onImageSelected} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile()] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Uploading/ })).toBeDisabled());
+    expect(screen.getByRole('button', { name: /Retake/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Remove/ })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Uploading/ }));
+    resolveUpload();
+    await waitFor(() => expect(onImageSelected).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('ImageUpload — replace image', () => {
   it('Retake clears the preview and returns to the picker buttons', async () => {
     render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);

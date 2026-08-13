@@ -86,10 +86,18 @@ function mockGetUserMediaUnsupported() {
   Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
 }
 
+// Several tests below call setMobileUserAgent() without a matching restore
+// (previously harmless — the preview `<img>` never depended on UA — but now
+// that mobile skips the preview decode, a leaked mobile UA would silently
+// flip every later desktop-assuming test onto the mobile code path). Capture
+// the real default once and restore it after every test regardless.
+const DEFAULT_USER_AGENT = window.navigator.userAgent;
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
+  restoreDesktopUserAgent(DEFAULT_USER_AGENT);
 });
 
 describe('ImageUpload — mobile/tablet native device capture (Task 209.56E)', () => {
@@ -305,7 +313,7 @@ describe('ImageUpload — memory-safe mobile capture pipeline (Task: camera low-
     render(<ImageUpload label="Discount ID Proof" required onImageSelected={vi.fn()} />);
 
     fireEvent.change(captureInput(), { target: { files: [jpegFile('camera.jpg')] } });
-    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Photo captured')).toBeInTheDocument());
 
     expect(readAsDataURLSpy).not.toHaveBeenCalled();
     readAsDataURLSpy.mockRestore();
@@ -398,6 +406,66 @@ describe('ImageUpload — memory-safe mobile capture pipeline (Task: camera low-
     fireEvent.click(screen.getByRole('button', { name: /Uploading/ }));
     resolveUpload();
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('ImageUpload — mobile skips full-resolution original preview decode (low-memory fix)', () => {
+  it('does not create an object URL or render a preview <img> for a mobile capture — shows a placeholder instead', async () => {
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL');
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(captureInput(), { target: { files: [jpegFile('camera.jpg')] } });
+    await waitFor(() => expect(screen.getByText('Photo captured')).toBeInTheDocument());
+
+    expect(screen.queryByAltText('Preview')).not.toBeInTheDocument();
+    expect(screen.getByText(/ready to upload/)).toBeInTheDocument();
+    expect(createObjectURLSpy).not.toHaveBeenCalled();
+    createObjectURLSpy.mockRestore();
+  });
+
+  it('does not create an object URL for a mobile gallery selection either — a large gallery photo is just as decode-risky as a camera capture', async () => {
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL');
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile('gallery.jpg')] } });
+    await waitFor(() => expect(screen.getByText('Gallery upload')).toBeInTheDocument());
+
+    expect(createObjectURLSpy).not.toHaveBeenCalled();
+    createObjectURLSpy.mockRestore();
+  });
+
+  it('still confirms and uploads the exact captured File on mobile, even with no preview rendered', async () => {
+    const onImageSelected = vi.fn().mockResolvedValue(undefined);
+    setMobileUserAgent();
+    const captured = jpegFile('camera.jpg');
+    render(<ImageUpload label="Payment Proof" required onImageSelected={onImageSelected} />);
+
+    fireEvent.change(captureInput(), { target: { files: [captured] } });
+    await waitFor(() => expect(screen.getByText('Photo captured')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Confirm/ }));
+
+    await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(captured, 'live_capture'));
+  });
+
+  it('Retake returns to the picker buttons on mobile with no preview to revoke', async () => {
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(captureInput(), { target: { files: [jpegFile('camera.jpg')] } });
+    await waitFor(() => expect(screen.getByText('Photo captured')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Retake/ }));
+    expect(screen.queryByText('Photo captured')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Take Photo/ })).toBeInTheDocument();
+  });
+
+  it('desktop keeps the direct preview — the low-memory mobile path does not affect non-mobile devices', async () => {
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.change(galleryInput(), { target: { files: [jpegFile()] } });
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
   });
 });
 

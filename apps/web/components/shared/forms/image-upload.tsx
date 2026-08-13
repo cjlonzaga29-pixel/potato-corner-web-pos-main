@@ -76,7 +76,7 @@ type NavigatorWithUserAgentData = Navigator & { userAgentData?: { mobile?: boole
  * iPadOS 13+ reports as "Macintosh" but — unlike a real Mac — exposes
  * multi-point touch.
  */
-function isMobileOrTablet(): boolean {
+export function isMobileOrTablet(): boolean {
   if (typeof navigator === 'undefined') return false;
   const uaData = (navigator as NavigatorWithUserAgentData).userAgentData;
   if (uaData && typeof uaData.mobile === 'boolean') return uaData.mobile;
@@ -216,6 +216,17 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
    * decoding them into an ImageBitmap + canvas here — just to shrink them
    * before upload — is the exact client-side memory spike the server-side
    * sharp resize already makes unnecessary.
+   *
+   * That same decode still happened for the on-screen preview even after
+   * 64a8165 removed the canvas re-encode: `URL.createObjectURL` is cheap,
+   * but rendering it in an `<img>` forces the browser to decode the
+   * full-resolution original to paint it, which is what kept reproducing
+   * "Unable to complete previous operation due to low memory" on real
+   * Android devices. Mobile/tablet skips that preview entirely — the
+   * placeholder card below shows capture succeeded without ever decoding
+   * the original. Desktop's getUserMedia path already captures at a much
+   * smaller (webcam-native) resolution via compressCanvas, so it keeps the
+   * direct preview.
    */
   function loadSelectedFile(selected: File, type: CaptureMode) {
     const validationMessage = validateFile(selected);
@@ -226,7 +237,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     setValidationError(null);
     setPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(selected);
+      return isMobileOrTablet() ? null : URL.createObjectURL(selected);
     });
     setMode(type);
     setPendingFile(selected);
@@ -285,7 +296,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
 
-      {!previewUrl && (
+      {!pendingFile && (
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="button" variant="outline" className="touch-target flex-1" onClick={handleTakePhotoClick}>
             <Camera className="mr-2 h-4 w-4" />
@@ -388,19 +399,27 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         </DialogContent>
       </Dialog>
 
-      {previewUrl && (
+      {pendingFile && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-destructive' : 'bg-info')} />
             {mode === 'live_capture' ? 'Photo captured' : 'Gallery upload'}
           </div>
-          {/* Compact thumbnail only — the live camera preview above (if any)
-              is torn down before this state renders. Capped via the same
-              density-aware token the old live preview used, kept here so
-              this pending-confirm state can never grow past what a checkout
-              footer can spare at any density tier. */}
-          {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}
-          <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
+          {previewUrl ? (
+            /* Compact thumbnail only — the live camera preview above (if any)
+               is torn down before this state renders. Capped via the same
+               density-aware token the old live preview used, kept here so
+               this pending-confirm state can never grow past what a checkout
+               footer can spare at any density tier. */
+            /* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */
+            <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
+          ) : (
+            // Mobile/tablet: no preview image — see loadSelectedFile above for why.
+            <div className="app-pos-proof-preview-height flex w-full flex-col items-center justify-center gap-1.5 rounded-md border border-dashed text-xs text-muted-foreground">
+              <ImageIcon className="h-6 w-6" aria-hidden="true" />
+              <span>Photo captured — ready to upload ({(pendingFile.size / (1024 * 1024)).toFixed(1)} MB)</span>
+            </div>
+          )}
 
           {uploadError && (
             <Alert variant="destructive" className="px-3 py-2">

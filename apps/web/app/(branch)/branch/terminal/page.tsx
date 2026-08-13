@@ -27,6 +27,7 @@ import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { SearchInput } from '@/components/shared/forms/search-input';
+import { isMobileOrTablet } from '@/components/shared/forms/image-upload';
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
@@ -969,7 +970,10 @@ export default function TerminalPage() {
     setPaymentProofType(result.payment_proof_type);
     setPaymentProofPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+      // Mobile: same low-memory decode risk as ImageUpload's own pre-confirm
+      // preview (image-upload.tsx) — skip it here too so the "View" dialog
+      // never has to decode the full-resolution original on a phone.
+      return isMobileOrTablet() ? null : URL.createObjectURL(file);
     });
   }
 
@@ -990,7 +994,7 @@ export default function TerminalPage() {
     setDiscountProofType(result.discount_proof_type);
     setDiscountProofPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+      return isMobileOrTablet() ? null : URL.createObjectURL(file);
     });
   }
 

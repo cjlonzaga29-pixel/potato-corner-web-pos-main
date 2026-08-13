@@ -177,6 +177,26 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   },
 }));
 
+// Task 209.xx — Discount Settings. Defaults to the same 20%/20%/20%/enabled
+// values every pre-existing test's "PWD (20%)"/"Senior Citizen (20%)"/
+// "Employee (20%)" text expectations already assume; this file mocks every
+// query hook it touches rather than rendering inside a real
+// QueryClientProvider, so useDiscountPolicy must be mocked too or the
+// unmocked real useQuery call would throw ("No QueryClient set").
+vi.mock('@/hooks/queries/use-settings', () => ({
+  useDiscountPolicy: () => ({
+    data: {
+      pwd: { percentage: 20, isEnabled: true },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    },
+    isLoading: false,
+  }),
+}));
+
 vi.mock('@/lib/offline/cache', () => ({
   cacheProductCatalog: vi.fn(),
   getCachedProductCatalog: vi.fn().mockResolvedValue([]),

@@ -36,6 +36,7 @@ import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof } from '@/hooks/queries/use-transactions';
+import { useDiscountPolicy } from '@/hooks/queries/use-settings';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
@@ -177,16 +178,27 @@ function readinessMessage(variant: PosCatalogProduct['variants'][number]): strin
   }
 }
 
+/** Live-configured percentages (Discount Settings), or the same 20/20/20 defaults the server falls back to before any supervisor has saved a change — see settings.types.ts DEFAULT_DISCOUNT_POLICY. */
+interface PreviewDiscountRates {
+  pwd: number;
+  senior_citizen: number;
+  employee: number;
+}
+const DEFAULT_PREVIEW_DISCOUNT_RATES: PreviewDiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
+
 /**
  * Client-side preview only — mirrors transactions.service's computeAmounts
  * closely enough to show the cashier a live total, but the server always
  * recomputes and persists the authoritative figures. Never trust this for
- * the actual charge.
+ * the actual charge. discountRates comes from useDiscountPolicy() so this
+ * preview matches whatever the server will actually charge, even after a
+ * supervisor changes a rate mid-shift.
  */
 function previewAmounts(
   cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null }[],
   discountType: DiscountChoice,
   promoAmount: number,
+  discountRates: PreviewDiscountRates = DEFAULT_PREVIEW_DISCOUNT_RATES,
 ) {
   const subtotal = round2(cartLines.reduce((sum, l) => sum + l.lineTotal, 0));
   const vatableSubtotal = round2(
@@ -199,13 +211,14 @@ function previewAmounts(
   const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
 
   if (discountType === 'pwd' || discountType === 'senior_citizen') {
+    const ratePercent = discountType === 'pwd' ? discountRates.pwd : discountRates.senior_citizen;
     const vatableBase = vatableSubtotal / 1.12;
-    const discountAmount = round2(vatableBase * 0.2);
+    const discountAmount = round2(vatableBase * (ratePercent / 100));
     const discountedBase = round2(vatableBase - discountAmount);
     return { discountAmount, vatAmount: 0, totalAmount: round2(discountedBase + nonVatableSubtotal) };
   }
   let discountAmount = 0;
-  if (discountType === 'employee') discountAmount = round2(vatableSubtotal * 0.2);
+  if (discountType === 'employee') discountAmount = round2(vatableSubtotal * (discountRates.employee / 100));
   else if (discountType === 'promotional') discountAmount = round2(promoAmount || 0);
   const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
   const vatAmount = round2(vatableAfterDiscount * (12 / 112));
@@ -220,6 +233,32 @@ export default function TerminalPage() {
   // Employee's (a Branch Account picking a Staff employee to run the
   // terminal must still see this; a genuine `staff` login must not).
   const canManageVoidRefund = user?.role !== undefined && VOID_REFUND_ENTRY_ROLES.includes(user.role);
+
+  // Task 209.xx — POS discount dropdown/preview source of truth. The server
+  // independently re-resolves this at checkout time regardless of what's
+  // rendered here (transactions.service.ts createTransaction) — this is
+  // display/preview only, never trusted for the actual charge.
+  const { data: discountPolicy } = useDiscountPolicy();
+  const discountRatesPreview: PreviewDiscountRates = useMemo(
+    () => ({
+      pwd: discountPolicy?.pwd.percentage ?? DEFAULT_PREVIEW_DISCOUNT_RATES.pwd,
+      senior_citizen: discountPolicy?.senior_citizen.percentage ?? DEFAULT_PREVIEW_DISCOUNT_RATES.senior_citizen,
+      employee: discountPolicy?.employee.percentage ?? DEFAULT_PREVIEW_DISCOUNT_RATES.employee,
+    }),
+    [discountPolicy],
+  );
+  const discountLabels = useMemo(
+    () => ({
+      pwd: `PWD (${discountRatesPreview.pwd}%)`,
+      senior_citizen: `Senior Citizen (${discountRatesPreview.senior_citizen}%)`,
+      employee: `Employee (${discountRatesPreview.employee}%)`,
+    }),
+    [discountRatesPreview],
+  );
+  const disabledDiscountTypes = useMemo<DiscountChoice[]>(() => {
+    if (!discountPolicy) return [];
+    return (['pwd', 'senior_citizen', 'employee'] as const).filter((type) => !discountPolicy[type].isEnabled);
+  }, [discountPolicy]);
 
   // STATE 1 — "Who is working?" (Branch Employee Authorization). Only a
   // `branch` (Branch Account) session ever sees this: a `staff` login is
@@ -878,8 +917,8 @@ export default function TerminalPage() {
   // even though its only real inputs are cartLines, which are already memoized.
   const subtotal = useMemo(() => round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0)), [cartLines]);
   const { discountAmount, vatAmount, totalAmount } = useMemo(
-    () => previewAmounts(cartLines, discountType, Number(promoAmount)),
-    [cartLines, discountType, promoAmount],
+    () => previewAmounts(cartLines, discountType, Number(promoAmount), discountRatesPreview),
+    [cartLines, discountType, promoAmount, discountRatesPreview],
   );
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
@@ -1256,6 +1295,8 @@ export default function TerminalPage() {
       totalAmount={totalAmount}
       discountType={discountType}
       onDiscountTypeChange={setDiscountType}
+      discountLabels={discountLabels}
+      disabledDiscountTypes={disabledDiscountTypes}
       discountIdReference={discountIdReference}
       onDiscountIdReferenceChange={setDiscountIdReference}
       discountProofKey={discountProofKey}

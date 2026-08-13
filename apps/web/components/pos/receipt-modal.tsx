@@ -20,6 +20,27 @@ const PAYMENT_METHOD_LABEL: Record<TransactionResponse['payment_method'], string
   other: 'Other',
 };
 
+const DISCOUNT_TYPE_LABEL: Record<string, string> = {
+  pwd: 'PWD',
+  senior_citizen: 'Senior Citizen',
+  employee: 'Employee',
+  manager_override: 'Manager Override',
+  promotional: 'Promotional',
+};
+
+/**
+ * Task 209.xx — always the rate FROZEN on this transaction (discount_rate_used),
+ * never today's Discount Settings value, so an old receipt keeps showing the
+ * percentage that was actually charged even after a supervisor changes the
+ * configured rate.
+ */
+function discountLabel(transaction: TransactionResponse): string {
+  const type = transaction.discount_type;
+  if (!type) return 'Discount';
+  const name = DISCOUNT_TYPE_LABEL[type] ?? type;
+  return transaction.discount_rate_used != null ? `${name} Discount (${transaction.discount_rate_used}%)` : `${name} Discount`;
+}
+
 interface ReceiptModalProps {
   transaction: TransactionResponse | null;
   onClose: () => void;
@@ -114,7 +135,7 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
             </div>
             {transaction.discount_amount > 0 && (
               <div className="flex justify-between">
-                <span>Discount {transaction.discount_type ? `(${transaction.discount_type})` : ''}</span>
+                <span>{discountLabel(transaction)}</span>
                 <span className="tabular-nums">-{formatPeso(transaction.discount_amount)}</span>
               </div>
             )}

@@ -206,6 +206,9 @@ export type ReceiptConfigResponse = z.infer<typeof schemas.receiptConfigResponse
 export type PaymentMethodConfig = z.infer<typeof schemas.paymentMethodConfigSchema>;
 export type UpdatePaymentMethodConfigInput = z.infer<typeof schemas.updatePaymentMethodConfigSchema>;
 export type PaymentMethodConfigResponse = z.infer<typeof schemas.paymentMethodConfigResponseSchema>;
+export type DiscountPolicy = z.infer<typeof schemas.discountPolicySchema>;
+export type UpdateDiscountPolicyInput = z.infer<typeof schemas.updateDiscountPolicySchema>;
+export type DiscountPolicyResponse = z.infer<typeof schemas.discountPolicyResponseSchema>;
 
 // CR-008 — Universal Product Catalog
 export type CreateProductCategoryInput = z.infer<typeof schemas.createProductCategorySchema>;

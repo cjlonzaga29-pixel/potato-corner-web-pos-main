@@ -7,8 +7,9 @@ import { SecurityPolicySection } from '@/components/settings/security-policy-sec
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
 import { ReceiptTemplatesSection } from '@/components/settings/receipt-templates-section';
 import { PaymentMethodsSection } from '@/components/settings/payment-methods-section';
+import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
 
-const TABS = ['security', 'notifications', 'receipts', 'payments'] as const;
+const TABS = ['security', 'notifications', 'receipts', 'payments', 'discounts'] as const;
 type TabValue = (typeof TABS)[number];
 const DEFAULT_TAB: TabValue = 'security';
 
@@ -43,6 +44,7 @@ function SettingsPageContent() {
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="receipts">Receipt Templates</TabsTrigger>
           <TabsTrigger value="payments">Payment Methods</TabsTrigger>
+          <TabsTrigger value="discounts">Discount Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="security">
@@ -59,6 +61,10 @@ function SettingsPageContent() {
 
         <TabsContent value="payments">
           <PaymentMethodsSection />
+        </TabsContent>
+
+        <TabsContent value="discounts">
+          <DiscountSettingsSection />
         </TabsContent>
       </Tabs>
     </div>

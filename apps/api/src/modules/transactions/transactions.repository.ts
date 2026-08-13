@@ -49,6 +49,7 @@ interface CreateTransactionRow {
   subtotal: number;
   discountAmount: number;
   discountType: string | null;
+  discountRateUsed: number | null;
   discountCustomerIdEncrypted: string | null;
   discountCustomerIdHash: string | null;
   vatAmount: number;
@@ -143,6 +144,7 @@ export const transactionsRepository = {
           cashierId: true,
           discountType: true,
           discountAmount: true,
+          discountRateUsed: true,
           discountCustomerIdEncrypted: true,
           discountCustomerIdHash: true,
           // Task 209.16 — existence flag + capture mode for the Discount
@@ -278,6 +280,7 @@ export const transactionsRepository = {
           subtotal: data.subtotal,
           discountAmount: data.discountAmount,
           discountType: data.discountType,
+          discountRateUsed: data.discountRateUsed,
           discountCustomerIdEncrypted: data.discountCustomerIdEncrypted,
           discountCustomerIdHash: data.discountCustomerIdHash,
           vatAmount: data.vatAmount,

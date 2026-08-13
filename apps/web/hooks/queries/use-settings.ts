@@ -7,10 +7,12 @@ import type {
   PaymentMethodConfigResponse,
   ReceiptConfigResponse,
   SecurityPolicy,
+  DiscountPolicyResponse,
   UpdateNotificationPreferencesInput,
   UpdatePaymentMethodConfigInput,
   UpdateReceiptConfigInput,
   UpdateSecurityPolicyInput,
+  UpdateDiscountPolicyInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
@@ -49,6 +51,43 @@ export function useUpdateSecurityPolicy() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'security'] });
       toast.success('Security policy updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * Task 209.xx — the centrally configured PWD/Senior Citizen/Employee/
+ * Promotional percentages. Read by both the POS dropdown (terminal/page.tsx,
+ * to render "PWD (10%)" etc.) and Discount Settings (readable by every
+ * role — cashier/staff/branch are READ ONLY, enforced server-side by the
+ * PUT route's adminOrSupervisor gate, not by hiding this query).
+ */
+export function useDiscountPolicy() {
+  const { accessToken, isLoading } = useAuth();
+
+  return useQuery({
+    queryKey: ['settings', 'discount-policy'],
+    queryFn: async () => {
+      const response = await apiClient<DiscountPolicyResponse>('/api/settings/discount-policy');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load discount settings'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading,
+  });
+}
+
+export function useUpdateDiscountPolicy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateDiscountPolicyInput) => {
+      const response = await apiClient<DiscountPolicyResponse>('/api/settings/discount-policy', { method: 'PUT', body: JSON.stringify(input) });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update discount settings'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-policy'] });
+      toast.success('Discount settings updated');
     },
     onError: (error: Error) => toast.error(error.message),
   });

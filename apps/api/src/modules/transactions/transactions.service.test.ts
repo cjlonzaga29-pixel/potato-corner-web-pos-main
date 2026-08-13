@@ -191,6 +191,26 @@ vi.mock('sharp', () => ({
   })),
 }));
 
+// Task 209.xx — Discount Settings. Defaults to the exact 20%/20%/20%/enabled
+// values every pre-existing PWD/Senior/Employee discount test in this file
+// already assumes (the same rates that used to be the hardcoded
+// STATUTORY_DISCOUNT_RATE/EMPLOYEE_DISCOUNT_RATE constants) — mockResolvedValue
+// survives vi.clearAllMocks() (see beforeEach below), so every test keeps
+// this default unless it explicitly overrides getDiscountPolicy itself (see
+// the "configurable discount rates" describe block).
+vi.mock('../settings/settings.service.js', () => ({
+  settingsService: {
+    getDiscountPolicy: vi.fn().mockResolvedValue({
+      pwd: { percentage: 20, isEnabled: true },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    }),
+  },
+}));
+
 const { transactionsRepository } = await import('./transactions.repository.js');
 const { nextCounterValue } = await import('../../lib/id-counter.js');
 const { productComponentsRepository } = await import('../product-components/product-components.repository.js');
@@ -208,6 +228,7 @@ const { config } = await import('../../config/index.js');
 const mutableConfig = config as { shadowBomDeductionEnabled: boolean; shadowBomDeductionBranchIds: string[] };
 const { shadowBomDeductionService, computeBomDeduction } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
+const { settingsService } = await import('../settings/settings.service.js');
 const { transactionsService } = await import('./transactions.service.js');
 
 function decimal(value: number) {
@@ -762,6 +783,120 @@ describe('transactionsService.createTransaction — discount proof linking', () 
 
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
+      expect.anything(),
+    );
+  });
+});
+
+// Task 209.xx — centrally configurable PWD/Senior Citizen/Employee discount
+// percentages (Discount Settings). Server-authoritative: the client sends
+// only the discount TYPE (createTransactionSchema has no percentage field),
+// and createTransaction always resolves the actual rate from
+// settingsService.getDiscountPolicy() at the moment of creation, never from
+// anything the client sent.
+describe('transactionsService.createTransaction — configurable discount rates', () => {
+  it('uses the configured PWD percentage (10%, not the old hardcoded 20%) and snapshots it as discountRateUsed', async () => {
+    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
+      pwd: { percentage: 10, isEnabled: true },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: '2026-08-13T00:00:00.000Z',
+      updatedBy: 'supervisor-1',
+    } as never);
+
+    await transactionsService.createTransaction({ ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-1' }, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountAmount: 8.93, discountRateUsed: 10 }),
+      expect.anything(),
+    );
+  });
+
+  it('a cashier/client cannot override the discount amount — a tampered discount_amount in the payload is ignored, server recomputes from the configured rate', async () => {
+    await transactionsService.createTransaction(
+      { ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-1', discountAmount: 999999 },
+      null,
+    );
+
+    const call = vi.mocked(transactionsRepository.createTransaction).mock.calls[0]?.[0];
+    expect(call?.discountAmount).not.toBe(999999);
+    expect(call?.discountAmount).toBeLessThan(100); // sane PWD discount off a ₱100 sale, nowhere near the tampered value
+  });
+
+  it('rejects PWD when a supervisor has disabled it in Discount Settings, before ever computing an amount', async () => {
+    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
+      pwd: { percentage: 20, isEnabled: false },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    } as never);
+
+    await expect(
+      transactionsService.createTransaction({ ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-1' }, null),
+    ).rejects.toMatchObject({ code: 'DISCOUNT_TYPE_DISABLED', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('Employee\'s configured rate is independent of PWD/Senior — changing PWD never changes what Employee charges', async () => {
+    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
+      pwd: { percentage: 5, isEnabled: true },
+      senior_citizen: { percentage: 5, isEnabled: true },
+      employee: { percentage: 30, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    } as never);
+
+    await transactionsService.createTransaction({ ...baseInput, discountType: 'employee' }, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountRateUsed: 30 }),
+      expect.anything(),
+    );
+  });
+
+  it('a no-discount sale never calls getDiscountPolicy and persists discountRateUsed: null', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(settingsService.getDiscountPolicy).not.toHaveBeenCalled();
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountRateUsed: null }),
+      expect.anything(),
+    );
+  });
+
+  // Fast-release regression #6 — createTransactionSchema has no percentage
+  // field at all, so there is no key a client could tamper to smuggle in a
+  // rate. This proves an extra, out-of-schema field on the service-layer
+  // input (bypassing the router's zod validate() entirely, as if someone
+  // called the service directly) still has zero effect: the rate always
+  // comes from settingsService.getDiscountPolicy(), never from the payload.
+  it("a client-supplied discountRateUsed/percentage on the input is not a real field and cannot influence the persisted rate", async () => {
+    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
+      pwd: { percentage: 10, isEnabled: true },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    } as never);
+
+    const tamperedPayload = {
+      ...baseInput,
+      discountType: 'pwd',
+      discountIdReference: 'PWD-1',
+      discountRateUsed: 99,
+      percentage: 99,
+      discountPercentage: 99,
+    };
+
+    await transactionsService.createTransaction(tamperedPayload as unknown as Parameters<typeof transactionsService.createTransaction>[0], null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountRateUsed: 10 }),
       expect.anything(),
     );
   });
@@ -1694,6 +1829,41 @@ describe('transactionsService.refundTransaction', () => {
     ).rejects.toMatchObject({ code: 'TRANSACTION_ALREADY_VOIDED' });
   });
 
+  // Fast-release regression #1 — a refund must reverse the ORIGINAL sale's
+  // snapshotted rate, never recompute from whatever Discount Settings says
+  // today. refundTransaction has no rate-resolution step at all (it only
+  // flips status/refundedAt/refundedById), so this pins that behavior: the
+  // rate the sale was made at (15%, set when the transaction was created)
+  // survives untouched even though Discount Settings currently says 20% for
+  // that same discount type.
+  it("preserves the original sale's discountRateUsed on refund, even though Discount Settings currently holds a different PWD rate", async () => {
+    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
+      pwd: { percentage: 20, isEnabled: true },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    } as never);
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ discountType: 'pwd', discountRateUsed: decimal(15) }) as never,
+    );
+    vi.mocked(transactionsRepository.refundTransaction).mockResolvedValue(
+      transactionRow({
+        discountType: 'pwd',
+        discountRateUsed: decimal(15),
+        status: 'refunded',
+        refundedById: 'admin-1',
+        refundReason: 'defective',
+      }) as never,
+    );
+
+    const result = await transactionsService.refundTransaction('txn-1', 'defective', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(result.discount_rate_used).toBe(15);
+    expect(settingsService.getDiscountPolicy).not.toHaveBeenCalled();
+  });
+
   it('broadcasts TRANSACTION_REFUNDED to the branch room and Super Admin with the refund payload', async () => {
     const branchId = randomUUID();
     vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ branchId }) as never);
@@ -2207,6 +2377,44 @@ describe('transactionsService.syncOfflineTransactions', () => {
     // Only one lookup — the pre-insert fast-path check. No second lookup for
     // a "winner", since this was never recognized as the offline-identity conflict.
     expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledTimes(1);
+  });
+
+  // Fast-release regression #2 — an offline device queues a discountType and
+  // a client-computed discountAmount (the offline UI has to show something
+  // before it can reach the server), but syncOfflineTransactions replays
+  // each item through the exact same transactionsService.createTransaction
+  // call path as an online sale, with no offline-specific rate logic. So the
+  // rate actually persisted must come from settingsService.getDiscountPolicy
+  // at SYNC time, not from anything the offline client queued — proven here
+  // by making the client's queued discountAmount (computed against an old
+  // 20% it saw before going offline) disagree with the 12% the server now
+  // has configured, and asserting the server's 12% wins.
+  it('resolves the server-configured discount rate at sync time, ignoring whatever rate the offline client assumed while queued', async () => {
+    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
+      pwd: { percentage: 12, isEnabled: true },
+      senior_citizen: { percentage: 20, isEnabled: true },
+      employee: { percentage: 20, isEnabled: true },
+      promotional: { percentage: 20, isEnabled: true },
+      updatedAt: null,
+      updatedBy: null,
+    } as never);
+    const queuedWhileOffline = offlineItem({
+      offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0200',
+      discountType: 'pwd',
+      discountIdReference: 'PWD-1',
+      discountAmount: 20, // stale client-side guess from the old 20% rate — must be discarded
+    });
+
+    await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [queuedWhileOffline] },
+      null,
+    );
+
+    expect(settingsService.getDiscountPolicy).toHaveBeenCalled();
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ discountRateUsed: 12 }),
+      expect.anything(),
+    );
   });
 });
 

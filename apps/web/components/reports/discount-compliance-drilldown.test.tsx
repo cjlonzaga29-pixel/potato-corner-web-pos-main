@@ -23,6 +23,7 @@ const PWD_ROW = {
   cashierId: 'cashier-1',
   discountType: 'pwd',
   discountAmount: 20,
+  discountRateUsed: 20,
   discountCustomerId: 'PWD-12345',
   discountCustomerIdHash: 'hashed(PWD-12345)',
   hasDiscountProof: true,
@@ -72,6 +73,21 @@ describe('DiscountComplianceDrilldown', () => {
     );
     expect(screen.getByText('PC-GMA-001-20260731-000001')).toBeInTheDocument();
     expect(screen.getByText('PC-GMA-001-20260731-000002')).toBeInTheDocument();
+  });
+
+  it('shows the rate actually used on each transaction, not a live-recomputed one (Task 209.xx)', () => {
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('20%')).toHaveLength(2);
   });
 
   it('resolves the cashier name from the employees lookup', () => {
@@ -219,7 +235,8 @@ describe('DiscountComplianceDrilldown', () => {
       />,
     );
     expect(screen.getByText('PC-GMA-001-20260601-000009')).toBeInTheDocument();
-    expect(screen.getAllByText('—')).toHaveLength(2); // discount type dash + customer id/reference dash
+    // discount type dash + discount rate used dash (Task 209.xx) + customer id/reference dash
+    expect(screen.getAllByText('—')).toHaveLength(3);
     expect(screen.getByText('No')).toBeInTheDocument();
   });
 });

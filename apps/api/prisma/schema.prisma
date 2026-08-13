@@ -1494,6 +1494,13 @@ model Transaction {
   paymentProofVerifiedAt      DateTime?                @map("payment_proof_verified_at")
   paymentProofVerifiedById    String?                  @map("payment_proof_verified_by_id")
   discountType                String?                  @map("discount_type")
+  // Task 209.xx — the DiscountSettings percentage actually in effect at the
+  // moment this transaction was created (transactions.service.ts
+  // computeAmounts), frozen forever. Whatever a supervisor later changes the
+  // configured PWD/Senior/Employee/Promotional rate to must never alter what
+  // this row reports on receipts/reports. Null for sales with no discount
+  // applied and for legacy rows predating this column.
+  discountRateUsed            Decimal?                 @map("discount_rate_used") @db.Decimal(5, 2)
   discountCustomerIdEncrypted String?                  @map("discount_customer_id_encrypted")
   // Deterministic HMAC-SHA256 of the same plaintext ID stored above —
   // discountCustomerIdEncrypted uses a random IV per encryption (see

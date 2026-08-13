@@ -158,6 +158,7 @@ export const discountAuditTransactionRowSchema = z.object({
   cashierId: z.uuid(),
   discountType: z.enum(discountTypeValues).nullable(),
   discountAmount: z.number(),
+  discountRateUsed: z.number().nullable().optional(),
   discountCustomerId: z.string().nullable(),
   discountCustomerIdHash: z.string().nullable(),
   hasDiscountProof: z.boolean(),
@@ -215,6 +216,12 @@ export const transactionResponseSchema = z.object({
   subtotal: z.number(),
   discount_amount: z.number(),
   discount_type: z.enum(discountTypeValues).nullable(),
+  // Task 209.xx — the configured discount percentage actually applied at
+  // transaction-creation time, frozen forever on the row (transactions.service.ts
+  // computeAmounts). Never recomputed from today's Discount Settings —
+  // historical receipts/reports must keep showing the rate that was live
+  // when the sale happened, not whatever a supervisor has since changed it to.
+  discount_rate_used: z.number().nullable().optional(),
   vat_amount: z.number(),
   vat_exempt_amount: z.number(),
   total_amount: z.number(),

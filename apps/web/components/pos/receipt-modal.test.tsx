@@ -28,6 +28,7 @@ function transaction(overrides: Partial<TransactionResponse> = {}): TransactionR
     subtotal: 195,
     discount_amount: 20,
     discount_type: 'senior_citizen',
+    discount_rate_used: 20,
     vat_amount: 18.75,
     vat_exempt_amount: 0,
     total_amount: 175,
@@ -118,7 +119,9 @@ describe('ReceiptModal', () => {
     // totals block
     expect(screen.getByText('Subtotal')).toBeInTheDocument();
     expect(screen.getByText('₱195.00')).toBeInTheDocument();
-    expect(screen.getByText(/Discount \(senior_citizen\)/)).toBeInTheDocument();
+    // Task 209.xx — shows the human-readable type name + the rate frozen on
+    // this transaction (discount_rate_used), never a raw "senior_citizen" string.
+    expect(screen.getByText('Senior Citizen Discount (20%)')).toBeInTheDocument();
     expect(screen.getByText('-₱20.00')).toBeInTheDocument();
     expect(screen.getByText('VAT (12%)')).toBeInTheDocument();
     expect(screen.getByText('₱18.75')).toBeInTheDocument();

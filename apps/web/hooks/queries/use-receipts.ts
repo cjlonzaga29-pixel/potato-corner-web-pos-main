@@ -27,6 +27,7 @@ export interface PublicReceipt {
   subtotal: number;
   discount_amount: number;
   discount_type: string | null;
+  discount_rate_used?: number | null;
   vat_amount: number;
   total_amount: number;
   payment_method: string;

@@ -63,3 +63,43 @@ export const paymentMethodConfigResponseSchema = paymentMethodConfigSchema.exten
   branchId: z.uuid(),
   updatedAt: z.iso.datetime(),
 });
+
+/**
+ * Task 209.xx — centrally configurable percentage for the four EXISTING POS
+ * discount types (PWD, Senior Citizen, Employee, Promotional). Stored as
+ * SystemSetting(key='discount_policy').value, same KV pattern as
+ * securityPolicySchema above. This governs only the *rate* each type
+ * applies — it does not add a new discount type or a new discount engine.
+ * See transactions.service.ts computeAmounts for how PWD/Senior Citizen's
+ * statutory VAT-exemption formula stays separate from this configurable
+ * percentage.
+ */
+export const CONFIGURABLE_DISCOUNT_TYPES = ['pwd', 'senior_citizen', 'employee', 'promotional'] as const;
+export type ConfigurableDiscountType = (typeof CONFIGURABLE_DISCOUNT_TYPES)[number];
+
+const discountRateEntrySchema = z.object({
+  percentage: z.number().finite().min(0).max(100),
+  isEnabled: z.boolean(),
+});
+
+export const discountPolicySchema = z.object({
+  pwd: discountRateEntrySchema,
+  senior_citizen: discountRateEntrySchema,
+  employee: discountRateEntrySchema,
+  promotional: discountRateEntrySchema,
+});
+
+/** Partial per-type PUT — only the provided discount type(s) are changed, same precedent as updatePaymentMethodConfigSchema. */
+export const updateDiscountPolicySchema = z
+  .object({
+    pwd: discountRateEntrySchema.partial().optional(),
+    senior_citizen: discountRateEntrySchema.partial().optional(),
+    employee: discountRateEntrySchema.partial().optional(),
+    promotional: discountRateEntrySchema.partial().optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, { message: 'At least one discount type must be provided' });
+
+export const discountPolicyResponseSchema = discountPolicySchema.extend({
+  updatedAt: z.iso.datetime().nullable(),
+  updatedBy: z.string().nullable(),
+});

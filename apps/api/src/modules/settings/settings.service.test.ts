@@ -334,3 +334,110 @@ describe('settingsService.updatePaymentMethodConfig', () => {
     ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
   });
 });
+
+// Task 209.xx — centrally configurable PWD/Senior Citizen/Employee/Promotional discount percentages.
+describe('settingsService.getDiscountPolicy', () => {
+  it('returns the pre-settings-model defaults (20%/20%/20%, all enabled) when no discount_policy row exists', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+
+    const policy = await settingsService.getDiscountPolicy();
+
+    expect(policy.pwd).toEqual({ percentage: 20, isEnabled: true });
+    expect(policy.senior_citizen).toEqual({ percentage: 20, isEnabled: true });
+    expect(policy.employee).toEqual({ percentage: 20, isEnabled: true });
+    expect(policy.updatedAt).toBeNull();
+    expect(policy.updatedBy).toBeNull();
+  });
+
+  it('returns the persisted value once a supervisor/admin has saved one', async () => {
+    const savedAt = new Date('2026-08-01T00:00:00.000Z');
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'discount_policy',
+      value: {
+        pwd: { percentage: 10, isEnabled: true },
+        senior_citizen: { percentage: 15, isEnabled: true },
+        employee: { percentage: 20, isEnabled: false },
+        promotional: { percentage: 20, isEnabled: true },
+      },
+      description: null,
+      updatedBy: 'supervisor-1',
+      createdAt: savedAt,
+      updatedAt: savedAt,
+    } as never);
+
+    const policy = await settingsService.getDiscountPolicy();
+
+    expect(policy.pwd.percentage).toBe(10);
+    expect(policy.senior_citizen.percentage).toBe(15);
+    expect(policy.employee.isEnabled).toBe(false);
+    expect(policy.updatedBy).toBe('supervisor-1');
+    expect(policy.updatedAt).toBe(savedAt.toISOString());
+  });
+});
+
+describe('settingsService.updateDiscountPolicy', () => {
+  it('merges a partial update (only PWD provided) over the existing/default policy and records an audit log', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'discount_policy',
+      value: {},
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: new Date(),
+      updatedAt: new Date('2026-08-13T00:00:00.000Z'),
+    } as never);
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+
+    const result = await settingsService.updateDiscountPolicy({ pwd: { percentage: 10 } }, ACTOR, null);
+
+    expect(result.pwd).toEqual({ percentage: 10, isEnabled: true });
+    // Untouched types keep their (default, since nothing was persisted yet) values — a partial PUT never resets what it didn't mention.
+    expect(result.senior_citizen).toEqual({ percentage: 20, isEnabled: true });
+    expect(settingsRepository.upsertSystemSetting).toHaveBeenCalledWith(
+      'discount_policy',
+      expect.objectContaining({ pwd: { percentage: 10, isEnabled: true } }),
+      'admin-1',
+      expect.any(String),
+    );
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'DISCOUNT_POLICY_UPDATED',
+        entityType: 'system_setting',
+        entityId: 'discount_policy',
+        actorId: 'admin-1',
+        beforeState: expect.objectContaining({ pwd: { percentage: 20, isEnabled: true } }),
+        afterState: expect.objectContaining({ pwd: { percentage: 10, isEnabled: true } }),
+      }),
+    );
+  });
+
+  it('a Supervisor may update the policy (adminOrSupervisor is enforced at the router, not the service, but the service must not itself reject a supervisor actor)', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'discount_policy',
+      value: {},
+      description: null,
+      updatedBy: 'supervisor-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+
+    const result = await settingsService.updateDiscountPolicy({ senior_citizen: { percentage: 15 } }, SUPERVISOR_ACTOR, null);
+
+    expect(result.senior_citizen.percentage).toBe(15);
+  });
+
+  it('does not silently accept an out-of-range percentage — validation is the zod schema layer, exercised here directly', async () => {
+    const { updateDiscountPolicySchema } = await import('@potato-corner/shared');
+
+    expect(updateDiscountPolicySchema.safeParse({ pwd: { percentage: 150 } }).success).toBe(false);
+    expect(updateDiscountPolicySchema.safeParse({ pwd: { percentage: -5 } }).success).toBe(false);
+    expect(updateDiscountPolicySchema.safeParse({ pwd: { percentage: Number.NaN } }).success).toBe(false);
+    expect(updateDiscountPolicySchema.safeParse({ pwd: { percentage: Number.POSITIVE_INFINITY } }).success).toBe(false);
+    expect(updateDiscountPolicySchema.safeParse({}).success).toBe(false); // at least one type required
+    expect(updateDiscountPolicySchema.safeParse({ pwd: { percentage: 10 } }).success).toBe(true);
+  });
+});

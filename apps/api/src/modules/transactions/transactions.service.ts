@@ -25,6 +25,7 @@ import {
   type UploadPaymentProofData,
   type UploadDiscountProofData,
 } from './transactions.types.js';
+import { settingsService } from '../settings/settings.service.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { computeBomDeduction } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
@@ -56,11 +57,6 @@ import { nextCounterValue } from '../../lib/id-counter.js';
 
 type ActorContext = { id: string; role: string };
 
-/** Architecture doc §Discounts — PWD/Senior Citizen VAT formula (Philippine law), locked, never modified without explicit instruction. */
-const STATUTORY_DISCOUNT_RATE = 0.2;
-/** "Employee (configurable %)" per the architecture doc — no settings model yet, so this constant is the one a future settings feature would read from instead. */
-const EMPLOYEE_DISCOUNT_RATE = 0.2;
-
 const PAYMENT_PROOF_BUCKET = 'payment-proofs';
 /** GCash, Maya, and Other all require a payment proof photo — only cash does not (Task 139). */
 const PROOF_REQUIRED_METHODS: readonly string[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA, PAYMENT_METHOD.OTHER];
@@ -73,11 +69,11 @@ const PROOF_REQUIRED_METHODS: readonly string[] = [PAYMENT_METHOD.GCASH, PAYMENT
  */
 const DISCOUNT_PROOF_BUCKET = 'discount-proofs';
 /**
- * No proof-required policy exists yet for PWD/Senior Citizen discounts (no
- * settings model wires into discount eligibility today — see
- * STATUTORY_DISCOUNT_RATE above). Proof capture stays optional until such a
- * policy is introduced; see DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING in
- * createTransaction below.
+ * No proof-required policy exists yet for PWD/Senior Citizen discounts —
+ * Discount Settings (settings.service.ts) governs only the discount
+ * *percentage*, never proof eligibility. Proof capture stays optional until
+ * such a policy is introduced; see DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING
+ * in createTransaction below.
  */
 
 function sanitizeFilename(name: string): string {
@@ -141,6 +137,7 @@ interface TransactionRow {
   subtotal: { toNumber(): number };
   discountAmount: { toNumber(): number };
   discountType: string | null;
+  discountRateUsed: { toNumber(): number } | null;
   vatAmount: { toNumber(): number };
   vatExemptAmount: { toNumber(): number };
   totalAmount: { toNumber(): number };
@@ -183,6 +180,7 @@ function toTransactionResponse(row: TransactionRow) {
     subtotal: row.subtotal.toNumber(),
     discount_amount: row.discountAmount.toNumber(),
     discount_type: row.discountType,
+    discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
     vat_amount: row.vatAmount.toNumber(),
     vat_exempt_amount: row.vatExemptAmount.toNumber(),
     total_amount: row.totalAmount.toNumber(),
@@ -778,7 +776,27 @@ interface ComputedAmounts {
   vatAmount: number;
   vatExemptAmount: number;
   totalAmount: number;
+  /** The configured percentage (0-100) actually applied, or null when no rate-based discount applies. Persisted verbatim on the transaction row — see discountRateUsed. */
+  discountRateUsed: number | null;
 }
+
+/**
+ * Task 209.xx — the configured percentage (0-100, e.g. 20 for "20%") for
+ * each rate-based discount type, resolved from Discount Settings
+ * (settings.service.ts getDiscountPolicy) immediately before computeAmounts
+ * runs. This is the ONLY thing the settings feature changes about this
+ * calculation: the statutory VAT-exemption formula/classification for
+ * PWD/Senior Citizen below is unchanged and stays independent of whatever
+ * percentage is configured (architecture doc §Discounts, locked).
+ */
+export interface DiscountRates {
+  pwd: number;
+  senior_citizen: number;
+  employee: number;
+}
+
+/** Same 20%/20%/20% values STATUTORY_DISCOUNT_RATE/EMPLOYEE_DISCOUNT_RATE hardcoded before Discount Settings existed — used only if a caller (e.g. a stale test) omits discountRates. */
+const DEFAULT_DISCOUNT_RATES: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
 
 /**
  * VAT + discount calculation. PWD/Senior Citizen sales are true VAT-exempt
@@ -786,12 +804,15 @@ interface ComputedAmounts {
  * never charged on the discounted base, not even added back. Every other
  * discount type (or none) uses the general VAT-inclusive-pricing extraction:
  * the VAT component is embedded in the post-discount total, not added on
- * top of it.
+ * top of it. discountRates supplies the configured percentage per type
+ * (Discount Settings, Task 209.xx) — the VAT-exemption formula/classification
+ * itself never changes based on the configured percentage.
  */
 export function computeAmounts(
   subtotal: number,
   items: ResolvedItem[],
   discountType: CreateTransactionData['discountType'],
+  discountRates: DiscountRates = DEFAULT_DISCOUNT_RATES,
 ): ComputedAmounts {
   const vatableSubtotal = round2(
     items.reduce((sum, item) => {
@@ -803,21 +824,24 @@ export function computeAmounts(
   const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
 
   if (discountType === DISCOUNT_TYPE.PWD || discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) {
+    const ratePercent = discountType === DISCOUNT_TYPE.PWD ? discountRates.pwd : discountRates.senior_citizen;
     const vatableBase = vatableSubtotal / 1.12;
-    const discountAmount = round2(vatableBase * STATUTORY_DISCOUNT_RATE);
+    const discountAmount = round2(vatableBase * (ratePercent / 100));
     const discountedBase = round2(vatableBase - discountAmount);
     const totalAmount = round2(discountedBase + nonVatableSubtotal);
-    return { discountAmount, vatAmount: 0, vatExemptAmount: nonVatableSubtotal, totalAmount };
+    return { discountAmount, vatAmount: 0, vatExemptAmount: nonVatableSubtotal, totalAmount, discountRateUsed: ratePercent };
   }
 
   let discountAmount = 0;
+  let discountRateUsed: number | null = null;
   if (discountType === DISCOUNT_TYPE.EMPLOYEE) {
-    discountAmount = round2(vatableSubtotal * EMPLOYEE_DISCOUNT_RATE);
+    discountRateUsed = discountRates.employee;
+    discountAmount = round2(vatableSubtotal * (discountRateUsed / 100));
   }
   const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
   const vatAmount = round2(vatableAfterDiscount * (12 / 112));
   const totalAfterDiscount = round2(vatableAfterDiscount + nonVatableSubtotal);
-  return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount: totalAfterDiscount };
+  return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount: totalAfterDiscount, discountRateUsed };
 }
 
 /**
@@ -1210,6 +1234,7 @@ export const transactionsService = {
         // missed, leaving a raw Prisma Decimal in the JSON response instead
         // of a number.
         discountAmount: row.discountAmount.toNumber(),
+        discountRateUsed: row.discountRateUsed?.toNumber() ?? null,
         discountCustomerId,
         discountCustomerIdHash: row.discountCustomerIdHash,
         hasDiscountProof: Boolean(row.discountProofKey),
@@ -1417,9 +1442,37 @@ export const transactionsService = {
     const isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
     const hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
 
+    // Task 209.xx — server-authoritative discount rate. The client only ever
+    // sends the discount TYPE (createTransactionSchema has no percentage
+    // field at all); the actual percentage is always resolved here, from
+    // whatever is configured in Discount Settings *right now*, at the
+    // moment this transaction is created. This applies identically to a
+    // live online charge and to an offline sale replayed later through
+    // syncOfflineTransactions -> createTransaction (same call path) — so a
+    // tampered/stale client-side percentage can never reach the database,
+    // and an offline device can never invent its own rate.
+    let discountRates: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
+    if (data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE) {
+      const policy = await settingsService.getDiscountPolicy();
+      const entry = policy[data.discountType];
+      if (!entry.isEnabled) {
+        throw new TransactionError(
+          'DISCOUNT_TYPE_DISABLED',
+          `${data.discountType} discount is currently disabled in Discount Settings`,
+          422,
+        );
+      }
+      discountRates = { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage };
+    }
+
     const resolvedItems = await resolveCartItems(data.branchId, data.items);
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
-    const { discountAmount, vatAmount, vatExemptAmount, totalAmount } = computeAmounts(subtotal, resolvedItems, data.discountType);
+    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = computeAmounts(
+      subtotal,
+      resolvedItems,
+      data.discountType,
+      discountRates,
+    );
 
     let changeGiven: number | null = null;
     if (data.paymentMethod === 'cash') {
@@ -1477,6 +1530,7 @@ export const transactionsService = {
             subtotal,
             discountAmount,
             discountType: data.discountType ?? null,
+            discountRateUsed,
             discountCustomerIdEncrypted,
             discountCustomerIdHash,
             vatAmount,

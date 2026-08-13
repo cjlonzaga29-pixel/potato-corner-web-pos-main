@@ -4,10 +4,14 @@ import {
   type PaymentMethodConfigResponse,
   type ReceiptConfigResponse,
   type SecurityPolicy,
+  type DiscountPolicy,
+  type DiscountPolicyResponse,
   type UpdateNotificationPreferencesInput,
   type UpdatePaymentMethodConfigInput,
   type UpdateReceiptConfigInput,
   type UpdateSecurityPolicyInput,
+  type UpdateDiscountPolicyInput,
+  CONFIGURABLE_DISCOUNT_TYPES,
 } from '@potato-corner/shared';
 import type {
   NotificationPreference as NotificationPreferenceRow,
@@ -16,7 +20,13 @@ import type {
   Prisma,
 } from '@prisma/client';
 import { settingsRepository } from './settings.repository.js';
-import { DEFAULT_SECURITY_POLICY, SECURITY_POLICY_KEY, SettingsError } from './settings.types.js';
+import {
+  DEFAULT_SECURITY_POLICY,
+  SECURITY_POLICY_KEY,
+  DEFAULT_DISCOUNT_POLICY,
+  DISCOUNT_POLICY_KEY,
+  SettingsError,
+} from './settings.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { assertBranchAccess as sharedAssertBranchAccess } from '../../lib/branch-access.js';
@@ -217,5 +227,56 @@ export const settingsService = {
     });
 
     return toPaymentMethodConfigResponse(updated);
+  },
+
+  /**
+   * Task 209.xx — the single source of truth POS checkout, receipts, and
+   * reports all resolve the current PWD/Senior Citizen/Employee/Promotional
+   * percentage from. Falls back to DEFAULT_DISCOUNT_POLICY (the values
+   * already hardcoded in transactions.service.ts before this settings model
+   * existed) until a supervisor/admin saves a change for the first time.
+   */
+  async getDiscountPolicy(): Promise<DiscountPolicyResponse> {
+    const setting = await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY);
+    if (!setting) return { ...DEFAULT_DISCOUNT_POLICY, updatedAt: null, updatedBy: null };
+    const value = setting.value as unknown as DiscountPolicy;
+    return { ...value, updatedAt: setting.updatedAt.toISOString(), updatedBy: setting.updatedBy };
+  },
+
+  async updateDiscountPolicy(
+    data: UpdateDiscountPolicyInput,
+    updatedBy: ActorContext,
+    ipAddress: string | null,
+  ): Promise<DiscountPolicyResponse> {
+    const before = await settingsService.getDiscountPolicy();
+
+    // Partial per-type PUT — merge the incoming partial entries over the
+    // currently persisted (or default) policy, same precedent as
+    // updatePaymentMethodConfig's merge-then-validate.
+    const merged: DiscountPolicy = { ...DEFAULT_DISCOUNT_POLICY };
+    for (const type of CONFIGURABLE_DISCOUNT_TYPES) {
+      merged[type] = { ...before[type], ...data[type] };
+    }
+
+    await settingsRepository.upsertSystemSetting(
+      DISCOUNT_POLICY_KEY,
+      merged as unknown as Prisma.InputJsonValue,
+      updatedBy.user_id,
+      'Configurable POS discount percentages (PWD, Senior Citizen, Employee, Promotional)',
+    );
+
+    await recordAuditLog({
+      action: 'DISCOUNT_POLICY_UPDATED',
+      entityType: 'system_setting',
+      entityId: DISCOUNT_POLICY_KEY,
+      actorId: updatedBy.user_id,
+      actorRole: updatedBy.role,
+      beforeState: before,
+      afterState: merged,
+      ipAddress,
+    });
+
+    const updated = await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY);
+    return { ...merged, updatedAt: updated?.updatedAt.toISOString() ?? new Date().toISOString(), updatedBy: updatedBy.user_id };
   },
 };

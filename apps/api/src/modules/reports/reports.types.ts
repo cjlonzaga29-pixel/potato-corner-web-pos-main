@@ -97,6 +97,11 @@ export type DailySalesTransactionRow = {
   vat_amount: number;
   discount_amount: number;
   discount_type: string | null;
+  // Task 209.xx — the configured percentage actually applied at sale time
+  // (Transaction.discountRateUsed), frozen forever; never today's Discount
+  // Settings value. Null for no-discount rows and for legacy sales predating
+  // this column.
+  discount_rate_used?: number | null;
   created_at: string;
   cashier_name: string;
   // Task 209.5 — carried on every row for reuse by the Discount Compliance

@@ -66,6 +66,14 @@ function ProofSummary({ label, previewUrl, onClear }: { label: string; previewUr
 
 export type DiscountChoice = 'none' | 'pwd' | 'senior_citizen' | 'employee' | 'promotional';
 
+/**
+ * Task 209.xx — fallback only, used while useDiscountPolicy() (use-settings.ts)
+ * is still loading. The percentages here are never authoritative: the
+ * terminal page always passes the live `discountLabels` prop (built from
+ * GET /api/settings/discount-policy) once the query resolves, and the
+ * server independently re-resolves the rate at checkout time regardless of
+ * what the dropdown displayed (transactions.service.ts createTransaction).
+ */
 export const DISCOUNT_LABELS: Record<DiscountChoice, string> = {
   none: 'No discount',
   pwd: 'PWD (20%)',
@@ -78,6 +86,14 @@ interface PaymentFooterProps {
   totalAmount: number;
   discountType: DiscountChoice;
   onDiscountTypeChange: (value: DiscountChoice) => void;
+  /**
+   * Task 209.xx — the live "TYPE (N%)" labels built from Discount Settings
+   * (GET /api/settings/discount-policy). Merged over DISCOUNT_LABELS so any
+   * key the caller omits (still loading) falls back to the static default.
+   */
+  discountLabels?: Partial<Record<DiscountChoice, string>>;
+  /** Task 209.xx — discount types a supervisor has turned off in Discount Settings; hidden from the dropdown so a cashier can never pick one the server would reject. */
+  disabledDiscountTypes?: readonly DiscountChoice[];
   discountIdReference: string;
   onDiscountIdReferenceChange: (value: string) => void;
   discountProofKey: string | null;
@@ -158,6 +174,8 @@ export const PaymentFooter = memo(function PaymentFooter({
   totalAmount,
   discountType,
   onDiscountTypeChange,
+  discountLabels,
+  disabledDiscountTypes,
   discountIdReference,
   onDiscountIdReferenceChange,
   discountProofKey,
@@ -186,6 +204,11 @@ export const PaymentFooter = memo(function PaymentFooter({
   const showFields = section === undefined || section === 'fields';
   const showProof = section === undefined || section === 'proof';
   const showConfirm = section === undefined || section === 'confirm';
+  const resolvedDiscountLabels: Record<DiscountChoice, string> = { ...DISCOUNT_LABELS, ...discountLabels };
+  const disabledSet = new Set(disabledDiscountTypes ?? []);
+  const visibleDiscountChoices = (Object.keys(resolvedDiscountLabels) as DiscountChoice[]).filter(
+    (value) => value === 'none' || !disabledSet.has(value),
+  );
   return (
     // Task 209.20 — `.app-pos-footer` replaces the old fixed `p-3 lg:p-2.5` /
     // `space-y-2.5 lg:space-y-1.5` pair, which keyed density purely off the
@@ -226,9 +249,9 @@ export const PaymentFooter = memo(function PaymentFooter({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {(Object.keys(DISCOUNT_LABELS) as DiscountChoice[]).map((value) => (
+              {visibleDiscountChoices.map((value) => (
                 <SelectItem key={value} value={value}>
-                  {DISCOUNT_LABELS[value]}
+                  {resolvedDiscountLabels[value]}
                 </SelectItem>
               ))}
             </SelectContent>

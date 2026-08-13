@@ -17,6 +17,7 @@ import {
   LogOut,
   Loader2,
   ClipboardList,
+  Settings,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -40,6 +41,7 @@ export const SUPERVISOR_NAV_ITEMS = [
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },
   { label: 'Employees', href: '/supervisor/employees', icon: Users },
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
+  { label: 'Settings', href: '/supervisor/settings', icon: Settings },
 ] satisfies ReadonlyArray<NavItem>;
 
 export function SupervisorSidebar() {

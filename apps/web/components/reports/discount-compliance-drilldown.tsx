@@ -78,6 +78,13 @@ export function DiscountComplianceDrilldown({
       cell: ({ row }) => (row.original.discountType ? <Badge variant="secondary">{humanizeSnake(row.original.discountType)}</Badge> : '—'),
     },
     {
+      id: 'discount_rate_used',
+      header: 'Discount Rate Used',
+      // Task 209.xx — the percentage actually applied to THIS transaction
+      // (frozen at sale time), never today's Discount Settings value.
+      cell: ({ row }) => (row.original.discountRateUsed != null ? `${row.original.discountRateUsed}%` : '—'),
+    },
+    {
       id: 'customer_id',
       header: 'Customer ID / Reference',
       cell: ({ row }) => row.original.discountCustomerId ?? '—',

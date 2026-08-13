@@ -4,11 +4,12 @@ import {
   updateNotificationPreferencesSchema,
   updateReceiptConfigSchema,
   updatePaymentMethodConfigSchema,
+  updateDiscountPolicySchema,
 } from '@potato-corner/shared';
 import { settingsService } from './settings.service.js';
 import { SettingsError } from './settings.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
@@ -86,6 +87,40 @@ router.put(
       if (!requireUser(req, res)) return;
       const preferences = await settingsService.updateNotificationPreferences(req.user.user_id, req.body, req.user, req.ip ?? null);
       res.status(200).json({ data: preferences, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+/**
+ * Task 209.xx — GET is `allRoles`: cashier/staff and the Branch Account must
+ * be able to read the configured percentages so the POS discount dropdown
+ * can render "PWD (10%)" etc. (requirement: Cashier/Staff and Branch Account
+ * are READ ONLY). PUT is `adminOrSupervisor`: only a Supervisor or Super
+ * Admin may change a rate — matches adminOrSupervisor's existing precedent
+ * (authorize.ts) for regional-oversight-level settings.
+ */
+router.get('/discount-policy', authenticate, allRoles, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const policy = await settingsService.getDiscountPolicy();
+    res.status(200).json({ data: policy, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+router.put(
+  '/discount-policy',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  validate(updateDiscountPolicySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const policy = await settingsService.updateDiscountPolicy(req.body, req.user, req.ip ?? null);
+      res.status(200).json({ data: policy, error: null, meta: null });
     } catch (error) {
       handleSettingsError(error, res, next);
     }

@@ -6,10 +6,26 @@ import { Card, CardContent } from '@/components/ui/card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
-import { usePublicReceipt } from '@/hooks/queries/use-receipts';
+import { usePublicReceipt, type PublicReceipt } from '@/hooks/queries/use-receipts';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
+}
+
+const DISCOUNT_TYPE_LABEL: Record<string, string> = {
+  pwd: 'PWD',
+  senior_citizen: 'Senior Citizen',
+  employee: 'Employee',
+  manager_override: 'Manager Override',
+  promotional: 'Promotional',
+};
+
+/** Task 209.xx — always the rate frozen on this transaction, never today's Discount Settings value; matches receipt-modal.tsx's same-purpose helper. */
+function discountLabel(receipt: PublicReceipt): string {
+  const type = receipt.discount_type;
+  if (!type) return 'Discount';
+  const name = DISCOUNT_TYPE_LABEL[type] ?? type;
+  return receipt.discount_rate_used != null ? `${name} Discount (${receipt.discount_rate_used}%)` : `${name} Discount`;
 }
 
 /** Public, unauthenticated e-receipt view — destination of the link/QR code printed on a physical receipt. transaction_number IS the receipt number, used as-is in the URL. */
@@ -75,7 +91,7 @@ export default function PublicReceiptPage() {
               </div>
               {receipt.discount_amount > 0 && (
                 <div className="flex justify-between">
-                  <span>Discount {receipt.discount_type ? `(${receipt.discount_type})` : ''}</span>
+                  <span>{discountLabel(receipt)}</span>
                   <span className="tabular-nums">-{formatPeso(receipt.discount_amount)}</span>
                 </div>
               )}

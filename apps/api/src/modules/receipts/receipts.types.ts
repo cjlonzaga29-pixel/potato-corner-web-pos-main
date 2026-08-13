@@ -29,6 +29,9 @@ export interface PublicReceiptResponse {
   subtotal: number;
   discount_amount: number;
   discount_type: string | null;
+  // Task 209.xx — the configured percentage actually applied at sale time,
+  // frozen on the transaction row; never today's Discount Settings value.
+  discount_rate_used?: number | null;
   vat_amount: number;
   total_amount: number;
   payment_method: string;

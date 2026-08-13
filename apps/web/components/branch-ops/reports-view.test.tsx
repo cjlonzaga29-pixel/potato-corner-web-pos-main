@@ -18,6 +18,7 @@ const {
   mockUseAuthStore,
   mockUseRequestExport,
   mockUseReportsRealtimeSync,
+  mockUseDiscountComplianceReport,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
   mockUseTransactions: vi.fn(),
@@ -33,6 +34,7 @@ const {
   mockUseAuthStore: vi.fn(),
   mockUseRequestExport: vi.fn(),
   mockUseReportsRealtimeSync: vi.fn(),
+  mockUseDiscountComplianceReport: vi.fn(),
 }));
 
 vi.mock('@/stores/branch.store', () => ({
@@ -71,6 +73,7 @@ vi.mock('@/stores/auth.store', () => ({
 vi.mock('@/hooks/queries/use-reports', () => ({
   useRequestExport: mockUseRequestExport,
   useReportsRealtimeSync: mockUseReportsRealtimeSync,
+  useDiscountComplianceReport: mockUseDiscountComplianceReport,
 }));
 
 /** Swaps Framer Motion's async NumberTicker for a synchronous text node — same approach as the supervisor/admin reports page tests. */
@@ -173,6 +176,11 @@ beforeEach(() => {
   mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string } }) => unknown) => selector({ user: { id: 'user-1' } }));
   mockUseRequestExport.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseReportsRealtimeSync.mockReturnValue(undefined);
+  // Task 209.56E — Discount Compliance's headline KPIs now read from this
+  // hook (server groupBy aggregate) instead of being reduced client-side
+  // from completedTransactions; default empty so tests that don't care
+  // about discount numbers specifically still render without crashing.
+  mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [] }, isLoading: false });
 });
 
 afterEach(() => {

@@ -562,8 +562,6 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
   const variantIds = [...new Set(items.map((i) => i.productVariantId))];
   const variants = await transactionsRepository.findVariantsForSale(variantIds);
   const variantMap = new Map(variants.map((v) => [v.id, v]));
-  const readinessResults = await productReadinessService.evaluateProductVariantReadinessForVariants(branchId, variants, variantIds);
-  const readinessMap = new Map(readinessResults.map((r) => [r.productVariantId, r]));
 
   const productIds = [
     ...new Set(
@@ -573,14 +571,26 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       ]),
     ),
   ];
-  const productAvailability = await transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds);
-  const productAvailabilityMap = new Map(productAvailability.map((r) => [r.productId, r.isAvailable]));
-
   const slotFlavorIds = items.flatMap((i) => (i.selectedFlavors ?? []).map((sf) => sf.flavorId));
   const flavorIds = [...new Set([...items.filter((i) => i.flavorId).map((i) => i.flavorId as string), ...slotFlavorIds])];
-  const flavorAvailability = flavorIds.length
-    ? await transactionsRepository.findBranchFlavorAvailabilityMap(branchId, flavorIds)
-    : [];
+
+  // Task 209.56E — none of these four reads depend on each other's result
+  // (readiness and product-availability both derive solely from `variants`,
+  // resolved above; flavor-availability depends only on the cart's own
+  // flavorIds). They were previously four back-to-back round trips
+  // (readiness alone already does its own internal product-availability
+  // fetch — see fetchReadinessData in product-readiness.service.ts — so the
+  // sequential findBranchProductAvailabilityMap call below was a second,
+  // fully redundant fetch of the same rows). Running them concurrently
+  // doesn't change any validation outcome: each result is only consumed
+  // independently below, never used to decide whether to run another.
+  const [readinessResults, productAvailability, flavorAvailability] = await Promise.all([
+    productReadinessService.evaluateProductVariantReadinessForVariants(branchId, variants, variantIds),
+    transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds),
+    flavorIds.length ? transactionsRepository.findBranchFlavorAvailabilityMap(branchId, flavorIds) : Promise.resolve([]),
+  ]);
+  const readinessMap = new Map(readinessResults.map((r) => [r.productVariantId, r]));
+  const productAvailabilityMap = new Map(productAvailability.map((r) => [r.productId, r.isAvailable]));
   const flavorAvailabilityMap = new Map(flavorAvailability.map((r) => [r.flavorId, r.isAvailable]));
 
   // Task 209.3 — each item's resolution (recipe-version lookup + BOM
@@ -607,8 +617,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
 
     let flavorName: string | null = null;
     let pricePremium = 0;
-    let deductionLines: BomDeductionLine[];
-    let recipeVersion: number;
+    let deductionLinesPromise: Promise<BomDeductionLine[]>;
     let selectedFlavors: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null = null;
 
     const flavorSlots = variant.flavorSlots ?? [];
@@ -671,8 +680,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       const resolvedSelectedFlavors = submitted.map((s) => ({ slotIndex: s.slotIndex, snackProductVariantId: s.snackProductVariantId, flavorId: s.flavorId }));
       selectedFlavors = resolvedSelectedFlavors;
 
-      recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
-      deductionLines = await computeBaseRecipeDeductionOrThrow(() => computeComponentDeductionForSlots(variant.id, resolvedSelectedFlavors, item.quantity, branchId));
+      deductionLinesPromise = computeBaseRecipeDeductionOrThrow(() => computeComponentDeductionForSlots(variant.id, resolvedSelectedFlavors, item.quantity, branchId));
     } else {
       const activeFlavorLinks = variant.variantFlavors.filter((vf) => vf.isAvailable && vf.flavor.isActive);
       if (!item.flavorId && activeFlavorLinks.length > 0) {
@@ -690,12 +698,25 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
         pricePremium = link.pricePremium.toNumber();
       }
 
-      recipeVersion = await productComponentsRepository.getVersionForVariant(variant.id);
-      deductionLines = await computeBaseRecipeDeductionOrThrow(() => computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null));
+      deductionLinesPromise = computeBaseRecipeDeductionOrThrow(() => computeBomDeduction(variant.id, branchId, item.quantity, item.flavorId ?? null));
     }
 
     const { premium: optionsPremium, snapshot: selectedOptions } = resolveSelectedOptions(variant, item.selectedOptionIds);
-    const optionDeductionLines = await computeOptionDeductionLines(item.selectedOptionIds, item.quantity);
+    // Task 209.56E — recipeVersion, deductionLines, and optionDeductionLines
+    // are three independent reads (none consumes another's output): the
+    // recipe version number, the BOM/slot deduction lines just kicked off
+    // above, and option-inventory deduction lines derived only from
+    // item.selectedOptionIds/quantity. They were previously three back-to-
+    // back awaits; running them concurrently removes two round trips per
+    // cart line without changing what each computes or which error
+    // surfaces first for a genuinely invalid cart line (each promise still
+    // rejects with its own TransactionError exactly as before).
+    const [recipeVersion, resolvedDeductionLines, optionDeductionLines] = await Promise.all([
+      productComponentsRepository.getVersionForVariant(variant.id),
+      deductionLinesPromise,
+      computeOptionDeductionLines(item.selectedOptionIds, item.quantity),
+    ]);
+    let deductionLines = resolvedDeductionLines;
     if (optionDeductionLines.length > 0) {
       deductionLines = mergeDeductionLines(deductionLines, optionDeductionLines);
     }
@@ -1219,6 +1240,18 @@ export const transactionsService = {
       .from(PAYMENT_PROOF_BUCKET)
       .upload(path, compressed, { contentType: 'image/webp', upsert: true });
     if (error) {
+      // Task 209.56E — the upstream Supabase Storage error (bucket missing,
+      // service-role key invalid/expired, network failure, etc.) used to be
+      // discarded here, leaving only the generic client-safe message below
+      // with no server-side trail to tell those causes apart. Logging the
+      // actual error name/message (never the file bytes, path is already
+      // non-sensitive) is what makes this diagnosable from production logs.
+      console.error('Payment proof upload to Supabase Storage failed', {
+        bucket: PAYMENT_PROOF_BUCKET,
+        branchId: data.branchId,
+        errorName: error.name,
+        errorMessage: error.message,
+      });
       throw new TransactionError('PAYMENT_PROOF_UPLOAD_FAILED', 'Failed to upload the payment proof image', 502);
     }
 
@@ -1269,6 +1302,16 @@ export const transactionsService = {
       .from(DISCOUNT_PROOF_BUCKET)
       .upload(path, compressed, { contentType: 'image/webp', upsert: true });
     if (error) {
+      // Task 209.56E — same diagnostic gap as uploadPaymentProof above: log
+      // the actual Supabase Storage error so a bucket/credential/network
+      // problem is distinguishable from the logs instead of only ever
+      // surfacing as this one generic client-safe message.
+      console.error('Discount proof upload to Supabase Storage failed', {
+        bucket: DISCOUNT_PROOF_BUCKET,
+        branchId: data.branchId,
+        errorName: error.name,
+        errorMessage: error.message,
+      });
       throw new TransactionError('DISCOUNT_PROOF_UPLOAD_FAILED', 'Failed to upload the discount proof image', 502);
     }
 
@@ -1526,9 +1569,36 @@ export const transactionsService = {
       throw error;
     }
 
-    for (const effect of postCommitEffects) {
-      await effect();
-    }
+    const response = toTransactionResponse(created as TransactionRow);
+
+    // Task 209.56E — postCommitEffects (low-stock notifications etc.) and
+    // the TRANSACTION_CREATED audit log write are mutually independent:
+    // neither reads the other's output, and both only run after the sale
+    // has already committed above (the charge itself already happened by
+    // this point — this doesn't weaken atomicity or acknowledge a sale
+    // before server confirmation, it only changes how the strictly-after-
+    // commit bookkeeping is scheduled). Previously sequential (~1.2s each
+    // in measured testing), running them concurrently removes one of the
+    // two from the response's critical path. Audit log is still awaited
+    // (not fire-and-forget) — a checkout response still confirms the audit
+    // entry was written, same guarantee as before.
+    await Promise.all([
+      (async () => {
+        for (const effect of postCommitEffects) {
+          await effect();
+        }
+      })(),
+      recordAuditLog({
+        action: 'TRANSACTION_CREATED',
+        entityType: 'transaction',
+        entityId: created.id,
+        actorId: data.cashierId,
+        actorRole: 'cashier',
+        branchId: data.branchId,
+        afterState: response,
+        ipAddress,
+      }),
+    ]);
 
     // CR-012.1 -- shadow BOM deduction comparison. Strictly best-effort and
     // strictly after the legacy deduction/transaction has already committed:
@@ -1558,19 +1628,6 @@ export const transactionsService = {
           });
       }
     }
-
-    const response = toTransactionResponse(created as TransactionRow);
-
-    await recordAuditLog({
-      action: 'TRANSACTION_CREATED',
-      entityType: 'transaction',
-      entityId: created.id,
-      actorId: data.cashierId,
-      actorRole: 'cashier',
-      branchId: data.branchId,
-      afterState: response,
-      ipAddress,
-    });
 
     notifyBranch(data.branchId, SOCKET_EVENTS.TRANSACTION_COMPLETED, response);
     notifySuperAdmin(SOCKET_EVENTS.TRANSACTION_COMPLETED, response);

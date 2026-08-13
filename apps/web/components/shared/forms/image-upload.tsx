@@ -1,13 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useRef, useState, type ChangeEvent } from 'react';
 import { Camera, Check, ImageIcon, Loader2, RotateCcw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 
 type CaptureMode = 'live_capture' | 'gallery_upload';
-type CameraStatus = 'idle' | 'active' | 'permission_denied' | 'unsupported';
 
 interface ImageUploadProps {
   /** May reject (e.g. the parent's network upload failing) — ImageUpload shows the failure inline with a Retry, keeping the captured/selected file so the cashier never has to recapture it. */
@@ -28,17 +27,13 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-function hasCameraSupport(): boolean {
-  return typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
-}
-
 function compressCanvas(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Image compression failed'))), 'image/jpeg', JPEG_QUALITY);
   });
 }
 
-/** Downscales to MAX_DIMENSION on the long edge before re-encoding as JPEG — keeps clock-in/ID photos small before upload. */
+/** Downscales to MAX_DIMENSION on the long edge before re-encoding as JPEG — keeps clock-in/ID/proof photos small before upload. */
 async function drawToCanvas(source: ImageBitmapSource): Promise<HTMLCanvasElement> {
   const bitmap = await createImageBitmap(source);
   const scale = Math.min(1, MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
@@ -52,169 +47,40 @@ async function drawToCanvas(source: ImageBitmapSource): Promise<HTMLCanvasElemen
 }
 
 /**
- * Capture priority, matched to what's actually available in the browser:
- *   1. getUserMedia() — in-page live preview + Capture button.
- *   2. capture="environment" on a file input — opens the device's native
- *      camera app directly where the browser supports it.
- *   3. Plain file input — the same element degrades to an ordinary file/
- *      gallery picker where `capture` isn't supported, so tier 2 and 3 are
- *      really one control.
- * "Upload from Gallery" is always offered as an explicit, separate action
- * (no `capture` attribute) so a cashier can pick an existing screenshot
- * instead of taking a new photo.
+ * Task 209.56E — "Take Photo" invokes the device's own native camera capture
+ * UI via `<input type="file" capture="environment">` instead of an in-page
+ * `getUserMedia()` live preview. This replaced an earlier implementation
+ * that opened a large embedded `<video>` preview inside the checkout modal
+ * (owner-reported "Live capture" complaint) and that carried real recurring
+ * cost: getUserMedia needs explicit permission handling, stream cleanup on
+ * unmount/modal-close (a camera left running was a shipped bug — Task
+ * 209.16), and per-browser quirks (Task 209.18's black-preview regression,
+ * Task 209.20's oversized preview). The native `capture` attribute has none
+ * of that: the OS owns the camera UI and the permission prompt, the browser
+ * only ever receives a finished file, and there is no stream to leak.
+ *
+ * `capture="environment"` is honored by mobile/tablet browsers (opens the
+ * rear camera directly); desktop browsers that don't support `capture`
+ * silently ignore it and fall back to their normal OS file picker — most
+ * desktop OS file pickers (Windows, macOS) offer their own "camera" option
+ * inside that picker, so a desktop cashier terminal still has a working
+ * capture path, just via the OS chrome instead of an in-page one. This is
+ * the graceful degradation the spec provides for a `capture` attribute an
+ * engine doesn't support — no feature-detection branch is needed for it,
+ * unlike getUserMedia's own must-detect-and-fall-back-in-JS story.
+ *
+ * "Upload from Gallery" stays a separate, `capture`-less file input so a
+ * cashier can always pick an existing photo instead of taking a new one.
  */
 export function ImageUpload({ onImageSelected, label = 'Photo', description, required }: ImageUploadProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const captureFallbackRef = useRef<HTMLInputElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const captureInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<CaptureMode | null>(null);
-  const [isCameraActive, setIsCameraActive] = useState(false);
-  const [cameraStatus, setCameraStatus] = useState<CameraStatus>('idle');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [cameraError, setCameraError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-
-  function stopCamera() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    setIsCameraActive(false);
-  }
-
-  // Task 209.16 — a cashier can close the payment/discount dialog (Esc,
-  // backdrop click, completing the sale) while the live camera is still
-  // active without ever hitting Cancel. Without this, the MediaStream (and
-  // the device's camera light) keeps running after the component unmounts.
-  useEffect(() => {
-    return () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    };
-  }, []);
-
-  // Task 209.18 — the confirmed "camera preview is black" defect. The
-  // <video> element below is only mounted once isCameraActive is true, so
-  // assigning srcObject/calling play() inside startCamera() itself (which
-  // runs *before* that state flip has re-rendered) always hit a null
-  // videoRef and silently no-op'd — the stream was live, but nothing was
-  // ever attached to the element that reached the screen. Doing the
-  // attach-and-play here, keyed on isCameraActive, guarantees videoRef.current
-  // is the real mounted node by the time this runs.
-  useEffect(() => {
-    if (!isCameraActive) return;
-    const video = videoRef.current;
-    const stream = streamRef.current;
-    if (!video || !stream) return;
-    video.srcObject = stream;
-    void video.play().catch(() => {
-      setCameraError('Could not start the camera preview — try again.');
-    });
-  }, [isCameraActive]);
-
-  async function startCamera() {
-    setCameraError(null);
-    setValidationError(null);
-
-    // Task 209.16 — getUserMedia is unavailable by spec on an insecure
-    // origin (plain http, not localhost); without this check that shows up
-    // to the cashier as the generic "not supported" message below, which is
-    // misleading on a branch terminal that's simply not on HTTPS yet.
-    // Checked against `=== false` specifically (not just falsy) because
-    // every real browser always sets this to a boolean, but jsdom (tests)
-    // leaves it `undefined` — that must not be treated as insecure.
-    if (typeof window !== 'undefined' && window.isSecureContext === false) {
-      setCameraStatus('unsupported');
-      setCameraError('Camera requires a secure HTTPS connection. Use Upload from Gallery instead.');
-      captureFallbackRef.current?.click();
-      return;
-    }
-
-    if (cameraStatus === 'permission_denied' || cameraStatus === 'unsupported' || !hasCameraSupport()) {
-      // Already known bad (or never supported) — go straight to the
-      // capture="environment"/gallery fallback instead of re-prompting.
-      if (cameraStatus === 'permission_denied') {
-        setCameraError('Camera permission denied — switching to the fallback camera/upload picker.');
-      } else {
-        setCameraStatus('unsupported');
-        setCameraError('Camera not supported on this device or browser — switching to the fallback camera/upload picker.');
-      }
-      captureFallbackRef.current?.click();
-      return;
-    }
-
-    try {
-      // Task 209.16 — `ideal` (not `exact`) so a device with only a
-      // front-facing camera (most laptop/desktop POS terminals) still opens
-      // the camera it has instead of throwing OverconstrainedError.
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-      streamRef.current = stream;
-      // srcObject/play() happen in the isCameraActive effect below, once the
-      // <video> element this stream needs is actually mounted.
-      setMode('live_capture');
-      setIsCameraActive(true);
-      setCameraStatus('active');
-    } catch (error) {
-      setIsCameraActive(false);
-      // getUserMedia rejects with a DOMException, which per spec does NOT
-      // extend Error (unlike a typical thrown error) — `instanceof Error`
-      // would silently misclassify every permission-denied rejection as
-      // "unsupported" here, so read `.name` structurally instead.
-      const name = typeof error === 'object' && error !== null && 'name' in error ? String((error as { name: unknown }).name) : '';
-      if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
-        setCameraStatus('permission_denied');
-        setCameraError('Camera permission denied — switching to the fallback camera/upload picker.');
-      } else if (name === 'NotFoundError') {
-        setCameraStatus('unsupported');
-        setCameraError('No camera found on this device — switching to the fallback camera/upload picker.');
-      } else if (name === 'NotReadableError') {
-        setCameraStatus('unsupported');
-        setCameraError('Camera is already in use or unavailable — switching to the fallback camera/upload picker.');
-      } else if (name === 'OverconstrainedError') {
-        setCameraStatus('unsupported');
-        setCameraError('Requested camera unavailable — switching to the fallback camera/upload picker.');
-      } else {
-        setCameraStatus('unsupported');
-        setCameraError('Camera not supported on this device or browser — switching to the fallback camera/upload picker.');
-      }
-      captureFallbackRef.current?.click();
-    }
-  }
-
-  async function handleCapture() {
-    const video = videoRef.current;
-    if (!video) return;
-    // Task 209.16 — `createImageBitmap(video)` used to drive the capture
-    // here; on several real-world browsers/webviews it either throws or
-    // silently grabs a blank frame for a *live* <video> source, especially
-    // if called before the stream has decoded a frame. Drawing the video
-    // straight into a canvas sized from its actual current dimensions is
-    // universally supported and is the concrete "Take Photo does not work"
-    // fix — a zero-sized video (stream not ready yet) is now reported as a
-    // camera-not-ready state instead of silently uploading an empty image.
-    if (!video.videoWidth || !video.videoHeight) {
-      setCameraError('Camera is still starting up — wait a moment and try again.');
-      return;
-    }
-    try {
-      const scale = Math.min(1, MAX_DIMENSION / Math.max(video.videoWidth, video.videoHeight));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(video.videoWidth * scale);
-      canvas.height = Math.round(video.videoHeight * scale);
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Canvas 2D context unavailable');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await compressCanvas(canvas);
-      const file = new File([blob], `capture-${Date.now()}.jpg`, { type: 'image/jpeg' });
-      setPendingFile(file);
-      setPreviewUrl(URL.createObjectURL(file));
-      stopCamera();
-    } catch {
-      setCameraError('Could not capture that frame — try again.');
-    }
-  }
 
   async function loadSelectedFile(selected: File, type: CaptureMode) {
     const validationMessage = validateFile(selected);
@@ -242,12 +108,12 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     await loadSelectedFile(selected, 'gallery_upload');
   }
 
-  async function handleCaptureFallbackChange(event: ChangeEvent<HTMLInputElement>) {
+  async function handleCaptureChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0];
     event.target.value = '';
     if (!selected) return;
-    // A photo taken via the native camera app is still a live capture from
-    // the cashier's point of view, even though it arrived as a file.
+    // A photo taken via the native camera UI is still a live capture from
+    // the cashier's point of view, even though it arrives here as a file.
     await loadSelectedFile(selected, 'live_capture');
   }
 
@@ -261,7 +127,6 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
 
   function handleRemove() {
     handleRetake();
-    setCameraError(null);
     setValidationError(null);
   }
 
@@ -289,9 +154,9 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
 
-      {!previewUrl && !isCameraActive && (
+      {!previewUrl && (
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button type="button" variant="outline" className="touch-target flex-1" onClick={() => void startCamera()}>
+          <Button type="button" variant="outline" className="touch-target flex-1" onClick={() => captureInputRef.current?.click()}>
             <Camera className="mr-2 h-4 w-4" />
             Take Photo
           </Button>
@@ -311,23 +176,15 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
             className="hidden"
             onChange={(event) => void handleGalleryChange(event)}
           />
-          {/* Tier 2/3 fallback for Take Photo: opens the native camera where
-              `capture` is supported, otherwise degrades to a plain file picker. */}
           <input
-            ref={captureFallbackRef}
+            ref={captureInputRef}
             type="file"
             accept="image/jpeg,image/png,image/webp"
             capture="environment"
             className="hidden"
-            onChange={(event) => void handleCaptureFallbackChange(event)}
+            onChange={(event) => void handleCaptureChange(event)}
           />
         </div>
-      )}
-
-      {cameraError && (
-        <Alert variant="destructive" className="px-3 py-2">
-          <AlertDescription>{cameraError}</AlertDescription>
-        </Alert>
       )}
 
       {validationError && (
@@ -336,46 +193,16 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         </Alert>
       )}
 
-      {isCameraActive && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-destructive" />
-            Live capture
-          </div>
-          {/* Task 209.20 — max-height was a fixed 160px (`max-h-40`) regardless
-              of density; `.app-pos-proof-preview-height` scales it with the
-              same tier the rest of checkout responds to (120px on a short
-              1366x768/1280x720 laptop up to 170-180px on a tall desktop/
-              mobile) so an active camera never eats more of the cart than
-              the tier can actually spare, while still collapsing back to the
-              compact attached summary the instant Capture finishes. */}
-          <video ref={videoRef} className="app-pos-proof-preview-height aspect-video w-full rounded-md bg-black object-cover" autoPlay muted playsInline />
-          <div className="flex gap-2">
-            <Button type="button" className="touch-target flex-1" onClick={() => void handleCapture()}>
-              Capture
-            </Button>
-            <Button type="button" variant="outline" className="touch-target" onClick={stopCamera}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
-
       {previewUrl && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-destructive' : 'bg-info')} />
-            {mode === 'live_capture' ? 'Live capture' : 'Gallery upload'}
+            {mode === 'live_capture' ? 'Photo captured' : 'Gallery upload'}
           </div>
-          {/* Task 209.23 — this pending-confirm preview (captured/selected,
-              not yet uploaded) used to render at the photo's full natural
-              size with no cap, unlike the live camera preview below it
-              (already capped via this same token) — the "giant preview"
-              complaint applied here too, since a cashier sees this between
-              every capture and Confirm. Reusing `.app-pos-proof-preview-height`
-              (a max-height) keeps it within the same density-appropriate
-              budget as the live camera; width still scales down with it
-              (no distortion) since the img has no explicit height of its own. */}
+          {/* Compact thumbnail only — no permanent/embedded camera preview.
+              Capped via the same density-aware token the old live preview
+              used, kept here so this pending-confirm state can never grow
+              past what a checkout footer can spare at any density tier. */}
           {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}
           <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
 

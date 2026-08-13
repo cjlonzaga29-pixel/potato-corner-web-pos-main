@@ -116,11 +116,28 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
           <p className="text-sm font-bold tabular-nums text-foreground">{formatPeso(variant.price)}</p>
         </div>
 
-        {message && (
-          <p className="line-clamp-2 rounded-md bg-destructive/10 px-1.5 py-1 text-[11px] font-medium leading-snug text-destructive">
-            {message}
-          </p>
-        )}
+        {/* Task 209.56E — this slot always renders, message or not, same
+            min-height reservation pattern the title above already uses.
+            Previously the message paragraph only rendered (and only took up
+            space) for unavailable items, so an unavailable card was taller
+            than every available card around it in the same grid row — the
+            grid opts every card out of row-stretch (`self-start` on Card,
+            see globals.css comment) specifically so a genuinely long title
+            doesn't stretch its neighbors, which means nothing else compensates
+            for a per-card height difference like this one. line-clamp-1 (not
+            2) keeps the reserved height to a single line's worth, since
+            readiness-rejection reasons are short phrases in practice — a rare
+            two-line reason still displays in full (line-clamp only caps
+            visual truncation, not layout height), it just makes that one
+            card very slightly taller than its siblings instead of every
+            unavailable card being taller. */}
+        <div className="min-h-[1.5rem]">
+          {message && (
+            <p className="line-clamp-1 rounded-md bg-destructive/10 px-1.5 py-1 text-[11px] font-medium leading-snug text-destructive">
+              {message}
+            </p>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

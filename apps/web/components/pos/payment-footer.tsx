@@ -322,7 +322,16 @@ export const PaymentFooter = memo(function PaymentFooter({
             </Alert>
           )}
 
-          {chargeDisabledReason && (
+          {/* Task 209.56E — chargeDisabledReason's first check is `isPending`
+              ("Checkout is already processing."), so during a normal single
+              click this Alert rendered at the same time as the button's own
+              "Processing…" spinner label below — two overlapping messages
+              for one ordinary in-flight charge (this is what the owner's
+              screenshot showed). isChargePending already fully communicates
+              that state via the button; suppress the Alert only for that one
+              reason so it's reserved for genuinely actionable blockers (not
+              clocked in, no branch, etc.). */}
+          {chargeDisabledReason && !isChargePending && (
             <Alert className="border-none bg-muted px-3 py-1.5" role="status" aria-live="polite">
               <AlertDescription className="app-pos-helper-text font-medium text-foreground">{chargeDisabledReason}</AlertDescription>
             </Alert>

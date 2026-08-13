@@ -35,7 +35,7 @@ import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/
 import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
-import { useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
+import { useDiscountComplianceReport, useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
 
 const DEFAULT_RANGE_DAYS = 7;
 const QUERY_LIMIT = 100;
@@ -509,6 +509,26 @@ export function ReportsView() {
     date_to: dateRange.to,
     limit: QUERY_LIMIT,
   });
+  // Task 209.56E — the Discount Compliance tab's headline KPIs (total
+  // discount amount, discounted-transaction count, PWD/Senior counts) used
+  // to be reduced client-side from completedQuery's rows, which are capped
+  // at QUERY_LIMIT (100). Any branch/date-range with more than 100 completed
+  // transactions silently undercounted every one of those numbers — the
+  // same reused reducer must've felt consistent internally but is a real
+  // financial-reporting gap. getDiscountCompliance is a SQL groupBy over
+  // the full date range (already what Admin Reports uses for the same
+  // numbers), so switching these 4 KPIs to it removes the cap without a
+  // second discount formula: it's the same discountAmount/discountType
+  // columns, aggregated server-side instead of paginated-then-reduced.
+  // The detail table and proof-compliance stats below still read from
+  // completedQuery, since they need per-transaction rows the aggregate
+  // doesn't carry — that page-sized scope is unchanged by this fix.
+  const discountComplianceQuery = useDiscountComplianceReport({
+    branch_id: activeBranchId ?? undefined,
+    date_from: dateRange.from,
+    date_to: dateRange.to,
+    limit: 25,
+  });
   // Sold Product Transactions — deliberately not status-filtered (unlike
   // completedQuery above) so the tab's own Status filter can show voided/
   // refunded rows too.
@@ -628,12 +648,21 @@ export function ReportsView() {
   const voidRefundLoading = voidedQuery.isLoading || refundedQuery.isLoading;
   const voidRefundError = voidedQuery.isError || refundedQuery.isError;
 
-  // Discount Compliance (reuses the completed-transactions fetch above)
+  // Discount Compliance — headline KPIs come from the server-side groupBy
+  // aggregate (see discountComplianceQuery above), not the page-capped
+  // completedTransactions list. discountedTransactions itself is still
+  // needed below for the per-transaction detail table and proof-compliance
+  // stats, which the aggregate's rows don't carry.
   const discountedTransactions = completedTransactions.filter((t) => t.discount_type !== null);
-  const totalDiscountedTransactions = discountedTransactions.length;
-  const pwdDiscounts = discountedTransactions.filter((t) => t.discount_type === 'pwd').length;
-  const seniorCitizenDiscounts = discountedTransactions.filter((t) => t.discount_type === 'senior_citizen').length;
-  const totalDiscountAmount = discountedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
+  const discountComplianceRows = discountComplianceQuery.data?.data ?? [];
+  const totalDiscountedTransactions = discountComplianceRows.reduce((sum, r) => sum + r.transaction_count, 0);
+  const pwdDiscounts = discountComplianceRows
+    .filter((r) => r.discount_type === 'pwd')
+    .reduce((sum, r) => sum + r.transaction_count, 0);
+  const seniorCitizenDiscounts = discountComplianceRows
+    .filter((r) => r.discount_type === 'senior_citizen')
+    .reduce((sum, r) => sum + r.transaction_count, 0);
+  const totalDiscountAmount = discountComplianceRows.reduce((sum, r) => sum + r.total_discount_amount, 0);
   // Task 209.5 — compact proof-compliance summary, added to this tab's
   // existing KPI row (no new dashboard widget, no redesign). Proof is only
   // ever meaningful for PWD/Senior Citizen rows — Employee/Promotional
@@ -923,10 +952,10 @@ export function ReportsView() {
             isLoading={completedQuery.isLoading}
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} isLoading={completedQuery.isLoading} />
-            <KpiCard title="PWD Discounts" value={pwdDiscounts} isLoading={completedQuery.isLoading} />
-            <KpiCard title="Senior Citizen Discounts" value={seniorCitizenDiscounts} isLoading={completedQuery.isLoading} />
-            <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={completedQuery.isLoading} />
+            <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} isLoading={discountComplianceQuery.isLoading} />
+            <KpiCard title="PWD Discounts" value={pwdDiscounts} isLoading={discountComplianceQuery.isLoading} />
+            <KpiCard title="Senior Citizen Discounts" value={seniorCitizenDiscounts} isLoading={discountComplianceQuery.isLoading} />
+            <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={discountComplianceQuery.isLoading} />
           </div>
           {canViewDiscountProof && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">

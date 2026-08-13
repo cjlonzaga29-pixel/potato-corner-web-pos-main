@@ -37,7 +37,17 @@ export async function shiftGuard(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  const activeAttendance = await attendanceRepository.findActiveRecord(req.user.user_id);
+  // Task 209.56E — attendance and the branch's active shift are independent
+  // reads (different tables, neither keyed off the other's result), so
+  // there's no need to wait for attendance to resolve before starting the
+  // shift lookup. If attendance turns out invalid below, the already-
+  // fetched `shift` value is simply discarded before the 403 response —
+  // no different from never having fetched it, since nothing reads or
+  // mutates it before that check.
+  const [activeAttendance, initialShift] = await Promise.all([
+    attendanceRepository.findActiveRecord(req.user.user_id),
+    cashRepository.findActiveShiftByBranch(branchId),
+  ]);
   if (!activeAttendance || activeAttendance.branchId !== branchId) {
     res.status(403).json({ data: null, error: { code: 'NOT_CLOCKED_IN' }, meta: null });
     return;
@@ -47,7 +57,7 @@ export async function shiftGuard(req: Request, res: Response, next: NextFunction
   // shift per branch (shift_one_open_per_branch), so a different cashier's
   // already-open shift must be reused here rather than triggering another
   // create attempt that would P2002 (Task 103).
-  let shift = await cashRepository.findActiveShiftByBranch(branchId);
+  let shift = initialShift;
   if (!shift) {
     // autoOpenShift returns the public response DTO (like every other
     // cashService method), not the raw Prisma row req.activeShift expects —

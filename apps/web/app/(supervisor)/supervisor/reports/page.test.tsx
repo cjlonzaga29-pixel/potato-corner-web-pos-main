@@ -25,6 +25,7 @@ const {
   mockUseAuthStore,
   mockUseRequestExport,
   mockUseReportsRealtimeSync,
+  mockUseDiscountComplianceReport,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
   mockUseTransactions: vi.fn(),
@@ -40,6 +41,7 @@ const {
   mockUseAuthStore: vi.fn(),
   mockUseRequestExport: vi.fn(),
   mockUseReportsRealtimeSync: vi.fn(),
+  mockUseDiscountComplianceReport: vi.fn(),
 }));
 
 vi.mock('@/stores/branch.store', () => ({
@@ -85,6 +87,7 @@ vi.mock('@/stores/auth.store', () => ({
 vi.mock('@/hooks/queries/use-reports', () => ({
   useRequestExport: mockUseRequestExport,
   useReportsRealtimeSync: mockUseReportsRealtimeSync,
+  useDiscountComplianceReport: mockUseDiscountComplianceReport,
 }));
 
 /**
@@ -294,6 +297,7 @@ beforeEach(() => {
   mockUseTransaction.mockReturnValue({ data: undefined, isLoading: false });
   mockUseRequestExport.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseReportsRealtimeSync.mockReturnValue(undefined);
+  mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [] }, isLoading: false });
 });
 
 afterEach(() => {

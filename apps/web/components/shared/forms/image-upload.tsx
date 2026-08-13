@@ -1,9 +1,10 @@
 'use client';
 
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { Camera, Check, ImageIcon, Loader2, RotateCcw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 
 type CaptureMode = 'live_capture' | 'gallery_upload';
@@ -47,31 +48,51 @@ async function drawToCanvas(source: ImageBitmapSource): Promise<HTMLCanvasElemen
 }
 
 /**
- * Task 209.56E — "Take Photo" invokes the device's own native camera capture
- * UI via `<input type="file" capture="environment">` instead of an in-page
- * `getUserMedia()` live preview. This replaced an earlier implementation
- * that opened a large embedded `<video>` preview inside the checkout modal
- * (owner-reported "Live capture" complaint) and that carried real recurring
- * cost: getUserMedia needs explicit permission handling, stream cleanup on
- * unmount/modal-close (a camera left running was a shipped bug — Task
- * 209.16), and per-browser quirks (Task 209.18's black-preview regression,
- * Task 209.20's oversized preview). The native `capture` attribute has none
- * of that: the OS owns the camera UI and the permission prompt, the browser
- * only ever receives a finished file, and there is no stream to leak.
+ * Task 209.56E — "Take Photo" on mobile/tablet invokes the device's own
+ * native camera capture UI via `<input type="file" capture="environment">`
+ * rather than an in-page `getUserMedia()` live preview: the OS owns the
+ * camera UI and the permission prompt there, the browser only ever receives
+ * a finished file, and there is no stream to leak.
  *
- * `capture="environment"` is honored by mobile/tablet browsers (opens the
- * rear camera directly); desktop browsers that don't support `capture`
- * silently ignore it and fall back to their normal OS file picker — most
- * desktop OS file pickers (Windows, macOS) offer their own "camera" option
- * inside that picker, so a desktop cashier terminal still has a working
- * capture path, just via the OS chrome instead of an in-page one. This is
- * the graceful degradation the spec provides for a `capture` attribute an
- * engine doesn't support — no feature-detection branch is needed for it,
- * unlike getUserMedia's own must-detect-and-fall-back-in-JS story.
+ * Desktop/laptop browsers largely ignore `capture` and fall back to the OS
+ * file picker instead of a camera — in practice that meant "Take Photo" on a
+ * Windows/macOS cashier terminal opened the file picker, not the webcam.
+ * Task 209.x reintroduces a `getUserMedia()` camera modal, but scoped to
+ * desktop/laptop only (see `isMobileOrTablet` below), and specifically
+ * guards the three failure modes that got the original in-page preview
+ * pulled in 209.56E: every path that can end the capture (Capture, Cancel,
+ * unmount, re-invoking Take Photo) routes through `stopCameraStream`, which
+ * is idempotent and always runs before a new stream is requested — so there
+ * is no code path that leaves a stream running (Task 209.16) or opens a
+ * second one (Task 209.20). The modal is a dedicated `Dialog`, not embedded
+ * in the checkout panel.
  *
  * "Upload from Gallery" stays a separate, `capture`-less file input so a
  * cashier can always pick an existing photo instead of taking a new one.
  */
+type NavigatorWithUserAgentData = Navigator & { userAgentData?: { mobile?: boolean } };
+
+/**
+ * Deliberately not screen-width-based (a desktop window can be narrow, a
+ * tablet can be wide). `userAgentData.mobile` is authoritative where present;
+ * otherwise fall back to a UA sniff, plus an iPadOS-specific check since
+ * iPadOS 13+ reports as "Macintosh" but — unlike a real Mac — exposes
+ * multi-point touch.
+ */
+function isMobileOrTablet(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const uaData = (navigator as NavigatorWithUserAgentData).userAgentData;
+  if (uaData && typeof uaData.mobile === 'boolean') return uaData.mobile;
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
+  if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
+function isGetUserMediaSupported(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function';
+}
+
 export function ImageUpload({ onImageSelected, label = 'Photo', description, required }: ImageUploadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const captureInputRef = useRef<HTMLInputElement>(null);
@@ -81,6 +102,101 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
+
+  /** Idempotent — safe to call whether or not a stream is active. Every capture-ending path (Capture, Cancel, unmount, re-open) routes through this so a stream can never be left running or duplicated. */
+  function stopCameraStream() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
+  useEffect(() => stopCameraStream, []);
+
+  async function startCamera(deviceId?: string) {
+    stopCameraStream();
+    setCameraError(null);
+    setIsStartingCamera(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        try {
+          await videoRef.current.play();
+        } catch {
+          // Autoplay can be rejected by browser policy even though the stream itself is valid — the <video> element still renders frames once srcObject is set.
+        }
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setVideoDevices(devices.filter((device) => device.kind === 'videoinput'));
+      } catch {
+        // Device listing is a nice-to-have (camera switcher) — the preview above already works without it.
+      }
+    } catch (error) {
+      const name = error && typeof error === 'object' && 'name' in error ? String((error as { name: unknown }).name) : '';
+      setCameraError(
+        name === 'NotAllowedError' || name === 'PermissionDeniedError'
+          ? 'Camera access was blocked. Allow camera permission in your browser or upload an image instead.'
+          : 'Could not access the camera. Use Upload from Gallery instead.',
+      );
+    } finally {
+      setIsStartingCamera(false);
+    }
+  }
+
+  function handleTakePhotoClick() {
+    if (isCameraOpen) return;
+    if (isMobileOrTablet()) {
+      captureInputRef.current?.click();
+      return;
+    }
+    if (!isGetUserMediaSupported()) {
+      setCameraError('Camera is not available on this device/browser. Use Upload from Gallery.');
+      return;
+    }
+    setCameraError(null);
+    setIsCameraOpen(true);
+    void startCamera(selectedDeviceId);
+  }
+
+  function handleCancelCamera() {
+    stopCameraStream();
+    setIsCameraOpen(false);
+    setCameraError(null);
+  }
+
+  function handleSwitchCamera(deviceId: string) {
+    setSelectedDeviceId(deviceId);
+    void startCamera(deviceId);
+  }
+
+  async function handleCapturePhoto() {
+    const video = videoRef.current;
+    if (!video || !streamRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await compressCanvas(canvas);
+    const file = new File([blob], `camera-capture-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    stopCameraStream();
+    setIsCameraOpen(false);
+    await loadSelectedFile(file, 'live_capture');
+  }
 
   async function loadSelectedFile(selected: File, type: CaptureMode) {
     const validationMessage = validateFile(selected);
@@ -156,7 +272,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
 
       {!previewUrl && (
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button type="button" variant="outline" className="touch-target flex-1" onClick={() => captureInputRef.current?.click()}>
+          <Button type="button" variant="outline" className="touch-target flex-1" onClick={handleTakePhotoClick}>
             <Camera className="mr-2 h-4 w-4" />
             Take Photo
           </Button>
@@ -205,16 +321,69 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         </Alert>
       )}
 
+      {!isCameraOpen && cameraError && (
+        <Alert variant="destructive" className="px-3 py-2">
+          <AlertDescription>{cameraError}</AlertDescription>
+        </Alert>
+      )}
+
+      <Dialog open={isCameraOpen} onOpenChange={(open) => !open && handleCancelCamera()}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Take Photo</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {cameraError && (
+              <Alert variant="destructive" className="px-3 py-2">
+                <AlertDescription>{cameraError}</AlertDescription>
+              </Alert>
+            )}
+            <div className="relative aspect-video w-full overflow-hidden rounded-md bg-black">
+              <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+              {isStartingCamera && (
+                <div className="absolute inset-0 flex items-center justify-center text-white">
+                  <Loader2 className="h-6 w-6 animate-spin" aria-hidden="true" />
+                </div>
+              )}
+            </div>
+            {videoDevices.length > 1 && (
+              <select
+                value={selectedDeviceId ?? ''}
+                onChange={(event) => handleSwitchCamera(event.target.value)}
+                className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                aria-label="Select camera"
+              >
+                {videoDevices.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Camera ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={handleCancelCamera}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void handleCapturePhoto()} disabled={!streamRef.current || isStartingCamera}>
+              <Camera className="mr-2 h-4 w-4" />
+              Capture Photo
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {previewUrl && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-destructive' : 'bg-info')} />
             {mode === 'live_capture' ? 'Photo captured' : 'Gallery upload'}
           </div>
-          {/* Compact thumbnail only — no permanent/embedded camera preview.
-              Capped via the same density-aware token the old live preview
-              used, kept here so this pending-confirm state can never grow
-              past what a checkout footer can spare at any density tier. */}
+          {/* Compact thumbnail only — the live camera preview above (if any)
+              is torn down before this state renders. Capped via the same
+              density-aware token the old live preview used, kept here so
+              this pending-confirm state can never grow past what a checkout
+              footer can spare at any density tier. */}
           {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}
           <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
 

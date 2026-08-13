@@ -6,19 +6,21 @@ type BranchErrorCtor = new (code: string, message: string, statusCode?: number, 
 /**
  * super_admin sees every branch regardless of status.
  *
- * supervisor is organization-wide by product rule (not assignment-scoped):
- * they see every currently-ACTIVE branch, resolved fresh from the database
+ * supervisor is assignment-scoped: their active UserBranchAssignment rows
+ * (branch must also currently be active), resolved fresh from the database
  * on every call — never the JWT's `branch_ids` claim, which is only ever a
- * snapshot from login/refresh time and would otherwise hide branches
- * created or activated after the token was minted, or keep exposing a
- * branch that's since gone inactive.
+ * snapshot from login/refresh time and would otherwise miss an assignment
+ * added after the token was minted, keep exposing one an Admin just
+ * removed, or keep exposing a branch that's since gone inactive. A
+ * supervisor with zero active assignments gets back an empty array — fail
+ * closed, never every branch (Supervisor Branch Assignment, Phase 8).
  *
  * branch/staff remain scoped to their JWT branch_ids (always exactly one) —
  * unchanged by this rule, since those roles are still assignment-scoped.
  */
 export async function getAccessibleBranchIds(actor: JwtPayload): Promise<string[] | 'all'> {
   if (actor.role === ROLES.SUPER_ADMIN) return 'all';
-  if (actor.role === ROLES.SUPERVISOR) return branchesRepository.findAllActiveBranchIds();
+  if (actor.role === ROLES.SUPERVISOR) return branchesRepository.findAllActiveBranchIds(actor.user_id);
   return actor.branch_ids;
 }
 

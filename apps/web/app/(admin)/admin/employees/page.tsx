@@ -3,8 +3,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
+import { Plus } from 'lucide-react';
 import { ROLE_LABELS, type EmployeeResponse, type EmploymentType, type Role } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { DataTable } from '@/components/shared/data-table';
@@ -12,6 +14,7 @@ import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
 import { useEmployees } from '@/hooks/queries/use-employees';
+import { AdminCreateEmployeeDialog } from '@/components/admin/employees/create-employee-dialog';
 
 const ROLE_FILTERS: { value: string; label: string }[] = [
   { value: 'all', label: 'All Roles' },
@@ -33,7 +36,13 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: 'false', label: 'Inactive' },
 ];
 
-/** Read-only overview — employee creation and management happen in the Supervisor console. */
+/**
+ * Cross-branch overview. Supervisor and Staff accounts are still created
+ * day-to-day from the Supervisor console (branch-scoped) — this page adds
+ * the one flow the Supervisor console can't do: Super Admin creating a
+ * Supervisor account and assigning it branches, since only Super Admin may
+ * create a non-staff account (employees.service.ts's createEmployee).
+ */
 export default function EmployeeListPage() {
   const router = useRouter();
   const [search, setSearch] = useState('');
@@ -41,6 +50,7 @@ export default function EmployeeListPage() {
   const [employmentType, setEmploymentType] = useState('all');
   const [status, setStatus] = useState('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  const [createOpen, setCreateOpen] = useState(false);
 
   const { data, isLoading, isError, refetch } = useEmployees({
     role: role === 'all' ? undefined : (role as Role),
@@ -94,9 +104,15 @@ export default function EmployeeListPage() {
 
   return (
     <div className="app-section app-section-gap">
-      <div>
-        <h1 className="app-title font-bold">Employees</h1>
-        <p className="text-sm text-muted-foreground">Read-only overview across all branches. Creation and management happen in the Supervisor console.</p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="app-title font-bold">Employees</h1>
+          <p className="text-sm text-muted-foreground">Overview across all branches. Staff are managed from the Supervisor console.</p>
+        </div>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Add Employee
+        </Button>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -175,8 +191,10 @@ export default function EmployeeListPage() {
         onPaginationChange={setPagination}
         rowCount={data?.total ?? 0}
         onRowClick={(employee) => router.push(`/admin/employees/${employee.id}`)}
-        emptyState={<EmptyState title="No employees yet" description="Employees are created in the Supervisor console." />}
+        emptyState={<EmptyState title="No employees yet" description="Add a Supervisor, or create Staff from the Supervisor console." />}
       />
+
+      <AdminCreateEmployeeDialog open={createOpen} onOpenChange={setCreateOpen} />
     </div>
   );
 }

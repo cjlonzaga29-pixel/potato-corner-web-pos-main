@@ -102,7 +102,7 @@ export async function socketAuthMiddleware(socket: Socket, next: (err?: Error) =
  * room per accessible branch. Resolved via getAccessibleBranchIds — the same
  * database-sourced authorization the REST API uses — never the JWT's
  * `branch_ids` claim directly, so a supervisor's real-time rooms reflect
- * every currently-active branch rather than a stale login-time snapshot.
+ * their current branch assignments rather than a stale login-time snapshot.
  * branch/staff remain scoped to their (single) JWT branch_id, unchanged.
  * Returns the joined branch ids so the caller can mirror them into presence
  * tracking on connect/disconnect. Exported standalone (like

@@ -92,7 +92,7 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
   };
 }
 
-/** super_admin sees everything; supervisor is scoped to every active branch (database-sourced) — never trust a client-supplied branch list. */
+/** super_admin sees everything; supervisor is scoped to their active branch assignments (database-sourced) — never trust a client-supplied branch list. */
 async function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWithAssignments): Promise<void> {
   const accessible = await getAccessibleBranchIds(requestingUser);
   if (accessible === 'all') return;
@@ -219,8 +219,8 @@ export const employeesService = {
     // Router permits both supervisor and branch actors here (adminOrBranch /
     // adminSupervisorOrBranch) — only super_admin may create a non-staff
     // account or assign branches outside the actor's accessible scope.
-    // Supervisor's scope is every active branch (database-sourced, not the
-    // JWT's branch_ids); branch stays JWT-scoped, unchanged.
+    // Supervisor's scope is their active branch assignments (database-sourced,
+    // not the JWT's branch_ids); branch stays JWT-scoped, unchanged.
     if (createdBy.role === ROLES.SUPERVISOR || createdBy.role === ROLES.BRANCH) {
       if (!isStaff) {
         throw new EmployeeError('INSUFFICIENT_PERMISSIONS', 'Only Super Admin may create a non-staff account', 403);

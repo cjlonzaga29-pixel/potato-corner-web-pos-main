@@ -260,7 +260,7 @@ describe('SupervisorDashboardPage', () => {
     render(<SupervisorDashboardPage />);
 
     expect(screen.queryByText('No branch configured')).not.toBeInTheDocument();
-    expect(screen.queryByText('No active branches available')).not.toBeInTheDocument();
+    expect(screen.queryByText('No branches assigned')).not.toBeInTheDocument();
   });
 
   it('shows an error state, not the no-branch message, when fetching active branches fails', () => {
@@ -273,13 +273,14 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.queryByText('No branch configured')).not.toBeInTheDocument();
   });
 
-  it('shows the zero-active-branches empty state only when the API genuinely returns none', () => {
+  it('shows the zero-assignments empty state (fail closed, never a global fallback) when the API returns no branches', () => {
     mockBranchState({ activeBranchId: null, activeBranch: null });
     mockUseBranches.mockReturnValue({ data: { branches: [], total: 0 }, isLoading: false, isError: false });
 
     render(<SupervisorDashboardPage />);
 
-    expect(screen.getByText('No active branches available')).toBeInTheDocument();
+    expect(screen.getByText('No branches assigned')).toBeInTheDocument();
+    expect(screen.getByText('Contact your administrator to get access to a branch.')).toBeInTheDocument();
     expect(screen.queryByText('No branch configured')).not.toBeInTheDocument();
   });
 

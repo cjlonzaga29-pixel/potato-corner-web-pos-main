@@ -100,10 +100,14 @@ export default function SupervisorDashboardPage() {
     }
 
     if ((branchesData?.branches.length ?? 0) === 0) {
+      // GET /api/branches?status=active is Supervisor-branch-assignment-scoped
+      // (lib/branch-access.ts) — an empty result here means this account has
+      // zero active UserBranchAssignment rows, not that the system has no
+      // active branches. Fail closed: no assignments, no implicit access.
       return (
         <EmptyState
-          title="No active branches available"
-          description="There are no active branches yet. Ask a Super Admin to create or activate one."
+          title="No branches assigned"
+          description="Contact your administrator to get access to a branch."
         />
       );
     }

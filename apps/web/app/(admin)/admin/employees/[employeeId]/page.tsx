@@ -20,6 +20,7 @@ import { useAuditLogs } from '@/hooks/queries/use-audit-logs';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { PayrollDataDialog } from '@/components/admin/employees/payroll-data-dialog';
+import { ManageBranchesDialog } from '@/components/admin/employees/manage-branches-dialog';
 
 interface EmployeeDetailPageProps {
   params: Promise<{ employeeId: string }>;
@@ -30,6 +31,7 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
   const { data: employee, isLoading, isError, refetch } = useEmployee(employeeId);
 
   const [payrollOpen, setPayrollOpen] = useState(false);
+  const [manageBranchesOpen, setManageBranchesOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -129,9 +131,18 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
 
         <TabsContent value="assignments" className="space-y-4">
           <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Branch Assignments</CardTitle>
-              <CardDescription>Branches this employee currently has access to. Manage from the Supervisor console.</CardDescription>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-base">Branch Assignments</CardTitle>
+                <CardDescription>Branches this employee currently has access to.</CardDescription>
+              </div>
+              {employee.role !== 'super_admin' && (
+                <RoleGuard allowedRoles={['super_admin']}>
+                  <Button variant="outline" size="sm" onClick={() => setManageBranchesOpen(true)}>
+                    Manage Branches
+                  </Button>
+                </RoleGuard>
+              )}
             </CardHeader>
             <CardContent>
               {employee.branch_assignments.length === 0 ? (
@@ -187,6 +198,7 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
 
       <RoleGuard allowedRoles={['super_admin']}>
         <PayrollDataDialog open={payrollOpen} onOpenChange={setPayrollOpen} employee={employee} />
+        <ManageBranchesDialog open={manageBranchesOpen} onOpenChange={setManageBranchesOpen} employee={employee} />
       </RoleGuard>
     </div>
   );

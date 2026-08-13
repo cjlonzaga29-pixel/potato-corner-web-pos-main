@@ -301,10 +301,10 @@ describe('branch-guard middleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  // Supervisor is organization-wide over every currently-active branch,
-  // resolved from the database (findAllActiveBranchIds) — never the JWT's
-  // branch_ids claim, which branchGuard no longer reads for this role at all.
-  it('supervisor with branch_id in the database-sourced active-branch list passes', async () => {
+  // Supervisor is scoped to their active UserBranchAssignment rows,
+  // resolved from the database (findAllActiveBranchIds(userId)) — never the
+  // JWT's branch_ids claim, which branchGuard no longer reads for this role at all.
+  it('supervisor with branch_id in their database-sourced assignment list passes', async () => {
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1', 'branch-2']);
     const req = mockReq({
       user: { user_id: 's1', role: ROLES.SUPERVISOR, email: 's@test.com', branch_ids: [], iat: 0, exp: 9999999999 },
@@ -316,7 +316,7 @@ describe('branch-guard middleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it('supervisor with branch_id NOT in the database-sourced active-branch list returns 403 BRANCH_ACCESS_DENIED', async () => {
+  it('supervisor with branch_id NOT in their database-sourced assignment list returns 403 BRANCH_ACCESS_DENIED', async () => {
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
     const req = mockReq({
       user: { user_id: 's1', role: ROLES.SUPERVISOR, email: 's@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
@@ -328,16 +328,16 @@ describe('branch-guard middleware', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
   });
 
-  it('supervisor with a stale/empty JWT branch_ids still passes for a currently-active branch (params)', async () => {
-    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
+  it('supervisor with zero active assignments returns 403 even for a currently-active branch — fail closed', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
     const req = mockReq({
       user: { user_id: 's1', role: ROLES.SUPERVISOR, email: 's@test.com', branch_ids: [], iat: 0, exp: 9999999999 },
       params: { branchId: 'branch-1' },
     });
     const res = mockRes();
-    const next = vi.fn();
-    await branchGuard(req, res, next);
-    expect(next).toHaveBeenCalledOnce();
+    await branchGuard(req, res, vi.fn());
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
   });
 
   it('supervisor with valid branch_id in query passes', async () => {
@@ -532,11 +532,11 @@ describe('cross-role access boundary tests (full authenticate + authorize/branch
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  // Supervisor access is resolved from the database's active-branch list
-  // (findAllActiveBranchIds), never the JWT's branch_ids claim — the token's
-  // branch_ids argument here is now irrelevant to access and is only kept
-  // non-empty because the schema requires it for the supervisor variant.
-  it('supervisor JWT can access their own branch data', async () => {
+  // Supervisor access is resolved from the database's active-assignment list
+  // (findAllActiveBranchIds(userId)), never the JWT's branch_ids claim — the
+  // token's branch_ids argument here is now irrelevant to access and is only
+  // kept non-empty because the schema requires it for the supervisor variant.
+  it('supervisor JWT can access a branch in their database-sourced assignment list', async () => {
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1, BRANCH_2]);
     const token = generateSupervisorToken([BRANCH_1, BRANCH_2]);
     const req = mockReq({ ...authHeader(token), params: { branchId: BRANCH_2 } });
@@ -546,7 +546,7 @@ describe('cross-role access boundary tests (full authenticate + authorize/branch
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('supervisor JWT can access an active branch not present in their (stale) JWT branch_ids', async () => {
+  it('supervisor JWT can access a newly-assigned branch not present in their (stale) JWT branch_ids', async () => {
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1, BRANCH_OTHER]);
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { branchId: BRANCH_OTHER } });
@@ -556,10 +556,21 @@ describe('cross-role access boundary tests (full authenticate + authorize/branch
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it("supervisor JWT cannot access a branch that isn't currently active — 403 BRANCH_ACCESS_DENIED", async () => {
+  it("supervisor JWT cannot access a branch outside their assignments, even one listed in their (stale) JWT branch_ids — 403 BRANCH_ACCESS_DENIED", async () => {
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
-    const token = generateSupervisorToken([BRANCH_1]);
+    const token = generateSupervisorToken([BRANCH_1, BRANCH_OTHER]);
     const req = mockReq({ ...authHeader(token), params: { branchId: BRANCH_OTHER } });
+    const res = mockRes();
+    const ok = await runChain([authenticate, adminOrSupervisor, branchGuard], req, res);
+    expect(ok).toBe(false);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+  });
+
+  it('supervisor JWT with zero active assignments is denied every branch — fail closed', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { branchId: BRANCH_1 } });
     const res = mockRes();
     const ok = await runChain([authenticate, adminOrSupervisor, branchGuard], req, res);
     expect(ok).toBe(false);

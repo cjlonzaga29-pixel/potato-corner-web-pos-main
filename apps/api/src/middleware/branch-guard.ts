@@ -8,9 +8,9 @@ import { hasBranchAccess } from '../lib/branch-access.js';
  * `authenticate`. Extracts branch_id from request params, query, or body
  * (in that order):
  * - super_admin: skip the check entirely, access to all branches.
- * - supervisor: organization-wide access to every currently-active branch,
- *   resolved from the database via hasBranchAccess — never the JWT's
- *   branch_ids claim, which is only a snapshot from login/refresh time.
+ * - supervisor: scoped to their active UserBranchAssignment rows, resolved
+ *   from the database via hasBranchAccess — never the JWT's branch_ids
+ *   claim, which is only a snapshot from login/refresh time.
  * - branch / staff: requested branch_id must equal the user's single assigned branch.
  * (An active-shift check for POS endpoints is a separate, route-specific
  * middleware — not duplicated here.)

@@ -57,9 +57,9 @@ function toReportResponse(report: ReadinessReport) {
 
 // R9 posture (same as universal-inventory / product-components): Admin owns
 // write paths elsewhere in the Recipe/BOM domain; this endpoint is read-only
-// for both Admin and Supervisor. Supervisor is organization-wide per
-// branch-access.ts (not assignment-scoped) — branch_id here filters the
-// report, it never widens what a role can already see.
+// for both Admin and Supervisor. Supervisor is branch-assignment-scoped per
+// branch-access.ts — branch_id here filters the report, it never widens
+// what a role can already see.
 router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;

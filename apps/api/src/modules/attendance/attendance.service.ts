@@ -120,8 +120,7 @@ function toListResponse(records: AttendanceRow[], total: number, page: number, l
  * - branch / supervisor: the employee must have an active
  *   UserBranchAssignment in one of the requester's accessible branches,
  *   resolved via lib/branch-access.ts (never duplicated here) — supervisor's
- *   org-wide reach over every currently-active branch stays defined in one
- *   place.
+ *   own branch-assignment scope stays defined in one place.
  * - super_admin: unrestricted.
  */
 async function assertEmployeeAccess(requestingUser: JwtPayload, employeeId: string): Promise<void> {

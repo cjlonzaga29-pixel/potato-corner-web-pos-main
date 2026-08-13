@@ -3,12 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { ROLES } from '@potato-corner/shared';
 
 /**
- * Supervisor branch access is an intentional authorization-model change:
- * Supervisor is organization-wide over every currently-ACTIVE branch,
- * resolved fresh from the database on every call — never the JWT's
- * `branch_ids` claim, and with no UserBranchAssignment requirement. These
- * tests pin that contract directly against the lib, independent of any one
- * module's usage of it.
+ * Supervisor branch access is assignment-scoped: a Supervisor sees only
+ * branches they have an active UserBranchAssignment for (and only while
+ * that branch is itself active), resolved fresh from the database on every
+ * call — never the JWT's `branch_ids` claim, which is only ever a snapshot
+ * from login/refresh time. These tests pin that contract directly against
+ * the lib, independent of any one module's usage of it.
  */
 vi.mock('../modules/branches/branches.repository.js', () => ({
   branchesRepository: {
@@ -31,8 +31,8 @@ class TestError extends Error {
 
 const IAT_EXP = { iat: 0, exp: 9999999999 };
 
-function supervisor(branchIds: string[] = []) {
-  return { user_id: randomUUID(), role: ROLES.SUPERVISOR, email: 'sup@test.com', branch_ids: branchIds, ...IAT_EXP };
+function supervisor(branchIds: string[] = [], userId?: string) {
+  return { user_id: userId ?? randomUUID(), role: ROLES.SUPERVISOR, email: 'sup@test.com', branch_ids: branchIds, ...IAT_EXP };
 }
 
 function branchActor(branchId: string) {
@@ -58,28 +58,26 @@ describe('getAccessibleBranchIds', () => {
     expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
   });
 
-  it('supervisor with zero UserBranchAssignment records (empty JWT branch_ids) receives every active branch', async () => {
-    const branchA = randomUUID();
-    const branchB = randomUUID();
-    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([branchA, branchB]);
+  it('supervisor with zero active branch assignments receives an empty array — fail closed, never every branch', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
 
     const result = await getAccessibleBranchIds(supervisor([]));
 
-    expect(result).toEqual([branchA, branchB]);
+    expect(result).toEqual([]);
   });
 
-  it('supervisor with a stale JWT branch_ids claim still receives every active branch from the database', async () => {
-    const staleBranch = randomUUID();
-    const currentBranch = randomUUID();
-    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([currentBranch]);
+  it('supervisor receives exactly their assigned branches, resolved by their user id', async () => {
+    const userId = randomUUID();
+    const assignedBranch = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([assignedBranch]);
 
-    const result = await getAccessibleBranchIds(supervisor([staleBranch]));
+    const result = await getAccessibleBranchIds(supervisor([], userId));
 
-    expect(result).toEqual([currentBranch]);
-    expect(result).not.toContain(staleBranch);
+    expect(result).toEqual([assignedBranch]);
+    expect(branchesRepository.findAllActiveBranchIds).toHaveBeenCalledWith(userId);
   });
 
-  it('a newly created/activated branch becomes visible to Supervisor immediately on the next call — no relogin needed', async () => {
+  it('an assignment added by an Admin becomes visible to Supervisor immediately on the next call — no relogin needed', async () => {
     const existingBranch = randomUUID();
     const newBranch = randomUUID();
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValueOnce([existingBranch]);
@@ -111,20 +109,32 @@ describe('getAccessibleBranchIds', () => {
 });
 
 describe('hasBranchAccess / assertBranchAccess', () => {
-  it('supervisor can access an active branch that is not present in their JWT branch_ids', async () => {
-    const activeBranch = randomUUID();
-    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([activeBranch]);
+  it('supervisor can access a branch they are actively assigned to', async () => {
+    const assignedBranch = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([assignedBranch]);
 
-    await expect(hasBranchAccess(supervisor([]), activeBranch)).resolves.toBe(true);
-    await expect(assertBranchAccess(supervisor([]), activeBranch, TestError)).resolves.toBeUndefined();
+    await expect(hasBranchAccess(supervisor([]), assignedBranch)).resolves.toBe(true);
+    await expect(assertBranchAccess(supervisor([]), assignedBranch, TestError)).resolves.toBeUndefined();
   });
 
-  it('supervisor cannot access an inactive branch', async () => {
-    const inactiveBranch = randomUUID();
-    // findAllActiveBranchIds only ever returns active branches — an inactive
-    // one is simply absent from the list.
+  it('supervisor cannot access an active branch they are not assigned to', async () => {
+    const assignedBranch = randomUUID();
+    const otherActiveBranch = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([assignedBranch]);
+
+    await expect(hasBranchAccess(supervisor([]), otherActiveBranch)).resolves.toBe(false);
+    await expect(assertBranchAccess(supervisor([]), otherActiveBranch, TestError)).rejects.toMatchObject({
+      code: 'BRANCH_ACCESS_DENIED',
+      statusCode: 403,
+    });
+  });
+
+  it('supervisor cannot access a branch assignment that has since gone inactive', async () => {
+    // findAllActiveBranchIds only ever returns rows where the branch is
+    // still active — a branch that's gone inactive is simply absent.
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
 
+    const inactiveBranch = randomUUID();
     await expect(hasBranchAccess(supervisor([]), inactiveBranch)).resolves.toBe(false);
     await expect(assertBranchAccess(supervisor([]), inactiveBranch, TestError)).rejects.toMatchObject({
       code: 'BRANCH_ACCESS_DENIED',
@@ -132,16 +142,8 @@ describe('hasBranchAccess / assertBranchAccess', () => {
     });
   });
 
-  it('supervisor cannot access a closed branch', async () => {
-    const otherActiveBranch = randomUUID();
-    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([otherActiveBranch]);
-
-    const closedBranch = randomUUID();
-    await expect(hasBranchAccess(supervisor([]), closedBranch)).resolves.toBe(false);
-  });
-
-  it('supervisor cannot access a deleted/unknown branch id', async () => {
-    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([randomUUID()]);
+  it('supervisor with zero assignments is denied every branch — no global fallback', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
 
     await expect(hasBranchAccess(supervisor([]), randomUUID())).resolves.toBe(false);
   });

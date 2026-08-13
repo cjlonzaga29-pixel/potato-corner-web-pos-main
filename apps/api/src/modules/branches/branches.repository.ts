@@ -105,18 +105,20 @@ export const branchesRepository = {
 
   /**
    * The database is the source of truth for Supervisor branch access
-   * (branch-access.ts's getAccessibleBranchIds) — every currently-active
-   * branch id, queried fresh on every call so a branch created or
-   * (re)activated after a supervisor's token was minted is visible
-   * immediately, with no UserBranchAssignment row required.
+   * (branch-access.ts's getAccessibleBranchIds) — this Supervisor's
+   * currently-active UserBranchAssignment rows, queried fresh on every call
+   * so an assignment added/removed by an Admin, or a branch that goes
+   * inactive, takes effect immediately without a relogin. A Supervisor with
+   * zero active assignments correctly gets back an empty array (fail-closed
+   * — see branch-access.ts), never every branch.
    */
-  async findAllActiveBranchIds(): Promise<string[]> {
-    const branches = await prisma.branch.findMany({
-      where: { status: 'active' },
-      select: { id: true },
-      orderBy: { createdAt: 'asc' },
+  async findAllActiveBranchIds(userId: string): Promise<string[]> {
+    const assignments = await prisma.userBranchAssignment.findMany({
+      where: { userId, removedAt: null, branch: { status: 'active' } },
+      select: { branchId: true },
+      orderBy: { assignedAt: 'asc' },
     });
-    return branches.map((b) => b.id);
+    return assignments.map((a) => a.branchId);
   },
 
   create(data: CreateBranchData, tx?: Prisma.TransactionClient) {

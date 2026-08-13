@@ -47,8 +47,10 @@ class MockMediaStreamTrack {
 
 class MockMediaStream {
   private tracks: MockMediaStreamTrack[];
+  readonly track: MockMediaStreamTrack;
   constructor(tracks: MockMediaStreamTrack[] = [new MockMediaStreamTrack()]) {
     this.tracks = tracks;
+    this.track = tracks[0] ?? new MockMediaStreamTrack();
   }
   getTracks() {
     return this.tracks;
@@ -192,7 +194,7 @@ describe('ImageUpload — desktop/laptop getUserMedia camera modal (Task 209.x)'
     await waitFor(() => expect(captureButton).not.toBeDisabled());
     fireEvent.click(captureButton);
 
-    await waitFor(() => expect(stream.getTracks()[0].stop).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(stream.track.stop).toHaveBeenCalledTimes(1));
   });
 
   it('stops all MediaStream tracks after Cancel and closes the modal', async () => {
@@ -205,7 +207,7 @@ describe('ImageUpload — desktop/laptop getUserMedia camera modal (Task 209.x)'
 
     fireEvent.click(screen.getByRole('button', { name: /Cancel/ }));
 
-    expect(stream.getTracks()[0].stop).toHaveBeenCalledTimes(1);
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
@@ -217,7 +219,7 @@ describe('ImageUpload — desktop/laptop getUserMedia camera modal (Task 209.x)'
     await waitFor(() => expect(document.querySelector('video')).not.toBeNull());
 
     unmount();
-    expect(stream.getTracks()[0].stop).toHaveBeenCalledTimes(1);
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
   });
 
   it('re-clicking Take Photo while the camera is already open does not request a second stream', async () => {

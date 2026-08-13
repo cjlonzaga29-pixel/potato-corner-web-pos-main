@@ -114,6 +114,14 @@ export const transactionsRepository = {
   findDiscountAuditTrail(filters: DiscountAuditFilters) {
     const where: Prisma.TransactionWhereInput = {
       discountType: { not: null },
+      // Must match reportsRepository.getDiscountCompliance's `status:
+      // 'completed'` filter (the summary KPIs and CSV/PDF export both read
+      // from that aggregate) — without it, a voided/refunded discounted
+      // transaction would appear in this drill-down but not in the summary
+      // row count/total it's opened from, breaking the reconciliation the
+      // report depends on. Voided/refunded discounts are covered separately
+      // by the Void/Refund report.
+      status: 'completed',
       ...(filters.branchIds !== 'all' ? { branchId: { in: filters.branchIds } } : {}),
       ...(filters.discountType ? { discountType: filters.discountType } : {}),
       ...(filters.dateFrom || filters.dateTo

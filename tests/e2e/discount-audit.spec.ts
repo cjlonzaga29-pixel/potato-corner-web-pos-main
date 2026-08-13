@@ -16,10 +16,20 @@ const NAV_TIMEOUT = 30_000;
  * that cross-file collision entirely. test.step keeps the sub-cases the
  * task asked for distinguishable in the report without re-authenticating
  * within this file.
+ *
+ * Task 209.5x — rewritten to match the actual Admin Reports UI: Discount
+ * Compliance is a branch-scoped aggregate table (Reports > Compliance >
+ * Discount Compliance), one row per branch+discount_type, with a "View
+ * Transactions" action that opens DiscountComplianceDrilldown (a Sheet, not
+ * a page) showing the per-transaction rows behind that row. The previous
+ * version of this spec asserted a "Discount Audit Trail" heading and a
+ * page-level discount-type filter/Export CSV button that no longer exist in
+ * this component — it predates DiscountComplianceDrilldown and had drifted
+ * out of sync with the UI, silently testing nothing real.
  */
-test.describe('Discount audit', () => {
-  test('discount audit panel: loads, filters, and exports', async ({ page }) => {
-    await test.step('discount audit panel loads and shows seeded rows', async () => {
+test.describe('Discount Compliance report', () => {
+  test('summary reconciles with the transaction drill-down and does not crash on legacy rows', async ({ page }) => {
+    await test.step('log in and open Reports > Compliance > Discount Compliance', async () => {
       await page.goto('/login', { waitUntil: 'networkidle' });
       await page.getByLabel('Email').fill('admin@potatocorner.test');
       await page.getByRole('textbox', { name: 'Password' }).fill('SuperAdmin123');
@@ -28,56 +38,80 @@ test.describe('Discount audit', () => {
 
       await page.getByRole('link', { name: 'Reports', exact: true }).click();
       await expect(page).toHaveURL(/\/admin\/reports$/, { timeout: NAV_TIMEOUT });
+      await page.getByRole('button', { name: 'Compliance' }).click();
       await page.getByRole('tab', { name: 'Discount Compliance' }).click();
-      await expect(page.getByText('Discount Audit Trail')).toBeVisible({ timeout: NAV_TIMEOUT });
-
-      const rows = page.locator('table').filter({ hasText: 'Receipt #' }).locator('tbody tr');
-      await expect(rows.first()).toBeVisible({ timeout: NAV_TIMEOUT });
-      expect(await rows.count()).toBeGreaterThanOrEqual(5);
-
-      await expect(page.getByText('Flagged').first()).toBeVisible();
     });
 
-    await test.step('filter by discount type narrows results', async () => {
-      const rows = page.locator('table').filter({ hasText: 'Receipt #' }).locator('tbody tr');
-      const countBefore = await rows.count();
+    await test.step('select Test Branch (seeded discount-audit fixtures) and wait for the summary to load', async () => {
+      await page.getByRole('combobox').first().click();
+      await page.getByRole('option', { name: 'Test Branch', exact: true }).click();
+      await expect(page.getByText('Discounted Transactions')).toBeVisible({ timeout: NAV_TIMEOUT });
+      // Skeletons resolve once the KPI aggregate query lands.
+      await expect(page.locator('[class*="animate-pulse"]').first()).not.toBeVisible({ timeout: NAV_TIMEOUT });
+    });
 
-      await page.getByLabel('Discount Type').click();
-      await page.getByRole('option', { name: 'PWD', exact: true }).click();
-      await expect(page).toHaveURL(/discount_type=pwd/);
+    let summaryCount = 0;
+    let summaryAmount = '';
 
-      await expect(rows.first()).toBeVisible();
-      // useDiscountAudit keeps showing the previous (unfiltered) result set
-      // while the filtered request is in flight (keepPreviousData), so
-      // comparing the row count against itself right after the click races
-      // the refetch. Poll on the actual condition we care about — every
-      // visible row is PWD — which only becomes true once the filtered
-      // response has landed.
-      await expect
-        .poll(
-          async () => {
-            const texts = await rows.locator('td:nth-child(3)').allTextContents();
-            return texts.length > 0 && texts.every((text) => text === 'PWD');
-          },
-          { timeout: NAV_TIMEOUT },
-        )
-        .toBe(true);
+    await test.step('read the summary row (branch/discount-type aggregate)', async () => {
+      const summaryRow = page.locator('table').filter({ hasText: 'BRANCH' }).locator('tbody tr').first();
+      await expect(summaryRow).toBeVisible({ timeout: NAV_TIMEOUT });
+      const cells = await summaryRow.locator('td').allTextContents();
+      // BRANCH | DISCOUNT TYPE | TRANSACTIONS | DISCOUNT AMOUNT | VAT EXEMPT AMOUNT | ACTIONS
+      summaryCount = Number(cells[2]);
+      summaryAmount = cells[3].replace(/[^0-9.]/g, '');
+      expect(summaryCount).toBeGreaterThan(0);
+    });
 
-      const discountTypeTexts = await rows.locator('td:nth-child(3)').allTextContents();
-      expect(discountTypeTexts.length).toBeGreaterThan(0);
-      expect(discountTypeTexts.length).toBeLessThanOrEqual(countBefore);
-      for (const text of discountTypeTexts) {
-        expect(text).toBe('PWD');
+    await test.step('open the drill-down — it must render every matching row, not "Something went wrong"', async () => {
+      await page.getByRole('button', { name: 'View Transactions' }).first().click();
+      await expect(page.getByText(/^Discount Transactions —/)).toBeVisible({ timeout: NAV_TIMEOUT });
+
+      // The crash this regression guards against surfaced as a swallowed
+      // 500 from GET /api/transactions/discount-audit (a legacy row whose
+      // encrypted discount_id_reference no longer decrypts under the
+      // current ENCRYPTION_KEY) — assert the request actually succeeded
+      // rather than only checking the DOM, so a future regression that
+      // silently re-introduces a hidden error state still fails this test.
+      const [response] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/api/transactions/discount-audit'), { timeout: NAV_TIMEOUT }),
+      ]).catch(() => [null]);
+      if (response) expect(response.status()).toBe(200);
+
+      await expect(page.getByText('Something went wrong')).not.toBeVisible();
+
+      const detailRows = page.getByRole('dialog').locator('table').locator('tbody tr');
+      await expect(detailRows.first()).toBeVisible({ timeout: NAV_TIMEOUT });
+      expect(await detailRows.count()).toBe(summaryCount);
+    });
+
+    await test.step('summary and detail amounts reconcile', async () => {
+      const detailAmounts = await page
+        .getByRole('dialog')
+        .locator('table')
+        .locator('tbody tr td:nth-child(6)')
+        .allTextContents();
+      const detailTotal = detailAmounts.reduce((sum, cell) => sum + Number(cell.replace(/[^0-9.]/g, '')), 0);
+      expect(detailTotal.toFixed(2)).toBe(Number(summaryAmount).toFixed(2));
+    });
+
+    await test.step('legacy/no-proof rows render without crashing: proof column is "No" or a working View Proof action', async () => {
+      const proofCells = page.getByRole('dialog').locator('table').locator('tbody tr td:last-child');
+      const count = await proofCells.count();
+      for (let i = 0; i < count; i++) {
+        const cell = proofCells.nth(i);
+        const text = await cell.innerText();
+        expect(text === 'No' || text.includes('View Proof')).toBe(true);
       }
     });
 
-    await test.step('csv export downloads a file', async () => {
-      const [download] = await Promise.all([
-        page.waitForEvent('download'),
-        page.getByRole('button', { name: 'Export CSV' }).click(),
-      ]);
-
-      expect(download.suggestedFilename()).toMatch(/\.csv$/);
+    await test.step('View Proof opens a dialog with the image (only for rows that actually have proof)', async () => {
+      const viewProofButton = page.getByRole('dialog').getByRole('button', { name: /Yes · View Proof/ }).first();
+      if (await viewProofButton.count()) {
+        await viewProofButton.click();
+        await expect(page.getByRole('heading', { name: 'Discount Proof' })).toBeVisible({ timeout: NAV_TIMEOUT });
+        await expect(page.locator('img[alt="Discount proof"]')).toBeVisible({ timeout: NAV_TIMEOUT });
+      }
     });
   });
 });

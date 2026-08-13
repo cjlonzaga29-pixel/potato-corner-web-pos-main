@@ -50,7 +50,12 @@ describe('ImageUpload — native device capture (Task 209.56E)', () => {
   it('the capture input carries capture="environment" so mobile/tablet browsers open the native rear-camera UI', () => {
     render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
     expect(captureInput().getAttribute('capture')).toBe('environment');
-    expect(captureInput().getAttribute('accept')).toBe('image/jpeg,image/png,image/webp');
+    // Task 209.56E follow-up — must stay the broad image/* wildcard, not a
+    // comma-separated MIME list: several Android browsers only reliably
+    // route capture="environment" to the camera app (not the gallery/
+    // library picker) when accept is this wildcard. validateFile() is the
+    // real type gate regardless of what this attribute allows through.
+    expect(captureInput().getAttribute('accept')).toBe('image/*');
   });
 
   it('a photo produced via the capture input previews and confirms as a live_capture', async () => {

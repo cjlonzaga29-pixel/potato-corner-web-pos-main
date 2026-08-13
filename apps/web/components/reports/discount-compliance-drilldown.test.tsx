@@ -137,4 +137,89 @@ describe('DiscountComplianceDrilldown', () => {
       true,
     );
   });
+
+  it('shows a legitimate "No discount transactions" empty state when none match the filter, not a crash', () => {
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [], total: 0, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('No discount transactions')).toBeInTheDocument();
+  });
+
+  it('shows a retryable error state instead of crashing when the request fails', () => {
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType="pwd"
+        dateFrom="2026-07-01"
+        dateTo="2026-07-31"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /retry|try again/i })).toBeInTheDocument();
+  });
+
+  it('renders legacy rows with no discount type, no customer reference, and no proof without crashing', () => {
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: {
+        data: [
+          {
+            id: 'txn-legacy',
+            branchId: 'branch-1',
+            transactionNumber: 'PC-GMA-001-20260601-000009',
+            cashierId: 'cashier-1',
+            discountType: null,
+            discountAmount: 15,
+            discountCustomerId: null,
+            discountCustomerIdHash: null,
+            hasDiscountProof: false,
+            discountProofType: null,
+            fraudFlagged: false,
+            createdAt: '2026-06-01T10:00:00.000Z',
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(
+      <DiscountComplianceDrilldown
+        open
+        branchId="branch-1"
+        branchName="Puregold GMA"
+        discountType={null}
+        dateFrom="2026-06-01"
+        dateTo="2026-06-30"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('PC-GMA-001-20260601-000009')).toBeInTheDocument();
+    expect(screen.getAllByText('—')).toHaveLength(2); // discount type dash + customer id/reference dash
+    expect(screen.getByText('No')).toBeInTheDocument();
+  });
 });

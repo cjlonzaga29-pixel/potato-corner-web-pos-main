@@ -2423,6 +2423,26 @@ describe('transactionsService.getDiscountAuditTrail', () => {
     expect(result.data[0]).toMatchObject({ discountCustomerId: null });
   });
 
+  it('does not crash the whole request when one row\'s discountCustomerIdEncrypted fails to decrypt (e.g. a rotated ENCRYPTION_KEY) — falls through to null instead', async () => {
+    const { decryptField } = await import('../../lib/encryption.js');
+    vi.mocked(decryptField).mockImplementationOnce(() => {
+      throw new Error('Unsupported state or unable to authenticate data');
+    });
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [
+        discountAuditRow({ id: 'txn-corrupted', discountCustomerIdEncrypted: 'garbled-ciphertext' }),
+        discountAuditRow({ id: 'txn-clean', discountCustomerIdEncrypted: 'encrypted(PWD-99999)' }),
+      ],
+      total: 2,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, superAdminActor, null);
+
+    expect(result.data).toHaveLength(2);
+    expect(result.data.find((r) => r.id === 'txn-corrupted')).toMatchObject({ discountCustomerId: null });
+    expect(result.data.find((r) => r.id === 'txn-clean')).toMatchObject({ discountCustomerId: 'decrypted(encrypted(PWD-99999))' });
+  });
+
   it('calls recordAuditLog with DISCOUNT_AUDIT_PII_ACCESSED only when at least one decryption occurred', async () => {
     vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
       rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],

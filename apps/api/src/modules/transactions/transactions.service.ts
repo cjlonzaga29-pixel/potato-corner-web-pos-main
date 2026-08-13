@@ -1176,8 +1176,20 @@ export const transactionsService = {
 
       let discountCustomerId: string | null = null;
       if (row.discountCustomerIdEncrypted && actor.role === 'super_admin') {
-        discountCustomerId = decryptField(row.discountCustomerIdEncrypted);
-        decrypted = true;
+        try {
+          discountCustomerId = decryptField(row.discountCustomerIdEncrypted);
+          decrypted = true;
+        } catch (error) {
+          // AES-GCM auth-tag failure — ciphertext written under a since-rotated
+          // ENCRYPTION_KEY, or otherwise corrupted. Never let one bad legacy row
+          // 500 the whole report: log server-side (transaction id only, never
+          // the ciphertext) and fall through with null, same as a transaction
+          // that never had a customer ID on file.
+          console.error('[discount-audit] failed to decrypt discountCustomerId', {
+            transactionId: row.id,
+            error: error instanceof Error ? error.message : error,
+          });
+        }
       }
 
       // Task 209.16 — built field-by-field rather than `...row` so two raw

@@ -60,7 +60,7 @@ export const createTransactionSchema = z
     payment_method: z.enum(paymentMethodValues),
     discount_type: z.enum(discountTypeValues).optional(),
     // PWD/Senior Citizen only — logged encrypted for BIR compliance.
-    discount_id_reference: z.string().min(1).optional(),
+    discount_id_reference: z.string().trim().min(1).optional(),
     // PROMO only — passed directly rather than computed (architecture doc §Discounts).
     discount_amount: z.number().nonnegative().optional(),
     cash_tendered: z.number().nonnegative().optional(),
@@ -275,7 +275,7 @@ export const offlineTransactionItemSchema = z
     items: z.array(cartItemSchema).min(1),
     payment_method: z.enum(paymentMethodValues),
     discount_type: z.enum(discountTypeValues).optional(),
-    discount_id_reference: z.string().min(1).optional(),
+    discount_id_reference: z.string().trim().min(1).optional(),
     discount_amount: z.number().nonnegative().optional(),
     cash_tendered: z.number().nonnegative().optional(),
     gcash_reference_number: z

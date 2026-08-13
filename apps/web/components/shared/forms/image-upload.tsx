@@ -176,10 +176,22 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
             className="hidden"
             onChange={(event) => void handleGalleryChange(event)}
           />
+          {/* Task 209.56E follow-up — a real-device test found this input opening
+              the gallery/library instead of the camera on several Android
+              browsers. The narrow, comma-separated `accept` list (matching
+              the gallery input above) is the cause: many Android WebView/
+              Chrome builds only reliably honor `capture` when `accept` is the
+              broad `image/*` wildcard — a specific MIME list makes them fall
+              back to the general file/library chooser instead of launching
+              the camera app. `accept="image/*"` here is not a security
+              relaxation: validateFile() re-checks the actual selected file's
+              type against ACCEPTED_MIME_TYPES regardless of what this
+              attribute let through, exactly as it already did before this
+              change. */}
           <input
             ref={captureInputRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/*"
             capture="environment"
             className="hidden"
             onChange={(event) => void handleCaptureChange(event)}

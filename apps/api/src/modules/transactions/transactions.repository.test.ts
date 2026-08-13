@@ -483,6 +483,24 @@ describe('transactionsRepository.findDiscountAuditTrail', () => {
       }),
     );
   });
+
+  it('filters to status: completed, matching reportsRepository.getDiscountCompliance so the drill-down reconciles with the summary KPIs/CSV/PDF export', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.transaction.count).mockResolvedValue(0);
+
+    await transactionsRepository.findDiscountAuditTrail({
+      branchIds: 'all',
+      page: 1,
+      limit: 25,
+    });
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: 'completed' }) }),
+    );
+    expect(prisma.transaction.count).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: 'completed' }) }),
+    );
+  });
 });
 
 describe('transactionsRepository.voidTransaction', () => {

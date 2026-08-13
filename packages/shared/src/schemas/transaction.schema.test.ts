@@ -106,3 +106,43 @@ describe('createTransactionSchema — items with selected_option_ids', () => {
     expect(result.success).toBe(true);
   });
 });
+
+describe('createTransactionSchema — discount_id_reference', () => {
+  const BASE_TRANSACTION = {
+    branch_id: '66666666-6666-4666-8666-666666666666',
+    payment_method: 'cash' as const,
+    cash_tendered: 100,
+    discount_type: 'pwd' as const,
+    items: [VALID_CART_ITEM],
+  };
+
+  it('rejects a whitespace-only discount_id_reference — trims before the min(1) check runs', () => {
+    const result = createTransactionSchema.safeParse({
+      ...BASE_TRANSACTION,
+      discount_id_reference: '       ',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('trims surrounding whitespace off an otherwise-valid discount_id_reference', () => {
+    const result = createTransactionSchema.safeParse({
+      ...BASE_TRANSACTION,
+      discount_id_reference: '  PWD-12345  ',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.discount_id_reference).toBe('PWD-12345');
+    }
+  });
+
+  it('accepts a non-empty discount_id_reference with no surrounding whitespace', () => {
+    const result = createTransactionSchema.safeParse({
+      ...BASE_TRANSACTION,
+      discount_id_reference: 'PWD-12345',
+    });
+
+    expect(result.success).toBe(true);
+  });
+});

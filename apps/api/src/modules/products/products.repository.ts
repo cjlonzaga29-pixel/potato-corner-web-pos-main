@@ -301,6 +301,9 @@ export const productsRepository = {
       },
       orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
       include: {
+        // CR-008 canonical category FK — POS catalog category tabs prefer
+        // this over the legacy free-text `category` column (see getPosCatalog).
+        productCategory: { select: { name: true, isActive: true } },
         variants: {
           where: { isActive: true },
           orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],

@@ -1723,6 +1723,92 @@ describe('productsService.getPosCatalog — Mix & Max snack options', () => {
   });
 });
 
+// Fast fix — Potato Corner category tabs. Products categorized through the
+// current admin UI only get `categoryId` (canonical ProductCategory FK) set,
+// leaving the legacy free-text `category` column null; getPosCatalog used to
+// read only that legacy column, so the POS category tab bar rendered empty.
+describe('productsService.getPosCatalog — category tabs (canonical ProductCategory)', () => {
+  function categoryCatalogProduct(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'product-1',
+      name: 'Cheese Fries',
+      category: null,
+      productCategory: null,
+      variants: [],
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([]);
+  });
+
+  it('derives the category tab from the canonical productCategory relation when the legacy category column is null', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      categoryCatalogProduct({ productCategory: { name: 'Fries', isActive: true } }),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.categories).toEqual(['Fries']);
+    expect(result.products[0]).toMatchObject({ category: 'Fries' });
+  });
+
+  it('prefers the canonical productCategory name over a stale legacy category string', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      categoryCatalogProduct({ category: 'Old Snacks', productCategory: { name: 'Fries', isActive: true } }),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.categories).toEqual(['Fries']);
+  });
+
+  it('falls back to the legacy category column when a product has no canonical productCategory', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      categoryCatalogProduct({ category: 'Snacks', productCategory: null }),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.categories).toEqual(['Snacks']);
+  });
+
+  it('excludes an archived productCategory from the tab list, falling back to the legacy value for that product', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      categoryCatalogProduct({ category: 'Legacy Fallback', productCategory: { name: 'Discontinued', isActive: false } }),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.categories).toEqual(['Legacy Fallback']);
+    expect(result.categories).not.toContain('Discontinued');
+  });
+
+  it('does not duplicate a category tab across multiple products that share the same canonical category', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      categoryCatalogProduct({ id: 'product-1', name: 'Regular Pops', productCategory: { name: 'Crunchy Chicken Pops', isActive: true } }),
+      categoryCatalogProduct({ id: 'product-2', name: 'Mega Pops', productCategory: { name: 'Crunchy Chicken Pops', isActive: true } }),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.categories).toEqual(['Crunchy Chicken Pops']);
+  });
+
+  it('omits a product with neither a canonical productCategory nor a legacy category from every tab', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      categoryCatalogProduct({ category: null, productCategory: null }),
+      categoryCatalogProduct({ id: 'product-2', category: 'Snacks', productCategory: null }),
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.categories).toEqual(['Snacks']);
+  });
+});
+
 describe('productsService.getPosCatalog — option group pos_button_label (Task 69)', () => {
   function optionGroupVariant(overrides: Partial<Record<string, unknown>> = {}) {
     return {

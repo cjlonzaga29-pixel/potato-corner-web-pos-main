@@ -1490,7 +1490,10 @@ export const productsService = {
       return {
         id: product.id,
         name: product.name,
-        category: product.category,
+        // CR-008: canonical ProductCategory (via categoryId) takes priority
+        // over the legacy free-text `category` column once it's active;
+        // falls back to the legacy value for products never migrated to it.
+        category: product.productCategory?.isActive ? product.productCategory.name : product.category,
         has_image: Boolean(product.imagePath),
         image_url: (product.imagePath && signedImageUrlByPath.get(product.imagePath)) || null,
         variants,

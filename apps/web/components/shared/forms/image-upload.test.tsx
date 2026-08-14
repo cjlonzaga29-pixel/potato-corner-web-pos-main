@@ -100,22 +100,8 @@ afterEach(() => {
   restoreDesktopUserAgent(DEFAULT_USER_AGENT);
 });
 
-describe('ImageUpload — mobile/tablet native device capture (Task 209.56E)', () => {
-  it('Take Photo on mobile/tablet clicks the native capture="environment" file input — no camera modal opens', () => {
-    const originalUA = window.navigator.userAgent;
-    setMobileUserAgent();
-    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
-
-    const clickSpy = vi.fn();
-    captureInput().addEventListener('click', clickSpy);
-    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
-
-    expect(clickSpy).toHaveBeenCalledTimes(1);
-    expect(document.querySelector('video')).toBeNull();
-    restoreDesktopUserAgent(originalUA);
-  });
-
-  it('the capture input carries capture="environment" so mobile/tablet browsers open the native rear-camera UI', () => {
+describe('ImageUpload — native capture="environment" fallback input (getUserMedia-unsupported browsers only)', () => {
+  it('the capture input carries capture="environment" so a fallback path can still open the native rear-camera UI', () => {
     render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
     expect(captureInput().getAttribute('capture')).toBe('environment');
     // Task 209.56E follow-up — must stay the broad image/* wildcard, not a
@@ -147,7 +133,43 @@ describe('ImageUpload — mobile/tablet native device capture (Task 209.56E)', (
   });
 });
 
-describe('ImageUpload — desktop/laptop getUserMedia camera modal (Task 209.x)', () => {
+describe('ImageUpload — in-POS getUserMedia camera overlay (mobile AND desktop, emergency camera fix)', () => {
+  it('Take Photo on a MOBILE device calls getUserMedia (in-page overlay) instead of clicking the native capture input', async () => {
+    const { getUserMedia } = mockGetUserMediaSuccess();
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    const captureClickSpy = vi.fn();
+    captureInput().addEventListener('click', captureClickSpy);
+
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1));
+    expect(captureClickSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.querySelector('video')).not.toBeNull());
+  });
+
+  it('requests a bounded resolution (not the device native maximum) on both mobile and desktop', async () => {
+    const { getUserMedia } = mockGetUserMediaSuccess();
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+
+    await waitFor(() =>
+      expect(getUserMedia).toHaveBeenCalledWith(
+        expect.objectContaining({
+          audio: false,
+          video: expect.objectContaining({
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          }),
+        }),
+      ),
+    );
+  });
+
   it('Take Photo on desktop calls getUserMedia and does not click the gallery/capture file inputs', async () => {
     const { getUserMedia } = mockGetUserMediaSuccess();
     render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
@@ -264,7 +286,7 @@ describe('ImageUpload — desktop/laptop getUserMedia camera modal (Task 209.x)'
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledWith(expect.any(File), 'gallery_upload'));
   });
 
-  it('shows a camera-unavailable message and never opens the file picker when getUserMedia is unsupported', () => {
+  it('DESKTOP: shows a camera-unavailable message and Upload from Gallery fallback when getUserMedia is unsupported', () => {
     mockGetUserMediaUnsupported();
     render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
 
@@ -273,9 +295,40 @@ describe('ImageUpload — desktop/laptop getUserMedia camera modal (Task 209.x)'
 
     fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
 
-    expect(screen.getByText(/Camera is not available on this device\/browser/)).toBeInTheDocument();
+    expect(screen.getByText(/Camera is not available in this browser/)).toBeInTheDocument();
     expect(captureClickSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('MOBILE: falls back to the native capture input (only) when getUserMedia is unsupported', () => {
+    mockGetUserMediaUnsupported();
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    const captureClickSpy = vi.fn();
+    captureInput().addEventListener('click', captureClickSpy);
+
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+
+    expect(captureClickSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('closes the camera overlay (not the POS page) on Android hardware Back, via a scoped history entry', async () => {
+    mockGetUserMediaSuccess();
+    setMobileUserAgent();
+    const pushStateSpy = vi.spyOn(window.history, 'pushState');
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+    await screen.findByRole('dialog');
+    expect(pushStateSpy).toHaveBeenCalledWith({ cameraOverlay: true }, '');
+
+    // Simulate the browser's own Back navigation consuming that pushed entry.
+    fireEvent.popState(window);
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    pushStateSpy.mockRestore();
   });
 });
 
@@ -406,6 +459,138 @@ describe('ImageUpload — memory-safe mobile capture pipeline (Task: camera low-
     fireEvent.click(screen.getByRole('button', { name: /Uploading/ }));
     resolveUpload();
     await waitFor(() => expect(onImageSelected).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('ImageUpload — in-page camera capture resolution bound (memory fix)', () => {
+  async function openCameraAndGetCaptureButton() {
+    fireEvent.click(screen.getByRole('button', { name: /Take Photo/ }));
+    const captureButton = await screen.findByRole('button', { name: /Capture Photo/ });
+    await waitFor(() => expect(captureButton).not.toBeDisabled());
+    return captureButton;
+  }
+
+  it('clamps the captured canvas to the configured max long-edge even when the video reports a much larger native resolution', async () => {
+    mockGetUserMediaSuccess();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    const captureButton = await openCameraAndGetCaptureButton();
+
+    const video = document.querySelector('video');
+    if (!video) throw new Error('video not found');
+    Object.defineProperty(video, 'videoWidth', { value: 4032, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 3024, configurable: true });
+
+    let capturedCanvas: HTMLCanvasElement | null = null;
+    const originalCreateElement = document.createElement.bind(document);
+    const createElementSpy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = originalCreateElement(tag);
+      if (tag === 'canvas') capturedCanvas = el as HTMLCanvasElement;
+      return el;
+    });
+
+    fireEvent.click(captureButton);
+
+    await waitFor(() => expect(capturedCanvas).not.toBeNull());
+    const canvas = capturedCanvas as unknown as HTMLCanvasElement;
+    expect(canvas.width).toBeLessThanOrEqual(1600);
+    expect(canvas.height).toBeLessThanOrEqual(1600);
+    expect(Math.max(canvas.width, canvas.height)).toBe(1600);
+    createElementSpy.mockRestore();
+  });
+
+  it('leaves the canvas at the source resolution when the stream is already within bounds (no upscaling)', async () => {
+    mockGetUserMediaSuccess();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    const captureButton = await openCameraAndGetCaptureButton();
+
+    const video = document.querySelector('video');
+    if (!video) throw new Error('video not found');
+    Object.defineProperty(video, 'videoWidth', { value: 1280, configurable: true });
+    Object.defineProperty(video, 'videoHeight', { value: 720, configurable: true });
+
+    let capturedCanvas: HTMLCanvasElement | null = null;
+    const originalCreateElement = document.createElement.bind(document);
+    const createElementSpy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = originalCreateElement(tag);
+      if (tag === 'canvas') capturedCanvas = el as HTMLCanvasElement;
+      return el;
+    });
+
+    fireEvent.click(captureButton);
+
+    await waitFor(() => expect(capturedCanvas).not.toBeNull());
+    const canvas = capturedCanvas as unknown as HTMLCanvasElement;
+    expect(canvas.width).toBe(1280);
+    expect(canvas.height).toBe(720);
+    createElementSpy.mockRestore();
+  });
+
+  it('uses canvas.toBlob, never canvas.toDataURL, for the captured frame', async () => {
+    const toDataURLSpy = vi.fn();
+    HTMLCanvasElement.prototype.toDataURL = toDataURLSpy;
+    mockGetUserMediaSuccess();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    const captureButton = await openCameraAndGetCaptureButton();
+
+    fireEvent.click(captureButton);
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+
+    expect(toDataURLSpy).not.toHaveBeenCalled();
+    // @ts-expect-error -- test-only cleanup, jsdom's HTMLCanvasElement has no real toDataURL implementation to restore.
+    delete HTMLCanvasElement.prototype.toDataURL;
+  });
+
+  it('the bounded camera capture IS previewed even on mobile — controlled resolution makes the decode safe', async () => {
+    mockGetUserMediaSuccess();
+    setMobileUserAgent();
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+    const captureButton = await openCameraAndGetCaptureButton();
+
+    fireEvent.click(captureButton);
+
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+  });
+
+  it('repeated Retake -> Capture cycles do not accumulate MediaStreams or object URLs', async () => {
+    const { stream } = mockGetUserMediaSuccess();
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL');
+    render(<ImageUpload label="Payment Proof" required onImageSelected={vi.fn()} />);
+
+    // First capture.
+    let captureButton = await openCameraAndGetCaptureButton();
+    fireEvent.click(captureButton);
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    const firstUrl = screen.getByAltText('Preview').getAttribute('src');
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
+
+    // Retake opens a fresh stream — the first is already stopped, never a second live one.
+    fireEvent.click(screen.getByRole('button', { name: /Retake/ }));
+    captureButton = await openCameraAndGetCaptureButton();
+    fireEvent.click(captureButton);
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+
+    expect(revokeSpy).toHaveBeenCalledWith(firstUrl);
+    // Same mocked stream instance is reused by the mock, but its tracks were
+    // stopped once per capture — never left running across a Retake cycle.
+    expect(stream.track.stop).toHaveBeenCalledTimes(2);
+    revokeSpy.mockRestore();
+  });
+
+  it('the camera stream is already released before Confirm/upload even starts — an upload failure cannot leave it running', async () => {
+    const { stream } = mockGetUserMediaSuccess();
+    const onImageSelected = vi.fn().mockRejectedValue(new Error('Network error'));
+    render(<ImageUpload label="Payment Proof" required onImageSelected={onImageSelected} />);
+    const captureButton = await openCameraAndGetCaptureButton();
+
+    fireEvent.click(captureButton);
+    await waitFor(() => expect(screen.getByAltText('Preview')).toBeInTheDocument());
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm/ }));
+    await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+
+    // Upload failed, but the camera was already torn down before Confirm was even clicked.
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
   });
 });
 

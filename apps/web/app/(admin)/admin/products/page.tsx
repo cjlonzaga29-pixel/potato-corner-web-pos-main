@@ -52,7 +52,9 @@ export default function ProductCatalogPage() {
     {
       id: 'image',
       header: 'Image',
-      cell: ({ row }) => <ProductImageThumbnail productId={row.original.id} hasImage={row.original.has_image} productName={row.original.name} />,
+      cell: ({ row }) => (
+        <ProductImageThumbnail hasImage={row.original.has_image} imageUrl={row.original.image_url} productName={row.original.name} />
+      ),
     },
     { accessorKey: 'name', header: 'Product' },
     { accessorKey: 'category_name', header: 'Category', cell: ({ row }) => row.original.category_name ?? '—' },

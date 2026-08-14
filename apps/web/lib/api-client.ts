@@ -3,18 +3,13 @@ import { broadcastLogout } from './auth-broadcast';
 import { getOrCreateDeviceId } from './device';
 import { decodeJwtPayload } from './jwt';
 import { API_URL } from './constants';
+import { getOrStartRefresh, peekInFlightRefresh } from './auth-refresh';
 
 interface ApiResponse<T> {
   data: T | null;
   error: { code: string; message?: string; details?: unknown } | string | null;
   meta: unknown;
 }
-
-interface RefreshResponseData {
-  access_token: string;
-}
-
-let refreshInFlight: Promise<string | null> | null = null;
 
 const CSRF_COOKIE_NAME = 'csrf-token';
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -33,36 +28,63 @@ function getCsrfToken(): string | null {
 }
 
 /**
- * Calls POST /api/auth/refresh (the HttpOnly refresh cookie travels
- * automatically via credentials: 'include'). Deduplicated so concurrent
- * 401s from multiple in-flight requests only trigger one refresh call.
+ * Resolves the shared in-flight refresh (see auth-refresh.ts) down to just
+ * the access token, collapsing every non-success outcome to null — this
+ * matches the pre-existing contract callers here relied on.
  */
 async function refreshAccessToken(): Promise<string | null> {
-  if (!refreshInFlight) {
-    refreshInFlight = (async () => {
-      try {
-        const csrfToken = getCsrfToken();
-        const response = await fetch(`${API_URL}/api/auth/refresh`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-          },
-          body: JSON.stringify({ device_id: getOrCreateDeviceId() }),
-        });
-        if (!response.ok) return null;
-        if (!(response.headers.get('content-type') ?? '').includes('application/json')) return null;
-        const body = (await response.json().catch(() => null)) as ApiResponse<RefreshResponseData> | null;
-        return body?.data?.access_token ?? null;
-      } catch {
-        return null;
-      } finally {
-        refreshInFlight = null;
-      }
-    })();
+  const outcome = await getOrStartRefresh();
+  return outcome.kind === 'json' ? outcome.body?.data?.access_token ?? null : null;
+}
+
+/**
+ * Reconstructs a `Response` from the shared refresh singleton's outcome so a
+ * direct `POST /api/auth/refresh` call (e.g. use-auth.ts's mount-time
+ * restore, via apiClient) still gets a real Response to parse — identical in
+ * shape to what a raw `fetch` would have produced — while still funneling
+ * through the same dedup as the 401-retry path below.
+ */
+async function refreshViaSharedSingleton(): Promise<Response> {
+  const outcome = await getOrStartRefresh();
+  if (outcome.kind === 'network-error') {
+    throw new Error('Failed to reach the refresh endpoint');
   }
-  return refreshInFlight;
+  if (outcome.kind === 'non-json') {
+    return new Response('', { status: outcome.status, headers: { 'content-type': 'text/plain' } });
+  }
+  return new Response(JSON.stringify(outcome.body ?? { data: null, error: null, meta: null }), {
+    status: outcome.status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/**
+ * Writes a freshly-refreshed access token into the auth store, rebuilding
+ * the cached user from the new token's own claims (a role change server-side
+ * must take effect the moment the refreshed token carries it). Shared by
+ * both the 401-retry path and the gate-wait path below — a request that
+ * queued behind someone else's in-flight refresh must apply the token itself
+ * rather than assuming whichever caller triggered that refresh has already
+ * written it to the store by the time this request wakes up (that's a
+ * separate, not-necessarily-faster promise chain — see use-auth.ts's
+ * restoreSession, which does its own decode+setAuth after apiClient resolves).
+ */
+function applyRefreshedToken(newToken: string): boolean {
+  const previousUser = useAuthStore.getState().user;
+  if (!previousUser) return false;
+  const payload = decodeJwtPayload(newToken);
+  const updatedUser = payload
+    ? {
+        id: payload.user_id,
+        role: payload.role,
+        email: payload.email,
+        firstName: previousUser.firstName,
+        lastName: previousUser.lastName,
+        branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
+      }
+    : previousUser;
+  useAuthStore.getState().setAuth(updatedUser, newToken);
+  return true;
 }
 
 /**
@@ -192,14 +214,35 @@ export async function fetchAuthenticated(
     }
     return response;
   }
-  if (refreshInFlight && !_isRetry && !isAuthPath) {
+
+  // A direct call to /api/auth/refresh (use-auth.ts's mount-time restore
+  // goes through here via apiClient) is routed through the same shared
+  // singleton as the 401-retry path below, instead of firing its own raw
+  // fetch — this is what actually collapses concurrent callers across
+  // different modules onto exactly one network request.
+  if (path === '/api/auth/refresh') {
+    return refreshViaSharedSingleton();
+  }
+
+  const inFlightRefresh = peekInFlightRefresh();
+  if (inFlightRefresh && !_isRetry && !isAuthPath) {
     // A refresh is already resolving elsewhere (e.g. another mutation's 401
-    // triggered it). Wait for it instead of firing with a token we know is
-    // stale — otherwise this request 401s on its own timeline, finds
-    // refreshInFlight already cleared, and starts a redundant refresh of
-    // its own (the storm seen in the 2026-07-20 audit).
+    // triggered it, or a mount-time restore is running). Wait for it instead
+    // of firing with a token we know is stale — otherwise this request 401s
+    // on its own timeline and starts a redundant refresh of its own (the
+    // storm seen in the 2026-07-20 audit, later found to still occur cross-
+    // module — see auth-refresh.ts).
     console.warn('[apiClient] awaiting in-flight refresh before request', path);
-    await refreshInFlight;
+    const outcome = await inFlightRefresh;
+    // Apply the token here rather than assuming whichever caller triggered
+    // this refresh has already written it to the store — that caller may
+    // still have several of its own microtask hops left (e.g. use-auth.ts's
+    // restoreSession decodes the JWT and calls setAuth only after its own
+    // apiClient() call resolves), and this request must not race ahead of
+    // that with a still-stale token.
+    if (outcome.kind === 'json' && outcome.body?.data?.access_token) {
+      applyRefreshedToken(outcome.body.data.access_token);
+    }
   }
 
   let response: Response;
@@ -217,32 +260,12 @@ export async function fetchAuthenticated(
   if (response.status === 401 && !_isRetry && path !== '/api/auth/refresh' && path !== '/api/auth/login') {
     console.warn('[apiClient] 401, triggering refresh', path);
     const newToken = await refreshAccessToken();
-    if (newToken) {
-      const previousUser = useAuthStore.getState().user;
-      if (previousUser) {
-        // Rebuild from the new token's own claims rather than reusing the
-        // stale cached user object — a role change server-side (e.g. a
-        // promotion to super_admin) must take effect the moment the refreshed
-        // token carries it, not stay pinned to whatever role was cached at
-        // login. First/last name aren't in the JWT, so they're carried over
-        // from the prior cached user (login-only fields). This is best-effort:
-        // if the token doesn't decode, fall back to the previous user as-is
-        // rather than treating a successful refresh as a failure — the retry
-        // below must still happen either way.
-        const payload = decodeJwtPayload(newToken);
-        const updatedUser = payload
-          ? {
-              id: payload.user_id,
-              role: payload.role,
-              email: payload.email,
-              firstName: previousUser.firstName,
-              lastName: previousUser.lastName,
-              branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
-            }
-          : previousUser;
-        useAuthStore.getState().setAuth(updatedUser, newToken);
-        return fetchAuthenticated(path, init, true);
-      }
+    // applyRefreshedToken is best-effort: if there's no previously-cached
+    // user (nothing to rebuild onto) or the token doesn't decode, it leaves
+    // the store untouched rather than treating a successful refresh as a
+    // failure — the retry below must still happen either way.
+    if (newToken && applyRefreshedToken(newToken)) {
+      return fetchAuthenticated(path, init, true);
     }
 
     useAuthStore.getState().clearAuth();

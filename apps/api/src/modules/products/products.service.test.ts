@@ -184,11 +184,21 @@ vi.mock('../../middleware/audit-log.js', () => ({
 }));
 
 const { productsRepository } = await import('./products.repository.js');
-const { productsService } = await import('./products.service.js');
+const { productsService, __resetSignedUrlCacheForTests } = await import('./products.service.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 const { prisma } = await import('../../lib/prisma.js');
+
+// Task 209.x — the signed-URL reuse cache (products.service.ts) is
+// module-level state that otherwise persists across every test in this
+// file. Several describe blocks below reuse the same fixture imagePath
+// (e.g. 'product-images/product-1/image.webp'), so without this reset a
+// later test could get a cache hit left over from an earlier one and never
+// call the mocked Storage client it's asserting against.
+beforeEach(() => {
+  __resetSignedUrlCacheForTests();
+});
 
 // Default: every requested variant is READY, so tests unrelated to readiness
 // (e.g. the Mix & Max snack_options tests below) don't need to stub this.
@@ -2338,7 +2348,7 @@ describe('productsService.uploadProductImage', () => {
     expect(storageMock.upload).toHaveBeenCalledWith(
       'product-images/prod-1/image.webp',
       Buffer.from('fake-image'),
-      { contentType: 'image/webp', upsert: true },
+      { contentType: 'image/webp', upsert: true, cacheControl: '3600' },
     );
     expect(productsRepository.updateImagePath).toHaveBeenCalledWith('prod-1', 'product-images/prod-1/image.webp');
     expect(productsRepository.updateImagePath).toHaveBeenCalledTimes(1);
@@ -2417,6 +2427,107 @@ describe('productsService.deleteProductImage', () => {
       statusCode: 502,
     });
     expect(productsRepository.updateImagePath).not.toHaveBeenCalled();
+  });
+});
+
+// Task 209.x perf fix — a fresh signed URL on every fetch defeats the
+// browser's HTTP cache (the token is part of the cache key). getSignedProductImageUrl
+// / getSignedProductImageUrls now reuse an in-memory cache entry across
+// calls within its TTL, and invalidate it on upload/delete since the object
+// path is stable per product.
+describe('productsService — signed URL reuse (Task 209.x image caching)', () => {
+  it('reuses the same signed URL across repeated getProductImage calls instead of re-signing every time', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    storageMock.createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://example.com/reused.webp' }, error: null });
+
+    const first = await productsService.getProductImage('prod-1');
+    const second = await productsService.getProductImage('prod-1');
+    const third = await productsService.getProductImage('prod-1');
+
+    expect(first.image_url).toBe('https://example.com/reused.webp');
+    expect(second.image_url).toBe('https://example.com/reused.webp');
+    expect(third.image_url).toBe('https://example.com/reused.webp');
+    expect(storageMock.createSignedUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses a cache entry populated by the batched catalog path for a subsequent single-product lookup of the same image', async () => {
+    vi.mocked(productsRepository.findAll).mockResolvedValue({
+      products: [
+        {
+          id: 'prod-1',
+          name: 'Mega Mix',
+          description: null,
+          category: null,
+          categoryId: null,
+          imagePath: 'product-images/prod-1/image.webp',
+          status: 'active',
+          displayOrder: null,
+          isSeasonal: false,
+          seasonalStartDate: null,
+          seasonalEndDate: null,
+          branchExclusive: false,
+          exclusiveBranchId: null,
+          exclusiveBranch: null,
+          productCategory: null,
+          createdBy: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          _count: { variants: 0 },
+          variants: [],
+          branchAvailability: [],
+        },
+      ],
+      total: 1,
+    } as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({
+      data: [{ path: 'product-images/prod-1/image.webp', signedUrl: 'https://example.com/from-batch.webp', error: null }],
+      error: null,
+    });
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+
+    await productsService.getAllProducts({ user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never, { page: 1, limit: 25 } as never);
+    const single = await productsService.getProductImage('prod-1');
+
+    expect(single.image_url).toBe('https://example.com/from-batch.webp');
+    expect(storageMock.createSignedUrls).toHaveBeenCalledTimes(1);
+    expect(storageMock.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the cache on upload, so the pre-upload URL is never handed out again', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: { signedUrl: 'https://example.com/before-upload.webp' }, error: null });
+
+    await productsService.getProductImage('prod-1');
+
+    vi.mocked(productsRepository.updateImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    // uploadProductImage mints (and caches) its own fresh signed URL as part
+    // of its response — a second, immediate lookup correctly reuses that
+    // freshly-cached value rather than triggering yet another Storage call;
+    // the only thing this test needs to prove is that it's never the stale
+    // pre-upload one.
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: { signedUrl: 'https://example.com/after-upload.webp' }, error: null });
+    await productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'x.png' }, SUPER_ADMIN, null);
+
+    const after = await productsService.getProductImage('prod-1');
+
+    expect(after.image_url).toBe('https://example.com/after-upload.webp');
+    expect(after.image_url).not.toBe('https://example.com/before-upload.webp');
+    expect(storageMock.createSignedUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates the cache on delete, so a later upload for the same path is signed fresh, not served the deleted image\'s stale URL', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: { signedUrl: 'https://example.com/before-delete.webp' }, error: null });
+    await productsService.getProductImage('prod-1');
+
+    await productsService.deleteProductImage('prod-1', SUPER_ADMIN, null);
+
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: { signedUrl: 'https://example.com/fresh-after-delete.webp' }, error: null });
+    const result = await productsService.getProductImage('prod-1');
+
+    expect(result.image_url).toBe('https://example.com/fresh-after-delete.webp');
+    expect(storageMock.createSignedUrl).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -2543,6 +2654,103 @@ describe('productsService.getPosCatalog — product images (Task 209.7)', () => 
     storageMock.createSignedUrls.mockRejectedValueOnce(new Error('network error'));
 
     const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products).toHaveLength(1);
+    expect(result.products[0]).toMatchObject({ has_image: true, image_url: null });
+  });
+});
+
+// Task 209.x perf fix — live profiling (2026-08-15) showed the admin product
+// list (GET /api/products, backing getAllProducts) firing one
+// GET /:productId/image request per row after the list loaded — a serial
+// waterfall of individual createSignedUrl calls. getAllProducts now batches
+// every image-bearing product on the page into a single createSignedUrls
+// call, the same contract getPosCatalog already used (Task 209.7).
+describe('productsService.getAllProducts — product images (Task 209.x N+1 fix)', () => {
+  function listRow(imagePath: string | null, overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'product-1',
+      name: 'Mega Mix',
+      description: null,
+      category: 'Snacks',
+      categoryId: null,
+      imagePath,
+      status: 'active',
+      displayOrder: null,
+      isSeasonal: false,
+      seasonalStartDate: null,
+      seasonalEndDate: null,
+      branchExclusive: false,
+      exclusiveBranchId: null,
+      exclusiveBranch: null,
+      productCategory: null,
+      createdBy: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+      _count: { variants: 1 },
+      variants: [{ isActive: true }],
+      branchAvailability: [{ isAvailable: true }],
+      ...overrides,
+    };
+  }
+
+  const baseFilters = { page: 1, limit: 25 } as never;
+
+  it('returns has_image=true and a signed image_url for a product with an image', async () => {
+    vi.mocked(productsRepository.findAll).mockResolvedValue({
+      products: [listRow('product-images/product-1/image.webp')],
+      total: 1,
+    } as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({
+      data: [{ path: 'product-images/product-1/image.webp', signedUrl: 'https://example.com/product-1.webp', error: null }],
+      error: null,
+    });
+
+    const result = await productsService.getAllProducts({ user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never, baseFilters);
+
+    expect(result.products[0]).toMatchObject({ has_image: true, image_url: 'https://example.com/product-1.webp' });
+    expect(storageMock.createSignedUrls).toHaveBeenCalledWith(['product-images/product-1/image.webp'], 60 * 60);
+    expect(storageMock.createSignedUrls).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves every image-bearing product on the page in a single batched Storage call — N products never produce N signed-URL requests', async () => {
+    const products = Array.from({ length: 10 }, (_, i) =>
+      listRow(`product-images/product-${i}/image.webp`, { id: `product-${i}`, name: `Product ${i}` }),
+    );
+    vi.mocked(productsRepository.findAll).mockResolvedValue({ products, total: 10 } as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({
+      data: products.map((p) => ({ path: p.imagePath, signedUrl: `https://example.com/${p.id}.webp`, error: null })),
+      error: null,
+    });
+
+    const result = await productsService.getAllProducts({ user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never, baseFilters);
+
+    // The one and only assertion that actually matters for the N+1 fix:
+    // regardless of how many products are on the page, Storage is hit once.
+    expect(storageMock.createSignedUrls).toHaveBeenCalledTimes(1);
+    expect(result.products).toHaveLength(10);
+    for (let i = 0; i < 10; i++) {
+      expect(result.products[i]).toMatchObject({ has_image: true, image_url: `https://example.com/product-${i}.webp` });
+    }
+  });
+
+  it('returns has_image=false and image_url=null for a product with no image, without calling Storage', async () => {
+    vi.mocked(productsRepository.findAll).mockResolvedValue({ products: [listRow(null)], total: 1 } as never);
+
+    const result = await productsService.getAllProducts({ user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never, baseFilters);
+
+    expect(result.products[0]).toMatchObject({ has_image: false, image_url: null });
+    expect(storageMock.createSignedUrls).not.toHaveBeenCalled();
+  });
+
+  it('does not remove the product from the list when signed-URL generation fails outright', async () => {
+    vi.mocked(productsRepository.findAll).mockResolvedValue({
+      products: [listRow('product-images/product-1/image.webp')],
+      total: 1,
+    } as never);
+    storageMock.createSignedUrls.mockResolvedValueOnce({ data: null, error: { message: 'storage down' } as never });
+
+    const result = await productsService.getAllProducts({ user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never, baseFilters);
 
     expect(result.products).toHaveLength(1);
     expect(result.products[0]).toMatchObject({ has_image: true, image_url: null });

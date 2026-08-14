@@ -252,9 +252,19 @@ type ListRow = Parameters<typeof toProductBase>[0] & {
   branchAvailability: { isAvailable: boolean }[];
 };
 
-function toProductListItem(product: ListRow) {
+/**
+ * Task 209.x perf fix — imageUrl is resolved by the caller via the same
+ * batched getSignedProductImageUrls() call getPosCatalog already uses
+ * (Task 209.7), instead of each row's caller-facing consumer having to hit
+ * GET /:productId/image individually. Live profiling (2026-08-15) showed the
+ * admin product list otherwise firing one signed-URL-mint request per
+ * product after the list loaded — a serial waterfall costing 0.85-2.5s per
+ * product before any image could start downloading.
+ */
+function toProductListItem(product: ListRow, imageUrl: string | null) {
   return {
     ...toProductBase(product),
+    image_url: imageUrl,
     variant_count: product._count.variants,
     active_variant_count: product.variants.filter((v) => v.isActive).length,
     active_branch_count: product.branchAvailability.filter((b) => b.isAvailable).length,
@@ -567,9 +577,49 @@ function productImageKey(productId: string): string {
   return `${PRODUCT_IMAGE_BUCKET}/${productId}/image.webp`;
 }
 
+/**
+ * Task 209.x perf fix — live profiling (2026-08-15) showed the catalog
+ * minting a brand-new signed URL on every fetch even though the underlying
+ * object hadn't changed, which defeats the browser's own HTTP cache: the
+ * signed URL's token is part of the cache key, so a fresh token on every
+ * request means a fresh cache miss on every request. This in-memory cache
+ * reuses the same signed URL string across requests within its TTL (so the
+ * browser can actually reuse its own cached image bytes), with a safety
+ * margin so a URL is never handed out close enough to its real expiry to
+ * die mid-render. Invalidated explicitly on upload/delete below — the
+ * object path is stable per product (upsert overwrites in place), so a
+ * stale cache entry would otherwise keep serving a signed URL for
+ * old-but-still-valid-looking content after a replace.
+ */
+const SIGNED_URL_REUSE_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+const signedUrlCache = new Map<string, { url: string; expiresAtMs: number }>();
+
+function cachedSignedUrl(imagePath: string): string | null {
+  const entry = signedUrlCache.get(imagePath);
+  if (!entry) return null;
+  if (entry.expiresAtMs - SIGNED_URL_REUSE_SAFETY_MARGIN_MS <= Date.now()) return null;
+  return entry.url;
+}
+
+function rememberSignedUrl(imagePath: string, url: string): void {
+  signedUrlCache.set(imagePath, { url, expiresAtMs: Date.now() + PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS * 1000 });
+}
+
+function invalidateSignedUrl(imagePath: string): void {
+  signedUrlCache.delete(imagePath);
+}
+
+/** Test-only escape hatch — the cache is module-level and otherwise persists for the life of the process (including across test cases in the same file). */
+export function __resetSignedUrlCacheForTests(): void {
+  signedUrlCache.clear();
+}
+
 async function getSignedProductImageUrl(imagePath: string): Promise<string> {
+  const cached = cachedSignedUrl(imagePath);
+  if (cached) return cached;
   const { data, error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrl(imagePath, PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS);
   if (error || !data) throw new ProductError('PRODUCT_IMAGE_URL_FAILED', 'Could not generate the product image URL', 500);
+  rememberSignedUrl(imagePath, data.signedUrl);
   return data.signedUrl;
 }
 
@@ -582,23 +632,57 @@ async function getSignedProductImageUrl(imagePath: string): Promise<string> {
  * every product falls back to has_image-with-no-url, which the terminal
  * already renders as a placeholder — a signing outage must not remove
  * products from the catalog.
+ *
+ * Task 209.x — every path already covered by a live, non-expiring-soon
+ * cache entry (see cachedSignedUrl above) is served from that cache instead
+ * of being re-signed; only the uncached/expiring subset hits Storage.
  */
 async function getSignedProductImageUrls(imagePaths: string[]): Promise<Map<string, string>> {
   if (imagePaths.length === 0) return new Map();
+
+  const result = new Map<string, string>();
+  const uncachedPaths: string[] = [];
+  for (const path of imagePaths) {
+    const cached = cachedSignedUrl(path);
+    if (cached) {
+      result.set(path, cached);
+    } else {
+      uncachedPaths.push(path);
+    }
+  }
+  if (uncachedPaths.length === 0) return result;
+
   try {
-    const { data, error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrls(imagePaths, PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS);
-    if (error || !data) return new Map();
-    return new Map(data.filter((row) => row.signedUrl).map((row) => [row.path as string, row.signedUrl as string]));
+    const { data, error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrls(uncachedPaths, PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS);
+    if (error || !data) return result;
+    for (const row of data) {
+      if (!row.signedUrl) continue;
+      result.set(row.path as string, row.signedUrl as string);
+      rememberSignedUrl(row.path as string, row.signedUrl as string);
+    }
+    return result;
   } catch {
-    return new Map();
+    return result;
   }
 }
 
 export const productsService = {
   async getAllProducts(_requestingUser: JwtPayload, filters: ProductListFilters) {
     const { products, total } = await productsRepository.findAll(filters);
+
+    // One batched Storage call for every image-bearing product on this page,
+    // instead of the frontend minting one signed URL per product via
+    // GET /:productId/image after the list arrives — same pattern
+    // getPosCatalog already uses (Task 209.7).
+    const imagePaths = products.map((p) => (p as ListRow).imagePath).filter((path): path is string => Boolean(path));
+    const signedImageUrlByPath = await getSignedProductImageUrls(imagePaths);
+
     return {
-      products: products.map((p) => toProductListItem(p as ListRow)),
+      products: products.map((p) => {
+        const row = p as ListRow;
+        const imageUrl = (row.imagePath && signedImageUrlByPath.get(row.imagePath)) || null;
+        return toProductListItem(row, imageUrl);
+      }),
       total,
       page: filters.page,
       limit: filters.limit,
@@ -1732,10 +1816,18 @@ export const productsService = {
     const imagePath = productImageKey(productId);
     const { error } = await supabaseAdmin.storage
       .from(PRODUCT_IMAGE_BUCKET)
-      .upload(imagePath, compressed, { contentType: 'image/webp', upsert: true });
+      // cacheControl matches PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS — Storage
+      // sets this as the object's Cache-Control response header, so the
+      // browser can cache the actual image bytes for as long as a reused
+      // signed URL (see signedUrlCache above) stays valid.
+      .upload(imagePath, compressed, { contentType: 'image/webp', upsert: true, cacheControl: String(PRODUCT_IMAGE_SIGNED_URL_TTL_SECONDS) });
     if (error) {
       throw new ProductError('PRODUCT_IMAGE_UPLOAD_FAILED', 'Failed to upload the product image', 502);
     }
+    // The path is stable per product (upsert overwrites in place) — a cache
+    // entry from before this upload would otherwise keep handing out a
+    // still-technically-valid signed URL whose underlying bytes just changed.
+    invalidateSignedUrl(imagePath);
 
     await productsRepository.updateImagePath(productId, imagePath);
     const response = { image_url: await getSignedProductImageUrl(imagePath) };
@@ -1763,6 +1855,7 @@ export const productsService = {
     if (error) {
       throw new ProductError('PRODUCT_IMAGE_DELETE_FAILED', 'Failed to delete the product image', 502);
     }
+    invalidateSignedUrl(existing.imagePath);
 
     await productsRepository.updateImagePath(productId, null);
 

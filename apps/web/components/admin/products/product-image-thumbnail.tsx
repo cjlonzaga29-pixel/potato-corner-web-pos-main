@@ -1,27 +1,26 @@
 'use client';
 
 import { ImageIcon } from 'lucide-react';
-import { useProductImage } from '@/hooks/queries/use-products';
 import { cn } from '@/lib/utils';
 
 interface ProductImageThumbnailProps {
-  productId: string;
   hasImage: boolean;
+  imageUrl: string | null | undefined;
   productName: string;
   className?: string;
 }
 
 /**
  * 48x48 rounded thumbnail for the Product Catalog list table (Task 209.6).
- * `hasImage` (from ProductResponse.has_image) gates the signed-URL fetch —
- * a product known to have no image never calls useProductImage, so the list
- * never mints signed URLs for products no one is viewing. Products with an
- * image show a skeleton until the signed URL resolves.
+ * `imageUrl` comes straight from the product list response — the backend
+ * batch-signs every image-bearing product's URL in one Storage call (Task
+ * 209.x perf fix, mirroring getPosCatalog's Task 209.7 pattern), so this
+ * component no longer fetches anything itself. Previously it called
+ * useProductImage() per row, which fired one GET /:productId/image request
+ * per visible product after the list loaded — a serial waterfall.
  */
-export function ProductImageThumbnail({ productId, hasImage, productName, className }: ProductImageThumbnailProps) {
-  const { data, isLoading } = useProductImage(productId, hasImage);
-
-  if (!hasImage) {
+export function ProductImageThumbnail({ hasImage, imageUrl, productName, className }: ProductImageThumbnailProps) {
+  if (!hasImage || !imageUrl) {
     return (
       <div
         role="img"
@@ -33,17 +32,13 @@ export function ProductImageThumbnail({ productId, hasImage, productName, classN
     );
   }
 
-  if (isLoading || !data?.image_url) {
-    return (
-      <div
-        data-testid="product-thumbnail-skeleton"
-        className={cn('h-12 w-12 shrink-0 animate-pulse rounded-md bg-muted', className)}
-      />
-    );
-  }
-
   return (
     // eslint-disable-next-line @next/next/no-img-element -- short-lived signed Supabase Storage URL, not an optimizable static asset
-    <img src={data.image_url} alt={productName} className={cn('h-12 w-12 shrink-0 rounded-md border object-cover', className)} />
+    <img
+      src={imageUrl}
+      alt={productName}
+      loading="lazy"
+      className={cn('h-12 w-12 shrink-0 rounded-md border object-cover', className)}
+    />
   );
 }

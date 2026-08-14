@@ -151,6 +151,115 @@ describe('apiClient refresh race', () => {
     expect(clearAuth).toHaveBeenCalled();
   });
 
+  it('MANDATORY: 10 simultaneous 401s collapse into exactly 1 refresh call, each original request retrying at most once', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const productCallCounts = new Map<string, number>();
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/auth/refresh')) {
+        return Promise.resolve(jsonResponse(200, { data: { access_token: 'new-token' }, error: null, meta: null }));
+      }
+      const seen = (productCallCounts.get(url) ?? 0) + 1;
+      productCallCounts.set(url, seen);
+      // Every path 401s on its first hit, then succeeds on retry.
+      return Promise.resolve(jsonResponse(seen === 1 ? 401 : 200, { data: { ok: true }, error: null, meta: null }));
+    });
+
+    const paths = Array.from({ length: 10 }, (_, i) => `/api/resource-${i}`);
+    const results = await Promise.all(paths.map((p) => apiClient(p)));
+
+    const refreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
+    expect(refreshCalls.length).toBe(1);
+
+    for (const [url, count] of productCallCounts) {
+      expect(count, `${url} should be called original + exactly one retry`).toBe(2);
+    }
+    for (const result of results) {
+      expect(result.data).toEqual({ ok: true });
+    }
+  });
+
+  it('a direct POST /api/auth/refresh call (use-auth.ts mount-time restore) shares the same in-flight refresh as a concurrent 401-triggered one, and the woken request uses the fresh token itself rather than racing the store update', async () => {
+    // A stateful store stand-in: setAuth actually updates what getState()
+    // returns next, since the test needs to prove the gated request reads a
+    // genuinely fresh token — not just that some setAuth() was called.
+    let currentToken = 'stale-token';
+    const setAuth = vi.fn((_user: unknown, token: string) => {
+      currentToken = token;
+    });
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      accessToken: currentToken,
+      user: { id: 'u1' },
+      setAuth,
+      clearAuth: vi.fn(),
+    }));
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    let refreshResolve!: (v: Response) => void;
+    const refreshPromise = new Promise<Response>((resolve) => {
+      refreshResolve = resolve;
+    });
+    let refreshFetchCount = 0;
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes('/api/auth/refresh')) {
+        refreshFetchCount += 1;
+        return refreshPromise;
+      }
+      const authHeader = (init?.headers as Headers)?.get('Authorization');
+      if (authHeader === 'Bearer new-token') {
+        return Promise.resolve(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
+      }
+      return Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null }));
+    });
+
+    // Simulates use-auth.ts's attemptRefresh(): a direct call to apiClient('/api/auth/refresh', ...).
+    const mountTimeRestore = apiClient('/api/auth/refresh', { method: 'POST', body: '{}' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // A data request 401s while that mount-time refresh is still in flight.
+    const dataRequest = apiClient('/api/products');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(refreshFetchCount).toBe(1);
+
+    refreshResolve(jsonResponse(200, { data: { access_token: 'new-token' }, error: null, meta: null }));
+    const [, dataResult] = await Promise.all([mountTimeRestore, dataRequest]);
+
+    // Exactly one refresh call total, and the gated request succeeded on its
+    // first real attempt with the fresh token instead of 401ing again and
+    // starting a second refresh cycle.
+    expect(refreshFetchCount).toBe(1);
+    expect(dataResult.data).toEqual({ ok: true });
+  });
+
+  it('starts a fresh (non-deduped) refresh cycle for a later, non-concurrent 401 once the prior refresh cycle has fully settled', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    let refreshCycle = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/auth/refresh')) {
+        refreshCycle += 1;
+        return Promise.resolve(
+          jsonResponse(200, { data: { access_token: `token-${refreshCycle}` }, error: null, meta: null }),
+        );
+      }
+      // Every product call 401s once (simulating the token going stale
+      // again by the time of the second, later apiClient call) then
+      // succeeds on its single retry.
+      return Promise.resolve(jsonResponse(401, { data: { ok: true }, error: null, meta: null }));
+    });
+
+    // Two fully sequential (non-overlapping) apiClient calls — the second
+    // only starts after the first has completely settled — must each
+    // independently trigger and complete their own refresh cycle. The
+    // shared singleton (auth-refresh.ts) must reset after each cycle so it
+    // never gets stuck "always in flight" after the first refresh.
+    await apiClient('/api/products');
+    await apiClient('/api/products');
+
+    const refreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
+    expect(refreshCalls.length).toBe(2);
+  });
+
   it('surfaces a plain-language session-expired message, never the raw backend token code, once refresh fails', async () => {
     (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
       accessToken: 'stale-token',

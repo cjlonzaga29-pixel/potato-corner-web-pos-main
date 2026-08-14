@@ -212,10 +212,15 @@ export const productResponseSchema = z.object({
   category_id: z.uuid().nullable(),
   category_name: z.string().nullable(),
   // Task 209.6 — true when the product has a stored image object key.
-  // Never the signed URL itself; fetch that separately via
-  // GET /api/products/:productId/image so list/detail payloads stay cheap
-  // and short-lived signed URLs aren't minted for products no one is viewing.
   has_image: z.boolean(),
+  // Task 209.x perf fix — the product list response batch-signs every
+  // image-bearing product's URL in one Storage call (mirrors getPosCatalog's
+  // Task 209.7 pattern), so the list never needs a per-product
+  // GET /api/products/:productId/image round trip to render thumbnails.
+  // Optional/nullable because the detail response (productDetailResponseSchema)
+  // still omits it — the Edit dialog fetches a product's image separately,
+  // on demand, via useProductImage, which is a single request, not a waterfall.
+  image_url: z.string().nullable().optional(),
   status: z.enum(productStatusValues),
   status_label: z.string(),
   display_order: z.number().int().nullable(),

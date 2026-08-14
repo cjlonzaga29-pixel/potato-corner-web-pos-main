@@ -164,6 +164,12 @@ export function BranchSidebar() {
                 const link = (
                   <Link
                     href={item.href ?? '#'}
+                    // POS Terminal is FAST-CHECKOUT-PROTECTED — it stays
+                    // eagerly prefetched (Next.js default) since it's the
+                    // cashier's primary, latency-sensitive destination.
+                    // Every other item is heavy and not immediately needed,
+                    // so its prefetch is deferred to an actual click.
+                    prefetch={item.href === '/branch/terminal' ? undefined : false}
                     className={cn(
                       'flex items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
                       isActive
@@ -240,6 +246,7 @@ export function BranchSidebar() {
                   <Link
                     key={item.href}
                     href={item.href ?? '#'}
+                    prefetch={item.href === '/branch/terminal' ? undefined : false}
                     onClick={() => setMobileNavOpen(false)}
                     className={cn(
                       'flex min-h-11 items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',

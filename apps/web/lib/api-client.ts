@@ -284,6 +284,15 @@ export async function apiClient<T>(
   accessTokenOverride?: string,
   refreshOverrideToken?: () => Promise<string | null>,
 ): Promise<ApiResponse<T>> {
+  // Snapshot which session this specific call was made under. A request can
+  // sit in flight for a while (slow/cold-starting backend — see
+  // middleware.ts's REFRESH_FETCH_TIMEOUT_MS comment for a documented case
+  // of this) and its response can land well after the user has since changed
+  // their password and signed back in on a fresh session. Without this, a
+  // late MUST_CHANGE_PASSWORD 403 that actually belongs to the old,
+  // already-superseded session would still hard-redirect the browser away
+  // from the new session's page — see the guard below.
+  const requestAccessToken = accessTokenOverride ?? useAuthStore.getState().accessToken;
   let response: Response;
   try {
     response = await fetchAuthenticated(path, init, false, accessTokenOverride, refreshOverrideToken);
@@ -330,13 +339,21 @@ export async function apiClient<T>(
   // the page the user was on so /change-password can send them back after a
   // successful change, then hard-redirect — this must fully interrupt
   // whatever flow triggered it, not just resolve the promise.
+  //
+  // Guarded on requestAccessToken still being the current session's token:
+  // a password change revokes the token this request was sent under and
+  // signs the user out, so a same-session retry can never legitimately race
+  // this. If the store's access token has since moved on (a fresh login
+  // happened while this request was still in flight), this 403 describes a
+  // session that no longer exists and must not hijack the new one.
   if (
     response.status === 403 &&
     typeof body.error === 'object' &&
     body.error !== null &&
     body.error.code === 'MUST_CHANGE_PASSWORD' &&
     typeof window !== 'undefined' &&
-    window.location.pathname !== '/change-password'
+    window.location.pathname !== '/change-password' &&
+    requestAccessToken === useAuthStore.getState().accessToken
   ) {
     sessionStorage.setItem('pc_redirect_after_password_change', window.location.pathname + window.location.search);
     window.location.href = '/change-password';

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/stores/auth.store', () => ({
   useAuthStore: {
@@ -238,6 +238,91 @@ describe('apiClient accessTokenOverride refresh (Task 209.56C — POS Terminal E
 
     const globalRefreshCalls = fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/auth/refresh'));
     expect(globalRefreshCalls.length).toBe(0);
+  });
+});
+
+describe('apiClient MUST_CHANGE_PASSWORD redirect (Task 209.x — stale-session guard)', () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.stubGlobal('fetch', vi.fn());
+    sessionStorage.clear();
+    // jsdom throws "Not implemented: navigation" on a real assignment to
+    // window.location.href — stub out a plain writable object instead so
+    // the redirect itself can be asserted on without that noise.
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, pathname: '/admin/dashboard', search: '', href: 'https://app.test/admin/dashboard' },
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+  });
+
+  it('redirects to /change-password on a 403 MUST_CHANGE_PASSWORD that belongs to the current session', async () => {
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
+      accessToken: 'current-token',
+      user: { id: 'u1' },
+      setAuth: vi.fn(),
+      clearAuth: vi.fn(),
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse(403, { data: null, error: { code: 'MUST_CHANGE_PASSWORD' }, meta: null }));
+
+    await apiClient('/api/employees');
+
+    expect(window.location.href).toBe('/change-password');
+    expect(sessionStorage.getItem('pc_redirect_after_password_change')).toBe('/admin/dashboard');
+  });
+
+  it('does NOT redirect when the 403 belongs to a session the store has since moved on from (e.g. a fresh login already landed)', async () => {
+    // The request was sent under 'old-token', but by the time its (delayed)
+    // response comes back, the store already holds a different token — a
+    // fresh login/refresh happened while this request was still in flight.
+    // Task 180's changePassword revokes the old session's tokens, so this
+    // exact case is a stale response from a session that no longer exists
+    // and must not hijack the page the user is now legitimately on.
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
+      accessToken: 'old-token',
+      user: { id: 'u1' },
+      setAuth: vi.fn(),
+      clearAuth: vi.fn(),
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation(async () => {
+      // Simulate the store moving on to a fresh session while this request
+      // was in flight (a new login completed before this slow response landed).
+      (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
+        accessToken: 'fresh-token-from-new-login',
+        user: { id: 'u1' },
+        setAuth: vi.fn(),
+        clearAuth: vi.fn(),
+      });
+      return jsonResponse(403, { data: null, error: { code: 'MUST_CHANGE_PASSWORD' }, meta: null });
+    });
+
+    await apiClient('/api/employees');
+
+    expect(window.location.href).toBe('https://app.test/admin/dashboard');
+    expect(sessionStorage.getItem('pc_redirect_after_password_change')).toBeNull();
+  });
+
+  it('does not redirect again when already on /change-password', async () => {
+    window.location.pathname = '/change-password';
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
+      accessToken: 'current-token',
+      user: { id: 'u1' },
+      setAuth: vi.fn(),
+      clearAuth: vi.fn(),
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse(403, { data: null, error: { code: 'MUST_CHANGE_PASSWORD' }, meta: null }));
+
+    await apiClient('/api/employees');
+
+    expect(window.location.href).toBe('https://app.test/admin/dashboard');
   });
 });
 

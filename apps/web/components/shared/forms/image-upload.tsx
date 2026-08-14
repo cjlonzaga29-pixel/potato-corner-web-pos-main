@@ -20,6 +20,10 @@ interface ImageUploadProps {
 const JPEG_QUALITY = 0.8;
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+/** Long-edge cap for the in-page camera's captured frame. Proof photos only need to be legible (PWD/Senior ID, GCash/Maya reference), not archival quality — this is what keeps a captured JPEG in the hundreds-of-KB range instead of the multi-MB/low-memory-crash originals the old native-camera flow produced. */
+const MAX_CAPTURE_DIMENSION = 1600;
+/** Bounded getUserMedia request — deliberately NOT the device's maximum native resolution, which is what caused "Unable to complete previous operation due to low memory" on real Android devices. */
+const CAMERA_VIDEO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 } } as const;
 
 function validateFile(file: File): string | null {
   if (!ACCEPTED_MIME_TYPES.includes(file.type)) return 'Only JPEG, PNG, or WebP images are supported.';
@@ -27,17 +31,7 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-/**
- * Only used for the desktop getUserMedia path (handleCapturePhoto), which
- * has no other way to turn a <video> frame into a File. Mobile/tablet native
- * capture and gallery selection never touch a canvas or `createImageBitmap`
- * — the captured/selected File goes straight to upload. Decoding a
- * full-resolution phone photo into a bitmap + canvas backing store client
- * side is what produced "Unable to complete previous operation due to low
- * memory" on real Android devices; the server (multer + sharp, see
- * transactions.service.ts) already resizes/compresses every proof image, so
- * duplicating that work in the browser only cost memory for no benefit.
- */
+/** Only path that ever touches a canvas — the bounded getUserMedia capture frame. Gallery selection and the native-camera fallback (only reachable when getUserMedia is unsupported) hand their File straight to upload with no client-side decode; the server (multer + sharp, see transactions.service.ts) already resizes/compresses every proof image. */
 function compressCanvas(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Image compression failed'))), 'image/jpeg', JPEG_QUALITY);
@@ -45,27 +39,25 @@ function compressCanvas(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 /**
- * Task 209.56E — "Take Photo" on mobile/tablet invokes the device's own
- * native camera capture UI via `<input type="file" capture="environment">`
- * rather than an in-page `getUserMedia()` live preview: the OS owns the
- * camera UI and the permission prompt there, the browser only ever receives
- * a finished file, and there is no stream to leak.
+ * OWNER REQUIREMENT (emergency in-POS mobile camera fix): "Take Photo" must
+ * never leave the POS page. It previously invoked the device's native camera
+ * app via `<input type="file" capture="environment">` on mobile/tablet —
+ * the OS owned the camera UI, but backgrounding the browser tab to run that
+ * native app is exactly what real Android devices were killing/reloading
+ * under memory pressure ("Unable to complete previous operation due to low
+ * memory"), which also unmounted the in-progress checkout. `getUserMedia()`
+ * now runs on mobile and desktop alike, in a `Dialog` overlay stacked above
+ * the still-mounted checkout — the tab never loses focus and no navigation
+ * ever occurs. Every path that can end the capture (Capture, Cancel,
+ * Android back button, unmount, re-invoking Take Photo) routes through
+ * `stopCameraStream`, which is idempotent and always runs before a new
+ * stream is requested — so there is no code path that leaves a stream
+ * running or opens a second one.
  *
- * Desktop/laptop browsers largely ignore `capture` and fall back to the OS
- * file picker instead of a camera — in practice that meant "Take Photo" on a
- * Windows/macOS cashier terminal opened the file picker, not the webcam.
- * Task 209.x reintroduces a `getUserMedia()` camera modal, but scoped to
- * desktop/laptop only (see `isMobileOrTablet` below), and specifically
- * guards the three failure modes that got the original in-page preview
- * pulled in 209.56E: every path that can end the capture (Capture, Cancel,
- * unmount, re-invoking Take Photo) routes through `stopCameraStream`, which
- * is idempotent and always runs before a new stream is requested — so there
- * is no code path that leaves a stream running (Task 209.16) or opens a
- * second one (Task 209.20). The modal is a dedicated `Dialog`, not embedded
- * in the checkout panel.
- *
- * "Upload from Gallery" stays a separate, `capture`-less file input so a
- * cashier can always pick an existing photo instead of taking a new one.
+ * The native `capture="environment"` input is kept only as a fallback for
+ * the rare mobile browser without `getUserMedia` support — never the
+ * default path anymore. "Upload from Gallery" stays a separate,
+ * `capture`-less file input so a cashier can always pick an existing photo.
  */
 type NavigatorWithUserAgentData = Navigator & { userAgentData?: { mobile?: boolean } };
 
@@ -76,7 +68,7 @@ type NavigatorWithUserAgentData = Navigator & { userAgentData?: { mobile?: boole
  * iPadOS 13+ reports as "Macintosh" but — unlike a real Mac — exposes
  * multi-point touch.
  */
-function isMobileOrTablet(): boolean {
+export function isMobileOrTablet(): boolean {
   if (typeof navigator === 'undefined') return false;
   const uaData = (navigator as NavigatorWithUserAgentData).userAgentData;
   if (uaData && typeof uaData.mobile === 'boolean') return uaData.mobile;
@@ -131,13 +123,42 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     };
   }, []);
 
+  // Owner requirement: Android hardware/gesture Back while the camera
+  // overlay is open must close the overlay and return to checkout — never
+  // leave the POS page. Without a pushed history entry, Back falls through
+  // to the browser's real navigation stack (the previous route, or out of
+  // the app). `closingByUsRef` distinguishes "user pressed Back" (browser
+  // already consumed our pushed entry, nothing left to undo) from "user hit
+  // Cancel/Capture" (we must consume the entry ourselves via history.back()
+  // so a later real Back press doesn't hit our stale marker).
+  const closingByUsRef = useRef(false);
+  useEffect(() => {
+    if (!isCameraOpen) return;
+    window.history.pushState({ cameraOverlay: true }, '');
+    function handlePopState() {
+      closingByUsRef.current = true;
+      stopCameraStream();
+      setIsCameraOpen(false);
+      setCameraError(null);
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      if (closingByUsRef.current) {
+        closingByUsRef.current = false;
+      } else {
+        window.history.back();
+      }
+    };
+  }, [isCameraOpen]);
+
   async function startCamera(deviceId?: string) {
     stopCameraStream();
     setCameraError(null);
     setIsStartingCamera(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } },
+        video: deviceId ? { deviceId: { exact: deviceId }, ...CAMERA_VIDEO_CONSTRAINTS } : { facingMode: { ideal: 'environment' }, ...CAMERA_VIDEO_CONSTRAINTS },
         audio: false,
       });
       streamRef.current = stream;
@@ -169,12 +190,16 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
 
   function handleTakePhotoClick() {
     if (isCameraOpen) return;
-    if (isMobileOrTablet()) {
-      captureInputRef.current?.click();
-      return;
-    }
     if (!isGetUserMediaSupported()) {
-      setCameraError('Camera is not available on this device/browser. Use Upload from Gallery.');
+      // Fallback only (item 16/19): the rare mobile browser without
+      // getUserMedia still gets a working camera via the native capture
+      // input; desktop/laptop has no native-camera analog, so it falls back
+      // to the error message + Upload from Gallery instead.
+      if (isMobileOrTablet()) {
+        captureInputRef.current?.click();
+        return;
+      }
+      setCameraError('Camera is not available in this browser. Use Upload from Gallery.');
       return;
     }
     setCameraError(null);
@@ -193,59 +218,69 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
     void startCamera(deviceId);
   }
 
+  /** Single frame, single canvas, single Blob — clamped to MAX_CAPTURE_DIMENSION on the long edge even though the getUserMedia request above already asks for a bounded resolution, because `ideal` is a soft constraint some devices/cameras don't honor exactly. */
   async function handleCapturePhoto() {
     const video = videoRef.current;
     if (!video || !streamRef.current) return;
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
+    const scale = Math.min(1, MAX_CAPTURE_DIMENSION / Math.max(sourceWidth, sourceHeight));
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const blob = await compressCanvas(canvas);
     const file = new File([blob], `camera-capture-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    // Camera indicator must turn off immediately — before upload, not after.
     stopCameraStream();
     setIsCameraOpen(false);
-    await loadSelectedFile(file, 'live_capture');
+    loadSelectedFile(file, 'live_capture', { bounded: true });
   }
 
   /**
-   * No client-side decode/re-encode: the captured/selected File is validated
-   * and handed straight to the caller's upload pipeline (FormData -> multer
-   * -> sharp on the server). Mobile native camera photos can be large, but
-   * decoding them into an ImageBitmap + canvas here — just to shrink them
-   * before upload — is the exact client-side memory spike the server-side
-   * sharp resize already makes unnecessary.
+   * No client-side decode/re-encode for gallery selection or the native-
+   * camera fallback: the File is validated and handed straight to the
+   * caller's upload pipeline (FormData -> multer -> sharp on the server).
+   * The in-page camera capture above is the one path that already produced
+   * a small, bounded-resolution JPEG (MAX_CAPTURE_DIMENSION) — safe to
+   * preview directly. Gallery picks and the rare native-capture fallback can
+   * still be an unbounded, full-resolution phone photo; decoding one of
+   * those into an `<img>` preview is what reproduced "Unable to complete
+   * previous operation due to low memory" on real Android devices, so those
+   * two paths keep skipping the preview on mobile/tablet.
    */
-  function loadSelectedFile(selected: File, type: CaptureMode) {
+  function loadSelectedFile(selected: File, type: CaptureMode, options?: { bounded?: boolean }) {
     const validationMessage = validateFile(selected);
     if (validationMessage) {
       setValidationError(validationMessage);
       return;
     }
     setValidationError(null);
+    const skipPreview = isMobileOrTablet() && !options?.bounded;
     setPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(selected);
+      return skipPreview ? null : URL.createObjectURL(selected);
     });
     setMode(type);
     setPendingFile(selected);
   }
 
-  async function handleGalleryChange(event: ChangeEvent<HTMLInputElement>) {
+  function handleGalleryChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0];
     event.target.value = '';
     if (!selected) return;
-    await loadSelectedFile(selected, 'gallery_upload');
+    loadSelectedFile(selected, 'gallery_upload');
   }
 
-  async function handleCaptureChange(event: ChangeEvent<HTMLInputElement>) {
+  function handleCaptureChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0];
     event.target.value = '';
     if (!selected) return;
     // A photo taken via the native camera UI is still a live capture from
     // the cashier's point of view, even though it arrives here as a file.
-    await loadSelectedFile(selected, 'live_capture');
+    loadSelectedFile(selected, 'live_capture');
   }
 
   function handleRetake() {
@@ -285,7 +320,7 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
 
-      {!previewUrl && (
+      {!pendingFile && (
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="button" variant="outline" className="touch-target flex-1" onClick={handleTakePhotoClick}>
             <Camera className="mr-2 h-4 w-4" />
@@ -388,19 +423,27 @@ export function ImageUpload({ onImageSelected, label = 'Photo', description, req
         </DialogContent>
       </Dialog>
 
-      {previewUrl && (
+      {pendingFile && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <span className={cn('h-2 w-2 rounded-full', mode === 'live_capture' ? 'bg-destructive' : 'bg-info')} />
             {mode === 'live_capture' ? 'Photo captured' : 'Gallery upload'}
           </div>
-          {/* Compact thumbnail only — the live camera preview above (if any)
-              is torn down before this state renders. Capped via the same
-              density-aware token the old live preview used, kept here so
-              this pending-confirm state can never grow past what a checkout
-              footer can spare at any density tier. */}
-          {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */}
-          <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
+          {previewUrl ? (
+            /* Compact thumbnail only — the live camera preview above (if any)
+               is torn down before this state renders. Capped via the same
+               density-aware token the old live preview used, kept here so
+               this pending-confirm state can never grow past what a checkout
+               footer can spare at any density tier. */
+            /* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not an optimizable remote asset */
+            <img src={previewUrl} alt="Preview" className="app-pos-proof-preview-height w-full rounded-md" />
+          ) : (
+            // Mobile/tablet: no preview image — see loadSelectedFile above for why.
+            <div className="app-pos-proof-preview-height flex w-full flex-col items-center justify-center gap-1.5 rounded-md border border-dashed text-xs text-muted-foreground">
+              <ImageIcon className="h-6 w-6" aria-hidden="true" />
+              <span>Photo captured — ready to upload ({(pendingFile.size / (1024 * 1024)).toFixed(1)} MB)</span>
+            </div>
+          )}
 
           {uploadError && (
             <Alert variant="destructive" className="px-3 py-2">

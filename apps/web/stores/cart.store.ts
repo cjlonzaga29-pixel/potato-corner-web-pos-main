@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import type { CartItem } from '@potato-corner/shared';
 
 // CR-008 Product Option selection (Task 21) — frontend cart state. Not part
@@ -47,6 +48,7 @@ interface HeldOrder {
 interface CartState {
   items: PosCartItem[];
   heldOrders: HeldOrder[];
+  hasHydrated: boolean;
   addItem: (item: PosCartItem) => void;
   removeItem: (index: number) => void;
   updateItemQuantity: (index: number, quantity: number) => void;
@@ -54,80 +56,116 @@ interface CartState {
   clearCart: () => void;
   holdCurrentOrder: () => void;
   resumeHeldOrder: (id: string) => void;
+  setHasHydrated: (hydrated: boolean) => void;
 }
 
 /**
  * POS cart is browser-only state, not server data — owned by Zustand, never
  * TanStack Query. Held orders: max 3, 15-minute expiry (enforced by the
  * component/hook that reads heldAt, not this store).
+ *
+ * Persisted to sessionStorage (same pattern as terminal-operator.store.ts) —
+ * mobile "Take Photo" backgrounds the tab to run the native camera app, and
+ * on real Android devices under memory pressure Chrome can discard that
+ * backgrounded tab's renderer process outright; returning to it then forces
+ * a full page reload. Before this, that reload silently wiped the in-progress
+ * cart with no recovery, forcing the cashier to re-enter the whole order —
+ * that data loss, not just the low-memory message itself, was the other half
+ * of the camera-return incident. Session-scoped (not localStorage) so a
+ * cleared/closed terminal doesn't resurrect a stale order on the next shift.
  */
-export const useCartStore = create<CartState>((set, get) => ({
-  items: [],
-  heldOrders: [],
-  // Tapping the same variant+flavor again increments its existing line
-  // instead of adding a duplicate row.
-  addItem: (item) =>
-    set((state) => {
-      const existing = state.items.find(
-        (i) =>
-          i.product_variant_id === item.product_variant_id &&
-          i.flavor_id === item.flavor_id &&
-          sameSelectedFlavors(i.selected_flavors, item.selected_flavors) &&
-          sameSelectedOptions(i.selected_options, item.selected_options),
-      );
-      if (!existing) return { items: [...state.items, item] };
-      return {
-        items: state.items.map((i) => (i === existing ? { ...i, quantity: i.quantity + item.quantity } : i)),
-      };
-    }),
-  removeItem: (index) =>
-    set((state) => ({ items: state.items.filter((_, i) => i !== index) })),
-  updateItemQuantity: (index, quantity) =>
-    set((state) => {
-      if (quantity <= 0) return { items: state.items.filter((_, i) => i !== index) };
-      return { items: state.items.map((item, i) => (i === index ? { ...item, quantity } : item)) };
-    }),
-  // Task 108 — swaps ONE cart line (by index) for the line(s) produced by
-  // re-editing it in the Add-ons dialog, in place, then folds any resulting
-  // duplicates (e.g. an edited line now matching another existing line)
-  // using the same identity check addItem uses — never leaves the stale
-  // line behind, never appends a bare duplicate.
-  replaceItem: (index, replacements) =>
-    set((state) => {
-      const spliced = [...state.items.slice(0, index), ...replacements, ...state.items.slice(index + 1)];
-      const merged: PosCartItem[] = [];
-      for (const item of spliced) {
-        const existingIndex = merged.findIndex(
-          (i) =>
-            i.product_variant_id === item.product_variant_id &&
-            i.flavor_id === item.flavor_id &&
-            sameSelectedFlavors(i.selected_flavors, item.selected_flavors) &&
-            sameSelectedOptions(i.selected_options, item.selected_options),
-        );
-        if (existingIndex === -1) {
-          merged.push(item);
-        } else {
-          const existing = merged[existingIndex];
-          if (existing) merged[existingIndex] = { ...existing, quantity: existing.quantity + item.quantity };
-        }
-      }
-      return { items: merged };
-    }),
-  clearCart: () => set({ items: [] }),
-  holdCurrentOrder: () => {
-    const { items, heldOrders } = get();
-    if (items.length === 0 || heldOrders.length >= 3) return;
-    set({
-      heldOrders: [...heldOrders, { id: crypto.randomUUID(), items, heldAt: Date.now() }],
+export const useCartStore = create<CartState>()(
+  persist(
+    (set, get) => ({
       items: [],
-    });
-  },
-  resumeHeldOrder: (id) => {
-    const held = get().heldOrders.find((order) => order.id === id);
-    if (!held) return;
-    set((state) => ({
-      items: held.items,
-      heldOrders: state.heldOrders.filter((order) => order.id !== id),
-    }));
-  },
-}));
+      heldOrders: [],
+      hasHydrated: false,
+      // Tapping the same variant+flavor again increments its existing line
+      // instead of adding a duplicate row.
+      addItem: (item) =>
+        set((state) => {
+          const existing = state.items.find(
+            (i) =>
+              i.product_variant_id === item.product_variant_id &&
+              i.flavor_id === item.flavor_id &&
+              sameSelectedFlavors(i.selected_flavors, item.selected_flavors) &&
+              sameSelectedOptions(i.selected_options, item.selected_options),
+          );
+          if (!existing) return { items: [...state.items, item] };
+          return {
+            items: state.items.map((i) =>
+              i === existing ? { ...i, quantity: i.quantity + item.quantity } : i,
+            ),
+          };
+        }),
+      removeItem: (index) => set((state) => ({ items: state.items.filter((_, i) => i !== index) })),
+      updateItemQuantity: (index, quantity) =>
+        set((state) => {
+          if (quantity <= 0) return { items: state.items.filter((_, i) => i !== index) };
+          return {
+            items: state.items.map((item, i) => (i === index ? { ...item, quantity } : item)),
+          };
+        }),
+      // Task 108 — swaps ONE cart line (by index) for the line(s) produced by
+      // re-editing it in the Add-ons dialog, in place, then folds any resulting
+      // duplicates (e.g. an edited line now matching another existing line)
+      // using the same identity check addItem uses — never leaves the stale
+      // line behind, never appends a bare duplicate.
+      replaceItem: (index, replacements) =>
+        set((state) => {
+          const spliced = [
+            ...state.items.slice(0, index),
+            ...replacements,
+            ...state.items.slice(index + 1),
+          ];
+          const merged: PosCartItem[] = [];
+          for (const item of spliced) {
+            const existingIndex = merged.findIndex(
+              (i) =>
+                i.product_variant_id === item.product_variant_id &&
+                i.flavor_id === item.flavor_id &&
+                sameSelectedFlavors(i.selected_flavors, item.selected_flavors) &&
+                sameSelectedOptions(i.selected_options, item.selected_options),
+            );
+            if (existingIndex === -1) {
+              merged.push(item);
+            } else {
+              const existing = merged[existingIndex];
+              if (existing)
+                merged[existingIndex] = {
+                  ...existing,
+                  quantity: existing.quantity + item.quantity,
+                };
+            }
+          }
+          return { items: merged };
+        }),
+      clearCart: () => set({ items: [] }),
+      holdCurrentOrder: () => {
+        const { items, heldOrders } = get();
+        if (items.length === 0 || heldOrders.length >= 3) return;
+        set({
+          heldOrders: [...heldOrders, { id: crypto.randomUUID(), items, heldAt: Date.now() }],
+          items: [],
+        });
+      },
+      resumeHeldOrder: (id) => {
+        const held = get().heldOrders.find((order) => order.id === id);
+        if (!held) return;
+        set((state) => ({
+          items: held.items,
+          heldOrders: state.heldOrders.filter((order) => order.id !== id),
+        }));
+      },
+      setHasHydrated: (hydrated) => set({ hasHydrated: hydrated }),
+    }),
+    {
+      name: 'potato-corner-pos-cart',
+      storage: createJSONStorage(() => sessionStorage),
+      partialize: (state) => ({ items: state.items, heldOrders: state.heldOrders }),
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
+    },
+  ),
+);

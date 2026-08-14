@@ -357,11 +357,11 @@ export const reportsRepository = {
         // branch_name/discount_proof_available — DAILY_SALES_TRANSACTION_COLUMNS
         // is untouched, so the Daily Sales tab's PDF/CSV is unaffected.
         discountProofKey: true,
-        // Discount Compliance CSV/PDF parity — same encrypted field
-        // transactions.service.ts's getDiscountAuditTrail decrypts for the
-        // screen; DAILY_SALES_TRANSACTION_COLUMNS never references
-        // discount_id_reference below, so the Daily Sales export stays
-        // unaffected by adding this.
+        // Same encrypted field transactions.service.ts's getDiscountAuditTrail
+        // decrypts for the screen. Carried on every row; reports.service.ts's
+        // requestExport strips the discount_id_reference column for the
+        // 'branch' role before rendering, for both the Daily Sales and
+        // Discount Compliance exports that read from this function.
         discountCustomerIdEncrypted: true,
       },
       orderBy: { createdAt: 'desc' },

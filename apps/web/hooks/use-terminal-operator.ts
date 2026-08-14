@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { useIsClockedIn } from '@/hooks/queries/use-attendance';
+import { useRefetchOnForeground } from '@/hooks/use-refetch-on-foreground';
 import type { AttendanceResponse } from '@potato-corner/shared';
 import { useTerminalOperatorStore } from '@/stores/terminal-operator.store';
 
@@ -82,7 +83,11 @@ export function useTerminalOperator({
 
   const restoreCandidateId = !activeEmployee && hasPersistedCandidate && persistedEmployeeId !== null ? persistedEmployeeId : undefined;
   const operatorId = isBranchAccount ? (activeEmployee?.id ?? restoreCandidateId) : userId;
-  const { isClockedIn, record, isLoading: isAttendanceLoading } = useIsClockedIn(operatorId);
+  const { isClockedIn, record, isLoading: isAttendanceLoading, refetch: refetchAttendance } = useIsClockedIn(operatorId);
+  // Server attendance state is authoritative — when this device's tab/app
+  // regains the foreground, re-check it so a clock-out made from another
+  // device (e.g. desktop) is picked up without a manual refresh.
+  useRefetchOnForeground(refetchAttendance);
 
   useEffect(() => {
     if (!isBranchAccount || branchId == null || isAttendanceLoading) return;

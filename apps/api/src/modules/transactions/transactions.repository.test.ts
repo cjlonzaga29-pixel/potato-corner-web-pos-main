@@ -193,7 +193,7 @@ describe('transactionsRepository.createTransaction', () => {
           ],
         },
       }),
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
     });
     expect(prisma.transactionItem.createMany).not.toHaveBeenCalled();
     expect(prisma.transaction.findUniqueOrThrow).not.toHaveBeenCalled();
@@ -326,7 +326,7 @@ describe('transactionsRepository.findByOfflineIdentity', () => {
 
     expect(prisma.transaction.findFirst).toHaveBeenCalledWith({
       where: { branchId: 'branch-1', deviceId: 'device-1', offlineProvisionalNumber: 'PC-MNL001-20260810-OFFLINE-0001' },
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
     });
   });
 
@@ -425,7 +425,7 @@ describe('transactionsRepository.findTransactionById', () => {
 
     expect(prisma.transaction.findUnique).toHaveBeenCalledWith({
       where: { id: 'txn-1' },
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
     });
   });
 });
@@ -516,7 +516,7 @@ describe('transactionsRepository.voidTransaction', () => {
     });
     expect(prisma.transaction.findUnique).toHaveBeenCalledWith({
       where: { id: 'txn-1' },
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
     });
     expect(result).toEqual({ id: 'txn-1' });
   });
@@ -544,7 +544,7 @@ describe('transactionsRepository.refundTransaction', () => {
     });
     expect(prisma.transaction.findUnique).toHaveBeenCalledWith({
       where: { id: 'txn-1' },
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
     });
     expect(result).toEqual({ id: 'txn-1' });
   });
@@ -568,7 +568,7 @@ describe('transactionsRepository.markReceiptPrinted', () => {
     expect(prisma.transaction.update).toHaveBeenCalledWith({
       where: { id: 'txn-1' },
       data: { receiptPrinted: true },
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } } },
+      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
     });
   });
 });

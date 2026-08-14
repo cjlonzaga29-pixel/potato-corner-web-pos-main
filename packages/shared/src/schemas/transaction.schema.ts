@@ -212,6 +212,13 @@ export const transactionResponseSchema = z.object({
   branch_id: z.uuid(),
   shift_id: z.uuid().nullable(),
   cashier_id: z.uuid(),
+  // Resolved server-side from the Transaction→User cashier relation — see
+  // transactions.service.ts's toTransactionResponse. Prefer this over a
+  // client-side employees-list lookup keyed by cashier_id: that list is
+  // branch/page-scoped and misses a cashier once their branch assignment
+  // changes, which was rendering a bare UUID in Reports. Null only if the
+  // relation somehow didn't load (never surfaced as a UUID at the callsite).
+  cashier_name: z.string().nullable().optional(),
   status: z.enum(transactionStatusValues),
   payment_method: z.enum(paymentMethodValues),
   subtotal: z.number(),

@@ -116,8 +116,21 @@ vi.mock('@/hooks/queries/use-employees', () => ({
 const STAFF_USER = { id: 'user-1', role: 'staff' as const, branchIds: ['branch-1'], firstName: 'Jamie', lastName: 'Cruz', email: 'jamie@example.com' };
 const BRANCH_USER = { id: 'branch-account-1', role: 'branch' as const, branchIds: ['branch-1'], firstName: 'Branch', lastName: 'Owner', email: 'owner@example.com' };
 
+const { MockGeolocationError } = vi.hoisted(() => ({
+  MockGeolocationError: class MockGeolocationError extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = 'GeolocationError';
+      this.code = code;
+    }
+  },
+}));
+
 vi.mock('@/lib/geolocation', () => ({
   getCurrentPosition: vi.fn().mockResolvedValue({ lat: 14.5, lng: 121.0 }),
+  queryGeolocationPermission: vi.fn().mockResolvedValue('granted'),
+  GeolocationError: MockGeolocationError,
 }));
 
 const { mockCartItems } = vi.hoisted(() => ({ mockCartItems: vi.fn(() => [] as unknown[]) }));

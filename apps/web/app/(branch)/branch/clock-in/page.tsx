@@ -2,14 +2,16 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, MapPin } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { LocationAccessRecovery } from '@/components/shared/feedback/location-access-recovery';
 import { useAuth } from '@/hooks/use-auth';
 import { useAttendanceByEmployee, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
+import { useClockInLocation } from '@/hooks/use-clock-in-location';
+import { useRefetchOnForeground } from '@/hooks/use-refetch-on-foreground';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 
 /** Starts null so the server-rendered markup and first client render agree — same hydration guard as PosHeader's clock. */
@@ -38,10 +40,11 @@ export default function ClockInPage() {
   const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const now = useNow();
-  const [gpsError, setGpsError] = useState<string | null>(null);
-  const [isLocating, setIsLocating] = useState(false);
+  const { isLocating, locationError, isPermissionDenied, getLocation } = useClockInLocation();
+  const [isClockingOut, setIsClockingOut] = useState(false);
 
   const { data: history, isLoading, isError, refetch } = useAttendanceByEmployee(user?.id, { limit: 1 });
+  useRefetchOnForeground(refetch);
   const clockIn = useClockIn();
   const clockOut = useClockOut();
 
@@ -50,10 +53,9 @@ export default function ClockInPage() {
 
   async function handleClockIn() {
     if (!user || !branchId) return;
-    setGpsError(null);
-    setIsLocating(true);
+    const coords = await getLocation();
+    if (!coords) return;
     try {
-      const coords = await getCurrentPosition();
       await clockIn.mutateAsync({
         employee_id: user.id,
         branch_id: branchId,
@@ -63,17 +65,15 @@ export default function ClockInPage() {
       // Shift is now auto-managed (opened transparently on clock-in) — go
       // straight to the POS Terminal, no separate Open Shift step.
       router.push('/branch/terminal');
-    } catch (error) {
-      setGpsError(error instanceof Error ? error.message : 'Unable to read your location.');
-    } finally {
-      setIsLocating(false);
+    } catch {
+      // useClockIn's onError already toasts and refetches attendance (e.g.
+      // "already clocked in" from another device) — nothing further here.
     }
   }
 
   async function handleClockOut() {
     if (!user || !branchId) return;
-    setGpsError(null);
-    setIsLocating(true);
+    setIsClockingOut(true);
     // GPS is optional on clock-out (clockOutSchema) — a failure here still lets the clock-out through, just without location data.
     let coords: GpsCoords | null = null;
     try {
@@ -81,7 +81,7 @@ export default function ClockInPage() {
     } catch {
       coords = null;
     }
-    setIsLocating(false);
+    setIsClockingOut(false);
     await clockOut.mutateAsync({
       employee_id: user.id,
       branch_id: branchId,
@@ -104,7 +104,7 @@ export default function ClockInPage() {
     return <p className="p-6 text-sm text-destructive">No branch assigned — cannot clock in.</p>;
   }
 
-  const isBusy = isLocating || clockIn.isPending || clockOut.isPending;
+  const isBusy = isLocating || isClockingOut || clockIn.isPending || clockOut.isPending;
 
   return (
     <div className="mx-auto max-w-md app-section app-section-gap overflow-y-auto p-6">
@@ -135,19 +135,18 @@ export default function ClockInPage() {
                 <p className="text-sm text-muted-foreground">Tap Clock In to start tracking your shift attendance.</p>
               )}
 
-              {gpsError && (
-                <Alert variant="destructive">
-                  <MapPin className="h-4 w-4" />
-                  <AlertTitle>Location error</AlertTitle>
-                  <AlertDescription>{gpsError}</AlertDescription>
-                </Alert>
-              )}
-
               {isClockedIn ? (
                 <Button className="w-full touch-target" variant="danger" onClick={handleClockOut} disabled={isBusy || isLoading}>
                   {isBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Clock Out
                 </Button>
+              ) : locationError ? (
+                <LocationAccessRecovery
+                  message={locationError}
+                  isRetrying={isLocating}
+                  onRetry={() => void handleClockIn()}
+                  showHelp={isPermissionDenied}
+                />
               ) : (
                 <Button className="w-full touch-target" onClick={handleClockIn} disabled={isBusy || isLoading}>
                   {isBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

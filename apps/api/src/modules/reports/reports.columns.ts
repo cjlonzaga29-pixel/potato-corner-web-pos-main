@@ -15,6 +15,10 @@ export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransaction
   { key: 'vat_amount', header: 'VAT' },
   { key: 'discount_amount', header: 'Discount' },
   { key: 'discount_type', header: 'Discount Type' },
+  // reports.service.ts's requestExport strips this column for the 'branch'
+  // role before rendering — same supervisor/super_admin-only rule as
+  // getDiscountAuditTrail, since this array alone can't express RBAC.
+  { key: 'discount_id_reference', header: 'Customer ID / Reference' },
   { key: 'created_at', header: 'Date' },
   { key: 'cashier_name', header: 'Cashier' },
 ];

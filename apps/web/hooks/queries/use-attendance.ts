@@ -119,7 +119,14 @@ export function useClockIn(accessTokenOverride?: string, refreshOverrideToken?: 
       invalidateAttendance(queryClient);
       toast.success('Clocked in');
     },
-    onError: (error: Error) => toast.error(error.message),
+    // A concurrent clock-in from another device (or a stale client read) can
+    // fail here after location was already obtained — re-fetch so this
+    // device's UI reflects the real server state instead of staying stuck
+    // showing "Clock In".
+    onError: (error: Error) => {
+      invalidateAttendance(queryClient);
+      toast.error(error.message);
+    },
   });
 }
 
@@ -141,7 +148,10 @@ export function useClockOut(accessTokenOverride?: string, refreshOverrideToken?:
       invalidateAttendance(queryClient);
       toast.success('Clocked out');
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      invalidateAttendance(queryClient);
+      toast.error(error.message);
+    },
   });
 }
 

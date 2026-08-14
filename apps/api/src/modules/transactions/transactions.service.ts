@@ -166,6 +166,7 @@ interface TransactionRow {
   updatedAt: Date;
   items?: TransactionItemRow[];
   shift?: { id: string; status: string; branchId: string } | null;
+  cashier?: { firstName: string; lastName: string } | null;
 }
 
 function toTransactionResponse(row: TransactionRow) {
@@ -175,6 +176,10 @@ function toTransactionResponse(row: TransactionRow) {
     branch_id: row.branchId,
     shift_id: row.shiftId,
     cashier_id: row.cashierId,
+    // Null only for the (practically unreachable, cashierId is a required FK)
+    // case Prisma's include returns no cashier row — reports render '—'/the
+    // existing cashier_id fallback rather than crash on a missing name.
+    cashier_name: row.cashier ? `${row.cashier.firstName} ${row.cashier.lastName}` : null,
     status: row.status,
     payment_method: row.paymentMethod,
     subtotal: row.subtotal.toNumber(),

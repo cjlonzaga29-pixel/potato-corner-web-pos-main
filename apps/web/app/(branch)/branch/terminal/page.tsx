@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
-import { Fingerprint, Loader2, LogOut, MapPin, ShoppingCart, User } from 'lucide-react';
+import { Fingerprint, Loader2, LogOut, ShoppingCart, User } from 'lucide-react';
 import { ROLES } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -27,12 +27,15 @@ import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { SearchInput } from '@/components/shared/forms/search-input';
+import { isMobileOrTablet } from '@/components/shared/forms/image-upload';
+import { LocationAccessRecovery } from '@/components/shared/feedback/location-access-recovery';
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
 import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useTerminalOperator } from '@/hooks/use-terminal-operator';
+import { useClockInLocation } from '@/hooks/use-clock-in-location';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof } from '@/hooks/queries/use-transactions';
@@ -351,8 +354,8 @@ export default function TerminalPage() {
   const uploadDiscountProof = useUploadDiscountProof(operatorToken, refreshEmployeeToken);
   const clockIn = useClockIn(operatorToken, refreshEmployeeToken);
   const clockOut = useClockOut(operatorToken, refreshEmployeeToken);
-  const [gpsError, setGpsError] = useState<string | null>(null);
-  const [isLocating, setIsLocating] = useState(false);
+  const { isLocating, locationError, isPermissionDenied, getLocation } = useClockInLocation();
+  const [isClockingOut, setIsClockingOut] = useState(false);
 
   const {
     data: employeesData,
@@ -510,29 +513,26 @@ export default function TerminalPage() {
   // clocked-out cashier sees the Clock In card below instead of the catalog.
   async function handleClockIn() {
     if (!operatorId || !branchId) return;
-    setGpsError(null);
-    setIsLocating(true);
+    const coords = await getLocation();
+    if (!coords) return;
     try {
-      const coords: GpsCoords = await getCurrentPosition();
       await clockIn.mutateAsync({ employee_id: operatorId, branch_id: branchId, gps_lat: coords.lat, gps_lng: coords.lng });
-    } catch (error) {
-      setGpsError(error instanceof Error ? error.message : 'Unable to read your location.');
-    } finally {
-      setIsLocating(false);
+    } catch {
+      // useClockIn's onError already toasts and refetches attendance (e.g.
+      // "already clocked in" from another device) — nothing further here.
     }
   }
 
   async function handleClockOut() {
     if (!operatorId || !branchId || createTransaction.isPending) return;
-    setGpsError(null);
-    setIsLocating(true);
+    setIsClockingOut(true);
     let coords: GpsCoords | null = null;
     try {
       coords = await getCurrentPosition();
     } catch {
       coords = null;
     }
-    setIsLocating(false);
+    setIsClockingOut(false);
     await clockOut.mutateAsync({ employee_id: operatorId, branch_id: branchId, ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}) });
     // The Branch Account was never signed out of — just drop the selected
     // Employee's terminal-local state, back to STATE 1 ("Who is working?").
@@ -969,7 +969,10 @@ export default function TerminalPage() {
     setPaymentProofType(result.payment_proof_type);
     setPaymentProofPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+      // Mobile: same low-memory decode risk as ImageUpload's own pre-confirm
+      // preview (image-upload.tsx) — skip it here too so the "View" dialog
+      // never has to decode the full-resolution original on a phone.
+      return isMobileOrTablet() ? null : URL.createObjectURL(file);
     });
   }
 
@@ -990,7 +993,7 @@ export default function TerminalPage() {
     setDiscountProofType(result.discount_proof_type);
     setDiscountProofPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+      return isMobileOrTablet() ? null : URL.createObjectURL(file);
     });
   }
 
@@ -1207,17 +1210,19 @@ export default function TerminalPage() {
               <p className="text-lg font-semibold">Clock In to Start Selling</p>
               <p className="text-sm text-muted-foreground">You need to clock in before you can use the POS Terminal.</p>
             </div>
-            {gpsError && (
-              <Alert variant="destructive">
-                <MapPin className="h-4 w-4" />
-                <AlertTitle>Location error</AlertTitle>
-                <AlertDescription>{gpsError}</AlertDescription>
-              </Alert>
+            {locationError ? (
+              <LocationAccessRecovery
+                message={locationError}
+                isRetrying={isLocating}
+                onRetry={() => void handleClockIn()}
+                showHelp={isPermissionDenied}
+              />
+            ) : (
+              <Button className="w-full touch-target" size="lg" onClick={() => void handleClockIn()} disabled={isLocating || clockIn.isPending}>
+                {(isLocating || clockIn.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Clock In
+              </Button>
             )}
-            <Button className="w-full touch-target" size="lg" onClick={() => void handleClockIn()} disabled={isLocating || clockIn.isPending}>
-              {(isLocating || clockIn.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Clock In
-            </Button>
           </CardContent>
         </Card>
       </div>
@@ -1347,9 +1352,9 @@ export default function TerminalPage() {
           size="sm"
           className="touch-target gap-1.5"
           onClick={() => void handleClockOut()}
-          disabled={isLocating || clockOut.isPending || createTransaction.isPending}
+          disabled={isClockingOut || clockOut.isPending || createTransaction.isPending}
         >
-          {isLocating || clockOut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+          {isClockingOut || clockOut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
           Clock Out
         </Button>
       </div>

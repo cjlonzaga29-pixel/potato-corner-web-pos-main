@@ -14,7 +14,7 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
-import { useTransaction, useTransactions } from '@/hooks/queries/use-transactions';
+import { useDiscountAuditTrail, useTransaction, useTransactions } from '@/hooks/queries/use-transactions';
 
 const ALL = 'all';
 
@@ -63,6 +63,16 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
     limit: 100,
   });
 
+  // Customer ID / Reference for PWD/Senior rows — same authorized
+  // discount-audit trail endpoint the Discount Compliance drilldown already
+  // calls (server-enforced to super_admin/supervisor, null for every other
+  // role), scoped to this sheet's single branch+day rather than a new query.
+  const discountAuditQuery = useDiscountAuditTrail({ branchId: branchId ?? undefined, dateFrom: reportDate, dateTo: reportDate, page: 1, limit: 100 }, open);
+  const discountCustomerIdByTransaction = useMemo(
+    () => new Map((discountAuditQuery.data?.data ?? []).map((row) => [row.id, row.discountCustomerId])),
+    [discountAuditQuery.data],
+  );
+
   const filtered = useMemo(() => {
     const allTransactions = data?.transactions ?? [];
     const term = search.trim().toLowerCase();
@@ -74,6 +84,11 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
     { id: 'time', header: 'Time', cell: ({ row }) => formatTimeOnly(row.original.created_at) },
     { id: 'receipt_number', header: 'Receipt Number', accessorKey: 'receipt_number' },
     {
+      id: 'cashier',
+      header: 'Cashier',
+      cell: ({ row }) => row.original.cashier_name ?? row.original.cashier_id,
+    },
+    {
       id: 'payment_method',
       header: 'Payment Method',
       cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
@@ -84,6 +99,16 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
       id: 'discount_amount',
       header: 'Discount',
       cell: ({ row }) => (row.original.discount_amount > 0 ? formatCurrency(row.original.discount_amount) : '—'),
+    },
+    {
+      id: 'discount_type',
+      header: 'Discount Type',
+      cell: ({ row }) => (row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'),
+    },
+    {
+      id: 'customer_id',
+      header: 'Customer ID / Reference',
+      cell: ({ row }) => discountCustomerIdByTransaction.get(row.original.id) ?? '—',
     },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
     { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },

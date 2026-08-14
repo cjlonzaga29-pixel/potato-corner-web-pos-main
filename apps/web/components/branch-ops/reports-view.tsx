@@ -22,6 +22,7 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
+import { ExportButtons } from '@/components/reports/export-buttons';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
@@ -776,12 +777,12 @@ export function ReportsView() {
           <Button onClick={handleRefresh} disabled={refreshDisabled} className="w-full sm:w-auto">
             {refreshDisabled ? `Refresh (${refreshCooldown}s)` : 'Refresh'}
           </Button>
-          <Button type="button" variant="outline" onClick={() => handleExport('csv')} disabled={isExportingCsv} className="w-full sm:w-auto">
-            {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
-          </Button>
-          <Button type="button" variant="outline" onClick={() => handleExport('pdf')} disabled={isExportingPdf} className="w-full sm:w-auto">
-            {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
-          </Button>
+          <ExportButtons
+            onExportCsv={() => handleExport('csv')}
+            onExportPdf={() => handleExport('pdf')}
+            isExportingCsv={isExportingCsv}
+            isExportingPdf={isExportingPdf}
+          />
         </div>
       </div>
 

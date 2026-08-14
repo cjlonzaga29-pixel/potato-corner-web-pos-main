@@ -84,6 +84,26 @@ export function resolveDateRangeBoundary(value: string, boundary: 'start' | 'end
 }
 
 /**
+ * Human-readable Manila-timezone date+time for printed reports (PDF), e.g.
+ * "Aug 7, 2026, 2:34 PM" — explicit Asia/Manila zone so the server process's
+ * own TZ never leaks in (same reasoning as dayBounds). Accepts the raw
+ * `.toISOString()` strings report rows store for created_at/closed_at/etc —
+ * display-only, doesn't touch the underlying stored value.
+ */
+export function formatManilaDateTime(value: string | Date): string {
+  const parsed = typeof value === 'string' ? new Date(value) : value;
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(parsed);
+}
+
+/**
  * Same reasoning as dayBounds, for a Manila calendar month — used by
  * "this month" activity windows (e.g. employee monthly stats) that must
  * agree with dayBounds on where a Manila day starts.

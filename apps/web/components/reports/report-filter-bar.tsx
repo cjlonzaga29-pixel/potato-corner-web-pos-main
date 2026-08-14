@@ -1,11 +1,12 @@
 'use client';
 
-import { Loader2, Download, FileText, RotateCw } from 'lucide-react';
+import { RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranches } from '@/hooks/queries/use-branches';
+import { ExportButtons } from '@/components/reports/export-buttons';
 
 export interface ReportFilterBarProps {
   branchId: string | null;
@@ -84,14 +85,13 @@ export function ReportFilterBar({
           <RotateCw className="mr-2 h-4 w-4" />
           {isRefreshDisabled ? `Refresh (${refreshCooldownSeconds}s)` : 'Refresh'}
         </Button>
-        <Button type="button" variant="outline" onClick={onExportCsv} disabled={isExportingCsv || exportDisabled} className="w-full sm:w-auto">
-          {isExportingCsv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-          {isExportingCsv ? 'Exporting CSV…' : 'Export CSV'}
-        </Button>
-        <Button type="button" variant="outline" onClick={onExportPdf} disabled={isExportingPdf || exportDisabled} className="w-full sm:w-auto">
-          {isExportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-          {isExportingPdf ? 'Exporting PDF…' : 'Export PDF'}
-        </Button>
+        <ExportButtons
+          onExportCsv={onExportCsv}
+          onExportPdf={onExportPdf}
+          isExportingCsv={isExportingCsv}
+          isExportingPdf={isExportingPdf}
+          disabled={exportDisabled}
+        />
       </div>
     </div>
   );

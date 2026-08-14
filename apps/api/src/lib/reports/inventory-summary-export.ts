@@ -126,23 +126,38 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', borderBottom: '1px solid #cccccc' },
   totalsRow: { flexDirection: 'row', borderBottom: '1px solid #000000', fontWeight: 700 },
   headerRow: { flexDirection: 'row', borderBottom: '1px solid #000000', fontWeight: 700 },
-  cell: { flex: 1, padding: 4 },
+  cell: { padding: 4, lineHeight: 1.35 },
   footer: { position: 'absolute', bottom: 16, left: 24, right: 24, fontSize: 8, textAlign: 'center', color: '#666666' },
 });
 
+const MIN_COLUMN_WIDTH = 6;
+const MAX_COLUMN_WIDTH = 40;
+
+/** Same content-driven sizing rationale as pdf.ts's computeColumnWidths — a
+ * long ingredient name shouldn't be squeezed into the same width as a
+ * "Converted"/"Conversion Needed" status cell. */
+function computeWidths(headers: string[], rows: (string | number)[][], totalRow: (string | number)[]): number[] {
+  return headers.map((h, i) => {
+    const longest = [...rows, totalRow].reduce((max, r) => Math.max(max, String(r[i] ?? '').length), h.length);
+    return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, longest));
+  });
+}
+
 function buildTable(headers: string[], rows: (string | number)[][], totalRow: (string | number)[]) {
+  const widths = computeWidths(headers, rows, totalRow);
+  const cellStyle = (i: number) => [styles.cell, { flex: widths[i] }];
   return e(
     View,
     { style: styles.table },
-    e(View, { style: styles.headerRow }, ...headers.map((h, i) => e(Text, { key: i, style: styles.cell }, h))),
+    e(View, { style: styles.headerRow, fixed: true }, ...headers.map((h, i) => e(Text, { key: i, style: cellStyle(i) }, h))),
     ...rows.map((r, i) =>
       e(
         View,
         { key: i, style: styles.row, wrap: false },
-        ...r.map((v, j) => e(Text, { key: j, style: styles.cell }, String(v))),
+        ...r.map((v, j) => e(Text, { key: j, style: cellStyle(j) }, String(v))),
       ),
     ),
-    e(View, { style: styles.totalsRow }, ...totalRow.map((v, j) => e(Text, { key: j, style: styles.cell }, String(v)))),
+    e(View, { style: styles.totalsRow }, ...totalRow.map((v, j) => e(Text, { key: j, style: cellStyle(j) }, String(v)))),
   );
 }
 

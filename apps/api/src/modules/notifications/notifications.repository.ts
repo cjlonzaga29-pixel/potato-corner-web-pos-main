@@ -61,6 +61,32 @@ export const notificationsRepository = {
     });
   },
 
+  /**
+   * Task 220 — super admins (company-wide) + supervisors assigned to the
+   * branch + the branch's own `branch`-role account. None of the three
+   * helpers above ever included role: 'branch', so branch accounts had no
+   * notification recipient path at all before this task. Used for the new
+   * operational-visibility event types (sale/refund/expense/receiving/waste/
+   * transfer/discount-compliance) where a branch account needs to see its
+   * own branch's activity per the role-scoping requirement. A `branch`-role
+   * user is resolved via UserBranchAssignment exactly like supervisor is —
+   * confirmed against branches.service.ts's branch-account provisioning,
+   * which creates one UserBranchAssignment row per branch account.
+   */
+  findBranchAllRolesUserIds(branchId: string) {
+    return prisma.user.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { role: 'super_admin' },
+          { role: 'supervisor', branchAssignments: { some: { branchId, removedAt: null } } },
+          { role: 'branch', branchAssignments: { some: { branchId, removedAt: null } } },
+        ],
+      },
+      select: { id: true },
+    });
+  },
+
   /** GET /api/notifications — unread (readAt null) first, then newest first within each group. */
   async findForRecipient(recipientUserId: string, pagination: { page: number; limit: number }) {
     const where: Prisma.NotificationWhereInput = { recipientUserId };
@@ -90,5 +116,11 @@ export const notificationsRepository = {
       where: { recipientUserId, readAt: null },
       data: { readAt: new Date() },
     });
+  },
+
+  /** Task 220 — Notification.branchId has no declared Prisma relation, so branch names are batch-joined manually at read time (never at write time, to keep every checkout/write-path call site above free of an extra query). */
+  findBranchNames(branchIds: string[]) {
+    if (branchIds.length === 0) return Promise.resolve([]);
+    return prisma.branch.findMany({ where: { id: { in: branchIds } }, select: { id: true, name: true } });
   },
 };

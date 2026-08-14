@@ -7,6 +7,7 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { manilaDateStringToUtc } from '../../lib/manila-time.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -131,6 +132,20 @@ export const expensesService = {
 
     notifyBranch(data.branch_id, SOCKET_EVENTS.EXPENSE_CREATED, response);
     notifySuperAdmin(SOCKET_EVENTS.EXPENSE_CREATED, response);
+
+    try {
+      await enqueueNotification('expense_created', {
+        type: 'expense_created',
+        branchId: data.branch_id,
+        expenseId: created.id,
+        category: response.category,
+        amount: response.amount,
+        vendorName: response.vendor_name ?? null,
+        createdByName: response.created_by_name,
+      });
+    } catch (error) {
+      console.error(`Failed to enqueue expense-created notification for expense ${created.id}:`, error);
+    }
 
     return response;
   },

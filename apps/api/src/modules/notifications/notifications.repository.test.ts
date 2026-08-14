@@ -17,6 +17,9 @@ vi.mock('../../lib/prisma.js', () => {
     user: {
       findMany: vi.fn(),
     },
+    branch: {
+      findMany: vi.fn(),
+    },
   };
   return { prisma: prismaMock };
 });
@@ -99,6 +102,61 @@ describe('notificationsRepository.findBranchSupervisorUserIds', () => {
       select: { id: true },
     });
     expect(result).toEqual([{ id: 'supervisor-1' }]);
+  });
+});
+
+describe('notificationsRepository.findBranchAllRolesUserIds', () => {
+  it('queries active super admins, plus supervisors and the branch account assigned to the given branch', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: 'admin-1' },
+      { id: 'supervisor-1' },
+      { id: 'branch-account-1' },
+    ] as never);
+
+    const result = await notificationsRepository.findBranchAllRolesUserIds('branch-1');
+
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: {
+        isActive: true,
+        OR: [
+          { role: 'super_admin' },
+          { role: 'supervisor', branchAssignments: { some: { branchId: 'branch-1', removedAt: null } } },
+          { role: 'branch', branchAssignments: { some: { branchId: 'branch-1', removedAt: null } } },
+        ],
+      },
+      select: { id: true },
+    });
+    expect(result).toEqual([{ id: 'admin-1' }, { id: 'supervisor-1' }, { id: 'branch-account-1' }]);
+  });
+
+  it('never includes a branch-role user assigned to a different branch', async () => {
+    // The mocked findMany doesn't actually filter — this asserts the *query
+    // shape* sent to Prisma scopes the branch OR-clause to the given
+    // branchId, which is what makes cross-branch leakage impossible at the
+    // DB level regardless of how many branch accounts exist.
+    vi.mocked(prisma.user.findMany).mockResolvedValue([] as never);
+    await notificationsRepository.findBranchAllRolesUserIds('branch-1');
+    const call = vi.mocked(prisma.user.findMany).mock.calls[0]?.[0] as { where: { OR: unknown[] } };
+    const branchClause = call.where.OR[2] as { role: string; branchAssignments: { some: { branchId: string } } };
+    expect(branchClause.role).toBe('branch');
+    expect(branchClause.branchAssignments.some.branchId).toBe('branch-1');
+  });
+});
+
+describe('notificationsRepository.findBranchNames', () => {
+  it('batch-fetches branch id/name pairs for the given ids', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1', name: 'Test Branch' }] as never);
+
+    const result = await notificationsRepository.findBranchNames(['branch-1']);
+
+    expect(prisma.branch.findMany).toHaveBeenCalledWith({ where: { id: { in: ['branch-1'] } }, select: { id: true, name: true } });
+    expect(result).toEqual([{ id: 'branch-1', name: 'Test Branch' }]);
+  });
+
+  it('skips the query entirely for an empty id list', async () => {
+    const result = await notificationsRepository.findBranchNames([]);
+    expect(prisma.branch.findMany).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
   });
 });
 

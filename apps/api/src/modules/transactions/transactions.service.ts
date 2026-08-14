@@ -1747,6 +1747,38 @@ export const transactionsService = {
     notifyBranch(data.branchId, SOCKET_EVENTS.TRANSACTION_COMPLETED, response);
     notifySuperAdmin(SOCKET_EVENTS.TRANSACTION_COMPLETED, response);
 
+    // Task 220 — fire-and-forget, never awaited into the checkout critical
+    // path (see the perf note above this function about post-commit work).
+    // Uses the already-broadcast TRANSACTION_COMPLETED socket event above
+    // for realtime delivery — this only persists the durable Notification
+    // row(s), matching the "don't double-broadcast" precedent already used
+    // by every other notification type here.
+    void (async () => {
+      try {
+        await enqueueNotification('sale_completed', {
+          type: 'sale_completed',
+          branchId: data.branchId,
+          transactionId: response.id,
+          transactionNumber: response.receipt_number,
+          amount: response.total_amount,
+          paymentMethod: data.paymentMethod,
+          cashierId: data.cashierId,
+        });
+        if (isPwdOrSeniorDiscount && !hasDiscountProof) {
+          await enqueueNotification('discount_compliance_flagged', {
+            type: 'discount_compliance_flagged',
+            branchId: data.branchId,
+            transactionId: response.id,
+            transactionNumber: response.receipt_number,
+            discountType: response.discount_type ?? data.discountType ?? 'unknown',
+            amount: response.total_amount,
+          });
+        }
+      } catch (error) {
+        console.error(`Failed to enqueue sale-completed notification for transaction ${response.id}:`, error);
+      }
+    })();
+
     // shift.cash_sales_total / gcash_sales_total are never persisted
     // mid-shift — Phase 9's withLiveSalesTotals overlay recomputes them from
     // Transaction rows on every read of GET /api/cash/current, so creating
@@ -2076,6 +2108,20 @@ export const transactionsService = {
     };
     notifyBranch(response.branch_id, SOCKET_EVENTS.TRANSACTION_REFUNDED, refundPayload);
     notifySuperAdmin(SOCKET_EVENTS.TRANSACTION_REFUNDED, refundPayload);
+
+    try {
+      await enqueueNotification('refund_completed', {
+        type: 'refund_completed',
+        branchId: response.branch_id,
+        transactionId: response.id,
+        transactionNumber: response.receipt_number,
+        amount: response.total_amount,
+        refundedByUserId: actor.id,
+        reason: refundReason,
+      });
+    } catch (error) {
+      console.error(`Failed to enqueue refund-completed notification for transaction ${response.id}:`, error);
+    }
 
     return response;
   },

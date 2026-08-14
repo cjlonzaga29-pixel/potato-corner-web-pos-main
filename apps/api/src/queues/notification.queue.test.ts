@@ -40,6 +40,7 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
     findSuperAdminUserIds: vi.fn(),
     findBranchSupervisorAndAdminUserIds: vi.fn(),
     findBranchSupervisorUserIds: vi.fn(),
+    findBranchAllRolesUserIds: vi.fn(),
   },
 }));
 
@@ -329,6 +330,179 @@ describe('processNotification — void_requested', () => {
       type: 'void_requested',
       payload: data,
       recipientUserId: 'supervisor-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — sale_completed', () => {
+  it('persists a Notification per branch-all-roles recipient (super admin + branch supervisors + the branch account itself), no re-broadcast socket event', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([
+      { id: 'admin-1' },
+      { id: 'supervisor-1' },
+      { id: 'branch-account-1' },
+    ] as never);
+    const data = {
+      type: 'sale_completed' as const,
+      branchId: 'branch-1',
+      transactionId: 'txn-1',
+      transactionNumber: 'PC-TES-20260815-000001',
+      amount: 759.37,
+      paymentMethod: 'cash',
+      cashierId: 'cashier-1',
+    };
+
+    await processNotification('sale_completed', data);
+
+    expect(notifyBranch).not.toHaveBeenCalled();
+    expect(notifySuperAdmin).not.toHaveBeenCalled();
+    expect(notificationsRepository.findBranchAllRolesUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledTimes(3);
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'sale_completed',
+      payload: data,
+      recipientUserId: 'branch-account-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — refund_completed', () => {
+  it('persists a Notification per branch-all-roles recipient', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'branch-account-1' }] as never);
+    const data = {
+      type: 'refund_completed' as const,
+      branchId: 'branch-1',
+      transactionId: 'txn-1',
+      transactionNumber: 'PC-TES-20260815-000001',
+      amount: 281.25,
+      refundedByUserId: 'supervisor-1',
+      reason: 'defective item',
+    };
+
+    await processNotification('refund_completed', data);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'refund_completed',
+      payload: data,
+      recipientUserId: 'branch-account-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — discount_compliance_flagged', () => {
+  it('persists a Notification per branch-all-roles recipient', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = {
+      type: 'discount_compliance_flagged' as const,
+      branchId: 'branch-1',
+      transactionId: 'txn-1',
+      transactionNumber: 'PC-TES-20260815-000001',
+      discountType: 'senior_citizen',
+      amount: 400,
+    };
+
+    await processNotification('discount_compliance_flagged', data);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'discount_compliance_flagged',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — expense_created', () => {
+  it('persists a Notification per branch-all-roles recipient', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'branch-account-1' }] as never);
+    const data = {
+      type: 'expense_created' as const,
+      branchId: 'branch-1',
+      expenseId: 'expense-1',
+      category: 'supplies',
+      amount: 850,
+      vendorName: 'Ace Hardware',
+      createdByName: 'Juan Dela Cruz',
+    };
+
+    await processNotification('expense_created', data);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'expense_created',
+      payload: data,
+      recipientUserId: 'branch-account-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — receiving_recorded', () => {
+  it('persists a Notification per branch-all-roles recipient', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'branch-account-1' }] as never);
+    const data = {
+      type: 'receiving_recorded' as const,
+      branchId: 'branch-1',
+      ingredientId: 'ingredient-1',
+      ingredientName: 'Cheese Powder',
+      quantityChange: 5000,
+      supplierReference: 'PO-2026-0815',
+    };
+
+    await processNotification('receiving_recorded', data);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'receiving_recorded',
+      payload: data,
+      recipientUserId: 'branch-account-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — waste_recorded', () => {
+  it('persists a Notification per branch-all-roles recipient', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'branch-account-1' }] as never);
+    const data = {
+      type: 'waste_recorded' as const,
+      branchId: 'branch-1',
+      ingredientId: 'ingredient-1',
+      ingredientName: 'Large Fries',
+      quantityChange: -200,
+      reasonCode: 'spoiled',
+    };
+
+    await processNotification('waste_recorded', data);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'waste_recorded',
+      payload: data,
+      recipientUserId: 'branch-account-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
+describe('processNotification — transfer_completed', () => {
+  it('persists a Notification scoped to its own branchId (each side of a transfer is a separate job)', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'branch-account-1' }] as never);
+    const data = {
+      type: 'transfer_completed' as const,
+      branchId: 'branch-1',
+      direction: 'outgoing' as const,
+      counterpartBranchId: 'branch-2',
+      ingredientName: 'Cheese Powder',
+      quantity: 500,
+    };
+
+    await processNotification('transfer_completed', data);
+
+    expect(notificationsRepository.findBranchAllRolesUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'transfer_completed',
+      payload: data,
+      recipientUserId: 'branch-account-1',
       branchId: 'branch-1',
     });
   });

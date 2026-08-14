@@ -305,6 +305,91 @@ export async function processNotification(jobName: string, data: unknown): Promi
     // set by cash_variance_flagged's approval counterpart elsewhere.
     return;
   }
+  // Task 220 — operational-visibility events. None of these re-emit a socket
+  // broadcast: the originating service call site (transactions.service.ts /
+  // expenses.service.ts / inventory.service.ts) already broadcasts
+  // TRANSACTION_COMPLETED / TRANSACTION_REFUNDED / EXPENSE_CREATED /
+  // INVENTORY_MOVEMENT_RECORDED at the moment of the write — re-emitting
+  // here would double-broadcast, the same reasoning documented above for
+  // inventory_product_unavailable. This job only persists the durable
+  // Notification row(s), fanned out via findBranchAllRolesUserIds so the
+  // branch's own account (previously unreachable by any notification type)
+  // is included alongside its supervisors and super admins.
+  if (jobName === 'sale_completed') {
+    const payload = data as Extract<NotificationPayload, { type: 'sale_completed' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'sale_completed', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'refund_completed') {
+    const payload = data as Extract<NotificationPayload, { type: 'refund_completed' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'refund_completed', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'discount_compliance_flagged') {
+    const payload = data as Extract<NotificationPayload, { type: 'discount_compliance_flagged' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({
+          type: 'discount_compliance_flagged',
+          payload,
+          recipientUserId: recipient.id,
+          branchId: payload.branchId,
+        }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'expense_created') {
+    const payload = data as Extract<NotificationPayload, { type: 'expense_created' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'expense_created', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'receiving_recorded') {
+    const payload = data as Extract<NotificationPayload, { type: 'receiving_recorded' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'receiving_recorded', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'waste_recorded') {
+    const payload = data as Extract<NotificationPayload, { type: 'waste_recorded' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'waste_recorded', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'transfer_completed') {
+    const payload = data as Extract<NotificationPayload, { type: 'transfer_completed' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'transfer_completed', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
   if (jobName === 'eod_summary') {
     const payload = data as Extract<NotificationPayload, { type: 'eod_summary' }>;
     notifySuperAdmin(SOCKET_EVENTS.EOD_SUMMARY, payload);

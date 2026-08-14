@@ -300,6 +300,19 @@ export const inventoryService = {
       criticalThreshold: ingredient.criticalThreshold,
     });
 
+    try {
+      await enqueueNotification('receiving_recorded', {
+        type: 'receiving_recorded',
+        branchId: ingredient.branchId,
+        ingredientId,
+        ingredientName: ingredient.name,
+        quantityChange: data.quantity,
+        supplierReference: data.supplier_reference ?? null,
+      });
+    } catch (error) {
+      console.error(`Failed to enqueue receiving-recorded notification for movement ${movement.id}:`, error);
+    }
+
     return response;
   },
 
@@ -425,6 +438,19 @@ export const inventoryService = {
       lowStockThreshold: ingredient.lowStockThreshold,
       criticalThreshold: ingredient.criticalThreshold,
     });
+
+    try {
+      await enqueueNotification('waste_recorded', {
+        type: 'waste_recorded',
+        branchId: ingredient.branchId,
+        ingredientId,
+        ingredientName: ingredient.name,
+        quantityChange: -data.quantity,
+        reasonCode: data.reason_code,
+      });
+    } catch (error) {
+      console.error(`Failed to enqueue waste-recorded notification for movement ${movement.id}:`, error);
+    }
 
     return response;
   },
@@ -585,6 +611,33 @@ export const inventoryService = {
       lowStockThreshold: destinationIngredient.lowStockThreshold,
       criticalThreshold: destinationIngredient.criticalThreshold,
     });
+
+    // Task 220 — one Notification per branch side (outgoing at the source,
+    // incoming at the destination), same "one job per branch" shape as
+    // eod_summary. Each fans out through findBranchAllRolesUserIds for its
+    // own branchId, so a branch account only ever sees the transfer under
+    // its own branch's notifications, matching "transfers involving Test
+    // Branch" in the role-scoping spec.
+    try {
+      await enqueueNotification('transfer_completed', {
+        type: 'transfer_completed',
+        branchId,
+        direction: 'outgoing',
+        counterpartBranchId: data.to_branch_id,
+        ingredientName: sourceIngredient.name,
+        quantity: data.quantity,
+      });
+      await enqueueNotification('transfer_completed', {
+        type: 'transfer_completed',
+        branchId: data.to_branch_id,
+        direction: 'incoming',
+        counterpartBranchId: branchId,
+        ingredientName: destinationIngredient.name,
+        quantity: data.quantity,
+      });
+    } catch (error) {
+      console.error(`Failed to enqueue transfer-completed notification for movement ${transferOut.id}:`, error);
+    }
 
     return response;
   },

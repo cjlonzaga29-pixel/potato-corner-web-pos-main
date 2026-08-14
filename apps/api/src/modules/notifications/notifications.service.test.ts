@@ -5,6 +5,7 @@ vi.mock('./notifications.repository.js', () => ({
     findForRecipient: vi.fn(),
     markRead: vi.fn(),
     markAllRead: vi.fn(),
+    findBranchNames: vi.fn(),
   },
 }));
 
@@ -33,18 +34,29 @@ describe('notificationsService.listForRecipient', () => {
       total: 2,
       unreadCount: 1,
     } as never);
+    vi.mocked(notificationsRepository.findBranchNames).mockResolvedValue([{ id: 'branch-1', name: 'Test Branch' }] as never);
 
     const result = await notificationsService.listForRecipient('user-1', { page: 1, limit: 25 });
 
     expect(notificationsRepository.findForRecipient).toHaveBeenCalledWith('user-1', { page: 1, limit: 25 });
+    expect(notificationsRepository.findBranchNames).toHaveBeenCalledWith(['branch-1']);
     expect(result).toEqual({
       notifications: [
-        { id: 'notif-1', type: 'low_stock', payload: { type: 'low_stock' }, branch_id: 'branch-1', read: false, created_at: createdAt.toISOString() },
+        {
+          id: 'notif-1',
+          type: 'low_stock',
+          payload: { type: 'low_stock' },
+          branch_id: 'branch-1',
+          branch_name: 'Test Branch',
+          read: false,
+          created_at: createdAt.toISOString(),
+        },
         {
           id: 'notif-2',
           type: 'eod_summary',
           payload: { type: 'eod_summary' },
           branch_id: 'branch-1',
+          branch_name: 'Test Branch',
           read: true,
           created_at: createdAt.toISOString(),
         },

@@ -10,12 +10,13 @@ interface NotificationRow {
   createdAt: Date;
 }
 
-function toNotificationResponse(row: NotificationRow) {
+function toNotificationResponse(row: NotificationRow, branchName: string | null) {
   return {
     id: row.id,
     type: row.type,
     payload: row.payload,
     branch_id: row.branchId,
+    branch_name: branchName,
     read: row.readAt !== null,
     created_at: row.createdAt.toISOString(),
   };
@@ -30,8 +31,12 @@ function toNotificationResponse(row: NotificationRow) {
 export const notificationsService = {
   async listForRecipient(userId: string, pagination: NotificationPagination) {
     const { notifications, total, unreadCount } = await notificationsRepository.findForRecipient(userId, pagination);
+    const rows = notifications as NotificationRow[];
+    const branchIds = [...new Set(rows.map((row) => row.branchId))];
+    const branches = await notificationsRepository.findBranchNames(branchIds);
+    const branchNameById = new Map(branches.map((branch) => [branch.id, branch.name]));
     return {
-      notifications: (notifications as NotificationRow[]).map(toNotificationResponse),
+      notifications: rows.map((row) => toNotificationResponse(row, branchNameById.get(row.branchId) ?? null)),
       total,
       unread_count: unreadCount,
       page: pagination.page,

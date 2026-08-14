@@ -130,6 +130,88 @@ export interface BranchOnlineNotificationPayload {
   branchName: string;
 }
 
+// Task 220 — operational visibility events, added on top of the existing
+// alert-style set above. Recipients for all of these use the new
+// findBranchAllRolesUserIds (super_admin + the branch's own supervisors +
+// the branch's own `branch`-role account), not the narrower
+// findBranchSupervisorAndAdminUserIds used by the pre-existing alert types
+// above, since branch accounts had no notification recipient path at all
+// before this task (confirmed: no repository helper ever queried
+// role: 'branch').
+export interface SaleCompletedNotificationPayload {
+  type: 'sale_completed';
+  branchId: string;
+  transactionId: string;
+  transactionNumber: string;
+  amount: number;
+  paymentMethod: string;
+  cashierId: string;
+}
+
+export interface RefundCompletedNotificationPayload {
+  type: 'refund_completed';
+  branchId: string;
+  transactionId: string;
+  transactionNumber: string;
+  amount: number;
+  refundedByUserId: string;
+  reason: string | null;
+}
+
+// Fires when a PWD/Senior Citizen discount transaction completes without a
+// discount_proof_key — see the DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING
+// comment in transactions.service.ts. Purely observational: does not enforce
+// or block the transaction, matching this task's "notifications observe,
+// they don't become the source of truth" rule.
+export interface DiscountComplianceFlaggedNotificationPayload {
+  type: 'discount_compliance_flagged';
+  branchId: string;
+  transactionId: string;
+  transactionNumber: string;
+  discountType: string;
+  amount: number;
+}
+
+export interface ExpenseCreatedNotificationPayload {
+  type: 'expense_created';
+  branchId: string;
+  expenseId: string;
+  category: string;
+  amount: number;
+  vendorName: string | null;
+  createdByName: string;
+}
+
+export interface ReceivingRecordedNotificationPayload {
+  type: 'receiving_recorded';
+  branchId: string;
+  ingredientId: string;
+  ingredientName: string;
+  quantityChange: number;
+  supplierReference: string | null;
+}
+
+export interface WasteRecordedNotificationPayload {
+  type: 'waste_recorded';
+  branchId: string;
+  ingredientId: string;
+  ingredientName: string;
+  quantityChange: number;
+  reasonCode: string;
+}
+
+// One row is created per branch side (from and to), each fanned out to that
+// branch's own recipients — same "one job per branch, shared context" shape
+// already established by EodSummaryNotificationPayload above.
+export interface TransferCompletedNotificationPayload {
+  type: 'transfer_completed';
+  branchId: string;
+  direction: 'outgoing' | 'incoming';
+  counterpartBranchId: string;
+  ingredientName: string;
+  quantity: number;
+}
+
 export type NotificationPayload =
   | LowStockNotificationPayload
   | CriticalStockNotificationPayload
@@ -143,7 +225,14 @@ export type NotificationPayload =
   | OfflineTransactionsSyncedNotificationPayload
   | EodSummaryNotificationPayload
   | BranchOfflineNotificationPayload
-  | BranchOnlineNotificationPayload;
+  | BranchOnlineNotificationPayload
+  | SaleCompletedNotificationPayload
+  | RefundCompletedNotificationPayload
+  | DiscountComplianceFlaggedNotificationPayload
+  | ExpenseCreatedNotificationPayload
+  | ReceivingRecordedNotificationPayload
+  | WasteRecordedNotificationPayload
+  | TransferCompletedNotificationPayload;
 
 export type NotificationType = NotificationPayload['type'];
 

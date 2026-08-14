@@ -117,7 +117,17 @@ describe('GET /', () => {
     const req = mockReq({ ...authHeader(token), query: { page: '2', limit: '10' } });
     const res = mockRes();
     vi.mocked(notificationsService.listForRecipient).mockResolvedValue({
-      notifications: [{ id: NOTIF_1, type: 'low_stock', payload: {}, branch_id: 'branch-1', read: false, created_at: '2026-07-17T00:00:00.000Z' }],
+      notifications: [
+        {
+          id: NOTIF_1,
+          type: 'low_stock',
+          payload: {},
+          branch_id: 'branch-1',
+          branch_name: 'Test Branch',
+          read: false,
+          created_at: '2026-07-17T00:00:00.000Z',
+        },
+      ],
       total: 15,
       unread_count: 4,
       page: 2,

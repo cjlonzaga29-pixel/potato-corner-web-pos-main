@@ -1033,6 +1033,7 @@ export default function TerminalPage() {
     if (!branchId || createTransaction.isPending || isChargingRef.current) return;
     isChargingRef.current = true;
     setChargeError(null);
+    const chargeClickedAt = performance.now();
 
     const payload: CreateTransactionInput = {
       branch_id: branchId,
@@ -1087,11 +1088,22 @@ export default function TerminalPage() {
     }
 
     try {
+      const requestStartedAt = performance.now();
       const transaction = await createTransaction.mutateAsync(payload);
+      const networkMs = performance.now() - requestStartedAt;
+      const closeStartedAt = performance.now();
       clearCart();
       resetPaymentFields();
       setIsCheckoutOpen(false);
       setReceipt(transaction);
+      // No cart contents/payment data — branch id and durations only, same
+      // convention as the backend's "POS checkout stage timing" log.
+      console.warn('[checkout] charge timing', {
+        branchId,
+        chargeClickToRequestMs: Math.round(requestStartedAt - chargeClickedAt),
+        networkMs: Math.round(networkMs),
+        responseToCheckoutCloseMs: Math.round(performance.now() - closeStartedAt),
+      });
     } catch (error) {
       setChargeError(error instanceof Error ? error.message : 'Failed to record transaction');
     } finally {

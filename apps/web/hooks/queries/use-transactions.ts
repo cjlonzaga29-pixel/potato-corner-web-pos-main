@@ -111,14 +111,25 @@ export function useCreateTransaction(accessTokenOverride?: string, refreshOverri
       return response.data;
     },
     onSuccess: (transaction) => {
-      void queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      // cash_sales_total/gcash_sales_total are computed live from Transaction
-      // rows (Phase 9's withLiveSalesTotals overlay) — refetching the shift
-      // is the only "invalidation" a new sale needs.
-      void queryClient.invalidateQueries({ queryKey: ['current-shift'] });
-      if (transaction.shift_id) {
-        void queryClient.invalidateQueries({ queryKey: ['shift', transaction.shift_id] });
-      }
+      const refreshStartedAt = performance.now();
+      // Fire-and-forget, same as before this timing wrapper was added — the
+      // mutation promise (and so handleCharge's checkout-close path) never
+      // awaits any of these; this Promise.all only observes when the
+      // background refetches finish, it doesn't gate anything on them.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['transactions'] }),
+        // cash_sales_total/gcash_sales_total are computed live from
+        // Transaction rows (Phase 9's withLiveSalesTotals overlay) —
+        // refetching the shift is the only "invalidation" a new sale needs.
+        queryClient.invalidateQueries({ queryKey: ['current-shift'] }),
+        transaction.shift_id
+          ? queryClient.invalidateQueries({ queryKey: ['shift', transaction.shift_id] })
+          : Promise.resolve(),
+      ]).then(() => {
+        console.warn('[checkout] post-sale background refresh timing', {
+          postSaleRefreshMs: Math.round(performance.now() - refreshStartedAt),
+        });
+      });
     },
     onError: (error: Error) => toast.error(error.message),
   });

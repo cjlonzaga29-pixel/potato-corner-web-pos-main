@@ -1392,6 +1392,16 @@ export const transactionsService = {
   },
 
   async createTransaction(data: CreateTransactionData, ipAddress: string | null) {
+    // Perf follow-up — coarse, additive stage timing only, at boundaries
+    // that already exist as isolated `await` expressions (a variable set
+    // immediately before and read immediately after an unchanged await).
+    // Deliberately NOT splicing checkpoints any deeper into this function's
+    // validation logic — see the "altered validation order" note in
+    // transactions.router.ts around this call for why. No request/payment
+    // data is captured, only durations.
+    const handlerStartedAt = performance.now();
+    let discountCalcMs = 0;
+
     // Task 209.3 — branch and shift are looked up by independent ids
     // (branchId vs shiftId) with no data dependency between them; running
     // them concurrently instead of back-to-back saves one round trip off
@@ -1463,7 +1473,9 @@ export const transactionsService = {
     // and an offline device can never invent its own rate.
     let discountRates: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
     if (data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE) {
+      const discountCalcStartedAt = performance.now();
       const policy = await settingsService.getDiscountPolicy();
+      discountCalcMs = performance.now() - discountCalcStartedAt;
       const entry = policy[data.discountType];
       if (!entry.isEnabled) {
         throw new TransactionError(
@@ -1475,7 +1487,9 @@ export const transactionsService = {
       discountRates = { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage };
     }
 
+    const catalogResolveStartedAt = performance.now();
     const resolvedItems = await resolveCartItems(data.branchId, data.items);
+    const catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
     const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = computeAmounts(
       subtotal,
@@ -1528,6 +1542,7 @@ export const transactionsService = {
     // the old COUNT-then-increment approach, this can never collide with a
     // concurrent sale, so there's no retry-on-P2002 loop here anymore.
     const receiptNumber = await generateReceiptNumber(branch.code);
+    const dbTransactionStartedAt = performance.now();
     try {
       const result = await prisma.$transaction(async (tx) => {
         const txCreated = await transactionsRepository.createTransaction(
@@ -1645,36 +1660,60 @@ export const transactionsService = {
       throw error;
     }
 
+    const dbTransactionMs = performance.now() - dbTransactionStartedAt;
+    const responseSerializeStartedAt = performance.now();
     const response = toTransactionResponse(created as TransactionRow);
+    const responseSerializeMs = performance.now() - responseSerializeStartedAt;
 
-    // Task 209.56E — postCommitEffects (low-stock notifications etc.) and
-    // the TRANSACTION_CREATED audit log write are mutually independent:
-    // neither reads the other's output, and both only run after the sale
-    // has already committed above (the charge itself already happened by
-    // this point — this doesn't weaken atomicity or acknowledge a sale
-    // before server confirmation, it only changes how the strictly-after-
-    // commit bookkeeping is scheduled). Previously sequential (~1.2s each
-    // in measured testing), running them concurrently removes one of the
-    // two from the response's critical path. Audit log is still awaited
-    // (not fire-and-forget) — a checkout response still confirms the audit
-    // entry was written, same guarantee as before.
-    await Promise.all([
-      (async () => {
-        for (const effect of postCommitEffects) {
-          await effect();
-        }
-      })(),
-      recordAuditLog({
-        action: 'TRANSACTION_CREATED',
-        entityType: 'transaction',
-        entityId: created.id,
-        actorId: data.cashierId,
-        actorRole: 'cashier',
-        branchId: data.branchId,
-        afterState: response,
-        ipAddress,
-      }),
-    ]);
+    // Structured checkout timing — request/branch identifiers and stage
+    // durations only, no cart contents, payment data, or PII. Complements
+    // the single total-duration log already in transactions.router.ts;
+    // this breaks that total into the stages most likely to grow with cart
+    // size (catalogResolveMs, dbTransactionMs) versus the ones that don't
+    // (discountCalcMs, responseSerializeMs).
+    console.warn('POS checkout stage timing', {
+      transactionId: created.id,
+      branchId: data.branchId,
+      discountCalcMs: Math.round(discountCalcMs),
+      catalogResolveMs: Math.round(catalogResolveMs),
+      dbTransactionMs: Math.round(dbTransactionMs),
+      responseSerializeMs: Math.round(responseSerializeMs),
+      requestToResponseReadyMs: Math.round(performance.now() - handlerStartedAt),
+    });
+
+    // Task 209.56E / perf follow-up — postCommitEffects (per-ingredient
+    // INVENTORY_SALE_DEDUCTED audit rows + low-stock notifications) and the
+    // TRANSACTION_CREATED audit log write are pure post-commit bookkeeping:
+    // the sale and inventory deduction already committed in the
+    // $transaction above, and neither recordAuditLog (middleware/
+    // audit-log.ts — catches and logs its own errors, never throws) nor
+    // enqueueRawNotificationJob (returns Promise.resolve() immediately,
+    // processes in the background) can ever reject or feed a value back
+    // into this response. There is nothing here for the HTTP response to
+    // safely wait on. Previously these were `await`ed (individually
+    // measured ~1.2s+ each on a cart with several distinct ingredients,
+    // since recordAuditLog is 2 sequential DB round trips per call and the
+    // effects loop runs one per distinct ingredient in the cart to
+    // preserve the audit hash chain's write order) — fired without
+    // `await` here instead, same fire-and-forget shape already used below
+    // for the shadow BOM comparison, so a multi-ingredient cart no longer
+    // pays checkout latency for audit bookkeeping that has zero bearing on
+    // whether the sale or inventory deduction succeeded.
+    void (async () => {
+      for (const effect of postCommitEffects) {
+        await effect();
+      }
+    })();
+    void recordAuditLog({
+      action: 'TRANSACTION_CREATED',
+      entityType: 'transaction',
+      entityId: created.id,
+      actorId: data.cashierId,
+      actorRole: 'cashier',
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
 
     // CR-012.1 -- shadow BOM deduction comparison. Strictly best-effort and
     // strictly after the legacy deduction/transaction has already committed:

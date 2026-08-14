@@ -91,6 +91,18 @@ export function multiGroupTarget(group: AddOnsDialogGroup): number {
  * for every selected/checked row. Every group's selection logic, isValid
  * rule, and the exact "Assigned N / M" text are unchanged.
  *
+ * Task 220 (options dialog usability) — widened the dialog from max-w-md
+ * (28rem) to w-[min(92vw,720px)] so a product with many flavor/add-on groups
+ * has room to breathe instead of wrapping every long label; max-h-[min(88vh,850px)]
+ * bounds it on very tall viewports the same way the previous max-h-[calc(100vh-2rem)]
+ * did on short ones. overflow-x-hidden is explicit (not just relied-upon
+ * wrapping) so a future long unbroken token can't reopen a horizontal
+ * scrollbar. Checkbox-style rows (simplified/SINGLE groups) render in a
+ * 2-column grid at sm+ to use the extra width instead of stacking full-height
+ * rows; MULTIPLE-group allocator rows stay single-column since their +/-
+ * controls need the full row width. Selection logic, isValid rule, and
+ * payload shape are unchanged.
+ *
  * Task 209.8B — tighter vertical rhythm: option/choice rows moved off the
  * fixed-48px `.touch-target` onto the density-aware `.app-control`
  * (option rows) / `.app-control-square` (allocator +/- buttons), smaller
@@ -146,17 +158,17 @@ export function AddOnsDialog({
         if (!open) onCancel();
       }}
     >
-      <DialogContent className="max-w-md">
+      <DialogContent className="w-[min(92vw,720px)] max-w-[720px] max-h-[min(88vh,850px)] overflow-x-hidden">
         <DialogHeader className="sticky top-0 z-10 -mx-4 -mt-4 border-b bg-card px-4 pb-2.5 pt-3.5 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-5">
           <DialogTitle>{productName}</DialogTitle>
           <DialogDescription>{variantName}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 py-1">
+        <div className="min-w-0 space-y-3 py-1">
           {simplifiedGroups.map((group) => {
             const selected = selectedOptionIds[group.id] ?? [];
             return (
-              <div key={group.id} className="space-y-1.5 border-t pt-2.5">
+              <div key={group.id} className="min-w-0 space-y-1.5 border-t pt-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold">{group.label}</p>
                   <Badge variant="secondary" className="text-[10px] font-medium">
@@ -164,44 +176,49 @@ export function AddOnsDialog({
                   </Badge>
                 </div>
 
-                <label
-                  className={cn(
-                    // Task 209.56C — was the fixed-height `app-control` (a
-                    // single `height` token, no wrapping headroom); a
-                    // min-height + h-auto lets a row that wraps to 2+ lines
-                    // (a long flavor/add-on name) grow instead of clipping
-                    // or overlapping the row below it.
-                    'flex min-h-[var(--app-control-height)] h-auto cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
-                    selected.length === 0 ? 'border-primary bg-primary/10 font-medium' : 'border-input',
-                  )}
-                >
-                  <Checkbox checked={selected.length === 0} onCheckedChange={() => onClearGroup(group.id)} />
-                  No Add-ons
-                </label>
+                {/* Task 220 — 2-column at sm+ so the wider dialog isn't wasted on a
+                    single narrow column of short checkbox rows; each row still wraps
+                    independently via min-w-0/break-words below. */}
+                <div className="grid min-w-0 grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  <label
+                    className={cn(
+                      // Task 209.56C — was the fixed-height `app-control` (a
+                      // single `height` token, no wrapping headroom); a
+                      // min-height + h-auto lets a row that wraps to 2+ lines
+                      // (a long flavor/add-on name) grow instead of clipping
+                      // or overlapping the row below it.
+                      'flex min-h-[var(--app-control-height)] h-auto min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
+                      selected.length === 0 ? 'border-primary bg-primary/10 font-medium' : 'border-input',
+                    )}
+                  >
+                    <Checkbox checked={selected.length === 0} onCheckedChange={() => onClearGroup(group.id)} />
+                    No Add-ons
+                  </label>
 
-                {group.options.map((option) => {
-                  const isSelected = selected.includes(option.id);
-                  return (
-                    <label
-                      key={option.id}
-                      className={cn(
-                        'flex min-h-[var(--app-control-height)] h-auto cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
-                        isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
-                      )}
-                    >
-                      <Checkbox checked={isSelected} onCheckedChange={() => onToggleOption(group.id, option.id)} />
-                      {/* Task 209.56C — min-w-0 is required alongside flex-1: a
-                          flex child's default min-width is its content's max-content
-                          width, which without this can push the row wider than the
-                          dialog instead of wrapping (the horizontal-scrollbar cause
-                          for a long, mostly-unbroken option name). */}
-                      <span className="min-w-0 flex-1 break-words">
-                        {option.name}
-                        {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
-                      </span>
-                    </label>
-                  );
-                })}
+                  {group.options.map((option) => {
+                    const isSelected = selected.includes(option.id);
+                    return (
+                      <label
+                        key={option.id}
+                        className={cn(
+                          'flex min-h-[var(--app-control-height)] h-auto min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
+                          isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
+                        )}
+                      >
+                        <Checkbox checked={isSelected} onCheckedChange={() => onToggleOption(group.id, option.id)} />
+                        {/* Task 209.56C — min-w-0 is required alongside flex-1: a
+                            flex child's default min-width is its content's max-content
+                            width, which without this can push the row wider than the
+                            dialog instead of wrapping (the horizontal-scrollbar cause
+                            for a long, mostly-unbroken option name). */}
+                        <span className="min-w-0 flex-1 break-words">
+                          {option.name}
+                          {option.price_adjustment !== 0 ? formatAdjustment(option.price_adjustment) : ''}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
             );
           })}
@@ -209,7 +226,7 @@ export function AddOnsDialog({
           {singleGroups.map((group) => {
             const selectedId = (selectedOptionIds[group.id] ?? [])[0];
             return (
-              <div key={group.id} className="space-y-1.5 border-t pt-2.5">
+              <div key={group.id} className="min-w-0 space-y-1.5 border-t pt-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold">{group.label}</p>
                   {group.required && (
@@ -219,14 +236,14 @@ export function AddOnsDialog({
                   )}
                 </div>
 
-                <div className="space-y-1.5">
+                <div className="grid min-w-0 grid-cols-1 gap-1.5 sm:grid-cols-2">
                   {group.options.map((option) => {
                     const isSelected = selectedId === option.id;
                     return (
                       <label
                         key={option.id}
                         className={cn(
-                          'flex min-h-[var(--app-control-height)] h-auto cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
+                          'flex min-h-[var(--app-control-height)] h-auto min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
                           isSelected ? 'border-primary bg-primary/10 font-medium' : 'border-input',
                         )}
                       >

@@ -8,6 +8,11 @@ import type { DiscountAuditFilters } from './transactions.types.js';
 const transactionInclude = {
   items: true,
   shift: { select: { id: true, status: true, branchId: true } },
+  // Human-readable cashier display (reports-view.tsx's Daily Sales/Sold
+  // Product Transactions/Discount Compliance tables) — the cashier's
+  // firstName/lastName, not the raw cashierId, so a supervisor never sees a
+  // bare UUID for a cashier whose branch assignment changed since the sale.
+  cashier: { select: { firstName: true, lastName: true } },
 } satisfies Prisma.TransactionInclude;
 
 const holdOrderInclude = {

@@ -123,6 +123,7 @@ function getDailySalesColumns(
   onViewReceipt: (transactionId: string) => void,
   onViewProof: (transactionId: string) => void,
   employeeNames: Map<string, string>,
+  discountCustomerIdByTransaction: Map<string, string | null>,
 ): ColumnDef<TransactionResponse>[] {
   const columns: ColumnDef<TransactionResponse>[] = [
     { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
@@ -145,9 +146,18 @@ function getDailySalesColumns(
   return [
     ...columns,
     {
+      // Same PII-visibility boundary as Cashier/Proof Available below
+      // (withActions === supervisor only) — sourced from the discount-audit
+      // trail endpoint already fetched for the Discount Compliance tab, not
+      // a new query.
+      id: 'customer_id',
+      header: 'Customer ID / Reference',
+      cell: ({ row }) => discountCustomerIdByTransaction.get(row.original.id) ?? '—',
+    },
+    {
       id: 'cashier',
       header: 'Cashier',
-      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+      cell: ({ row }) => row.original.cashier_name ?? employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
     },
     {
       id: 'payment_proof',
@@ -196,7 +206,7 @@ function getSoldProductTransactionsColumns(
     {
       id: 'cashier',
       header: 'Cashier',
-      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+      cell: ({ row }) => row.original.cashier_name ?? employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
     },
     {
       id: 'items',
@@ -320,7 +330,7 @@ function getDiscountComplianceColumns(
     {
       id: 'cashier',
       header: 'Cashier',
-      cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+      cell: ({ row }) => row.original.cashier_name ?? employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
     },
     {
       // Same PII-visibility boundary as Cashier/Proof Available above
@@ -805,7 +815,7 @@ export function ReportsView() {
           </div>
           <DataTable
             stickyHeader
-            columns={getDailySalesColumns(isSupervisor, setReceiptTransactionId, setProofTransactionId, employeeNames)}
+            columns={getDailySalesColumns(isSupervisor, setReceiptTransactionId, setProofTransactionId, employeeNames, discountCustomerIdByTransaction)}
             data={completedTransactions}
             isLoading={completedQuery.isLoading}
             isError={completedQuery.isError}
@@ -1073,7 +1083,11 @@ export function ReportsView() {
             transaction={viewDetailTransaction}
             onClose={() => setViewDetailTransaction(null)}
             branchName={activeBranch?.name ?? null}
-            cashierName={viewDetailTransaction ? (employeeNames.get(viewDetailTransaction.cashier_id) ?? viewDetailTransaction.cashier_id) : ''}
+            cashierName={
+              viewDetailTransaction
+                ? (viewDetailTransaction.cashier_name ?? employeeNames.get(viewDetailTransaction.cashier_id) ?? viewDetailTransaction.cashier_id)
+                : ''
+            }
             attendanceRecords={attendanceRecords}
           />
         </>

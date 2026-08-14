@@ -668,3 +668,119 @@ describe('ReportsView — Discount Compliance tab Customer ID / Reference column
     expect(screen.queryByText('1234567890')).not.toBeInTheDocument();
   });
 });
+
+// FAST FIX — Daily Sales report is missing the same Customer ID / Reference
+// a supervisor needs for PWD/Senior transactions, and was falling back to a
+// raw cashier UUID whenever the client-side employees list didn't have a
+// match. Daily Sales is the default tab, so no tab click is needed.
+describe('ReportsView — Daily Sales tab Customer ID / Reference and cashier name', () => {
+  function mockDailySalesTransaction(overrides: Partial<TransactionResponse> = {}) {
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [transaction({ id: 'txn-pwd-1', receipt_number: 'PC-0099', discount_type: 'pwd', discount_amount: 20, ...overrides })],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+  }
+
+  it('renders the stored Customer ID / Reference for a supervisor viewing a PWD transaction', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'supervisor-1', role: 'supervisor' } }),
+    );
+    mockDailySalesTransaction();
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [{ id: 'txn-pwd-1', discountCustomerId: '1234567890', discountType: 'pwd' }] },
+      isLoading: false,
+    });
+
+    render(<ReportsView />);
+
+    const row = screen.getByText('PC-0099').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText('1234567890')).toBeInTheDocument();
+  });
+
+  it('renders "—" for a non-discounted transaction\'s Customer ID / Reference', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'supervisor-1', role: 'supervisor' } }),
+    );
+    mockDailySalesTransaction({ discount_type: null, discount_amount: 0 });
+    mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
+
+    render(<ReportsView />);
+
+    const row = screen.getByText('PC-0099').closest('tr');
+    // A non-discounted row also shows "—" for Discount Type, so several
+    // cells legitimately match — assert at least one exists rather than
+    // requiring uniqueness.
+    expect(within(row as HTMLElement).getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('does not render the Customer ID / Reference column for a branch/staff session', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'staff-1', role: 'staff' } }),
+    );
+    mockDailySalesTransaction();
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [{ id: 'txn-pwd-1', discountCustomerId: '1234567890', discountType: 'pwd' }] },
+      isLoading: false,
+    });
+
+    render(<ReportsView />);
+
+    expect(screen.queryByText('Customer ID / Reference')).not.toBeInTheDocument();
+    expect(screen.queryByText('1234567890')).not.toBeInTheDocument();
+  });
+
+  it('shows the server-resolved cashier_name instead of the raw cashier_id UUID', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'supervisor-1', role: 'supervisor' } }),
+    );
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [
+          transaction({ id: 'txn-1', receipt_number: 'PC-0100', cashier_id: '08f7750e-027c-41f6-88de-f49d3a48b8d8', cashier_name: 'CJ Lonzaga' }),
+        ],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ReportsView />);
+
+    const row = screen.getByText('PC-0100').closest('tr');
+    expect(within(row as HTMLElement).getByText('CJ Lonzaga')).toBeInTheDocument();
+    expect(within(row as HTMLElement).queryByText('08f7750e-027c-41f6-88de-f49d3a48b8d8')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the cashier_id UUID only when both cashier_name and the employees list are missing a match', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'supervisor-1', role: 'supervisor' } }),
+    );
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [transaction({ id: 'txn-1', receipt_number: 'PC-0101', cashier_id: '08f7750e-027c-41f6-88de-f49d3a48b8d8', cashier_name: null })],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ReportsView />);
+
+    const row = screen.getByText('PC-0101').closest('tr');
+    expect(within(row as HTMLElement).getByText('08f7750e-027c-41f6-88de-f49d3a48b8d8')).toBeInTheDocument();
+  });
+});

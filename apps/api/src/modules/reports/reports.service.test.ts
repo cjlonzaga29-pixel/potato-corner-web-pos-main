@@ -55,6 +55,7 @@ vi.mock('./reports.columns.js', () => ({
     { key: 'vat_amount', header: 'VAT' },
     { key: 'discount_amount', header: 'Discount' },
     { key: 'discount_type', header: 'Discount Type' },
+    { key: 'discount_id_reference', header: 'Customer ID / Reference' },
     { key: 'created_at', header: 'Date' },
     { key: 'cashier_name', header: 'Cashier' },
   ],
@@ -64,6 +65,8 @@ vi.mock('./reports.columns.js', () => ({
     { key: 'branch_name', header: 'Branch' },
     { key: 'cashier_name', header: 'Cashier' },
     { key: 'discount_type', header: 'Discount Type' },
+    { key: 'discount_rate_used', header: 'Discount Rate Used' },
+    { key: 'discount_id_reference', header: 'Customer ID / Reference' },
     { key: 'discount_amount', header: 'Discount Amount' },
     { key: 'discount_proof_available', header: 'Proof Available' },
   ],
@@ -313,11 +316,85 @@ describe('reportsService.requestExport', () => {
     const csv = result.buffer.toString('utf-8');
     const lines = csv.split('\n');
     expect(lines).toHaveLength(3); // header + 2 transaction rows, matching the screen's row count
-    expect(lines[0]).toBe('Receipt #,Payment,Total,VAT,Discount,Discount Type,Date,Cashier');
-    expect(lines[1]).toBe('MNL001-20260801-000001,cash,150,16.07,0,,2026-08-01T10:00:00.000Z,Juan Dela Cruz');
+    expect(lines[0]).toBe('Receipt #,Payment,Total,VAT,Discount,Discount Type,Customer ID / Reference,Date,Cashier');
+    expect(lines[1]).toBe('MNL001-20260801-000001,cash,150,16.07,0,,,2026-08-01T10:00:00.000Z,Juan Dela Cruz');
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 2 }) }),
     );
+  });
+
+  it('Supervisor Daily Sales CSV export includes the decrypted Customer ID / Reference for a PWD row', async () => {
+    const rows = [
+      {
+        receipt_number: 'MNL001-20260801-000001',
+        payment_method: 'cash',
+        total_amount: 150,
+        vat_amount: 16.07,
+        discount_amount: 30,
+        discount_type: 'pwd',
+        discount_id_reference: '1234567890',
+        created_at: '2026-08-01T10:00:00.000Z',
+        cashier_name: 'Juan Dela Cruz',
+      },
+    ];
+    vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue(rows as never);
+
+    const result = await reportsService.requestExport('DAILY_SALES', { branchId: 'b1', page: 1, limit: 100 }, 'csv', 'user-1', 'supervisor', 'b1');
+
+    if (result.kind !== 'file') throw new Error('expected file result');
+    const csv = result.buffer.toString('utf-8');
+    expect(csv).toContain('Customer ID / Reference');
+    expect(csv).toContain('1234567890');
+  });
+
+  it('branch/staff Daily Sales CSV export never includes the Customer ID / Reference column or value, even though getDailySalesTransactions returns it on every row', async () => {
+    const rows = [
+      {
+        receipt_number: 'MNL001-20260801-000001',
+        payment_method: 'cash',
+        total_amount: 150,
+        vat_amount: 16.07,
+        discount_amount: 30,
+        discount_type: 'pwd',
+        discount_id_reference: '1234567890',
+        created_at: '2026-08-01T10:00:00.000Z',
+        cashier_name: 'Juan Dela Cruz',
+      },
+    ];
+    vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue(rows as never);
+
+    const result = await reportsService.requestExport('DAILY_SALES', { branchId: 'b1', page: 1, limit: 100 }, 'csv', 'staff-1', 'branch', 'b1');
+
+    if (result.kind !== 'file') throw new Error('expected file result');
+    const csv = result.buffer.toString('utf-8');
+    expect(csv).not.toContain('Customer ID / Reference');
+    expect(csv).not.toContain('1234567890');
+  });
+
+  it('branch/staff Discount Compliance CSV export never includes the Customer ID / Reference column or value', async () => {
+    const rows = [
+      {
+        receipt_number: 'MNL001-20260801-000001',
+        payment_method: 'cash',
+        total_amount: 150,
+        vat_amount: 16.07,
+        discount_amount: 30,
+        discount_type: 'pwd',
+        discount_id_reference: '1234567890',
+        created_at: '2026-08-01T10:00:00.000Z',
+        cashier_name: 'Juan Dela Cruz',
+        branch_name: 'SM North',
+        discount_proof_available: 'No',
+      },
+    ];
+    vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue(rows as never);
+
+    const result = await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'csv', 'staff-1', 'branch', 'b1');
+
+    if (result.kind !== 'file') throw new Error('expected file result');
+    const csv = result.buffer.toString('utf-8');
+    expect(csv).not.toContain('Customer ID / Reference');
+    expect(csv).not.toContain('1234567890');
   });
 
   it('PDF sync path (super admin, Admin Daily Sales report): looks up the branch name and builds an in-memory buffer when count < 2,000', async () => {

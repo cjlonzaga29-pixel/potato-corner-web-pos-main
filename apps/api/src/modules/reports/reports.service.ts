@@ -22,6 +22,19 @@ function defaultRealtimeFilters(filters: ReportFilters): ReportFilters {
   return { ...filters, dateFrom, dateTo };
 }
 
+/**
+ * discount_id_reference carries a decrypted PWD/Senior Citizen government ID
+ * — same supervisor/super_admin-only rule getDiscountAuditTrail already
+ * enforces. DAILY_SALES_TRANSACTION_COLUMNS/DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS
+ * are flat arrays with no role awareness, and the 'branch' role reaches both
+ * export branches below (adminSupervisorOrBranch), so the column must be
+ * stripped here or a branch/staff export would leak it.
+ */
+function scopeDiscountIdColumn<T extends { key: string }>(columns: T[], requesterRole: string): T[] {
+  if (requesterRole === ROLES.SUPERVISOR || requesterRole === ROLES.SUPER_ADMIN) return columns;
+  return columns.filter((c) => c.key !== 'discount_id_reference');
+}
+
 function toWireFilters(filters: ReportFilters) {
   return {
     branch_id: filters.branchId,
@@ -290,15 +303,16 @@ export const reportsService = {
       const resolvedFilters = defaultRealtimeFilters(filters);
       const rows = await reportsRepository.getDailySalesTransactions(resolvedFilters);
       const filename = buildExportFilename(reportType, format, resolvedFilters);
+      const columns = scopeDiscountIdColumn(DAILY_SALES_TRANSACTION_COLUMNS, requesterRole);
 
       let buffer: Buffer;
       let contentType: 'text/csv' | 'application/pdf';
       if (format === 'csv') {
-        buffer = generateCsv(rows, DAILY_SALES_TRANSACTION_COLUMNS);
+        buffer = generateCsv(rows, columns);
         contentType = 'text/csv';
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, DAILY_SALES_TRANSACTION_COLUMNS, branch?.name ?? null);
+        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
         contentType = 'application/pdf';
       }
 
@@ -374,15 +388,16 @@ export const reportsService = {
       const resolvedFilters = defaultRealtimeFilters(filters);
       const rows = (await reportsRepository.getDailySalesTransactions(resolvedFilters)).filter((row) => row.discount_type !== null);
       const filename = buildExportFilename(reportType, format, resolvedFilters);
+      const columns = scopeDiscountIdColumn(DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, requesterRole);
 
       let buffer: Buffer;
       let contentType: 'text/csv' | 'application/pdf';
       if (format === 'csv') {
-        buffer = generateCsv(rows, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS);
+        buffer = generateCsv(rows, columns);
         contentType = 'text/csv';
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, branch?.name ?? null);
+        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
         contentType = 'application/pdf';
       }
 

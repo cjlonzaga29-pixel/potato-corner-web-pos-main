@@ -1691,6 +1691,33 @@ describe('transactionsService.getTransactionById', () => {
   });
 });
 
+// FAST FIX — Reports (Daily Sales/Sold Product Transactions/Discount
+// Compliance) was falling back to the raw cashier_id UUID whenever the
+// client-side employees list (branch/page-scoped) didn't have a match, e.g.
+// after a cashier's branch assignment changed. Resolving the name
+// server-side from the existing Transaction→User cashier relation removes
+// that dependency entirely.
+describe('transactionsService.getTransactionById — cashier_name response mapping', () => {
+  it('resolves cashier_name from the included cashier relation', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ cashierId: '08f7750e-027c-41f6-88de-f49d3a48b8d8', cashier: { firstName: 'CJ', lastName: 'Lonzaga' } }) as never,
+    );
+
+    const result = await transactionsService.getTransactionById('txn-1');
+
+    expect(result.cashier_name).toBe('CJ Lonzaga');
+    expect(result.cashier_id).toBe('08f7750e-027c-41f6-88de-f49d3a48b8d8');
+  });
+
+  it('falls back to null (never a crash) when the cashier relation is missing', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow({ cashier: null }) as never);
+
+    const result = await transactionsService.getTransactionById('txn-1');
+
+    expect(result.cashier_name).toBeNull();
+  });
+});
+
 describe('transactionsService.voidTransaction', () => {
   it('rejects voiding a transaction from a shift that is no longer active', async () => {
     vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(

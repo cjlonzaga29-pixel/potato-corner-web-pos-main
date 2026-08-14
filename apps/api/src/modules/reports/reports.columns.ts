@@ -35,6 +35,7 @@ export const DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS: ReportColumn<DailySalesTra
   { key: 'cashier_name', header: 'Cashier' },
   { key: 'discount_type', header: 'Discount Type' },
   { key: 'discount_rate_used', header: 'Discount Rate Used' },
+  { key: 'discount_id_reference', header: 'Customer ID / Reference' },
   { key: 'discount_amount', header: 'Discount Amount' },
   { key: 'discount_proof_available', header: 'Proof Available' },
 ];

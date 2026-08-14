@@ -5,6 +5,7 @@ import { classifyStockStatus } from '../universal-inventory/universal-inventory.
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
+import { decryptField } from '../../lib/encryption.js';
 import type {
   ReportFilters,
   ReportType,
@@ -356,24 +357,46 @@ export const reportsRepository = {
         // branch_name/discount_proof_available — DAILY_SALES_TRANSACTION_COLUMNS
         // is untouched, so the Daily Sales tab's PDF/CSV is unaffected.
         discountProofKey: true,
+        // Discount Compliance CSV/PDF parity — same encrypted field
+        // transactions.service.ts's getDiscountAuditTrail decrypts for the
+        // screen; DAILY_SALES_TRANSACTION_COLUMNS never references
+        // discount_id_reference below, so the Daily Sales export stays
+        // unaffected by adding this.
+        discountCustomerIdEncrypted: true,
       },
       orderBy: { createdAt: 'desc' },
       take: filters.limit,
     });
-    return rows.map((row) => ({
-      transaction_id: row.id,
-      receipt_number: row.transactionNumber,
-      payment_method: row.paymentMethod,
-      total_amount: row.totalAmount.toNumber(),
-      vat_amount: row.vatAmount.toNumber(),
-      discount_amount: row.discountAmount.toNumber(),
-      discount_type: row.discountType,
-      discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
-      created_at: row.createdAt.toISOString(),
-      cashier_name: `${row.cashier.firstName} ${row.cashier.lastName}`,
-      branch_name: row.branch.name,
-      discount_proof_available: row.discountProofKey !== null ? 'Yes' : 'No',
-    }));
+    return rows.map((row) => {
+      let discountIdReference: string | null = null;
+      if (row.discountCustomerIdEncrypted) {
+        try {
+          discountIdReference = decryptField(row.discountCustomerIdEncrypted);
+        } catch (error) {
+          // Same fail-safe as getDiscountAuditTrail: a legacy/rotated-key
+          // ciphertext must never 500 the export — fall through to null.
+          console.error('[reports] failed to decrypt discount_id_reference', {
+            transactionId: row.id,
+            error: error instanceof Error ? error.message : error,
+          });
+        }
+      }
+      return {
+        transaction_id: row.id,
+        receipt_number: row.transactionNumber,
+        payment_method: row.paymentMethod,
+        total_amount: row.totalAmount.toNumber(),
+        vat_amount: row.vatAmount.toNumber(),
+        discount_amount: row.discountAmount.toNumber(),
+        discount_type: row.discountType,
+        discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
+        discount_id_reference: discountIdReference,
+        created_at: row.createdAt.toISOString(),
+        cashier_name: `${row.cashier.firstName} ${row.cashier.lastName}`,
+        branch_name: row.branch.name,
+        discount_proof_available: row.discountProofKey !== null ? 'Yes' : 'No',
+      };
+    });
   },
 
   async getShiftSummary(filters: ReportFilters): Promise<ShiftSummaryReportRow[]> {

@@ -2552,6 +2552,7 @@ describe('transactionsService.getDiscountAuditTrail', () => {
 
   const baseFilters = { branchIds: 'all' as const, page: 1, limit: 25 };
   const superAdminActor = { id: 'admin-1', role: 'super_admin' };
+  const supervisorActor = { id: 'supervisor-1', role: 'supervisor' };
   const staffActor = { id: 'staff-1', role: 'staff' };
 
   beforeEach(() => {
@@ -2598,7 +2599,7 @@ describe('transactionsService.getDiscountAuditTrail', () => {
     expect(result.data[0]).toMatchObject({ fraudFlagged: false });
   });
 
-  it('decrypts discountCustomerId only when actor.role === super_admin AND the encrypted field is present', async () => {
+  it('decrypts discountCustomerId for a super_admin actor when the encrypted field is present', async () => {
     vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
       rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
       total: 1,
@@ -2609,7 +2610,21 @@ describe('transactionsService.getDiscountAuditTrail', () => {
     expect(result.data[0]).toMatchObject({ discountCustomerId: 'decrypted(encrypted(PWD-12345))' });
   });
 
-  it('leaves discountCustomerId null when actor.role !== super_admin', async () => {
+  // Task: Discount Compliance parity — a supervisor is already branch-scoped
+  // by the router (hasBranchAccess/getAccessibleBranchIds) before rows reach
+  // this service, so the rows it sees here are only ones it's authorized for.
+  it('also decrypts discountCustomerId for a supervisor actor when the encrypted field is present', async () => {
+    vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
+      rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
+      total: 1,
+    } as never);
+
+    const result = await transactionsService.getDiscountAuditTrail(baseFilters, supervisorActor, null);
+
+    expect(result.data[0]).toMatchObject({ discountCustomerId: 'decrypted(encrypted(PWD-12345))' });
+  });
+
+  it('leaves discountCustomerId null when actor.role is neither super_admin nor supervisor', async () => {
     vi.mocked(transactionsRepository.findDiscountAuditTrail).mockResolvedValue({
       rows: [discountAuditRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' })],
       total: 1,

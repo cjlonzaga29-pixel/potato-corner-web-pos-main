@@ -1199,7 +1199,12 @@ export const transactionsService = {
       });
 
       let discountCustomerId: string | null = null;
-      if (row.discountCustomerIdEncrypted && actor.role === 'super_admin') {
+      // Task: Discount Compliance parity — Admin and Supervisor both need
+      // this for BIR PWD/Senior audit review. Safe to extend beyond
+      // super_admin because the router (GET /discount-audit) already scopes
+      // `rows` to branches the actor is authorized for via hasBranchAccess/
+      // getAccessibleBranchIds before this runs — no cross-branch exposure.
+      if (row.discountCustomerIdEncrypted && (actor.role === 'super_admin' || actor.role === 'supervisor')) {
         try {
           discountCustomerId = decryptField(row.discountCustomerIdEncrypted);
           decrypted = true;

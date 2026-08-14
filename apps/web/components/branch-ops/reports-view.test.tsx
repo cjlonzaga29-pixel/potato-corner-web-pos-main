@@ -19,6 +19,7 @@ const {
   mockUseRequestExport,
   mockUseReportsRealtimeSync,
   mockUseDiscountComplianceReport,
+  mockUseDiscountAuditTrail,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
   mockUseTransactions: vi.fn(),
@@ -35,6 +36,7 @@ const {
   mockUseRequestExport: vi.fn(),
   mockUseReportsRealtimeSync: vi.fn(),
   mockUseDiscountComplianceReport: vi.fn(),
+  mockUseDiscountAuditTrail: vi.fn(),
 }));
 
 vi.mock('@/stores/branch.store', () => ({
@@ -45,9 +47,16 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useTransactions: mockUseTransactions,
   useTransaction: mockUseTransaction,
   useTransactionsRealtimeSync: mockUseTransactionsRealtimeSync,
+  useDiscountAuditTrail: mockUseDiscountAuditTrail,
   useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
   usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
   useDiscountProof: () => ({ data: undefined, isLoading: false, isError: false }),
+  // ViewTransactionDetailDialog (mounted whenever isSupervisor is true,
+  // unrelated to this task) calls these unconditionally — only exercised
+  // now because these are the first tests in this file to set the mocked
+  // role to 'supervisor'.
+  useVoidTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRefundTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
@@ -64,6 +73,10 @@ vi.mock('@/hooks/queries/use-attendance', () => ({
 
 vi.mock('@/hooks/queries/use-employees', () => ({
   useEmployees: mockUseEmployees,
+  // ReceiptModal (mounted whenever isSupervisor is true, unrelated to this
+  // task) calls this unconditionally — only exercised now because these are
+  // the first tests in this file to set the mocked role to 'supervisor'.
+  useEmployee: () => ({ data: undefined, isLoading: false }),
 }));
 
 vi.mock('@/stores/auth.store', () => ({
@@ -181,6 +194,11 @@ beforeEach(() => {
   // from completedTransactions; default empty so tests that don't care
   // about discount numbers specifically still render without crashing.
   mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [] }, isLoading: false });
+  // Task: Discount Compliance parity — sources the Customer ID / Reference
+  // column via a Map keyed by transaction id, same discount-audit endpoint
+  // the Admin drilldown already calls; default empty so tests that don't
+  // care about it still render without crashing.
+  mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
 });
 
 afterEach(() => {
@@ -558,5 +576,95 @@ describe('ReportsView — export controls (CSV/PDF download fix)', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Export CSV' })).toBeEnabled();
+  });
+});
+
+// Task: Discount Compliance parity — Customer ID / Reference must be visible
+// to both Supervisor and Admin (super_admin) on this tab's detail table,
+// sourced from the same discount-audit trail endpoint the Admin drilldown
+// already uses (mocked here as mockUseDiscountAuditTrail), not a new query.
+describe('ReportsView — Discount Compliance tab Customer ID / Reference column', () => {
+  function openDiscountComplianceTab() {
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Compliance' }));
+  }
+
+  function mockDiscountedTransaction(overrides: Partial<TransactionResponse> = {}) {
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [transaction({ id: 'txn-pwd-1', receipt_number: 'PC-0099', discount_type: 'pwd', discount_amount: 20, ...overrides })],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+  }
+
+  it('renders the stored Customer ID / Reference for a supervisor viewing a PWD transaction', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'supervisor-1', role: 'supervisor' } }),
+    );
+    mockDiscountedTransaction();
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [{ id: 'txn-pwd-1', discountCustomerId: '1234567890', discountType: 'pwd' }] },
+      isLoading: false,
+    });
+
+    render(<ReportsView />);
+    openDiscountComplianceTab();
+
+    const row = screen.getByText('PC-0099').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText('1234567890')).toBeInTheDocument();
+  });
+
+  it('renders the stored Customer ID / Reference for a super_admin viewing a Senior Citizen transaction', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'admin-1', role: 'super_admin' } }),
+    );
+    mockDiscountedTransaction({ discount_type: 'senior_citizen' });
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [{ id: 'txn-pwd-1', discountCustomerId: 'SC-1234567', discountType: 'senior_citizen' }] },
+      isLoading: false,
+    });
+
+    render(<ReportsView />);
+    openDiscountComplianceTab();
+
+    const row = screen.getByText('PC-0099').closest('tr');
+    expect(within(row as HTMLElement).getByText('SC-1234567')).toBeInTheDocument();
+  });
+
+  it('renders "—" (never a crash) when the discount-audit trail has no matching row — null/legacy/missing ID', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'supervisor-1', role: 'supervisor' } }),
+    );
+    mockDiscountedTransaction();
+    mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
+
+    render(<ReportsView />);
+    openDiscountComplianceTab();
+
+    const row = screen.getByText('PC-0099').closest('tr');
+    expect(within(row as HTMLElement).getByText('—')).toBeInTheDocument();
+  });
+
+  it('does not render the Customer ID / Reference column for a branch/staff session (same PII gate as Proof Available)', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
+      selector({ user: { id: 'staff-1', role: 'staff' } }),
+    );
+    mockDiscountedTransaction();
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [{ id: 'txn-pwd-1', discountCustomerId: '1234567890', discountType: 'pwd' }] },
+      isLoading: false,
+    });
+
+    render(<ReportsView />);
+    openDiscountComplianceTab();
+
+    expect(screen.queryByText('Customer ID / Reference')).not.toBeInTheDocument();
+    expect(screen.queryByText('1234567890')).not.toBeInTheDocument();
   });
 });

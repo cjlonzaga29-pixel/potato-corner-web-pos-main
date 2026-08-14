@@ -146,8 +146,9 @@ export const discountAuditQuerySchema = z.object({
  * returns the service's row shape as-is rather than going through a
  * dedicated toXResponse mapper.
  *
- * discountCustomerId is populated only for a super_admin actor (see the
- * service) — null for every other role, by design, not a bug. hasDiscountProof
+ * discountCustomerId is populated only for a super_admin or supervisor actor
+ * (see the service, branch-scoped via the router for supervisors) — null for
+ * every other role (e.g. branch/staff), by design, not a bug. hasDiscountProof
  * is an existence flag only, same as transactionResponseSchema's
  * has_discount_proof: the raw discount_proof_key never leaves the server.
  */

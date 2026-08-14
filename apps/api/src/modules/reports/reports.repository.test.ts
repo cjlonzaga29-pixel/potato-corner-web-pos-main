@@ -26,7 +26,14 @@ vi.mock('../../lib/prisma.js', () => {
   return { prisma: prismaMock };
 });
 
+vi.mock('../../lib/encryption.js', () => ({
+  encryptField: vi.fn((value: string) => `encrypted(${value})`),
+  hashField: vi.fn((value: string) => `hashed(${value})`),
+  decryptField: vi.fn((value: string) => `decrypted(${value})`),
+}));
+
 const { prisma } = await import('../../lib/prisma.js');
+const { decryptField } = await import('../../lib/encryption.js');
 const { reportsRepository } = await import('./reports.repository.js');
 
 function decimal(value: number): Prisma.Decimal {
@@ -1394,6 +1401,42 @@ describe('reportsRepository.getDailySalesTransactions', () => {
     const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
 
     expect(rows[0]).toMatchObject({ transaction_id: 'txn-1', branch_name: 'Branch One' });
+  });
+
+  // Task: Discount Compliance CSV/PDF parity — discount_id_reference is the
+  // decrypted discountCustomerIdEncrypted, same field/decrypt utility
+  // transactions.service.ts's getDiscountAuditTrail already uses for the screen.
+  it('decrypts discountCustomerIdEncrypted into discount_id_reference when present', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      transactionRow({ discountCustomerIdEncrypted: 'encrypted(PWD-12345)' }),
+    ] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]).toMatchObject({ discount_id_reference: 'decrypted(encrypted(PWD-12345))' });
+  });
+
+  it('leaves discount_id_reference null when discountCustomerIdEncrypted is null', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      transactionRow({ discountCustomerIdEncrypted: null }),
+    ] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]).toMatchObject({ discount_id_reference: null });
+  });
+
+  it('does not crash the export when a legacy discountCustomerIdEncrypted fails to decrypt — falls through to null', async () => {
+    vi.mocked(decryptField).mockImplementationOnce(() => {
+      throw new Error('Unsupported state or unable to authenticate data');
+    });
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      transactionRow({ discountCustomerIdEncrypted: 'garbled-ciphertext' }),
+    ] as never);
+
+    const rows = await reportsRepository.getDailySalesTransactions(baseFilters);
+
+    expect(rows[0]).toMatchObject({ discount_id_reference: null });
   });
 
   // Task 209.10 — Sold Product Transactions export-parity fix: the tab's

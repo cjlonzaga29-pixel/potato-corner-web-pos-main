@@ -31,7 +31,7 @@ import { formatCurrency, formatDateTime, formatDuration, formatInventoryQuantity
 import { manilaEndOfDayISO, manilaStartOfDayISO } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
-import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
+import { useDiscountAuditTrail, useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
@@ -300,6 +300,7 @@ function getDiscountComplianceColumns(
   withActions: boolean,
   onViewProof: (transactionId: string) => void,
   employeeNames: Map<string, string>,
+  discountCustomerIdByTransaction: Map<string, string | null>,
 ): ColumnDef<TransactionResponse>[] {
   const columns: ColumnDef<TransactionResponse>[] = [
     { id: 'receipt_number', header: 'Receipt #', accessorKey: 'receipt_number' },
@@ -320,6 +321,14 @@ function getDiscountComplianceColumns(
       id: 'cashier',
       header: 'Cashier',
       cell: ({ row }) => employeeNames.get(row.original.cashier_id) ?? row.original.cashier_id,
+    },
+    {
+      // Same PII-visibility boundary as Cashier/Proof Available above
+      // (withActions === supervisor/super_admin only, never branch/staff) —
+      // sourced from the discount-audit trail endpoint, not a new query.
+      id: 'customer_id',
+      header: 'Customer ID / Reference',
+      cell: ({ row }) => discountCustomerIdByTransaction.get(row.original.id) ?? '—',
     },
     {
       id: 'discount_proof',
@@ -529,6 +538,17 @@ export function ReportsView() {
     date_to: dateRange.to,
     limit: 25,
   });
+  // Task: Discount Compliance parity — reuses the same discount-audit trail
+  // endpoint the Admin drilldown already calls (GET /transactions/discount-audit)
+  // purely to source discountCustomerId per transaction id, not as this tab's
+  // row source (discountedTransactions below is unchanged, so KPIs/detail-row
+  // count/CSV/PDF parity with the screen are all unaffected). Gated to
+  // canViewDiscountProof so branch/staff sessions never issue this
+  // supervisor/admin-only request.
+  const discountAuditQuery = useDiscountAuditTrail(
+    { branchId: activeBranchId ?? undefined, dateFrom: dateRange.from, dateTo: dateRange.to, page: 1, limit: QUERY_LIMIT },
+    canViewDiscountProof,
+  );
   // Sold Product Transactions — deliberately not status-filtered (unlike
   // completedQuery above) so the tab's own Status filter can show voided/
   // refunded rows too.
@@ -654,6 +674,9 @@ export function ReportsView() {
   // needed below for the per-transaction detail table and proof-compliance
   // stats, which the aggregate's rows don't carry.
   const discountedTransactions = completedTransactions.filter((t) => t.discount_type !== null);
+  const discountCustomerIdByTransaction = new Map(
+    (discountAuditQuery.data?.data ?? []).map((row) => [row.id, row.discountCustomerId]),
+  );
   const discountComplianceRows = discountComplianceQuery.data?.data ?? [];
   const totalDiscountedTransactions = discountComplianceRows.reduce((sum, r) => sum + r.transaction_count, 0);
   const pwdDiscounts = discountComplianceRows
@@ -966,7 +989,7 @@ export function ReportsView() {
           )}
           <DataTable
             stickyHeader
-            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames)}
+            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames, discountCustomerIdByTransaction)}
             data={discountedTransactions}
             isLoading={completedQuery.isLoading}
             isError={completedQuery.isError}

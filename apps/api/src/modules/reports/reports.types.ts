@@ -111,4 +111,8 @@ export type DailySalesTransactionRow = {
   transaction_id: string;
   branch_name: string;
   discount_proof_available: 'Yes' | 'No';
+  // Task: Discount Compliance CSV/PDF parity — decrypted discountCustomerId
+  // (same field the Admin drilldown shows), null for no-discount rows, rows
+  // with no stored reference, and legacy rows that fail to decrypt.
+  discount_id_reference?: string | null;
 } & Record<string, unknown>;

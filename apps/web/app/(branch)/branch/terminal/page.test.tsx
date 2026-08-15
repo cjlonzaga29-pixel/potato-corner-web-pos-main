@@ -1280,10 +1280,10 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
     fireEvent.click(screen.getByText('Mega Mix Fries'));
 
     const dialog = screen.getByRole('dialog');
-    expect(dialog.className).toContain('w-[calc(100vw-2rem)]');
-    expect(dialog.className).toContain('max-w-md');
-    expect(dialog.className).toContain('max-h-[calc(100vh-2rem)]');
-    expect(dialog.className).toContain('overflow-y-auto');
+    expect(dialog.className).toContain('w-[min(92vw,720px)]');
+    expect(dialog.className).toContain('max-w-[720px]');
+    expect(dialog.className).toContain('max-h-[min(88vh,850px)]');
+    expect(dialog.className).toContain('overflow-x-hidden');
   });
 
   // Task 193B — a variant carrying two independent required MULTIPLE groups

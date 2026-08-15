@@ -224,20 +224,6 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'action', header: 'Action' },
     { key: 'ip_address', header: 'IP Address', isAudit: true },
   ],
-  // Not used for PDF export — EXPENSES is special-cased in
-  // reports.service.ts's requestExport (see lib/reports/expenses-export.ts's
-  // EXPENSES_EXPORT_COLUMNS/generateExpensesPdf), since it needs a Total
-  // Expenses / Total Amount summary block the generic single-totals-row
-  // layout doesn't render. This entry exists only so REPORT_COLUMNS stays a
-  // total Record<ReportType, ...>.
-  EXPENSES: [
-    { key: 'incurred_at', header: 'Date' },
-    { key: 'branch', header: 'Branch' },
-    { key: 'category', header: 'Category' },
-    { key: 'vendor_name', header: 'Vendor' },
-    { key: 'amount', header: 'Amount' },
-    { key: 'created_by_name', header: 'Recorded By' },
-  ],
 };
 
 export async function getReportRows(reportType: ReportType, filters: ReportFilters): Promise<Record<string, unknown>[]> {

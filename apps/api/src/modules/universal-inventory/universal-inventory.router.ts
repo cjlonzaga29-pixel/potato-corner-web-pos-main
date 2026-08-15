@@ -541,6 +541,7 @@ stockBranchRouter.post(
           branchId: req.params.branchId as string,
           inventoryItemId: req.params.inventoryItemId as string,
           quantity: body.quantity,
+          unitCost: body.unit_cost,
           enteredUnitId: body.entered_unit_id,
           deliveryReference: body.delivery_reference,
           notes: body.notes,
@@ -602,12 +603,33 @@ stockBranchRouter.post(
           quantity: body.quantity,
           enteredUnitId: body.entered_unit_id,
           reasonCode: body.reason_code,
+          responsibleUserId: body.responsible_user_id,
           notes: body.notes,
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
       res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.get(
+  '/:branchId/inventory-stock/transfer-destinations',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await universalInventoryService.getTransferDestinations(req.params.branchId as string, {
+        id: req.user.user_id,
+        role: req.user.role,
+      });
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

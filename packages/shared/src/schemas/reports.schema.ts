@@ -76,6 +76,21 @@ export const DailySalesReportRowSchema = z.object({
   completed_count: z.number().int(),
   voided_count: z.number().int(),
   refunded_count: z.number().int(),
+  // Finance waterfall (Simple Operational Audit §6): net_sales - cogs =
+  // gross_profit; gross_profit - waste_cost - expense_total =
+  // operating_result. Sourced from the same computeFinancialMetrics() every
+  // other report/dashboard uses, plus waste_cost as a separate line (never
+  // folded into cogs — a wasted unit was never sold).
+  cogs: z.number(),
+  gross_profit: z.number(),
+  waste_cost: z.number(),
+  expense_total: z.number(),
+  operating_result: z.number(),
+  // True when any completed sale in this bucket had to estimate its COGS
+  // from current cost (no point-in-time capture) or had no resolvable cost
+  // at all — mirrors the dashboard's isNetProfitEstimated rule so this
+  // report never presents an inaccurate figure as definitive.
+  is_profit_estimated: z.boolean(),
 });
 export type DailySalesReportRow = z.infer<typeof DailySalesReportRowSchema>;
 

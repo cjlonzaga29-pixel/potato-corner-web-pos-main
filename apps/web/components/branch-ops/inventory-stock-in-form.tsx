@@ -18,13 +18,14 @@ import { useBranchInventoryStock, useReceiveInventoryStock } from '@/hooks/queri
 const formSchema = z.object({
   inventory_item_id: z.uuid('Select an item'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
+  unit_cost: z.coerce.number().positive('Unit cost is required to record acquisition cost'),
   delivery_reference: z.string().max(100).optional(),
   notes: z.string().optional(),
 });
 
 type FormValues = z.input<typeof formSchema>;
 
-const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity: 0, delivery_reference: '', notes: '' };
+const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity: 0, unit_cost: 0, delivery_reference: '', notes: '' };
 
 function StockInFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
@@ -35,6 +36,9 @@ function StockInFormContent({ basePath }: { basePath: string }) {
   const inventoryItemId = form.watch('inventory_item_id');
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const stockIn = useReceiveInventoryStock(activeBranchId, inventoryItemId);
+  const quantity = form.watch('quantity');
+  const unitCost = form.watch('unit_cost');
+  const totalCost = Number(quantity || 0) * Number(unitCost || 0);
 
   useEffect(() => {
     const preselected = searchParams.get('inventory_item_id');
@@ -46,6 +50,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     const parsed = formSchema.parse(values);
     await stockIn.mutateAsync({
       quantity: parsed.quantity,
+      unit_cost: parsed.unit_cost,
       delivery_reference: parsed.delivery_reference || undefined,
       notes: parsed.notes || undefined,
     });
@@ -102,6 +107,19 @@ function StockInFormContent({ basePath }: { basePath: string }) {
           <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Received${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
+
+          <FormFieldWrapper<FormValues>
+            name="unit_cost"
+            label={`Unit Cost${item ? ` (per ${item.base_unit_code})` : ''}`}
+            description="Purchase cost per unit for this delivery"
+            required
+          >
+            <Input type="number" step="any" inputMode="decimal" />
+          </FormFieldWrapper>
+
+          <p className="rounded-md border bg-muted/30 p-3 text-sm">
+            Total Cost: <span className="font-medium">₱{totalCost.toFixed(2)}</span>
+          </p>
 
           <FormFieldWrapper<FormValues> name="delivery_reference" label="Delivery Reference" description="Optional">
             <Input placeholder="PO number, delivery receipt, etc." />

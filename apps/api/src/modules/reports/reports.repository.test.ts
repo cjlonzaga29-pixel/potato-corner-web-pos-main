@@ -4,7 +4,8 @@ import { Prisma } from '@prisma/client';
 vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
     transaction: { findMany: vi.fn(), groupBy: vi.fn(), count: vi.fn() },
-    transactionItem: { groupBy: vi.fn() },
+    transactionItem: { groupBy: vi.fn(), findMany: vi.fn() },
+    expense: { findMany: vi.fn() },
     branch: { findMany: vi.fn(), findUnique: vi.fn() },
     shift: { findMany: vi.fn(), count: vi.fn() },
     inventoryMovement: { findMany: vi.fn(), groupBy: vi.fn(), count: vi.fn() },
@@ -47,6 +48,17 @@ beforeEach(() => {
 });
 
 describe('reportsRepository.getDailySales', () => {
+  // Finance waterfall fields (cogs/gross_profit/waste_cost/expense_total/
+  // operating_result) default to empty/zero here — dedicated tests below
+  // exercise them explicitly. Every pre-existing test in this block only
+  // asserts sales/discount/VAT fields, so leaving cost inputs at "no data"
+  // keeps them at their old expected values (0).
+  beforeEach(() => {
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.expense.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([]);
+  });
+
   it('buckets completed/voided/refunded transactions by report_date and branch', async () => {
     vi.mocked(prisma.transaction.findMany).mockResolvedValue([
       { branchId: 'b1', status: 'completed', subtotal: decimal(112), totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), createdAt: new Date('2026-07-01T10:00:00.000Z') },
@@ -68,6 +80,12 @@ describe('reportsRepository.getDailySales', () => {
         completed_count: 1,
         voided_count: 1,
         refunded_count: 0,
+        cogs: 0,
+        gross_profit: 112,
+        waste_cost: 0,
+        expense_total: 0,
+        operating_result: 112,
+        is_profit_estimated: false,
       },
     ]);
     expect(prisma.transaction.findMany).toHaveBeenCalledWith(
@@ -122,6 +140,53 @@ describe('reportsRepository.getDailySales', () => {
 
     expect(row?.gross_sales).toBe(200);
     expect(row?.discount_total).toBe(40);
+  });
+
+  it('wires COGS (from frozen deductionSnapshot), Waste Cost, and Expenses into gross_profit/operating_result without double-counting', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      { branchId: 'b1', status: 'completed', subtotal: decimal(1000), totalAmount: decimal(1000), discountAmount: decimal(0), vatAmount: decimal(107.14), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([
+      {
+        deductionSnapshot: [{ inventoryItemId: 'item-1', quantity: 10, componentUnitCost: 30, componentCost: 300 }],
+        transaction: { branchId: 'b1', createdAt: new Date('2026-07-01T10:00:00.000Z') },
+      },
+    ] as never);
+    vi.mocked(prisma.expense.findMany).mockResolvedValue([{ branchId: 'b1', amount: decimal(150), incurredAt: new Date('2026-07-01T09:00:00.000Z') }] as never);
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      { branchId: 'b1', totalCost: decimal(50), createdAt: new Date('2026-07-01T08:00:00.000Z') },
+    ] as never);
+
+    const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
+
+    // gross_sales 1000, cogs 300 -> gross_profit 700; operating_result =
+    // gross_profit(700) - waste_cost(50) - expense_total(150) = 500, and
+    // expense_total must appear exactly once (not folded into cogs/waste).
+    expect(row).toMatchObject({
+      gross_sales: 1000,
+      cogs: 300,
+      gross_profit: 700,
+      waste_cost: 50,
+      expense_total: 150,
+      operating_result: 500,
+      is_profit_estimated: false,
+    });
+  });
+
+  it('flags is_profit_estimated when a sale predates cost-snapshot capture', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      { branchId: 'b1', status: 'completed', subtotal: decimal(500), totalAmount: decimal(500), discountAmount: decimal(0), vatAmount: decimal(53.57), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    // Legacy row: no deductionSnapshot at all.
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([
+      { deductionSnapshot: null, transaction: { branchId: 'b1', createdAt: new Date('2026-07-01T10:00:00.000Z') } },
+    ] as never);
+
+    const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(row?.is_profit_estimated).toBe(true);
   });
 });
 
@@ -1070,27 +1135,50 @@ describe('reportsRepository.getInventoryAnalytics', () => {
     expect(slowest?.days_since_last_movement).toBe(13);
   });
 
-  it('computes waste trends grouped by Manila calendar day, not UTC day', async () => {
+  it('computes waste trends grouped by Manila calendar day, not UTC day, using each movement\'s own frozen cost snapshot', async () => {
     mockPrismaCalls({
       waste: [
         // 2026-07-10T08:00:00Z == 2026-07-10T16:00+08:00 -> Manila July 10
-        { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z') },
+        { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z'), totalCost: decimal(10) },
         // 2026-07-10T20:00:00Z == 2026-07-11T04:00+08:00 -> already Manila July 11,
         // even though the UTC calendar date is still the 10th.
-        { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-3), createdAt: new Date('2026-07-10T20:00:00.000Z') },
-        { inventoryItemId: 'item-slow', branchId: 'b1', quantityChange: decimal(-1), createdAt: new Date('2026-07-11T08:00:00.000Z') },
+        { inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-3), createdAt: new Date('2026-07-10T20:00:00.000Z'), totalCost: decimal(15) },
+        { inventoryItemId: 'item-slow', branchId: 'b1', quantityChange: decimal(-1), createdAt: new Date('2026-07-11T08:00:00.000Z'), totalCost: decimal(20) },
       ],
     });
 
     const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
 
     expect(result.waste_trends).toEqual([
-      // item-fast unitCost 5: only the 08:00Z entry (qty 2) is Manila July 10.
+      // Only the 08:00Z entry (qty 2, snapshotted cost 10) is Manila July 10.
       { date: '2026-07-10', total_waste_quantity: 2, total_waste_cost: 10 },
-      // The 20:00Z item-fast entry (qty 3, cost 15) rolls into Manila July 11
-      // alongside item-slow's entry (qty 1, unitCost 20, cost 20).
+      // The 20:00Z item-fast entry (qty 3, snapshotted cost 15) rolls into
+      // Manila July 11 alongside item-slow's entry (qty 1, snapshotted cost 20).
       { date: '2026-07-11', total_waste_quantity: 4, total_waste_cost: 35 },
     ]);
+  });
+
+  it('does not recompute waste cost from today\'s average when the snapshot and current cost diverge (historical stability)', async () => {
+    mockPrismaCalls({
+      // Today's stock unitCost for item-fast is 5 (via stockRows fallback),
+      // but this movement's own frozen snapshot says 2 — a purchase-price
+      // change after the fact must not retroactively inflate/deflate it.
+      waste: [{ inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z'), totalCost: decimal(2) }],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result.waste_trends).toEqual([{ date: '2026-07-10', total_waste_quantity: 2, total_waste_cost: 2 }]);
+  });
+
+  it('treats a legacy waste row with no cost snapshot as contributing 0 cost, not a fabricated figure', async () => {
+    mockPrismaCalls({
+      waste: [{ inventoryItemId: 'item-fast', branchId: 'b1', quantityChange: decimal(-2), createdAt: new Date('2026-07-10T08:00:00.000Z'), totalCost: null }],
+    });
+
+    const result = await reportsRepository.getInventoryAnalytics({ dateFrom, dateTo, periodDays: 30 });
+
+    expect(result.waste_trends).toEqual([{ date: '2026-07-10', total_waste_quantity: 2, total_waste_cost: 0 }]);
   });
 
   it('computes turnover rate per branch', async () => {

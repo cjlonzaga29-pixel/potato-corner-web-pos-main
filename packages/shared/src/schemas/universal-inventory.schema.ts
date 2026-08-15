@@ -172,6 +172,7 @@ const stockMovementTypeEnum = z.enum([
 
 export const receiveInventoryStockSchema = z.object({
   quantity: z.number().positive(),
+  unit_cost: z.number().positive('Unit cost is required to record acquisition cost'),
   entered_unit_id: z.uuid().optional(),
   delivery_reference: z.string().max(100).optional(),
   notes: z.string().optional(),
@@ -187,6 +188,7 @@ export const wasteInventoryStockSchema = z.object({
   quantity: z.number().positive(),
   entered_unit_id: z.uuid().optional(),
   reason_code: z.enum(wasteReasonValues),
+  responsible_user_id: z.uuid('Select the staff member responsible for this waste'),
   notes: z.string().optional(),
 });
 
@@ -195,6 +197,16 @@ export const transferInventoryStockSchema = z.object({
   to_branch_id: z.uuid(),
   quantity: z.number().positive(),
   notes: z.string().optional(),
+});
+
+export const transferDestinationBranchSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  code: z.string(),
+});
+
+export const transferDestinationListResponseSchema = z.object({
+  branches: z.array(transferDestinationBranchSchema),
 });
 
 export const physicalCountInventoryStockSchema = z.object({
@@ -224,6 +236,12 @@ export const inventoryStockMovementResponseSchema = z.object({
   reference_id: z.string().nullable(),
   notes: z.string().nullable(),
   performed_by_user_id: z.uuid().nullable(),
+  // Carrying cost snapshot at movement time. Null means "cost not
+  // initialized" (legacy row or an item that has never been costed) —
+  // never treat null as 0.
+  unit_cost: z.number().nullable(),
+  total_cost: z.number().nullable(),
+  responsible_user_id: z.uuid().nullable(),
   created_at: z.iso.datetime(),
 });
 
@@ -245,6 +263,9 @@ export const branchInventoryStockRowSchema = z.object({
   critical_threshold: z.number().nullable(),
   status: z.enum(['healthy', 'low', 'critical']),
   consumed_today: z.number(),
+  // Null means "cost not initialized" — never treat as 0.
+  avg_unit_cost: z.number().nullable(),
+  inventory_value: z.number().nullable(),
 });
 
 export const branchInventoryStockListResponseSchema = z.object({

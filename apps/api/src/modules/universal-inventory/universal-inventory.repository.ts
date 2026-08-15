@@ -41,6 +41,11 @@ export interface CreateStockMovementInput {
   referenceId?: string;
   notes?: string;
   performedByUserId?: string;
+  /** Carrying cost snapshot at movement time — see schema.prisma's InventoryStockMovement doc comment. */
+  unitCost?: Prisma.Decimal;
+  totalCost?: Prisma.Decimal;
+  /** WASTE only: accountable staff member, distinct from performedByUserId. */
+  responsibleUserId?: string;
 }
 
 /**
@@ -246,6 +251,15 @@ export const universalInventoryRepository = {
     });
   },
 
+  /** Waste accountability: the write must only accept an active user actually assigned to this branch (frontend picker sources the same-branch list from GET /api/employees?branch_id=). */
+  async isActiveUserInBranch(userId: string, branchId: string): Promise<boolean> {
+    const assignment = await prisma.userBranchAssignment.findFirst({
+      where: { userId, branchId, removedAt: null, user: { isActive: true } },
+      select: { id: true },
+    });
+    return assignment !== null;
+  },
+
   // --- Branch inventory cutover: direct InventoryStock read/write ---
 
   /**
@@ -289,10 +303,27 @@ export const universalInventoryRepository = {
    * transactions.service.ts's deductInventoryForSale already uses for the
    * POS sale-deduction hot path.
    */
-  incrementStockQuantity(branchId: string, inventoryItemId: string, delta: Prisma.Decimal | number, tx: Prisma.TransactionClient) {
+  /**
+   * `unitCost`, when passed, absolute-sets InventoryStock.unitCost in the
+   * same update as the quantity increment (e.g. the newly-computed weighted
+   * average from a costed receiving) — omit it for cost-agnostic writers
+   * (adjustment/waste/transfer-out) that must not disturb the existing
+   * carrying cost.
+   */
+  incrementStockQuantity(
+    branchId: string,
+    inventoryItemId: string,
+    delta: Prisma.Decimal | number,
+    tx: Prisma.TransactionClient,
+    unitCost?: Prisma.Decimal,
+  ) {
     return tx.inventoryStock.update({
       where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
-      data: { quantityOnHand: { increment: delta }, version: { increment: 1 } },
+      data: {
+        quantityOnHand: { increment: delta },
+        version: { increment: 1 },
+        ...(unitCost !== undefined ? { unitCost } : {}),
+      },
     });
   },
 
@@ -310,6 +341,9 @@ export const universalInventoryRepository = {
         referenceId: input.referenceId,
         notes: input.notes,
         performedByUserId: input.performedByUserId,
+        unitCost: input.unitCost,
+        totalCost: input.totalCost,
+        responsibleUserId: input.responsibleUserId,
       },
       include: stockMovementInclude,
     });

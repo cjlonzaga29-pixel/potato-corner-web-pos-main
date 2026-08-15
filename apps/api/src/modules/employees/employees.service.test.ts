@@ -459,7 +459,7 @@ describe('employeesService.resetEmployeePassword', () => {
   it('allows a branch actor to reset the password of an employee in their own branch', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
-    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', BRANCH_USER, null)).resolves.toBeUndefined();
+    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', BRANCH_USER, null)).resolves.toEqual({});
 
     expect(authRepository.updatePasswordHash).toHaveBeenCalledWith('emp-1', expect.any(String));
   });
@@ -477,7 +477,7 @@ describe('employeesService.resetEmployeePassword', () => {
   it('allows a supervisor to reset the password of an employee in one of their assigned branches', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
-    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPERVISOR_USER, null)).resolves.toBeUndefined();
+    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPERVISOR_USER, null)).resolves.toEqual({});
   });
 
   it('rejects a supervisor resetting the password of an employee outside the accessible (active) branch scope', async () => {
@@ -494,7 +494,25 @@ describe('employeesService.resetEmployeePassword', () => {
   it('allows super_admin to reset the password of any employee regardless of branch', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
 
-    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null)).resolves.toBeUndefined();
+    await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null)).resolves.toEqual({});
+  });
+
+  it('generates and returns a temporary password once when new_password is omitted', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+
+    const result = await employeesService.resetEmployeePassword('emp-1', undefined, SUPER_ADMIN_USER, null);
+
+    expect(result.temporaryPassword).toEqual(expect.any(String));
+    expect(result.temporaryPassword?.length).toBeGreaterThanOrEqual(8);
+    expect(authRepository.updatePasswordHash).toHaveBeenCalledWith('emp-1', expect.any(String));
+  });
+
+  it('does not return a temporary password when the caller supplies one', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+
+    const result = await employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null);
+
+    expect(result.temporaryPassword).toBeUndefined();
   });
 
   it('rejects resetting the password of a staff employee, who has no credentials to reset', async () => {

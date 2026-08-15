@@ -85,6 +85,8 @@ export interface ReceiveInventoryStockData {
   branchId: string;
   inventoryItemId: string;
   quantity: number;
+  /** Purchase cost per entered unit for this delivery — required so every receiving carries a cost snapshot. */
+  unitCost: number;
   enteredUnitId?: string;
   deliveryReference?: string;
   notes?: string;
@@ -106,6 +108,8 @@ export interface WasteInventoryStockData {
   quantity: number;
   enteredUnitId?: string;
   reasonCode: string;
+  /** Accountable staff member for this waste — must be an active user assigned to branchId. Distinct from performedByUserId ("recorded by"). */
+  responsibleUserId: string;
   notes?: string;
   performedByUserId?: string;
 }

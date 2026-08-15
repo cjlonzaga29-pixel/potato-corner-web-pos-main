@@ -177,6 +177,9 @@ function movement(overrides: Partial<InventoryStockMovementResponse> = {}): Inve
     reference_id: null,
     notes: null,
     performed_by_user_id: null,
+    unit_cost: null,
+    total_cost: null,
+    responsible_user_id: null,
     created_at: '2026-07-16T02:00:00.000Z',
     ...overrides,
   };

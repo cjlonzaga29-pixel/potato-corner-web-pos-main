@@ -42,6 +42,7 @@ vi.mock('./universal-inventory.repository.js', () => ({
     getConsumedTodayByBranch: vi.fn(),
     findStock: vi.fn(),
     findStockMovements: vi.fn(),
+    isActiveUserInBranch: vi.fn(),
   },
 }));
 
@@ -49,7 +50,12 @@ vi.mock('../branches/branches.repository.js', () => ({
   branchesRepository: {
     listAllBranchIds: vi.fn(),
     findById: vi.fn(),
+    findActiveBranchesForTransfer: vi.fn(),
   },
+}));
+
+vi.mock('../../lib/branch-access.js', () => ({
+  getTransferDestinationBranchIds: vi.fn(),
 }));
 
 vi.mock('../../middleware/audit-log.js', () => ({
@@ -82,6 +88,7 @@ vi.mock('../product-components/unit-conversion.util.js', () => ({
 
 const { universalInventoryRepository: repo } = await import('./universal-inventory.repository.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
+const { getTransferDestinationBranchIds } = await import('../../lib/branch-access.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { universalInventoryService } = await import('./universal-inventory.service.js');
 const { convertQuantity } = await import('../product-components/unit-conversion.util.js');
@@ -101,6 +108,7 @@ function buildStock(overrides: Partial<Record<string, unknown>> = {}) {
     branchId: 'branch-1',
     inventoryItemId: 'item-1',
     quantityOnHand: dec(10),
+    unitCost: null,
     lowStockThreshold: null,
     criticalThreshold: null,
     ...overrides,
@@ -162,10 +170,13 @@ function buildItem(overrides: Partial<Record<string, unknown>> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue([]);
-  vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1', code: 'MNL001', name: 'Manila' } as never);
+  vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1', code: 'MNL001', name: 'Manila', status: 'active' } as never);
+  vi.mocked(branchesRepository.findActiveBranchesForTransfer).mockResolvedValue([]);
+  vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
   vi.mocked(repo.createStockRows).mockResolvedValue({ count: 0 } as never);
   vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
   vi.mocked(repo.getConsumedTodayByBranch).mockResolvedValue(new Map());
+  vi.mocked(repo.isActiveUserInBranch).mockResolvedValue(true);
   // Mirrors a real Prisma round-trip: Decimal-typed columns always come back
   // as Decimal instances on read, even when the write was given a plain
   // number (as adjustStock's quantityDelta and transferStock's quantity are).
@@ -489,7 +500,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(branchesRepository.findById).mockResolvedValue(null);
 
     await expect(
-      universalInventoryService.receiveStock({ branchId: 'missing', inventoryItemId: 'item-1', quantity: 5 }, ACTOR, null),
+      universalInventoryService.receiveStock({ branchId: 'missing', inventoryItemId: 'item-1', quantity: 5, unitCost: 10 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'BRANCH_NOT_FOUND' });
   });
 
@@ -497,7 +508,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.findItemById).mockResolvedValue(null);
 
     await expect(
-      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'missing', quantity: 5 }, ACTOR, null),
+      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'missing', quantity: 5, unitCost: 10 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
   });
 
@@ -505,7 +516,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(null);
 
     await expect(
-      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5 }, ACTOR, null),
+      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'STOCK_ROW_NOT_FOUND' });
     expect(repo.createStockMovement).not.toHaveBeenCalled();
   });
@@ -515,14 +526,16 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
     const result = await universalInventoryService.receiveStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, deliveryReference: 'PO-1001' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10, deliveryReference: 'PO-1001' },
       ACTOR,
       null,
     );
 
     // Delta-based write: an atomic `increment: 5` at the DB layer, not a
-    // locally-computed absolute SET of 15.
-    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(5), {});
+    // locally-computed absolute SET of 15. Cost is a 5th argument here
+    // because buildStock's unitCost is null (no prior cost to blend), so
+    // the new average bootstraps to the received unit cost outright.
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(5), {}, dec(10));
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({
         branchId: 'branch-1',
@@ -532,6 +545,8 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
         quantityAfter: dec(15),
         referenceType: 'delivery',
         referenceId: 'PO-1001',
+        unitCost: dec(10),
+        totalCost: dec(50),
       }),
       {},
     );
@@ -539,12 +554,24 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'INVENTORY_STOCK_RECEIVED' }));
   });
 
+  it('blends with the existing average cost when one is already set', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(50), unitCost: dec(8) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(150) } as never);
+
+    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 100, unitCost: 10 }, ACTOR, null);
+
+    // (50*8 + 100*10) / 150 = 9.333...
+    const call = vi.mocked(repo.incrementStockQuantity).mock.calls[0];
+    const newAvgCost = call?.[4] as Prisma.Decimal;
+    expect(newAvgCost.toDecimalPlaces(4).toString()).toBe('9.3333');
+  });
+
   it('TASK 118 — passes the InventoryItem id to convertQuantity so an item-specific conversion is preferred', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
     await universalInventoryService.receiveStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, enteredUnitId: 'unit-tbsp' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10, enteredUnitId: 'unit-tbsp' },
       ACTOR,
       null,
     );
@@ -647,7 +674,7 @@ describe('universalInventoryService.wasteStock — Test D (waste management)', (
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(7) }) as never);
 
     await universalInventoryService.wasteStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage', responsibleUserId: 'user-1' },
       ACTOR,
       null,
     );
@@ -664,7 +691,7 @@ describe('universalInventoryService.wasteStock — Test D (waste management)', (
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(2) }) as never);
 
     await expect(
-      universalInventoryService.wasteStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, reasonCode: 'spoilage' }, ACTOR, null),
+      universalInventoryService.wasteStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, reasonCode: 'spoilage', responsibleUserId: 'user-1' }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
     expect(repo.createStockMovement).not.toHaveBeenCalled();
   });
@@ -675,7 +702,7 @@ describe('universalInventoryService.wasteStock — Test D (waste management)', (
     vi.mocked(repo.findStock).mockResolvedValue(buildStock({ quantityOnHand: dec(7) }) as never);
 
     await universalInventoryService.wasteStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage', enteredUnitId: 'unit-tbsp' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage', enteredUnitId: 'unit-tbsp', responsibleUserId: 'user-1' },
       ACTOR,
       null,
     );
@@ -746,7 +773,7 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
     // Delta-based writes: atomic `increment: -5` / `increment: 5`, not
     // locally-computed absolute SETs of 15/25.
     expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', -5, {});
-    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-2', 'item-1', 5, {});
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-2', 'item-1', 5, {}, undefined);
     expect(repo.createStockMovement).toHaveBeenCalledWith(
       expect.objectContaining({ branchId: 'branch-1', movementType: 'TRANSFER_OUT', quantityBefore: dec(20), quantityAfter: dec(15) }),
       {},
@@ -756,6 +783,63 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
       {},
     );
     expect(result.transfer_out.reference_id).toBe(result.transfer_in.reference_id);
+  });
+
+  it('carries the source cost basis onto both legs and blends it into the destination average — spec example: 20 @ ₱8 + 10 @ ₱10 -> ₱8.666...', async () => {
+    vi.mocked(repo.lockAndGetStock).mockImplementation(
+      (branchId: string) =>
+        Promise.resolve(
+          branchId === 'branch-1'
+            ? buildStock({ branchId, quantityOnHand: dec(50), unitCost: dec(10) })
+            : buildStock({ branchId, quantityOnHand: dec(20), unitCost: dec(8) }),
+        ) as never,
+    );
+    vi.mocked(repo.incrementStockQuantity)
+      .mockResolvedValueOnce({ quantityOnHand: dec(40) } as never)
+      .mockResolvedValueOnce({ quantityOnHand: dec(30) } as never);
+
+    await universalInventoryService.transferStock(
+      { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 10 },
+      ACTOR,
+      null,
+    );
+
+    // Source's own average cost is untouched — no cost argument on its write.
+    expect(repo.incrementStockQuantity).toHaveBeenNthCalledWith(1, 'branch-1', 'item-1', -10, {});
+    // Destination blends its existing 20 @ ₱8 with the incoming 10 @ ₱10 -> 8.666...
+    const destCall = vi.mocked(repo.incrementStockQuantity).mock.calls[1];
+    const destNewAvg = destCall?.[4] as Prisma.Decimal;
+    expect(destNewAvg.toDecimalPlaces(4).toString()).toBe('8.6667');
+
+    expect(repo.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'TRANSFER_OUT', unitCost: dec(10), totalCost: dec(100) }),
+      {},
+    );
+    expect(repo.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'TRANSFER_IN', unitCost: dec(10), totalCost: dec(100) }),
+      {},
+    );
+  });
+
+  it('does not fabricate a cost when the source has never been costed (unitCost null)', async () => {
+    vi.mocked(repo.lockAndGetStock).mockImplementation(
+      (branchId: string) => Promise.resolve(buildStock({ branchId, quantityOnHand: dec(20), unitCost: null })) as never,
+    );
+    vi.mocked(repo.incrementStockQuantity)
+      .mockResolvedValueOnce({ quantityOnHand: dec(15) } as never)
+      .mockResolvedValueOnce({ quantityOnHand: dec(25) } as never);
+
+    await universalInventoryService.transferStock(
+      { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.incrementStockQuantity).toHaveBeenNthCalledWith(2, 'branch-2', 'item-1', 5, {}, undefined);
+    expect(repo.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'TRANSFER_OUT', unitCost: undefined, totalCost: undefined }),
+      {},
+    );
   });
 
   it('rejects (with no partial write) when the source branch has insufficient stock', async () => {
@@ -786,6 +870,192 @@ describe('universalInventoryService.transferStock — Test E (atomic branch tran
         null,
       ),
     ).rejects.toMatchObject({ code: 'STOCK_ROW_NOT_FOUND' });
+  });
+});
+
+/**
+ * Transfer RBAC policy — destination-branch authorization. Source-branch
+ * authorization (own branch for a branch account, an assigned active
+ * branch for a supervisor — including "cannot spoof source"/"unassigned
+ * source rejected") is enforced by branchGuard at the route layer, covered
+ * in universal-inventory.router.test.ts; these tests cover the destination
+ * half, which has no route-level guard (to_branch_id is a body field) and
+ * so must be enforced here — directly against the database, the same way
+ * for a direct API call as for the dropdown-driven UI, so the dropdown can
+ * never be bypassed.
+ */
+describe('universalInventoryService.transferStock — Transfer RBAC policy (destination authorization)', () => {
+  const BRANCH_ACTOR = { id: 'branch-user-1', role: 'branch' };
+  const SUPERVISOR_ACTOR = { id: 'supervisor-1', role: 'supervisor' };
+  const ADMIN_ACTOR = { id: 'admin-1', role: 'super_admin' };
+
+  function mockSuccessfulTransferWrites() {
+    vi.mocked(repo.lockAndGetStock).mockImplementation(
+      (branchId: string) => Promise.resolve(buildStock({ branchId, quantityOnHand: dec(20) })) as never,
+    );
+    vi.mocked(repo.incrementStockQuantity)
+      .mockResolvedValueOnce({ quantityOnHand: dec(15) } as never)
+      .mockResolvedValueOnce({ quantityOnHand: dec(25) } as never);
+  }
+
+  function mockBranches(overrides: Record<string, { status: string }>) {
+    vi.mocked(branchesRepository.findById).mockImplementation(
+      (id: string) => Promise.resolve({ id, ...overrides[id] }) as never,
+    );
+  }
+
+  // --- Branch account: any other active branch ---
+
+  it('branch account: another active destination -> accepted', async () => {
+    mockSuccessfulTransferWrites();
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-2': { status: 'active' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+        BRANCH_ACTOR,
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('branch account: self-transfer rejected', async () => {
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-1', quantity: 5 },
+        BRANCH_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSFER' });
+  });
+
+  it('branch account: inactive destination rejected — the active check applies regardless of branch role having no id restriction', async () => {
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-2': { status: 'inactive' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+        BRANCH_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'BRANCH_INACTIVE' });
+    expect(repo.incrementStockQuantity).not.toHaveBeenCalled();
+  });
+
+  // --- Supervisor: assigned active branches only ---
+
+  it('supervisor: assigned source -> assigned destination -> accepted', async () => {
+    mockSuccessfulTransferWrites();
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-2': { status: 'active' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue(['branch-2']);
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+        SUPERVISOR_ACTOR,
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('supervisor: destination outside their assigned branches rejected — a direct API call cannot bypass the dropdown restriction', async () => {
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-3': { status: 'active' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue(['branch-2']);
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-3', quantity: 5 },
+        SUPERVISOR_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'TRANSFER_DESTINATION_DENIED' });
+    expect(repo.incrementStockQuantity).not.toHaveBeenCalled();
+    expect(repo.createStockMovement).not.toHaveBeenCalled();
+  });
+
+  it('supervisor: self-transfer rejected', async () => {
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-1', quantity: 5 },
+        SUPERVISOR_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSFER' });
+  });
+
+  it('supervisor with zero active branch assignments cannot transfer anywhere — fail closed, never every branch', async () => {
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-2': { status: 'active' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue([]);
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+        SUPERVISOR_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'TRANSFER_DESTINATION_DENIED' });
+  });
+
+  // --- Admin / Super Admin: any active branch ---
+
+  it('admin: branch A -> branch B -> accepted', async () => {
+    mockSuccessfulTransferWrites();
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-2': { status: 'active' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+        ADMIN_ACTOR,
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('admin: inactive destination rejected', async () => {
+    mockBranches({ 'branch-1': { status: 'active' }, 'branch-2': { status: 'inactive' } });
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
+
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-2', quantity: 5 },
+        ADMIN_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'BRANCH_INACTIVE' });
+  });
+
+  it('admin: self-transfer rejected', async () => {
+    await expect(
+      universalInventoryService.transferStock(
+        { inventoryItemId: 'item-1', fromBranchId: 'branch-1', toBranchId: 'branch-1', quantity: 5 },
+        ADMIN_ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSFER' });
+  });
+});
+
+describe('universalInventoryService.getTransferDestinations', () => {
+  it('resolves the actor-authorized id set and excludes the source branch from the result', async () => {
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue(['branch-2']);
+    vi.mocked(branchesRepository.findActiveBranchesForTransfer).mockResolvedValue([{ id: 'branch-2', name: 'Branch Two', code: 'MNL002' }]);
+
+    const result = await universalInventoryService.getTransferDestinations('branch-1', { id: 'supervisor-1', role: 'supervisor' });
+
+    expect(branchesRepository.findActiveBranchesForTransfer).toHaveBeenCalledWith('branch-1', ['branch-2']);
+    expect(result).toEqual({ branches: [{ id: 'branch-2', name: 'Branch Two', code: 'MNL002' }] });
+  });
+
+  it("passes undefined (no restriction) for an actor authorized for 'all' branches", async () => {
+    vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
+    vi.mocked(branchesRepository.findActiveBranchesForTransfer).mockResolvedValue([]);
+
+    await universalInventoryService.getTransferDestinations('branch-1', { id: 'admin-1', role: 'super_admin' });
+
+    expect(branchesRepository.findActiveBranchesForTransfer).toHaveBeenCalledWith('branch-1', undefined);
   });
 });
 
@@ -858,7 +1128,7 @@ describe('universalInventoryService — manual inventory writes always lock befo
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
-    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5 }, ACTOR, null);
+    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10 }, ACTOR, null);
 
     const lockOrder = vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder[0] as number;
     const writeOrder = vi.mocked(repo.incrementStockQuantity).mock.invocationCallOrder[0] as number;
@@ -885,7 +1155,7 @@ describe('universalInventoryService — manual inventory writes always lock befo
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(7) } as never);
 
     await universalInventoryService.wasteStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 3, reasonCode: 'spoilage', responsibleUserId: 'user-1' },
       ACTOR,
       null,
     );

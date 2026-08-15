@@ -13,12 +13,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { BranchCombobox } from '@/components/shared/branch-combobox';
 import { useBranchStore } from '@/stores/branch.store';
-import { useBranchInventoryStock, useTransferInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { useBranchInventoryStock, useTransferDestinationBranches, useTransferInventoryStock } from '@/hooks/queries/use-universal-inventory';
 
 const formSchema = z.object({
   inventory_item_id: z.uuid('Select an item'),
-  to_branch_id: z.uuid('Enter the destination branch ID'),
+  to_branch_id: z.uuid('Select the destination branch'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
   notes: z.string().optional(),
 });
@@ -36,6 +37,11 @@ function TransferFormContent({ basePath }: { basePath: string }) {
   const inventoryItemId = form.watch('inventory_item_id');
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const transfer = useTransferInventoryStock(activeBranchId);
+  // Backend-authorized destinations only (Transfer RBAC policy) — never a
+  // client-side filter over the full branch list, since what's authorized
+  // depends on the actor's role (branch: any other active branch;
+  // supervisor: assigned active branches only; admin: any active branch).
+  const { data: destinationBranches = [] } = useTransferDestinationBranches(activeBranchId);
 
   useEffect(() => {
     const preselected = searchParams.get('inventory_item_id');
@@ -109,14 +115,26 @@ function TransferFormContent({ basePath }: { basePath: string }) {
             </p>
           )}
 
-          <FormFieldWrapper<FormValues>
+          <FormField
+            control={form.control}
             name="to_branch_id"
-            label="Destination Branch ID"
-            description="Ask your supervisor or admin for the receiving branch's ID"
-            required
-          >
-            <Input placeholder="00000000-0000-0000-0000-000000000000" />
-          </FormFieldWrapper>
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  Destination Branch<span className="ml-0.5 text-destructive">*</span>
+                </FormLabel>
+                <FormControl>
+                  <BranchCombobox
+                    branches={destinationBranches}
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="Search branches..."
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           <FormFieldWrapper<FormValues> name="quantity" label={`Quantity to Transfer${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />

@@ -10,6 +10,8 @@ import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { convertQuantity } from '../product-components/unit-conversion.util.js';
 import { dayBounds } from '../../lib/manila-time.js';
+import { blendWeightedAverageCost } from '../../lib/inventory-cost.js';
+import { getTransferDestinationBranchIds } from '../../lib/branch-access.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -161,6 +163,9 @@ interface StockMovementRow {
   referenceId: string | null;
   notes: string | null;
   performedByUserId: string | null;
+  unitCost: { toNumber(): number } | null;
+  totalCost: { toNumber(): number } | null;
+  responsibleUserId: string | null;
   createdAt: Date;
 }
 
@@ -180,6 +185,9 @@ function toStockMovementResponse(row: StockMovementRow) {
     reference_id: row.referenceId,
     notes: row.notes,
     performed_by_user_id: row.performedByUserId,
+    unit_cost: row.unitCost?.toNumber() ?? null,
+    total_cost: row.totalCost?.toNumber() ?? null,
+    responsible_user_id: row.responsibleUserId,
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -196,11 +204,13 @@ interface StockRow {
   quantityOnHand: { toNumber(): number };
   lowStockThreshold: { toNumber(): number } | null;
   criticalThreshold: { toNumber(): number } | null;
+  unitCost: { toNumber(): number } | null;
   inventoryItem: {
     name: string;
     sku: string | null;
     category?: { name: string } | null;
     baseUnit: { code: string };
+    unitCost: { toNumber(): number } | null;
   };
 }
 
@@ -208,6 +218,9 @@ function toStockRowResponse(row: StockRow) {
   const quantity = row.quantityOnHand.toNumber();
   const lowThreshold = row.lowStockThreshold?.toNumber() ?? null;
   const criticalThreshold = row.criticalThreshold?.toNumber() ?? null;
+  // Branch-specific InventoryStock.unitCost overrides InventoryItem.unitCost
+  // (the item-level default) — null means "cost not initialized", never 0.
+  const avgUnitCost = row.unitCost?.toNumber() ?? row.inventoryItem.unitCost?.toNumber() ?? null;
   return {
     inventory_item_id: row.inventoryItemId,
     name: row.inventoryItem.name,
@@ -218,6 +231,8 @@ function toStockRowResponse(row: StockRow) {
     low_stock_threshold: lowThreshold,
     critical_threshold: criticalThreshold,
     status: classifyStockStatus(quantity, lowThreshold, criticalThreshold),
+    avg_unit_cost: avgUnitCost,
+    inventory_value: avgUnitCost !== null ? Math.round(avgUnitCost * quantity * 100) / 100 : null,
   };
 }
 
@@ -696,6 +711,11 @@ export const universalInventoryService = {
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
     const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);
+    // unit_cost is entered per the form's unit (e.g. per gram), same as
+    // quantity — convert the base-quantity cost basis consistently so
+    // unitCost always means "per base unit" everywhere it's stored/read.
+    const unitCostPerBaseUnit = new Prisma.Decimal(data.unitCost).mul(new Prisma.Decimal(data.quantity)).div(baseQuantity);
+    const totalCost = unitCostPerBaseUnit.mul(baseQuantity);
 
     const movement = await prisma.$transaction(async (tx) => {
       const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
@@ -703,7 +723,8 @@ export const universalInventoryService = {
         throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
       }
       const quantityBefore = stock.quantityOnHand;
-      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity, tx);
+      const newAverageCost = blendWeightedAverageCost(quantityBefore, stock.unitCost, baseQuantity, unitCostPerBaseUnit);
+      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity, tx, newAverageCost);
       const quantityAfter = updated.quantityOnHand;
       return repo.createStockMovement(
         {
@@ -718,6 +739,8 @@ export const universalInventoryService = {
           referenceId: data.deliveryReference,
           notes: data.notes,
           performedByUserId: data.performedByUserId ?? actor.id,
+          unitCost: unitCostPerBaseUnit,
+          totalCost,
         },
         tx,
       );
@@ -816,6 +839,14 @@ export const universalInventoryService = {
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
+    // Responsible Staff must be an active user actually assigned to this
+    // branch — never let a caller attribute waste to someone in another
+    // branch (or a deactivated account).
+    const responsibleUserValid = await repo.isActiveUserInBranch(data.responsibleUserId, data.branchId);
+    if (!responsibleUserValid) {
+      throw new UniversalInventoryError('INVALID_RESPONSIBLE_USER', 'Responsible staff must be an active user assigned to this branch', 400);
+    }
+
     const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);
 
     const movement = await prisma.$transaction(async (tx) => {
@@ -828,6 +859,13 @@ export const universalInventoryService = {
       if (quantityBefore.minus(baseQuantity).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
       }
+      // Waste consumes at the current carrying cost — it never changes the
+      // average (unlike receiving), so the cost argument to
+      // incrementStockQuantity is deliberately omitted. If cost was never
+      // initialized for this item, unitCost/totalCost stay null (never a
+      // fabricated 0) rather than under-reporting waste loss as free.
+      const unitCost = stock.unitCost;
+      const totalCost = unitCost ? unitCost.mul(baseQuantity) : null;
       const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity.negated(), tx);
       const quantityAfter = updated.quantityOnHand;
       return repo.createStockMovement(
@@ -841,6 +879,9 @@ export const universalInventoryService = {
           unitId: item.baseUnitId,
           notes: `Reason: ${data.reasonCode}${data.notes ? ` — ${data.notes}` : ''}`,
           performedByUserId: data.performedByUserId ?? actor.id,
+          responsibleUserId: data.responsibleUserId,
+          unitCost: unitCost ?? undefined,
+          totalCost: totalCost ?? undefined,
         },
         tx,
       );
@@ -891,6 +932,23 @@ export const universalInventoryService = {
     if (!toBranch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Destination branch not found', 404);
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
+    // Transfer RBAC policy. Source-branch authorization (own branch for a
+    // branch account, an assigned active branch for a supervisor) is already
+    // enforced by branchGuard on the route (req.params.branchId) before this
+    // service method is ever reached — that also blocks a branch account
+    // from spoofing its source branch. Destination authorization has no
+    // equivalent route-level guard (to_branch_id is a body field, not a
+    // route param), so it's enforced here instead, directly against the
+    // database — never trusting that the frontend only offered authorized
+    // options, since this same code path is what a direct API call reaches.
+    if (toBranch.status !== 'active') {
+      throw new UniversalInventoryError('BRANCH_INACTIVE', 'Destination branch is not active', 422);
+    }
+    const authorizedDestinations = await getTransferDestinationBranchIds(actor);
+    if (authorizedDestinations !== 'all' && !authorizedDestinations.includes(data.toBranchId)) {
+      throw new UniversalInventoryError('TRANSFER_DESTINATION_DENIED', 'You are not authorized to transfer stock to this branch', 403);
+    }
+
     const transferId = randomUUID();
 
     const { transferOut, transferIn } = await prisma.$transaction(async (tx) => {
@@ -918,8 +976,22 @@ export const universalInventoryService = {
       }
       const inBefore = destStock.quantityOnHand;
 
+      // Transfer preserves cost basis — it's neither a sale (no COGS) nor a
+      // purchase/expense. The source's own average cost is untouched (only
+      // its quantity drops); the transferred value is carried at the
+      // source's current average and blended into the destination's average
+      // the same way a costed receiving would be. If the source cost is
+      // unknown (null — never costed), there's nothing to carry or blend,
+      // so both movements' cost snapshots stay null rather than fabricating
+      // one.
+      const transferUnitCost = sourceStock.unitCost;
+      const transferTotalCost = transferUnitCost ? transferUnitCost.mul(data.quantity) : null;
+      const newDestAvgCost = transferUnitCost
+        ? blendWeightedAverageCost(inBefore, destStock.unitCost, new Prisma.Decimal(data.quantity), transferUnitCost)
+        : undefined;
+
       const updatedSource = await repo.incrementStockQuantity(data.fromBranchId, data.inventoryItemId, -data.quantity, tx);
-      const updatedDest = await repo.incrementStockQuantity(data.toBranchId, data.inventoryItemId, data.quantity, tx);
+      const updatedDest = await repo.incrementStockQuantity(data.toBranchId, data.inventoryItemId, data.quantity, tx, newDestAvgCost);
       const outAfter = updatedSource.quantityOnHand;
       const inAfter = updatedDest.quantityOnHand;
 
@@ -936,6 +1008,8 @@ export const universalInventoryService = {
           referenceId: transferId,
           notes: data.notes,
           performedByUserId: data.performedByUserId ?? actor.id,
+          unitCost: transferUnitCost ?? undefined,
+          totalCost: transferTotalCost ?? undefined,
         },
         tx,
       );
@@ -952,6 +1026,8 @@ export const universalInventoryService = {
           referenceId: transferId,
           notes: data.notes,
           performedByUserId: data.performedByUserId ?? actor.id,
+          unitCost: transferUnitCost ?? undefined,
+          totalCost: transferTotalCost ?? undefined,
         },
         tx,
       );
@@ -1004,6 +1080,21 @@ export const universalInventoryService = {
     });
 
     return response;
+  },
+
+  /**
+   * Transfer-destination candidates for the "Destination Branch" picker —
+   * the exact same policy transferStock itself enforces
+   * (getTransferDestinationBranchIds), so the dropdown never offers a
+   * branch the backend would reject. Excludes the source branch itself.
+   */
+  async getTransferDestinations(fromBranchId: string, actor: ActorContext) {
+    const authorizedDestinations = await getTransferDestinationBranchIds(actor);
+    const branches = await branchesRepository.findActiveBranchesForTransfer(
+      fromBranchId,
+      authorizedDestinations === 'all' ? undefined : authorizedDestinations,
+    );
+    return { branches };
   },
 
   // --- Physical count (brief §7) ---

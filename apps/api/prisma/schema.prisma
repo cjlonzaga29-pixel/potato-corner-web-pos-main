@@ -1278,7 +1278,13 @@ enum InventoryStockMovementType {
 /// loose polymorphic pointer (e.g. "transaction" / transactionId for
 /// SALE/SALE_REVERSAL, "transfer" / a shared transfer id linking the paired
 /// TRANSFER_OUT/TRANSFER_IN rows) -- no FK, since the referenced entity type
-/// varies by movementType.
+/// varies by movementType. unitCost/totalCost snapshot the per-unit and line
+/// carrying cost at the moment of the movement (RECEIVING: purchase cost;
+/// WASTE/TRANSFER_*: current weighted-average cost) -- nullable because
+/// legacy rows predate cost capture and must read as "unknown", never as 0.
+/// responsibleUserId is the accountable staff member for WASTE (distinct
+/// from performedByUserId, the actor who recorded it); unused for other
+/// movement types.
 model InventoryStockMovement {
   id                 String                     @id @default(uuid())
   branchId           String                     @map("branch_id")
@@ -1292,6 +1298,9 @@ model InventoryStockMovement {
   referenceId        String?                    @map("reference_id")
   notes              String?
   performedByUserId  String?                    @map("performed_by_user_id")
+  unitCost           Decimal?                   @map("unit_cost") @db.Decimal(10, 4)
+  totalCost          Decimal?                   @map("total_cost") @db.Decimal(12, 4)
+  responsibleUserId  String?                    @map("responsible_user_id")
 
   branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)

@@ -10,7 +10,6 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
-import { useExpenses } from '@/hooks/queries/use-expenses';
 import { useDashboardSalesTrendReport, usePaymentMethodMixReport } from '@/hooks/queries/use-reports';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
@@ -58,14 +57,28 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
   const filters = { branch_id: branchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: MAX_LIST_LIMIT };
   const salesTrend = useDashboardSalesTrendReport(filters);
   const paymentMix = usePaymentMethodMixReport(filters);
-  const expenses = useExpenses(filters);
 
-  const isLoading = salesTrend.isLoading || paymentMix.isLoading || expenses.isLoading;
-  const isError = salesTrend.isError || paymentMix.isError || expenses.isError;
+  const isLoading = salesTrend.isLoading || paymentMix.isLoading;
+  const isError = salesTrend.isError || paymentMix.isError;
 
-  const grossSales = useMemo(() => (salesTrend.data?.data ?? []).reduce((sum, row) => sum + row.gross_sales, 0), [salesTrend.data]);
-  const totalExpenses = expenses.data?.total_amount ?? 0;
-  const netIncome = grossSales - totalExpenses;
+  // Every figure below is summed straight from DAILY_SALES rows — the same
+  // computeFinancialMetrics()-derived values the Daily Sales report and its
+  // CSV/PDF export show, so this panel never diverges from them (no second
+  // financial formula engine).
+  const rows = salesTrend.data?.data;
+  const { grossSales, netSales, cogs, grossProfit, wasteCost, totalExpenses, operatingResult, isProfitEstimated } = useMemo(() => {
+    const data = rows ?? [];
+    return {
+      grossSales: data.reduce((sum, row) => sum + row.gross_sales, 0),
+      netSales: data.reduce((sum, row) => sum + row.net_sales, 0),
+      cogs: data.reduce((sum, row) => sum + row.cogs, 0),
+      grossProfit: data.reduce((sum, row) => sum + row.gross_profit, 0),
+      wasteCost: data.reduce((sum, row) => sum + row.waste_cost, 0),
+      totalExpenses: data.reduce((sum, row) => sum + row.expense_total, 0),
+      operatingResult: data.reduce((sum, row) => sum + row.operating_result, 0),
+      isProfitEstimated: data.some((row) => row.is_profit_estimated),
+    };
+  }, [rows]);
 
   const trendData = useMemo(() => {
     const rows = salesTrend.data?.data ?? [];
@@ -92,7 +105,6 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
         retry={() => {
           void salesTrend.refetch();
           void paymentMix.refetch();
-          void expenses.refetch();
         }}
       />
     );
@@ -102,24 +114,42 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <KpiCard
-          title="Gross Sales — Selected Period"
+          title="Gross Sales"
           value={grossSales}
           prefix="₱"
           isLoading={isLoading}
-          emphasize
-          tooltip={`Completed sales from ${dateFrom} to ${dateTo}.`}
+          tooltip={`Completed sales from ${dateFrom} to ${dateTo}, before discounts/refunds.`}
         />
-        <KpiCard title="Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} emphasize />
+        <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} tooltip="Gross Sales minus discounts and refunds." />
         <KpiCard
-          title="Net Income"
-          value={netIncome}
+          title="Cost of Goods Sold"
+          value={cogs}
           prefix="₱"
           isLoading={isLoading}
-          tone={netIncome >= 0 ? 'positive' : 'negative'}
-          tooltip="Gross Sales minus Expenses for the selected range (COGS not included)."
-          emphasize
+          tooltip={isProfitEstimated ? 'Some sales in this range predate cost capture — COGS is partly estimated from current cost.' : 'Sourced from each sale’s frozen cost snapshot at checkout time.'}
         />
+        <KpiCard
+          title="Gross Profit"
+          value={grossProfit}
+          prefix="₱"
+          isLoading={isLoading}
+          tone={grossProfit >= 0 ? 'positive' : 'negative'}
+          emphasize
+          tooltip="Net Sales minus Cost of Goods Sold."
+        />
+        <KpiCard title="Waste Cost" value={wasteCost} prefix="₱" isLoading={isLoading} tone="negative" tooltip="Inventory lost to spoilage/damage/error, at its cost when wasted." />
+        <KpiCard title="Operating Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} tooltip="Recorded Expenses for the selected range." />
       </div>
+
+      <KpiCard
+        title="Operating Result"
+        value={operatingResult}
+        prefix="₱"
+        isLoading={isLoading}
+        tone={operatingResult >= 0 ? 'positive' : 'negative'}
+        emphasize
+        tooltip="Gross Profit minus Waste Cost minus Operating Expenses."
+      />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

@@ -28,6 +28,8 @@ vi.mock('./universal-inventory.service.js', () => ({
     updateItemConversion: vi.fn(),
     deleteItemConversion: vi.fn(),
     getStockMovements: vi.fn(),
+    transferStock: vi.fn(),
+    getTransferDestinations: vi.fn(),
   },
 }));
 
@@ -98,6 +100,7 @@ async function runHandlers(handlers: Middleware[], req: Request, res: Response):
 }
 
 const BRANCH_1 = randomUUID();
+const BRANCH_2 = randomUUID();
 const UNIT_1 = randomUUID();
 
 beforeEach(() => {
@@ -401,5 +404,83 @@ describe('GET /:branchId/inventory-stock/movements — date filter boundary reso
         toDate: new Date('2026-07-30T09:30:00.000Z'),
       }),
     );
+  });
+});
+
+/**
+ * Transfer RBAC policy — source-branch authorization. This is enforced by
+ * branchGuard against the route's :branchId param (the source, always
+ * req.params.branchId not the request body) *before* the service layer is
+ * ever reached — a branch account cannot spoof its source branch, and a
+ * supervisor cannot use a branch they aren't actively assigned to as a
+ * source. Destination-branch authorization is a separate check that lives
+ * in the service (universal-inventory.service.test.ts), since to_branch_id
+ * is a body field with no equivalent route-level guard.
+ */
+describe('POST /:branchId/inventory-stock/transfer — source-branch authorization (branchGuard)', () => {
+  it('branch account transferring from its own branch reaches the service', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/transfer');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(BRANCH_1)),
+      params: { branchId: BRANCH_1 },
+      body: { inventory_item_id: randomUUID(), to_branch_id: BRANCH_2, quantity: 5 },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.transferStock).mockResolvedValue({} as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(universalInventoryService.transferStock).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it('branch account spoofing a different source branch than its own JWT is rejected before the service runs', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/transfer');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(BRANCH_1)),
+      params: { branchId: BRANCH_2 },
+      body: { inventory_item_id: randomUUID(), to_branch_id: BRANCH_1, quantity: 5 },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.transferStock).not.toHaveBeenCalled();
+  });
+
+  it('supervisor using an unassigned branch as the source is rejected before the service runs', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/transfer');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_2 },
+      body: { inventory_item_id: randomUUID(), to_branch_id: BRANCH_1, quantity: 5 },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.transferStock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /:branchId/inventory-stock/transfer-destinations', () => {
+  it('returns the backend-authorized destination list for the requesting actor', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/transfer-destinations');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(BRANCH_1)),
+      params: { branchId: BRANCH_1 },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.getTransferDestinations).mockResolvedValue({
+      branches: [{ id: BRANCH_2, name: 'Branch Two', code: 'MNL002' }],
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(universalInventoryService.getTransferDestinations).toHaveBeenCalledWith(BRANCH_1, expect.objectContaining({ role: 'branch' }));
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 });

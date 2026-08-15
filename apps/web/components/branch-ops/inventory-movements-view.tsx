@@ -77,6 +77,15 @@ export function InventoryMovementsView() {
         </span>
       ),
     },
+    {
+      id: 'total_cost',
+      header: 'Cost',
+      cell: ({ row }) => (
+        <span className="tabular-nums text-muted-foreground">
+          {row.original.total_cost === null ? '—' : `₱${Math.abs(row.original.total_cost).toFixed(2)}`}
+        </span>
+      ),
+    },
     { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
   ];
 

@@ -16,6 +16,7 @@ import {
 import { employeesRepository, type EmployeeWithAssignments, type EmployeeWithGovernmentIds } from './employees.repository.js';
 import { EmployeeError } from './employees.types.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
+import { generateTemporaryPassword } from '../../lib/generate-password.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { authRepository } from '../auth/auth.repository.js';
@@ -474,10 +475,10 @@ export const employeesService = {
 
   async resetEmployeePassword(
     employeeId: string,
-    newPassword: string,
+    newPassword: string | undefined,
     resetBy: ActorContext,
     ipAddress: string | null,
-  ): Promise<void> {
+  ): Promise<{ temporaryPassword?: string }> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     // Branch Employee Authorization: `staff` rows have no login credentials
@@ -490,7 +491,13 @@ export const employeesService = {
     }
     await assertEmployeeAccess(resetBy, employee);
 
-    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);
+    // Caller may supply their own new_password, or omit it entirely to have
+    // the server generate one — generated passwords are returned exactly
+    // once in the response and never persisted anywhere in plaintext.
+    const generatedPassword = newPassword ? undefined : generateTemporaryPassword();
+    const effectivePassword = newPassword ?? (generatedPassword as string);
+
+    const passwordHash = await bcrypt.hash(effectivePassword, BCRYPT_COST_FACTOR);
     await authRepository.updatePasswordHash(employeeId, passwordHash);
     await authRepository.setMustChangePassword(employeeId, true);
     await authRepository.revokeAllUserTokens(employeeId);
@@ -503,6 +510,8 @@ export const employeesService = {
       actorRole: resetBy.role,
       ipAddress,
     });
+
+    return generatedPassword ? { temporaryPassword: generatedPassword } : {};
   },
 
   async getEmployeeActivity(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeActivityResponse> {

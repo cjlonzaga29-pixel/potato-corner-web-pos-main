@@ -53,6 +53,11 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'discount_total', header: 'Discounts' },
     { key: 'vat_total', header: 'VAT' },
     { key: 'net_sales', header: 'Net Sales' },
+    { key: 'cogs', header: 'COGS' },
+    { key: 'gross_profit', header: 'Gross Profit' },
+    { key: 'waste_cost', header: 'Waste Cost' },
+    { key: 'expense_total', header: 'Expenses' },
+    { key: 'operating_result', header: 'Operating Result' },
     { key: 'completed_count', header: 'Completed' },
     { key: 'voided_count', header: 'Voided' },
     { key: 'refunded_count', header: 'Refunded' },
@@ -218,6 +223,20 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'actor_role', header: 'Role' },
     { key: 'action', header: 'Action' },
     { key: 'ip_address', header: 'IP Address', isAudit: true },
+  ],
+  // Not used for PDF export — EXPENSES is special-cased in
+  // reports.service.ts's requestExport (see lib/reports/expenses-export.ts's
+  // EXPENSES_EXPORT_COLUMNS/generateExpensesPdf), since it needs a Total
+  // Expenses / Total Amount summary block the generic single-totals-row
+  // layout doesn't render. This entry exists only so REPORT_COLUMNS stays a
+  // total Record<ReportType, ...>.
+  EXPENSES: [
+    { key: 'incurred_at', header: 'Date' },
+    { key: 'branch', header: 'Branch' },
+    { key: 'category', header: 'Category' },
+    { key: 'vendor_name', header: 'Vendor' },
+    { key: 'amount', header: 'Amount' },
+    { key: 'created_by_name', header: 'Recorded By' },
   ],
 };
 

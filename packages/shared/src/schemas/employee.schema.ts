@@ -126,7 +126,9 @@ export const setEmployeeStatusSchema = z
  * with `export *` from schemas/index.ts, so the names must not collide.
  */
 export const resetEmployeePasswordSchema = z.object({
-  new_password: strongPasswordSchema,
+  // Omitted entirely -> server generates a secure temporary password and
+  // returns it once in the response, instead of the caller supplying one.
+  new_password: strongPasswordSchema.optional(),
 });
 
 export const employeeBranchAssignmentSchema = z.object({

@@ -1,9 +1,23 @@
 'use client';
 
+import { useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ROLE_LABELS, type Role } from '@potato-corner/shared';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ResetBranchPasswordDialog } from '@/components/admin/reset-branch-password-dialog';
 import type { BranchAccountOverview } from '@/hooks/queries/use-branches';
+
+function PasswordCell({ account }: { account: BranchAccountOverview }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex items-center gap-2">
+      <p className="font-mono text-sm text-muted-foreground">••••••••</p>
+      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+        Reset Password
+      </Button>
+      {open && <ResetBranchPasswordDialog open={open} onOpenChange={setOpen} account={account} />}
+    </div>
+  );
+}
 
 export function createBranchAccountsColumns(): ColumnDef<BranchAccountOverview>[] {
   return [
@@ -17,16 +31,11 @@ export function createBranchAccountsColumns(): ColumnDef<BranchAccountOverview>[
         </div>
       ),
     },
-    {
-      id: 'name',
-      header: 'Name',
-      cell: ({ row }) => `${row.original.first_name} ${row.original.last_name}`,
-    },
     { accessorKey: 'email', header: 'Email' },
     {
-      id: 'role',
-      header: 'Role',
-      cell: ({ row }) => <Badge variant="secondary">{ROLE_LABELS[row.original.role as Role]}</Badge>,
+      id: 'password',
+      header: 'Password',
+      cell: ({ row }) => <PasswordCell account={row.original} />,
     },
   ];
 }

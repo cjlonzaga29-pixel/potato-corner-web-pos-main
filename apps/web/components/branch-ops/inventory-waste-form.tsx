@@ -15,7 +15,9 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
+import { useAuthStore } from '@/stores/auth.store';
 import { useBranchInventoryStock, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { useEmployees } from '@/hooks/queries/use-employees';
 
 const REASON_LABELS: Record<WasteReason, string> = {
   spoilage: 'Spoilage',
@@ -29,6 +31,7 @@ const formSchema = z.object({
   inventory_item_id: z.uuid('Select an item'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
   reason_code: z.enum(Object.values(WASTE_REASON) as [WasteReason, ...WasteReason[]]),
+  responsible_user_id: z.uuid('Select the staff member responsible'),
   notes: z.string().optional(),
 });
 
@@ -38,6 +41,7 @@ const DEFAULT_VALUES: FormValues = {
   inventory_item_id: '',
   quantity: 0,
   reason_code: 'spoilage',
+  responsible_user_id: '',
   notes: '',
 };
 
@@ -50,12 +54,28 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   const inventoryItemId = form.watch('inventory_item_id');
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const waste = useWasteInventoryStock(activeBranchId, inventoryItemId);
+  const quantity = form.watch('quantity');
+  const wasteCost = item?.avg_unit_cost != null ? Number(quantity || 0) * item.avg_unit_cost : null;
+
+  const currentUser = useAuthStore((s) => s.user);
+  const { data: staffData } = useEmployees({ branchId: activeBranchId ?? undefined, isActive: true }, { enabled: Boolean(activeBranchId) });
+  const staff = staffData?.employees ?? [];
 
   useEffect(() => {
     const preselected = searchParams.get('inventory_item_id');
     if (preselected) form.setValue('inventory_item_id', preselected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // Default Responsible Staff to the logged-in actor once the same-branch roster loads and includes them.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (form.getValues('responsible_user_id')) return;
+    if (staff.some((employee) => employee.id === currentUser.id)) {
+      form.setValue('responsible_user_id', currentUser.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staff, currentUser]);
 
   const [pendingValues, setPendingValues] = useState<z.output<typeof formSchema> | null>(null);
 
@@ -68,6 +88,7 @@ function WasteFormContent({ basePath }: { basePath: string }) {
     await waste.mutateAsync({
       quantity: pendingValues.quantity,
       reason_code: pendingValues.reason_code,
+      responsible_user_id: pendingValues.responsible_user_id,
       notes: pendingValues.notes || undefined,
     });
     router.push(`${basePath}/inventory`);
@@ -123,6 +144,45 @@ function WasteFormContent({ basePath }: { basePath: string }) {
           <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Wasted${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
+
+          {item && (
+            <p className="rounded-md border bg-muted/30 p-3 text-sm">
+              Current Unit Cost:{' '}
+              <span className="font-medium">{item.avg_unit_cost === null ? 'Cost not initialized' : `₱${item.avg_unit_cost.toFixed(4)}`}</span>
+              {wasteCost !== null && (
+                <>
+                  {' — '}Estimated Waste Cost: <span className="font-medium">₱{wasteCost.toFixed(2)}</span>
+                </>
+              )}
+            </p>
+          )}
+
+          <FormField
+            control={form.control}
+            name="responsible_user_id"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  Responsible Staff<span className="ml-0.5 text-destructive">*</span>
+                </FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select the staff member responsible" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {staff.map((employee) => (
+                      <SelectItem key={employee.id} value={employee.id}>
+                        {employee.first_name} {employee.last_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           <FormField
             control={form.control}

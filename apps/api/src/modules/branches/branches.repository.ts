@@ -121,6 +121,24 @@ export const branchesRepository = {
     return assignments.map((a) => a.branchId);
   },
 
+  /**
+   * Transfer-destination candidates (Transfer RBAC policy): active branches
+   * other than the source, optionally restricted to a specific id allowlist
+   * (supervisor scope, from getTransferDestinationBranchIds). Powers the
+   * "Destination Branch" picker so it only ever offers what the backend
+   * would actually accept from transferStock.
+   */
+  async findActiveBranchesForTransfer(excludeBranchId: string, restrictToIds?: string[]): Promise<{ id: string; name: string; code: string }[]> {
+    return prisma.branch.findMany({
+      where: {
+        status: 'active',
+        id: { not: excludeBranchId, ...(restrictToIds ? { in: restrictToIds } : {}) },
+      },
+      select: { id: true, name: true, code: true },
+      orderBy: { name: 'asc' },
+    });
+  },
+
   create(data: CreateBranchData, tx?: Prisma.TransactionClient) {
     return (tx ?? prisma).branch.create({
       data: {
@@ -309,7 +327,7 @@ export const branchesRepository = {
 
   async findAllAccounts() {
     return prisma.userBranchAssignment.findMany({
-      where: { removedAt: null },
+      where: { removedAt: null, user: { role: 'branch' } },
       select: {
         id: true,
         user: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },

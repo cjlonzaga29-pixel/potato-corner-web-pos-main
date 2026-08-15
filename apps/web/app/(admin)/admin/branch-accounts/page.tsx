@@ -15,7 +15,7 @@ export default function BranchAccountsPage() {
     <div className="app-section app-section-gap">
       <div>
         <h1 className="app-title font-bold">Branch Accounts</h1>
-        <p className="text-sm text-muted-foreground">Every user account and the branch it&apos;s assigned to</p>
+        <p className="text-sm text-muted-foreground">Branch login accounts only — supervisors and staff are managed under Employees</p>
       </div>
 
       <DataTable

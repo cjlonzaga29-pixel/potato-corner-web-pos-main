@@ -34,3 +34,23 @@ export async function assertBranchAccess(actor: JwtPayload, branchId: string, Er
     throw new ErrorClass('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
   }
 }
+
+/**
+ * Transfer-destination authorization (Transfer RBAC policy): which branch
+ * ids an actor may transfer stock INTO. Deliberately not the same as
+ * getAccessibleBranchIds — a branch account's general access is scoped to
+ * its own single branch, but transfers are inherently inter-branch, so a
+ * branch account may target any other active branch. super_admin and
+ * branch both resolve to 'all' here; activeness of the specific
+ * destination is still enforced by the caller (transferStock checks
+ * toBranch.status directly), same as super_admin's unrestricted access
+ * elsewhere doesn't imply inactive branches are valid targets.
+ *
+ * supervisor stays assignment-scoped, resolved fresh from the database
+ * (never the JWT claim) — same reasoning as getAccessibleBranchIds.
+ */
+export async function getTransferDestinationBranchIds(actor: { id: string; role: string }): Promise<string[] | 'all'> {
+  if (actor.role === ROLES.SUPERVISOR) return branchesRepository.findAllActiveBranchIds(actor.id);
+  if (actor.role === ROLES.SUPER_ADMIN || actor.role === ROLES.BRANCH) return 'all';
+  return [];
+}

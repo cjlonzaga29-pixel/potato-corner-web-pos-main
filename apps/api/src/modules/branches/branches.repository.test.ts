@@ -5,7 +5,7 @@ vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
     branch: { findMany: vi.fn(), delete: vi.fn() },
     shift: { groupBy: vi.fn(), count: vi.fn() },
-    userBranchAssignment: { groupBy: vi.fn(), count: vi.fn() },
+    userBranchAssignment: { groupBy: vi.fn(), count: vi.fn(), findMany: vi.fn() },
     transaction: { groupBy: vi.fn(), aggregate: vi.fn() },
     transactionItem: { findMany: vi.fn() },
     attendanceRecord: { groupBy: vi.fn(), count: vi.fn() },
@@ -472,6 +472,57 @@ describe('branchesRepository.branchStats', () => {
     const stats = await branchesRepository.branchStats('branch-1');
 
     expect(stats).not.toHaveProperty('todayRevenue');
+  });
+});
+
+describe('branchesRepository.findAllAccounts', () => {
+  it('queries only role: branch assignments — excludes supervisor/staff/super_admin at the database level', async () => {
+    vi.mocked(prisma.userBranchAssignment.findMany).mockResolvedValue([] as never);
+
+    await branchesRepository.findAllAccounts();
+
+    expect(prisma.userBranchAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { removedAt: null, user: { role: 'branch' } },
+      }),
+    );
+  });
+
+  it('never selects passwordHash on the joined user', async () => {
+    vi.mocked(prisma.userBranchAssignment.findMany).mockResolvedValue([] as never);
+
+    await branchesRepository.findAllAccounts();
+
+    const call = vi.mocked(prisma.userBranchAssignment.findMany).mock.calls[0]?.[0] as {
+      select: { user: { select: Record<string, unknown> } };
+    };
+    expect(call.select.user.select).not.toHaveProperty('passwordHash');
+  });
+});
+
+describe('branchesRepository.findActiveBranchesForTransfer', () => {
+  it('queries only active branches, excluding the source branch', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([] as never);
+
+    await branchesRepository.findActiveBranchesForTransfer('branch-1');
+
+    expect(prisma.branch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'active', id: { not: 'branch-1' } },
+      }),
+    );
+  });
+
+  it('restricts to an id allowlist when one is given (supervisor scope)', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([] as never);
+
+    await branchesRepository.findActiveBranchesForTransfer('branch-1', ['branch-2', 'branch-3']);
+
+    expect(prisma.branch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'active', id: { not: 'branch-1', in: ['branch-2', 'branch-3'] } },
+      }),
+    );
   });
 });
 

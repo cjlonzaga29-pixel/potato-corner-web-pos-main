@@ -24,6 +24,7 @@ import type {
   PhysicalCountInventoryStockInput,
   PhysicalCountStockResultResponse,
   ReceiveInventoryStockInput,
+  TransferDestinationListResponse,
   TransferInventoryStockInput,
   UnitConversionResponse,
   UnitOfMeasureResponse,
@@ -499,6 +500,20 @@ export function useWasteInventoryStock(branchId: string | null | undefined, inve
       toast.success('Waste recorded');
     },
     onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Transfer-destination candidates authorized by the backend for this source branch/actor (Transfer RBAC policy) — the picker must never offer a branch the backend would reject. */
+export function useTransferDestinationBranches(branchId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['branch-inventory-stock', branchId, 'transfer-destinations'],
+    queryFn: async () => {
+      const response = await apiClient<TransferDestinationListResponse>(`/api/branches/${branchId}/inventory-stock/transfer-destinations`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load transfer destinations'));
+      return response.data.branches;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 15 * 1000,
   });
 }
 

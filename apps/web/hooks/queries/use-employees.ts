@@ -202,3 +202,32 @@ export function useSetEmployeeStatus(employeeId: string) {
   });
 }
 
+export interface ResetEmployeePasswordInput {
+  new_password?: string;
+}
+
+export interface ResetEmployeePasswordResult {
+  success: boolean;
+  temporary_password: string | null;
+}
+
+/**
+ * Admin/supervisor/branch-scoped password reset. Omitting new_password has
+ * the server generate a secure temporary password, returned exactly once in
+ * the response — the caller must display/copy it immediately, since it is
+ * never persisted in plaintext and cannot be retrieved again afterward.
+ */
+export function useResetEmployeePassword(employeeId: string) {
+  return useMutation({
+    mutationFn: async (input: ResetEmployeePasswordInput) => {
+      const response = await apiClient<ResetEmployeePasswordResult>(`/api/employees/${employeeId}/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to reset password'));
+      return response.data;
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+

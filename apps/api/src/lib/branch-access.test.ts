@@ -17,7 +17,7 @@ vi.mock('../modules/branches/branches.repository.js', () => ({
 }));
 
 const { branchesRepository } = await import('../modules/branches/branches.repository.js');
-const { getAccessibleBranchIds, hasBranchAccess, assertBranchAccess } = await import('./branch-access.js');
+const { getAccessibleBranchIds, hasBranchAccess, assertBranchAccess, getTransferDestinationBranchIds } = await import('./branch-access.js');
 
 class TestError extends Error {
   constructor(
@@ -169,5 +169,49 @@ describe('hasBranchAccess / assertBranchAccess', () => {
     const otherBranch = randomUUID();
 
     await expect(hasBranchAccess(staffActor(ownBranch), otherBranch)).resolves.toBe(false);
+  });
+});
+
+/**
+ * Transfer RBAC policy: which branches an actor may transfer stock INTO.
+ * Deliberately distinct from getAccessibleBranchIds — a branch account's
+ * general access is scoped to its own single branch, but a branch account
+ * must be able to transfer to any other active branch, not just its own.
+ */
+describe('getTransferDestinationBranchIds', () => {
+  it("super_admin always resolves to 'all', without querying the database", async () => {
+    const result = await getTransferDestinationBranchIds({ id: randomUUID(), role: ROLES.SUPER_ADMIN });
+    expect(result).toBe('all');
+    expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
+  });
+
+  it("branch account resolves to 'all' — may transfer to any other active branch, not just its own", async () => {
+    const result = await getTransferDestinationBranchIds({ id: randomUUID(), role: ROLES.BRANCH });
+    expect(result).toBe('all');
+    expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
+  });
+
+  it('supervisor resolves to exactly their assigned active branches, resolved by their user id', async () => {
+    const userId = randomUUID();
+    const assignedBranch = randomUUID();
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([assignedBranch]);
+
+    const result = await getTransferDestinationBranchIds({ id: userId, role: ROLES.SUPERVISOR });
+
+    expect(result).toEqual([assignedBranch]);
+    expect(branchesRepository.findAllActiveBranchIds).toHaveBeenCalledWith(userId);
+  });
+
+  it('supervisor with zero active assignments receives an empty array — fail closed, never every branch', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+
+    const result = await getTransferDestinationBranchIds({ id: randomUUID(), role: ROLES.SUPERVISOR });
+
+    expect(result).toEqual([]);
+  });
+
+  it('an unexpected/staff role fails closed to an empty array', async () => {
+    const result = await getTransferDestinationBranchIds({ id: randomUUID(), role: ROLES.STAFF });
+    expect(result).toEqual([]);
   });
 });

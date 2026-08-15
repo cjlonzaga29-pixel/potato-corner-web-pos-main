@@ -49,6 +49,22 @@ export function InventoryList({ basePath }: { basePath: string }) {
       ),
     },
     {
+      id: 'avg_unit_cost',
+      header: 'Avg Unit Cost',
+      cell: ({ row }) => (
+        <span className="tabular-nums text-muted-foreground">
+          {row.original.avg_unit_cost === null ? 'Cost not initialized' : `₱${row.original.avg_unit_cost.toFixed(4)}`}
+        </span>
+      ),
+    },
+    {
+      id: 'inventory_value',
+      header: 'Inventory Value',
+      cell: ({ row }) => (
+        <span className="tabular-nums">{row.original.inventory_value === null ? '—' : `₱${row.original.inventory_value.toFixed(2)}`}</span>
+      ),
+    },
+    {
       id: 'consumed_today',
       header: 'Consumed Today',
       cell: ({ row }) => (

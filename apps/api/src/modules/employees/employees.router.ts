@@ -219,9 +219,9 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const { new_password } = req.body as { new_password: string };
-      await employeesService.resetEmployeePassword(req.params.employeeId as string, new_password, req.user, req.ip ?? null);
-      res.status(200).json({ data: { success: true }, error: null, meta: null });
+      const { new_password } = req.body as { new_password?: string };
+      const result = await employeesService.resetEmployeePassword(req.params.employeeId as string, new_password, req.user, req.ip ?? null);
+      res.status(200).json({ data: { success: true, temporary_password: result.temporaryPassword ?? null }, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);
     }

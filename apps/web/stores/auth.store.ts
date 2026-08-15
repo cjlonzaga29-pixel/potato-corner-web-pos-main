@@ -19,6 +19,8 @@ interface AuthState {
   setAuth: (user: AuthUser, accessToken: string) => void;
   clearAuth: () => void;
   setLoading: (isLoading: boolean) => void;
+  /** Self-service Profile name edit — patches the cached identity in place so every subscriber (sidebar, header, POS) re-renders with the new name immediately, without a fresh login/refresh. */
+  updateName: (firstName: string, lastName: string) => void;
   hasRole: (role: Role) => boolean;
   /** True for super_admin regardless of branchId, otherwise true only if branchId is in the user's branch_ids. */
   hasBranchAccess: (branchId: string) => boolean;
@@ -45,6 +47,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setAuth: (user, accessToken) => set({ user, accessToken, isAuthenticated: true, isLoading: false }),
   clearAuth: () => set({ ...initialState, isLoading: false }),
   setLoading: (isLoading) => set({ isLoading }),
+  updateName: (firstName, lastName) =>
+    set((state) => (state.user ? { user: { ...state.user, firstName, lastName } } : {})),
   hasRole: (role) => get().user?.role === role,
   hasBranchAccess: (branchId) => {
     const { user } = get();

@@ -161,6 +161,11 @@ export const authRepository = {
     return prisma.user.update({ where: { id: userId }, data: { mustChangePassword } });
   },
 
+  /** Self-service display-name update — writes only firstName/lastName, never any other column. */
+  updateName(userId: string, firstName: string, lastName: string) {
+    return prisma.user.update({ where: { id: userId }, data: { firstName, lastName } });
+  },
+
   /** Phase 21: Postgres replacement for the Redis access-token blacklist (see verify-access-token.ts). */
   insertRevokedToken(tokenHash: string, expiresAt: Date) {
     return prisma.revokedToken.upsert({

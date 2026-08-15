@@ -19,6 +19,7 @@ vi.mock('./auth.service.js', () => ({
     logout: vi.fn(),
     logoutAllDevices: vi.fn(),
     selectEmployee: vi.fn(),
+    updateProfile: vi.fn(),
   },
 }));
 
@@ -204,6 +205,144 @@ describe('POST /select-employee — cookie behavior (Task 122)', () => {
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.cookie).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /profile — self-service display-name update', () => {
+  it('requires authentication', async () => {
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ body: { name: 'New Name' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(authService.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('resolves the user id from the authenticated token, not from the request body', async () => {
+    const tokenUserId = randomUUID();
+    const branchToken = generateBranchToken(BRANCH_ID, { userId: tokenUserId });
+    vi.mocked(authService.updateProfile).mockResolvedValue({
+      user: { id: tokenUserId, role: ROLES.BRANCH, email: 'branch@potatocorner.test', first_name: 'New', last_name: 'Name', branch_ids: [BRANCH_ID], must_change_password: false },
+    } as never);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    // A spoofed user_id in the body must be ignored entirely — updateProfileSchema doesn't even declare the field.
+    const req = mockReq({ ...authHeader(branchToken), body: { name: 'New Name', user_id: 'someone-elses-id' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(authService.updateProfile).toHaveBeenCalledWith(tokenUserId, 'New Name');
+  });
+
+  it('rejects an empty name with 422 and never calls the service', async () => {
+    const branchToken = generateBranchToken(BRANCH_ID);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ ...authHeader(branchToken), body: { name: '' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(authService.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a whitespace-only name with 422', async () => {
+    const branchToken = generateBranchToken(BRANCH_ID);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ ...authHeader(branchToken), body: { name: '   ' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(authService.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('trims leading/trailing whitespace before it ever reaches the service', async () => {
+    const branchToken = generateBranchToken(BRANCH_ID);
+    vi.mocked(authService.updateProfile).mockResolvedValue({
+      user: { id: 'user-1', role: ROLES.BRANCH, email: 'branch@potatocorner.test', first_name: 'CJ', last_name: 'Lonzaga', branch_ids: [BRANCH_ID], must_change_password: false },
+    } as never);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ ...authHeader(branchToken), body: { name: '   CJ Lonzaga   ' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(authService.updateProfile).toHaveBeenCalledWith(expect.any(String), 'CJ Lonzaga');
+  });
+
+  it('rejects a name over the max length with 422', async () => {
+    const branchToken = generateBranchToken(BRANCH_ID);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ ...authHeader(branchToken), body: { name: 'A'.repeat(101) } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(authService.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('silently drops any role/email/branch fields present in the body — only name is ever forwarded', async () => {
+    const branchToken = generateBranchToken(BRANCH_ID);
+    vi.mocked(authService.updateProfile).mockResolvedValue({
+      user: { id: 'user-1', role: ROLES.BRANCH, email: 'branch@potatocorner.test', first_name: 'New', last_name: 'Name', branch_ids: [BRANCH_ID], must_change_password: false },
+    } as never);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({
+      ...authHeader(branchToken),
+      body: { name: 'New Name', role: 'super_admin', email: 'hacker@evil.test', branch_ids: ['other-branch'] },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    // Exactly (userId, name) — a third argument would mean a whitelist-bypassing field slipped through.
+    expect(authService.updateProfile).toHaveBeenCalledWith(expect.any(String), 'New Name');
+    expect(vi.mocked(authService.updateProfile).mock.calls[0]).toHaveLength(2);
+  });
+
+  it('works for a supervisor session, not just branch', async () => {
+    const { generateSupervisorToken } = await import('../../test-utils/auth-tokens.js');
+    const supervisorId = randomUUID();
+    const supervisorToken = generateSupervisorToken([BRANCH_ID], { userId: supervisorId });
+    vi.mocked(authService.updateProfile).mockResolvedValue({
+      user: { id: supervisorId, role: ROLES.SUPERVISOR, email: 'supervisor@potatocorner.test', first_name: 'New', last_name: 'Name', branch_ids: [BRANCH_ID], must_change_password: false },
+    } as never);
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ ...authHeader(supervisorToken), body: { name: 'New Name' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(authService.updateProfile).toHaveBeenCalledWith(supervisorId, 'New Name');
+  });
+
+  it('propagates a service-level USER_NOT_FOUND as a 404', async () => {
+    const { AuthError } = await import('./auth.types.js');
+    const branchToken = generateBranchToken(BRANCH_ID);
+    vi.mocked(authService.updateProfile).mockRejectedValue(new AuthError('USER_NOT_FOUND', 'User not found', 404));
+
+    const handlers = getRouteHandlers(authRouter, 'patch', '/profile');
+    const req = mockReq({ ...authHeader(branchToken), body: { name: 'New Name' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
   });
 });
 

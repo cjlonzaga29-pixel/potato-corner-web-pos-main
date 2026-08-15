@@ -47,6 +47,23 @@ export const changePasswordSchema = z
     path: ['confirm_password'],
   });
 
+/**
+ * Self-service display-name update (PATCH /api/auth/profile). Deliberately
+ * the only field this schema accepts — email/role/branch/permissions are
+ * never editable through this endpoint, whitelisted by omission rather than
+ * by stripping unknown keys. `.trim()` runs before `.min()`/`.max()` so a
+ * whitespace-only submission is rejected as empty rather than accepted as
+ * whitespace, and the trimmed value is what the router/service ultimately
+ * persist (validate() replaces req.body with the parsed result).
+ */
+export const updateProfileSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Name is required')
+    .max(100, 'Name must be at most 100 characters'),
+});
+
 export const resetRequestSchema = z.object({
   email: z.email(),
 });

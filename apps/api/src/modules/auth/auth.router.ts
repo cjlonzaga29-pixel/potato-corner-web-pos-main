@@ -8,6 +8,7 @@ import {
   pinSetSchema,
   pinLoginSchema,
   selectEmployeeSchema,
+  updateProfileSchema,
   unlockAccountSchema,
   confirm2FASchema,
   disable2FASchema,
@@ -176,6 +177,31 @@ router.post(
       clearRefreshCookie(res);
       clearAccessHintCookie(res);
       res.status(200).json({ data: { user: result.user }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+/**
+ * Self-service display-name update. Whitelists only `name` via
+ * updateProfileSchema — email/role/branch/permissions/password/2FA are
+ * never reachable through this route. The user id is always req.user's
+ * (from the verified access token), never taken from the request body.
+ */
+router.patch(
+  '/profile',
+  authenticate,
+  validate(updateProfileSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      const { name } = req.body as { name: string };
+      const result = await authService.updateProfile(req.user.user_id, name);
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);
     }

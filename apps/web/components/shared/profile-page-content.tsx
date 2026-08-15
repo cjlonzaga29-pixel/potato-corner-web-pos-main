@@ -1,10 +1,15 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useTheme } from 'next-themes';
+import { toast } from 'sonner';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { useAuth } from '@/hooks/use-auth';
+import { useUpdateProfile } from '@/hooks/queries/use-profile';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ActiveSessionsSection } from '@/components/profile/active-sessions-section';
 import { TwoFactorSection } from '@/components/profile/two-factor-section';
@@ -15,9 +20,75 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
 ] as const;
 
+const NAME_MAX_LENGTH = 100;
+
 interface ProfilePageContentProps {
   /** Hides the Active Sessions card. Defaults to shown (Supervisor keeps device management; Super Admin does not). */
   showActiveSessions?: boolean;
+}
+
+/**
+ * Account Information's Name field is the only editable field on this page
+ * — email, role, and branches stay read-only. Split out so the prefill/dirty
+ * tracking only ever touches the Name input, not the rest of the card.
+ */
+function NameField() {
+  const { user } = useAuth();
+  const updateProfile = useUpdateProfile();
+  const originalName = user ? `${user.firstName} ${user.lastName}`.trim() || user.email || '' : '';
+
+  const [name, setName] = useState('');
+  const [initialized, setInitialized] = useState(false);
+
+  // Prefill once the authenticated user has loaded — does not re-sync after
+  // that so it never clobbers what the user is actively typing.
+  useEffect(() => {
+    if (!initialized && user) {
+      setName(originalName);
+      setInitialized(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, initialized]);
+
+  const trimmedName = name.trim();
+  const isUnchanged = trimmedName === originalName;
+  const isInvalid = trimmedName.length === 0 || trimmedName.length > NAME_MAX_LENGTH;
+  const isSaving = updateProfile.isPending;
+
+  async function handleSave() {
+    if (isUnchanged || isInvalid || isSaving) return;
+    try {
+      await updateProfile.mutateAsync(trimmedName);
+      setName(trimmedName);
+      toast.success('Name updated successfully');
+    } catch (error) {
+      // Entered value is left as-is (not reset to originalName) so the user can retry without retyping.
+      toast.error(error instanceof Error ? error.message : 'Failed to update name');
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <Label htmlFor="profile-name" className="text-muted-foreground">
+          Name
+        </Label>
+        <Input
+          id="profile-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={NAME_MAX_LENGTH}
+          disabled={isSaving}
+          className="max-w-[240px] text-right font-medium"
+        />
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" disabled={isUnchanged || isInvalid || isSaving} onClick={() => void handleSave()}>
+          {isSaving ? 'Saving...' : 'Save Changes'}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export function ProfilePageContent({ showActiveSessions = true }: ProfilePageContentProps) {
@@ -39,12 +110,7 @@ export function ProfilePageContent({ showActiveSessions = true }: ProfilePageCon
           <CardTitle>Account Information</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Name</span>
-            <span className="font-medium">
-              {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : '—'}
-            </span>
-          </div>
+          <NameField />
           <div className="flex justify-between">
             <span className="text-muted-foreground">Email</span>
             <span className="font-medium">{user?.email ?? '—'}</span>

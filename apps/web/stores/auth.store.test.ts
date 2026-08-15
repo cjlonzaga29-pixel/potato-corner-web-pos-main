@@ -66,4 +66,19 @@ describe('useAuthStore', () => {
     expect(useAuthStore.getState().isAdmin()).toBe(false);
     expect(useAuthStore.getState().isSupervisor()).toBe(false);
   });
+
+  it('updateName patches the cached user firstName/lastName in place', () => {
+    useAuthStore.getState().setAuth(STAFF_USER, 'token-123');
+    useAuthStore.getState().updateName('New', 'Name');
+    const state = useAuthStore.getState();
+    expect(state.user).toEqual({ ...STAFF_USER, firstName: 'New', lastName: 'Name' });
+    // Nothing else about the session moves — same token, still authenticated.
+    expect(state.accessToken).toBe('token-123');
+    expect(state.isAuthenticated).toBe(true);
+  });
+
+  it('updateName is a no-op when there is no signed-in user', () => {
+    useAuthStore.getState().updateName('New', 'Name');
+    expect(useAuthStore.getState().user).toBeNull();
+  });
 });

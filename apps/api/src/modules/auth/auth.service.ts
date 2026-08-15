@@ -28,6 +28,22 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/**
+ * The User row has separate firstName/lastName columns (no single "name"
+ * column — see schema.prisma) but the Profile page's self-service edit is a
+ * single display-name field, matching how it's already rendered everywhere
+ * (`${firstName} ${lastName}`.trim()). Splits on the first run of whitespace
+ * so round-tripping the rendered value back through this reproduces the
+ * original first/last split; a single-word name (no space) becomes
+ * firstName with lastName cleared to '' rather than duplicating the word
+ * into both columns. Input is already trimmed and non-empty by
+ * updateProfileSchema before this runs.
+ */
+function splitDisplayName(name: string): { firstName: string; lastName: string } {
+  const [firstName, ...rest] = name.split(/\s+/);
+  return { firstName: firstName ?? name, lastName: rest.join(' ') };
+}
+
 interface AccessTokenUser {
   id: string;
   role: Role;
@@ -351,6 +367,34 @@ export const authService = {
     return {
       user: toUserSummary({ ...user, mustChangePassword: false }, branchIds),
     };
+  },
+
+  /**
+   * Self-service display-name update. userId comes from the authenticated
+   * request's JWT (req.user.user_id in the router) — never from the request
+   * body — so a caller can only ever rename themselves, no matter what an
+   * id field in the payload might claim. Only firstName/lastName are
+   * written; email/role/branch/permissions/password/2FA are untouched.
+   */
+  async updateProfile(userId: string, name: string): Promise<{ user: AuthenticatedUserSummary }> {
+    const { firstName, lastName } = splitDisplayName(name);
+    await authRepository.updateName(userId, firstName, lastName);
+
+    const user = await authRepository.findUserById(userId);
+    if (!user) {
+      throw new AuthError('USER_NOT_FOUND', 'User not found', 404);
+    }
+    const branchIds = user.branchAssignments.map((assignment) => assignment.branchId);
+
+    await recordAuditLog({
+      action: 'PROFILE_NAME_UPDATED',
+      entityType: 'user',
+      entityId: userId,
+      actorId: userId,
+      actorRole: user.role,
+    });
+
+    return { user: toUserSummary(user, branchIds) };
   },
 
   async requestPasswordReset(email: string): Promise<void> {

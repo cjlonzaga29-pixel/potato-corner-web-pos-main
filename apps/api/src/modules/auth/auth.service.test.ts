@@ -31,6 +31,7 @@ vi.mock('./auth.repository.js', () => ({
     hasActiveDeviceSession: vi.fn(),
     updatePasswordHash: vi.fn(),
     setMustChangePassword: vi.fn(),
+    updateName: vi.fn().mockResolvedValue(undefined),
     insertRevokedToken: vi.fn().mockResolvedValue(undefined),
     storePasswordResetToken: vi.fn().mockResolvedValue(undefined),
     findPasswordResetToken: vi.fn(),
@@ -589,6 +590,67 @@ describe('authService.changePassword', () => {
     expect(authRepository.setMustChangePassword).not.toHaveBeenCalled();
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
     expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+  });
+});
+
+describe('authService.updateProfile', () => {
+  it('splits the display name on the first space and persists exactly firstName/lastName', async () => {
+    vi.mocked(authRepository.findUserById).mockResolvedValue(
+      buildUser({ firstName: 'CJ', lastName: 'Lonzaga' }) as never,
+    );
+
+    const result = await authService.updateProfile('user-1', 'CJ Lonzaga');
+
+    expect(authRepository.updateName).toHaveBeenCalledWith('user-1', 'CJ', 'Lonzaga');
+    expect(result.user.first_name).toBe('CJ');
+    expect(result.user.last_name).toBe('Lonzaga');
+  });
+
+  it('joins remaining words into lastName for a multi-word name', async () => {
+    vi.mocked(authRepository.findUserById).mockResolvedValue(
+      buildUser({ firstName: 'Mary', lastName: 'Jane Cruz' }) as never,
+    );
+
+    await authService.updateProfile('user-1', 'Mary Jane Cruz');
+
+    expect(authRepository.updateName).toHaveBeenCalledWith('user-1', 'Mary', 'Jane Cruz');
+  });
+
+  it('clears lastName to an empty string for a single-word name', async () => {
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser({ firstName: 'Cher', lastName: '' }) as never);
+
+    await authService.updateProfile('user-1', 'Cher');
+
+    expect(authRepository.updateName).toHaveBeenCalledWith('user-1', 'Cher', '');
+  });
+
+  it('never writes email, role, or branch fields — only firstName/lastName go through updateName', async () => {
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser() as never);
+
+    await authService.updateProfile('user-1', 'New Name');
+
+    expect(authRepository.updateName).toHaveBeenCalledTimes(1);
+    expect(authRepository.updateName).toHaveBeenCalledWith('user-1', expect.any(String), expect.any(String));
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(authRepository.setMustChangePassword).not.toHaveBeenCalled();
+  });
+
+  it('scopes the update to the given userId only — no other user id is ever touched', async () => {
+    vi.mocked(authRepository.findUserById).mockResolvedValue(buildUser({ id: 'user-1' }) as never);
+
+    await authService.updateProfile('user-1', 'New Name');
+
+    expect(authRepository.updateName).toHaveBeenCalledWith('user-1', expect.any(String), expect.any(String));
+    expect(authRepository.findUserById).toHaveBeenCalledWith('user-1');
+  });
+
+  it('throws USER_NOT_FOUND if the user no longer exists after the update', async () => {
+    vi.mocked(authRepository.findUserById).mockResolvedValue(null);
+
+    await expect(authService.updateProfile('user-1', 'New Name')).rejects.toMatchObject({
+      code: 'USER_NOT_FOUND',
+      statusCode: 404,
+    });
   });
 });
 

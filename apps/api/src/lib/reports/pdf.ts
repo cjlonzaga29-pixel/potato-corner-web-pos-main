@@ -36,7 +36,7 @@ function reportTypeLabel(reportType: ReportType): string {
 // underlying row value (and the CSV export) are untouched.
 const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
-function formatCellValue(value: unknown): string {
+export function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string' && ISO_DATETIME_RE.test(value)) {
     return formatManilaDateTime(value);

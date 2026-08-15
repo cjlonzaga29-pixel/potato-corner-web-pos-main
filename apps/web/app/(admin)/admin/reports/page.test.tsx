@@ -387,14 +387,12 @@ describe('AdminReportsPage', () => {
     expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
   });
 
-  // Task 209.x (Expenses export bug) — EXPENSES has no registered ReportType
-  // on the export-job endpoint, so Export CSV/PDF on this tab used to `return`
-  // with zero feedback (no toast, no download, no error): the "doesn't
-  // respond" bug the owner reported. CSV now downloads the same rows shown
-  // on-screen via the same client-side downloadCsv() the dedicated Expenses
-  // page already uses; PDF (never implemented for Expenses anywhere) now
-  // tells the user plainly instead of silently doing nothing.
-  describe('Expenses tab export (Task 209.x)', () => {
+  // Fast fix: enable Expenses PDF export. CSV keeps downloading the same
+  // rows shown on-screen via the same client-side downloadCsv() the
+  // dedicated Expenses page already uses (Task 209.x). PDF, which used to
+  // hard-block with a "not available" toast, now routes through the same
+  // requestExport() mutation every other report tab uses.
+  describe('Expenses tab export', () => {
     beforeEach(() => {
       vi.mocked(expensesHooks.useExpenses).mockReturnValue({
         data: {
@@ -429,11 +427,10 @@ describe('AdminReportsPage', () => {
       vi.mocked(expensesHooks.useExpenses).mockReturnValue({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() } as never);
     });
 
-    it('never calls the export-job endpoint for either format on the Expenses tab', () => {
+    it('never calls the export-job endpoint for Export CSV on the Expenses tab — CSV stays client-side', () => {
       render(<AdminReportsPage />);
       selectReportTab('Expenses');
       fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
-      fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
       expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
     });
 
@@ -451,13 +448,55 @@ describe('AdminReportsPage', () => {
       expect(toast.success).toHaveBeenCalledWith('CSV downloaded');
     });
 
-    it('shows an explicit "not available" toast on Export PDF instead of silently doing nothing', () => {
+    it('no longer shows the removed "not available" toast on Export PDF', () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+
+      expect(toast.error).not.toHaveBeenCalledWith('PDF export is not available for Expenses', expect.anything());
+    });
+
+    it('invokes the same requestExport() mutation every other report tab uses, with report_type EXPENSES and format pdf', () => {
       render(<AdminReportsPage />);
       selectReportTab('Expenses');
       fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
 
       expect(mockDownloadCsv).not.toHaveBeenCalled();
-      expect(toast.error).toHaveBeenCalledWith('PDF export is not available for Expenses', expect.objectContaining({ description: expect.any(String) }));
+      expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+        {
+          report_type: 'EXPENSES',
+          filters: { branch_id: undefined, date_from: expect.any(String), date_to: expect.any(String), page: 1, limit: 100 },
+          format: 'pdf',
+        },
+        expect.objectContaining({ onSettled: expect.any(Function) }),
+      );
+    });
+
+    it('passes the selected branch through to the PDF export request, same as every other report tab', () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      fireEvent.click(screen.getByRole('button', { name: 'Main Branch' }));
+      fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+
+      expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ filters: expect.objectContaining({ branch_id: 'branch-1' }) }),
+        expect.anything(),
+      );
+    });
+
+    it('shows the PDF export loading state and resets it via onSettled, same as every other report tab', async () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      const pdfButton = screen.getByRole('button', { name: /export pdf/i });
+      fireEvent.click(pdfButton);
+
+      const onSettled = mockUseRequestExport.mutate.mock.calls.at(-1)?.[1]?.onSettled;
+      expect(typeof onSettled).toBe('function');
+      await act(async () => {
+        onSettled();
+      });
+
+      expect(screen.getByRole('button', { name: 'Export PDF' })).toBeEnabled();
     });
 
     it('keeps both Expenses export buttons enabled (no branch-required gate on this tab)', () => {

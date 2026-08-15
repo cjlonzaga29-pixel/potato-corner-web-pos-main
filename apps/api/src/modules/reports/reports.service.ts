@@ -9,9 +9,13 @@ import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
 import { generatePdf } from '../../lib/reports/pdf.js';
 import { generateInventorySummaryCsv, generateInventorySummaryPdf } from '../../lib/reports/inventory-summary-export.js';
+import { generateExpensesPdf, formatPhp, type ExpensesExportRow } from '../../lib/reports/expenses-export.js';
 import { buildExportFilename } from '../../lib/reports/export-filename.js';
 import { prisma } from '../../lib/prisma.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
+import { expensesRepository } from '../expenses/expenses.repository.js';
+import type { ExpenseFilters } from '../expenses/expenses.types.js';
+import { manilaDateKey } from '../../lib/manila-time.js';
 
 const DEFAULT_REALTIME_RANGE_DAYS = 7;
 
@@ -411,6 +415,54 @@ export const reportsService = {
         afterState: { reportType, format, async: false, rowCount: rows.length },
       });
       return { kind: 'file', buffer, filename, contentType };
+    }
+
+    // EXPENSES has no ReportSnapshot-backed data source and, before this
+    // fix, no registered report_type on this endpoint at all — the Reports
+    // page's Expenses tab used to hard-block PDF with a toast and never
+    // call requestExport for it. CSV stays exactly as it was (client-side,
+    // built from the same Expenses tab fetch, never routed through this
+    // endpoint) — only PDF is wired here. Redirected regardless of role,
+    // same as INVENTORY_SUMMARY below: non-super-admin branch access was
+    // already enforced by the /export route's inline hasBranchAccess check
+    // before reaching this function, so branchIds: 'all' here only means
+    // "don't re-restrict a branch that access control already validated."
+    if (reportType === 'EXPENSES') {
+      if (format === 'csv') {
+        throw new ReportError('UNSUPPORTED_FORMAT', "Use the Expenses tab's Export CSV button for Expenses CSV export", 400);
+      }
+      const resolvedFilters = defaultRealtimeFilters(filters);
+      const expenseFilters: ExpenseFilters = {
+        branchIds: 'all',
+        branch_id: resolvedFilters.branchId,
+        dateFrom: resolvedFilters.dateFrom ? manilaDateKey(resolvedFilters.dateFrom) : undefined,
+        dateTo: resolvedFilters.dateTo ? manilaDateKey(resolvedFilters.dateTo) : undefined,
+        page: resolvedFilters.page,
+        limit: resolvedFilters.limit,
+      };
+      const { expenses, total, totalAmount } = await expensesRepository.findAll(expenseFilters);
+      const rows: ExpensesExportRow[] = expenses.map((row) => ({
+        incurred_at: row.incurredAt.toISOString(),
+        branch: row.branch.name,
+        category: row.category,
+        vendor_name: row.vendorName ?? '',
+        amount: formatPhp(row.amount.toNumber()),
+        created_by_name: `${row.creator.firstName} ${row.creator.lastName}`,
+      }));
+      const filename = buildExportFilename(reportType, format, resolvedFilters);
+      const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+      const buffer = await generateExpensesPdf(resolvedFilters, rows, total, totalAmount, branch?.name ?? null, 'POTATO CORNER');
+
+      await recordAuditLog({
+        action: 'REPORT_EXPORTED',
+        entityType: 'report',
+        entityId: reportType,
+        actorId: requesterId,
+        actorRole: requesterRole,
+        branchId,
+        afterState: { reportType, format, async: false, rowCount: rows.length },
+      });
+      return { kind: 'file', buffer, filename, contentType: 'application/pdf' };
     }
 
     // INVENTORY_SUMMARY (TASK 157) renders as two independently-dimensioned

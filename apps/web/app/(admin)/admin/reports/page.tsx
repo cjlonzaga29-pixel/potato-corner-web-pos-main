@@ -476,7 +476,7 @@ function AdminReportsPageContent() {
     setRefreshCooldown(REFRESH_COOLDOWN_SECONDS);
   }
 
-  /** Financial Summary exports as the DAILY_SALES report (its underlying data source); Inventory Analytics and Expenses have no registered ReportType and aren't exportable via this endpoint. */
+  /** Financial Summary exports as the DAILY_SALES report (its underlying data source); Inventory Analytics has no registered ReportType and isn't exportable via this endpoint. Expenses is handled by handleExportExpenses below (CSV stays client-side, PDF now goes through requestExport). */
   function exportableReportType(): ExportRequestInput['report_type'] | null {
     if (activeReport === 'FINANCIAL_SUMMARY') return 'DAILY_SALES';
     if (activeReport === 'INVENTORY_ANALYTICS') return null;
@@ -487,22 +487,28 @@ function AdminReportsPageContent() {
   const exportBranchRequired = BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId;
 
   /**
-   * Task 209.x (Expenses export bug) — the EXPENSES tab has no registered
-   * ReportType on the export-job endpoint (see exportableReportType above),
-   * so this used to `return` here with zero feedback: no toast, no
-   * download, no error — exactly the "Export CSV/PDF doesn't respond" bug
-   * the owner reported. Expenses already has a working client-side CSV
-   * export on its own dedicated page (admin/expenses/page.tsx); this reuses
-   * that exact same downloadCsv() call against the same rows already
-   * fetched for this tab (`expenses`, filtered by the same branch/date
-   * inputs as every other report tab) instead of building a second
-   * implementation. PDF has never had a generator for Expenses anywhere in
-   * this app — rather than silently doing nothing, or fabricating a new PDF
-   * report, this tells the user plainly that PDF isn't available here yet.
+   * Expenses' CSV export stays client-side, built from the same rows
+   * already fetched for this tab (`expenses`, filtered by the same
+   * branch/date inputs as every other report tab) via the dedicated
+   * downloadCsv() call also used on its own page (admin/expenses/page.tsx)
+   * — unchanged by the PDF fix below. PDF is now routed through the same
+   * requestExport() mutation every other report tab uses (report_type
+   * 'EXPENSES'), which re-fetches the identical branch/date-filtered rows
+   * server-side (expensesRepository.findAll, the same query behind this
+   * tab's screen and CSV) rather than recomputing anything — see
+   * reports.service.ts's EXPENSES branch.
    */
   function handleExportExpenses(format: 'csv' | 'pdf') {
     if (format === 'pdf') {
-      toast.error('PDF export is not available for Expenses', { description: 'Use Export CSV instead.' });
+      setIsExportingPdf(true);
+      requestExport.mutate(
+        {
+          report_type: 'EXPENSES',
+          filters: { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },
+          format: 'pdf',
+        },
+        { onSettled: () => setIsExportingPdf(false) },
+      );
       return;
     }
     const rows = expenses.data?.expenses ?? [];

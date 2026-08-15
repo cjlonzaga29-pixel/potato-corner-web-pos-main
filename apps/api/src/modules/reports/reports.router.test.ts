@@ -40,7 +40,7 @@ vi.mock('../branches/branches.repository.js', () => ({
 const { reportsService } = await import('./reports.service.js');
 const { reportsRouter } = await import('./reports.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
-const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
+const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken, generateBranchToken } = await import('../../test-utils/auth-tokens.js');
 const { ReportError } = await import('./reports.types.js');
 const { MAX_LIST_LIMIT } = await import('@potato-corner/shared');
 
@@ -434,5 +434,76 @@ describe('POST /export', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  describe('EXPENSES report_type — branch RBAC (Task: enable PDF export for Expenses)', () => {
+    it('super_admin can export EXPENSES with no branch_id (All Branches) — the inline branch-access check is skipped entirely', async () => {
+      const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+      const token = generateSuperAdminToken();
+      const req = mockReq({ ...authHeader(token), body: { report_type: 'EXPENSES', filters: { page: 1, limit: 100 }, format: 'pdf' } });
+      const res = mockRes();
+      const buffer = Buffer.from('%PDF-1.4 fake');
+      vi.mocked(reportsService.requestExport).mockResolvedValue({ kind: 'file', buffer, filename: 'Expenses_2026-07-31.pdf', contentType: 'application/pdf' });
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(reportsService.requestExport).toHaveBeenCalledWith('EXPENSES', expect.objectContaining({ branchId: undefined }), 'pdf', expect.any(String), 'super_admin', null);
+    });
+
+    it('supervisor exporting EXPENSES without a branch_id is rejected with 400 BRANCH_ID_REQUIRED before the service is ever called', async () => {
+      const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+      const token = generateSupervisorToken([BRANCH_1]);
+      const req = mockReq({ ...authHeader(token), body: { report_type: 'EXPENSES', filters: { page: 1, limit: 100 }, format: 'pdf' } });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'BRANCH_ID_REQUIRED' }) }));
+      expect(reportsService.requestExport).not.toHaveBeenCalled();
+    });
+
+    it('supervisor exporting EXPENSES for a branch outside their assigned branches is rejected with 403 BRANCH_ACCESS_DENIED — assigned-branches-only scope', async () => {
+      const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+      const outsideBranch = randomUUID();
+      vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]); // supervisor's own assigned branch — not outsideBranch
+      const token = generateSupervisorToken([BRANCH_1]);
+      const req = mockReq({ ...authHeader(token), body: { report_type: 'EXPENSES', filters: { branch_id: outsideBranch, page: 1, limit: 100 }, format: 'pdf' } });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'BRANCH_ACCESS_DENIED' }) }));
+      expect(reportsService.requestExport).not.toHaveBeenCalled();
+    });
+
+    it('branch account exporting EXPENSES for their own branch is allowed — own-branch-only scope', async () => {
+      const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+      const token = generateBranchToken(BRANCH_1);
+      const req = mockReq({ ...authHeader(token), body: { report_type: 'EXPENSES', filters: { branch_id: BRANCH_1, page: 1, limit: 100 }, format: 'pdf' } });
+      const res = mockRes();
+      const buffer = Buffer.from('%PDF-1.4 fake');
+      vi.mocked(reportsService.requestExport).mockResolvedValue({ kind: 'file', buffer, filename: 'Expenses_2026-07-31.pdf', contentType: 'application/pdf' });
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(reportsService.requestExport).toHaveBeenCalledWith('EXPENSES', expect.objectContaining({ branchId: BRANCH_1 }), 'pdf', expect.any(String), 'branch', BRANCH_1);
+    });
+
+    it('branch account exporting EXPENSES for a branch other than their own is rejected with 403 BRANCH_ACCESS_DENIED', async () => {
+      const handlers = getRouteHandlers(reportsRouter, 'post', '/export');
+      const otherBranch = randomUUID();
+      const token = generateBranchToken(BRANCH_1);
+      const req = mockReq({ ...authHeader(token), body: { report_type: 'EXPENSES', filters: { branch_id: otherBranch, page: 1, limit: 100 }, format: 'pdf' } });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(reportsService.requestExport).not.toHaveBeenCalled();
+    });
   });
 });

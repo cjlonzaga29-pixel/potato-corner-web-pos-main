@@ -214,5 +214,9 @@ export const REPORT_TYPE = {
   INVENTORY_VALUATION: 'INVENTORY_VALUATION',
   BRANCH_COMPARISON: 'BRANCH_COMPARISON',
   AUDIT_LOG: 'AUDIT_LOG',
+  // Not backed by ReportSnapshot (see the Prisma ReportType enum) — Expenses
+  // exports go straight through reports.service.ts's requestExport to
+  // expensesRepository, same as INVENTORY_SUMMARY above.
+  EXPENSES: 'EXPENSES',
 } as const;
 export type ReportType = (typeof REPORT_TYPE)[keyof typeof REPORT_TYPE];

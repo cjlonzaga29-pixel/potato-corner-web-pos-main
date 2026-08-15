@@ -81,6 +81,13 @@ vi.mock('../../queues/report.queue.js', () => ({
 vi.mock('../../lib/reports/pdf.js', () => ({
   generatePdf: vi.fn(),
 }));
+vi.mock('../../lib/reports/expenses-export.js', () => ({
+  generateExpensesPdf: vi.fn(),
+  formatPhp: (amount: number) => `PHP ${amount.toFixed(2)}`,
+}));
+vi.mock('../expenses/expenses.repository.js', () => ({
+  expensesRepository: { findAll: vi.fn() },
+}));
 vi.mock('../../lib/prisma.js', () => ({
   prisma: { branch: { findUnique: vi.fn() } },
 }));
@@ -701,5 +708,147 @@ describe('reportsService.requestExport', () => {
     await expect(
       reportsService.requestExport('BRANCH_COMPARISON', { page: 1, limit: 25 }, 'csv', 'user-1', 'supervisor', null),
     ).rejects.toMatchObject({ code: 'FORBIDDEN_REPORT_TYPE', statusCode: 403 });
+  });
+
+  describe('EXPENSES export (Task: enable PDF export for Expenses)', () => {
+    async function mockExpensesRepository(overrides: { total?: number; totalAmount?: number; expenses?: unknown[] } = {}) {
+      const { expensesRepository } = await import('../expenses/expenses.repository.js');
+      vi.mocked(expensesRepository.findAll).mockResolvedValue({
+        expenses: overrides.expenses ?? [
+          {
+            incurredAt: new Date('2026-07-30T04:00:00.000Z'),
+            branch: { name: 'SM North' },
+            category: 'utilities',
+            vendorName: 'Meralco',
+            amount: { toNumber: () => 1234.5 },
+            creator: { firstName: 'Juan', lastName: 'Dela Cruz' },
+          },
+        ],
+        total: overrides.total ?? 1,
+        totalAmount: overrides.totalAmount ?? 1234.5,
+      } as never);
+      return expensesRepository;
+    }
+
+    it('invokes generateExpensesPdf (the PDF generation architecture) and returns a PDF file result', async () => {
+      const expensesRepository = await mockExpensesRepository();
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      const pdfBuffer = Buffer.from('%PDF-1.4 fake');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(pdfBuffer);
+      const { prisma } = await import('../../lib/prisma.js');
+      vi.mocked(prisma.branch.findUnique).mockResolvedValue({ name: 'SM North' } as never);
+
+      const result = await reportsService.requestExport('EXPENSES', { branchId: 'b1', dateFrom: new Date('2026-07-01T00:00:00.000Z'), dateTo: new Date('2026-07-31T23:59:59.999Z'), page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
+
+      expect(expensesRepository.findAll).toHaveBeenCalled();
+      expect(generateExpensesPdf).toHaveBeenCalled();
+      expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
+    });
+
+    it('passes the selected branch_id through to expensesRepository.findAll unrestricted (branchIds: "all") — non-super-admin access was already validated by the /export route before this runs', async () => {
+      const expensesRepository = await mockExpensesRepository();
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+      const { prisma } = await import('../../lib/prisma.js');
+      vi.mocked(prisma.branch.findUnique).mockResolvedValue({ name: 'SM North' } as never);
+
+      await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
+
+      expect(expensesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ branchIds: 'all', branch_id: 'b1' }));
+    });
+
+    it('exports authorized rows from all branches when branchId is null (Admin "All Branches")', async () => {
+      const expensesRepository = await mockExpensesRepository();
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      await reportsService.requestExport('EXPENSES', { page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', null);
+
+      expect(expensesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ branchIds: 'all', branch_id: undefined }));
+    });
+
+    it('converts the From/To date range into Manila-date-key strings for expensesRepository.findAll', async () => {
+      const expensesRepository = await mockExpensesRepository();
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      await reportsService.requestExport(
+        'EXPENSES',
+        { branchId: 'b1', dateFrom: new Date('2026-06-30T16:00:00.000Z'), dateTo: new Date('2026-07-31T15:59:59.999Z'), page: 1, limit: 100 },
+        'pdf',
+        'admin-1',
+        'super_admin',
+        'b1',
+      );
+
+      expect(expensesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ dateFrom: '2026-07-01', dateTo: '2026-07-31' }));
+    });
+
+    it('maps expensesRepository rows into the PDF row shape (Date, Branch, Category, Vendor, formatted Amount, Recorded By)', async () => {
+      await mockExpensesRepository();
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
+
+      expect(generateExpensesPdf).toHaveBeenCalledWith(
+        expect.any(Object),
+        [
+          {
+            incurred_at: '2026-07-30T04:00:00.000Z',
+            branch: 'SM North',
+            category: 'utilities',
+            vendor_name: 'Meralco',
+            amount: 'PHP 1234.50',
+            created_by_name: 'Juan Dela Cruz',
+          },
+        ],
+        1,
+        1234.5,
+        'SM North',
+        'POTATO CORNER',
+      );
+    });
+
+    it('passes the already-computed total (count) and totalAmount straight through to the PDF summary — never recomputed from the visible rows', async () => {
+      await mockExpensesRepository({ total: 250, totalAmount: 987654.32, expenses: [] });
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
+
+      expect(generateExpensesPdf).toHaveBeenCalledWith(expect.any(Object), [], 250, 987654.32, expect.any(String), 'POTATO CORNER');
+    });
+
+    it('handles an empty dataset by generating a PDF with zero rows instead of throwing', async () => {
+      await mockExpensesRepository({ total: 0, totalAmount: 0, expenses: [] });
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      const pdfBuffer = Buffer.from('%PDF-1.4 fake');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(pdfBuffer);
+
+      const result = await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
+
+      expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
+    });
+
+    it('rejects a CSV export request for report_type EXPENSES — CSV stays on the Expenses tab\'s own client-side export, unrouted through this endpoint', async () => {
+      await expect(
+        reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'csv', 'admin-1', 'super_admin', 'b1'),
+      ).rejects.toMatchObject({ code: 'UNSUPPORTED_FORMAT' });
+      const { expensesRepository } = await import('../expenses/expenses.repository.js');
+      expect(expensesRepository.findAll).not.toHaveBeenCalled();
+    });
+
+    it('writes a REPORT_EXPORTED audit log entry', async () => {
+      await mockExpensesRepository();
+      const { generateExpensesPdf } = await import('../../lib/reports/expenses-export.js');
+      vi.mocked(generateExpensesPdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
+
+      expect(recordAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'REPORT_EXPORTED', entityId: 'EXPENSES', branchId: 'b1', afterState: expect.objectContaining({ format: 'pdf', rowCount: 1 }) }),
+      );
+    });
   });
 });

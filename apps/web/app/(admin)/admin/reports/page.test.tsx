@@ -443,11 +443,11 @@ describe('AdminReportsPage', () => {
       fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
 
       expect(mockDownloadCsv).toHaveBeenCalledTimes(1);
-      const [filename, rows] = mockDownloadCsv.mock.calls[0]!;
-      expect(filename).toMatch(/\.csv$/);
-      expect(rows).toEqual([
-        expect.objectContaining({ branch: 'Main Branch', category: 'supplies', vendor_name: 'Acme Corp', amount: 500 }),
-      ]);
+      expect(mockDownloadCsv).toHaveBeenCalledWith(
+        expect.stringMatching(/\.csv$/),
+        [expect.objectContaining({ branch: 'Main Branch', category: 'supplies', vendor_name: 'Acme Corp', amount: 500 })],
+        expect.anything(),
+      );
       expect(toast.success).toHaveBeenCalledWith('CSV downloaded');
     });
 

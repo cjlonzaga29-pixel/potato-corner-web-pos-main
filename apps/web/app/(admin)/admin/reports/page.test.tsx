@@ -110,7 +110,14 @@ vi.mock('@/stores/auth.store', () => ({ useAuthStore: vi.fn((selector: (s: { use
 vi.mock('@/stores/socket.store', () => ({ useSocketStore: vi.fn((selector: (s: { isConnected: boolean }) => unknown) => selector({ isConnected: true })) }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+const { mockDownloadCsv } = vi.hoisted(() => ({ mockDownloadCsv: vi.fn() }));
+vi.mock('@/lib/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/utils')>();
+  return { ...actual, downloadCsv: mockDownloadCsv };
+});
+
 const reportsHooks = await import('@/hooks/queries/use-reports');
+const expensesHooks = await import('@/hooks/queries/use-expenses');
 const { toast } = await import('sonner');
 const { default: AdminReportsPage } = await import('./page.js');
 
@@ -378,6 +385,87 @@ describe('AdminReportsPage', () => {
     selectCategory('Inventory');
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
     expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
+  });
+
+  // Task 209.x (Expenses export bug) — EXPENSES has no registered ReportType
+  // on the export-job endpoint, so Export CSV/PDF on this tab used to `return`
+  // with zero feedback (no toast, no download, no error): the "doesn't
+  // respond" bug the owner reported. CSV now downloads the same rows shown
+  // on-screen via the same client-side downloadCsv() the dedicated Expenses
+  // page already uses; PDF (never implemented for Expenses anywhere) now
+  // tells the user plainly instead of silently doing nothing.
+  describe('Expenses tab export (Task 209.x)', () => {
+    beforeEach(() => {
+      vi.mocked(expensesHooks.useExpenses).mockReturnValue({
+        data: {
+          expenses: [
+            {
+              id: 'exp-1',
+              incurred_at: '2026-08-10',
+              branch_id: 'branch-1',
+              branch_name: 'Main Branch',
+              category: 'supplies',
+              vendor_name: 'Acme Corp',
+              description: null,
+              amount: 500,
+              created_by_name: 'Admin One',
+              receipt_url: null,
+            },
+          ],
+          total: 1,
+          total_amount: 500,
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      } as never);
+    });
+
+    afterEach(() => {
+      // vi.clearAllMocks() (outer beforeEach) clears call history but not a
+      // mockReturnValue — reset it explicitly so later tests in this file
+      // that rely on the module-level default (data: undefined -> empty
+      // expenses list) aren't left seeing this describe block's fixture row.
+      vi.mocked(expensesHooks.useExpenses).mockReturnValue({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() } as never);
+    });
+
+    it('never calls the export-job endpoint for either format on the Expenses tab', () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+      fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+      expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
+    });
+
+    it('downloads a client-side CSV of the currently-loaded expense rows on Export CSV', () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+      expect(mockDownloadCsv).toHaveBeenCalledTimes(1);
+      const [filename, rows] = mockDownloadCsv.mock.calls[0]!;
+      expect(filename).toMatch(/\.csv$/);
+      expect(rows).toEqual([
+        expect.objectContaining({ branch: 'Main Branch', category: 'supplies', vendor_name: 'Acme Corp', amount: 500 }),
+      ]);
+      expect(toast.success).toHaveBeenCalledWith('CSV downloaded');
+    });
+
+    it('shows an explicit "not available" toast on Export PDF instead of silently doing nothing', () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      fireEvent.click(screen.getByRole('button', { name: /export pdf/i }));
+
+      expect(mockDownloadCsv).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledWith('PDF export is not available for Expenses', expect.objectContaining({ description: expect.any(String) }));
+    });
+
+    it('keeps both Expenses export buttons enabled (no branch-required gate on this tab)', () => {
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      expect(screen.getByRole('button', { name: /export csv/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /export pdf/i })).toBeEnabled();
+    });
   });
 
   it('exports the active tab\'s report type on Export PDF click', () => {

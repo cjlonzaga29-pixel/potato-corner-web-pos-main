@@ -38,7 +38,7 @@ import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytic
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { expenseColumns } from '@/components/admin/expense-columns';
-import { formatCurrency, formatDateTime } from '@/lib/utils';
+import { downloadCsv, formatCurrency, formatDateTime } from '@/lib/utils';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
@@ -486,9 +486,55 @@ function AdminReportsPageContent() {
 
   const exportBranchRequired = BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId;
 
+  /**
+   * Task 209.x (Expenses export bug) — the EXPENSES tab has no registered
+   * ReportType on the export-job endpoint (see exportableReportType above),
+   * so this used to `return` here with zero feedback: no toast, no
+   * download, no error — exactly the "Export CSV/PDF doesn't respond" bug
+   * the owner reported. Expenses already has a working client-side CSV
+   * export on its own dedicated page (admin/expenses/page.tsx); this reuses
+   * that exact same downloadCsv() call against the same rows already
+   * fetched for this tab (`expenses`, filtered by the same branch/date
+   * inputs as every other report tab) instead of building a second
+   * implementation. PDF has never had a generator for Expenses anywhere in
+   * this app — rather than silently doing nothing, or fabricating a new PDF
+   * report, this tells the user plainly that PDF isn't available here yet.
+   */
+  function handleExportExpenses(format: 'csv' | 'pdf') {
+    if (format === 'pdf') {
+      toast.error('PDF export is not available for Expenses', { description: 'Use Export CSV instead.' });
+      return;
+    }
+    const rows = expenses.data?.expenses ?? [];
+    downloadCsv(
+      `expenses-${dateFrom}-to-${dateTo}.csv`,
+      rows.map((row) => ({
+        incurred_at: row.incurred_at,
+        branch: row.branch_name,
+        category: row.category,
+        vendor_name: row.vendor_name ?? '',
+        amount: row.amount,
+        created_by_name: row.created_by_name,
+      })),
+      [
+        { key: 'incurred_at', label: 'Date' },
+        { key: 'branch', label: 'Branch' },
+        { key: 'category', label: 'Category' },
+        { key: 'vendor_name', label: 'Vendor' },
+        { key: 'amount', label: 'Amount' },
+        { key: 'created_by_name', label: 'Recorded By' },
+      ],
+    );
+    toast.success('CSV downloaded');
+  }
+
   function handleExport(format: 'csv' | 'pdf') {
     if (BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId) {
       toast.error('Select a branch before exporting');
+      return;
+    }
+    if (activeReport === 'EXPENSES') {
+      handleExportExpenses(format);
       return;
     }
     const reportType = exportableReportType();

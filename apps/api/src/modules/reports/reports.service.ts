@@ -195,6 +195,29 @@ export const reportsService = {
     realtimeReport('INVENTORY_MOVEMENT', filters, actorId, actorRole, (f) => reportsRepository.getInventoryMovement(f)),
   getInventoryConsumptionSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('INVENTORY_CONSUMPTION_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventoryConsumptionSummary(f)),
+  // Bespoke rather than realtimeReport -- this returns one summary object,
+  // not a data[]/total page, so it doesn't fit ReportResponse<T>. Mirrors
+  // getInventoryAnalyticsReport's shape below. branchGuard (applied at the
+  // router) has already verified actorId's access to filters.branchId
+  // before this runs.
+  async getInventoryValueSummaryReport(filters: ReportFilters, actorId: string, actorRole: string) {
+    const resolved = defaultRealtimeFilters(filters);
+    const summary = await reportsRepository.getInventoryValueSummary(resolved);
+    await recordAuditLog({
+      action: 'REPORT_ACCESSED',
+      entityType: 'report',
+      entityId: 'INVENTORY_VALUE_SUMMARY',
+      actorId,
+      actorRole,
+      branchId: resolved.branchId ?? null,
+      afterState: { reportType: 'INVENTORY_VALUE_SUMMARY', filters: toWireFilters(resolved) },
+    });
+    return {
+      generated_at: new Date().toISOString(),
+      filters: toWireFilters(resolved),
+      summary,
+    };
+  },
   // Bespoke rather than the generic realtimeReport helper — INVENTORY_SUMMARY
   // (TASK 157) returns two independently-dimensioned tables (ingredient
   // weight in kg, packaging in native count) plus their own totals, not a
@@ -448,6 +471,7 @@ export const reportsService = {
         vendor_name: row.vendorName ?? '',
         amount: formatPhp(row.amount.toNumber()),
         created_by_name: `${row.creator.firstName} ${row.creator.lastName}`,
+        proof_available: row.receiptKey ? 'Yes' : 'No',
       }));
       const filename = buildExportFilename(reportType, format, resolvedFilters);
       const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;

@@ -26,6 +26,9 @@ export interface ExpensesExportRow extends Record<string, unknown> {
   vendor_name: string;
   amount: string;
   created_by_name: string;
+  // 'Yes' | 'No' only — never the storage key or a signed URL, same rule as
+  // InventoryMovementReportRow.proof_available (see reports.schema.ts).
+  proof_available: string;
 }
 
 export const EXPENSES_EXPORT_COLUMNS: ReportColumn<ExpensesExportRow>[] = [
@@ -35,6 +38,7 @@ export const EXPENSES_EXPORT_COLUMNS: ReportColumn<ExpensesExportRow>[] = [
   { key: 'vendor_name', header: 'Vendor' },
   { key: 'amount', header: 'Amount' },
   { key: 'created_by_name', header: 'Recorded By' },
+  { key: 'proof_available', header: 'Proof Available' },
 ];
 
 /**

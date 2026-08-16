@@ -18,6 +18,7 @@ import type {
   DiscountComplianceReportRow,
   PaymentMethodMixReportRow,
   InventoryMovementReportRow,
+  InventoryValueSummary,
   InventoryConsumptionSummaryReportRow,
   IngredientWeightKgRow,
   PackagingPcRow,
@@ -635,11 +636,13 @@ export const reportsRepository = {
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });
-    const recorderIds = [...new Set(movements.map((m) => m.performedByUserId).filter((id): id is string => id !== null))];
-    const recorders = recorderIds.length
-      ? await prisma.user.findMany({ where: { id: { in: recorderIds } }, select: { id: true, firstName: true, lastName: true } })
+    const recorderIds = [...new Set(movements.map((m) => m.performedByUserId).filter((id): id is string => id != null))];
+    const responsibleIds = [...new Set(movements.map((m) => m.responsibleUserId).filter((id): id is string => id != null))];
+    const userIdsToLoad = [...new Set([...recorderIds, ...responsibleIds])];
+    const users = userIdsToLoad.length
+      ? await prisma.user.findMany({ where: { id: { in: userIdsToLoad } }, select: { id: true, firstName: true, lastName: true } })
       : [];
-    const recorderNameById = new Map(recorders.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+    const userNameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
 
     // TRANSFER_OUT/TRANSFER_IN share one business event and one proof
     // upload (against transferOut.id) — a row with no proof_key of its own
@@ -678,12 +681,55 @@ export const reportsRepository = {
       reference_type: m.referenceType,
       reference_id: m.referenceId,
       notes: m.notes,
-      recorded_by_name: m.performedByUserId ? (recorderNameById.get(m.performedByUserId) ?? null) : null,
+      recorded_by_name: m.performedByUserId ? (userNameById.get(m.performedByUserId) ?? null) : null,
+      responsible_user_name: m.responsibleUserId ? (userNameById.get(m.responsibleUserId) ?? null) : null,
       unit_cost: m.unitCost ? m.unitCost.toNumber() : null,
       total_cost: m.totalCost ? m.totalCost.toNumber() : null,
       proof_available: m.proofKey || (m.referenceId && referenceIdsWithProof.has(m.referenceId)) ? 'Yes' : 'No',
       created_at: m.createdAt.toISOString(),
     }));
+  },
+
+  // Value-based summary cards for the Inventory Activity/Audit hub (Business
+  // Accountability V2 §B1). current_inventory_value is a point-in-time
+  // snapshot (branch-filtered only, not date-filtered -- stock on hand
+  // today isn't meaningful "as of" a past date). The rest sum
+  // InventoryStockMovement.totalCost by type over the same branch/date
+  // filters as getInventoryMovement. "Out" flavored buckets are reported as
+  // positive magnitudes (Math.abs), matching the existing per-row display
+  // convention in reports-view.tsx/page.tsx.
+  async getInventoryValueSummary(filters: ReportFilters): Promise<InventoryValueSummary> {
+    const range = dateRangeFilter(filters);
+    const branchWhere = filters.branchId ? { branchId: filters.branchId } : {};
+
+    const [movementSums, stockRows] = await Promise.all([
+      prisma.inventoryStockMovement.groupBy({
+        by: ['movementType'],
+        where: { ...branchWhere, ...(range && { createdAt: range }) },
+        _sum: { totalCost: true },
+      }),
+      prisma.inventoryStock.findMany({
+        where: branchWhere,
+        select: { quantityOnHand: true, unitCost: true, inventoryItem: { select: { unitCost: true } } },
+      }),
+    ]);
+
+    const sumFor = (type: string) => movementSums.find((m) => m.movementType === type)?._sum.totalCost?.toNumber() ?? 0;
+
+    const currentInventoryValue = stockRows.reduce((sum, s) => {
+      const cost = s.unitCost?.toNumber() ?? s.inventoryItem.unitCost?.toNumber() ?? 0;
+      return sum + s.quantityOnHand.toNumber() * cost;
+    }, 0);
+
+    return {
+      current_inventory_value: round2(currentInventoryValue),
+      stock_received_value: round2(sumFor('RECEIVING')),
+      waste_cost: round2(Math.abs(sumFor('WASTE'))),
+      adjustment_in_value: round2(sumFor('ADJUSTMENT_IN')),
+      adjustment_out_value: round2(Math.abs(sumFor('ADJUSTMENT_OUT'))),
+      transfer_in_value: round2(sumFor('TRANSFER_IN')),
+      transfer_out_value: round2(Math.abs(sumFor('TRANSFER_OUT'))),
+    };
   },
 
   // Aggregated sale-driven consumption (movement_type SALE only), grouped by

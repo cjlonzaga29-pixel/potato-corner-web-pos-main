@@ -17,6 +17,7 @@ import {
   type DiscountComplianceReportRow,
   type PaymentMethodMixReportRow,
   type InventoryMovementReportRow,
+  type InventoryValueSummary,
   type InventoryConsumptionSummaryReportRow,
   type InventorySummaryResponse,
   type AttendanceSummaryReportRow,
@@ -120,6 +121,25 @@ export function useInventoryMovementReport(filters: ReportQueryFilters, enabled 
 }
 export function useInventoryConsumptionSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<InventoryConsumptionSummaryReportRow>('INVENTORY_CONSUMPTION_SUMMARY', filters, enabled && Boolean(filters.branch_id));
+}
+/**
+ * GET /api/reports/inventory-value-summary returns one summary object, not
+ * a data[]/total page, so it's fetched directly rather than through
+ * useRealtimeReport — same reasoning as useInventorySummaryReport above.
+ */
+export function useInventoryValueSummaryReport(filters: ReportQueryFilters, enabled = true) {
+  return useQuery({
+    queryKey: ['reports', 'INVENTORY_VALUE_SUMMARY', filters],
+    queryFn: async () => {
+      const response = await apiClient<{ generated_at: string; summary: InventoryValueSummary }>(
+        `/api/reports/inventory-value-summary?${buildReportQueryString(filters)}`,
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load inventory value summary'));
+      return response.data.summary;
+    },
+    enabled: enabled && Boolean(filters.branch_id),
+    staleTime: 60_000,
+  });
 }
 /**
  * GET /api/reports/inventory-summary returns a bespoke two-table response

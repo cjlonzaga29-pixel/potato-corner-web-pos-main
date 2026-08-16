@@ -38,7 +38,9 @@ import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytic
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { expenseColumns } from '@/components/admin/expense-columns';
+import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
 import { downloadCsv, formatCurrency, formatDateTime } from '@/lib/utils';
+import { movementTypeLabel } from '@/lib/inventory-movement-labels';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
@@ -49,6 +51,7 @@ import {
   useVoidRefundReport,
   useDiscountComplianceReport,
   useInventoryMovementReport,
+  useInventoryValueSummaryReport,
   useInventorySummaryReport,
   useAttendanceSummaryReport,
   useFraudAlertSummaryReport,
@@ -217,23 +220,61 @@ function getDiscountComplianceColumns(onViewTransactions: (row: DiscountComplian
   ];
 }
 
-const inventoryMovementColumns: ColumnDef<InventoryMovementReportRow>[] = [
-  { accessorKey: 'branch_name', header: 'Branch' },
-  { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { id: 'movement_type', header: 'Type', cell: ({ row }) => humanize(row.original.movement_type) },
-  {
-    id: 'quantity_change',
-    header: 'Change',
-    cell: ({ row }) => `${row.original.quantity_change > 0 ? '+' : ''}${row.original.quantity_change} ${row.original.unit}`,
-  },
-  {
-    id: 'quantity_after',
-    header: 'Balance After',
-    cell: ({ row }) => `${row.original.quantity_after} ${row.original.unit}`,
-  },
-  { accessorKey: 'recorded_by_name', header: 'Recorded By', cell: ({ row }) => row.original.recorded_by_name ?? '—' },
-  { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
-];
+function createInventoryMovementColumns(onViewProof: (row: InventoryMovementReportRow) => void): ColumnDef<InventoryMovementReportRow>[] {
+  return [
+    { accessorKey: 'branch_name', header: 'Branch' },
+    { accessorKey: 'ingredient_name', header: 'Ingredient' },
+    { id: 'movement_type', header: 'Type', cell: ({ row }) => movementTypeLabel(row.original.movement_type) },
+    {
+      id: 'quantity_change',
+      header: 'Change',
+      cell: ({ row }) => `${row.original.quantity_change > 0 ? '+' : ''}${row.original.quantity_change} ${row.original.unit}`,
+    },
+    {
+      id: 'quantity_after',
+      header: 'Balance After',
+      cell: ({ row }) => `${row.original.quantity_after} ${row.original.unit}`,
+    },
+    {
+      id: 'unit_cost',
+      header: 'Unit Cost',
+      cell: ({ row }) => (row.original.unit_cost === null ? '—' : formatCurrency(row.original.unit_cost)),
+    },
+    {
+      id: 'total_cost',
+      header: 'Total Cost',
+      cell: ({ row }) => (row.original.total_cost === null ? '—' : formatCurrency(row.original.total_cost)),
+    },
+    { accessorKey: 'recorded_by_name', header: 'Recorded By', cell: ({ row }) => row.original.recorded_by_name ?? '—' },
+    {
+      accessorKey: 'responsible_user_name',
+      header: 'Responsible Staff',
+      cell: ({ row }) => row.original.responsible_user_name ?? '—',
+    },
+    {
+      id: 'reason_reference',
+      header: 'Reason / Reference',
+      cell: ({ row }) =>
+        row.original.notes ??
+        (row.original.reference_type
+          ? `${humanize(row.original.reference_type)}${row.original.reference_id ? ` #${row.original.reference_id.slice(0, 8)}` : ''}`
+          : '—'),
+    },
+    {
+      id: 'proof',
+      header: 'Proof',
+      cell: ({ row }) =>
+        row.original.proof_available === 'Yes' ? (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onViewProof(row.original)}>
+            View Proof
+          </Button>
+        ) : (
+          <span className="text-xs text-muted-foreground">No Proof</span>
+        ),
+    },
+    { accessorKey: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
+  ];
+}
 
 // TASK 157/165: Inventory Summary is split into two independently-dimensioned
 // tables — Ingredient Weight Consumption (KG) and Packaging Consumption
@@ -426,6 +467,7 @@ function AdminReportsPageContent() {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [drilldownRow, setDrilldownRow] = useState<DailySalesReportRow | null>(null);
   const [discountDrilldownRow, setDiscountDrilldownRow] = useState<DiscountComplianceReportRow | null>(null);
+  const [movementProofRow, setMovementProofRow] = useState<InventoryMovementReportRow | null>(null);
 
   const requestExport = useRequestExport();
 
@@ -458,6 +500,7 @@ function AdminReportsPageContent() {
   const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeReport === 'FRAUD_ALERT_SUMMARY');
   const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeReport === 'DISCOUNT_COMPLIANCE');
   const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
+  const inventoryValueSummary = useInventoryValueSummaryReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
   const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
@@ -791,19 +834,65 @@ function AdminReportsPageContent() {
                 <KpiCard title="Total Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
                 <KpiCard
                   title="Stock In"
-                  value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'stock_in').length}
+                  value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'RECEIVING').length}
                   isLoading={inventoryMovement.isLoading}
                 />
                 <KpiCard
                   title="Waste"
-                  value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'waste').length}
+                  value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'WASTE').length}
                   isLoading={inventoryMovement.isLoading}
                   tone="warning"
                 />
               </div>
+              <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiCard
+                  title="Current Inventory Value"
+                  value={inventoryValueSummary.data?.current_inventory_value ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                />
+                <KpiCard
+                  title="Stock Received Value"
+                  value={inventoryValueSummary.data?.stock_received_value ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                />
+                <KpiCard
+                  title="Waste Cost"
+                  value={inventoryValueSummary.data?.waste_cost ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                  tone="warning"
+                />
+                <KpiCard
+                  title="Adjustment In Value"
+                  value={inventoryValueSummary.data?.adjustment_in_value ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                />
+                <KpiCard
+                  title="Adjustment Out Value"
+                  value={inventoryValueSummary.data?.adjustment_out_value ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                  tone="warning"
+                />
+                <KpiCard
+                  title="Transfer In Value"
+                  value={inventoryValueSummary.data?.transfer_in_value ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                />
+                <KpiCard
+                  title="Transfer Out Value"
+                  value={inventoryValueSummary.data?.transfer_out_value ?? 0}
+                  prefix="₱"
+                  isLoading={inventoryValueSummary.isLoading}
+                />
+              </div>
               <DataTable
                 stickyHeader
-                columns={inventoryMovementColumns}
+                columns={createInventoryMovementColumns(setMovementProofRow)}
                 data={inventoryMovement.data?.data ?? []}
                 isLoading={inventoryMovement.isLoading}
                 emptyState={<EmptyState title="No inventory movements in this range" />}
@@ -903,6 +992,12 @@ function AdminReportsPageContent() {
         discountType={discountDrilldownRow?.discount_type ?? null}
         dateFrom={dateFrom}
         dateTo={dateTo}
+      />
+
+      <ViewInventoryMovementProofDialog
+        branchId={movementProofRow?.branch_id ?? null}
+        movementId={movementProofRow?.movement_id ?? null}
+        onOpenChange={(o) => !o && setMovementProofRow(null)}
       />
     </div>
   );

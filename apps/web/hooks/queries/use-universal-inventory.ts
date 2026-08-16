@@ -587,6 +587,28 @@ export function useUploadMovementProof(branchId: string | null | undefined) {
   });
 }
 
+/**
+ * Resolves a fresh signed proof-photo URL for one movement, on demand — used
+ * by the Admin Reports "Inventory Movement" tab, whose row data (unlike the
+ * branch-scoped Inventory Movements screen) only carries a proof_available
+ * Yes/No flag, never a pre-resolved URL, so the report row shape stays safe
+ * to also feed CSV/PDF export. Only enabled while a "View Proof" dialog for
+ * this movement is open — same pattern as useDiscountProof/usePaymentProof.
+ */
+export function useMovementProofUrl(branchId: string | null | undefined, movementId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['branch-inventory-stock', branchId, 'movement-proof-url', movementId],
+    queryFn: async () => {
+      const response = await apiClient<{ proof_url: string | null }>(
+        `/api/branches/${branchId}/inventory-stock/movements/${movementId}/proof-url`,
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load proof photo'));
+      return response.data;
+    },
+    enabled: Boolean(branchId) && Boolean(movementId) && enabled,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Cost correction (Receiving Simplification V2 §12-15) — controlled,
 // audited change to a branch's current carrying cost. adminOrSupervisor

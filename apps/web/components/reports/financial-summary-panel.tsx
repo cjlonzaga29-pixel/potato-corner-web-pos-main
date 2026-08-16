@@ -11,6 +11,7 @@ import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
 import { useDashboardSalesTrendReport, usePaymentMethodMixReport } from '@/hooks/queries/use-reports';
+import { formatCurrency } from '@/lib/utils';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 type Granularity = 'daily' | 'weekly' | 'monthly';
@@ -66,10 +67,11 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
   // CSV/PDF export show, so this panel never diverges from them (no second
   // financial formula engine).
   const rows = salesTrend.data?.data;
-  const { grossSales, netSales, cogs, grossProfit, wasteCost, totalExpenses, operatingResult, isProfitEstimated } = useMemo(() => {
+  const { grossSales, discountTotal, netSales, cogs, grossProfit, wasteCost, totalExpenses, operatingResult, isProfitEstimated } = useMemo(() => {
     const data = rows ?? [];
     return {
       grossSales: data.reduce((sum, row) => sum + row.gross_sales, 0),
+      discountTotal: data.reduce((sum, row) => sum + row.discount_total, 0),
       netSales: data.reduce((sum, row) => sum + row.net_sales, 0),
       cogs: data.reduce((sum, row) => sum + row.cogs, 0),
       grossProfit: data.reduce((sum, row) => sum + row.gross_profit, 0),
@@ -120,6 +122,7 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
           isLoading={isLoading}
           tooltip={`Completed sales from ${dateFrom} to ${dateTo}, before discounts/refunds.`}
         />
+        <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tone="negative" tooltip="PWD, Senior, and other discounts applied to completed sales." />
         <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} tooltip="Gross Sales minus discounts and refunds." />
         <KpiCard
           title="Cost of Goods Sold"
@@ -150,6 +153,48 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
         emphasize
         tooltip="Gross Profit minus Waste Cost minus Operating Expenses."
       />
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Financial Waterfall</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1 font-mono text-sm">
+            <div className="flex justify-between">
+              <span>Gross Sales</span>
+              <span className="tabular-nums">{formatCurrency(grossSales)}</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Less: Discounts</span>
+              <span className="tabular-nums">-{formatCurrency(discountTotal)}</span>
+            </div>
+            <div className="flex justify-between border-t pt-1 font-semibold">
+              <span>Net Sales</span>
+              <span className="tabular-nums">{formatCurrency(netSales)}</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Less: COGS</span>
+              <span className="tabular-nums">-{formatCurrency(cogs)}</span>
+            </div>
+            <div className="flex justify-between border-t pt-1 font-semibold">
+              <span>Gross Profit</span>
+              <span className="tabular-nums">{formatCurrency(grossProfit)}</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Less: Waste</span>
+              <span className="tabular-nums">-{formatCurrency(wasteCost)}</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Less: Expenses</span>
+              <span className="tabular-nums">-{formatCurrency(totalExpenses)}</span>
+            </div>
+            <div className={`flex justify-between border-t pt-1 text-base font-bold ${operatingResult >= 0 ? 'text-success' : 'text-destructive'}`}>
+              <span>Operating Result</span>
+              <span className="tabular-nums">{formatCurrency(operatingResult)}</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

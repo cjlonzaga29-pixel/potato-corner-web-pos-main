@@ -14,6 +14,7 @@ export type {
   DiscountComplianceReportRow,
   PaymentMethodMixReportRow,
   InventoryMovementReportRow,
+  InventoryValueSummary,
   InventoryConsumptionSummaryReportRow,
   IngredientWeightKgRow,
   PackagingPcRow,

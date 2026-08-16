@@ -358,6 +358,7 @@ describe('reportsRepository.getInventoryMovement', () => {
         reference_id: 'ref-1',
         notes: 'Received from supplier',
         recorded_by_name: 'Juan Cruz',
+        responsible_user_name: null,
         unit_cost: 2.5,
         total_cost: -5,
         proof_available: 'Yes',

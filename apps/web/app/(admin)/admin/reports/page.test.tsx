@@ -19,6 +19,7 @@ vi.mock('@/hooks/queries/use-reports', () => {
     useFraudAlertSummaryReport: vi.fn(() => empty),
     useDiscountComplianceReport: vi.fn(() => empty),
     useInventoryMovementReport: vi.fn(() => empty),
+    useInventoryValueSummaryReport: vi.fn(() => empty),
     useInventoryConsumptionSummaryReport: vi.fn(() => empty),
     useInventorySummaryReport: vi.fn(() => empty),
     useAttendanceSummaryReport: vi.fn(() => empty),
@@ -34,6 +35,11 @@ vi.mock('@/hooks/queries/use-reports', () => {
 vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpenses: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
   useExpensesRealtimeSync: vi.fn(),
+}));
+
+// Backs the Inventory Movement tab's "View Proof" dialog — not under test here.
+vi.mock('@/hooks/queries/use-universal-inventory', () => ({
+  useMovementProofUrl: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
 // Backs the Daily Sales "View Transactions" drilldown (DailySalesDrilldown) — not under test

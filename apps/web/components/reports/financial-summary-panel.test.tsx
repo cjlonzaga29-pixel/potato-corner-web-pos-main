@@ -89,20 +89,24 @@ describe('FinancialSummaryPanel', () => {
     mockDefaults();
     render(<FinancialSummaryPanel branchId={null} dateFrom="2026-07-01" dateTo="2026-07-02" />);
 
-    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
+    // Labels below also appear as their own row in the Financial Waterfall
+    // card (Business Accountability V2 §D2), rendered alongside the KpiCard
+    // grid — so these four are asserted with getAllByText, not getByText.
+    expect(screen.getAllByText('Gross Sales').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('₱1500')).toBeInTheDocument();
-    expect(screen.getByText('Net Sales')).toBeInTheDocument();
+    expect(screen.getAllByText('Net Sales').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('₱1350')).toBeInTheDocument();
     expect(screen.getByText('Cost of Goods Sold')).toBeInTheDocument();
     expect(screen.getByText('₱600')).toBeInTheDocument();
-    expect(screen.getByText('Gross Profit')).toBeInTheDocument();
+    expect(screen.getAllByText('Gross Profit').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('₱750')).toBeInTheDocument();
     expect(screen.getByText('Waste Cost')).toBeInTheDocument();
     expect(screen.getByText('₱30')).toBeInTheDocument();
     expect(screen.getByText('Operating Expenses')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();
-    expect(screen.getByText('Operating Result')).toBeInTheDocument();
+    expect(screen.getAllByText('Operating Result').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('₱420')).toBeInTheDocument();
+    expect(screen.getByText('Discounts')).toBeInTheDocument();
   });
 
   it('renders an error state with retry when any underlying query errors', () => {

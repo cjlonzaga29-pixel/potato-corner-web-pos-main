@@ -75,6 +75,9 @@ function ExpensesPageContent() {
         vendor_name: row.vendor_name ?? '',
         amount: row.amount,
         created_by_name: row.created_by_name,
+        // 'Yes'/'No' only — never the signed URL itself (same rule as every
+        // other proof-bearing export in this app).
+        proof_available: row.receipt_url ? 'Yes' : 'No',
       })),
       [
         { key: 'incurred_at', label: 'Date' },
@@ -83,6 +86,7 @@ function ExpensesPageContent() {
         { key: 'vendor_name', label: 'Vendor' },
         { key: 'amount', label: 'Amount' },
         { key: 'created_by_name', label: 'Recorded By' },
+        { key: 'proof_available', label: 'Proof Available' },
       ],
     );
   }

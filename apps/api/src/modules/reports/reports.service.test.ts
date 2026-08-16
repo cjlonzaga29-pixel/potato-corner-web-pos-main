@@ -801,6 +801,7 @@ describe('reportsService.requestExport', () => {
             vendor_name: 'Meralco',
             amount: 'PHP 1234.50',
             created_by_name: 'Juan Dela Cruz',
+            proof_available: 'No',
           },
         ],
         1,

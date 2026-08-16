@@ -172,6 +172,11 @@ export const InventoryMovementReportRowSchema = z.object({
   reference_id: z.string().nullable(),
   notes: z.string().nullable(),
   recorded_by_name: z.string().nullable(),
+  // Who is accountable for the movement (e.g. the staff member who wasted
+  // stock or received the delivery) -- distinct from recorded_by_name, which
+  // is who keyed the record into the system. Null when the movement type
+  // doesn't capture a responsible party.
+  responsible_user_name: z.string().nullable(),
   // Carrying-cost snapshot at movement time (never recomputed from today's
   // average) -- null means "cost not initialized", not 0.
   unit_cost: z.number().nullable(),
@@ -185,6 +190,24 @@ export const InventoryMovementReportRowSchema = z.object({
   created_at: z.iso.datetime(),
 });
 export type InventoryMovementReportRow = z.infer<typeof InventoryMovementReportRowSchema>;
+
+// Value-based rollup for the Inventory Activity/Audit hub's summary cards
+// (Business Accountability V2 §B1) -- distinct from the per-row movement
+// ledger above. current_inventory_value is a point-in-time snapshot (not
+// filtered by date range); the rest are sums over the same branch/date
+// filters as the movement ledger. All values are non-negative -- "out"
+// flavored buckets (waste, adjustment out, transfer out) are already
+// absolute magnitudes, not signed deltas.
+export const InventoryValueSummarySchema = z.object({
+  current_inventory_value: z.number(),
+  stock_received_value: z.number(),
+  waste_cost: z.number(),
+  adjustment_in_value: z.number(),
+  adjustment_out_value: z.number(),
+  transfer_in_value: z.number(),
+  transfer_out_value: z.number(),
+});
+export type InventoryValueSummary = z.infer<typeof InventoryValueSummarySchema>;
 
 // Aggregated sale-driven consumption (movement_type SALE only) per ingredient/branch
 // over the filtered date range — distinct from InventoryMovementReportRow above, which

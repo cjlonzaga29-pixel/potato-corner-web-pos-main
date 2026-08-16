@@ -123,6 +123,7 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'unit_cost', header: 'Unit Cost' },
     { key: 'total_cost', header: 'Total Cost' },
     { key: 'recorded_by_name', header: 'Recorded By' },
+    { key: 'responsible_user_name', header: 'Responsible Staff' },
     // Yes/No only — never the storage key or a signed URL (same rule as
     // DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS's discount_proof_available
     // above). Actually viewing the photo happens on the dedicated Inventory

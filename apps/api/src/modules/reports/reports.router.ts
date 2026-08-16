@@ -86,6 +86,7 @@ realtimeRoute('/cash-reconciliation', (f, id, role) => reportsService.getCashRec
 realtimeRoute('/void-refund', (f, id, role) => reportsService.getVoidRefundReport(f, id, role));
 realtimeRoute('/discount-compliance', (f, id, role) => reportsService.getDiscountComplianceReport(f, id, role));
 realtimeRoute('/inventory-movement', (f, id, role) => reportsService.getInventoryMovementReport(f, id, role));
+realtimeRoute('/inventory-value-summary', (f, id, role) => reportsService.getInventoryValueSummaryReport(f, id, role));
 realtimeRoute('/inventory-consumption-summary', (f, id, role) => reportsService.getInventoryConsumptionSummaryReport(f, id, role));
 realtimeRoute('/inventory-summary', (f, id, role) => reportsService.getInventorySummaryReport(f, id, role));
 realtimeRoute('/attendance-summary', (f, id, role) => reportsService.getAttendanceSummaryReport(f, id, role));

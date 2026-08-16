@@ -10,6 +10,7 @@ const SAMPLE_ROW: ExpensesExportRow = {
   vendor_name: 'Meralco',
   amount: formatPhp(1234.5),
   created_by_name: 'Juan Dela Cruz',
+  proof_available: 'Yes',
 };
 
 /**
@@ -110,6 +111,7 @@ describe('generateExpensesPdf', () => {
         vendor_name: 'A Very Long Vendor Company Name Incorporated Philippines',
         amount: formatPhp(1234.5),
         created_by_name: 'A Very Long Employee Full Name Dela Cruz',
+        proof_available: 'No',
       },
     ];
     const buffer = await generateExpensesPdf({ page: 1, limit: 100 }, rows, 1, 1234.5, 'SM North', 'POTATO CORNER');
@@ -124,6 +126,7 @@ describe('generateExpensesPdf', () => {
       vendor_name: `Vendor ${i}`,
       amount: formatPhp(100 + i),
       created_by_name: 'Juan Dela Cruz',
+      proof_available: i % 2 === 0 ? 'Yes' : 'No',
     }));
     const buffer = await generateExpensesPdf({ page: 1, limit: 100 }, rows, 100, 15000, 'SM North', 'POTATO CORNER');
     expect(buffer.subarray(0, 5).toString('utf-8')).toBe('%PDF-');
@@ -131,7 +134,15 @@ describe('generateExpensesPdf', () => {
     expect(boxCount).toBeGreaterThan(1);
   }, 60000);
 
-  it('exports exactly the six required columns in the required order: Date, Branch, Category, Vendor, Amount, Recorded By', () => {
-    expect(EXPENSES_EXPORT_COLUMNS.map((c) => c.header)).toEqual(['Date', 'Branch', 'Category', 'Vendor', 'Amount', 'Recorded By']);
+  it('exports exactly the seven required columns in the required order: Date, Branch, Category, Vendor, Amount, Recorded By, Proof Available', () => {
+    expect(EXPENSES_EXPORT_COLUMNS.map((c) => c.header)).toEqual([
+      'Date',
+      'Branch',
+      'Category',
+      'Vendor',
+      'Amount',
+      'Recorded By',
+      'Proof Available',
+    ]);
   });
 });

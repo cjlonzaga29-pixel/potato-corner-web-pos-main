@@ -57,6 +57,18 @@ export const expenseColumns: ColumnDef<ExpenseRow>[] = [
     cell: ({ row }) => row.original.created_by_name,
   },
   {
+    id: 'proof',
+    header: 'Proof',
+    cell: ({ row }) =>
+      row.original.receipt_url ? (
+        <a href={row.original.receipt_url} target="_blank" rel="noreferrer" className="text-primary underline">
+          Yes · View Receipt
+        </a>
+      ) : (
+        <span className="text-xs text-muted-foreground">No Proof</span>
+      ),
+  },
+  {
     id: 'actions',
     header: '',
     cell: ({ row }) => (

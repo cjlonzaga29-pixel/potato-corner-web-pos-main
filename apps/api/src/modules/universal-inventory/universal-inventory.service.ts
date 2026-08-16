@@ -798,14 +798,29 @@ export const universalInventoryService = {
     const users = await repo.findUsersByIds(userIds);
     const nameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
 
+    // Own-proofKey-less TRANSFER legs fall back to their sibling leg's proof
+    // (same referenceId, uploaded once against transferOut.id) — see
+    // getMovementProofUrl's doc comment for why. Batched across the whole
+    // page instead of one lookup per row.
+    const transferReferenceIdsNeedingFallback = Array.from(
+      new Set(
+        movements
+          .filter((m) => !m.proofKey && m.referenceType === 'transfer' && m.referenceId)
+          .map((m) => m.referenceId as string),
+      ),
+    );
+    const siblingProofKeyByReferenceId = await repo.findSiblingProofKeysByReferenceIds(transferReferenceIdsNeedingFallback);
+
     const enrichedMovements = await Promise.all(
-      movements.map(async (m) =>
-        toStockMovementResponse(m, {
-          proofUrl: m.proofKey ? await getSignedInventoryProofUrl(m.proofKey) : null,
+      movements.map(async (m) => {
+        const proofKey =
+          m.proofKey ?? (m.referenceType === 'transfer' && m.referenceId ? (siblingProofKeyByReferenceId.get(m.referenceId) ?? null) : null);
+        return toStockMovementResponse(m, {
+          proofUrl: proofKey ? await getSignedInventoryProofUrl(proofKey) : null,
           performedByName: m.performedByUserId ? (nameById.get(m.performedByUserId) ?? null) : null,
           responsibleUserName: m.responsibleUserId ? (nameById.get(m.responsibleUserId) ?? null) : null,
-        }),
-      ),
+        });
+      }),
     );
 
     return {
@@ -1336,8 +1351,17 @@ export const universalInventoryService = {
     if (!movement || movement.branchId !== branchId) {
       throw new UniversalInventoryError('MOVEMENT_NOT_FOUND', 'Inventory stock movement not found', 404);
     }
-    if (!movement.proofKey) return { proof_url: null };
-    return { proof_url: await getSignedInventoryProofUrl(movement.proofKey) };
+    let proofKey = movement.proofKey;
+    // TRANSFER_OUT/TRANSFER_IN share one business event — proof is uploaded
+    // once, against transferOut.id, so the other leg falls back to its
+    // sibling's proof instead of reporting "no proof" for a transfer that
+    // does have one.
+    if (!proofKey && movement.referenceType === 'transfer' && movement.referenceId) {
+      const siblingKeys = await repo.findSiblingProofKeysByReferenceIds([movement.referenceId]);
+      proofKey = siblingKeys.get(movement.referenceId) ?? null;
+    }
+    if (!proofKey) return { proof_url: null };
+    return { proof_url: await getSignedInventoryProofUrl(proofKey) };
   },
 
   // --- Cost correction (Receiving Simplification V2 §12-15) ---

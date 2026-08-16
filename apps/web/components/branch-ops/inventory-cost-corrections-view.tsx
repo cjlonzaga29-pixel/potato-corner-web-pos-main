@@ -18,9 +18,15 @@ const REASON_LABELS: Record<CostCorrectionReason, string> = {
   other: 'Other',
 };
 
+interface InventoryCostCorrectionsViewProps {
+  /** Overrides useBranchStore's activeBranchId — used by the Admin cross-branch screen, which has no single "active branch" of its own. Omitted (the default) everywhere else, preserving the existing branch-store-driven behavior exactly. */
+  branchId?: string | null;
+}
+
 /** Supervisor/Super Admin only — no equivalent route exists under (branch), enforcing the RBAC at the routing level in addition to the server-side adminOrSupervisor guard. */
-export function InventoryCostCorrectionsView() {
-  const activeBranchId = useBranchStore((s) => s.activeBranchId);
+export function InventoryCostCorrectionsView({ branchId }: InventoryCostCorrectionsViewProps = {}) {
+  const storeActiveBranchId = useBranchStore((s) => s.activeBranchId);
+  const activeBranchId = branchId !== undefined ? branchId : storeActiveBranchId;
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
 
   const { data, isLoading, isError, refetch } = useInventoryCostCorrections(activeBranchId, {

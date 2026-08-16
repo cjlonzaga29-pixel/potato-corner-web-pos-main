@@ -23,6 +23,8 @@ import {
   ListTree,
   SlidersHorizontal,
   ClipboardList,
+  History,
+  FileClock,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -56,6 +58,8 @@ export const ADMIN_NAV_ITEMS = [
       { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
       { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
       { label: 'Units', href: '/admin/inventory/units', icon: Ruler },
+      { label: 'Inventory Movements', href: '/admin/inventory/movements', icon: History },
+      { label: 'Cost Corrections', href: '/admin/inventory/cost-corrections', icon: FileClock },
       { label: 'Recipe Readiness', href: '/admin/recipe-readiness', icon: ClipboardList },
     ],
   },

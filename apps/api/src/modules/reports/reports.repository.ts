@@ -640,6 +640,26 @@ export const reportsRepository = {
       ? await prisma.user.findMany({ where: { id: { in: recorderIds } }, select: { id: true, firstName: true, lastName: true } })
       : [];
     const recorderNameById = new Map(recorders.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+
+    // TRANSFER_OUT/TRANSFER_IN share one business event and one proof
+    // upload (against transferOut.id) — a row with no proof_key of its own
+    // still reports Yes when its sibling leg (same reference_id) has one,
+    // mirroring universalInventoryRepository.findSiblingProofKeysByReferenceIds.
+    // Never inferred from movement_type alone — only an actual sibling
+    // proof_key match counts.
+    const transferReferenceIdsNeedingFallback = [
+      ...new Set(
+        movements.filter((m) => !m.proofKey && m.referenceType === 'transfer' && m.referenceId).map((m) => m.referenceId as string),
+      ),
+    ];
+    const siblingProofRows = transferReferenceIdsNeedingFallback.length
+      ? await prisma.inventoryStockMovement.findMany({
+          where: { referenceId: { in: transferReferenceIdsNeedingFallback }, proofKey: { not: null } },
+          select: { referenceId: true },
+        })
+      : [];
+    const referenceIdsWithProof = new Set(siblingProofRows.map((r) => r.referenceId));
+
     return movements.map((m) => ({
       movement_id: m.id,
       branch_id: m.branchId,
@@ -661,7 +681,7 @@ export const reportsRepository = {
       recorded_by_name: m.performedByUserId ? (recorderNameById.get(m.performedByUserId) ?? null) : null,
       unit_cost: m.unitCost ? m.unitCost.toNumber() : null,
       total_cost: m.totalCost ? m.totalCost.toNumber() : null,
-      proof_available: m.proofKey ? 'Yes' : 'No',
+      proof_available: m.proofKey || (m.referenceId && referenceIdsWithProof.has(m.referenceId)) ? 'Yes' : 'No',
       created_at: m.createdAt.toISOString(),
     }));
   },

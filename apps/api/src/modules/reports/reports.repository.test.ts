@@ -442,6 +442,64 @@ describe('reportsRepository.getInventoryMovement', () => {
     expect(rows[0]?.recorded_by_name).toBeNull();
     expect(prisma.user.findMany).not.toHaveBeenCalled();
   });
+
+  // INVENTORY AUDIT FOLLOW-UPS §2A/§6/Phase 6 — a TRANSFER_IN row with no
+  // proof_key of its own still reports Yes when its sibling TRANSFER_OUT leg
+  // (same reference_id) has one — never inferred from movement_type alone.
+  it('reports proof_available Yes for a TRANSFER_IN row whose sibling TRANSFER_OUT leg has the proof', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValueOnce([
+      {
+        id: 'mv-in', branchId: 'b2', inventoryItemId: 'item-1', movementType: 'TRANSFER_IN',
+        quantityChange: decimal(5), quantityBefore: decimal(10), quantityAfter: decimal(15),
+        referenceType: 'transfer', referenceId: 'evt-1', notes: null,
+        performedByUserId: null, unitCost: null, totalCost: null, proofKey: null,
+        createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM South' }, inventoryItem: { name: 'Potato' }, unit: { code: 'kg' },
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValueOnce([{ referenceId: 'evt-1' }] as never);
+
+    const rows = await reportsRepository.getInventoryMovement(baseFilters);
+
+    expect(prisma.inventoryStockMovement.findMany).toHaveBeenCalledTimes(2);
+    expect(rows[0]?.proof_available).toBe('Yes');
+  });
+
+  it('reports proof_available No for a TRANSFER row when neither it nor its sibling has a proof', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValueOnce([
+      {
+        id: 'mv-in', branchId: 'b2', inventoryItemId: 'item-1', movementType: 'TRANSFER_IN',
+        quantityChange: decimal(5), quantityBefore: decimal(10), quantityAfter: decimal(15),
+        referenceType: 'transfer', referenceId: 'evt-1', notes: null,
+        performedByUserId: null, unitCost: null, totalCost: null, proofKey: null,
+        createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM South' }, inventoryItem: { name: 'Potato' }, unit: { code: 'kg' },
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValueOnce([] as never);
+
+    const rows = await reportsRepository.getInventoryMovement(baseFilters);
+
+    expect(rows[0]?.proof_available).toBe('No');
+  });
+
+  it('never looks up a sibling proof for a non-transfer row (never infers proof from movement_type)', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValueOnce([
+      {
+        id: 'mv-adj', branchId: 'b1', inventoryItemId: 'item-1', movementType: 'ADJUSTMENT_OUT',
+        quantityChange: decimal(-2), quantityBefore: decimal(10), quantityAfter: decimal(8),
+        referenceType: null, referenceId: null, notes: null,
+        performedByUserId: null, unitCost: null, totalCost: null, proofKey: null,
+        createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato' }, unit: { code: 'kg' },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryMovement(baseFilters);
+
+    expect(prisma.inventoryStockMovement.findMany).toHaveBeenCalledTimes(1);
+    expect(rows[0]?.proof_available).toBe('No');
+  });
 });
 
 // SALE MOVEMENT COST SNAPSHOT FIX — cost must come from each SALE

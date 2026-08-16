@@ -15,7 +15,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useAdjustInventoryStock, useBranchInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { useAdjustInventoryStock, useBranchInventoryStock, useUploadMovementProof } from '@/hooks/queries/use-universal-inventory';
+import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
 
 const REASON_LABELS: Record<AdjustmentReason, string> = {
   count_correction: 'Count Correction',
@@ -45,6 +46,19 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
   const inventoryItemId = form.watch('inventory_item_id');
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const adjust = useAdjustInventoryStock(activeBranchId, inventoryItemId);
+  const uploadProof = useUploadMovementProof(activeBranchId);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  // Set only once the adjustment has actually been recorded (stock already
+  // changed server-side). Once set, the form below is replaced by a
+  // recovery banner so a failed proof upload can never be "retried" by
+  // resubmitting the whole form — that would call /adjust again and double
+  // the adjustment. Retry re-attaches to this same movement id instead.
+  const [recordedMovement, setRecordedMovement] = useState<{ id: string } | null>(null);
+  // Distinct from recordedMovement: only true once a proof upload has
+  // actually failed — recordedMovement flips to non-null as soon as /adjust
+  // succeeds, before the upload outcome is known, so the recovery banner
+  // below must not key off it alone.
+  const [proofUploadFailed, setProofUploadFailed] = useState(false);
 
   useEffect(() => {
     const preselected = searchParams.get('inventory_item_id');
@@ -60,16 +74,56 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
 
   async function handleConfirm() {
     if (!pendingValues) return;
-    await adjust.mutateAsync({
+    const movement = await adjust.mutateAsync({
       quantity_delta: pendingValues.quantity_delta,
       reason_code: pendingValues.reason_code,
       notes: pendingValues.notes || undefined,
     });
+    setRecordedMovement({ id: movement.id });
+    if (proofFile) {
+      try {
+        await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
+      } catch {
+        setProofUploadFailed(true); // Recovery banner takes over below.
+        return;
+      }
+    }
+    router.push(`${basePath}/inventory`);
+  }
+
+  async function retryProofUpload() {
+    if (!recordedMovement || !proofFile) return;
+    try {
+      await uploadProof.mutateAsync({ movementId: recordedMovement.id, file: proofFile });
+    } catch {
+      setProofUploadFailed(true);
+      return;
+    }
     router.push(`${basePath}/inventory`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording an adjustment.</p>;
+  }
+
+  if (recordedMovement && proofUploadFailed) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4">
+        <div className="rounded-md border border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-medium">Stock adjustment was recorded, but the proof photo could not be uploaded.</p>
+          <p className="mt-1">The adjustment has already been applied — retrying below will not apply it again.</p>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory`)}>
+            Continue Without Photo
+          </Button>
+          <Button type="button" onClick={() => void retryProofUpload()} disabled={uploadProof.isPending || !proofFile}>
+            {uploadProof.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Retry Photo Upload
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -153,6 +207,8 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
+          <InventoryProofPhotoPicker label="Proof Photo (optional)" file={proofFile} onChange={setProofFile} />
+
           <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
             <Textarea rows={3} />
           </FormFieldWrapper>
@@ -161,8 +217,8 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
             <Button type="button" variant="outline" onClick={() => router.back()}>
               Cancel
             </Button>
-            <Button type="submit" disabled={adjust.isPending}>
-              {adjust.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button type="submit" disabled={adjust.isPending || uploadProof.isPending}>
+              {(adjust.isPending || uploadProof.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Record Adjustment
             </Button>
           </div>

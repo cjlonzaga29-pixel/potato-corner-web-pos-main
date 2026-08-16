@@ -375,6 +375,30 @@ export const universalInventoryRepository = {
     return prisma.inventoryStockMovement.update({ where: { id }, data: { proofKey, proofType }, include: stockMovementInclude });
   },
 
+  /**
+   * A TRANSFER_OUT/TRANSFER_IN pair shares one referenceId but proof is only
+   * ever uploaded once (against transferOut.id, from the source branch's
+   * form) — this resolves the OTHER leg's proof by referenceId instead of
+   * requiring a second upload, so both legs' UI can show the same photo.
+   * Callers only pass referenceIds whose own row's proofKey is already null,
+   * so any match found here necessarily belongs to the sibling leg, not the
+   * row itself — no id-exclusion needed. One match per referenceId is kept
+   * (a transfer has exactly two legs, at most one of which is ever costed
+   * with a proof upload today).
+   */
+  async findSiblingProofKeysByReferenceIds(referenceIds: string[]): Promise<Map<string, string>> {
+    if (referenceIds.length === 0) return new Map();
+    const rows = await prisma.inventoryStockMovement.findMany({
+      where: { referenceId: { in: referenceIds }, proofKey: { not: null } },
+      select: { referenceId: true, proofKey: true },
+    });
+    const map = new Map<string, string>();
+    for (const row of rows) {
+      if (row.referenceId && row.proofKey && !map.has(row.referenceId)) map.set(row.referenceId, row.proofKey);
+    }
+    return map;
+  },
+
   /** Batch name lookup for movement/correction history display — InventoryStockMovement.performedByUserId/responsibleUserId are loose references, not Prisma relations (the entity referenced varies), so this is a manual findMany + map, same pattern as reports.repository.ts's recorderIds lookup. */
   findUsersByIds(ids: string[]) {
     if (ids.length === 0) return Promise.resolve([]);

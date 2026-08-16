@@ -45,6 +45,7 @@ vi.mock('./universal-inventory.repository.js', () => ({
     isActiveUserInBranch: vi.fn(),
     findMovementById: vi.fn(),
     updateMovementProof: vi.fn(),
+    findSiblingProofKeysByReferenceIds: vi.fn(),
     findUsersByIds: vi.fn(),
     setStockUnitCost: vi.fn(),
     createCostCorrection: vi.fn(),
@@ -206,6 +207,7 @@ beforeEach(() => {
   vi.mocked(repo.getConsumedTodayByBranch).mockResolvedValue(new Map());
   vi.mocked(repo.isActiveUserInBranch).mockResolvedValue(true);
   vi.mocked(repo.findUsersByIds).mockResolvedValue([]);
+  vi.mocked(repo.findSiblingProofKeysByReferenceIds).mockResolvedValue(new Map());
   // Mirrors a real Prisma round-trip: Decimal-typed columns always come back
   // as Decimal instances on read, even when the write was given a plain
   // number (as adjustStock's quantityDelta and transferStock's quantity are).
@@ -524,6 +526,38 @@ describe('universalInventoryService.getStockMovements', () => {
     const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
 
     expect(result.movements[0]).toMatchObject({ unit_id: null, unit_code: null });
+  });
+
+  // INVENTORY AUDIT FOLLOW-UPS §2A/§6 — both legs of a paired transfer must
+  // show the same proof in list rows too, not just the single-movement
+  // proof-url endpoint.
+  it('resolves a TRANSFER_IN row\'s proof_url from its sibling TRANSFER_OUT leg when it has none of its own', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [
+        buildMovement({ id: 'transfer-in-1', movementType: 'TRANSFER_IN', proofKey: null, referenceType: 'transfer', referenceId: 'evt-1' }),
+      ],
+      total: 1,
+    } as never);
+    vi.mocked(repo.findSiblingProofKeysByReferenceIds).mockResolvedValue(new Map([['evt-1', 'movements/branch-1/transfer-out-1/x.webp']]));
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(repo.findSiblingProofKeysByReferenceIds).toHaveBeenCalledWith(['evt-1']);
+    expect(result.movements[0]).toMatchObject({ proof_url: 'https://signed.example/proof' });
+  });
+
+  it('does not look up a sibling proof for rows that already have their own, or for non-transfer rows', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [
+        buildMovement({ id: 'transfer-out-1', movementType: 'TRANSFER_OUT', proofKey: 'movements/branch-1/transfer-out-1/x.webp', referenceType: 'transfer', referenceId: 'evt-1' }),
+        buildMovement({ id: 'adjustment-1', movementType: 'ADJUSTMENT_OUT', proofKey: null, referenceType: null, referenceId: null }),
+      ],
+      total: 2,
+    } as never);
+
+    await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(repo.findSiblingProofKeysByReferenceIds).toHaveBeenCalledWith([]);
   });
 });
 
@@ -1622,6 +1656,66 @@ describe('universalInventoryService — movement/waste proof upload', () => {
     );
 
     expect(repo.updateMovementProof).toHaveBeenCalledWith('movement-1', expect.any(String), 'gallery_upload');
+    expect(result.proof_url).toBe('https://signed.example/proof');
+  });
+
+  // INVENTORY AUDIT FOLLOW-UPS §2A — a TRANSFER_OUT/TRANSFER_IN pair shares
+  // one business event; proof is uploaded once (against transferOut.id), so
+  // the other leg must resolve the same photo instead of reporting none.
+  it('getMovementProofUrl resolves the sibling leg\'s proof for a TRANSFER movement with no proof of its own', async () => {
+    vi.mocked(repo.findMovementById).mockResolvedValue(
+      buildMovement({
+        id: 'transfer-in-1',
+        movementType: 'TRANSFER_IN',
+        proofKey: null,
+        referenceType: 'transfer',
+        referenceId: 'transfer-evt-1',
+      }) as never,
+    );
+    vi.mocked(repo.findSiblingProofKeysByReferenceIds).mockResolvedValue(new Map([['transfer-evt-1', 'movements/branch-1/transfer-out-1/x.webp']]));
+
+    const result = await universalInventoryService.getMovementProofUrl('branch-1', 'transfer-in-1');
+
+    expect(repo.findSiblingProofKeysByReferenceIds).toHaveBeenCalledWith(['transfer-evt-1']);
+    expect(result.proof_url).toBe('https://signed.example/proof');
+  });
+
+  it('getMovementProofUrl returns null when neither the movement nor its transfer sibling has a proof', async () => {
+    vi.mocked(repo.findMovementById).mockResolvedValue(
+      buildMovement({ id: 'transfer-in-1', movementType: 'TRANSFER_IN', proofKey: null, referenceType: 'transfer', referenceId: 'transfer-evt-1' }) as never,
+    );
+    vi.mocked(repo.findSiblingProofKeysByReferenceIds).mockResolvedValue(new Map());
+
+    const result = await universalInventoryService.getMovementProofUrl('branch-1', 'transfer-in-1');
+
+    expect(result.proof_url).toBeNull();
+  });
+
+  it('getMovementProofUrl never looks up a sibling for a non-transfer movement (never infers proof from movement type)', async () => {
+    vi.mocked(repo.findMovementById).mockResolvedValue(
+      buildMovement({ id: 'adjustment-1', movementType: 'ADJUSTMENT_OUT', proofKey: null, referenceType: null, referenceId: null }) as never,
+    );
+
+    const result = await universalInventoryService.getMovementProofUrl('branch-1', 'adjustment-1');
+
+    expect(repo.findSiblingProofKeysByReferenceIds).not.toHaveBeenCalled();
+    expect(result.proof_url).toBeNull();
+  });
+
+  it('getMovementProofUrl uses the movement\'s own proof without a sibling lookup when it already has one', async () => {
+    vi.mocked(repo.findMovementById).mockResolvedValue(
+      buildMovement({
+        id: 'transfer-out-1',
+        movementType: 'TRANSFER_OUT',
+        proofKey: 'movements/branch-1/transfer-out-1/x.webp',
+        referenceType: 'transfer',
+        referenceId: 'transfer-evt-1',
+      }) as never,
+    );
+
+    const result = await universalInventoryService.getMovementProofUrl('branch-1', 'transfer-out-1');
+
+    expect(repo.findSiblingProofKeysByReferenceIds).not.toHaveBeenCalled();
     expect(result.proof_url).toBe('https://signed.example/proof');
   });
 });

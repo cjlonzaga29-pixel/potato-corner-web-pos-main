@@ -10,24 +10,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
+import { MOVEMENT_TYPE_LABELS } from '@/lib/inventory-movement-labels';
 import { useBranchStore } from '@/stores/branch.store';
 import { useBranchInventoryStock, useInventoryStockMovements } from '@/hooks/queries/use-universal-inventory';
 
-const MOVEMENT_TYPE_LABELS: Record<InventoryStockMovementType, string> = {
-  RECEIVING: 'Receiving',
-  ADJUSTMENT_IN: 'Adjustment (In)',
-  ADJUSTMENT_OUT: 'Adjustment (Out)',
-  WASTE: 'Waste',
-  TRANSFER_IN: 'Transfer In',
-  TRANSFER_OUT: 'Transfer Out',
-  PHYSICAL_COUNT: 'Physical Count',
-  SALE: 'Sale',
-  SALE_REVERSAL: 'Sale Reversal',
-};
+interface InventoryMovementsViewProps {
+  /** Overrides useBranchStore's activeBranchId — used by the Admin cross-branch screen, which has no single "active branch" of its own. Omitted (the default) everywhere else, preserving the existing branch-store-driven behavior exactly. */
+  branchId?: string | null;
+}
 
-/** Shared body behind both `/supervisor/inventory/movements` and `/branch/inventory/movements` — no internal navigation, so no basePath is needed. */
-export function InventoryMovementsView() {
-  const activeBranchId = useBranchStore((s) => s.activeBranchId);
+/** Shared body behind `/supervisor/inventory/movements`, `/branch/inventory/movements`, and the Admin Inventory Movements screen — no internal navigation, so no basePath is needed. */
+export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps = {}) {
+  const storeActiveBranchId = useBranchStore((s) => s.activeBranchId);
+  const activeBranchId = branchId !== undefined ? branchId : storeActiveBranchId;
   const { data: stock } = useBranchInventoryStock(activeBranchId);
   const [inventoryItemId, setInventoryItemId] = useState('all');
   const [movementType, setMovementType] = useState('all');
@@ -78,6 +73,15 @@ export function InventoryMovementsView() {
       ),
     },
     {
+      id: 'unit_cost',
+      header: 'Unit Cost',
+      cell: ({ row }) => (
+        <span className="tabular-nums text-muted-foreground">
+          {row.original.unit_cost === null ? '—' : `₱${row.original.unit_cost.toFixed(4)}`}
+        </span>
+      ),
+    },
+    {
       id: 'total_cost',
       header: 'Cost',
       cell: ({ row }) => (
@@ -102,6 +106,26 @@ export function InventoryMovementsView() {
       id: 'performed_by',
       header: 'Recorded By',
       cell: ({ row }) => row.original.performed_by_name ?? '—',
+    },
+    {
+      id: 'responsible',
+      header: 'Responsible Staff',
+      cell: ({ row }) => row.original.responsible_user_name ?? '—',
+    },
+    {
+      id: 'reference',
+      // TRANSFER_IN/TRANSFER_OUT legs share one reference_id (see
+      // transferStock) — shown so the two branch-side rows of the same
+      // transfer can be visually matched instead of looking unrelated.
+      header: 'Reference',
+      cell: ({ row }) =>
+        row.original.reference_id ? (
+          <span className="text-xs text-muted-foreground">
+            {row.original.reference_type ?? 'ref'}: {row.original.reference_id.slice(0, 8)}
+          </span>
+        ) : (
+          '—'
+        ),
     },
     {
       id: 'proof',

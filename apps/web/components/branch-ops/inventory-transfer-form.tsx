@@ -15,7 +15,13 @@ import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { BranchCombobox } from '@/components/shared/branch-combobox';
 import { useBranchStore } from '@/stores/branch.store';
-import { useBranchInventoryStock, useTransferDestinationBranches, useTransferInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import {
+  useBranchInventoryStock,
+  useTransferDestinationBranches,
+  useTransferInventoryStock,
+  useUploadMovementProof,
+} from '@/hooks/queries/use-universal-inventory';
+import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
 
 const formSchema = z.object({
   inventory_item_id: z.uuid('Select an item'),
@@ -42,6 +48,22 @@ function TransferFormContent({ basePath }: { basePath: string }) {
   // depends on the actor's role (branch: any other active branch;
   // supervisor: assigned active branches only; admin: any active branch).
   const { data: destinationBranches = [] } = useTransferDestinationBranches(activeBranchId);
+  const uploadProof = useUploadMovementProof(activeBranchId);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  // Set only once the transfer has actually been recorded (both legs already
+  // written server-side). Once set, the form below is replaced by a recovery
+  // banner so a failed proof upload can never be "retried" by resubmitting
+  // the whole form — that would call /transfer again and move stock twice.
+  // Retry re-attaches to the same transfer_out movement id instead — proof
+  // belongs to the transfer business event, not each leg independently
+  // (see the backend's referenceId-sibling fallback for how the destination
+  // branch's TRANSFER_IN leg resolves the same photo without a second upload).
+  const [recordedTransfer, setRecordedTransfer] = useState<{ transferOutId: string } | null>(null);
+  // Distinct from recordedTransfer: only true once a proof upload has
+  // actually failed — recordedTransfer flips to non-null as soon as
+  // /transfer succeeds, before the upload outcome is known, so the recovery
+  // banner below must not key off it alone.
+  const [proofUploadFailed, setProofUploadFailed] = useState(false);
 
   useEffect(() => {
     const preselected = searchParams.get('inventory_item_id');
@@ -57,17 +79,57 @@ function TransferFormContent({ basePath }: { basePath: string }) {
 
   async function handleConfirm() {
     if (!pendingValues) return;
-    await transfer.mutateAsync({
+    const result = await transfer.mutateAsync({
       inventory_item_id: pendingValues.inventory_item_id,
       to_branch_id: pendingValues.to_branch_id,
       quantity: pendingValues.quantity,
       notes: pendingValues.notes || undefined,
     });
+    setRecordedTransfer({ transferOutId: result.transfer_out.id });
+    if (proofFile) {
+      try {
+        await uploadProof.mutateAsync({ movementId: result.transfer_out.id, file: proofFile });
+      } catch {
+        setProofUploadFailed(true); // Recovery banner takes over below.
+        return;
+      }
+    }
+    router.push(`${basePath}/inventory`);
+  }
+
+  async function retryProofUpload() {
+    if (!recordedTransfer || !proofFile) return;
+    try {
+      await uploadProof.mutateAsync({ movementId: recordedTransfer.transferOutId, file: proofFile });
+    } catch {
+      setProofUploadFailed(true);
+      return;
+    }
     router.push(`${basePath}/inventory`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before transferring stock.</p>;
+  }
+
+  if (recordedTransfer && proofUploadFailed) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4">
+        <div className="rounded-md border border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-medium">Transfer completed, but proof photo could not be uploaded.</p>
+          <p className="mt-1">Both transfer legs have already been recorded — retrying below will not run the transfer again.</p>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory`)}>
+            Continue Without Photo
+          </Button>
+          <Button type="button" onClick={() => void retryProofUpload()} disabled={uploadProof.isPending || !proofFile}>
+            {uploadProof.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Retry Photo Upload
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -140,6 +202,8 @@ function TransferFormContent({ basePath }: { basePath: string }) {
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
 
+          <InventoryProofPhotoPicker label="Proof Photo (optional)" file={proofFile} onChange={setProofFile} />
+
           <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
             <Textarea rows={3} />
           </FormFieldWrapper>
@@ -148,8 +212,8 @@ function TransferFormContent({ basePath }: { basePath: string }) {
             <Button type="button" variant="outline" onClick={() => router.back()}>
               Cancel
             </Button>
-            <Button type="submit" disabled={transfer.isPending}>
-              {transfer.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button type="submit" disabled={transfer.isPending || uploadProof.isPending}>
+              {(transfer.isPending || uploadProof.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Transfer Stock
             </Button>
           </div>

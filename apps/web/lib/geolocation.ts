@@ -3,7 +3,7 @@ export interface GpsCoords {
   lng: number;
 }
 
-export type GeolocationErrorCode = 'PERMISSION_DENIED' | 'POSITION_UNAVAILABLE' | 'TIMEOUT' | 'UNSUPPORTED' | 'UNKNOWN';
+export type GeolocationErrorCode = 'PERMISSION_DENIED' | 'POSITION_UNAVAILABLE' | 'TIMEOUT' | 'UNSUPPORTED' | 'INSECURE_CONTEXT' | 'UNKNOWN';
 
 /** Cashier-friendly geolocation failure — code lets callers branch (e.g. show the permission-recovery panel only for PERMISSION_DENIED) without re-parsing the message string. */
 export class GeolocationError extends Error {
@@ -70,6 +70,13 @@ function requestPosition(options: PositionOptions): Promise<GpsCoords> {
  * instead of leaving the cashier stuck — never more than that one retry.
  */
 export async function getCurrentPosition(): Promise<GpsCoords> {
+  // getCurrentPosition silently hangs (never resolves or rejects) in an
+  // insecure context on most mobile browsers rather than surfacing a clear
+  // error — checked explicitly so a plain-HTTP deployment fails fast with an
+  // actionable message instead of leaving the cashier stuck on a spinner.
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    throw new GeolocationError('INSECURE_CONTEXT', 'Location access requires a secure HTTPS connection.');
+  }
   if (!navigator.geolocation) {
     throw new GeolocationError('UNSUPPORTED', 'This browser does not support location access.');
   }

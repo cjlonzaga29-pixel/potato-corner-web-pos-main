@@ -97,4 +97,19 @@ describe('getCurrentPosition', () => {
     mockGeolocation((_success, error) => error?.(positionError(2)));
     await expect(getCurrentPosition()).rejects.toBeInstanceOf(GeolocationError);
   });
+
+  it('rejects with INSECURE_CONTEXT without ever calling getCurrentPosition when the page is not HTTPS', async () => {
+    const calls: unknown[] = [];
+    mockGeolocation((success) => {
+      calls.push(success);
+    });
+    const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false });
+    try {
+      await expect(getCurrentPosition()).rejects.toMatchObject({ code: 'INSECURE_CONTEXT' });
+      expect(calls).toHaveLength(0);
+    } finally {
+      if (originalDescriptor) Object.defineProperty(window, 'isSecureContext', originalDescriptor);
+    }
+  });
 });

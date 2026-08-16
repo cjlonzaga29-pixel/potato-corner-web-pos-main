@@ -10,9 +10,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
-import { MOVEMENT_TYPE_LABELS } from '@/lib/inventory-movement-labels';
 import { useBranchStore } from '@/stores/branch.store';
 import { useBranchInventoryStock, useInventoryStockMovements } from '@/hooks/queries/use-universal-inventory';
+
+const MOVEMENT_TYPE_LABELS: Record<InventoryStockMovementType, string> = {
+  RECEIVING: 'Receiving',
+  ADJUSTMENT_IN: 'Adjustment (In)',
+  ADJUSTMENT_OUT: 'Adjustment (Out)',
+  WASTE: 'Waste',
+  TRANSFER_IN: 'Transfer In',
+  TRANSFER_OUT: 'Transfer Out',
+  PHYSICAL_COUNT: 'Physical Count',
+  SALE: 'Sale',
+  SALE_REVERSAL: 'Sale Reversal',
+};
 
 interface InventoryMovementsViewProps {
   /** Overrides useBranchStore's activeBranchId — used by the Admin cross-branch screen, which has no single "active branch" of its own. Omitted (the default) everywhere else, preserving the existing branch-store-driven behavior exactly. */

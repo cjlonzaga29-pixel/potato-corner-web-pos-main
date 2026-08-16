@@ -16,8 +16,9 @@ import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
 import { useAuthStore } from '@/stores/auth.store';
-import { useBranchInventoryStock, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { useBranchInventoryStock, useUploadMovementProof, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
 import { useEmployees } from '@/hooks/queries/use-employees';
+import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
 
 const REASON_LABELS: Record<WasteReason, string> = {
   spoilage: 'Spoilage',
@@ -54,6 +55,8 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   const inventoryItemId = form.watch('inventory_item_id');
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const waste = useWasteInventoryStock(activeBranchId, inventoryItemId);
+  const uploadProof = useUploadMovementProof(activeBranchId);
+  const [proofFile, setProofFile] = useState<File | null>(null);
   const quantity = form.watch('quantity');
   const wasteCost = item?.avg_unit_cost != null ? Number(quantity || 0) * item.avg_unit_cost : null;
 
@@ -85,12 +88,15 @@ function WasteFormContent({ basePath }: { basePath: string }) {
 
   async function handleConfirm() {
     if (!pendingValues) return;
-    await waste.mutateAsync({
+    const movement = await waste.mutateAsync({
       quantity: pendingValues.quantity,
       reason_code: pendingValues.reason_code,
       responsible_user_id: pendingValues.responsible_user_id,
       notes: pendingValues.notes || undefined,
     });
+    if (proofFile) {
+      await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
+    }
     router.push(`${basePath}/inventory`);
   }
 
@@ -211,6 +217,8 @@ function WasteFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
+          <InventoryProofPhotoPicker label="Photo Proof (optional)" file={proofFile} onChange={setProofFile} />
+
           <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
             <Textarea rows={3} />
           </FormFieldWrapper>
@@ -219,8 +227,8 @@ function WasteFormContent({ basePath }: { basePath: string }) {
             <Button type="button" variant="outline" onClick={() => router.back()}>
               Cancel
             </Button>
-            <Button type="submit" disabled={waste.isPending}>
-              {waste.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button type="submit" disabled={waste.isPending || uploadProof.isPending}>
+              {(waste.isPending || uploadProof.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Record Waste
             </Button>
           </div>

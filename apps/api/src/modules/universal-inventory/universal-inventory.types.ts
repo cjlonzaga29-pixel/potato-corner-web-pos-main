@@ -81,12 +81,14 @@ export type InventoryStockMovementType =
   | 'SALE'
   | 'SALE_REVERSAL';
 
+export type InventoryProofType = 'live_capture' | 'gallery_upload';
+
 export interface ReceiveInventoryStockData {
   branchId: string;
   inventoryItemId: string;
   quantity: number;
-  /** Purchase cost per entered unit for this delivery — required so every receiving carries a cost snapshot. */
-  unitCost: number;
+  /** Total peso cost for this delivery, as printed on the receipt — replaces the former per-unit unitCost input (Receiving Simplification V2). Per-base-unit carrying cost is derived server-side. */
+  totalCost: number;
   enteredUnitId?: string;
   deliveryReference?: string;
   notes?: string;
@@ -128,4 +130,12 @@ export interface PhysicalCountInventoryStockData {
   counts: { inventoryItemId: string; countedQuantity: number }[];
   notes?: string;
   performedByUserId?: string;
+}
+
+export interface CreateInventoryCostCorrectionData {
+  branchId: string;
+  inventoryItemId: string;
+  newUnitCost: number;
+  reasonCode: string;
+  notes?: string;
 }

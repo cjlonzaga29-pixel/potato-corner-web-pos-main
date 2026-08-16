@@ -12,6 +12,8 @@ import type {
   CreateInventoryItemData,
   UpdateInventoryItemData,
   InventoryStockMovementType,
+  InventoryProofType,
+  CreateInventoryCostCorrectionData,
 } from './universal-inventory.types.js';
 
 const inventoryItemInclude = {
@@ -22,7 +24,13 @@ const inventoryItemInclude = {
 const stockMovementInclude = {
   inventoryItem: { select: { name: true } },
   unit: { select: { code: true } },
+  enteredUnit: { select: { code: true } },
 } satisfies Prisma.InventoryStockMovementInclude;
+
+const costCorrectionInclude = {
+  branch: { select: { name: true } },
+  inventoryItem: { select: { name: true } },
+} satisfies Prisma.InventoryCostCorrectionInclude;
 
 const itemConversionInclude = {
   fromUnit: { select: { id: true, code: true, name: true } },
@@ -46,6 +54,11 @@ export interface CreateStockMovementInput {
   totalCost?: Prisma.Decimal;
   /** WASTE only: accountable staff member, distinct from performedByUserId. */
   responsibleUserId?: string;
+  /** RECEIVING/WASTE only: purchase-unit quantity/unit as entered, distinct from quantityChange/unitId (always base-unit). See schema.prisma's InventoryStockMovement doc comment. */
+  enteredQuantity?: Prisma.Decimal | number;
+  enteredUnitId?: string;
+  proofKey?: string;
+  proofType?: InventoryProofType;
 }
 
 /**
@@ -344,9 +357,84 @@ export const universalInventoryRepository = {
         unitCost: input.unitCost,
         totalCost: input.totalCost,
         responsibleUserId: input.responsibleUserId,
+        enteredQuantity: input.enteredQuantity,
+        enteredUnitId: input.enteredUnitId,
+        proofKey: input.proofKey,
+        proofType: input.proofType,
       },
       include: stockMovementInclude,
     });
+  },
+
+  /** Branch-scoped lookup used to authorize a proof-photo upload/read before touching Storage — mirrors expensesRepository's find-then-assertBranchAccess pattern. */
+  findMovementById(id: string) {
+    return prisma.inventoryStockMovement.findUnique({ where: { id }, include: stockMovementInclude });
+  },
+
+  updateMovementProof(id: string, proofKey: string | null, proofType: InventoryProofType | null) {
+    return prisma.inventoryStockMovement.update({ where: { id }, data: { proofKey, proofType }, include: stockMovementInclude });
+  },
+
+  /** Batch name lookup for movement/correction history display — InventoryStockMovement.performedByUserId/responsibleUserId are loose references, not Prisma relations (the entity referenced varies), so this is a manual findMany + map, same pattern as reports.repository.ts's recorderIds lookup. */
+  findUsersByIds(ids: string[]) {
+    if (ids.length === 0) return Promise.resolve([]);
+    return prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true } });
+  },
+
+  // --- Cost correction (Receiving Simplification V2 §12-15) ---
+
+  /** The one sanctioned direct-mutation path for InventoryStock.unitCost outside the RECEIVING/TRANSFER_IN weighted-average blend. Must be called after lockAndGetStock inside the same transaction. */
+  setStockUnitCost(branchId: string, inventoryItemId: string, unitCost: Prisma.Decimal, tx: Prisma.TransactionClient) {
+    return tx.inventoryStock.update({
+      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
+      data: { unitCost, version: { increment: 1 } },
+    });
+  },
+
+  createCostCorrection(data: CreateInventoryCostCorrectionData & { oldUnitCost: Prisma.Decimal | null; quantityOnHand: Prisma.Decimal; valuationDifference: Prisma.Decimal; correctedByUserId: string }, tx: Prisma.TransactionClient) {
+    return tx.inventoryCostCorrection.create({
+      data: {
+        branchId: data.branchId,
+        inventoryItemId: data.inventoryItemId,
+        oldUnitCost: data.oldUnitCost,
+        newUnitCost: data.newUnitCost,
+        quantityOnHand: data.quantityOnHand,
+        valuationDifference: data.valuationDifference,
+        reasonCode: data.reasonCode,
+        notes: data.notes,
+        correctedByUserId: data.correctedByUserId,
+      },
+      include: costCorrectionInclude,
+    });
+  },
+
+  findCostCorrectionById(id: string) {
+    return prisma.inventoryCostCorrection.findUnique({ where: { id }, include: costCorrectionInclude });
+  },
+
+  updateCostCorrectionProof(id: string, proofKey: string | null, proofType: InventoryProofType | null) {
+    return prisma.inventoryCostCorrection.update({ where: { id }, data: { proofKey, proofType }, include: costCorrectionInclude });
+  },
+
+  async findCostCorrections(
+    branchId: string,
+    filters: { inventoryItemId?: string; page: number; limit: number },
+  ) {
+    const where: Prisma.InventoryCostCorrectionWhereInput = {
+      branchId,
+      ...(filters.inventoryItemId && { inventoryItemId: filters.inventoryItemId }),
+    };
+    const [corrections, total] = await Promise.all([
+      prisma.inventoryCostCorrection.findMany({
+        where,
+        include: costCorrectionInclude,
+        orderBy: { createdAt: 'desc' },
+        skip: (filters.page - 1) * filters.limit,
+        take: filters.limit,
+      }),
+      prisma.inventoryCostCorrection.count({ where }),
+    ]);
+    return { corrections, total };
   },
 
   /**

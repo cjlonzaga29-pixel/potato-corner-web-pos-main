@@ -1,8 +1,19 @@
 import { z } from 'zod';
-import { ADJUSTMENT_REASON, type AdjustmentReason, WASTE_REASON, type WasteReason } from '../constants/status.js';
+import {
+  ADJUSTMENT_REASON,
+  type AdjustmentReason,
+  WASTE_REASON,
+  type WasteReason,
+  COST_CORRECTION_REASON,
+  type CostCorrectionReason,
+  IMAGE_PROOF_TYPE,
+  type ImageProofType,
+} from '../constants/status.js';
 
 const adjustmentReasonValues = Object.values(ADJUSTMENT_REASON) as [AdjustmentReason, ...AdjustmentReason[]];
 const wasteReasonValues = Object.values(WASTE_REASON) as [WasteReason, ...WasteReason[]];
+const costCorrectionReasonValues = Object.values(COST_CORRECTION_REASON) as [CostCorrectionReason, ...CostCorrectionReason[]];
+const imageProofTypeValues = Object.values(IMAGE_PROOF_TYPE) as [ImageProofType, ...ImageProofType[]];
 
 // CR-010 — Universal Inventory identity layer (InventoryItem/Category/Unit/
 // Conversion + branch assignment). Admin-owned; see docs/decisions/CR-010.
@@ -172,7 +183,11 @@ const stockMovementTypeEnum = z.enum([
 
 export const receiveInventoryStockSchema = z.object({
   quantity: z.number().positive(),
-  unit_cost: z.number().positive('Unit cost is required to record acquisition cost'),
+  // Total peso cost for this delivery, as printed on the receipt — the
+  // per-base-unit carrying cost is derived server-side (total_cost /
+  // converted base quantity), never entered by the caller. Replaces the
+  // former unit_cost field (Receiving Simplification V2 §1/§4).
+  total_cost: z.number().positive('Total cost is required to record acquisition cost'),
   entered_unit_id: z.uuid().optional(),
   delivery_reference: z.string().max(100).optional(),
   notes: z.string().optional(),
@@ -242,6 +257,17 @@ export const inventoryStockMovementResponseSchema = z.object({
   unit_cost: z.number().nullable(),
   total_cost: z.number().nullable(),
   responsible_user_id: z.uuid().nullable(),
+  // Purchase-unit quantity/unit as entered (RECEIVING/WASTE only) — distinct
+  // from quantity_change/unit_id, which are always base-unit. Null for
+  // legacy rows and every other movement type.
+  entered_quantity: z.number().nullable(),
+  entered_unit_id: z.uuid().nullable(),
+  entered_unit_code: z.string().nullable(),
+  // Freshly-minted signed URL, resolved on every read — mirrors
+  // Expense.receipt_url. Null when no photo was attached.
+  proof_url: z.string().nullable(),
+  performed_by_name: z.string().nullable(),
+  responsible_user_name: z.string().nullable(),
   created_at: z.iso.datetime(),
 });
 
@@ -257,6 +283,7 @@ export const branchInventoryStockRowSchema = z.object({
   name: z.string(),
   sku: z.string().nullable(),
   category_name: z.string().nullable(),
+  base_unit_id: z.uuid(),
   base_unit_code: z.string(),
   quantity_on_hand: z.number(),
   low_stock_threshold: z.number().nullable(),
@@ -306,3 +333,52 @@ export const physicalCountStockResultResponseSchema = z.object({
   results: z.array(physicalCountStockResultRowSchema),
   submitted_at: z.iso.datetime(),
 });
+
+// ---------------------------------------------------------------------------
+// Cost correction (Receiving Simplification V2 §12-15) — a controlled,
+// audited change to a branch's current InventoryStock.unit_cost. Never
+// rewrites historical movements/COGS/waste; see inventory-cost-correction
+// service doc comment for the accounting rule.
+// ---------------------------------------------------------------------------
+
+export const createInventoryCostCorrectionSchema = z.object({
+  new_unit_cost: z.number().positive('New unit cost must be greater than zero'),
+  reason_code: z.enum(costCorrectionReasonValues),
+  notes: z.string().max(500).optional(),
+});
+
+export const inventoryCostCorrectionResponseSchema = z.object({
+  id: z.uuid(),
+  branch_id: z.uuid(),
+  branch_name: z.string(),
+  inventory_item_id: z.uuid(),
+  inventory_item_name: z.string(),
+  // Null only when correcting a never-before-priced ("Cost not initialized") item.
+  old_unit_cost: z.number().nullable(),
+  new_unit_cost: z.number(),
+  quantity_on_hand: z.number(),
+  valuation_difference: z.number(),
+  reason_code: z.enum(costCorrectionReasonValues),
+  notes: z.string().nullable(),
+  proof_url: z.string().nullable(),
+  corrected_by_user_id: z.uuid(),
+  corrected_by_name: z.string(),
+  created_at: z.iso.datetime(),
+});
+
+export const inventoryCostCorrectionListResponseSchema = z.object({
+  corrections: z.array(inventoryCostCorrectionResponseSchema),
+  total: z.number(),
+  page: z.number(),
+  limit: z.number(),
+});
+
+// ---------------------------------------------------------------------------
+// Proof photo upload (receiving/waste movements and cost corrections) —
+// storage-key-only, mirrors Expense.receiptKey. Multipart requests carry the
+// file itself, not JSON, so there's no request-body schema here; only the
+// proof_type hint (which capture path the client used) travels as a query/
+// form field, validated the same way transaction proof uploads are.
+// ---------------------------------------------------------------------------
+
+export const inventoryProofTypeSchema = z.enum(imageProofTypeValues);

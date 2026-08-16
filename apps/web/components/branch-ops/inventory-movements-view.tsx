@@ -86,6 +86,35 @@ export function InventoryMovementsView() {
         </span>
       ),
     },
+    {
+      id: 'purchase_quantity',
+      header: 'Purchase Qty/Unit',
+      cell: ({ row }) =>
+        row.original.entered_quantity === null ? (
+          '—'
+        ) : (
+          <span className="tabular-nums">
+            {row.original.entered_quantity} {row.original.entered_unit_code}
+          </span>
+        ),
+    },
+    {
+      id: 'performed_by',
+      header: 'Recorded By',
+      cell: ({ row }) => row.original.performed_by_name ?? '—',
+    },
+    {
+      id: 'proof',
+      header: 'Receipt',
+      cell: ({ row }) =>
+        row.original.proof_url ? (
+          <a href={row.original.proof_url} target="_blank" rel="noreferrer" className="text-primary underline">
+            View Receipt
+          </a>
+        ) : (
+          '—'
+        ),
+    },
     { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
   ];
 

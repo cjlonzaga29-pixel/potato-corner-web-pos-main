@@ -1,20 +1,23 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ArrowRightLeft, ClipboardList, History, MinusCircle, PlusCircle, TriangleAlert } from 'lucide-react';
-import type { BranchInventoryStockRow } from '@potato-corner/shared';
+import { ArrowRightLeft, ClipboardList, FileClock, History, MinusCircle, PenLine, PlusCircle, TriangleAlert } from 'lucide-react';
+import { ROLES, type BranchInventoryStockRow } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
 import {
   useBranchInventoryStock,
   useBranchInventoryStockAlerts,
   useInventoryStockRealtimeSync,
 } from '@/hooks/queries/use-universal-inventory';
+import { CostCorrectionDialog } from './cost-correction-dialog';
 
 /**
  * Shared body behind both `/supervisor/inventory` and `/branch/inventory` —
@@ -32,6 +35,13 @@ export function InventoryList({ basePath }: { basePath: string }) {
   useInventoryStockRealtimeSync(activeBranchId);
   const { data, isLoading, isError, refetch } = useBranchInventoryStock(activeBranchId);
   const { data: alertsData } = useBranchInventoryStockAlerts(activeBranchId);
+  // Cost correction is Supervisor/Super Admin only (Receiving Simplification
+  // V2 §12) — this component is shared with /branch/inventory, so the
+  // action/nav must be hidden for the branch role even though the server
+  // independently enforces the same rule (adminOrSupervisor).
+  const role = useAuthStore((s) => s.user?.role);
+  const canCorrectCost = role === ROLES.SUPERVISOR || role === ROLES.SUPER_ADMIN;
+  const [correctingItem, setCorrectingItem] = useState<BranchInventoryStockRow | null>(null);
 
   const alertCount = alertsData?.alerts.length ?? 0;
   const criticalCount = alertsData?.alerts.filter((a) => a.severity === 'critical').length ?? 0;
@@ -115,6 +125,12 @@ export function InventoryList({ basePath }: { basePath: string }) {
             <MinusCircle className="mr-1 h-4 w-4" />
             Waste
           </Button>
+          {canCorrectCost && (
+            <Button variant="ghost" size="sm" onClick={() => setCorrectingItem(row.original)}>
+              <PenLine className="mr-1 h-4 w-4" />
+              Correct Cost
+            </Button>
+          )}
         </div>
       ),
     },
@@ -144,6 +160,12 @@ export function InventoryList({ basePath }: { basePath: string }) {
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
           </Button>
+          {canCorrectCost && (
+            <Button variant="outline" onClick={() => router.push('/supervisor/inventory/cost-corrections')} className="w-full sm:w-auto">
+              <FileClock className="mr-2 h-4 w-4" />
+              Cost Corrections
+            </Button>
+          )}
         </div>
       </div>
 
@@ -176,6 +198,19 @@ export function InventoryList({ basePath }: { basePath: string }) {
           />
         }
       />
+
+      {canCorrectCost && correctingItem && activeBranchId && (
+        <CostCorrectionDialog
+          branchId={activeBranchId}
+          inventoryItemId={correctingItem.inventory_item_id}
+          itemName={correctingItem.name}
+          baseUnitCode={correctingItem.base_unit_code}
+          quantityOnHand={correctingItem.quantity_on_hand}
+          currentUnitCost={correctingItem.avg_unit_cost}
+          open={Boolean(correctingItem)}
+          onOpenChange={(nextOpen) => !nextOpen && setCorrectingItem(null)}
+        />
+      )}
     </div>
   );
 }

@@ -9,11 +9,14 @@ import type {
   AssignInventoryItemToBranchesResponse,
   BranchInventoryStockListResponse,
   CreateInventoryCategoryInput,
+  CreateInventoryCostCorrectionInput,
   CreateInventoryItemInput,
   CreateInventoryItemUnitConversionInput,
   CreateUnitConversionInput,
   CreateUnitOfMeasureInput,
   InventoryCategoryResponse,
+  InventoryCostCorrectionListResponse,
+  InventoryCostCorrectionResponse,
   InventoryItemDetailResponse,
   InventoryItemResponse,
   InventoryItemUnitConversionResponse,
@@ -551,6 +554,108 @@ export function useSubmitInventoryStockCount(branchId: string | null | undefined
     onSuccess: () => {
       invalidateInventoryStock(queryClient, branchId);
       toast.success('Physical count submitted');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Receipt/waste photo proof (Receiving Simplification V2 §7-8) — two-step,
+// mirrors useUploadExpenseReceipt: the movement already exists (created by
+// useReceiveInventoryStock/useWasteInventoryStock above) before this attaches
+// a photo to it. Optional — callers only invoke this when the user picked a
+// file.
+// ---------------------------------------------------------------------------
+
+export function useUploadMovementProof(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ movementId, file }: { movementId: string; file: File }) => {
+      const formData = new FormData();
+      formData.set('proof', file);
+      const response = await apiClient<InventoryStockMovementResponse>(
+        `/api/branches/${branchId}/inventory-stock/movements/${movementId}/proof`,
+        { method: 'POST', body: formData },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload the proof photo'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cost correction (Receiving Simplification V2 §12-15) — controlled,
+// audited change to a branch's current carrying cost. adminOrSupervisor
+// only; branch accounts never see these hooks invoked since the UI that
+// calls them is itself role-gated (server independently enforces the same
+// rule regardless).
+// ---------------------------------------------------------------------------
+
+export function useCreateInventoryCostCorrection(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateInventoryCostCorrectionInput) => {
+      const response = await apiClient<InventoryCostCorrectionResponse>(
+        `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/cost-corrections`,
+        { method: 'POST', body: JSON.stringify(input) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to record cost correction'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateInventoryStock(queryClient, branchId);
+      void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock', branchId, 'cost-corrections'] });
+      toast.success('Cost correction recorded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export interface InventoryCostCorrectionFilters {
+  inventory_item_id?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function useInventoryCostCorrections(branchId: string | null | undefined, filters: InventoryCostCorrectionFilters = {}) {
+  return useQuery({
+    queryKey: ['branch-inventory-stock', branchId, 'cost-corrections', filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters.inventory_item_id) params.set('inventory_item_id', filters.inventory_item_id);
+      params.set('page', String(filters.page ?? 1));
+      params.set('limit', String(filters.limit ?? 25));
+      const response = await apiClient<InventoryCostCorrectionListResponse>(
+        `/api/branches/${branchId}/inventory-stock/cost-corrections?${params.toString()}`,
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load cost correction history'));
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 15 * 1000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useUploadCostCorrectionProof(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ correctionId, file }: { correctionId: string; file: File }) => {
+      const formData = new FormData();
+      formData.set('proof', file);
+      const response = await apiClient<InventoryCostCorrectionResponse>(
+        `/api/branches/${branchId}/inventory-stock/cost-corrections/${correctionId}/proof`,
+        { method: 'POST', body: formData },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload the proof photo'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock', branchId, 'cost-corrections'] });
     },
     onError: (error: Error) => toast.error(error.message),
   });

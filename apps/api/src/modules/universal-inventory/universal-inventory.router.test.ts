@@ -30,6 +30,10 @@ vi.mock('./universal-inventory.service.js', () => ({
     getStockMovements: vi.fn(),
     transferStock: vi.fn(),
     getTransferDestinations: vi.fn(),
+    correctCost: vi.fn(),
+    listCostCorrections: vi.fn(),
+    uploadMovementProof: vi.fn(),
+    uploadCostCorrectionProof: vi.fn(),
   },
 }));
 
@@ -235,15 +239,20 @@ describe('POST /api/universal-inventory/items/:itemId/branches', () => {
 // --- Item-specific unit conversions (TASK 121) ---
 
 describe('GET /api/universal-inventory/items/:itemId/conversions', () => {
-  it('rejects a branch-role token', async () => {
+  // Receiving Simplification V2 §3: branch staff need read access to an
+  // item's configured purchase-unit conversions to populate the receiving
+  // form's Purchase Unit dropdown. Write endpoints (POST/PATCH/DELETE) stay
+  // adminOnly below — only this GET was loosened.
+  it('allows a branch-role token (read-only, needed for the receiving form)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'get', '/items/:itemId/conversions');
     const req = mockReq({ ...authHeader(generateBranchToken(BRANCH_1)), params: { itemId: 'item-1' } });
     const res = mockRes();
+    vi.mocked(universalInventoryService.listItemConversions).mockResolvedValue([]);
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(universalInventoryService.listItemConversions).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.listItemConversions).toHaveBeenCalledWith('item-1');
   });
 
   it('allows a supervisor token (read-only oversight)', async () => {
@@ -482,5 +491,133 @@ describe('GET /:branchId/inventory-stock/transfer-destinations', () => {
 
     expect(universalInventoryService.getTransferDestinations).toHaveBeenCalledWith(BRANCH_1, expect.objectContaining({ role: 'branch' }));
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cost correction RBAC (Receiving Simplification V2 §12) — Branch Accounts
+// get NO access to any correction route; Supervisor is still limited to
+// assigned branches via branchGuard, same as every other stockBranchRouter
+// route.
+// ---------------------------------------------------------------------------
+
+describe('POST /:branchId/inventory-stock/:inventoryItemId/cost-corrections — RBAC', () => {
+  it('rejects a branch-role token', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/:inventoryItemId/cost-corrections');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(BRANCH_1)),
+      params: { branchId: BRANCH_1, inventoryItemId: 'item-1' },
+      body: { new_unit_cost: 12, reason_code: 'other' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.correctCost).not.toHaveBeenCalled();
+  });
+
+  it('rejects a supervisor token for a branch outside their assignment', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/:inventoryItemId/cost-corrections');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_2, inventoryItemId: 'item-1' },
+      body: { new_unit_cost: 12, reason_code: 'other' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.correctCost).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor token for an assigned branch', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/:inventoryItemId/cost-corrections');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_1, inventoryItemId: 'item-1' },
+      body: { new_unit_cost: 12, reason_code: 'other' },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.correctCost).mockResolvedValue({} as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(universalInventoryService.correctCost).toHaveBeenCalled();
+  });
+
+  it('allows a super_admin token', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/:inventoryItemId/cost-corrections');
+    const req = mockReq({
+      ...authHeader(generateSuperAdminToken()),
+      params: { branchId: BRANCH_1, inventoryItemId: 'item-1' },
+      body: { new_unit_cost: 12, reason_code: 'other' },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.correctCost).mockResolvedValue({} as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+});
+
+describe('GET /:branchId/inventory-stock/cost-corrections — RBAC', () => {
+  it('rejects a branch-role token', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/cost-corrections');
+    const req = mockReq({ ...authHeader(generateBranchToken(BRANCH_1)), params: { branchId: BRANCH_1 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.listCostCorrections).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Receipt/waste proof upload — branch-scope authorization. The multer
+// fileFilter/size-limit rejection itself (mirrors expensesRouter's
+// receiptUpload wiring, same MIME allowlist and 5MB cap) needs a real
+// multipart stream to exercise and isn't unit-testable against a mock req —
+// this codebase has no router-level unit test for that on the Expense proof
+// upload either. What's testable and matters most here is that the proof
+// endpoints never let an actor reach a movement outside their own branch,
+// same guarantee already enforced for every other stockBranchRouter route.
+// ---------------------------------------------------------------------------
+
+describe('POST /:branchId/inventory-stock/movements/:movementId/proof — branch scope', () => {
+  it('rejects a branch account uploading against a branch that is not its own', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/movements/:movementId/proof');
+    const req = mockReq({
+      ...authHeader(generateBranchToken(BRANCH_1)),
+      params: { branchId: BRANCH_2, movementId: 'movement-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.uploadMovementProof).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /:branchId/inventory-stock/movements/:movementId/proof-url — branch scope', () => {
+  it('rejects a supervisor reading a proof URL outside their assigned branches', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([BRANCH_1]);
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/movements/:movementId/proof-url');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_2, movementId: 'movement-1' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
   });
 });

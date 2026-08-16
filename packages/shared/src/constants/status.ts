@@ -160,6 +160,16 @@ export const WASTE_REASON = {
 } as const;
 export type WasteReason = (typeof WASTE_REASON)[keyof typeof WASTE_REASON];
 
+/** Reason codes for an InventoryCostCorrection (Receiving Simplification V2 §13). */
+export const COST_CORRECTION_REASON = {
+  INCORRECT_RECEIVING_COST: 'incorrect_receiving_cost',
+  SUPPLIER_INVOICE_CORRECTION: 'supplier_invoice_correction',
+  DATA_ENTRY_MISTAKE: 'data_entry_mistake',
+  OPENING_BALANCE_CORRECTION: 'opening_balance_correction',
+  OTHER: 'other',
+} as const;
+export type CostCorrectionReason = (typeof COST_CORRECTION_REASON)[keyof typeof COST_CORRECTION_REASON];
+
 export const GPS_STATUS = {
   WITHIN_RADIUS: 'within_radius',
   OUTSIDE_RADIUS: 'outside_radius',

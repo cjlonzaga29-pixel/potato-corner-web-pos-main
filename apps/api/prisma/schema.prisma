@@ -381,6 +381,7 @@ model Branch {
   // CR-006 Phase A
   inventoryStocks InventoryStock[]
   inventoryStockMovements InventoryStockMovement[]
+  inventoryCostCorrections InventoryCostCorrection[]
 
   // CR-001
   exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
@@ -1090,7 +1091,8 @@ model UnitOfMeasure {
   conversionsFrom   UnitConversion[]         @relation("UnitConversionFrom")
   conversionsTo     UnitConversion[]         @relation("UnitConversionTo")
   recipeComponents  ProductComponent[]
-  stockMovements    InventoryStockMovement[]
+  stockMovements    InventoryStockMovement[] @relation("InventoryStockMovementUnit")
+  enteredUnitStockMovements InventoryStockMovement[] @relation("InventoryStockMovementEnteredUnit")
   optionDeductionMappings ProductOptionInventoryMapping[]
   itemConversionsFrom InventoryItemUnitConversion[] @relation("InventoryItemUnitConversionFrom")
   itemConversionsTo   InventoryItemUnitConversion[] @relation("InventoryItemUnitConversionTo")
@@ -1173,6 +1175,7 @@ model InventoryItem {
   baseUnit          UnitOfMeasure              @relation(fields: [baseUnitId], references: [id])
   stocks            InventoryStock[]
   stockMovements    InventoryStockMovement[]
+  costCorrections   InventoryCostCorrection[]
   productComponents ProductComponent[]
   identityMappings  InventoryIdentityMapping[]
   optionMappings    ProductOptionInventoryMapping[]
@@ -1285,6 +1288,17 @@ enum InventoryStockMovementType {
 /// responsibleUserId is the accountable staff member for WASTE (distinct
 /// from performedByUserId, the actor who recorded it); unused for other
 /// movement types.
+///
+/// TASK — Receiving Simplification V2: enteredQuantity/enteredUnitId capture
+/// the purchase-unit quantity as the user actually typed it (e.g. "1" / kg),
+/// distinct from unitId (always the item's base unit) and quantityChange
+/// (always the converted base-unit quantity) -- needed so receiving/waste
+/// history can display "Purchase Quantity: 1 kg" instead of only the
+/// converted base quantity. Populated for RECEIVING/WASTE only; null for
+/// legacy rows and every other movement type. proofKey/proofType are the
+/// optional receipt/waste photo, same storage-key-only shape as
+/// Expense.receiptKey -- never a public/signed URL, resolved to a fresh
+/// signed URL only on read.
 model InventoryStockMovement {
   id                 String                     @id @default(uuid())
   branchId           String                     @map("branch_id")
@@ -1301,10 +1315,15 @@ model InventoryStockMovement {
   unitCost           Decimal?                   @map("unit_cost") @db.Decimal(10, 4)
   totalCost          Decimal?                   @map("total_cost") @db.Decimal(12, 4)
   responsibleUserId  String?                    @map("responsible_user_id")
+  enteredQuantity    Decimal?                   @map("entered_quantity") @db.Decimal(12, 4)
+  enteredUnitId      String?                    @map("entered_unit_id")
+  proofKey           String?                    @map("proof_key")
+  proofType          ImageProofType?            @map("proof_type")
 
   branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
-  unit          UnitOfMeasure? @relation(fields: [unitId], references: [id])
+  unit          UnitOfMeasure? @relation("InventoryStockMovementUnit", fields: [unitId], references: [id])
+  enteredUnit   UnitOfMeasure? @relation("InventoryStockMovementEnteredUnit", fields: [enteredUnitId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1312,6 +1331,41 @@ model InventoryStockMovement {
   @@index([inventoryItemId])
   @@index([createdAt])
   @@map("inventory_stock_movements")
+}
+
+/// TASK — Receiving Simplification V2 §12-15: controlled, audited correction
+/// of a branch's current InventoryStock.unitCost, deliberately separate from
+/// InventoryStockMovement -- a cost correction has no quantity change, so it
+/// doesn't fit the movement ledger's "quantity change" contract. Never
+/// updated or deleted (append-only, matching the movement ledger's own
+/// immutability). oldUnitCost is nullable to represent correcting a
+/// never-before-priced ("Cost not initialized") item; valuationDifference is
+/// 0 in that case (nothing to compare against yet) rather than fabricated.
+/// This is the only sanctioned path that sets InventoryStock.unitCost
+/// directly outside the RECEIVING/TRANSFER_IN weighted-average blend -- it
+/// never touches InventoryStockMovement, COGS, or any historical snapshot.
+model InventoryCostCorrection {
+  id                  String          @id @default(uuid())
+  branchId            String          @map("branch_id")
+  inventoryItemId     String          @map("inventory_item_id")
+  oldUnitCost         Decimal?        @map("old_unit_cost") @db.Decimal(10, 4)
+  newUnitCost         Decimal         @map("new_unit_cost") @db.Decimal(10, 4)
+  quantityOnHand      Decimal         @map("quantity_on_hand") @db.Decimal(10, 3)
+  valuationDifference Decimal         @map("valuation_difference") @db.Decimal(12, 4)
+  reasonCode          String          @map("reason_code")
+  notes               String?
+  proofKey            String?         @map("proof_key")
+  proofType           ImageProofType? @map("proof_type")
+  correctedByUserId   String          @map("corrected_by_user_id")
+
+  branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([branchId, inventoryItemId])
+  @@index([createdAt])
+  @@map("inventory_cost_corrections")
 }
 
 /// CR-007 §10 -- join between a ProductVariant and the InventoryItem it

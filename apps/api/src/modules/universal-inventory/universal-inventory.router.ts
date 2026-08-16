@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import {
   createInventoryCategorySchema,
@@ -16,6 +17,7 @@ import {
   wasteInventoryStockSchema,
   transferInventoryStockSchema,
   physicalCountInventoryStockSchema,
+  createInventoryCostCorrectionSchema,
 } from '@potato-corner/shared';
 import { universalInventoryService } from './universal-inventory.service.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
@@ -27,6 +29,35 @@ import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
+
+const proofUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      callback(new UniversalInventoryError('INVALID_IMAGE_TYPE', 'Image must be JPEG, PNG, or WebP', 422));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
+/** Shared multer-error-to-JSON translation for the proof-upload routes below — mirrors expensesRouter's receiptUpload wiring. */
+function handleUpload(uploader: (req: Request, res: Response, callback: (error?: unknown) => void) => void) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    uploader(req, res, (error: unknown) => {
+      if (error) {
+        handleModuleError(
+          error instanceof multer.MulterError ? new UniversalInventoryError('IMAGE_TOO_LARGE', 'Image must be 5MB or smaller', 422) : error,
+          res,
+          next,
+        );
+        return;
+      }
+      next();
+    });
+  };
+}
 
 const router: Router = Router();
 
@@ -313,10 +344,15 @@ router.post(
 
 // --- Item-specific unit conversions (TASK 121 — reuses TASK 115's service/repository) ---
 
+// Receiving Simplification V2 §3: branch staff need read (never write)
+// access to an item's configured purchase-unit conversions to populate the
+// receiving form's Purchase Unit dropdown — "Admin only [to write]. Supervisor
+// may view. Branch uses the configured purchase units." Write endpoints
+// below stay adminOnly.
 router.get(
   '/items/:itemId/conversions',
   authenticate,
-  adminOrSupervisor,
+  adminSupervisorOrBranch,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -541,7 +577,7 @@ stockBranchRouter.post(
           branchId: req.params.branchId as string,
           inventoryItemId: req.params.inventoryItemId as string,
           quantity: body.quantity,
-          unitCost: body.unit_cost,
+          totalCost: body.total_cost,
           enteredUnitId: body.entered_unit_id,
           deliveryReference: body.delivery_reference,
           notes: body.notes,
@@ -686,6 +722,160 @@ stockBranchRouter.post(
         req.ip ?? null,
       );
       res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Receiving/waste proof photo (Receiving Simplification V2 §7-8). Two-step,
+// mirrors expensesRouter's POST /:expenseId/receipt: the movement already
+// exists (created by /receive or /waste above) before a photo is attached.
+// Optional on both RECEIVING and WASTE — no upload-required check here.
+// ---------------------------------------------------------------------------
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/movements/:movementId/proof',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  handleUpload(proofUpload.single('proof')),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A proof image file is required' }, meta: null });
+        return;
+      }
+      const result = await universalInventoryService.uploadMovementProof(
+        req.params.branchId as string,
+        req.params.movementId as string,
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.get(
+  '/:branchId/inventory-stock/movements/:movementId/proof-url',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await universalInventoryService.getMovementProofUrl(req.params.branchId as string, req.params.movementId as string);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Cost correction (Receiving Simplification V2 §12-15). adminOrSupervisor
+// only — Branch Accounts get no access to any correction route, matching
+// "Branch Account: NO cost correction permission unless current RBAC
+// explicitly allows it" (it doesn't). branchGuard still applies so a
+// supervisor is limited to their assigned branches, same as every other
+// stockBranchRouter route.
+// ---------------------------------------------------------------------------
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/:inventoryItemId/cost-corrections',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  branchGuard,
+  validate(createInventoryCostCorrectionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof createInventoryCostCorrectionSchema>;
+      const result = await universalInventoryService.correctCost(
+        {
+          branchId: req.params.branchId as string,
+          inventoryItemId: req.params.inventoryItemId as string,
+          newUnitCost: body.new_unit_cost,
+          reasonCode: body.reason_code,
+          notes: body.notes,
+        },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+const costCorrectionQuerySchema = z.object({
+  inventory_item_id: z.uuid().optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(25),
+});
+
+stockBranchRouter.get(
+  '/:branchId/inventory-stock/cost-corrections',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const parsed = costCorrectionQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(422).json({
+          data: null,
+          error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+          meta: null,
+        });
+        return;
+      }
+      const result = await universalInventoryService.listCostCorrections(req.params.branchId as string, {
+        inventoryItemId: parsed.data.inventory_item_id,
+        page: parsed.data.page,
+        limit: parsed.data.limit,
+      });
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/cost-corrections/:correctionId/proof',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  branchGuard,
+  handleUpload(proofUpload.single('proof')),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A proof image file is required' }, meta: null });
+        return;
+      }
+      const result = await universalInventoryService.uploadCostCorrectionProof(
+        req.params.branchId as string,
+        req.params.correctionId as string,
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

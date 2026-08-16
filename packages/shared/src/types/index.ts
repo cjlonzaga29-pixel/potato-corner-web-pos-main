@@ -127,6 +127,10 @@ export type InventoryStockTransferResponse = z.infer<typeof schemas.inventorySto
 export type PhysicalCountStockResultRow = z.infer<typeof schemas.physicalCountStockResultRowSchema>;
 export type PhysicalCountStockResultResponse = z.infer<typeof schemas.physicalCountStockResultResponseSchema>;
 
+export type CreateInventoryCostCorrectionInput = z.infer<typeof schemas.createInventoryCostCorrectionSchema>;
+export type InventoryCostCorrectionResponse = z.infer<typeof schemas.inventoryCostCorrectionResponseSchema>;
+export type InventoryCostCorrectionListResponse = z.infer<typeof schemas.inventoryCostCorrectionListResponseSchema>;
+
 export type CreateProductComponentInput = z.infer<typeof schemas.createProductComponentSchema>;
 export type UpdateProductComponentInput = z.infer<typeof schemas.updateProductComponentSchema>;
 export type ProductComponentResponse = z.infer<typeof schemas.productComponentResponseSchema>;

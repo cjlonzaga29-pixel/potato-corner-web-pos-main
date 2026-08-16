@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { Prisma } from '@prisma/client';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
 import { universalInventoryRepository as repo } from './universal-inventory.repository.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
 import { branchesRepository } from '../branches/branches.repository.js';
@@ -28,9 +30,39 @@ import type {
   TransferInventoryStockData,
   PhysicalCountInventoryStockData,
   InventoryStockMovementType,
+  CreateInventoryCostCorrectionData,
 } from './universal-inventory.types.js';
 
 type ActorContext = { id: string; role: string };
+
+const INVENTORY_PROOF_BUCKET = 'inventory-proofs';
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
+
+async function getSignedInventoryProofUrl(proofKey: string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(INVENTORY_PROOF_BUCKET).createSignedUrl(proofKey, 60 * 60);
+  if (error || !data) throw new UniversalInventoryError('PROOF_URL_FAILED', 'Could not generate proof photo URL', 500);
+  return data.signedUrl;
+}
+
+/** Re-encodes to webp and uploads under the given key prefix — shared by movement (receiving/waste) and cost-correction proof uploads. Mirrors expensesService.uploadReceipt's compress-then-upload shape. */
+async function uploadInventoryProofImage(
+  keyPrefix: string,
+  file: { buffer: Buffer; originalname: string },
+  previousKey: string | null,
+): Promise<string> {
+  if (previousKey) {
+    const { error: removeError } = await supabaseAdmin.storage.from(INVENTORY_PROOF_BUCKET).remove([previousKey]);
+    if (removeError) console.error('Failed to remove old inventory proof object:', removeError);
+  }
+  const compressed = await sharp(file.buffer).resize({ width: 1200, withoutEnlargement: true }).webp({ quality: 85 }).toBuffer();
+  const path = `${keyPrefix}/${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
+  const { error } = await supabaseAdmin.storage.from(INVENTORY_PROOF_BUCKET).upload(path, compressed, { contentType: 'image/webp', upsert: true });
+  if (error) throw new UniversalInventoryError('PROOF_UPLOAD_FAILED', 'Failed to upload the proof image', 502);
+  return path;
+}
 
 function toCategoryResponse(category: {
   id: string;
@@ -166,10 +198,24 @@ interface StockMovementRow {
   unitCost: { toNumber(): number } | null;
   totalCost: { toNumber(): number } | null;
   responsibleUserId: string | null;
+  enteredQuantity: { toNumber(): number } | null;
+  enteredUnitId: string | null;
+  enteredUnit: { code: string } | null;
+  proofKey: string | null;
   createdAt: Date;
 }
 
-function toStockMovementResponse(row: StockMovementRow) {
+/**
+ * `enrichment` carries fields only the history list resolves (signed proof
+ * URL, performer/responsible display names) — write endpoints (receive/
+ * waste/adjust/transfer/physicalCount) call this with no enrichment since a
+ * freshly-created movement never has a proof yet (photos attach via a
+ * separate follow-up call) and don't need names in their own response.
+ */
+function toStockMovementResponse(
+  row: StockMovementRow,
+  enrichment?: { proofUrl?: string | null; performedByName?: string | null; responsibleUserName?: string | null },
+) {
   return {
     id: row.id,
     branch_id: row.branchId,
@@ -188,6 +234,49 @@ function toStockMovementResponse(row: StockMovementRow) {
     unit_cost: row.unitCost?.toNumber() ?? null,
     total_cost: row.totalCost?.toNumber() ?? null,
     responsible_user_id: row.responsibleUserId,
+    entered_quantity: row.enteredQuantity?.toNumber() ?? null,
+    entered_unit_id: row.enteredUnitId,
+    entered_unit_code: row.enteredUnit?.code ?? null,
+    proof_url: enrichment?.proofUrl ?? null,
+    performed_by_name: enrichment?.performedByName ?? null,
+    responsible_user_name: enrichment?.responsibleUserName ?? null,
+    created_at: row.createdAt.toISOString(),
+  };
+}
+
+interface CostCorrectionRow {
+  id: string;
+  branchId: string;
+  branch: { name: string };
+  inventoryItemId: string;
+  inventoryItem: { name: string };
+  oldUnitCost: { toNumber(): number } | null;
+  newUnitCost: { toNumber(): number };
+  quantityOnHand: { toNumber(): number };
+  valuationDifference: { toNumber(): number };
+  reasonCode: string;
+  notes: string | null;
+  proofKey: string | null;
+  correctedByUserId: string;
+  createdAt: Date;
+}
+
+function toCostCorrectionResponse(row: CostCorrectionRow, enrichment: { correctedByName: string | null; proofUrl: string | null }) {
+  return {
+    id: row.id,
+    branch_id: row.branchId,
+    branch_name: row.branch.name,
+    inventory_item_id: row.inventoryItemId,
+    inventory_item_name: row.inventoryItem.name,
+    old_unit_cost: row.oldUnitCost?.toNumber() ?? null,
+    new_unit_cost: row.newUnitCost.toNumber(),
+    quantity_on_hand: row.quantityOnHand.toNumber(),
+    valuation_difference: row.valuationDifference.toNumber(),
+    reason_code: row.reasonCode,
+    notes: row.notes,
+    proof_url: enrichment.proofUrl,
+    corrected_by_user_id: row.correctedByUserId,
+    corrected_by_name: enrichment.correctedByName ?? '',
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -209,7 +298,7 @@ interface StockRow {
     name: string;
     sku: string | null;
     category?: { name: string } | null;
-    baseUnit: { code: string };
+    baseUnit: { id: string; code: string };
     unitCost: { toNumber(): number } | null;
   };
 }
@@ -226,6 +315,7 @@ function toStockRowResponse(row: StockRow) {
     name: row.inventoryItem.name,
     sku: row.inventoryItem.sku,
     category_name: row.inventoryItem.category?.name ?? null,
+    base_unit_id: row.inventoryItem.baseUnit.id,
     base_unit_code: row.inventoryItem.baseUnit.code,
     quantity_on_hand: quantity,
     low_stock_threshold: lowThreshold,
@@ -695,8 +785,28 @@ export const universalInventoryService = {
     filters: { inventoryItemId?: string; movementType?: InventoryStockMovementType; fromDate?: Date; toDate?: Date; page: number; limit: number },
   ) {
     const { movements, total } = await repo.findStockMovements(branchId, filters);
+
+    // Batch-resolve performer/responsible names and signed proof URLs — only
+    // for rows that actually need them, so a page with no photos/no waste
+    // rows costs nothing extra.
+    const userIds = Array.from(
+      new Set(movements.flatMap((m) => [m.performedByUserId, m.responsibleUserId]).filter((id): id is string => id !== null)),
+    );
+    const users = await repo.findUsersByIds(userIds);
+    const nameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+
+    const enrichedMovements = await Promise.all(
+      movements.map(async (m) =>
+        toStockMovementResponse(m, {
+          proofUrl: m.proofKey ? await getSignedInventoryProofUrl(m.proofKey) : null,
+          performedByName: m.performedByUserId ? (nameById.get(m.performedByUserId) ?? null) : null,
+          responsibleUserName: m.responsibleUserId ? (nameById.get(m.responsibleUserId) ?? null) : null,
+        }),
+      ),
+    );
+
     return {
-      movements: movements.map(toStockMovementResponse),
+      movements: enrichedMovements,
       total,
       page: filters.page,
       limit: filters.limit,
@@ -711,11 +821,15 @@ export const universalInventoryService = {
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
     const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);
-    // unit_cost is entered per the form's unit (e.g. per gram), same as
-    // quantity — convert the base-quantity cost basis consistently so
-    // unitCost always means "per base unit" everywhere it's stored/read.
-    const unitCostPerBaseUnit = new Prisma.Decimal(data.unitCost).mul(new Prisma.Decimal(data.quantity)).div(baseQuantity);
-    const totalCost = unitCostPerBaseUnit.mul(baseQuantity);
+    // total_cost is the whole delivery's peso cost as printed on the
+    // receipt (Receiving Simplification V2 §1/§4) — derive the per-base-unit
+    // carrying cost with a single division, and persist total_cost verbatim
+    // as entered rather than re-deriving it by multiplying back (the
+    // previous unit_cost-based contract computed unitCostPerBaseUnit then
+    // re-multiplied, an unnecessary round trip through Decimal division
+    // twice).
+    const totalCost = new Prisma.Decimal(data.totalCost);
+    const unitCostPerBaseUnit = totalCost.div(baseQuantity);
 
     const movement = await prisma.$transaction(async (tx) => {
       const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
@@ -741,6 +855,8 @@ export const universalInventoryService = {
           performedByUserId: data.performedByUserId ?? actor.id,
           unitCost: unitCostPerBaseUnit,
           totalCost,
+          enteredQuantity: data.quantity,
+          enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
         },
         tx,
       );
@@ -880,6 +996,8 @@ export const universalInventoryService = {
           notes: `Reason: ${data.reasonCode}${data.notes ? ` — ${data.notes}` : ''}`,
           performedByUserId: data.performedByUserId ?? actor.id,
           responsibleUserId: data.responsibleUserId,
+          enteredQuantity: data.quantity,
+          enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
           unitCost: unitCost ?? undefined,
           totalCost: totalCost ?? undefined,
         },
@@ -1167,6 +1285,173 @@ export const universalInventoryService = {
 
     notifyBranch(data.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
     notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    return response;
+  },
+
+  // --- Receipt/waste photo proof (Receiving Simplification V2 §7-8) ---
+  // Two-step, mirrors expensesService.uploadReceipt: the movement is created
+  // first (JSON), then the photo is attached in a separate multipart call
+  // referencing the movement id. Optional for both RECEIVING and WASTE —
+  // there is no existing "photo required" policy in this codebase to
+  // preserve (payment-proof requires only non-cash; discount-proof has no
+  // required policy at all), so none is invented here.
+
+  async uploadMovementProof(
+    branchId: string,
+    movementId: string,
+    file: { buffer: Buffer; originalname: string },
+    actor: ActorContext,
+    ipAddress: string | null,
+  ) {
+    const movement = await repo.findMovementById(movementId);
+    if (!movement || movement.branchId !== branchId) {
+      throw new UniversalInventoryError('MOVEMENT_NOT_FOUND', 'Inventory stock movement not found', 404);
+    }
+
+    const path = await uploadInventoryProofImage(`movements/${branchId}/${movementId}`, file, movement.proofKey);
+    const updated = await repo.updateMovementProof(movementId, path, 'gallery_upload');
+    const proofUrl = await getSignedInventoryProofUrl(path);
+    const response = toStockMovementResponse(updated, { proofUrl });
+
+    await recordAuditLog({
+      action: 'INVENTORY_MOVEMENT_PROOF_UPLOADED',
+      entityType: 'inventory_stock_movement',
+      entityId: movementId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    return response;
+  },
+
+  async getMovementProofUrl(branchId: string, movementId: string) {
+    const movement = await repo.findMovementById(movementId);
+    if (!movement || movement.branchId !== branchId) {
+      throw new UniversalInventoryError('MOVEMENT_NOT_FOUND', 'Inventory stock movement not found', 404);
+    }
+    if (!movement.proofKey) return { proof_url: null };
+    return { proof_url: await getSignedInventoryProofUrl(movement.proofKey) };
+  },
+
+  // --- Cost correction (Receiving Simplification V2 §12-15) ---
+  // The one sanctioned direct-mutation path for InventoryStock.unitCost
+  // outside the RECEIVING/TRANSFER_IN weighted-average blend. Deliberately
+  // separate from InventoryStockMovement (a correction has no quantity
+  // change) and NEVER touches COGS, historical waste snapshots, or past
+  // movements — only the branch's current carrying cost, prospectively.
+
+  async correctCost(data: CreateInventoryCostCorrectionData, actor: ActorContext, ipAddress: string | null) {
+    const [branch, item] = await Promise.all([branchesRepository.findById(data.branchId), repo.findItemById(data.inventoryItemId)]);
+    if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
+
+    const newUnitCost = new Prisma.Decimal(data.newUnitCost);
+
+    const correction = await prisma.$transaction(async (tx) => {
+      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
+      if (!stock) {
+        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+      }
+      const oldUnitCost = stock.unitCost;
+      // Null oldUnitCost means "cost not initialized" — nothing to compare
+      // against yet, so the valuation adjustment is 0, never fabricated.
+      const valuationDifference = oldUnitCost ? stock.quantityOnHand.mul(newUnitCost.minus(oldUnitCost)) : new Prisma.Decimal(0);
+
+      await repo.setStockUnitCost(data.branchId, data.inventoryItemId, newUnitCost, tx);
+
+      return repo.createCostCorrection(
+        {
+          branchId: data.branchId,
+          inventoryItemId: data.inventoryItemId,
+          newUnitCost: data.newUnitCost,
+          reasonCode: data.reasonCode,
+          notes: data.notes,
+          oldUnitCost,
+          quantityOnHand: stock.quantityOnHand,
+          valuationDifference,
+          correctedByUserId: actor.id,
+        },
+        tx,
+      );
+    });
+
+    const [correctorUser] = await repo.findUsersByIds([actor.id]);
+    const response = toCostCorrectionResponse(correction, {
+      correctedByName: correctorUser ? `${correctorUser.firstName} ${correctorUser.lastName}` : null,
+      proofUrl: null,
+    });
+
+    await recordAuditLog({
+      action: 'INVENTORY_COST_CORRECTED',
+      entityType: 'inventory_cost_correction',
+      entityId: correction.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: response,
+      ipAddress,
+    });
+
+    notifyBranch(data.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, response);
+
+    return response;
+  },
+
+  async listCostCorrections(branchId: string, filters: { inventoryItemId?: string; page: number; limit: number }) {
+    const { corrections, total } = await repo.findCostCorrections(branchId, filters);
+
+    const userIds = Array.from(new Set(corrections.map((c) => c.correctedByUserId)));
+    const users = await repo.findUsersByIds(userIds);
+    const nameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+
+    const enriched = await Promise.all(
+      corrections.map(async (c) =>
+        toCostCorrectionResponse(c, {
+          correctedByName: nameById.get(c.correctedByUserId) ?? null,
+          proofUrl: c.proofKey ? await getSignedInventoryProofUrl(c.proofKey) : null,
+        }),
+      ),
+    );
+
+    return { corrections: enriched, total, page: filters.page, limit: filters.limit };
+  },
+
+  async uploadCostCorrectionProof(
+    branchId: string,
+    correctionId: string,
+    file: { buffer: Buffer; originalname: string },
+    actor: ActorContext,
+    ipAddress: string | null,
+  ) {
+    const correction = await repo.findCostCorrectionById(correctionId);
+    if (!correction || correction.branchId !== branchId) {
+      throw new UniversalInventoryError('CORRECTION_NOT_FOUND', 'Inventory cost correction not found', 404);
+    }
+
+    const path = await uploadInventoryProofImage(`cost-corrections/${branchId}/${correctionId}`, file, correction.proofKey);
+    const updated = await repo.updateCostCorrectionProof(correctionId, path, 'gallery_upload');
+    const proofUrl = await getSignedInventoryProofUrl(path);
+    const users = await repo.findUsersByIds([updated.correctedByUserId]);
+    const response = toCostCorrectionResponse(updated, {
+      correctedByName: users[0] ? `${users[0].firstName} ${users[0].lastName}` : null,
+      proofUrl,
+    });
+
+    await recordAuditLog({
+      action: 'INVENTORY_COST_CORRECTION_PROOF_UPLOADED',
+      entityType: 'inventory_cost_correction',
+      entityId: correctionId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId,
+      afterState: response,
+      ipAddress,
+    });
 
     return response;
   },

@@ -43,7 +43,35 @@ vi.mock('./universal-inventory.repository.js', () => ({
     findStock: vi.fn(),
     findStockMovements: vi.fn(),
     isActiveUserInBranch: vi.fn(),
+    findMovementById: vi.fn(),
+    updateMovementProof: vi.fn(),
+    findUsersByIds: vi.fn(),
+    setStockUnitCost: vi.fn(),
+    createCostCorrection: vi.fn(),
+    findCostCorrectionById: vi.fn(),
+    updateCostCorrectionProof: vi.fn(),
+    findCostCorrections: vi.fn(),
   },
+}));
+
+vi.mock('../../lib/supabase.js', () => ({
+  supabaseAdmin: {
+    storage: {
+      from: vi.fn(() => ({
+        upload: vi.fn().mockResolvedValue({ error: null }),
+        remove: vi.fn().mockResolvedValue({ error: null }),
+        createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/proof' }, error: null }),
+      })),
+    },
+  },
+}));
+
+vi.mock('sharp', () => ({
+  default: vi.fn(() => ({
+    resize: vi.fn().mockReturnThis(),
+    webp: vi.fn().mockReturnThis(),
+    toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake')),
+  })),
 }));
 
 vi.mock('../branches/branches.repository.js', () => ({
@@ -177,6 +205,7 @@ beforeEach(() => {
   vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);
   vi.mocked(repo.getConsumedTodayByBranch).mockResolvedValue(new Map());
   vi.mocked(repo.isActiveUserInBranch).mockResolvedValue(true);
+  vi.mocked(repo.findUsersByIds).mockResolvedValue([]);
   // Mirrors a real Prisma round-trip: Decimal-typed columns always come back
   // as Decimal instances on read, even when the write was given a plain
   // number (as adjustStock's quantityDelta and transferStock's quantity are).
@@ -186,6 +215,9 @@ beforeEach(() => {
       quantityChange: new Prisma.Decimal(input.quantityChange as Prisma.Decimal.Value),
       quantityBefore: new Prisma.Decimal(input.quantityBefore as Prisma.Decimal.Value),
       quantityAfter: new Prisma.Decimal(input.quantityAfter as Prisma.Decimal.Value),
+      enteredQuantity: input.enteredQuantity !== undefined ? new Prisma.Decimal(input.enteredQuantity as Prisma.Decimal.Value) : null,
+      enteredUnit: input.enteredUnitId ? { code: 'kg' } : null,
+      proofKey: null,
     })) as never);
 });
 
@@ -500,7 +532,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(branchesRepository.findById).mockResolvedValue(null);
 
     await expect(
-      universalInventoryService.receiveStock({ branchId: 'missing', inventoryItemId: 'item-1', quantity: 5, unitCost: 10 }, ACTOR, null),
+      universalInventoryService.receiveStock({ branchId: 'missing', inventoryItemId: 'item-1', quantity: 5, totalCost: 50 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'BRANCH_NOT_FOUND' });
   });
 
@@ -508,7 +540,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.findItemById).mockResolvedValue(null);
 
     await expect(
-      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'missing', quantity: 5, unitCost: 10 }, ACTOR, null),
+      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'missing', quantity: 5, totalCost: 50 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
   });
 
@@ -516,7 +548,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(null);
 
     await expect(
-      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10 }, ACTOR, null),
+      universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, totalCost: 50 }, ACTOR, null),
     ).rejects.toMatchObject({ code: 'STOCK_ROW_NOT_FOUND' });
     expect(repo.createStockMovement).not.toHaveBeenCalled();
   });
@@ -526,7 +558,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
     const result = await universalInventoryService.receiveStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10, deliveryReference: 'PO-1001' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, totalCost: 50, deliveryReference: 'PO-1001' },
       ACTOR,
       null,
     );
@@ -558,7 +590,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(50), unitCost: dec(8) }) as never);
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(150) } as never);
 
-    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 100, unitCost: 10 }, ACTOR, null);
+    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 100, totalCost: 1000 }, ACTOR, null);
 
     // (50*8 + 100*10) / 150 = 9.333...
     const call = vi.mocked(repo.incrementStockQuantity).mock.calls[0];
@@ -571,7 +603,7 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
     await universalInventoryService.receiveStock(
-      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10, enteredUnitId: 'unit-tbsp' },
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, totalCost: 50, enteredUnitId: 'unit-tbsp' },
       ACTOR,
       null,
     );
@@ -1128,7 +1160,7 @@ describe('universalInventoryService — manual inventory writes always lock befo
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10) }) as never);
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
 
-    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, unitCost: 10 }, ACTOR, null);
+    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, totalCost: 50 }, ACTOR, null);
 
     const lockOrder = vi.mocked(repo.lockAndGetStock).mock.invocationCallOrder[0] as number;
     const writeOrder = vi.mocked(repo.incrementStockQuantity).mock.invocationCallOrder[0] as number;
@@ -1380,5 +1412,216 @@ describe('universalInventoryService.listItemConversions — TASK 115', () => {
     await expect(universalInventoryService.listItemConversions('missing-item')).rejects.toMatchObject({
       code: 'INVENTORY_ITEM_NOT_FOUND',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Receiving Simplification V2 — total-cost-based receiving math
+// ---------------------------------------------------------------------------
+
+describe('universalInventoryService.receiveStock — total_cost contract (Receiving Simplification V2)', () => {
+  it('1 kg @ ₱300 with 1kg=1000g converts to 1000g @ ₱0.30/g', async () => {
+    vi.mocked(convertQuantity).mockResolvedValueOnce(new Prisma.Decimal(1000));
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(0), unitCost: null }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(1000) } as never);
+
+    await universalInventoryService.receiveStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 1, totalCost: 300, enteredUnitId: 'unit-kg' },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quantityChange: expect.any(Prisma.Decimal),
+        unitCost: expect.objectContaining({}),
+        totalCost: expect.objectContaining({}),
+        enteredQuantity: 1,
+        enteredUnitId: 'unit-kg',
+      }),
+      {},
+    );
+    const call = vi.mocked(repo.createStockMovement).mock.calls[0]?.[0] as { unitCost: Prisma.Decimal; totalCost: Prisma.Decimal };
+    expect(call.unitCost.toDecimalPlaces(4).toString()).toBe('0.3');
+    expect(call.totalCost.toString()).toBe('300');
+  });
+
+  it('5 cases @ ₱1,800 with 1 case=24pc converts to 120pc @ ₱15/pc', async () => {
+    vi.mocked(convertQuantity).mockResolvedValueOnce(new Prisma.Decimal(120));
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(0), unitCost: null }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(120) } as never);
+
+    await universalInventoryService.receiveStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, totalCost: 1800, enteredUnitId: 'unit-case' },
+      ACTOR,
+      null,
+    );
+
+    const call = vi.mocked(repo.createStockMovement).mock.calls[0]?.[0] as { unitCost: Prisma.Decimal; totalCost: Prisma.Decimal };
+    expect(call.unitCost.toString()).toBe('15');
+    expect(call.totalCost.toString()).toBe('1800');
+  });
+
+  it('preserves the entered total_cost verbatim rather than re-deriving it by multiplying back', async () => {
+    // 100 units @ existing avg ₱10, receiving 50 units for a total of ₱700
+    // (i.e. ₱14/unit) — new average should be (1000 + 700) / 150 = 11.3333.
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(100), unitCost: dec(10) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(150) } as never);
+
+    await universalInventoryService.receiveStock({ branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 50, totalCost: 700 }, ACTOR, null);
+
+    const call = vi.mocked(repo.incrementStockQuantity).mock.calls[0];
+    const newAvgCost = call?.[4] as Prisma.Decimal;
+    expect(newAvgCost.toDecimalPlaces(4).toString()).toBe('11.3333');
+
+    const movementCall = vi.mocked(repo.createStockMovement).mock.calls[0]?.[0] as { totalCost: Prisma.Decimal };
+    expect(movementCall.totalCost.toString()).toBe('700');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cost correction (Receiving Simplification V2 §12-15)
+// ---------------------------------------------------------------------------
+
+function buildCorrection(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'correction-1',
+    branchId: 'branch-1',
+    branch: { name: 'Manila' },
+    inventoryItemId: 'item-1',
+    inventoryItem: { name: 'Cheese Powder' },
+    oldUnitCost: dec(10),
+    newUnitCost: dec(12),
+    quantityOnHand: dec(100),
+    valuationDifference: dec(200),
+    reasonCode: 'incorrect_receiving_cost',
+    notes: null,
+    proofKey: null,
+    correctedByUserId: 'admin-1',
+    createdAt: new Date('2026-08-16'),
+    ...overrides,
+  };
+}
+
+describe('universalInventoryService.correctCost', () => {
+  it('computes valuation_difference = quantity_on_hand * (new - old) and sets InventoryStock.unitCost directly', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(100), unitCost: dec(10) }) as never);
+    vi.mocked(repo.createCostCorrection).mockResolvedValue(buildCorrection() as never);
+    vi.mocked(repo.findUsersByIds).mockResolvedValue([{ id: 'admin-1', firstName: 'Ada', lastName: 'Min' }] as never);
+
+    const result = await universalInventoryService.correctCost(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', newUnitCost: 12, reasonCode: 'incorrect_receiving_cost' },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.setStockUnitCost).toHaveBeenCalledWith('branch-1', 'item-1', expect.objectContaining({}), {});
+    const setCostArg = vi.mocked(repo.setStockUnitCost).mock.calls[0]?.[2] as Prisma.Decimal;
+    expect(setCostArg.toString()).toBe('12');
+
+    expect(repo.createCostCorrection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchId: 'branch-1',
+        inventoryItemId: 'item-1',
+        newUnitCost: 12,
+        oldUnitCost: expect.objectContaining({}),
+        quantityOnHand: expect.objectContaining({}),
+        valuationDifference: expect.objectContaining({}),
+      }),
+      {},
+    );
+    const correctionArg = vi.mocked(repo.createCostCorrection).mock.calls[0]?.[0] as {
+      oldUnitCost: Prisma.Decimal;
+      valuationDifference: Prisma.Decimal;
+    };
+    expect(correctionArg.oldUnitCost.toString()).toBe('10');
+    // 100 * (12 - 10) = 200
+    expect(correctionArg.valuationDifference.toString()).toBe('200');
+
+    expect(result.valuation_difference).toBe(200);
+    expect(result.old_unit_cost).toBe(10);
+    expect(result.new_unit_cost).toBe(12);
+  });
+
+  it('valuation_difference is 0 (never fabricated) when correcting a never-before-priced item', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(50), unitCost: null }) as never);
+    vi.mocked(repo.createCostCorrection).mockResolvedValue(buildCorrection({ oldUnitCost: null, valuationDifference: dec(0) }) as never);
+
+    await universalInventoryService.correctCost(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', newUnitCost: 5, reasonCode: 'opening_balance_correction' },
+      ACTOR,
+      null,
+    );
+
+    const correctionArg = vi.mocked(repo.createCostCorrection).mock.calls[0]?.[0] as { oldUnitCost: unknown; valuationDifference: Prisma.Decimal };
+    expect(correctionArg.oldUnitCost).toBeNull();
+    expect(correctionArg.valuationDifference.toString()).toBe('0');
+  });
+
+  it('never touches InventoryStockMovement, COGS, or historical snapshots', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(100), unitCost: dec(10) }) as never);
+    vi.mocked(repo.createCostCorrection).mockResolvedValue(buildCorrection() as never);
+
+    await universalInventoryService.correctCost(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', newUnitCost: 12, reasonCode: 'other' },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.createStockMovement).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown branch', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(null);
+
+    await expect(
+      universalInventoryService.correctCost({ branchId: 'missing', inventoryItemId: 'item-1', newUnitCost: 12, reasonCode: 'other' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'BRANCH_NOT_FOUND' });
+  });
+
+  it('rejects when no InventoryStock row exists yet', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(null);
+
+    await expect(
+      universalInventoryService.correctCost({ branchId: 'branch-1', inventoryItemId: 'item-1', newUnitCost: 12, reasonCode: 'other' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'STOCK_ROW_NOT_FOUND' });
+    expect(repo.setStockUnitCost).not.toHaveBeenCalled();
+  });
+});
+
+describe('universalInventoryService.listCostCorrections', () => {
+  it('enriches with corrected_by_name and leaves proof_url null when no proof was attached', async () => {
+    vi.mocked(repo.findCostCorrections).mockResolvedValue({ corrections: [buildCorrection()], total: 1 } as never);
+    vi.mocked(repo.findUsersByIds).mockResolvedValue([{ id: 'admin-1', firstName: 'Ada', lastName: 'Min' }] as never);
+
+    const result = await universalInventoryService.listCostCorrections('branch-1', { page: 1, limit: 25 });
+
+    expect(result.corrections[0]).toMatchObject({ corrected_by_name: 'Ada Min', proof_url: null });
+  });
+});
+
+describe('universalInventoryService — movement/waste proof upload', () => {
+  it('uploadMovementProof rejects when the movement belongs to a different branch', async () => {
+    vi.mocked(repo.findMovementById).mockResolvedValue(buildMovement({ branchId: 'other-branch' }) as never);
+
+    await expect(
+      universalInventoryService.uploadMovementProof('branch-1', 'movement-1', { buffer: Buffer.from('x'), originalname: 'r.jpg' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'MOVEMENT_NOT_FOUND' });
+  });
+
+  it('uploadMovementProof uploads, updates proofKey, and returns a signed proof_url', async () => {
+    vi.mocked(repo.findMovementById).mockResolvedValue(buildMovement({ branchId: 'branch-1', proofKey: null }) as never);
+    vi.mocked(repo.updateMovementProof).mockResolvedValue(buildMovement({ branchId: 'branch-1', proofKey: 'movements/branch-1/movement-1/x.webp' }) as never);
+
+    const result = await universalInventoryService.uploadMovementProof(
+      'branch-1',
+      'movement-1',
+      { buffer: Buffer.from('x'), originalname: 'receipt.jpg' },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.updateMovementProof).toHaveBeenCalledWith('movement-1', expect.any(String), 'gallery_upload');
+    expect(result.proof_url).toBe('https://signed.example/proof');
   });
 });

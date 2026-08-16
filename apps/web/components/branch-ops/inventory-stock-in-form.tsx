@@ -84,6 +84,12 @@ function StockInFormContent({ basePath }: { basePath: string }) {
   // resubmitting the whole form — that would call /receive again and double
   // the stock. Retry re-attaches to this same movement id instead.
   const [recordedMovement, setRecordedMovement] = useState<{ id: string } | null>(null);
+  // Distinct from recordedMovement: only true once a proof upload has actually
+  // failed. recordedMovement flips to non-null as soon as /receive succeeds,
+  // before the upload outcome is known, so the recovery banner below must not
+  // key off it alone — otherwise it flashes on the successful path too, while
+  // router.push is still in flight.
+  const [proofUploadFailed, setProofUploadFailed] = useState(false);
 
   const purchaseUnitOptions = useMemo(
     () => (item ? buildPurchaseUnitOptions(item.base_unit_id, item.base_unit_code, conversions) : []),
@@ -126,7 +132,8 @@ function StockInFormContent({ basePath }: { basePath: string }) {
       try {
         await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
       } catch {
-        return; // Recovery banner (recordedMovement is set) takes over below.
+        setProofUploadFailed(true); // Recovery banner takes over below.
+        return;
       }
     }
     router.push(`${basePath}/inventory`);
@@ -137,6 +144,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     try {
       await uploadProof.mutateAsync({ movementId: recordedMovement.id, file: proofFile });
     } catch {
+      setProofUploadFailed(true);
       return;
     }
     router.push(`${basePath}/inventory`);
@@ -146,7 +154,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     return <p className="text-sm text-destructive">Select an active branch before recording stock-in.</p>;
   }
 
-  if (recordedMovement) {
+  if (recordedMovement && proofUploadFailed) {
     return (
       <div className="mx-auto max-w-lg space-y-4">
         <div className="rounded-md border border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">

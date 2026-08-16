@@ -329,6 +329,9 @@ describe('reportsRepository.getInventoryMovement', () => {
         referenceId: 'ref-1',
         notes: 'Received from supplier',
         performedByUserId: 'u1',
+        unitCost: decimal(2.5),
+        totalCost: decimal(-5),
+        proofKey: 'inventory-proofs/mv-1.webp',
         createdAt: new Date('2026-07-01T10:00:00.000Z'),
         branch: { name: 'SM North' },
         inventoryItem: { name: 'Potato' },
@@ -355,10 +358,32 @@ describe('reportsRepository.getInventoryMovement', () => {
         reference_id: 'ref-1',
         notes: 'Received from supplier',
         recorded_by_name: 'Juan Cruz',
+        unit_cost: 2.5,
+        total_cost: -5,
+        proof_available: 'Yes',
         created_at: '2026-07-01T10:00:00.000Z',
       },
     ]);
     expect(prisma.inventoryMovement.findMany).not.toHaveBeenCalled();
+  });
+
+  it('reports proof_available as No when no proof photo was attached, and unit_cost/total_cost as null when the item has never been costed', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        id: 'mv-legacy', branchId: 'b1', inventoryItemId: 'item-1', movementType: 'SALE',
+        quantityChange: decimal(-2), quantityBefore: decimal(10), quantityAfter: decimal(8),
+        referenceType: null, referenceId: null, notes: null,
+        performedByUserId: null, unitCost: null, totalCost: null, proofKey: null,
+        createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato' }, unit: { code: 'kg' },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryMovement({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]?.proof_available).toBe('No');
+    expect(rows[0]?.unit_cost).toBeNull();
+    expect(rows[0]?.total_cost).toBeNull();
   });
 
   it('falls back to em-dash for unit when the movement has no unitId, mirroring the Inventory Movement screen', async () => {
@@ -416,6 +441,129 @@ describe('reportsRepository.getInventoryMovement', () => {
 
     expect(rows[0]?.recorded_by_name).toBeNull();
     expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+});
+
+// SALE MOVEMENT COST SNAPSHOT FIX — cost must come from each SALE
+// movement's own unit_cost/total_cost snapshot (captured at deduction time),
+// never from InventoryItem's *current* cost — otherwise a later receiving
+// silently reprices an already-reported historical consumption total.
+describe('reportsRepository.getInventoryConsumptionSummary', () => {
+  it('uses the movement-level unit_cost/total_cost snapshot, not InventoryItem.unitCost', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-1',
+        quantityChange: decimal(-5),
+        // Movement captured ₱10/unit at deduction time — must win even though
+        // the item's *current* cost (never read by this path) is different.
+        unitCost: decimal(10),
+        totalCost: decimal(-50),
+        branch: { name: 'SM North' },
+        inventoryItem: { name: 'Potato', unitCost: decimal(999), baseUnit: { code: 'g' } },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryConsumptionSummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows).toEqual([
+      {
+        ingredient_id: 'item-1',
+        ingredient_name: 'Potato',
+        branch_id: 'b1',
+        branch_name: 'SM North',
+        unit: 'g',
+        quantity_consumed: 5,
+        unit_cost: 10,
+        consumption_value: 50,
+        has_unknown_cost: false,
+        movement_count: 1,
+      },
+    ]);
+  });
+
+  // Reconciliation scenario (SALE MOVEMENT COST SNAPSHOT FIX §8): 100 units
+  // @ ₱10 sells 5 units (SALE movement snapshot ₱10/unit, ₱50 total), then a
+  // later receiving moves the weighted average to ₱20. The already-recorded
+  // SALE movement's cost must not be reread at the new average — this
+  // report must still show ₱50 for that historical consumption.
+  it('is unaffected by a since-changed current cost — the historical SALE snapshot stands', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        branchId: 'b1',
+        inventoryItemId: 'item-1',
+        quantityChange: decimal(-5),
+        unitCost: decimal(10),
+        totalCost: decimal(-50),
+        branch: { name: 'SM North' },
+        // Current InventoryItem.unitCost has since moved to ₱20 (post-receiving) —
+        // must have zero effect on this row.
+        inventoryItem: { name: 'Potato', unitCost: decimal(20), baseUnit: { code: 'g' } },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryConsumptionSummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]?.unit_cost).toBe(10);
+    expect(rows[0]?.consumption_value).toBe(50);
+  });
+
+  it('sums quantity and cost across multiple SALE movements for the same ingredient/branch', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-5), unitCost: decimal(10), totalCost: decimal(-50),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+      },
+      {
+        branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-3), unitCost: decimal(10), totalCost: decimal(-30),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryConsumptionSummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]?.quantity_consumed).toBe(8);
+    expect(rows[0]?.consumption_value).toBe(80);
+    expect(rows[0]?.unit_cost).toBe(10);
+    expect(rows[0]?.movement_count).toBe(2);
+  });
+
+  it('never fabricates a legacy null-cost movement as ₱0 — reports unit_cost/consumption_value as null and flags has_unknown_cost', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-5), unitCost: null, totalCost: null,
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryConsumptionSummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]?.quantity_consumed).toBe(5); // consumption quantity still shown
+    expect(rows[0]?.unit_cost).toBeNull();
+    expect(rows[0]?.consumption_value).toBeNull();
+    expect(rows[0]?.has_unknown_cost).toBe(true);
+  });
+
+  it('flags has_unknown_cost and reports only the known-cost portion when a bucket mixes costed and legacy-null movements', async () => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
+      {
+        branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-5), unitCost: decimal(10), totalCost: decimal(-50),
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+      },
+      {
+        branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-3), unitCost: null, totalCost: null,
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+      },
+    ] as never);
+
+    const rows = await reportsRepository.getInventoryConsumptionSummary({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(rows[0]?.quantity_consumed).toBe(8); // all quantity still counted
+    expect(rows[0]?.consumption_value).toBe(50); // only the known-cost movement's total
+    // Never a blended known-cost-over-mixed-quantity rate (50/8 = 6.25 would
+    // understate the real ₱10/unit rate and imply false precision).
+    expect(rows[0]?.unit_cost).toBeNull();
+    expect(rows[0]?.has_unknown_cost).toBe(true);
   });
 });
 

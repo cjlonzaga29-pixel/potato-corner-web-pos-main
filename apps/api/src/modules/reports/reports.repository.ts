@@ -38,6 +38,12 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+// Matches InventoryStockMovement.unitCost's @db.Decimal(10, 4) precision —
+// round2 would visibly truncate a sub-peso unit cost (e.g. ₱0.4023/g).
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
 // TASK 149 — kg totals need more precision than the native-unit round2 (2dp):
 // a tbsp/tsp-derived factor can land on a value like 23.5 tbsp x 7g / 1000 =
 // 0.1645kg, which round2 (or even 3dp rounding) would visibly truncate.
@@ -653,6 +659,9 @@ export const reportsRepository = {
       reference_id: m.referenceId,
       notes: m.notes,
       recorded_by_name: m.performedByUserId ? (recorderNameById.get(m.performedByUserId) ?? null) : null,
+      unit_cost: m.unitCost ? m.unitCost.toNumber() : null,
+      total_cost: m.totalCost ? m.totalCost.toNumber() : null,
+      proof_available: m.proofKey ? 'Yes' : 'No',
       created_at: m.createdAt.toISOString(),
     }));
   },
@@ -661,9 +670,15 @@ export const reportsRepository = {
   // ingredient + branch over the filtered range. Distinct from
   // getInventoryMovement above (the raw per-movement ledger, every movement
   // type) — this rolls SALE deductions up into one row per ingredient/branch.
-  // unit_cost is InventoryItem-level (org-wide), not the branch InventoryStock
-  // override getInventoryValuation prefers, since this is a movement-log
-  // aggregate, not a point-in-time stock snapshot.
+  //
+  // Cost comes from each movement's own unit_cost/total_cost snapshot
+  // (captured at deduction time by deductInventoryForSale) — never from
+  // InventoryItem/InventoryStock's *current* cost, which would let a later
+  // receiving silently reprice an already-reported historical consumption
+  // total. Legacy movements predating cost capture have unit_cost/total_cost
+  // = null; a bucket that mixes known- and unknown-cost movements reports
+  // has_unknown_cost = true and consumption_value/unit_cost reflect only the
+  // known portion, never a fabricated zero standing in for the unknown one.
   async getInventoryConsumptionSummary(filters: ReportFilters): Promise<InventoryConsumptionSummaryReportRow[]> {
     const range = dateRangeFilter(filters);
     const movements = await prisma.inventoryStockMovement.findMany({
@@ -672,8 +687,10 @@ export const reportsRepository = {
         branchId: true,
         inventoryItemId: true,
         quantityChange: true,
+        unitCost: true,
+        totalCost: true,
         branch: { select: { name: true } },
-        inventoryItem: { select: { name: true, unitCost: true, baseUnit: { select: { code: true } } } },
+        inventoryItem: { select: { name: true, baseUnit: { select: { code: true } } } },
       },
     });
 
@@ -681,25 +698,30 @@ export const reportsRepository = {
       branchName: string;
       ingredientName: string;
       unit: string;
-      unitCost: number | null;
       quantityConsumed: number;
+      knownCostTotal: number;
+      hasUnknownCost: boolean;
       movementCount: number;
     }
     const buckets = new Map<string, Bucket>();
     for (const m of movements) {
       const key = `${m.branchId}:${m.inventoryItemId}`;
       const consumed = Math.abs(m.quantityChange.toNumber());
+      const movementCost = m.totalCost ? Math.abs(m.totalCost.toNumber()) : null;
       const existing = buckets.get(key);
       if (existing) {
         existing.quantityConsumed += consumed;
         existing.movementCount += 1;
+        if (movementCost !== null) existing.knownCostTotal += movementCost;
+        else existing.hasUnknownCost = true;
       } else {
         buckets.set(key, {
           branchName: m.branch.name,
           ingredientName: m.inventoryItem.name,
           unit: m.inventoryItem.baseUnit.code,
-          unitCost: m.inventoryItem.unitCost?.toNumber() ?? null,
           quantityConsumed: consumed,
+          knownCostTotal: movementCost ?? 0,
+          hasUnknownCost: movementCost === null,
           movementCount: 1,
         });
       }
@@ -708,6 +730,15 @@ export const reportsRepository = {
     return Array.from(buckets.entries())
       .map(([key, b]) => {
         const [branchId, ingredientId] = key.split(':') as [string, string];
+        // knownCostTotal covers only the movements with a captured cost — an
+        // unknown-cost movement contributes its quantity (counted above) but
+        // never a cost, known or assumed. consumption_value surfaces that
+        // known-only partial total (flagged via has_unknown_cost) rather than
+        // hiding it; unit_cost, though, is only ever a *true* per-unit rate —
+        // never a known-cost-over-mixed-quantity blend, which would quietly
+        // understate the real rate and imply false precision.
+        const hasAnyKnownCost = b.knownCostTotal > 0 || !b.hasUnknownCost;
+        const consumptionValue = hasAnyKnownCost ? round2(b.knownCostTotal) : null;
         return {
           ingredient_id: ingredientId,
           ingredient_name: b.ingredientName,
@@ -715,12 +746,13 @@ export const reportsRepository = {
           branch_name: b.branchName,
           unit: b.unit,
           quantity_consumed: round2(b.quantityConsumed),
-          unit_cost: b.unitCost,
-          consumption_value: b.unitCost !== null ? round2(b.quantityConsumed * b.unitCost) : 0,
+          unit_cost: !b.hasUnknownCost && b.quantityConsumed > 0 ? round4(b.knownCostTotal / b.quantityConsumed) : null,
+          consumption_value: consumptionValue,
+          has_unknown_cost: b.hasUnknownCost,
           movement_count: b.movementCount,
         };
       })
-      .sort((a, b) => b.consumption_value - a.consumption_value);
+      .sort((a, b) => (b.consumption_value ?? 0) - (a.consumption_value ?? 0));
   },
 
   // Per-ingredient live stock snapshot — deliberately ignores filters.dateFrom/

@@ -120,7 +120,15 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'quantity_change', header: 'Change' },
     { key: 'quantity_before', header: 'Before' },
     { key: 'quantity_after', header: 'After' },
+    { key: 'unit_cost', header: 'Unit Cost' },
+    { key: 'total_cost', header: 'Total Cost' },
     { key: 'recorded_by_name', header: 'Recorded By' },
+    // Yes/No only — never the storage key or a signed URL (same rule as
+    // DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS's discount_proof_available
+    // above). Actually viewing the photo happens on the dedicated Inventory
+    // Movements screen (branch-scoped, resolves a fresh signed URL per row)
+    // or via the Admin Reports "View Proof" action, never from exported data.
+    { key: 'proof_available', header: 'Proof Available' },
     { key: 'created_at', header: 'Date' },
     // isAudit: CSV-only (see generateCsv/generatePdf's shared visibleColumns
     // filter) — these three exist on the Inventory Movement screen's table
@@ -139,6 +147,7 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'quantity_consumed', header: 'Quantity Consumed' },
     { key: 'unit_cost', header: 'Unit Cost' },
     { key: 'consumption_value', header: 'Consumption Value' },
+    { key: 'has_unknown_cost', header: 'Has Unknown-Cost Movements', isAudit: true },
     { key: 'movement_count', header: 'Sales Movements' },
   ],
   // Not used for CSV/PDF export — INVENTORY_SUMMARY is special-cased in

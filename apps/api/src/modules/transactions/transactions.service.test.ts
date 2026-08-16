@@ -3154,6 +3154,77 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     expect(lockCalls).toContain(expectedLockId);
   });
 
+  // SALE MOVEMENT COST SNAPSHOT FIX §6 — a reversal must reuse the original
+  // sale's captured componentCost, never today's InventoryStock.unitCost.
+  // The mocked InventoryStock read below deliberately omits unitCost (would
+  // be undefined if read) to prove the reversal's cost never touches that
+  // row at all — it comes entirely from the snapshot already fetched above.
+  it('reverses a SALE using the original componentCost from deductionSnapshot, not the current carrying cost', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [
+          { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g', componentUnitCost: 10, componentCost: 20 },
+        ],
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({
+      quantityOnHand: decimal(8),
+    } as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
+      id: 'stock-1',
+      quantityOnHand: decimal(10),
+    } as never);
+
+    await transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(universalInventoryRepository.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({ movementType: 'SALE_REVERSAL' }),
+      expect.anything(),
+    );
+    const [movementArg] = vi.mocked(universalInventoryRepository.createStockMovement).mock.calls[0] as never as [
+      { totalCost: Prisma.Decimal; unitCost: Prisma.Decimal },
+      unknown,
+    ];
+    expect(movementArg.totalCost.toNumber()).toBe(20);
+    expect(movementArg.unitCost.toNumber()).toBe(10);
+  });
+
+  // §5/§6 — a legacy transaction whose deductionSnapshot never captured cost
+  // (predates the componentCost cutover) must not have its reversal
+  // fabricate a cost from anywhere else.
+  it('leaves unit_cost/total_cost undefined on a SALE_REVERSAL when the original deductionSnapshot never captured cost', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }],
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: decimal(8) } as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({ id: 'stock-1', quantityOnHand: decimal(10) } as never);
+
+    await transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null);
+
+    const [movementArg] = vi.mocked(universalInventoryRepository.createStockMovement).mock.calls[0] as never as [
+      { unitCost?: unknown; totalCost?: unknown },
+      unknown,
+    ];
+    expect(movementArg.unitCost).toBeUndefined();
+    expect(movementArg.totalCost).toBeUndefined();
+  });
+
   // Task 209.31 — the stockTotals reversal pass must acquire every
   // InventoryStock advisory lock in sorted order up front, mirroring
   // deductInventoryForSale's pattern, instead of locking/reading/writing one
@@ -3346,6 +3417,72 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
       }),
       expect.anything(),
     );
+  });
+
+  // SALE MOVEMENT COST SNAPSHOT FIX §2/§9 — each BOM component's SALE
+  // movement must carry its own unit_cost/total_cost, matching that
+  // component's own carrying cost (not a shared/blended value across the
+  // sale). The per-item costs deliberately differ from attachCostToDeductionLines'
+  // resolution (the `select` branch below) to prove the movement snapshot
+  // comes from deductInventoryForSale's own advisory-locked stock read
+  // (§10 concurrency), not from the earlier pre-lock cost lookup that only
+  // feeds TransactionItem.deductionSnapshot.
+  it('snapshots unit_cost/total_cost on every component SALE movement from its own locked-read carrying cost', async () => {
+    const lockedReadUnitCosts: Record<string, number> = { 'item-cup': 3, 'item-potato': 0.4, 'item-oil': 2.5 };
+    vi.mocked(prisma.inventoryStock.findMany).mockImplementation((async (args: unknown) => {
+      const call = args as { where?: { inventoryItemId?: { in?: string[] } }; select?: unknown };
+      const ids = (call?.where?.inventoryItemId?.in ?? []) as string[];
+      if (call?.select) return ids.map((id) => ({ inventoryItemId: id })); // attachCostToDeductionLines's pre-lock read — no cost here
+      return ids.map((id) => ({
+        inventoryItemId: id,
+        quantityOnHand: decimal(stockOnHand[id] ?? 0),
+        lowStockThreshold: null,
+        criticalThreshold: null,
+        unitCost: lockedReadUnitCosts[id] !== undefined ? new Prisma.Decimal(lockedReadUnitCosts[id] as number) : null,
+      }));
+    }) as never);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    const [movementInputs] = vi.mocked(universalInventoryRepository.createStockMovements).mock.calls[0] as never as [
+      Array<{ inventoryItemId: string; unitCost?: Prisma.Decimal; totalCost?: Prisma.Decimal }>,
+      unknown,
+    ];
+    for (const line of bomLines) {
+      const movement = movementInputs.find((m) => m.inventoryItemId === line.inventoryItemId);
+      const expectedUnitCost = lockedReadUnitCosts[line.inventoryItemId];
+      expect(movement?.unitCost?.toNumber()).toBe(expectedUnitCost);
+      expect(movement?.totalCost?.toNumber()).toBeCloseTo((expectedUnitCost as number) * line.quantity, 6);
+    }
+  });
+
+  // §5 — an item whose InventoryStock.unitCost was never initialized must
+  // record unit_cost/total_cost as undefined (Prisma writes this as SQL
+  // NULL), never a fabricated 0 standing in for "unknown".
+  it('leaves unit_cost/total_cost undefined on a SALE movement when the item has no carrying cost yet', async () => {
+    vi.mocked(prisma.inventoryStock.findMany).mockImplementation((async (args: unknown) => {
+      const call = args as { where?: { inventoryItemId?: { in?: string[] } }; select?: unknown };
+      const ids = (call?.where?.inventoryItemId?.in ?? []) as string[];
+      if (call?.select) return ids.map((id) => ({ inventoryItemId: id }));
+      return ids.map((id) => ({
+        inventoryItemId: id,
+        quantityOnHand: decimal(stockOnHand[id] ?? 0),
+        lowStockThreshold: null,
+        criticalThreshold: null,
+        unitCost: null,
+      }));
+    }) as never);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    const [movementInputs] = vi.mocked(universalInventoryRepository.createStockMovements).mock.calls[0] as never as [
+      Array<{ unitCost?: unknown; totalCost?: unknown }>,
+      unknown,
+    ];
+    for (const movement of movementInputs) {
+      expect(movement.unitCost).toBeUndefined();
+      expect(movement.totalCost).toBeUndefined();
+    }
   });
 });
 

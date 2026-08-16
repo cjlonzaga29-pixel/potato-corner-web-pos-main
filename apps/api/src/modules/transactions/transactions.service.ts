@@ -988,6 +988,18 @@ async function deductInventoryForSale(
       data: { quantityOnHand: { decrement: quantity }, version: { increment: 1 } },
     });
 
+    // Carrying cost snapshot at the exact moment of deduction — `stock` here
+    // is the same InventoryStock row read (and advisory-locked) above, so
+    // this can never race a concurrent receiving the way a cost lookup after
+    // releasing the lock could. Same stock.unitCost-only convention as
+    // WASTE/TRANSFER_OUT (universal-inventory.service.ts) — no InventoryItem
+    // fallback here; that fallback is cogs.ts's separate concern for
+    // TransactionItem.deductionSnapshot, which this must not duplicate or
+    // diverge from. Null (never fabricated as 0) when cost was never
+    // initialized for this item.
+    const unitCost = stock.unitCost;
+    const totalCost = unitCost ? unitCost.mul(quantity) : null;
+
     movementInputs.push({
       branchId,
       inventoryItemId,
@@ -998,6 +1010,8 @@ async function deductInventoryForSale(
       unitId: baseUnitId,
       referenceType: 'transaction',
       referenceId: transactionId,
+      unitCost: unitCost ?? undefined,
+      totalCost: totalCost ?? undefined,
     });
 
     effects.push(() =>
@@ -1081,21 +1095,29 @@ async function reverseInventoryForTransaction(
   // InventoryStock). Never cross-apply one shape's totals to the other
   // system — that would corrupt whichever stock model didn't actually move.
   const legacyTotals = new Map<string, number>();
-  const stockTotals = new Map<string, { quantity: number; baseUnitId?: string }>();
+  // totalCost is the original sale's componentCost summed per inventory
+  // item — reused verbatim (never recomputed from today's carrying cost) so
+  // the reversal preserves the exact cost context the sale itself recorded.
+  // null once any contributing line's cost was unknown at sale time, so a
+  // partially-known sum is never mistaken for a complete one.
+  const stockTotals = new Map<string, { quantity: number; baseUnitId?: string; totalCost: number | null }>();
 
   for (const item of transactionItems) {
     const snapshot = item.deductionSnapshot as
       | { ingredientId: string; quantity: number }[]
-      | { inventoryItemId: string; quantity: number; baseUnitId?: string }[]
+      | { inventoryItemId: string; quantity: number; baseUnitId?: string; componentCost?: number | null }[]
       | null;
 
     const firstEntry = snapshot?.[0];
     if (firstEntry && 'inventoryItemId' in firstEntry) {
-      for (const entry of snapshot as { inventoryItemId: string; quantity: number; baseUnitId?: string }[]) {
+      for (const entry of snapshot as { inventoryItemId: string; quantity: number; baseUnitId?: string; componentCost?: number | null }[]) {
         const existing = stockTotals.get(entry.inventoryItemId);
+        const costKnownSoFar = existing ? existing.totalCost !== null : true;
+        const hasCost = entry.componentCost !== undefined && entry.componentCost !== null;
         stockTotals.set(entry.inventoryItemId, {
           quantity: (existing?.quantity ?? 0) + entry.quantity,
           baseUnitId: entry.baseUnitId ?? existing?.baseUnitId,
+          totalCost: hasCost && costKnownSoFar ? (existing?.totalCost ?? 0) + (entry.componentCost as number) : null,
         });
       }
       continue;
@@ -1153,7 +1175,7 @@ async function reverseInventoryForTransaction(
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
   }
 
-  for (const [inventoryItemId, { quantity, baseUnitId }] of sortedStockEntries) {
+  for (const [inventoryItemId, { quantity, baseUnitId, totalCost }] of sortedStockEntries) {
     const stock = await tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } });
     const quantityBefore = stock?.quantityOnHand ?? new Prisma.Decimal(0);
 
@@ -1161,6 +1183,16 @@ async function reverseInventoryForTransaction(
       where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
       data: { quantityOnHand: { increment: quantity }, version: { increment: 1 } },
     });
+
+    // Reuses the original sale's componentCost total (accumulated above from
+    // TransactionItem.deductionSnapshot) rather than today's stock.unitCost —
+    // a refund/void must preserve the cost context the sale itself recorded,
+    // not re-price the reversal at whatever the carrying cost has since
+    // become. unitCost here is the per-unit average of that original total;
+    // both stay undefined (not fabricated as 0) when the original cost was
+    // never captured.
+    const reversalTotalCost = totalCost !== null ? new Prisma.Decimal(totalCost) : null;
+    const reversalUnitCost = reversalTotalCost !== null && quantity !== 0 ? reversalTotalCost.div(quantity) : null;
 
     await universalInventoryRepository.createStockMovement(
       {
@@ -1174,6 +1206,8 @@ async function reverseInventoryForTransaction(
         referenceType: 'transaction',
         referenceId: transactionId,
         notes: `Inventory reversal (${kind}) for transaction ${transactionId}`,
+        unitCost: reversalUnitCost ?? undefined,
+        totalCost: reversalTotalCost ?? undefined,
       },
       tx,
     );

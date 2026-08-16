@@ -172,13 +172,28 @@ export const InventoryMovementReportRowSchema = z.object({
   reference_id: z.string().nullable(),
   notes: z.string().nullable(),
   recorded_by_name: z.string().nullable(),
+  // Carrying-cost snapshot at movement time (never recomputed from today's
+  // average) -- null means "cost not initialized", not 0.
+  unit_cost: z.number().nullable(),
+  total_cost: z.number().nullable(),
+  // Yes/No only -- never the storage key or a signed URL, since this row
+  // shape is shared by CSV/PDF export as well as the on-screen table. Same
+  // 'Yes' | 'No' string convention as DiscountComplianceReportRow's
+  // discount_proof_available (see reports.columns.ts), not a boolean, so CSV
+  // cells never render the raw "true"/"false".
+  proof_available: z.enum(['Yes', 'No']),
   created_at: z.iso.datetime(),
 });
 export type InventoryMovementReportRow = z.infer<typeof InventoryMovementReportRowSchema>;
 
 // Aggregated sale-driven consumption (movement_type SALE only) per ingredient/branch
 // over the filtered date range — distinct from InventoryMovementReportRow above, which
-// is the raw per-movement ledger across every movement type.
+// is the raw per-movement ledger across every movement type. unit_cost/consumption_value
+// come from each underlying SALE movement's own cost snapshot (never today's live
+// InventoryItem/InventoryStock cost) -- null when no movement in the bucket captured a
+// cost yet, so a legacy/uninitialized-cost ingredient reads as "unknown", never ₱0.
+// has_unknown_cost flags a bucket that mixes known- and unknown-cost movements, in which
+// case unit_cost/consumption_value cover only the known portion.
 export const InventoryConsumptionSummaryReportRowSchema = z.object({
   ingredient_id: z.uuid(),
   ingredient_name: z.string(),
@@ -187,7 +202,8 @@ export const InventoryConsumptionSummaryReportRowSchema = z.object({
   unit: z.string(),
   quantity_consumed: z.number(),
   unit_cost: z.number().nullable(),
-  consumption_value: z.number(),
+  consumption_value: z.number().nullable(),
+  has_unknown_cost: z.boolean(),
   movement_count: z.number().int(),
 });
 export type InventoryConsumptionSummaryReportRow = z.infer<typeof InventoryConsumptionSummaryReportRowSchema>;

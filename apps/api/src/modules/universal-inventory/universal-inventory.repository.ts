@@ -443,7 +443,10 @@ export const universalInventoryRepository = {
    * (createMany can't return them); use this only where callers don't need
    * the created movement rows back (e.g. deductInventoryForSale, which
    * already has everything it needs from the paired InventoryStock.update
-   * result).
+   * result). unitCost/totalCost must be threaded through here the same as
+   * every other field — SALE is this method's only caller, and dropping its
+   * cost snapshot silently was the historical-accuracy gap this batch path
+   * had relative to createStockMovement's full field set.
    */
   createStockMovements(inputs: CreateStockMovementInput[], tx: Prisma.TransactionClient) {
     return tx.inventoryStockMovement.createMany({
@@ -459,6 +462,8 @@ export const universalInventoryRepository = {
         referenceId: input.referenceId,
         notes: input.notes,
         performedByUserId: input.performedByUserId,
+        unitCost: input.unitCost,
+        totalCost: input.totalCost,
       })),
     });
   },

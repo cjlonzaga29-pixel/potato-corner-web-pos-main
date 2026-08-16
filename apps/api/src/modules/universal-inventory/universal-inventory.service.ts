@@ -60,7 +60,10 @@ async function uploadInventoryProofImage(
   const compressed = await sharp(file.buffer).resize({ width: 1200, withoutEnlargement: true }).webp({ quality: 85 }).toBuffer();
   const path = `${keyPrefix}/${Date.now()}-${sanitizeFilename(file.originalname)}.webp`;
   const { error } = await supabaseAdmin.storage.from(INVENTORY_PROOF_BUCKET).upload(path, compressed, { contentType: 'image/webp', upsert: true });
-  if (error) throw new UniversalInventoryError('PROOF_UPLOAD_FAILED', 'Failed to upload the proof image', 502);
+  if (error) {
+    console.error('Failed to upload inventory proof image to Storage:', error);
+    throw new UniversalInventoryError('PROOF_UPLOAD_FAILED', 'Failed to upload the proof image', 502);
+  }
   return path;
 }
 

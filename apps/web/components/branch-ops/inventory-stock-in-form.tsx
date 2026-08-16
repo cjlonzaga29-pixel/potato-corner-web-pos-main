@@ -78,6 +78,12 @@ function StockInFormContent({ basePath }: { basePath: string }) {
   const stockIn = useReceiveInventoryStock(activeBranchId, inventoryItemId);
   const uploadProof = useUploadMovementProof(activeBranchId);
   const [proofFile, setProofFile] = useState<File | null>(null);
+  // Set only once stockIn has actually created the movement (stock already
+  // incremented server-side). Once set, the form below is replaced by a
+  // recovery banner so a failed proof upload can never be "retried" by
+  // resubmitting the whole form — that would call /receive again and double
+  // the stock. Retry re-attaches to this same movement id instead.
+  const [recordedMovement, setRecordedMovement] = useState<{ id: string } | null>(null);
 
   const purchaseUnitOptions = useMemo(
     () => (item ? buildPurchaseUnitOptions(item.base_unit_id, item.base_unit_code, conversions) : []),
@@ -115,14 +121,49 @@ function StockInFormContent({ basePath }: { basePath: string }) {
       total_cost: parsed.total_cost,
       notes: parsed.notes || undefined,
     });
+    setRecordedMovement({ id: movement.id });
     if (proofFile) {
-      await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
+      try {
+        await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
+      } catch {
+        return; // Recovery banner (recordedMovement is set) takes over below.
+      }
+    }
+    router.push(`${basePath}/inventory`);
+  }
+
+  async function retryProofUpload() {
+    if (!recordedMovement || !proofFile) return;
+    try {
+      await uploadProof.mutateAsync({ movementId: recordedMovement.id, file: proofFile });
+    } catch {
+      return;
     }
     router.push(`${basePath}/inventory`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording stock-in.</p>;
+  }
+
+  if (recordedMovement) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4">
+        <div className="rounded-md border border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-medium">Receiving was recorded, but the receipt photo could not be uploaded.</p>
+          <p className="mt-1">Stock has already been updated — retrying below will not add it again.</p>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory`)}>
+            Continue Without Photo
+          </Button>
+          <Button type="button" onClick={() => void retryProofUpload()} disabled={uploadProof.isPending || !proofFile}>
+            {uploadProof.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Retry Photo Upload
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (

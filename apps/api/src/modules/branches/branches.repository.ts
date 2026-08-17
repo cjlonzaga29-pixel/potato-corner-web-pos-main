@@ -16,12 +16,11 @@ function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: 
 /**
  * Canonical low-stock count for one branch, sourced from InventoryStock
  * (Phase 4 dashboard KPI reconciliation) instead of the legacy
- * Ingredient/InventoryMovement ledger — proven parity rule from
- * branches-low-stock-parity.integration.test.ts: a row counts as low stock
- * when its lowStockThreshold is set and quantityOnHand <= that threshold,
- * scoped to non-deleted InventoryItems. Rows with no threshold configured
- * are excluded (nothing to compare against), same as an Ingredient with no
- * matching InventoryStock row contributes nothing.
+ * Ingredient/InventoryMovement ledger: a row counts as low stock when its
+ * lowStockThreshold is set and quantityOnHand <= that threshold, scoped to
+ * non-deleted InventoryItems. Rows with no threshold configured are excluded
+ * (nothing to compare against), same as an Ingredient with no matching
+ * InventoryStock row contributes nothing.
  */
 async function countLowStock(branchId: string): Promise<number> {
   const rows = await prisma.inventoryStock.findMany({

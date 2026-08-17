@@ -11,7 +11,13 @@ vi.mock('@/lib/api-client', () => ({ apiClient: vi.fn() }));
 const { apiClient } = await import('@/lib/api-client');
 
 const mockToastSuccess = vi.fn();
-vi.mock('sonner', () => ({ toast: { success: (...args: unknown[]) => mockToastSuccess(...args) } }));
+const mockToastError = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+    error: (...args: unknown[]) => mockToastError(...args),
+  },
+}));
 
 const mockClearAuth = vi.fn();
 vi.mock('@/stores/auth.store', () => ({
@@ -124,6 +130,23 @@ describe('ChangePasswordPage error flow', () => {
     await waitFor(() => expect(screen.getByText('Current password is incorrect')).toBeInTheDocument());
     expect(mockReplace).not.toHaveBeenCalled();
     expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+
+  it('regression: a confirmed-dead session (SESSION_EXPIRED) clears auth and redirects to /login instead of stranding the user on the form', async () => {
+    vi.mocked(apiClient).mockResolvedValue({
+      data: null,
+      error: { code: 'SESSION_EXPIRED', message: 'Session expired. Please sign in again.' },
+      meta: null,
+    });
+    render(<ChangePasswordPage />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/login'));
+    expect(mockClearAuth).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastLogout).toHaveBeenCalledTimes(1);
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Session expired. Please sign in again.')).not.toBeInTheDocument();
   });
 
   it('does not call the API when passwords do not match (client-side validation)', async () => {

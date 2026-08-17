@@ -85,6 +85,33 @@ describe('LoginForm post-login redirect', () => {
   });
 });
 
+describe('LoginForm must-change-password redirect', () => {
+  it('routes straight to /change-password when the login response flags must_change_password, ignoring returnTo', async () => {
+    mockLogin.mockResolvedValue({
+      challengeRequired: false,
+      user: { ...STAFF_USER, must_change_password: true },
+    });
+    mockSearchParams = new URLSearchParams({ returnTo: '/receipts/12345' });
+    render(<LoginForm />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/change-password'));
+  });
+
+  it('routes to the role dashboard as normal when must_change_password is false', async () => {
+    mockLogin.mockResolvedValue({
+      challengeRequired: false,
+      user: { ...STAFF_USER, must_change_password: false },
+    });
+    render(<LoginForm />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/terminal'));
+  });
+});
+
 describe('LoginForm 2FA challenge', () => {
   it('renders the TOTP challenge screen when login returns challenge_required', async () => {
     mockLogin.mockResolvedValue({ challengeRequired: true, challengeToken: 'chal-1', expiresIn: 300 });

@@ -376,8 +376,9 @@ export const authService = {
     }
 
     const newHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);
-    await authRepository.updatePasswordHash(userId, newHash);
-    await authRepository.setMustChangePassword(userId, false);
+    // One UPDATE writing both columns — see updatePasswordAndSetMustChange's
+    // own comment for why this must not be two separate awaited calls.
+    await authRepository.updatePasswordAndSetMustChange(userId, newHash, false);
 
     // Revokes every session for this user, including the one this request
     // was made on — the caller must sign in again with the new password.

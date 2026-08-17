@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { middleware } from './middleware';
 
+/** Builds an unsigned JWT-shaped string — middleware only decodes (never verifies) this locally. */
+function fakeAccessToken(payload: Record<string, unknown>): string {
+  const base64url = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString('base64url');
+  return `${base64url({ alg: 'none' })}.${base64url(payload)}.sig`;
+}
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -69,5 +75,31 @@ describe('middleware /login redirect preserves returnTo', () => {
     for (const [, init] of fetchMock.mock.calls) {
       expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
     }
+  });
+});
+
+describe('middleware /change-password loop guard', () => {
+  it('redirects a must-change-password account to /change-password from any other page', async () => {
+    const token = fakeAccessToken({ role: 'branch', must_change_password: true, exp: Math.floor(Date.now() / 1000) + 900 });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: { access_token: token }, error: null, meta: null }), { status: 200 }),
+    );
+
+    const request = makeRequest('https://app.potatocorner.test/branch/dashboard', 'refresh_token=good-token');
+    const response = await middleware(request);
+
+    expect(requireLocation(response).pathname).toBe('/change-password');
+  });
+
+  it('sends a cleared (must_change_password=false) account away from /change-password to its own dashboard, instead of re-showing the form', async () => {
+    const token = fakeAccessToken({ role: 'branch', must_change_password: false, exp: Math.floor(Date.now() / 1000) + 900 });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: { access_token: token }, error: null, meta: null }), { status: 200 }),
+    );
+
+    const request = makeRequest('https://app.potatocorner.test/change-password', 'refresh_token=good-token');
+    const response = await middleware(request);
+
+    expect(requireLocation(response).pathname).toBe('/branch/dashboard');
   });
 });

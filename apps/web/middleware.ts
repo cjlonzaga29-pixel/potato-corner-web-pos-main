@@ -251,6 +251,16 @@ export async function middleware(request: NextRequest) {
     if (freshHint.mustChangePassword && pathname !== '/change-password') {
       return NextResponse.redirect(new URL('/change-password', request.url));
     }
+    // Mirror image of the redirect above: once the flag is actually clear
+    // (a fresh token proves it — see the access-hint comment above), a
+    // manual/stale visit to /change-password sends the user on to their own
+    // dashboard instead of re-showing a form there's nothing left to do on.
+    if (!freshHint.mustChangePassword && pathname === '/change-password' && freshHint.role) {
+      const dashboard = ROLE_DASHBOARDS[freshHint.role as keyof typeof ROLE_DASHBOARDS];
+      if (dashboard) {
+        return NextResponse.redirect(new URL(dashboard, request.url));
+      }
+    }
     const ownership = ROLE_PATH_OWNERSHIP.find((entry) => pathname.startsWith(entry.prefix));
     if (freshHint.role && ownership && !ownership.roles.includes(freshHint.role)) {
       const correctPrefix = ROLE_DASHBOARDS[freshHint.role as keyof typeof ROLE_DASHBOARDS];
@@ -283,6 +293,13 @@ export async function middleware(request: NextRequest) {
   // reach, and it can't be skipped by navigating straight to another URL.
   if (mustChangePassword && pathname !== '/change-password') {
     return withRotatedCookies(NextResponse.redirect(new URL('/change-password', request.url)), setCookies);
+  }
+
+  if (!mustChangePassword && pathname === '/change-password' && role) {
+    const dashboard = ROLE_DASHBOARDS[role as keyof typeof ROLE_DASHBOARDS];
+    if (dashboard) {
+      return withRotatedCookies(NextResponse.redirect(new URL(dashboard, request.url)), setCookies);
+    }
   }
 
   const ownership = ROLE_PATH_OWNERSHIP.find((entry) => pathname.startsWith(entry.prefix));

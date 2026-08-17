@@ -508,8 +508,10 @@ export const employeesService = {
     const effectivePassword = newPassword ?? (generatedPassword as string);
 
     const passwordHash = await bcrypt.hash(effectivePassword, BCRYPT_COST_FACTOR);
-    await authRepository.updatePasswordHash(employeeId, passwordHash);
-    await authRepository.setMustChangePassword(employeeId, true);
+    // One UPDATE writing both columns — see updatePasswordAndSetMustChange's
+    // own comment (auth.repository.ts): two separate writes here could leave
+    // a temp password committed without the forced-change flag ever landing.
+    await authRepository.updatePasswordAndSetMustChange(employeeId, passwordHash, true);
     await authRepository.revokeAllUserTokens(employeeId);
 
     await recordAuditLog({

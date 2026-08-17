@@ -91,6 +91,23 @@ export default function ChangePasswordPage() {
     }
 
     if (!response.data) {
+      const errorCode = typeof response.error === 'object' && response.error !== null ? response.error.code : undefined;
+
+      // apiClient's own 401 handling (see fetchAuthenticated in api-client.ts)
+      // already tried a silent refresh and gave up — this session is
+      // confirmed dead, not just "current password wrong". Leaving the user
+      // on this form with an inline error text here is exactly the stuck
+      // "Session expired" screen this page used to produce: nothing else on
+      // this standalone route is listening for the broadcastLogout it already
+      // fired, so without this branch the redirect never happens.
+      if (errorCode === 'SESSION_EXPIRED') {
+        clearAuth();
+        broadcastLogout();
+        router.replace('/login');
+        toast.error('Your session expired. Please sign in again.');
+        return;
+      }
+
       setError(
         typeof response.error === 'string'
           ? response.error

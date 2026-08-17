@@ -28,6 +28,7 @@ export interface Verify2FASessionResponse {
     first_name: string;
     last_name: string;
     branch_ids: string[];
+    must_change_password: boolean;
   };
 }
 

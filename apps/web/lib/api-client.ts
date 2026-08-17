@@ -68,21 +68,34 @@ async function refreshViaSharedSingleton(): Promise<Response> {
  * written it to the store by the time this request wakes up (that's a
  * separate, not-necessarily-faster promise chain — see use-auth.ts's
  * restoreSession, which does its own decode+setAuth after apiClient resolves).
+ *
+ * Deliberately does NOT require a pre-existing cached user. A page landed on
+ * directly (hard navigation/reload — e.g. /change-password, reached with a
+ * still-valid HttpOnly refresh cookie but an empty in-memory Zustand store)
+ * has no previousUser to rebuild onto, but the refresh itself is still
+ * genuinely valid: the store used to bail out here with `false` in that case,
+ * which the 401-retry path below then treated identically to a truly dead
+ * session — clearing auth and surfacing SESSION_EXPIRED even though a brand
+ * new access token had just been successfully issued. firstName/lastName
+ * fall back to '' when there's nothing to preserve, same as use-auth.ts's
+ * restoreSession does for the equivalent mount-time-refresh case.
  */
 function applyRefreshedToken(newToken: string): boolean {
   const previousUser = useAuthStore.getState().user;
-  if (!previousUser) return false;
   const payload = decodeJwtPayload(newToken);
+  // Nothing to build a user from either way — genuinely can't apply this token.
+  if (!payload && !previousUser) return false;
   const updatedUser = payload
     ? {
         id: payload.user_id,
         role: payload.role,
         email: payload.email,
-        firstName: previousUser.firstName,
-        lastName: previousUser.lastName,
+        firstName: previousUser?.firstName ?? '',
+        lastName: previousUser?.lastName ?? '',
         branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
       }
-    : previousUser;
+    : // The guard above proves previousUser is non-null whenever payload isn't.
+      (previousUser as NonNullable<typeof previousUser>);
   useAuthStore.getState().setAuth(updatedUser, newToken);
   return true;
 }
@@ -260,10 +273,10 @@ export async function fetchAuthenticated(
   if (response.status === 401 && !_isRetry && path !== '/api/auth/refresh' && path !== '/api/auth/login') {
     console.warn('[apiClient] 401, triggering refresh', path);
     const newToken = await refreshAccessToken();
-    // applyRefreshedToken is best-effort: if there's no previously-cached
-    // user (nothing to rebuild onto) or the token doesn't decode, it leaves
-    // the store untouched rather than treating a successful refresh as a
-    // failure — the retry below must still happen either way.
+    // applyRefreshedToken only fails when the new token doesn't decode —
+    // it no longer requires a pre-existing cached user (see its own comment
+    // above), so a genuinely successful refresh is never mistaken for a
+    // dead session just because this page was hard-loaded with an empty store.
     if (newToken && applyRefreshedToken(newToken)) {
       return fetchAuthenticated(path, init, true);
     }

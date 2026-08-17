@@ -31,6 +31,7 @@ vi.mock('./auth.repository.js', () => ({
     hasActiveDeviceSession: vi.fn(),
     updatePasswordHash: vi.fn(),
     setMustChangePassword: vi.fn(),
+    updatePasswordAndSetMustChange: vi.fn(),
     updateName: vi.fn().mockResolvedValue(undefined),
     insertRevokedToken: vi.fn().mockResolvedValue(undefined),
     storePasswordResetToken: vi.fn().mockResolvedValue(undefined),
@@ -652,7 +653,9 @@ describe('authService.changePassword', () => {
 
     const result = await authService.changePassword('user-1', 'CorrectHorse1', 'NewPassword1', accessToken, 'device-1');
 
-    expect(authRepository.setMustChangePassword).toHaveBeenCalledWith('user-1', false);
+    // One combined write, not separate updatePasswordHash + setMustChangePassword
+    // calls — see updatePasswordAndSetMustChange's own comment for why.
+    expect(authRepository.updatePasswordAndSetMustChange).toHaveBeenCalledWith('user-1', expect.any(String), false);
     expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('user-1');
     expect(authRepository.insertRevokedToken).toHaveBeenCalledWith(expect.any(String), expect.any(Date));
     expect(result.user.must_change_password).toBe(false);
@@ -677,9 +680,8 @@ describe('authService.changePassword', () => {
       authService.changePassword('user-1', 'WrongPassword1', 'NewPassword1', accessToken, 'device-1'),
     ).rejects.toMatchObject({ code: 'INVALID_PASSWORD', statusCode: 401 });
 
-    expect(authRepository.setMustChangePassword).not.toHaveBeenCalled();
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
-    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
   });
 });
 

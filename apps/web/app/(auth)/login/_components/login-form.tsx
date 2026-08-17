@@ -30,6 +30,12 @@ interface LoginErrorState {
 
 interface ChallengeUser {
   role: keyof typeof ROLE_DASHBOARD_PATHS;
+  /**
+   * Optional so pre-existing call sites/tests that predate this field keep
+   * compiling — treated as `false` when absent (matches AccessTokenUser's
+   * own default on the backend, auth.service.ts).
+   */
+  must_change_password?: boolean;
 }
 
 /** Step 11b Phase 2: which screen the form is showing — 'credentials' is the unchanged pre-2FA flow. */
@@ -71,6 +77,17 @@ export function LoginForm() {
   } = useForm<LoginFormValues>({ resolver: zodResolver(loginFormSchema) });
 
   function redirectAfterLogin(user: ChallengeUser) {
+    // A must-change-password account routes straight to /change-password —
+    // never to its dashboard or a stale returnTo — so this session never
+    // has to round-trip through a real API 403 (and the resulting hard
+    // window.location.href reload, which wipes the in-memory access token
+    // this same click just set) just to discover the same thing the login
+    // response already told us. middleware.ts still enforces this
+    // server-side on every subsequent navigation regardless.
+    if (user.must_change_password) {
+      router.push('/change-password');
+      return;
+    }
     const returnTo = getSafeReturnTo(searchParams.get('returnTo'));
     router.push(returnTo ?? ROLE_DASHBOARD_PATHS[user.role] ?? '/');
   }

@@ -40,6 +40,7 @@ vi.mock('../auth/auth.repository.js', () => ({
     revokeAllUserTokens: vi.fn().mockResolvedValue(undefined),
     updatePasswordHash: vi.fn().mockResolvedValue(undefined),
     setMustChangePassword: vi.fn().mockResolvedValue(undefined),
+    updatePasswordAndSetMustChange: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -463,7 +464,7 @@ describe('employeesService.resetEmployeePassword', () => {
 
     await expect(employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', BRANCH_USER, null)).resolves.toEqual({});
 
-    expect(authRepository.updatePasswordHash).toHaveBeenCalledWith('emp-1', expect.any(String));
+    expect(authRepository.updatePasswordAndSetMustChange).toHaveBeenCalledWith('emp-1', expect.any(String), true);
   });
 
   it('rejects a branch actor resetting the password of an employee in another branch', async () => {
@@ -473,7 +474,7 @@ describe('employeesService.resetEmployeePassword', () => {
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', OTHER_BRANCH_USER, null),
     ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
 
-    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
   });
 
   it('allows a supervisor to reset the password of an employee in one of their assigned branches', async () => {
@@ -490,7 +491,7 @@ describe('employeesService.resetEmployeePassword', () => {
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', UNASSIGNED_SUPERVISOR_USER, null),
     ).rejects.toMatchObject({ code: 'EMPLOYEE_ACCESS_DENIED', statusCode: 403 });
 
-    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
   });
 
   it('allows super_admin to reset the password of any employee regardless of branch', async () => {
@@ -506,7 +507,7 @@ describe('employeesService.resetEmployeePassword', () => {
 
     expect(result.temporaryPassword).toEqual(expect.any(String));
     expect(result.temporaryPassword?.length).toBeGreaterThanOrEqual(8);
-    expect(authRepository.updatePasswordHash).toHaveBeenCalledWith('emp-1', expect.any(String));
+    expect(authRepository.updatePasswordAndSetMustChange).toHaveBeenCalledWith('emp-1', expect.any(String), true);
   });
 
   it('does not return a temporary password when the caller supplies one', async () => {
@@ -524,7 +525,7 @@ describe('employeesService.resetEmployeePassword', () => {
       employeesService.resetEmployeePassword('emp-1', 'NewPassword1!', SUPER_ADMIN_USER, null),
     ).rejects.toMatchObject({ code: 'EMPLOYEE_HAS_NO_CREDENTIALS', statusCode: 400 });
 
-    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
   });
 });
 

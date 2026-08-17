@@ -166,6 +166,24 @@ export const authRepository = {
     return prisma.user.update({ where: { id: userId }, data: { mustChangePassword } });
   },
 
+  /**
+   * Used everywhere a password write and a mustChangePassword write need to
+   * land together — authService.changePassword (clears the flag) and
+   * employeesService's admin-reset-password (sets it) — instead of two
+   * separate updatePasswordHash + setMustChangePassword calls. A single
+   * UPDATE statement writing both columns is atomic at the row level by
+   * construction, so there's no window where a crash between two separate
+   * writes could leave the new password hash committed while
+   * mustChangePassword is still stuck at its old value — for the
+   * self-service path that's the exact inconsistent state that would force
+   * the account right back into the change-password loop on its very next
+   * login; for the admin-reset path it's the account's temp password
+   * working directly without ever being forced through change-password.
+   */
+  updatePasswordAndSetMustChange(userId: string, passwordHash: string, mustChangePassword: boolean) {
+    return prisma.user.update({ where: { id: userId }, data: { passwordHash, mustChangePassword } });
+  },
+
   /** Self-service display-name update — writes only firstName/lastName, never any other column. */
   updateName(userId: string, firstName: string, lastName: string) {
     return prisma.user.update({ where: { id: userId }, data: { firstName, lastName } });

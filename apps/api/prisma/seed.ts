@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import { assertSeedAllowed } from './seed-guard.js';
 
 const prisma = new PrismaClient();
 
@@ -49,6 +50,8 @@ const SEED_USERS = [
 ];
 
 async function main() {
+  assertSeedAllowed(process.env);
+
   const branch = await prisma.branch.upsert({
     where: { code: 'MAIN01' },
     update: {},

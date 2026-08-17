@@ -122,6 +122,12 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   NEXT_PUBLIC_APP_URL: z.string().min(1).default('http://localhost:3000'),
   SENTRY_DSN: z.string().optional(),
+  // Not required — email.ts already fails loudly per-request outside
+  // development when these are absent (see sendPasswordResetEmail). Typed
+  // here instead of read via raw process.env so config validation and the
+  // production-readiness warning below have one source of truth.
+  RESEND_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().min(1).optional(),
   /**
    * CR-010A.1 — off by default; existing movement-write behavior is
    * unchanged until explicitly enabled. "true"/"false" only — z.coerce.boolean()
@@ -178,6 +184,36 @@ function assertPgBouncerCompatible(databaseUrl: string): void {
   }
 }
 
+/**
+ * Password reset / welcome / fraud-alert emails already fail loudly per
+ * request outside development when RESEND_API_KEY is unset (see
+ * sendPasswordResetEmail in lib/email.ts) — that's what actually stops a
+ * silent "success" response from a nonexistent provider. This is a
+ * boot-time warning on top of that, so a misconfigured production
+ * deployment is visible in the logs immediately instead of only surfacing
+ * the first time someone requests a password reset. Deliberately a
+ * warning, not a thrown error — email delivery being unavailable must not
+ * take down the rest of the POS.
+ */
+export function warnIfEmailDeliveryMisconfigured(data: {
+  NODE_ENV: string;
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  NEXT_PUBLIC_APP_URL: string;
+}): void {
+  if (data.NODE_ENV === 'development' || data.NODE_ENV === 'test') return;
+
+  if (!data.RESEND_API_KEY) {
+    console.warn('[config] RESEND_API_KEY is not set — password reset, welcome, and fraud alert emails will fail to send.');
+  }
+  if (!data.EMAIL_FROM) {
+    console.warn('[config] EMAIL_FROM is not set — outgoing emails will fall back to a placeholder sender address.');
+  }
+  if (/^https?:\/\/localhost(:\d+)?/i.test(data.NEXT_PUBLIC_APP_URL)) {
+    console.warn(`[config] NEXT_PUBLIC_APP_URL is "${data.NEXT_PUBLIC_APP_URL}" outside development — generated links (e.g. password reset) will point at localhost.`);
+  }
+}
+
 function loadConfig() {
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
@@ -186,6 +222,7 @@ function loadConfig() {
   }
   assertPgBouncerCompatible(result.data.DATABASE_URL);
   assertPosTransactionTimingSane(result.data.PRISMA_TRANSACTION_MAX_WAIT_MS, result.data.PRISMA_TRANSACTION_TIMEOUT_MS);
+  warnIfEmailDeliveryMisconfigured(result.data);
   return result.data;
 }
 
@@ -209,6 +246,7 @@ export const config = {
   hashKey: env.HASH_KEY,
   supabase: { url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY },
   sentryDsn: env.SENTRY_DSN,
+  email: { resendApiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM },
   inventoryProjectionOutboxEnabled: env.INVENTORY_PROJECTION_OUTBOX_ENABLED,
   shadowBomDeductionEnabled: env.SHADOW_BOM_DEDUCTION_ENABLED,
   shadowBomDeductionBranchIds: env.SHADOW_BOM_DEDUCTION_BRANCH_IDS,

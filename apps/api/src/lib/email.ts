@@ -6,7 +6,7 @@ import type {
   LargeAdjustmentApprovalNeededNotificationPayload,
 } from '../modules/notifications/notifications.types.js';
 
-const apiKey = process.env.RESEND_API_KEY;
+const apiKey = config.email.resendApiKey;
 const resend = apiKey ? new Resend(apiKey) : null;
 
 /**
@@ -20,7 +20,7 @@ const resend = apiKey ? new Resend(apiKey) : null;
  * the link to whatever is reading stdout.
  */
 export async function sendPasswordResetEmail(toEmail: string, resetToken: string): Promise<void> {
-  const resetUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+  const resetUrl = `${config.frontendUrl}/reset-password?token=${resetToken}`;
 
   if (!resend) {
     if (config.nodeEnv !== 'development') {
@@ -31,7 +31,7 @@ export async function sendPasswordResetEmail(toEmail: string, resetToken: string
   }
 
   const { data, error } = await resend.emails.send({
-    from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
+    from: config.email.from ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: 'Reset your Potato Corner POS password',
     html: `<p>Click the link below to reset your password. This link expires in 1 hour.</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
@@ -56,7 +56,7 @@ export async function sendPasswordResetEmail(toEmail: string, resetToken: string
  * instead, which is the correct outcome (retry/alert, not a silent leak).
  */
 export async function sendWelcomeEmail(toEmail: string, firstName: string, employeeId: string, tempPassword: string): Promise<void> {
-  const loginUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/login`;
+  const loginUrl = `${config.frontendUrl}/login`;
 
   if (!resend) {
     if (config.nodeEnv !== 'development') {
@@ -67,7 +67,7 @@ export async function sendWelcomeEmail(toEmail: string, firstName: string, emplo
   }
 
   const { data, error } = await resend.emails.send({
-    from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
+    from: config.email.from ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: 'Welcome to Potato Corner POS',
     html: `<p>Hi ${firstName},</p><p>Your employee account (${employeeId}) has been created. Your temporary password is:</p><p><strong>${tempPassword}</strong></p><p>You will be required to change it on first login.</p><p><a href="${loginUrl}">Sign in</a></p>`,
@@ -88,7 +88,7 @@ export async function sendWelcomeEmail(toEmail: string, firstName: string, emplo
  * a leaked credential — logging it in development is harmless either way.
  */
 export async function sendFraudAlertEmail(toEmail: string, payload: FraudAlertCreatedNotificationPayload): Promise<void> {
-  const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/fraud/${payload.alertId}`;
+  const reviewUrl = `${config.frontendUrl}/fraud/${payload.alertId}`;
 
   if (!resend) {
     if (config.nodeEnv !== 'development') {
@@ -99,7 +99,7 @@ export async function sendFraudAlertEmail(toEmail: string, payload: FraudAlertCr
   }
 
   const { data, error } = await resend.emails.send({
-    from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
+    from: config.email.from ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: `Fraud alert (${payload.severity}) — review required`,
     html: `<p>A new ${payload.severity} severity fraud alert was created for branch ${payload.branchId}.</p><p><a href="${reviewUrl}">Review the alert</a></p>`,
@@ -121,7 +121,7 @@ export async function sendLargeAdjustmentApprovalEmail(
   toEmail: string,
   payload: LargeAdjustmentApprovalNeededNotificationPayload,
 ): Promise<void> {
-  const approvalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/adjustments/${payload.adjustmentId}`;
+  const approvalUrl = `${config.frontendUrl}/adjustments/${payload.adjustmentId}`;
 
   if (!resend) {
     if (config.nodeEnv !== 'development') {
@@ -132,7 +132,7 @@ export async function sendLargeAdjustmentApprovalEmail(
   }
 
   const { data, error } = await resend.emails.send({
-    from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
+    from: config.email.from ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: `Adjustment approval needed — ₱${payload.amount.toLocaleString('en-PH')}`,
     html: `<p>Branch ${payload.branchId} requested an adjustment of ₱${payload.amount.toLocaleString('en-PH')} that needs Super Admin approval.</p><p><a href="${approvalUrl}">Review the adjustment</a></p>`,
@@ -152,7 +152,7 @@ export async function sendLargeAdjustmentApprovalEmail(
  * persists.
  */
 export async function sendEodSummaryEmail(toEmail: string, payload: EodSummaryNotificationPayload): Promise<void> {
-  const reportsUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/reports?date=${payload.businessDate}`;
+  const reportsUrl = `${config.frontendUrl}/reports?date=${payload.businessDate}`;
 
   if (!resend) {
     if (config.nodeEnv !== 'development') {
@@ -167,7 +167,7 @@ export async function sendEodSummaryEmail(toEmail: string, payload: EodSummaryNo
     .join('');
 
   const { data, error } = await resend.emails.send({
-    from: process.env.EMAIL_FROM ?? 'no-reply@potatocorner.local',
+    from: config.email.from ?? 'no-reply@potatocorner.local',
     to: toEmail,
     subject: `EOD summary — ${payload.businessDate}`,
     html: `<p>End-of-day summary for ${payload.businessDate}:</p><ul><li>Total revenue: ₱${payload.totalRevenue.toLocaleString('en-PH')}</li><li>Transactions: ${payload.transactionCount}</li><li>Voids: ${payload.voidCount}</li><li>Unresolved cash variances: ${payload.unresolvedCashVarianceCount}</li><li>Open fraud alerts created today: ${payload.openFraudAlertsCreatedTodayCount}</li></ul><ul>${branchRows}</ul><p><a href="${reportsUrl}">View full report</a></p>`,

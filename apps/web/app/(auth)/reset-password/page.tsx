@@ -47,15 +47,17 @@ function RequestResetForm() {
       // Always show the same success state — never confirm whether the email exists.
       setSubmitted(true);
     } catch {
-      setError('Something went wrong. Please try again.');
+      setError("We couldn't process the request right now. Please try again.");
     }
   }
 
   if (submitted) {
     return (
-      <p className="text-sm text-muted-foreground">
-        If an account exists for that email, a reset link has been sent. Check your inbox.
-      </p>
+      <div className="space-y-2 text-sm text-muted-foreground">
+        <p className="font-medium text-foreground">Check your email</p>
+        <p>If an account exists for this email, we&apos;ve sent password reset instructions.</p>
+        <p>Didn&apos;t receive it? Check Spam/Junk and wait a moment before trying again.</p>
+      </div>
     );
   }
 

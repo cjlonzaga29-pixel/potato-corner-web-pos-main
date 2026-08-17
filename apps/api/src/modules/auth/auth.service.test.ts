@@ -78,6 +78,8 @@ vi.mock('../../lib/email.js', () => ({
   sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('@sentry/node', () => ({ captureException: vi.fn() }));
+
 // Real AES-256-GCM would require a live ENCRYPTION_KEY; these tests only
 // care that whatever setPendingTotpSecret stored is what confirm/disable/
 // regenerate later decrypt, so a reversible stand-in is enough.
@@ -91,6 +93,8 @@ const { authService } = await import('./auth.service.js');
 const { totpService } = await import('./totp.service.js');
 const { config } = await import('../../config/index.js');
 const { employeesRepository } = await import('../employees/employees.repository.js');
+const { sendPasswordResetEmail } = await import('../../lib/email.js');
+const Sentry = await import('@sentry/node');
 
 function buildUser(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -988,6 +992,97 @@ describe('authService.disable2FA', () => {
     await authService.disable2FA('user-1', 'CorrectHorse1', '123456');
 
     expect(authRepository.disableTotp).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('authService.requestPasswordReset', () => {
+  it('stores a hashed token and emails the account when the email exists', async () => {
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(buildUser({ email: 'staff@potatocorner.test' }) as never);
+
+    await authService.requestPasswordReset('staff@potatocorner.test');
+
+    expect(authRepository.storePasswordResetToken).toHaveBeenCalledWith(expect.any(String), 'user-1', expect.any(Date));
+    expect(sendPasswordResetEmail).toHaveBeenCalledWith('staff@potatocorner.test', expect.any(String));
+    // The token handed to the mailer must not be the same string persisted — only its hash is stored.
+    const storedHash = vi.mocked(authRepository.storePasswordResetToken).mock.calls[0]?.[0];
+    const emailedToken = vi.mocked(sendPasswordResetEmail).mock.calls[0]?.[1];
+    expect(storedHash).not.toBe(emailedToken);
+  });
+
+  it('does nothing observable — no token stored, no email sent — for a nonexistent email, and does not throw', async () => {
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(null);
+
+    await expect(authService.requestPasswordReset('nobody@potatocorner.test')).resolves.toBeUndefined();
+
+    expect(authRepository.storePasswordResetToken).not.toHaveBeenCalled();
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+  });
+
+  it('reports a mail-provider failure to Sentry (without the token) but still resolves normally', async () => {
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(buildUser() as never);
+    const providerError = new Error('Resend API error');
+    vi.mocked(sendPasswordResetEmail).mockRejectedValueOnce(providerError);
+
+    await expect(authService.requestPasswordReset('staff@potatocorner.test')).resolves.toBeUndefined();
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(providerError, expect.objectContaining({ tags: { flow: 'password_reset_email' } }));
+
+    // The raw reset token must never reach Sentry — only the user id and the provider's own error object do.
+    const plainToken = vi.mocked(sendPasswordResetEmail).mock.calls[0]?.[1];
+    const sentryCallArgs = vi.mocked(Sentry.captureException).mock.calls[0];
+    expect(JSON.stringify(sentryCallArgs)).not.toContain(plainToken);
+  });
+});
+
+describe('authService.resetPassword', () => {
+  it('updates the canonical password hash, revokes sessions, and consumes the token', async () => {
+    vi.mocked(authRepository.findPasswordResetToken).mockResolvedValue({
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() + 60_000),
+    } as never);
+
+    await authService.resetPassword('valid-token', 'NewPassword1');
+
+    expect(authRepository.updatePasswordHash).toHaveBeenCalledWith('user-1', expect.any(String));
+    const newHash = vi.mocked(authRepository.updatePasswordHash).mock.calls[0]?.[1] as string;
+    await expect(bcrypt.compare('NewPassword1', newHash)).resolves.toBe(true);
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('user-1');
+    expect(authRepository.deletePasswordResetToken).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('rejects an expired token and does not touch the password', async () => {
+    vi.mocked(authRepository.findPasswordResetToken).mockResolvedValue({
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() - 1000),
+    } as never);
+
+    await expect(authService.resetPassword('expired-token', 'NewPassword1')).rejects.toMatchObject({
+      code: 'RESET_TOKEN_INVALID',
+      statusCode: 400,
+    });
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('rejects an already-used (deleted) or otherwise unknown token', async () => {
+    vi.mocked(authRepository.findPasswordResetToken).mockResolvedValue(null);
+
+    await expect(authService.resetPassword('reused-token', 'NewPassword1')).rejects.toMatchObject({
+      code: 'RESET_TOKEN_INVALID',
+      statusCode: 400,
+    });
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+  });
+
+  it('a token can only be used once — the token is deleted on success so replay fails downstream lookups', async () => {
+    vi.mocked(authRepository.findPasswordResetToken).mockResolvedValue({
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() + 60_000),
+    } as never);
+
+    await authService.resetPassword('one-time-token', 'NewPassword1');
+
+    expect(authRepository.deletePasswordResetToken).toHaveBeenCalledTimes(1);
   });
 });
 

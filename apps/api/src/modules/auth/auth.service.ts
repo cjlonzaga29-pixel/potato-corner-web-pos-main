@@ -1,5 +1,6 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import * as Sentry from '@sentry/node';
 import { ROLES, type JwtPayload, type Role } from '@potato-corner/shared';
 import { authRepository } from './auth.repository.js';
 import { totpService } from './totp.service.js';
@@ -439,7 +440,14 @@ export const authService = {
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000);
     await authRepository.storePasswordResetToken(sha256Hex(token), user.id, expiresAt);
     // user was looked up BY this exact email, so it's guaranteed non-null here.
+    // Failure here must not change the response (see the router — same
+    // generic message either way, to avoid account enumeration), but it must
+    // not go unnoticed either: this is the only place a broken email
+    // provider (bad API key, unverified sender domain) would previously ever
+    // surface, and console.error alone is invisible unless someone is
+    // actively tailing production logs. Never include the token/email body.
     await sendPasswordResetEmail(normalizedEmail, token).catch((error: unknown) => {
+      Sentry.captureException(error, { tags: { flow: 'password_reset_email' }, user: { id: user.id } });
       console.error('Failed to send password reset email:', error);
     });
 

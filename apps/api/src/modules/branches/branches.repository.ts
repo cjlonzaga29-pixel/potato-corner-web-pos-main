@@ -5,13 +5,45 @@ import { nextCounterValue } from '../../lib/id-counter.js';
 import { dayBounds } from '../../lib/manila-time.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import { computeCogsForItems } from '../../lib/cogs.js';
-import { inventoryRepository } from '../inventory/inventory.repository.js';
 import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
 
 function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: number }> {
   return Object.fromEntries(
     Object.values(PAYMENT_METHOD).map((method) => [method, { total: 0, count: 0 }]),
   ) as Record<PaymentMethod, { total: number; count: number }>;
+}
+
+/**
+ * Canonical low-stock count for one branch, sourced from InventoryStock
+ * (Phase 4 dashboard KPI reconciliation) instead of the legacy
+ * Ingredient/InventoryMovement ledger — proven parity rule from
+ * branches-low-stock-parity.integration.test.ts: a row counts as low stock
+ * when its lowStockThreshold is set and quantityOnHand <= that threshold,
+ * scoped to non-deleted InventoryItems. Rows with no threshold configured
+ * are excluded (nothing to compare against), same as an Ingredient with no
+ * matching InventoryStock row contributes nothing.
+ */
+async function countLowStock(branchId: string): Promise<number> {
+  const rows = await prisma.inventoryStock.findMany({
+    where: { branchId, lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } },
+    select: { quantityOnHand: true, lowStockThreshold: true },
+  });
+  return rows.filter((row) => row.quantityOnHand.toNumber() <= (row.lowStockThreshold?.toNumber() ?? Infinity)).length;
+}
+
+/** Same rule as countLowStock, grouped across every active branch in one query — used by findAllStatsGrouped. */
+async function countLowStockByBranch(branchIds: string[]): Promise<Map<string, number>> {
+  const rows = await prisma.inventoryStock.findMany({
+    where: { branchId: { in: branchIds }, lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } },
+    select: { branchId: true, quantityOnHand: true, lowStockThreshold: true },
+  });
+  const byBranch = new Map<string, number>();
+  for (const row of rows) {
+    if (row.quantityOnHand.toNumber() <= (row.lowStockThreshold?.toNumber() ?? Infinity)) {
+      byBranch.set(row.branchId, (byBranch.get(row.branchId) ?? 0) + 1);
+    }
+  }
+  return byBranch;
 }
 
 const activeAssignmentsInclude = {
@@ -234,7 +266,7 @@ export const branchesRepository = {
       activeStaffCount,
       staffTimedInCount,
       todayExpenses,
-      ingredients,
+      lowStockIngredientCount,
     ] = await Promise.all([
       prisma.shift.count({ where: { branchId, status: 'active' } }),
       prisma.transaction.aggregate({
@@ -249,9 +281,14 @@ export const branchesRepository = {
       prisma.transaction.groupBy({
         by: ['paymentMethod'],
         where: { branchId, createdAt: todayRange, status: 'completed' },
-        // subtotal, not totalAmount — must match todayGrossSales's field exactly
-        // (same where-clause too) so Σ(paymentBreakdown) === todayGrossSales.
-        _sum: { subtotal: true },
+        // Phase 5 (Payment Collections KPI reconciliation): totalAmount, not
+        // subtotal — Payment Collections must reflect what was actually
+        // collected from the customer (post-discount), same canonical field
+        // reportsRepository.getPaymentMethodMix already uses. This
+        // deliberately no longer sums to todayGrossSales (which stays
+        // subtotal/pre-discount) whenever a branch has discounted sales —
+        // that divergence is the correct, intended behavior, not a bug.
+        _sum: { totalAmount: true },
         _count: { _all: true },
       }),
       prisma.transactionItem.findMany({
@@ -271,30 +308,11 @@ export const branchesRepository = {
         where: { branchId, deletedAt: null, incurredAt: todayRange },
         _sum: { amount: true },
       }),
-      // Prisma's filter API can't compare two columns of the same row
-      // (currentStock <= lowStockThreshold) without raw SQL, which this
-      // project avoids — branch ingredient lists are small, so counting
-      // in application code is simpler and stays within the ORM.
-      //
-      // currentStock itself is no longer read here (Phase 8: it's a
-      // vestigial stored field, never updated after ingredient creation —
-      // see the schema doc comment on Ingredient). Real current stock is
-      // derived from the InventoryMovement ledger via inventoryRepository,
-      // the same source every Phase 8 endpoint uses.
-      prisma.ingredient.findMany({
-        where: { branchId, deletedAt: null },
-        select: { id: true, lowStockThreshold: true },
-      }),
+      // Phase 4 dashboard KPI reconciliation: canonical InventoryStock-based
+      // count (see countLowStock above), not the legacy Ingredient +
+      // InventoryMovement ledger.
+      countLowStock(branchId),
     ]);
-
-    // getCurrentStockMap only includes ingredients with at least one
-    // movement — one with none has zero stock, not "unknown," so it must
-    // still count toward the low-stock total whenever the threshold is >= 0.
-    const stockMap = await inventoryRepository.getCurrentStockMap(ingredients.map((i) => i.id));
-    const lowStockIngredientCount = ingredients.filter((ingredient) => {
-      const currentStock = stockMap.get(ingredient.id)?.toNumber() ?? 0;
-      return currentStock <= ingredient.lowStockThreshold.toNumber();
-    }).length;
 
     const { cogs, isEstimated, missingCostItemCount } = await computeCogsForItems(
       todayTransactionItems.map((item) => ({ branchId, deductionSnapshot: item.deductionSnapshot })),
@@ -311,7 +329,7 @@ export const branchesRepository = {
     const paymentBreakdown = emptyPaymentBreakdown();
     for (const group of paymentGroups) {
       paymentBreakdown[group.paymentMethod] = {
-        total: round2(Number(group._sum.subtotal ?? 0)),
+        total: round2(Number(group._sum.totalAmount ?? 0)),
         count: group._count._all,
       };
     }
@@ -370,7 +388,6 @@ export const branchesRepository = {
       paymentGroups,
       todayTransactionItems,
       expenseGroups,
-      ingredients,
     ] = await Promise.all([
       prisma.branch.findMany({
         where: { status: 'active' },
@@ -405,9 +422,9 @@ export const branchesRepository = {
       prisma.transaction.groupBy({
         by: ['branchId', 'paymentMethod'],
         where: { status: 'completed', createdAt: todayRange },
-        // subtotal, not totalAmount — must match todayGrossSales's field exactly
-        // (same where-clause too) so Σ(paymentBreakdown) === todayGrossSales.
-        _sum: { subtotal: true },
+        // Phase 5 (Payment Collections KPI reconciliation): totalAmount, not
+        // subtotal — see branchStats's identical comment above.
+        _sum: { totalAmount: true },
         _count: { _all: true },
       }),
       prisma.transactionItem.findMany({
@@ -419,20 +436,12 @@ export const branchesRepository = {
         where: { deletedAt: null, incurredAt: todayRange },
         _sum: { amount: true },
       }),
-      prisma.ingredient.findMany({
-        where: { deletedAt: null },
-        select: { id: true, branchId: true, lowStockThreshold: true },
-      }),
     ]);
 
-    const stockMap = await inventoryRepository.getCurrentStockMap(ingredients.map((i) => i.id));
-    const lowStockByBranch = new Map<string, number>();
-    for (const ing of ingredients) {
-      const current = stockMap.get(ing.id)?.toNumber() ?? 0;
-      if (current <= ing.lowStockThreshold.toNumber()) {
-        lowStockByBranch.set(ing.branchId, (lowStockByBranch.get(ing.branchId) ?? 0) + 1);
-      }
-    }
+    // Phase 4 dashboard KPI reconciliation: canonical InventoryStock-based
+    // count (see countLowStockByBranch above), not the legacy Ingredient +
+    // InventoryMovement ledger.
+    const lowStockByBranch = await countLowStockByBranch(branches.map((b) => b.id));
 
     const itemsByBranch = new Map<string, { branchId: string; deductionSnapshot: Prisma.JsonValue | null }[]>();
     for (const item of todayTransactionItems) {
@@ -468,7 +477,7 @@ export const branchesRepository = {
       const paymentBreakdown = emptyPaymentBreakdown();
       for (const group of paymentGroups.filter((g) => g.branchId === b.id)) {
         paymentBreakdown[group.paymentMethod] = {
-          total: round2(Number(group._sum.subtotal ?? 0)),
+          total: round2(Number(group._sum.totalAmount ?? 0)),
           count: group._count._all,
         };
       }

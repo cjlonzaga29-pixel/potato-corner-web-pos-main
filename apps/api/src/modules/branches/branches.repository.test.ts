@@ -220,22 +220,34 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     expect(rows[0]).toMatchObject({ todayGrossSales: 1234.56, todayTransactionCount: 9 });
   });
 
-  it('lowStockIngredientCount reflects ingredients where current stock <= threshold', async () => {
+  it('lowStockIngredientCount reflects InventoryStock rows where quantityOnHand <= threshold (Phase 4: canonical source, not legacy Ingredient)', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
-    vi.mocked(prisma.ingredient.findMany).mockResolvedValue([
-      { id: 'ing-low', branchId: 'branch-1', lowStockThreshold: decimal(10) },
-      { id: 'ing-ok', branchId: 'branch-1', lowStockThreshold: decimal(10) },
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { branchId: 'branch-1', quantityOnHand: decimal(5), lowStockThreshold: decimal(10) }, // 5 <= 10 -> counts as low stock
+      { branchId: 'branch-1', quantityOnHand: decimal(50), lowStockThreshold: decimal(10) }, // 50 > 10 -> does not count
     ] as never);
-    vi.mocked(inventoryRepository.getCurrentStockMap).mockResolvedValue(
-      new Map([
-        ['ing-low', decimal(5)], // 5 <= 10 -> counts as low stock
-        ['ing-ok', decimal(50)], // 50 > 10 -> does not count
-      ]) as never,
-    );
 
     const rows = await branchesRepository.findAllStatsGrouped();
 
     expect(rows[0]).toMatchObject({ lowStockIngredientCount: 1 });
+    // Confirms the migration off the legacy ledger — see Phase 4's audit finding.
+    expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
+    expect(inventoryRepository.getCurrentStockMap).not.toHaveBeenCalled();
+  });
+
+  it('lowStockIngredientCount excludes InventoryStock rows with no threshold configured', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([]);
+    // The repository query itself filters lowStockThreshold: { not: null } —
+    // asserting the call shape here since a mocked findMany would otherwise
+    // happily return rows the real query could never produce.
+    await branchesRepository.findAllStatsGrouped();
+
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } }),
+      }),
+    );
   });
 
   it('computes Net Sales / Gross Profit / Net Profit per branch using the shared financial-metrics formula (no VAT double-subtraction)', async () => {
@@ -284,8 +296,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
     mockTransactionGroupBy({
       payment: [
-        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { subtotal: decimal(500) }, _count: { _all: 3 } },
-        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { subtotal: decimal(200) }, _count: { _all: 1 } },
+        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { totalAmount: decimal(500) }, _count: { _all: 3 } },
+        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { totalAmount: decimal(200) }, _count: { _all: 1 } },
       ],
     });
 
@@ -301,17 +313,19 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     });
   });
 
-  it('regression: paymentBreakdown sums to exactly todayGrossSales even when a discount makes subtotal !== totalAmount (org-wide)', async () => {
+  it('Phase 5: paymentBreakdown (Payment Collections) reflects actual totalAmount collected, not pre-discount subtotal — diverges from todayGrossSales on a discounted sale (org-wide)', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
     mockTransactionGroupBy({
       txn: [
         { branchId: 'branch-1', _sum: { subtotal: decimal(700), discountAmount: decimal(100), vatAmount: decimal(75) }, _count: { _all: 2 } },
       ],
       payment: [
-        // Post-discount totalAmount (600) intentionally differs from subtotal (700) — the groupBy
-        // must still be keyed on subtotal so the breakdown reconciles with todayGrossSales.
-        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { subtotal: decimal(400), totalAmount: decimal(340) }, _count: { _all: 1 } },
-        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { subtotal: decimal(300), totalAmount: decimal(260) }, _count: { _all: 1 } },
+        // Post-discount totalAmount (340/260 = 600) intentionally differs
+        // from subtotal (400/300 = 700) — Payment Collections must reflect
+        // the former, the canonical field reportsRepository.getPaymentMethodMix
+        // already uses for the same purpose.
+        { branchId: 'branch-1', paymentMethod: 'cash', _sum: { totalAmount: decimal(340) }, _count: { _all: 1 } },
+        { branchId: 'branch-1', paymentMethod: 'gcash', _sum: { totalAmount: decimal(260) }, _count: { _all: 1 } },
       ],
     });
 
@@ -320,7 +334,7 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     if (!branch1) throw new Error('expected a row for branch-1');
 
     const breakdownSum = Object.values(branch1.paymentBreakdown).reduce((sum, m) => sum + m.total, 0);
-    expect(breakdownSum).toBe(branch1.todayGrossSales);
+    expect(breakdownSum).toBe(600);
     expect(branch1.todayGrossSales).toBe(700);
   });
 
@@ -433,8 +447,8 @@ describe('branchesRepository.branchStats', () => {
   it('builds a payment-method breakdown of today\'s completed sales, keyed by cash/gcash/maya/other', async () => {
     mockTransactionGroupBy({
       payment: [
-        { paymentMethod: 'cash', _sum: { subtotal: decimal(300) }, _count: { _all: 2 } },
-        { paymentMethod: 'maya', _sum: { subtotal: decimal(150) }, _count: { _all: 1 } },
+        { paymentMethod: 'cash', _sum: { totalAmount: decimal(300) }, _count: { _all: 2 } },
+        { paymentMethod: 'maya', _sum: { totalAmount: decimal(150) }, _count: { _all: 1 } },
       ],
     });
 
@@ -448,23 +462,25 @@ describe('branchesRepository.branchStats', () => {
     });
   });
 
-  it('regression: paymentBreakdown sums to exactly todayGrossSales for a single branch when a discounted sale makes subtotal !== totalAmount', async () => {
+  it('Phase 5: paymentBreakdown (Payment Collections) reflects actual totalAmount collected, not pre-discount subtotal — diverges from todayGrossSales on a discounted sale', async () => {
     mockTransactionAggregate(
       { _count: { _all: 2 }, _sum: { subtotal: decimal(700), discountAmount: decimal(100), vatAmount: decimal(75) } },
       { _sum: { totalAmount: null } },
     );
     mockTransactionGroupBy({
       payment: [
-        // Post-discount totalAmount (340/260) intentionally differs from subtotal (400/300).
-        { paymentMethod: 'cash', _sum: { subtotal: decimal(400), totalAmount: decimal(340) }, _count: { _all: 1 } },
-        { paymentMethod: 'gcash', _sum: { subtotal: decimal(300), totalAmount: decimal(260) }, _count: { _all: 1 } },
+        // Post-discount totalAmount (340/260 = 600) intentionally differs
+        // from subtotal (400/300 = 700) — Payment Collections must reflect
+        // the former.
+        { paymentMethod: 'cash', _sum: { totalAmount: decimal(340) }, _count: { _all: 1 } },
+        { paymentMethod: 'gcash', _sum: { totalAmount: decimal(260) }, _count: { _all: 1 } },
       ],
     });
 
     const stats = await branchesRepository.branchStats('branch-1');
 
     const breakdownSum = Object.values(stats.paymentBreakdown).reduce((sum, m) => sum + m.total, 0);
-    expect(breakdownSum).toBe(stats.todayGrossSales);
+    expect(breakdownSum).toBe(600);
     expect(stats.todayGrossSales).toBe(700);
   });
 
@@ -472,6 +488,27 @@ describe('branchesRepository.branchStats', () => {
     const stats = await branchesRepository.branchStats('branch-1');
 
     expect(stats).not.toHaveProperty('todayRevenue');
+  });
+
+  it('lowStockIngredientCount is sourced from InventoryStock, not the legacy Ingredient ledger (Phase 4)', async () => {
+    // The real query filters lowStockThreshold: { not: null } at the DB
+    // level (asserted below) — a mocked resolved row list can only ever
+    // contain what a null-filtered query would actually return.
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { quantityOnHand: decimal(2), lowStockThreshold: decimal(10) }, // 2 <= 10 -> low stock
+      { quantityOnHand: decimal(50), lowStockThreshold: decimal(10) }, // 50 > 10 -> not low stock
+    ] as never);
+
+    const stats = await branchesRepository.branchStats('branch-1');
+
+    expect(stats.lowStockIngredientCount).toBe(1);
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ branchId: 'branch-1', lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } }),
+      }),
+    );
+    expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
+    expect(inventoryRepository.getCurrentStockMap).not.toHaveBeenCalled();
   });
 });
 

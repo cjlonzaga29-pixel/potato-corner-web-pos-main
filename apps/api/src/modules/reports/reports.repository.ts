@@ -1169,7 +1169,11 @@ export const reportsRepository = {
   // per-item row shape for the branch-analytics tab and CSV/PDF export.
   async getInventoryValuationRollup(): Promise<AdminInventoryValuationRollupResponse> {
     const [branches, stockRows, activeItemCount, movementMaxByBranch] = await Promise.all([
-      prisma.branch.findMany({ select: { id: true, name: true } }),
+      // Phase 4 dashboard KPI reconciliation: active branches only, matching
+      // branchesRepository.findAllStatsGrouped's sibling "Low Stock Items"
+      // card — an inactive/closed branch's stale stock rows must not
+      // inflate the Admin dashboard's alert count.
+      prisma.branch.findMany({ where: { status: 'active' }, select: { id: true, name: true } }),
       prisma.inventoryStock.findMany({
         where: { inventoryItem: { deletedAt: null } },
         select: {
@@ -1206,9 +1210,17 @@ export const reportsRepository = {
 
       acc.itemCount += 1;
       acc.totalValue += effectiveUnitCost !== null ? quantity * effectiveUnitCost : 0;
-      if (status === 'low') acc.lowStockCount += 1;
-      if (status === 'critical') acc.criticalStockCount += 1;
-      if (quantity <= 0) acc.outOfStockCount += 1;
+      // Mutually exclusive buckets (Phase 4: avoid double-counting a single
+      // item as both critical AND out-of-stock) — out-of-stock takes
+      // priority over critical/low, mirroring notification.queue.ts's
+      // existing severity ternary for the same InventoryStock data.
+      if (quantity <= 0) {
+        acc.outOfStockCount += 1;
+      } else if (status === 'critical') {
+        acc.criticalStockCount += 1;
+      } else if (status === 'low') {
+        acc.lowStockCount += 1;
+      }
 
       accByBranch.set(row.branchId, acc);
     }

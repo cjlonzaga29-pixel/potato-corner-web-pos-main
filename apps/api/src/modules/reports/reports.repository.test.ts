@@ -1176,23 +1176,35 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     );
   });
 
-  it('TEST D: healthy/low/critical/out-of-stock counts match the InventoryStock alert threshold rule', async () => {
+  it('TEST D: healthy/low/critical/out-of-stock counts match the InventoryStock alert threshold rule, mutually exclusive (Phase 4: no double-count)', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       stockRow({ branchId: 'b1', quantityOnHand: 100, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // healthy
       stockRow({ branchId: 'b1', quantityOnHand: 15, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // low
       stockRow({ branchId: 'b1', quantityOnHand: 3, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // critical
-      stockRow({ branchId: 'b1', quantityOnHand: 0, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // critical + out of stock
+      // quantity 0 with a critical threshold set is classified 'critical' by
+      // classifyStockStatus, but out-of-stock takes priority and it must be
+      // counted exactly once, not under both buckets.
+      stockRow({ branchId: 'b1', quantityOnHand: 0, lowStockThreshold: 20, criticalThreshold: 5, itemUnitCost: 1 }), // out of stock only
     ] as never);
 
     const result = await reportsRepository.getInventoryValuationRollup();
 
     expect(result.branches[0]).toEqual(
-      expect.objectContaining({ low_stock_count: 1, critical_stock_count: 2, out_of_stock_count: 1 }),
+      expect.objectContaining({ low_stock_count: 1, critical_stock_count: 1, out_of_stock_count: 1 }),
     );
     expect(result.summary.total_low_stock_rows).toBe(1);
-    expect(result.summary.total_critical_stock_rows).toBe(2);
+    expect(result.summary.total_critical_stock_rows).toBe(1);
     expect(result.summary.total_out_of_stock_rows).toBe(1);
+    // The four rows above must never sum to more than 4 total alerted/healthy
+    // items — proves no item is represented in two buckets at once.
+    const { low_stock_count, critical_stock_count, out_of_stock_count, inventory_item_count } = result.branches[0] as {
+      low_stock_count: number;
+      critical_stock_count: number;
+      out_of_stock_count: number;
+      inventory_item_count: number;
+    };
+    expect(low_stock_count + critical_stock_count + out_of_stock_count).toBeLessThanOrEqual(inventory_item_count);
   });
 
   it('TEST E: never reads the legacy Ingredient or InventoryMovement tables', async () => {
@@ -1204,6 +1216,15 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
     expect(prisma.inventoryMovement.findMany).not.toHaveBeenCalled();
     expect(prisma.inventoryMovement.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('scopes to active branches only, matching the sibling Low Stock Items KPI (Phase 4: no inactive-branch inclusion)', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([] as never);
+
+    await reportsRepository.getInventoryValuationRollup();
+
+    expect(prisma.branch.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'active' } }));
   });
 
   it('prefers InventoryStock.unit_cost over InventoryItem.unit_cost when a branch-specific override exists', async () => {

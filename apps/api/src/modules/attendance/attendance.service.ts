@@ -6,6 +6,8 @@ import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { cashRepository } from '../cash/cash.repository.js';
 import { cashService } from '../cash/cash.service.js';
 import { getAccessibleBranchIds } from '../../lib/branch-access.js';
+import { prisma } from '../../lib/prisma.js';
+import { attendanceOpenSessionLockId } from '../../lib/pg-lock.js';
 
 type ActorContext = { id: string; role: string };
 type GpsStatus = 'within_radius' | 'outside_radius' | 'no_gps_data';
@@ -164,15 +166,36 @@ export const attendanceService = {
     }
 
     const clockInServerTime = new Date();
-    const record = (await attendanceRepository.clockIn({
-      employeeId: data.employeeId,
-      branchId: data.branchId,
-      clockInServerTime,
-      clockInDeviceTime: data.deviceTime,
-      clockInGpsLat: data.gpsLat,
-      clockInGpsLng: data.gpsLng,
-      clockInGpsStatus: resolveGpsStatus(branch, data.gpsLat, data.gpsLng),
-      clockInTimeFlag: resolveTimeFlag(clockInServerTime, data.deviceTime),
+
+    // Phase 8: the pre-checks above are optimistic (no lock held yet), so
+    // two simultaneous clock-in requests for the same employee (desktop +
+    // mobile, or a retried request) can both pass the ALREADY_CLOCKED_IN
+    // check before either has written its row. The advisory lock plus a
+    // re-check through the SAME tx client, right before the create, closes
+    // that window — the loser blocks on the lock, then sees the winner's
+    // just-committed row and throws instead of creating a second open
+    // record. Same pattern as cash.service.ts's closeShift/branchShiftLockId.
+    const record = (await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${attendanceOpenSessionLockId(data.employeeId)})`;
+
+      const lockedActive = await attendanceRepository.findActiveRecord(data.employeeId, tx);
+      if (lockedActive) {
+        throw new AttendanceError('ALREADY_CLOCKED_IN', 'Employee already has an open attendance record', 409);
+      }
+
+      return attendanceRepository.clockIn(
+        {
+          employeeId: data.employeeId,
+          branchId: data.branchId,
+          clockInServerTime,
+          clockInDeviceTime: data.deviceTime,
+          clockInGpsLat: data.gpsLat,
+          clockInGpsLng: data.gpsLng,
+          clockInGpsStatus: resolveGpsStatus(branch, data.gpsLat, data.gpsLng),
+          clockInTimeFlag: resolveTimeFlag(clockInServerTime, data.deviceTime),
+        },
+        tx,
+      );
     })) as AttendanceRow;
 
     const response = toResponse(record);

@@ -57,8 +57,9 @@ function dateRangeWhere(from?: Date, to?: Date): Prisma.DateTimeFilter | undefin
  */
 export const attendanceRepository = {
   /** The one open (not clocked out, not soft-deleted) record for an employee — enforces "one open record per employee" at the service layer. */
-  findActiveRecord(employeeId: string) {
-    return prisma.attendanceRecord.findFirst({
+  findActiveRecord(employeeId: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.attendanceRecord.findFirst({
       where: { employeeId, clockOutServerTime: null, deletedAt: null },
       orderBy: { clockInServerTime: 'desc' },
     });
@@ -86,8 +87,9 @@ export const attendanceRepository = {
     return prisma.branch.findUnique({ where: { id: branchId } });
   },
 
-  clockIn(data: ClockInRow) {
-    return prisma.attendanceRecord.create({ data });
+  clockIn(data: ClockInRow, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.attendanceRecord.create({ data });
   },
 
   clockOut(id: string, data: ClockOutRow) {

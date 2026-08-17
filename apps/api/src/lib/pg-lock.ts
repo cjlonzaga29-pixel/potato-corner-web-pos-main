@@ -40,3 +40,19 @@ export function inventoryStockLockId(branchId: string, inventoryItemId: string):
 export function branchShiftLockId(branchId: string): bigint {
   return hashToLockId(sha256Hex(`shift:${branchId}`));
 }
+
+/**
+ * Canonical advisory-lock key for one employee's open-attendance-session
+ * check + create (Phase 8: duplicate open attendance prevention). clockIn
+ * was a plain check-then-create with no uniqueness guarantee — two
+ * simultaneous clock-in requests for the same employee (desktop + mobile,
+ * or a retried request) could both pass the "no active record" check before
+ * either had written its row, producing two open attendance records for the
+ * same employee. Serializing on this lock inside clockIn's transaction, with
+ * a re-check of the active record through the same tx client after the lock
+ * is acquired, closes that window without a schema change — same pattern as
+ * branchShiftLockId/closeShift.
+ */
+export function attendanceOpenSessionLockId(employeeId: string): bigint {
+  return hashToLockId(sha256Hex(`attendance-open-session:${employeeId}`));
+}

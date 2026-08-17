@@ -27,6 +27,20 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// clockIn now takes an advisory lock inside its own transaction (Phase 8:
+// duplicate open attendance prevention) — attendanceRepository itself is
+// fully mocked above, so this stand-in tx client only needs a working
+// $executeRaw for the lock statement; $transaction just invokes the
+// callback with it, same technique as cash.service.test.ts.
+vi.mock('../../lib/prisma.js', () => {
+  const txClient = { $executeRaw: vi.fn().mockResolvedValue(undefined) };
+  const prismaMock = {
+    $executeRaw: vi.fn().mockResolvedValue(undefined),
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txClient)),
+  };
+  return { prisma: prismaMock };
+});
+
 vi.mock('../cash/cash.repository.js', () => ({
   cashRepository: {
     findActiveShift: vi.fn(),
@@ -53,6 +67,7 @@ const { cashRepository } = await import('../cash/cash.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
+const { prisma } = await import('../../lib/prisma.js');
 const { attendanceService } = await import('./attendance.service.js');
 
 const STAFF = { id: 'employee-1', role: 'staff' };
@@ -204,6 +219,7 @@ describe('attendanceService.clockIn', () => {
     expect(result.clock_in_gps_status).toBe('within_radius');
     expect(attendanceRepository.clockIn).toHaveBeenCalledWith(
       expect.objectContaining({ employeeId: 'employee-1', branchId: 'branch-1', clockInGpsStatus: 'within_radius' }),
+      expect.anything(),
     );
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'ATTENDANCE_CLOCKED_IN', entityId: 'record-1' }));
   });
@@ -232,7 +248,7 @@ describe('attendanceService.clockIn', () => {
 
     await attendanceService.clockIn({ employeeId: 'employee-1', branchId: 'branch-1', gpsLat: 15.5, gpsLng: 121.5 }, STAFF);
 
-    expect(attendanceRepository.clockIn).toHaveBeenCalledWith(expect.objectContaining({ clockInGpsStatus: 'outside_radius' }));
+    expect(attendanceRepository.clockIn).toHaveBeenCalledWith(expect.objectContaining({ clockInGpsStatus: 'outside_radius' }), expect.anything());
   });
 
   it('rejects with 403 EMPLOYEE_NOT_ASSIGNED_TO_BRANCH when the employee has no assignment at the branch', async () => {
@@ -252,6 +268,87 @@ describe('attendanceService.clockIn', () => {
       attendanceService.clockIn({ employeeId: 'employee-1', branchId: 'branch-1', gpsLat: 14.5995, gpsLng: 120.9842 }, STAFF),
     ).rejects.toMatchObject({ code: 'ALREADY_CLOCKED_IN', statusCode: 409 });
     expect(attendanceRepository.clockIn).not.toHaveBeenCalled();
+  });
+
+  // Phase 8 — duplicate open attendance prevention. clockIn's pre-lock
+  // ALREADY_CLOCKED_IN check above is optimistic; these cover the
+  // advisory-lock + tx re-check that actually closes the race.
+  describe('concurrency (Phase 8)', () => {
+    it('takes the per-employee advisory lock inside a transaction before creating the record', async () => {
+      vi.mocked(attendanceRepository.findBranchAssignment).mockResolvedValue({ id: 'assignment-1' } as never);
+      vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
+      vi.mocked(attendanceRepository.findBranchById).mockResolvedValue(branchRow() as never);
+      vi.mocked(attendanceRepository.clockIn).mockResolvedValue(attendanceRow() as never);
+
+      await attendanceService.clockIn({ employeeId: 'employee-1', branchId: 'branch-1', gpsLat: 14.5995, gpsLng: 120.9842 }, STAFF);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      // The tx client is captured from clockIn's own 2nd argument — same
+      // technique as cash.service.test.ts, since attendanceRepository is
+      // fully mocked and doesn't otherwise expose which client it was
+      // called through.
+      const tx = vi.mocked(attendanceRepository.clockIn).mock.calls[0]?.[1] as unknown as { $executeRaw: ReturnType<typeof vi.fn> };
+      expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+      const lockCallOrder = vi.mocked(tx.$executeRaw).mock.invocationCallOrder[0] ?? -1;
+      const createCallOrder = vi.mocked(attendanceRepository.clockIn).mock.invocationCallOrder[0] ?? -1;
+      expect(lockCallOrder).toBeGreaterThanOrEqual(0);
+      expect(lockCallOrder).toBeLessThan(createCallOrder);
+    });
+
+    it('re-checks for an active record through the SAME tx client after the lock is acquired, and refuses to create a second row even if the pre-lock check raced past', async () => {
+      vi.mocked(attendanceRepository.findBranchAssignment).mockResolvedValue({ id: 'assignment-1' } as never);
+      vi.mocked(attendanceRepository.findBranchById).mockResolvedValue(branchRow() as never);
+      // First call: the optimistic pre-lock check (no active record yet).
+      // Second call: the re-check inside the locked transaction — a
+      // "concurrent" clock-in from another device won the race and
+      // committed its row in between, so this one must now see it.
+      vi.mocked(attendanceRepository.findActiveRecord)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(attendanceRow() as never);
+
+      await expect(
+        attendanceService.clockIn({ employeeId: 'employee-1', branchId: 'branch-1', gpsLat: 14.5995, gpsLng: 120.9842 }, STAFF),
+      ).rejects.toMatchObject({ code: 'ALREADY_CLOCKED_IN', statusCode: 409 });
+
+      expect(attendanceRepository.findActiveRecord).toHaveBeenCalledTimes(2);
+      expect(attendanceRepository.clockIn).not.toHaveBeenCalled();
+    });
+
+    it('only one of two "simultaneous" clock-in attempts creates a row — the second observes the first through the re-check', async () => {
+      vi.mocked(attendanceRepository.findBranchAssignment).mockResolvedValue({ id: 'assignment-1' } as never);
+      vi.mocked(attendanceRepository.findBranchById).mockResolvedValue(branchRow() as never);
+      // Both callers pass the optimistic pre-lock check (findActiveRecord ->
+      // null) before either has committed. The advisory lock itself is what
+      // the default $transaction mock doesn't model (it just invokes the
+      // callback inline) — overridden here to actually serialize concurrent
+      // $transaction calls, one at a time, the same guarantee
+      // pg_advisory_xact_lock provides for real against Postgres.
+      let queue: Promise<unknown> = Promise.resolve();
+      const txClient = { $executeRaw: vi.fn().mockResolvedValue(undefined) };
+      vi.mocked(prisma.$transaction).mockImplementation(((callback: (tx: unknown) => Promise<unknown>) => {
+        const run = () => callback(txClient);
+        const scheduled = queue.then(run, run);
+        queue = scheduled.catch(() => undefined);
+        return scheduled;
+      }) as never);
+
+      let committedRecord: unknown = null;
+      vi.mocked(attendanceRepository.findActiveRecord).mockImplementation((async () => committedRecord) as never);
+      vi.mocked(attendanceRepository.clockIn).mockImplementation((async () => {
+        committedRecord = attendanceRow();
+        return committedRecord;
+      }) as never);
+
+      const input = { employeeId: 'employee-1', branchId: 'branch-1', gpsLat: 14.5995, gpsLng: 120.9842 } as const;
+      const results = await Promise.allSettled([attendanceService.clockIn(input, STAFF), attendanceService.clockIn(input, STAFF)]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'ALREADY_CLOCKED_IN' });
+      expect(attendanceRepository.clockIn).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('rejects with 404 BRANCH_NOT_FOUND when the branch does not exist', async () => {

@@ -210,6 +210,17 @@ describe('expensesService.uploadReceipt', () => {
 
     expect(storageMock.remove).not.toHaveBeenCalled();
   });
+
+  it('IDOR: supervisor cannot attach a receipt to an expense outside their assigned branches', async () => {
+    vi.mocked(expensesRepository.findById).mockResolvedValue(buildExpenseRow({ branchId: 'branch-z' }) as never);
+
+    await expect(
+      expensesService.uploadReceipt('expense-1', { buffer: Buffer.from('img'), originalname: 'receipt.jpg' }, SUPERVISOR_JWT, null),
+    ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
+
+    expect(storageMock.upload).not.toHaveBeenCalled();
+    expect(expensesRepository.updateReceipt).not.toHaveBeenCalled();
+  });
 });
 
 describe('expensesService.deleteReceipt', () => {

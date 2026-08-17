@@ -9,6 +9,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useBranchStore } from '@/stores/branch.store';
@@ -17,6 +19,7 @@ import { manilaToday } from '@/lib/manila-date';
 import {
   useExpenses,
   useCreateExpense,
+  useUploadExpenseReceiptForExpense,
   useExpensesRealtimeSync,
   type ExpenseCategory,
   type ExpenseRow,
@@ -31,23 +34,75 @@ const CATEGORY_LABEL: Record<ExpenseCategory, string> = {
 
 function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onOpenChange: (open: boolean) => void }) {
   const createExpense = useCreateExpense();
+  const uploadReceipt = useUploadExpenseReceiptForExpense();
   const [category, setCategory] = useState<ExpenseCategory>('supplies');
   const [amount, setAmount] = useState('');
   const [vendorName, setVendorName] = useState('');
   const [description, setDescription] = useState('');
   const [incurredAt, setIncurredAt] = useState(() => manilaToday());
 
+  // Task: expense receipt upload — a receipt needs an expense id, which
+  // doesn't exist until createExpense resolves. handleCreate stages the
+  // create first, then uploads the receipt as a second, isolated step.
+  // createdExpenseId only becomes non-null if that second step fails, so the
+  // dialog can stay open and retry the upload (same expense id) without ever
+  // re-creating the expense — same shape as CreateProductDialog (Task 209.6).
+  const [pendingReceipt, setPendingReceipt] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [createdExpenseId, setCreatedExpenseId] = useState<string | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+
+  function handleReceiptStaged(file: File) {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPendingReceipt(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    setReceiptError(null);
+  }
+
+  function handleReceiptRemove() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPendingReceipt(null);
+    setPreviewUrl(null);
+    setReceiptError(null);
+  }
+
   async function handleCreate() {
-    await createExpense.mutateAsync({
-      branch_id: branchId,
-      category,
-      amount: Number(amount),
-      vendor_name: vendorName || undefined,
-      description: description || undefined,
-      incurred_at: incurredAt,
-    });
+    let expenseId = createdExpenseId;
+
+    if (!expenseId) {
+      const created = await createExpense.mutateAsync({
+        branch_id: branchId,
+        category,
+        amount: Number(amount),
+        vendor_name: vendorName || undefined,
+        description: description || undefined,
+        incurred_at: incurredAt,
+      });
+      expenseId = created.id;
+      setCreatedExpenseId(created.id);
+    }
+
+    if (pendingReceipt) {
+      try {
+        await uploadReceipt.mutateAsync({ expenseId, file: pendingReceipt });
+      } catch (error) {
+        // The expense itself is already recorded — only the receipt step
+        // failed. Keep the dialog open (createdExpenseId is now set) so
+        // retrying re-uses this same expense instead of creating another.
+        setReceiptError(error instanceof Error ? error.message : 'Receipt upload failed — try again.');
+        return;
+      }
+    }
+
     onOpenChange(false);
   }
+
+  function handleContinueWithoutPhoto() {
+    onOpenChange(false);
+  }
+
+  const isRetryingReceipt = Boolean(createdExpenseId) && Boolean(receiptError);
+  const isSubmitting = createExpense.isPending || uploadReceipt.isPending;
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
@@ -58,7 +113,7 @@ function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onO
         <div className="space-y-3">
           <div className="space-y-1">
             <Label>Category</Label>
-            <Select value={category} onValueChange={(v) => setCategory(v as ExpenseCategory)}>
+            <Select value={category} onValueChange={(v) => setCategory(v as ExpenseCategory)} disabled={Boolean(createdExpenseId)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -74,29 +129,73 @@ function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onO
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Amount</Label>
-              <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} disabled={Boolean(createdExpenseId)} />
             </div>
             <div className="space-y-1">
               <Label>Date Incurred</Label>
-              <Input type="date" value={incurredAt} onChange={(e) => setIncurredAt(e.target.value)} />
+              <Input type="date" value={incurredAt} onChange={(e) => setIncurredAt(e.target.value)} disabled={Boolean(createdExpenseId)} />
             </div>
           </div>
           <div className="space-y-1">
             <Label>Vendor (optional)</Label>
-            <Input value={vendorName} onChange={(e) => setVendorName(e.target.value)} />
+            <Input value={vendorName} onChange={(e) => setVendorName(e.target.value)} disabled={Boolean(createdExpenseId)} />
           </div>
           <div className="space-y-1">
             <Label>Description (optional)</Label>
-            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} disabled={Boolean(createdExpenseId)} />
           </div>
+
+          {!isRetryingReceipt && (
+            <div className="space-y-2">
+              {!pendingReceipt ? (
+                <ImageUpload
+                  label="Receipt / Expense Proof"
+                  description="Optional — JPEG, PNG, or WebP, up to 5MB."
+                  onImageSelected={handleReceiptStaged}
+                />
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Receipt / Expense Proof</p>
+                  {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview of a not-yet-uploaded file */}
+                  {previewUrl && <img src={previewUrl} alt="Receipt preview" className="max-h-[200px] w-full rounded-md border object-contain" />}
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={handleReceiptRemove} disabled={isSubmitting}>
+                      Replace
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={handleReceiptRemove} disabled={isSubmitting}>
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {isRetryingReceipt && (
+            <Alert variant="destructive" className="px-3 py-2">
+              <AlertDescription>
+                Expense was recorded, but the receipt photo could not be uploaded.
+                {receiptError ? ` (${receiptError})` : ''}
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={() => void handleCreate()} disabled={!amount || Number(amount) <= 0 || createExpense.isPending}>
-            {createExpense.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Save Expense
+          {isRetryingReceipt ? (
+            <Button variant="outline" onClick={handleContinueWithoutPhoto}>
+              Continue Without Photo
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={Boolean(createdExpenseId)}>
+              Cancel
+            </Button>
+          )}
+          <Button
+            onClick={() => void handleCreate()}
+            disabled={(!createdExpenseId && (!amount || Number(amount) <= 0)) || isSubmitting}
+          >
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isRetryingReceipt ? 'Retry Photo Upload' : 'Save Expense'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -115,6 +214,18 @@ const columns: ColumnDef<ExpenseRow>[] = [
   },
   { id: 'amount', header: 'Amount', cell: ({ row }) => formatCurrency(row.original.amount) },
   { id: 'created_by_name', header: 'Recorded By', cell: ({ row }) => row.original.created_by_name },
+  {
+    id: 'proof',
+    header: 'Proof',
+    cell: ({ row }) =>
+      row.original.receipt_url ? (
+        <a href={row.original.receipt_url} target="_blank" rel="noreferrer" className="text-primary underline">
+          View Proof
+        </a>
+      ) : (
+        <span className="text-xs text-muted-foreground">No Proof</span>
+      ),
+  },
 ];
 
 /** Shared body behind both `/supervisor/expenses` and `/branch/expenses`. */

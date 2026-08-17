@@ -183,6 +183,35 @@ export function useUploadExpenseReceipt(expenseId: string) {
   });
 }
 
+/**
+ * Same expenseId-as-mutation-variable shape as useUploadProductImage (Task 209.6) —
+ * the Supervisor create flow doesn't have an expense id until the create
+ * mutation resolves, so the id can't be bound at hook-instantiation time the
+ * way useUploadExpenseReceipt above is. Kept separate from that hook (used by
+ * the Admin edit page) rather than changing its signature.
+ */
+export function useUploadExpenseReceiptForExpense() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ expenseId, file }: { expenseId: string; file: File }) => {
+      const formData = new FormData();
+      formData.set('receipt', file);
+      const response = await apiClient<ExpenseRow>(`/api/expenses/${expenseId}/receipt`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload the receipt'));
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['expenses', 'detail', variables.expenseId] });
+      void queryClient.invalidateQueries({ queryKey: ['expenses', 'list'] });
+      toast.success('Receipt uploaded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useDeleteExpenseReceipt(expenseId: string) {
   const queryClient = useQueryClient();
   return useMutation({

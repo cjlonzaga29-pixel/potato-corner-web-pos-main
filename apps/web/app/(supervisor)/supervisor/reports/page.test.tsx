@@ -26,6 +26,7 @@ const {
   mockUseRequestExport,
   mockUseReportsRealtimeSync,
   mockUseDiscountComplianceReport,
+  mockUseInventoryValueSummaryReport,
   mockUseDiscountAuditTrail,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
@@ -43,6 +44,7 @@ const {
   mockUseRequestExport: vi.fn(),
   mockUseReportsRealtimeSync: vi.fn(),
   mockUseDiscountComplianceReport: vi.fn(),
+  mockUseInventoryValueSummaryReport: vi.fn(),
   mockUseDiscountAuditTrail: vi.fn(),
 }));
 
@@ -91,6 +93,7 @@ vi.mock('@/hooks/queries/use-reports', () => ({
   useRequestExport: mockUseRequestExport,
   useReportsRealtimeSync: mockUseReportsRealtimeSync,
   useDiscountComplianceReport: mockUseDiscountComplianceReport,
+  useInventoryValueSummaryReport: mockUseInventoryValueSummaryReport,
 }));
 
 /**
@@ -310,6 +313,7 @@ beforeEach(() => {
   mockUseRequestExport.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseReportsRealtimeSync.mockReturnValue(undefined);
   mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [] }, isLoading: false });
+  mockUseInventoryValueSummaryReport.mockReturnValue({ data: undefined, isLoading: false });
   mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
 });
 
@@ -614,10 +618,11 @@ describe('SupervisorReportsPage', () => {
 
     expect(screen.getByText('Total Movements')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
-    // "RECEIVING"/"WASTE" also appear as movement-type badges in the table
-    // rows below the KPI row, so more than one match is expected here.
-    expect(screen.getAllByText('RECEIVING').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('WASTE').length).toBeGreaterThan(0);
+    // Movement-type badges render the humanized label (lib/inventory-movement-labels.ts),
+    // not the raw enum value — "Receiving"/"Waste" also appear as KPI card
+    // titles, so more than one match is expected here.
+    expect(screen.getAllByText('Receiving').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Waste').length).toBeGreaterThan(0);
     expect(screen.getByText('Adjustments')).toBeInTheDocument();
   });
 

@@ -446,11 +446,11 @@ export const cashRepository = {
   },
 
   /** Pending-review queue across branches — the list view backing the new Shift Approval UI. */
-  async listPendingReviews(filters: { branchId?: string; phase?: 'opening' | 'closing'; page: number; limit: number }) {
+  async listPendingReviews(filters: { branchIds: string[] | 'all'; phase?: 'opening' | 'closing'; page: number; limit: number }) {
     const where: Prisma.ShiftReviewWhereInput = {
       status: 'pending',
       ...(filters.phase && { phase: filters.phase }),
-      ...(filters.branchId && { shift: { branchId: filters.branchId } }),
+      ...(filters.branchIds !== 'all' && { shift: { branchId: { in: filters.branchIds } } }),
     };
 
     const [reviews, total] = await Promise.all([

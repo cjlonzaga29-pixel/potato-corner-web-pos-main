@@ -1,8 +1,9 @@
 import { Prisma } from '@prisma/client';
-import { ROLES, SOCKET_EVENTS } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, type JwtPayload } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { config } from '../../config/index.js';
 import { branchShiftLockId } from '../../lib/pg-lock.js';
+import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 import { cashRepository } from './cash.repository.js';
 import {
   CashError,
@@ -684,9 +685,10 @@ export const cashService = {
     return responseWithSummary;
   },
 
-  async approveVariance(id: string, data: ApproveVarianceData, actor: ActorContext, ipAddress: string | null) {
+  async approveVariance(id: string, data: ApproveVarianceData, actor: JwtPayload, ipAddress: string | null) {
     const shift = (await cashRepository.findShiftById(id)) as ShiftRow | null;
     if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'Shift not found', 404);
+    await assertBranchAccess(actor, shift.branchId, CashError);
     if (shift.status !== 'flagged') {
       throw new CashError('SHIFT_NOT_PENDING_REVIEW', 'This shift is not pending variance review', 409);
     }
@@ -694,7 +696,7 @@ export const cashService = {
     const updated = (await cashRepository.approveVariance(id, {
       approved: data.approved,
       notes: data.notes,
-      approvedBy: actor.id,
+      approvedBy: actor.user_id,
     })) as ShiftRow;
     const response = toShiftResponse(updated);
 
@@ -702,7 +704,7 @@ export const cashService = {
       action: data.approved ? 'SHIFT_VARIANCE_APPROVED' : 'SHIFT_VARIANCE_REJECTED',
       entityType: 'shift',
       entityId: id,
-      actorId: actor.id,
+      actorId: actor.user_id,
       actorRole: actor.role,
       branchId: shift.branchId,
       beforeState: toShiftResponse(shift),
@@ -714,7 +716,7 @@ export const cashService = {
       const approvalPayload = {
         shiftId: id,
         branchId: shift.branchId,
-        approvedBy: actor.id,
+        approvedBy: actor.user_id,
         variance: updated.cashVariance?.toNumber() ?? null,
       };
       notifyBranch(shift.branchId, SOCKET_EVENTS.CASH_VARIANCE_APPROVED, approvalPayload);
@@ -770,9 +772,10 @@ export const cashService = {
    * to review yet); opening has no such gate, since it's reviewable as soon
    * as the shift is opened.
    */
-  async reviewShift(shiftId: string, phase: 'opening' | 'closing', data: ReviewShiftData, actor: ActorContext, ipAddress: string | null) {
+  async reviewShift(shiftId: string, phase: 'opening' | 'closing', data: ReviewShiftData, actor: JwtPayload, ipAddress: string | null) {
     const shift = (await cashRepository.findShiftById(shiftId)) as ShiftRow | null;
     if (!shift) throw new CashError('SHIFT_NOT_FOUND', 'Shift not found', 404);
+    await assertBranchAccess(actor, shift.branchId, CashError);
 
     if (phase === 'closing' && shift.status === 'active') {
       throw new CashError('SHIFT_NOT_CLOSED_YET', 'Cannot review the closing count before the shift is closed', 409);
@@ -787,7 +790,7 @@ export const cashService = {
     const updated = (await cashRepository.submitReview(shiftId, phase, {
       approved: data.approved,
       notes: data.notes,
-      reviewedBy: actor.id,
+      reviewedBy: actor.user_id,
     })) as ShiftReviewRow;
     const response = toShiftReviewResponse(updated);
 
@@ -795,7 +798,7 @@ export const cashService = {
       action: data.approved ? 'SHIFT_REVIEW_APPROVED' : 'SHIFT_REVIEW_REJECTED',
       entityType: 'shift_review',
       entityId: updated.id,
-      actorId: actor.id,
+      actorId: actor.user_id,
       actorRole: actor.role,
       branchId: shift.branchId,
       beforeState: toShiftReviewResponse(review),
@@ -803,15 +806,30 @@ export const cashService = {
       ipAddress,
     });
 
-    const payload = { shiftId, phase, status: response.status, reviewedBy: actor.id };
+    const payload = { shiftId, phase, status: response.status, reviewedBy: actor.user_id };
     notifyBranch(shift.branchId, SOCKET_EVENTS.SHIFT_REVIEW_UPDATED, payload);
     notifySuperAdmin(SOCKET_EVENTS.SHIFT_REVIEW_UPDATED, payload);
 
     return response;
   },
 
-  async listPendingReviews(filters: PendingReviewFilters) {
-    const { reviews, total } = await cashRepository.listPendingReviews(filters);
+  async listPendingReviews(actor: JwtPayload, filters: PendingReviewFilters) {
+    const accessible = await getAccessibleBranchIds(actor);
+    if (filters.branchId) {
+      // Direct branch_id substitution: deny outright rather than silently
+      // returning an empty page, so an unauthorized probe is distinguishable
+      // from "no pending reviews right now".
+      if (accessible !== 'all' && !accessible.includes(filters.branchId)) {
+        throw new CashError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+      }
+    }
+    const branchIds = filters.branchId ? [filters.branchId] : accessible;
+    const { reviews, total } = await cashRepository.listPendingReviews({
+      branchIds,
+      phase: filters.phase,
+      page: filters.page,
+      limit: filters.limit,
+    });
     return {
       reviews: reviews.map((review) => ({
         ...toShiftReviewResponse(review as ShiftReviewRow),

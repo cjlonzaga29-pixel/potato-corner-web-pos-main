@@ -136,7 +136,7 @@ router.get('/reviews/pending', authenticate, adminOrSupervisor, requirePasswordC
       });
       return;
     }
-    const result = await cashService.listPendingReviews({
+    const result = await cashService.listPendingReviews(req.user, {
       branchId: parsed.data.branch_id,
       phase: parsed.data.phase,
       page: parsed.data.page,
@@ -230,7 +230,7 @@ router.post(
       const shift = await cashService.approveVariance(
         req.params.shiftId as string,
         body,
-        { id: req.user.user_id, role: req.user.role },
+        req.user,
         req.ip ?? null,
       );
       res.status(200).json({ data: shift, error: null, meta: null });
@@ -276,7 +276,7 @@ router.post(
         req.params.shiftId as string,
         phase,
         body,
-        { id: req.user.user_id, role: req.user.role },
+        req.user,
         req.ip ?? null,
       );
       res.status(200).json({ data: review, error: null, meta: null });

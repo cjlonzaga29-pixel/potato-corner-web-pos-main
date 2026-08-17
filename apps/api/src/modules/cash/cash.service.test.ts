@@ -65,15 +65,59 @@ vi.mock('../attendance/attendance.repository.js', () => ({
   },
 }));
 
+// branch-access.ts (getAccessibleBranchIds) resolves Supervisor scope from
+// the database, never the JWT's branch_ids — mocked here so the
+// approveVariance/reviewShift/listPendingReviews branch-scoping tests below
+// don't depend on a real Prisma connection. Same pattern as
+// expenses.service.test.ts.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { cashRepository } = await import('./cash.repository.js');
 const { attendanceRepository } = await import('../attendance/attendance.repository.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { enqueueNotification } = await import('../../queues/notification.queue.js');
 const { prisma } = await import('../../lib/prisma.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { cashService } = await import('./cash.service.js');
 
 const SUPERVISOR = { id: 'supervisor-1', role: 'supervisor' };
 const SUPER_ADMIN = { id: 'admin-1', role: 'super_admin' };
+
+// JwtPayload-shaped actors for approveVariance/reviewShift/listPendingReviews,
+// which now enforce branch access via getAccessibleBranchIds/assertBranchAccess
+// and therefore need the full JWT shape (user_id, email, branch_ids), not the
+// trimmed {id, role} ActorContext the audit-log-only functions use.
+const SUPER_ADMIN_JWT = {
+  user_id: 'admin-1',
+  role: 'super_admin' as const,
+  email: 'admin@test.com',
+  iat: 0,
+  exp: 0,
+};
+// branch-1 — matches shiftRow()'s default branchId, so "own branch" cases
+// below need no override.
+const SUPERVISOR_JWT_BRANCH_1 = {
+  user_id: 'supervisor-1',
+  role: 'supervisor' as const,
+  email: 'sup1@test.com',
+  branch_ids: ['branch-1'],
+  iat: 0,
+  exp: 0,
+};
+// Assigned to branch-2 only — used for the cross-branch-denial cases against
+// a shift/review that lives on branch-1.
+const SUPERVISOR_JWT_BRANCH_2 = {
+  user_id: 'supervisor-2',
+  role: 'supervisor' as const,
+  email: 'sup2@test.com',
+  branch_ids: ['branch-2'],
+  iat: 0,
+  exp: 0,
+};
 // Task 209.55B fixtures: a Branch Account's own JWT id is distinct from any
 // employee id — its authorization comes entirely from branchIds, scoped to
 // its one assigned branch (matching the jwtPayloadSchema `branch` variant's
@@ -141,6 +185,10 @@ beforeEach(() => {
   // tests aren't exercising the attendance-link guard (§6), only the
   // dedicated ATTENDANCE_REQUIRED test below overrides this.
   vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-1' } as never);
+  // Default: SUPERVISOR_JWT_BRANCH_1's one active assignment is branch-1,
+  // matching shiftRow()'s default branchId — cross-branch tests override
+  // this per-case (SUPERVISOR_JWT_BRANCH_2, or a branch removed mid-test).
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
   // Task 209.41 — default to "no cash refunds during this shift" so every
   // pre-existing closeShift/getShiftSummary fixture (which predates this
   // term) keeps computing the same expected_cash/expectedClosingCash it did
@@ -1077,7 +1125,7 @@ describe('cashService.approveVariance', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active' }) as never);
 
     await expect(
-      cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+      cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null),
     ).rejects.toMatchObject({ code: 'SHIFT_NOT_PENDING_REVIEW', statusCode: 409 });
   });
 
@@ -1085,7 +1133,7 @@ describe('cashService.approveVariance', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(null);
 
     await expect(
-      cashService.approveVariance('missing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+      cashService.approveVariance('missing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null),
     ).rejects.toMatchObject({ code: 'SHIFT_NOT_FOUND', statusCode: 404 });
   });
 
@@ -1093,7 +1141,7 @@ describe('cashService.approveVariance', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'flagged' }) as never);
     vi.mocked(cashRepository.approveVariance).mockResolvedValue(shiftRow({ status: 'closed', varianceApproved: true }) as never);
 
-    const result = await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+    const result = await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
 
     expect(result.status).toBe('closed');
     expect(cashRepository.approveVariance).toHaveBeenCalledWith('shift-1', { approved: true, notes: 'x'.repeat(50), approvedBy: 'admin-1' });
@@ -1106,12 +1154,12 @@ describe('cashService.approveVariance', () => {
       shiftRow({ branchId, status: 'closed', varianceApproved: true, cashVariance: decimal(-50) }) as never,
     );
 
-    await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+    await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
 
     expect(notifyBranch).toHaveBeenCalledWith(
       branchId,
       'cash:variance_approved',
-      expect.objectContaining({ shiftId: 'shift-1', branchId, approvedBy: SUPER_ADMIN.id, variance: -50 }),
+      expect.objectContaining({ shiftId: 'shift-1', branchId, approvedBy: SUPER_ADMIN_JWT.user_id, variance: -50 }),
     );
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_approved', expect.objectContaining({ shiftId: 'shift-1' }));
   });
@@ -1120,10 +1168,56 @@ describe('cashService.approveVariance', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'flagged' }) as never);
     vi.mocked(cashRepository.approveVariance).mockResolvedValue(shiftRow({ status: 'flagged', varianceApproved: false }) as never);
 
-    await cashService.approveVariance('shift-1', { approved: false, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+    await cashService.approveVariance('shift-1', { approved: false, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
 
     expect(notifyBranch).not.toHaveBeenCalledWith(expect.anything(), 'cash:variance_approved', expect.anything());
     expect(notifySuperAdmin).not.toHaveBeenCalledWith('cash:variance_approved', expect.anything());
+  });
+
+  // Phase 1A / 1D — cross-branch IDOR coverage: a supervisor's variance
+  // approval must be scoped to their currently assigned active branches,
+  // resolved fresh from the DB (branchesRepository.findAllActiveBranchIds),
+  // never the JWT's stale branch_ids claim.
+  describe('branch scoping (IDOR)', () => {
+    it('allows a supervisor to approve a variance for their own assigned branch', async () => {
+      vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', status: 'flagged' }) as never);
+      vi.mocked(cashRepository.approveVariance).mockResolvedValue(shiftRow({ branchId: 'branch-1', status: 'closed', varianceApproved: true }) as never);
+
+      const result = await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPERVISOR_JWT_BRANCH_1, null);
+
+      expect(result.status).toBe('closed');
+    });
+
+    it("denies a supervisor approving a variance for a shift outside their assigned branches — 403 BRANCH_ACCESS_DENIED", async () => {
+      vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', status: 'flagged' }) as never);
+      vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-2']);
+
+      await expect(
+        cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPERVISOR_JWT_BRANCH_2, null),
+      ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
+      expect(cashRepository.approveVariance).not.toHaveBeenCalled();
+    });
+
+    it('allows super_admin to approve a variance for any branch', async () => {
+      vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-2', status: 'flagged' }) as never);
+      vi.mocked(cashRepository.approveVariance).mockResolvedValue(shiftRow({ branchId: 'branch-2', status: 'closed', varianceApproved: true }) as never);
+
+      const result = await cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
+
+      expect(result.status).toBe('closed');
+    });
+
+    it('a branch just removed from the supervisor\'s assignments becomes inaccessible immediately (fresh DB lookup, not a cached JWT claim)', async () => {
+      vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', status: 'flagged' }) as never);
+      // SUPERVISOR_JWT_BRANCH_1's token still claims branch-1, but the DB
+      // (the only source of truth getAccessibleBranchIds trusts) now says
+      // their active assignments no longer include it.
+      vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+
+      await expect(
+        cashService.approveVariance('shift-1', { approved: true, notes: 'x'.repeat(50) }, SUPERVISOR_JWT_BRANCH_1, null),
+      ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
+    });
   });
 });
 
@@ -1361,7 +1455,7 @@ describe('cashService.reviewShift', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(null);
 
     await expect(
-      cashService.reviewShift('missing', 'opening', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+      cashService.reviewShift('missing', 'opening', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null),
     ).rejects.toMatchObject({ code: 'SHIFT_NOT_FOUND', statusCode: 404 });
   });
 
@@ -1369,7 +1463,7 @@ describe('cashService.reviewShift', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active' }) as never);
 
     await expect(
-      cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+      cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null),
     ).rejects.toMatchObject({ code: 'SHIFT_NOT_CLOSED_YET', statusCode: 409 });
     expect(cashRepository.submitReview).not.toHaveBeenCalled();
   });
@@ -1378,10 +1472,10 @@ describe('cashService.reviewShift', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'active' }) as never);
     vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'opening' }) as never);
     vi.mocked(cashRepository.submitReview).mockResolvedValue(
-      reviewRow({ phase: 'opening', status: 'approved', reviewedBy: SUPER_ADMIN.id, reviewedAt: new Date() }) as never,
+      reviewRow({ phase: 'opening', status: 'approved', reviewedBy: SUPER_ADMIN_JWT.user_id, reviewedAt: new Date() }) as never,
     );
 
-    const result = await cashService.reviewShift('shift-1', 'opening', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+    const result = await cashService.reviewShift('shift-1', 'opening', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
 
     expect(result.status).toBe('approved');
   });
@@ -1391,7 +1485,7 @@ describe('cashService.reviewShift', () => {
     vi.mocked(cashRepository.findReview).mockResolvedValue(null);
 
     await expect(
-      cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+      cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null),
     ).rejects.toMatchObject({ code: 'SHIFT_REVIEW_NOT_FOUND', statusCode: 404 });
   });
 
@@ -1400,7 +1494,7 @@ describe('cashService.reviewShift', () => {
     vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ status: 'approved' }) as never);
 
     await expect(
-      cashService.reviewShift('shift-1', 'closing', { approved: false, notes: 'x'.repeat(50) }, SUPER_ADMIN, null),
+      cashService.reviewShift('shift-1', 'closing', { approved: false, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null),
     ).rejects.toMatchObject({ code: 'SHIFT_REVIEW_ALREADY_DECIDED', statusCode: 409 });
     expect(cashRepository.submitReview).not.toHaveBeenCalled();
   });
@@ -1410,36 +1504,61 @@ describe('cashService.reviewShift', () => {
     vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId, status: 'closed' }) as never);
     vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'closing' }) as never);
     vi.mocked(cashRepository.submitReview).mockResolvedValue(
-      reviewRow({ phase: 'closing', status: 'approved', reviewedBy: SUPER_ADMIN.id, reviewedAt: new Date() }) as never,
+      reviewRow({ phase: 'closing', status: 'approved', reviewedBy: SUPER_ADMIN_JWT.user_id, reviewedAt: new Date() }) as never,
     );
 
-    const result = await cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN, null);
+    const result = await cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
 
     expect(result.status).toBe('approved');
     expect(cashRepository.submitReview).toHaveBeenCalledWith('shift-1', 'closing', {
       approved: true,
       notes: 'x'.repeat(50),
-      reviewedBy: SUPER_ADMIN.id,
+      reviewedBy: SUPER_ADMIN_JWT.user_id,
     });
     expect(notifyBranch).toHaveBeenCalledWith(
       branchId,
       'cash:shift_review_updated',
-      expect.objectContaining({ shiftId: 'shift-1', phase: 'closing', status: 'approved', reviewedBy: SUPER_ADMIN.id }),
+      expect.objectContaining({ shiftId: 'shift-1', phase: 'closing', status: 'approved', reviewedBy: SUPER_ADMIN_JWT.user_id }),
     );
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:shift_review_updated', expect.objectContaining({ shiftId: 'shift-1' }));
   });
 
   it('records a rejected decision with the actor as reviewer', async () => {
-    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ status: 'closed' }) as never);
+    vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', status: 'closed' }) as never);
     vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'closing' }) as never);
     vi.mocked(cashRepository.submitReview).mockResolvedValue(
-      reviewRow({ phase: 'closing', status: 'rejected', reviewedBy: SUPERVISOR.id, reviewedAt: new Date() }) as never,
+      reviewRow({ phase: 'closing', status: 'rejected', reviewedBy: SUPERVISOR_JWT_BRANCH_1.user_id, reviewedAt: new Date() }) as never,
     );
 
-    const result = await cashService.reviewShift('shift-1', 'closing', { approved: false, notes: 'x'.repeat(50) }, SUPERVISOR, null);
+    const result = await cashService.reviewShift('shift-1', 'closing', { approved: false, notes: 'x'.repeat(50) }, SUPERVISOR_JWT_BRANCH_1, null);
 
     expect(result.status).toBe('rejected');
-    expect(result.reviewed_by).toBe(SUPERVISOR.id);
+    expect(result.reviewed_by).toBe(SUPERVISOR_JWT_BRANCH_1.user_id);
+  });
+
+  // Phase 1B / 1D — cross-branch IDOR coverage, same rationale as
+  // approveVariance above: the underlying shift's branch must be checked,
+  // not just the actor's role.
+  describe('branch scoping (IDOR)', () => {
+    it("denies a supervisor reviewing a shift outside their assigned branches — 403 BRANCH_ACCESS_DENIED", async () => {
+      vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-1', status: 'closed' }) as never);
+      vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-2']);
+
+      await expect(
+        cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPERVISOR_JWT_BRANCH_2, null),
+      ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
+      expect(cashRepository.submitReview).not.toHaveBeenCalled();
+    });
+
+    it('allows super_admin to review a shift on any branch', async () => {
+      vi.mocked(cashRepository.findShiftById).mockResolvedValue(shiftRow({ branchId: 'branch-2', status: 'closed' }) as never);
+      vi.mocked(cashRepository.findReview).mockResolvedValue(reviewRow({ phase: 'closing' }) as never);
+      vi.mocked(cashRepository.submitReview).mockResolvedValue(reviewRow({ phase: 'closing', status: 'approved' }) as never);
+
+      const result = await cashService.reviewShift('shift-1', 'closing', { approved: true, notes: 'x'.repeat(50) }, SUPER_ADMIN_JWT, null);
+
+      expect(result.status).toBe('approved');
+    });
   });
 });
 
@@ -1463,13 +1582,53 @@ describe('cashService.listPendingReviews', () => {
       total: 1,
     } as never);
 
-    const result = await cashService.listPendingReviews({ page: 1, limit: 25 });
+    const result = await cashService.listPendingReviews(SUPER_ADMIN_JWT, { page: 1, limit: 25 });
 
     expect(result.total).toBe(1);
     expect(result.reviews[0]).toMatchObject({
       phase: 'opening',
       status: 'pending',
       shift: { id: 'shift-1', branch_id: branchId, status: 'active' },
+    });
+  });
+
+  // Phase 1C / 1D — pending reviews must be scoped server-side to the
+  // actor's accessible branches, never fetched unfiltered and trimmed in
+  // the frontend.
+  describe('branch scoping (IDOR)', () => {
+    it("scopes a supervisor's unfiltered request to their assigned branches only", async () => {
+      vi.mocked(cashRepository.listPendingReviews).mockResolvedValue({ reviews: [], total: 0 } as never);
+
+      await cashService.listPendingReviews(SUPERVISOR_JWT_BRANCH_1, { page: 1, limit: 25 });
+
+      expect(cashRepository.listPendingReviews).toHaveBeenCalledWith(
+        expect.objectContaining({ branchIds: ['branch-1'] }),
+      );
+    });
+
+    it('denies a direct branch_id substitution for a branch the supervisor is not assigned to — 403 BRANCH_ACCESS_DENIED', async () => {
+      await expect(
+        cashService.listPendingReviews(SUPERVISOR_JWT_BRANCH_1, { branchId: 'branch-2', page: 1, limit: 25 }),
+      ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
+      expect(cashRepository.listPendingReviews).not.toHaveBeenCalled();
+    });
+
+    it('allows an admin to filter by any branch_id', async () => {
+      vi.mocked(cashRepository.listPendingReviews).mockResolvedValue({ reviews: [], total: 0 } as never);
+
+      await cashService.listPendingReviews(SUPER_ADMIN_JWT, { branchId: 'branch-2', page: 1, limit: 25 });
+
+      expect(cashRepository.listPendingReviews).toHaveBeenCalledWith(
+        expect.objectContaining({ branchIds: ['branch-2'] }),
+      );
+    });
+
+    it("aggregates across all of an admin's unfiltered request as 'all' branches", async () => {
+      vi.mocked(cashRepository.listPendingReviews).mockResolvedValue({ reviews: [], total: 0 } as never);
+
+      await cashService.listPendingReviews(SUPER_ADMIN_JWT, { page: 1, limit: 25 });
+
+      expect(cashRepository.listPendingReviews).toHaveBeenCalledWith(expect.objectContaining({ branchIds: 'all' }));
     });
   });
 });

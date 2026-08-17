@@ -191,27 +191,27 @@ describe('cashRepository.submitReview', () => {
 });
 
 describe('cashRepository.listPendingReviews', () => {
-  it('filters to pending status, applies optional branch/phase filters, and paginates', async () => {
+  it('filters to pending status, scopes to the given branch ids, applies the phase filter, and paginates', async () => {
     vi.mocked(prisma.shiftReview.findMany).mockResolvedValue([]);
     vi.mocked(prisma.shiftReview.count).mockResolvedValue(0);
 
-    await cashRepository.listPendingReviews({ branchId: 'branch-1', phase: 'opening', page: 2, limit: 10 });
+    await cashRepository.listPendingReviews({ branchIds: ['branch-1'], phase: 'opening', page: 2, limit: 10 });
 
     expect(prisma.shiftReview.findMany).toHaveBeenCalledWith({
-      where: { status: 'pending', phase: 'opening', shift: { branchId: 'branch-1' } },
+      where: { status: 'pending', phase: 'opening', shift: { branchId: { in: ['branch-1'] } } },
       include: { shift: { select: { id: true, branchId: true, cashierId: true, status: true, startedAt: true, closedAt: true } } },
       orderBy: { createdAt: 'asc' },
       skip: 10,
       take: 10,
     });
-    expect(prisma.shiftReview.count).toHaveBeenCalledWith({ where: { status: 'pending', phase: 'opening', shift: { branchId: 'branch-1' } } });
+    expect(prisma.shiftReview.count).toHaveBeenCalledWith({ where: { status: 'pending', phase: 'opening', shift: { branchId: { in: ['branch-1'] } } } });
   });
 
-  it('omits branch/phase from the where clause when not provided', async () => {
+  it("omits the branch filter from the where clause when branchIds is 'all' (super_admin, unfiltered)", async () => {
     vi.mocked(prisma.shiftReview.findMany).mockResolvedValue([]);
     vi.mocked(prisma.shiftReview.count).mockResolvedValue(0);
 
-    await cashRepository.listPendingReviews({ page: 1, limit: 25 });
+    await cashRepository.listPendingReviews({ branchIds: 'all', page: 1, limit: 25 });
 
     expect(prisma.shiftReview.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'pending' } }));
   });

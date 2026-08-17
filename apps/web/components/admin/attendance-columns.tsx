@@ -1,16 +1,23 @@
 'use client';
 
 import type { ColumnDef } from '@tanstack/react-table';
+import { AlertTriangle } from 'lucide-react';
 import type { AttendanceResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { StatusBadge } from '@/components/shared/status-badge';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatDateTime, formatDuration } from '@/lib/utils';
+import { manilaDateString, manilaToday } from '@/lib/manila-date';
 
 const CORRECTION_REASON_TRUNCATE_LENGTH = 40;
 
 function truncateId(id: string): string {
   return `${id.slice(0, 8)}…`;
+}
+
+/** See attendance-view.tsx's identical helper — kept in sync so admin and supervisor never disagree on what counts as stale. */
+function isStaleOpenShift(record: AttendanceResponse): boolean {
+  return record.clock_out_server_time === null && manilaDateString(new Date(record.clock_in_server_time)) !== manilaToday();
 }
 
 export interface AttendanceColumnOptions {
@@ -24,7 +31,17 @@ export function createAttendanceColumns({ employeeNames, branchNames }: Attendan
     {
       id: 'employee_id',
       header: 'Employee',
-      cell: ({ row }) => employeeNames.get(row.original.employee_id) ?? truncateId(row.original.employee_id),
+      cell: ({ row }) => {
+        // Primary source is the API's own employee relation; the roster map
+        // and truncated id are fallbacks only — never the raw UUID as-is.
+        const name = row.original.employee_name ?? employeeNames.get(row.original.employee_id) ?? 'Former Employee';
+        return (
+          <div>
+            <div>{name}</div>
+            {row.original.employee_code && <div className="text-xs text-muted-foreground">{row.original.employee_code}</div>}
+          </div>
+        );
+      },
     },
     {
       id: 'branch_id',
@@ -39,12 +56,25 @@ export function createAttendanceColumns({ employeeNames, branchNames }: Attendan
     {
       id: 'clock_out_server_time',
       header: 'Clock Out',
-      cell: ({ row }) =>
-        row.original.clock_out_server_time ? (
-          formatDateTime(row.original.clock_out_server_time)
-        ) : (
-          <Badge variant="pending">Still clocked in</Badge>
-        ),
+      cell: ({ row }) => {
+        if (row.original.clock_out_server_time) return formatDateTime(row.original.clock_out_server_time);
+        if (isStaleOpenShift(row.original)) {
+          return (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center gap-1 text-warning">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Stale open shift
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Clocked in on a prior day and never clocked out — likely a missed clock-out, not an active shift.</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          );
+        }
+        return <Badge variant="pending">Still clocked in</Badge>;
+      },
     },
     {
       id: 'break_minutes',
@@ -69,7 +99,8 @@ export function createAttendanceColumns({ employeeNames, branchNames }: Attendan
     {
       id: 'status',
       header: 'Status',
-      cell: ({ row }) => <StatusBadge status={row.original.status} type="attendance" />,
+      cell: ({ row }) =>
+        isStaleOpenShift(row.original) ? <Badge variant="warning">Needs Review</Badge> : <StatusBadge status={row.original.status} type="attendance" />,
     },
     {
       id: 'correction_reason',
@@ -80,12 +111,14 @@ export function createAttendanceColumns({ employeeNames, branchNames }: Attendan
         if (reason.length <= CORRECTION_REASON_TRUNCATE_LENGTH) return reason;
         const truncated = `${reason.slice(0, CORRECTION_REASON_TRUNCATE_LENGTH)}…`;
         return (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="cursor-default">{truncated}</span>
-            </TooltipTrigger>
-            <TooltipContent>{reason}</TooltipContent>
-          </Tooltip>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-default">{truncated}</span>
+              </TooltipTrigger>
+              <TooltipContent>{reason}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         );
       },
     },

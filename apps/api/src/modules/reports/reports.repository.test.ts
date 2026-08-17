@@ -1163,7 +1163,20 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     expect(result.summary.total_inventory_value).toBe(120);
   });
 
-  it('TEST C: a zero-quantity stock row counts toward inventory_item_count with $0.00 value', async () => {
+  it('TEST C: a zero-quantity stock row with a configured threshold counts toward inventory_item_count with $0.00 value and as out-of-stock', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 0, itemUnitCost: 5, criticalThreshold: 5 }),
+    ] as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    expect(result.branches[0]).toEqual(
+      expect.objectContaining({ branch_id: 'b1', inventory_item_count: 1, total_inventory_value: 0, out_of_stock_count: 1 }),
+    );
+  });
+
+  it('TEST C2 (Cross-Dashboard Correctness audit): a zero-quantity stock row with NO threshold configured is an un-configured/never-populated projection row, not a real alert — it must not inflate out_of_stock_count', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       stockRow({ branchId: 'b1', quantityOnHand: 0, itemUnitCost: 5 }),
@@ -1172,8 +1185,9 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     const result = await reportsRepository.getInventoryValuationRollup();
 
     expect(result.branches[0]).toEqual(
-      expect.objectContaining({ branch_id: 'b1', inventory_item_count: 1, total_inventory_value: 0, out_of_stock_count: 1 }),
+      expect.objectContaining({ branch_id: 'b1', inventory_item_count: 1, total_inventory_value: 0, low_stock_count: 0, critical_stock_count: 0, out_of_stock_count: 0 }),
     );
+    expect(result.summary.total_out_of_stock_rows).toBe(0);
   });
 
   it('TEST D: healthy/low/critical/out-of-stock counts match the InventoryStock alert threshold rule, mutually exclusive (Phase 4: no double-count)', async () => {

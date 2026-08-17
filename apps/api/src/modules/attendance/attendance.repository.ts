@@ -118,6 +118,11 @@ export const attendanceRepository = {
     const [records, total] = await Promise.all([
       prisma.attendanceRecord.findMany({
         where,
+        // Employee name is displayed directly from this relation (not a
+        // separate, filtered/capped roster query) so a reassigned,
+        // deactivated, or terminated employee still shows a name instead of
+        // a raw UUID — see Cross-Dashboard Correctness audit.
+        include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } } },
         orderBy: { clockInServerTime: 'desc' },
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,

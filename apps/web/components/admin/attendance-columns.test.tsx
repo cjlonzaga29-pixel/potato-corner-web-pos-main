@@ -1,13 +1,19 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, afterEach } from 'vitest';
+import { render, screen, cleanup } from '@testing-library/react';
 import type { AttendanceResponse } from '@potato-corner/shared';
 import { DataTable } from '@/components/shared/data-table';
+import { manilaToday } from '@/lib/manila-date';
 import { createAttendanceColumns } from './attendance-columns';
+
+afterEach(cleanup);
 
 function attendanceRecord(overrides: Partial<AttendanceResponse> = {}): AttendanceResponse {
   return {
     id: 'record-1',
     employee_id: 'employee-1',
+    employee_name: null,
+    employee_code: null,
+    employee_status: null,
     branch_id: 'branch-1',
     clock_in_server_time: '2026-07-15T08:00:00.000Z',
     clock_in_gps_lat: 14.5995,
@@ -54,15 +60,24 @@ describe('createAttendanceColumns', () => {
     expect(screen.getByText('Employee forgot to clock out')).toBeInTheDocument();
   });
 
-  it('shows "Still clocked in" when clock_out_server_time is null', () => {
-    renderRecord(attendanceRecord({ clock_out_server_time: null, actual_work_minutes: null }));
+  it('shows "Still clocked in" when clock_out_server_time is null and the shift started today', () => {
+    renderRecord(attendanceRecord({ clock_in_server_time: `${manilaToday()}T08:00:00.000Z`, clock_out_server_time: null, actual_work_minutes: null }));
 
     expect(screen.getByText('Still clocked in')).toBeInTheDocument();
   });
 
   it('shows "—" when actual_work_minutes is null', () => {
-    renderRecord(attendanceRecord({ actual_work_minutes: null, clock_out_server_time: null }));
+    renderRecord(attendanceRecord({ clock_in_server_time: `${manilaToday()}T08:00:00.000Z`, actual_work_minutes: null, clock_out_server_time: null }));
 
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('flags a still-open record from a prior day as a stale open shift needing review, without rewriting its status', () => {
+    // Default clock_in_server_time (2026-07-15) is deliberately a prior day.
+    renderRecord(attendanceRecord({ clock_out_server_time: null, actual_work_minutes: null, status: 'present' }));
+
+    expect(screen.getByText('Stale open shift')).toBeInTheDocument();
+    expect(screen.getByText('Needs Review')).toBeInTheDocument();
+    expect(screen.queryByText('Present')).not.toBeInTheDocument();
   });
 });

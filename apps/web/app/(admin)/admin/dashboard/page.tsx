@@ -68,7 +68,9 @@ function AdminDashboardPageContent() {
   // critical_stock_count/out_of_stock_count.
   const rollupBranches = inventoryRollup?.branches ?? [];
   const scopedRollupBranches = branchFilter ? rollupBranches.filter((b) => b.branch_id === branchFilter) : rollupBranches;
-  const inventoryAlertCount = scopedRollupBranches.reduce((sum, b) => sum + b.critical_stock_count + b.out_of_stock_count, 0);
+  const criticalStockCount = scopedRollupBranches.reduce((sum, b) => sum + b.critical_stock_count, 0);
+  const outOfStockCount = scopedRollupBranches.reduce((sum, b) => sum + b.out_of_stock_count, 0);
+  const inventoryAlertCount = criticalStockCount + outOfStockCount;
 
   const paymentBreakdown = branchStats?.reduce<PaymentBreakdown>(
     (acc, b) => ({
@@ -120,6 +122,7 @@ function AdminDashboardPageContent() {
           isLoading={isLoadingInventoryRollup}
           icon={BellRing}
           tone={inventoryAlertCount > 0 ? 'warning' : 'default'}
+          tooltip={`${criticalStockCount} critical, ${outOfStockCount} out of stock — items at or below a configured alert threshold. Excludes Low Stock Items (a separate, less severe threshold).`}
         />
       </div>
 

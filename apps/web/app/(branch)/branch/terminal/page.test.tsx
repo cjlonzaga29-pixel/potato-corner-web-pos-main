@@ -2040,12 +2040,13 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
   });
 
-  it('shows an empty state when no active employees are assigned to the branch', () => {
+  it('shows an empty state with a link to the Employees section when no active employees are assigned to the branch', () => {
     mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
 
     render(<TerminalPage />);
 
     expect(screen.getByText('No active employees')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Go to Employees' })).toHaveAttribute('href', '/branch/employees');
   });
 
   it('never authenticates as the selected Employee — the Branch Account session is untouched before, during, and after selection', async () => {

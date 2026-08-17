@@ -3,7 +3,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { truncateText } from '@/lib/utils';
 
 function formatTimeOnly(date: string): string {
   return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(date));
@@ -57,7 +56,7 @@ export function DashboardAttendanceOverview({ records, isLoading }: DashboardAtt
                 key={record.id}
                 className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
               >
-                <span className="min-w-0 truncate font-medium">{truncateText(record.employee_id, 13)}</span>
+                <span className="min-w-0 truncate font-medium">{record.employee_name ?? 'Former Employee'}</span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">{formatTimeOnly(record.clock_in_server_time)}</span>
                 <StatusBadge status={record.clock_in_gps_status} type="gps" />
               </div>

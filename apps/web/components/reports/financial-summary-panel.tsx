@@ -82,6 +82,11 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
     };
   }, [rows]);
 
+  // Derived purely from the canonical grossProfit/netSales already summed above —
+  // not a competing formula, just a ratio of two existing canonical figures.
+  const grossMarginPct = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
+  const operatingResultTone = operatingResult > 0 ? 'positive' : operatingResult < 0 ? 'negative' : 'default';
+
   const trendData = useMemo(() => {
     const rows = salesTrend.data?.data ?? [];
     const buckets = new Map<string, { bucket: string; gross_sales: number; net_sales: number }>();
@@ -114,7 +119,7 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="app-kpi-grid-3">
         <KpiCard
           title="Gross Sales"
           value={grossSales}
@@ -122,8 +127,9 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
           isLoading={isLoading}
           tooltip={`Completed sales from ${dateFrom} to ${dateTo}, before discounts/refunds.`}
         />
-        <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tone="negative" tooltip="PWD, Senior, and other discounts applied to completed sales." />
-        <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} tooltip="Gross Sales minus discounts and refunds." />
+        <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tooltip="PWD, Senior, and other discounts applied to completed sales." />
+        <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} emphasize tooltip="Gross Sales minus discounts and refunds." />
+
         <KpiCard
           title="Cost of Goods Sold"
           value={cogs}
@@ -140,26 +146,34 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
           emphasize
           tooltip="Net Sales minus Cost of Goods Sold."
         />
-        <KpiCard title="Waste Cost" value={wasteCost} prefix="₱" isLoading={isLoading} tone="negative" tooltip="Inventory lost to spoilage/damage/error, at its cost when wasted." />
-        <KpiCard title="Operating Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} tooltip="Recorded Expenses for the selected range." />
-      </div>
+        <KpiCard title="Gross Margin" value={grossMarginPct} suffix="%" isLoading={isLoading} tooltip="Gross Profit as a percentage of Net Sales." />
 
-      <KpiCard
-        title="Operating Result"
-        value={operatingResult}
-        prefix="₱"
-        isLoading={isLoading}
-        tone={operatingResult >= 0 ? 'positive' : 'negative'}
-        emphasize
-        tooltip="Gross Profit minus Waste Cost minus Operating Expenses."
-      />
+        <KpiCard
+          title="Waste Cost"
+          value={wasteCost}
+          prefix="₱"
+          isLoading={isLoading}
+          tone={wasteCost > 0 ? 'negative' : 'default'}
+          tooltip="Inventory lost to spoilage/damage/error, at its cost when wasted."
+        />
+        <KpiCard title="Operating Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} tooltip="Recorded Expenses for the selected range." />
+        <KpiCard
+          title="Operating Result"
+          value={operatingResult}
+          prefix="₱"
+          isLoading={isLoading}
+          tone={operatingResultTone}
+          emphasize
+          tooltip="Gross Profit minus Waste Cost minus Operating Expenses."
+        />
+      </div>
 
       {!isLoading && (
         <Card>
-          <CardHeader>
+          <CardHeader className="app-card-padding pb-2">
             <CardTitle className="text-sm font-medium">Financial Waterfall</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-1 font-mono text-sm">
+          <CardContent className="app-card-padding space-y-1 pt-0 font-mono text-sm">
             <div className="flex justify-between">
               <span>Gross Sales</span>
               <span className="tabular-nums">{formatCurrency(grossSales)}</span>
@@ -188,7 +202,7 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
               <span>Less: Expenses</span>
               <span className="tabular-nums">-{formatCurrency(totalExpenses)}</span>
             </div>
-            <div className={`flex justify-between border-t pt-1 text-base font-bold ${operatingResult >= 0 ? 'text-success' : 'text-destructive'}`}>
+            <div className={`flex justify-between border-t pt-1 text-base font-bold ${operatingResultTone === 'positive' ? 'text-success' : operatingResultTone === 'negative' ? 'text-destructive' : ''}`}>
               <span>Operating Result</span>
               <span className="tabular-nums">{formatCurrency(operatingResult)}</span>
             </div>

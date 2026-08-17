@@ -491,6 +491,39 @@ describe('attendanceService.manualOverride', () => {
  * mocks this service out entirely and only proves the role gate + error
  * mapping, not the scoping decision itself.
  */
+describe('attendanceService.getByBranch', () => {
+  it('maps the joined employee relation to employee_name/employee_code/employee_status — never the raw UUID (Cross-Dashboard Correctness audit)', async () => {
+    vi.mocked(attendanceRepository.findByBranch).mockResolvedValue({
+      records: [
+        attendanceRow({
+          employee: { firstName: 'Juan', lastName: 'Dela Cruz', employeeId: 'PC-EMP-000001', status: 'active' },
+        }),
+      ],
+      total: 1,
+    } as never);
+
+    const result = await attendanceService.getByBranch('branch-1', { page: 1, limit: 25 });
+
+    expect(result.records[0]).toMatchObject({
+      employee_id: 'employee-1',
+      employee_name: 'Juan Dela Cruz',
+      employee_code: 'PC-EMP-000001',
+      employee_status: 'active',
+    });
+  });
+
+  it('returns employee_name/employee_code/employee_status as null when the employee relation is missing, rather than falling back to the id', async () => {
+    vi.mocked(attendanceRepository.findByBranch).mockResolvedValue({
+      records: [attendanceRow({ employee: null })],
+      total: 1,
+    } as never);
+
+    const result = await attendanceService.getByBranch('branch-1', { page: 1, limit: 25 });
+
+    expect(result.records[0]).toMatchObject({ employee_name: null, employee_code: null, employee_status: null });
+  });
+});
+
 describe('attendanceService.getByEmployee', () => {
   const EMPLOYEE_ID = randomUUID();
   const BRANCH_1 = randomUUID();

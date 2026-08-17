@@ -45,6 +45,8 @@ interface AttendanceRow {
   originalRecordId: string | null;
   deletedAt: Date | null;
   createdAt: Date;
+  /** Present only when the query included the relation (branch-scoped list reads) — see attendance.repository.ts findByBranch. */
+  employee?: { firstName: string; lastName: string; employeeId: string | null; status: string } | null;
 }
 
 interface BranchRow {
@@ -87,6 +89,12 @@ function toResponse(record: AttendanceRow) {
   return {
     id: record.id,
     employee_id: record.employeeId,
+    // Only populated when the query joined the employee relation (see
+    // attendance.repository.ts findByBranch) — null on writes/corrections,
+    // which return the raw record without that include.
+    employee_name: record.employee ? `${record.employee.firstName} ${record.employee.lastName}` : null,
+    employee_code: record.employee?.employeeId ?? null,
+    employee_status: record.employee?.status ?? null,
     branch_id: record.branchId,
     clock_in_server_time: record.clockInServerTime.toISOString(),
     clock_in_gps_lat: record.clockInGpsLat?.toNumber() ?? null,

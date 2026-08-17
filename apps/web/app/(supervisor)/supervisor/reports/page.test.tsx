@@ -229,6 +229,9 @@ function attendanceRecord(overrides: Partial<AttendanceResponse> = {}): Attendan
   return {
     id: 'record-1',
     employee_id: 'employee-1234-5678',
+    employee_name: null,
+    employee_code: null,
+    employee_status: null,
     branch_id: 'branch-1',
     clock_in_server_time: '2026-07-16T01:00:00.000Z',
     clock_in_gps_lat: 14.5995,

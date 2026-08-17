@@ -45,6 +45,63 @@ async function countLowStockByBranch(branchIds: string[]): Promise<Map<string, n
   return byBranch;
 }
 
+/**
+ * Canonical "currently working" count for the live Staff Clocked In KPI
+ * (Cross-Dashboard Correctness audit). An open attendance row
+ * (clock_out_server_time IS NULL) only counts a staff member as currently
+ * working if the employee is still active AND still holds a live
+ * (non-removed) assignment to the same branch they clocked in at — this
+ * excludes terminated/deactivated staff and staff reassigned elsewhere
+ * without ever modifying the underlying attendance row. Historical/stale
+ * open attendance remains queryable on the attendance pages; it just no
+ * longer inflates this live KPI.
+ */
+async function countStaffTimedIn(branchId: string): Promise<number> {
+  const rows = await prisma.attendanceRecord.findMany({
+    where: { branchId, clockOutServerTime: null, deletedAt: null },
+    select: {
+      employee: {
+        select: {
+          isActive: true,
+          status: true,
+          branchAssignments: { where: { branchId, removedAt: null }, select: { id: true } },
+        },
+      },
+    },
+  });
+  return rows.filter(
+    (row) => row.employee.isActive && row.employee.status === 'active' && row.employee.branchAssignments.length > 0,
+  ).length;
+}
+
+/** Same rule as countStaffTimedIn, grouped across every branch in one query — used by findAllStatsGrouped. */
+async function countStaffTimedInByBranch(): Promise<Map<string, number>> {
+  const rows = await prisma.attendanceRecord.findMany({
+    where: { clockOutServerTime: null, deletedAt: null },
+    select: {
+      branchId: true,
+      employee: {
+        select: {
+          isActive: true,
+          status: true,
+          branchAssignments: { where: { removedAt: null }, select: { branchId: true } },
+        },
+      },
+    },
+  });
+  const byBranch = new Map<string, number>();
+  for (const row of rows) {
+    const isCurrentlyWorking =
+      row.employee.isActive &&
+      row.employee.status === 'active' &&
+      row.employee.branchAssignments.some((a) => a.branchId === row.branchId);
+    if (isCurrentlyWorking) {
+      byBranch.set(row.branchId, (byBranch.get(row.branchId) ?? 0) + 1);
+    }
+  }
+  return byBranch;
+}
+
 const activeAssignmentsInclude = {
   userAssignments: {
     where: { removedAt: null },
@@ -299,10 +356,9 @@ export const branchesRepository = {
       }),
       // Currently timed-in staff (Simple Operational Audit §7) — a live
       // "right now" count, deliberately not scoped to today's Manila window
-      // since a clock-in can span midnight.
-      prisma.attendanceRecord.count({
-        where: { branchId, clockOutServerTime: null, deletedAt: null },
-      }),
+      // since a clock-in can span midnight. See countStaffTimedIn for the
+      // "currently working" definition (excludes terminated/unassigned staff).
+      countStaffTimedIn(branchId),
       prisma.expense.aggregate({
         where: { branchId, deletedAt: null, incurredAt: todayRange },
         _sum: { amount: true },
@@ -402,11 +458,7 @@ export const branchesRepository = {
         where: { removedAt: null, user: { role: 'staff' } },
         _count: { _all: true },
       }),
-      prisma.attendanceRecord.groupBy({
-        by: ['branchId'],
-        where: { clockOutServerTime: null, deletedAt: null },
-        _count: { _all: true },
-      }),
+      countStaffTimedInByBranch(),
       prisma.transaction.groupBy({
         by: ['branchId'],
         where: { status: 'completed', createdAt: todayRange },
@@ -485,7 +537,7 @@ export const branchesRepository = {
         branchId: b.id,
         activeShiftsCount: shiftGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
         activeStaffCount: staffGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
-        staffTimedInCount: staffTimedInGroups.find((g) => g.branchId === b.id)?._count._all ?? 0,
+        staffTimedInCount: staffTimedInGroups.get(b.id) ?? 0,
         todayTransactionCount: txnGroup?._count._all ?? 0,
         todayGrossSales: metrics.grossSales,
         todayDiscountTotal: metrics.discountTotal,

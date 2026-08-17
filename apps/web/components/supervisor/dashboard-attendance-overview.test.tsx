@@ -9,6 +9,9 @@ function record(overrides: Partial<AttendanceResponse> = {}): AttendanceResponse
   return {
     id: 'record-1',
     employee_id: 'employee-1234-5678',
+    employee_name: null,
+    employee_code: null,
+    employee_status: null,
     branch_id: 'branch-1',
     clock_in_server_time: '2026-07-16T01:00:00.000Z',
     clock_in_gps_lat: 14.5995,
@@ -57,9 +60,16 @@ describe('DashboardAttendanceOverview', () => {
     expect(screen.getByText('3 total today')).toBeInTheDocument();
   });
 
-  it('renders the clocked-in staff list with a GPS status badge', () => {
-    render(<DashboardAttendanceOverview records={[record({ employee_id: 'employee-1234-5678', clock_in_gps_status: 'outside_radius' })]} isLoading={false} />);
-    expect(screen.getByText(/employee-123/)).toBeInTheDocument();
+  it('renders the clocked-in staff list with a GPS status badge, showing the employee name (not the raw UUID)', () => {
+    render(<DashboardAttendanceOverview records={[record({ employee_id: 'employee-1234-5678', employee_name: 'Juan Dela Cruz', clock_in_gps_status: 'outside_radius' })]} isLoading={false} />);
+    expect(screen.getByText('Juan Dela Cruz')).toBeInTheDocument();
+    expect(screen.queryByText(/employee-1234-5678/)).not.toBeInTheDocument();
     expect(screen.getByText('Outside Radius').className).toContain('bg-destructive/15');
+  });
+
+  it('falls back to "Former Employee" instead of a raw UUID when the employee relation is missing', () => {
+    render(<DashboardAttendanceOverview records={[record({ employee_id: 'employee-1234-5678', employee_name: null })]} isLoading={false} />);
+    expect(screen.getByText('Former Employee')).toBeInTheDocument();
+    expect(screen.queryByText(/employee-1234-5678/)).not.toBeInTheDocument();
   });
 });

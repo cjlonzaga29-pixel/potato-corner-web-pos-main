@@ -1214,7 +1214,18 @@ export const reportsRepository = {
       // item as both critical AND out-of-stock) — out-of-stock takes
       // priority over critical/low, mirroring notification.queue.ts's
       // existing severity ternary for the same InventoryStock data.
-      if (quantity <= 0) {
+      //
+      // Cross-Dashboard Correctness audit: out-of-stock must go through
+      // classifyStockStatus's null-threshold-safe check first, same as
+      // critical/low already do — a row with quantityOnHand=0 but no
+      // low/critical threshold configured is an un-configured/never-
+      // populated InventoryStock projection row (see the model's "Empty/
+      // zero-row in Phase A" comment), not a real alert, exactly like
+      // notifyIfLowStock treats "null threshold" as "no alerting
+      // configured" rather than "always alert". Previously this branch
+      // ran before classifyStockStatus and ignored that null-threshold
+      // convention, inflating the KPI with unconfigured placeholder rows.
+      if (status !== 'healthy' && quantity <= 0) {
         acc.outOfStockCount += 1;
       } else if (status === 'critical') {
         acc.criticalStockCount += 1;

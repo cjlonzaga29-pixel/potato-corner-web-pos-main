@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
@@ -1172,7 +1173,12 @@ export default function TerminalPage() {
           <EmptyState
             icon={User}
             title="No active employees"
-            description="No active employees are assigned to this branch yet. Create one from the Employees section."
+            description="No active employees are assigned to this branch. If staff already exist, their branch assignment may need to be restored — otherwise, add one from the Employees section."
+            action={
+              <Button asChild size="sm">
+                <Link href="/branch/employees">Go to Employees</Link>
+              </Button>
+            }
           />
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">

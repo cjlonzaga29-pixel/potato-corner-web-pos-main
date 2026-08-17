@@ -8,7 +8,7 @@ vi.mock('../../lib/prisma.js', () => {
     userBranchAssignment: { groupBy: vi.fn(), count: vi.fn(), findMany: vi.fn() },
     transaction: { groupBy: vi.fn(), aggregate: vi.fn() },
     transactionItem: { findMany: vi.fn() },
-    attendanceRecord: { groupBy: vi.fn(), count: vi.fn() },
+    attendanceRecord: { groupBy: vi.fn(), count: vi.fn(), findMany: vi.fn() },
     expense: { groupBy: vi.fn(), aggregate: vi.fn() },
     ingredient: { findMany: vi.fn() },
     inventoryStock: { findMany: vi.fn() },
@@ -88,6 +88,7 @@ beforeEach(() => {
   vi.mocked(prisma.userBranchAssignment.count).mockResolvedValue(0);
   vi.mocked(prisma.attendanceRecord.groupBy).mockResolvedValue([] as never);
   vi.mocked(prisma.attendanceRecord.count).mockResolvedValue(0);
+  vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([] as never);
   mockTransactionGroupBy({});
   mockTransactionAggregate(
     { _count: { _all: 0 }, _sum: { subtotal: null, discountAmount: null, vatAmount: null } },
@@ -197,14 +198,21 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     expect(rows[0]).toMatchObject({ activeStaffCount: 6 });
   });
 
-  it('correctly aggregates staffTimedInCount from attendanceRecord groupBy (currently clocked-in staff)', async () => {
+  it('counts staffTimedInCount only for active employees with a live assignment to the same branch — stale/terminated/reassigned open attendance rows are excluded', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
-    vi.mocked(prisma.attendanceRecord.groupBy).mockResolvedValue([{ branchId: 'branch-1', _count: { _all: 3 } }] as never);
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
+      { branchId: 'branch-1', employee: { isActive: true, status: 'active', branchAssignments: [{ branchId: 'branch-1' }] } },
+      { branchId: 'branch-1', employee: { isActive: true, status: 'active', branchAssignments: [{ branchId: 'branch-1' }] } },
+      // stale: employee was terminated but never clocked out
+      { branchId: 'branch-1', employee: { isActive: false, status: 'terminated', branchAssignments: [] } },
+      // stale: employee reassigned away from this branch (assignment removed) but never clocked out
+      { branchId: 'branch-1', employee: { isActive: true, status: 'active', branchAssignments: [] } },
+    ] as never);
 
     const rows = await branchesRepository.findAllStatsGrouped();
 
-    expect(rows[0]).toMatchObject({ staffTimedInCount: 3 });
-    expect(prisma.attendanceRecord.groupBy).toHaveBeenCalledWith(
+    expect(rows[0]).toMatchObject({ staffTimedInCount: 2 });
+    expect(prisma.attendanceRecord.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { clockOutServerTime: null, deletedAt: null } }),
     );
   });
@@ -424,15 +432,22 @@ describe('branchesRepository.branchStats', () => {
     expect(stats.missingCostItemCount).toBe(0);
   });
 
-  it('surfaces staffTimedInCount from attendanceRecord.count scoped to the branch', async () => {
-    vi.mocked(prisma.attendanceRecord.count).mockResolvedValue(4);
+  it('counts staffTimedInCount only for active employees with a live assignment to this branch — stale/terminated/reassigned rows are excluded', async () => {
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
+      { employee: { isActive: true, status: 'active', branchAssignments: [{ id: 'a1' }] } },
+      { employee: { isActive: true, status: 'active', branchAssignments: [{ id: 'a2' }] } },
+      // stale: employee was terminated but never clocked out
+      { employee: { isActive: false, status: 'terminated', branchAssignments: [] } },
+      // stale: employee's assignment to this branch was removed but never clocked out
+      { employee: { isActive: true, status: 'active', branchAssignments: [] } },
+    ] as never);
 
     const stats = await branchesRepository.branchStats('branch-1');
 
-    expect(stats.staffTimedInCount).toBe(4);
-    expect(prisma.attendanceRecord.count).toHaveBeenCalledWith({
-      where: { branchId: 'branch-1', clockOutServerTime: null, deletedAt: null },
-    });
+    expect(stats.staffTimedInCount).toBe(2);
+    expect(prisma.attendanceRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { branchId: 'branch-1', clockOutServerTime: null, deletedAt: null } }),
+    );
   });
 
   it('flags isNetProfitEstimated and reports missingCostItemCount when a sold item has no resolvable cost, rather than silently treating COGS as zero', async () => {

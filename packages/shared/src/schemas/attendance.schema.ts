@@ -64,6 +64,13 @@ export const attendanceQuerySchema = z.object({
 export const attendanceResponseSchema = z.object({
   id: z.uuid(),
   employee_id: z.uuid(),
+  // Present when the read query joined the employee relation (branch-scoped
+  // list reads); null on write/correction responses that return the raw
+  // record. Frontend must never fall back to rendering employee_id as the
+  // visible name.
+  employee_name: z.string().nullable(),
+  employee_code: z.string().nullable(),
+  employee_status: z.string().nullable(),
   branch_id: z.uuid(),
   clock_in_server_time: z.iso.datetime(),
   clock_in_gps_lat: z.number().nullable(),

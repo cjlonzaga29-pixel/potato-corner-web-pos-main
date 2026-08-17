@@ -2,21 +2,37 @@
 
 import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
+import { AlertTriangle } from 'lucide-react';
 import type { AttendanceResponse } from '@potato-corner/shared';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { StatusBadge } from '@/components/shared/status-badge';
+import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AttendanceOverrideDialog } from '@/components/supervisor/attendance-override-dialog';
 import { formatDateTime, formatDuration } from '@/lib/utils';
+import { manilaDateString, manilaToday } from '@/lib/manila-date';
 import { useBranchStore } from '@/stores/branch.store';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
 
 const ALL_EMPLOYEES = 'all';
+
+/**
+ * A still-open record (no clock-out) whose clock-in happened on a prior
+ * Asia/Manila calendar day is stale — no shift legitimately spans multiple
+ * business days. This is a presentational distinction only (Cross-Dashboard
+ * Correctness audit): the underlying attendance row/status is never
+ * modified, so history stays intact and the Correct action still applies
+ * under the same authorization rules.
+ */
+function isStaleOpenShift(record: AttendanceResponse): boolean {
+  return record.clock_out_server_time === null && manilaDateString(new Date(record.clock_in_server_time)) !== manilaToday();
+}
 
 /**
  * Shared body behind both `/supervisor/attendance` and `/branch/attendance`.
@@ -54,12 +70,45 @@ export function AttendanceView() {
   }
 
   const columns: ColumnDef<AttendanceResponse>[] = [
-    { id: 'employee', header: 'Employee', cell: ({ row }) => employeeNames.get(row.original.employee_id) ?? row.original.employee_id },
+    {
+      id: 'employee',
+      header: 'Employee',
+      cell: ({ row }) => {
+        // Primary source is the API's own employee relation (never stale/
+        // filtered); the roster lookup and "Former Employee" are fallbacks
+        // only — the raw employee_id UUID must never render as the name.
+        const name = row.original.employee_name ?? employeeNames.get(row.original.employee_id) ?? 'Former Employee';
+        return (
+          <div>
+            <div>{name}</div>
+            {row.original.employee_code && <div className="text-xs text-muted-foreground">{row.original.employee_code}</div>}
+          </div>
+        );
+      },
+    },
     { id: 'clock_in', header: 'Clock In', cell: ({ row }) => formatDateTime(row.original.clock_in_server_time) },
     {
       id: 'clock_out',
       header: 'Clock Out',
-      cell: ({ row }) => (row.original.clock_out_server_time ? formatDateTime(row.original.clock_out_server_time) : 'Still clocked in'),
+      cell: ({ row }) => {
+        if (row.original.clock_out_server_time) return formatDateTime(row.original.clock_out_server_time);
+        if (isStaleOpenShift(row.original)) {
+          return (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center gap-1 text-warning">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Stale open shift
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Clocked in on a prior day and never clocked out — likely a missed clock-out, not an active shift.</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          );
+        }
+        return 'Still clocked in';
+      },
     },
     {
       id: 'duration',
@@ -67,7 +116,12 @@ export function AttendanceView() {
       cell: ({ row }) => (row.original.actual_work_minutes === null ? '—' : formatDuration(row.original.actual_work_minutes)),
     },
     { id: 'gps', header: 'GPS', cell: ({ row }) => <StatusBadge status={row.original.clock_in_gps_status} type="gps" /> },
-    { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="attendance" /> },
+    {
+      id: 'status',
+      header: 'Status',
+      cell: ({ row }) =>
+        isStaleOpenShift(row.original) ? <Badge variant="warning">Needs Review</Badge> : <StatusBadge status={row.original.status} type="attendance" />,
+    },
     {
       id: 'actions',
       header: '',

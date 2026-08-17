@@ -205,6 +205,18 @@ export const branchesRepository = {
     return prisma.shift.count({ where: { branchId, status: 'active' } });
   },
 
+  /** The canonical role='branch' login account(s) currently active for this branch — see changeBranchStatus's operational-status sync. */
+  findActiveBranchAccountUsers(branchId: string) {
+    return prisma.user.findMany({
+      where: {
+        role: 'branch',
+        isActive: true,
+        branchAssignments: { some: { branchId, removedAt: null } },
+      },
+      select: { id: true, email: true },
+    });
+  },
+
   delete(branchId: string) {
     return prisma.branch.delete({ where: { id: branchId } });
   },

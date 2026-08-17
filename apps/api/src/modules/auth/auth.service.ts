@@ -112,6 +112,30 @@ function decodeExpiry(accessToken: string): Date {
   return decoded?.exp ? new Date(decoded.exp * 1000) : new Date();
 }
 
+/**
+ * Independent defense-in-depth check (Task 209.x branch-account audit,
+ * 2026-08-17): Branch.status has never driven a `branch` account's isActive
+ * flag — there is no code path that flips one from the other — so an admin
+ * setting a branch to inactive/closed does not, by itself, block that
+ * branch's login today. For role='branch' only: require at least one active
+ * (removedAt null) assignment AND that assignment's branch to be 'active'.
+ * Deliberately not applied to supervisor/staff — a supervisor with several
+ * assignments must stay usable if only one of their branches is inactive.
+ */
+function assertBranchAccountOperational(user: {
+  role: Role;
+  branchAssignments: { branch: { status: string } }[];
+}): void {
+  if (user.role !== ROLES.BRANCH) return;
+
+  if (user.branchAssignments.length === 0) {
+    throw new AuthError('BRANCH_ASSIGNMENT_REMOVED', 'This account is not currently assigned to a branch', 403);
+  }
+  if (!user.branchAssignments.some((a) => a.branch.status === 'active')) {
+    throw new AuthError('BRANCH_INACTIVE', 'This branch is not currently active', 403);
+  }
+}
+
 function toUserSummary(user: {
   id: string;
   role: Role;
@@ -166,6 +190,8 @@ export const authService = {
     if (!user.isActive) {
       throw new AuthError('ACCOUNT_INACTIVE', 'This account has been deactivated', 403);
     }
+
+    assertBranchAccountOperational(user);
 
     // `staff` (Employees) never have a passwordHash (Branch Employee
     // Authorization) — they also never have an email, so findUserByEmail
@@ -269,6 +295,10 @@ export const authService = {
         console.warn('Refresh token reuse detected', { userId: stored.user.id, tokenId: stored.id });
         throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
       }
+
+      // Same defense-in-depth as login() — a branch going inactive between
+      // this token's issue and now must not let its account keep refreshing.
+      assertBranchAccountOperational(stored.user);
 
       const branchIds = stored.user.branchAssignments.map((assignment) => assignment.branchId);
       const newRefreshToken = generateRefreshToken();

@@ -260,6 +260,30 @@ export const employeesRepository = {
     });
   },
 
+  /**
+   * Branch Operating System gap fix (Task 209.x incident, 2026-08-13): a
+   * `branch` account is 1:1 with its branch — deactivation always clears its
+   * one assignment via updateBranchAssignments(userId, [], ...), but neither
+   * reactivate() nor setStatus('active') ever restored it, so a reactivated
+   * branch account came back with no branch and couldn't operate. Restores
+   * the most recently removed assignment — a no-op if one is already active
+   * (nothing to restore) or none was ever removed (e.g. a brand-new account).
+   * Deliberately not used for supervisor/staff: their reactivation should
+   * stay a conscious re-assignment by an admin, not an automatic one.
+   */
+  async restoreMostRecentBranchAssignment(userId: string): Promise<void> {
+    const activeCount = await prisma.userBranchAssignment.count({ where: { userId, removedAt: null } });
+    if (activeCount > 0) return;
+
+    const lastRemoved = await prisma.userBranchAssignment.findFirst({
+      where: { userId, removedAt: { not: null } },
+      orderBy: { removedAt: 'desc' },
+    });
+    if (!lastRemoved) return;
+
+    await prisma.userBranchAssignment.update({ where: { id: lastRemoved.id }, data: { removedAt: null } });
+  },
+
   async hasActiveShift(userId: string): Promise<boolean> {
     const count = await prisma.shift.count({ where: { cashierId: userId, status: 'active' } });
     return count > 0;

@@ -15,7 +15,12 @@ export const authRepository = {
   findUserByEmail(email: string) {
     return prisma.user.findUnique({
       where: { email },
-      include: { branchAssignments: { where: { removedAt: null } } },
+      include: {
+        branchAssignments: {
+          where: { removedAt: null },
+          include: { branch: { select: { status: true } } },
+        },
+      },
     });
   },
 
@@ -220,7 +225,16 @@ export const authRepository = {
   findRefreshTokenTx(tx: Prisma.TransactionClient, token: string) {
     return tx.refreshToken.findUnique({
       where: { tokenHash: sha256Hex(token) },
-      include: { user: { include: { branchAssignments: { where: { removedAt: null } } } } },
+      include: {
+        user: {
+          include: {
+            branchAssignments: {
+              where: { removedAt: null },
+              include: { branch: { select: { status: true } } },
+            },
+          },
+        },
+      },
     });
   },
 

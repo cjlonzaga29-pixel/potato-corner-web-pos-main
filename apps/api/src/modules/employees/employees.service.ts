@@ -394,6 +394,9 @@ export const employeesService = {
     if (before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_ACTIVE', 'This employee is already active', 409);
 
     const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.user_id);
+    if (before.role === ROLES.BRANCH) {
+      await employeesRepository.restoreMostRecentBranchAssignment(employeeId);
+    }
 
     await recordAuditLog({
       action: 'EMPLOYEE_REACTIVATED',
@@ -454,6 +457,13 @@ export const employeesService = {
       await authRepository.revokeAllUserTokens(employeeId);
       await employeesRepository.updateBranchAssignments(employeeId, [], changedBy.user_id);
       revokeEmployeeSession(employeeId, status);
+    } else if (before.role === ROLES.BRANCH) {
+      // Mirror image of the branch clear above — a `branch` account is 1:1
+      // with its branch, so returning it to 'active' restores the
+      // assignment that leaving 'active' removed. Supervisor/staff
+      // reactivation deliberately does NOT do this — re-assigning a person
+      // to a branch stays a conscious admin action.
+      await employeesRepository.restoreMostRecentBranchAssignment(employeeId);
     }
 
     const employee = await employeesRepository.findById(employeeId);

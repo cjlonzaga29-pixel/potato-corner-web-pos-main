@@ -179,6 +179,72 @@ describe('authService.login', () => {
   });
 });
 
+// Task 209.x branch-account audit: login must independently reject a
+// role='branch' account whose branch isn't operational, even though
+// isActive is true — this is the gap the Crossing Los Banos investigation
+// found (Branch.status was never checked at all before this).
+describe('authService.login branch operational checks', () => {
+  it('rejects with BRANCH_INACTIVE when the assigned branch is not active', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(
+      buildUser({
+        role: ROLES.BRANCH,
+        passwordHash,
+        branchAssignments: [{ branchId: 'branch-1', branch: { status: 'inactive' } }],
+      }) as never,
+    );
+
+    await expect(
+      authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null),
+    ).rejects.toMatchObject({ code: 'BRANCH_INACTIVE', statusCode: 403 });
+    expect(authRepository.storeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('rejects with BRANCH_ASSIGNMENT_REMOVED when the branch account has no active assignment', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(
+      buildUser({ role: ROLES.BRANCH, passwordHash, branchAssignments: [] }) as never,
+    );
+
+    await expect(
+      authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null),
+    ).rejects.toMatchObject({ code: 'BRANCH_ASSIGNMENT_REMOVED', statusCode: 403 });
+  });
+
+  it('succeeds for a branch account with an active assignment to an active branch', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(
+      buildUser({
+        role: ROLES.BRANCH,
+        passwordHash,
+        branchAssignments: [{ branchId: 'branch-1', branch: { status: 'active' } }],
+      }) as never,
+    );
+
+    const result = (await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null)) as SessionResult;
+
+    expect(result.access_token).toEqual(expect.any(String));
+  });
+
+  it('does not apply the branch-active check to a supervisor with a mix of active and inactive branches', async () => {
+    const passwordHash = await bcrypt.hash('CorrectHorse1', 12);
+    vi.mocked(authRepository.findUserByEmail).mockResolvedValue(
+      buildUser({
+        role: ROLES.SUPERVISOR,
+        passwordHash,
+        branchAssignments: [
+          { branchId: 'branch-1', branch: { status: 'inactive' } },
+          { branchId: 'branch-2', branch: { status: 'active' } },
+        ],
+      }) as never,
+    );
+
+    const result = (await authService.login('staff@potatocorner.test', 'CorrectHorse1', 'device-1', null)) as SessionResult;
+
+    expect(result.access_token).toEqual(expect.any(String));
+  });
+});
+
 // Step 11b Phase 2 CRITICAL VERIFICATION: a user without 2FA enrolled must
 // see byte-for-byte the same response shape login() returned before this
 // phase existed — buildUser() defaults totpEnabled to undefined/falsy, same
@@ -450,6 +516,26 @@ describe('authService.refreshToken', () => {
     await expect(authService.refreshToken('old-refresh-token', 'device-2')).rejects.toMatchObject({
       code: 'REFRESH_INVALID',
     });
+  });
+
+  it('rejects a branch account refresh once its branch has gone inactive', async () => {
+    const storedToken = {
+      id: 'rt-1',
+      userId: 'user-1',
+      deviceId: 'device-1',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      user: buildUser({
+        role: ROLES.BRANCH,
+        branchAssignments: [{ branchId: 'branch-1', branch: { status: 'inactive' } }],
+      }),
+    };
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
+
+    await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({
+      code: 'BRANCH_INACTIVE',
+    });
+    expect(authRepository.rotateRefreshTokenTx).not.toHaveBeenCalled();
   });
 });
 

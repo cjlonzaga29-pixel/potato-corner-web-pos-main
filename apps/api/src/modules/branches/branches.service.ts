@@ -7,6 +7,7 @@ import { BranchError, type BranchListFilters, type CreateBranchData, type Update
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
 import { employeesRepository } from '../employees/employees.repository.js';
+import { authRepository } from '../auth/auth.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
 import { universalInventoryService } from '../universal-inventory/universal-inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -26,6 +27,17 @@ const BCRYPT_COST_FACTOR = 12;
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
+
+/**
+ * Task 209.x branch-account audit (2026-08-17): tags a `branch` account
+ * deactivation as caused by changeBranchStatus itself, not a manual/security
+ * disable — the one signal that would let a future branch→active transition
+ * tell "safe to auto-reactivate" apart from "an admin disabled this on
+ * purpose, leave it alone." Deliberately unused on the reactivation side for
+ * now (see the comment in changeBranchStatus) — recorded here so that half
+ * of the sync isn't blocked on a schema change later.
+ */
+const BRANCH_INACTIVE_DEACTIVATION_REASON = 'Auto-deactivated: branch status changed to inactive/closed.';
 
 const STATUS_LABELS: Record<BranchStatus, string> = {
   active: 'Active',
@@ -428,6 +440,54 @@ export const branchesService = {
       afterState: { status: branch.status },
       ipAddress,
     });
+
+    // Branch account operational-status sync (Task 209.x audit, 2026-08-17):
+    // before this, Branch.status and the canonical role='branch' account's
+    // isActive were entirely independent — nothing here ever deactivated a
+    // branch account, and auth.service.ts's login only ever checked
+    // isActive, not Branch.status (now covered separately by
+    // assertBranchAccountOperational in auth.service.ts). This closes the
+    // active -> inactive/closed half of that gap.
+    //
+    // The reverse (inactive -> active reactivating the account) is
+    // deliberately NOT implemented here. Doing it safely requires being able
+    // to tell "this account is deactivated because I deactivated it right
+    // here a moment ago" apart from "an admin deactivated this account for
+    // an unrelated, manual/security reason after that" — and the schema has
+    // no field for that distinction today. BRANCH_INACTIVE_DEACTIVATION_REASON
+    // above exists so a future change can make that distinction (by checking
+    // deactivationReason before auto-reactivating) without a migration, but
+    // wiring that up is a decision for a human to make explicitly, not an
+    // automatic side effect of this fix. Until then, reactivating a branch
+    // account after its branch comes back requires a deliberate admin
+    // action via the Employees screen.
+    if (status !== 'active' && before.status === 'active') {
+      const branchAccounts = await branchesRepository.findActiveBranchAccountUsers(branchId);
+      for (const account of branchAccounts) {
+        await prisma.user.update({
+          where: { id: account.id },
+          data: {
+            isActive: false,
+            status: 'inactive',
+            deactivatedAt: new Date(),
+            deactivatedBy: changedBy.id,
+            deactivationReason: BRANCH_INACTIVE_DEACTIVATION_REASON,
+          },
+        });
+        await authRepository.revokeAllUserTokens(account.id);
+        await recordAuditLog({
+          action: 'BRANCH_ACCOUNT_AUTO_DEACTIVATED',
+          entityType: 'user',
+          entityId: account.id,
+          actorId: changedBy.id,
+          actorRole: changedBy.role,
+          branchId: branch.id,
+          beforeState: { isActive: true },
+          afterState: { isActive: false, reason: BRANCH_INACTIVE_DEACTIVATION_REASON },
+          ipAddress,
+        });
+      }
+    }
 
     getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_STATUS_CHANGED, {
       branchId: branch.id,

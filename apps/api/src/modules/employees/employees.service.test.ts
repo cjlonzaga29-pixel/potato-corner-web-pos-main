@@ -15,6 +15,8 @@ vi.mock('./employees.repository.js', () => ({
     deactivate: vi.fn(),
     reactivate: vi.fn(),
     updateBranchAssignments: vi.fn(),
+    setStatus: vi.fn(),
+    restoreMostRecentBranchAssignment: vi.fn(),
     hasActiveShift: vi.fn(),
     getActivity: vi.fn(),
   },
@@ -770,6 +772,72 @@ describe('employeesService.reactivateEmployee', () => {
       code: 'EMPLOYEE_ACCESS_DENIED',
       statusCode: 403,
     });
+  });
+
+  // Task 209.x branch-account audit (2026-08-17): a `branch` account is 1:1
+  // with its branch — deactivation always clears its assignment, but neither
+  // reactivate() nor setStatus('active') ever restored it, leaving a
+  // reactivated branch account assigned to nothing. Confirmed live via the
+  // Test Branch account, which a prior session had reactivated without
+  // restoring its assignment.
+  it("restores the most recently removed branch assignment when reactivating a role='branch' account", async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(
+      buildEmployee({ role: ROLES.BRANCH, isActive: false, branchAssignments: [] }) as never,
+    );
+    vi.mocked(employeesRepository.reactivate).mockResolvedValue(
+      buildEmployee({ role: ROLES.BRANCH, isActive: true }) as never,
+    );
+
+    await employeesService.reactivateEmployee('emp-1', ACTOR, null);
+
+    expect(employeesRepository.restoreMostRecentBranchAssignment).toHaveBeenCalledWith('emp-1');
+  });
+
+  it('does not attempt to restore a branch assignment when reactivating a staff/supervisor employee', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ isActive: false }) as never);
+    vi.mocked(employeesRepository.reactivate).mockResolvedValue(buildEmployee({ isActive: true }) as never);
+
+    await employeesService.reactivateEmployee('emp-1', ACTOR, null);
+
+    expect(employeesRepository.restoreMostRecentBranchAssignment).not.toHaveBeenCalled();
+  });
+});
+
+describe('employeesService.setEmployeeStatus', () => {
+  it("restores the removed branch assignment when a role='branch' account returns to active", async () => {
+    vi.mocked(employeesRepository.findById)
+      .mockResolvedValueOnce(buildEmployee({ role: ROLES.BRANCH, status: 'terminated', isActive: false, branchAssignments: [] }) as never)
+      .mockResolvedValueOnce(buildEmployee({ role: ROLES.BRANCH, status: 'active', isActive: true }) as never);
+    vi.mocked(employeesRepository.hasActiveShift).mockResolvedValue(false);
+
+    await employeesService.setEmployeeStatus('emp-1', 'active', null, ACTOR, null);
+
+    expect(employeesRepository.restoreMostRecentBranchAssignment).toHaveBeenCalledWith('emp-1');
+    expect(employeesRepository.updateBranchAssignments).not.toHaveBeenCalled();
+  });
+
+  it("clears the branch assignment (and does not restore anything) when a role='branch' account leaves active", async () => {
+    vi.mocked(employeesRepository.findById)
+      .mockResolvedValueOnce(buildEmployee({ role: ROLES.BRANCH, status: 'active', isActive: true }) as never)
+      .mockResolvedValueOnce(buildEmployee({ role: ROLES.BRANCH, status: 'terminated', isActive: false, branchAssignments: [] }) as never);
+    vi.mocked(employeesRepository.hasActiveShift).mockResolvedValue(false);
+
+    await employeesService.setEmployeeStatus('emp-1', 'terminated', 'test', ACTOR, null);
+
+    expect(employeesRepository.updateBranchAssignments).toHaveBeenCalledWith('emp-1', [], ACTOR.user_id);
+    expect(employeesRepository.restoreMostRecentBranchAssignment).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('emp-1');
+  });
+
+  it('does not restore a branch assignment when a staff/supervisor employee returns to active', async () => {
+    vi.mocked(employeesRepository.findById)
+      .mockResolvedValueOnce(buildEmployee({ status: 'inactive', isActive: false, branchAssignments: [] }) as never)
+      .mockResolvedValueOnce(buildEmployee({ status: 'active', isActive: true }) as never);
+    vi.mocked(employeesRepository.hasActiveShift).mockResolvedValue(false);
+
+    await employeesService.setEmployeeStatus('emp-1', 'active', null, ACTOR, null);
+
+    expect(employeesRepository.restoreMostRecentBranchAssignment).not.toHaveBeenCalled();
   });
 });
 

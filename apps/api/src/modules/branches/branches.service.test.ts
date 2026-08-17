@@ -25,6 +25,13 @@ vi.mock('./branches.repository.js', () => ({
     findAllAccounts: vi.fn(),
     findAllStatsGrouped: vi.fn(),
     findAllActiveBranchIds: vi.fn(),
+    findActiveBranchAccountUsers: vi.fn(),
+  },
+}));
+
+vi.mock('../auth/auth.repository.js', () => ({
+  authRepository: {
+    revokeAllUserTokens: vi.fn(),
   },
 }));
 
@@ -48,7 +55,10 @@ vi.mock('../employees/employees.repository.js', () => ({
 // vi.hoisted so it's safe to reference from the (hoisted) vi.mock factory.
 const { txMock } = vi.hoisted(() => ({ txMock: {} }));
 vi.mock('../../lib/prisma.js', () => ({
-  prisma: { $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txMock)) },
+  prisma: {
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txMock)),
+    user: { update: vi.fn() },
+  },
 }));
 
 vi.mock('../product-inventory/product-inventory.repository.js', () => ({
@@ -107,6 +117,7 @@ const { flavorsRepository } = await import('../flavors/flavors.repository.js');
 const { inventoryService } = await import('../inventory/inventory.service.js');
 const { universalInventoryService } = await import('../universal-inventory/universal-inventory.service.js');
 const { employeesRepository } = await import('../employees/employees.repository.js');
+const { authRepository } = await import('../auth/auth.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
 
 const ACTOR = { id: 'admin-1', role: ROLES.SUPER_ADMIN };
@@ -135,6 +146,7 @@ function buildBranch(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(branchesRepository.findActiveBranchAccountUsers).mockResolvedValue([]);
 });
 
 describe('branchesService.createBranch', () => {
@@ -756,6 +768,48 @@ describe('branchesService.changeBranchStatus', () => {
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'BRANCH_STATUS_CHANGED' }),
     );
+  });
+
+  it('active -> inactive deactivates the canonical branch account and revokes its sessions', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch({ status: 'active' }) as never);
+    vi.mocked(branchesRepository.update).mockResolvedValue(buildBranch({ status: 'inactive' }) as never);
+    vi.mocked(branchesRepository.findActiveBranchAccountUsers).mockResolvedValue([
+      { id: 'branch-user-1', email: 'branch1@potatocorner.com' },
+    ] as never);
+
+    await branchesService.changeBranchStatus('branch-1', 'inactive', ACTOR, null);
+
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'branch-user-1' },
+        data: expect.objectContaining({ isActive: false, status: 'inactive' }),
+      }),
+    );
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('branch-user-1');
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'BRANCH_ACCOUNT_AUTO_DEACTIVATED', entityId: 'branch-user-1' }),
+    );
+  });
+
+  it('active -> inactive with no canonical branch account does nothing extra', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch({ status: 'active' }) as never);
+    vi.mocked(branchesRepository.update).mockResolvedValue(buildBranch({ status: 'inactive' }) as never);
+    vi.mocked(branchesRepository.findActiveBranchAccountUsers).mockResolvedValue([]);
+
+    await branchesService.changeBranchStatus('branch-1', 'inactive', ACTOR, null);
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('inactive -> active never touches the branch account (no auto-reactivation)', async () => {
+    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch({ status: 'inactive' }) as never);
+    vi.mocked(branchesRepository.update).mockResolvedValue(buildBranch({ status: 'active' }) as never);
+
+    await branchesService.changeBranchStatus('branch-1', 'active', ACTOR, null);
+
+    expect(branchesRepository.findActiveBranchAccountUsers).not.toHaveBeenCalled();
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 });
 

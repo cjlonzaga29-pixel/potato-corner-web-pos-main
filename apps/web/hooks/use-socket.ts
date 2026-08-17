@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { Socket } from 'socket.io-client';
-import { getSocket } from '@/lib/socket';
+import { getSocket, resetSocket } from '@/lib/socket';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocketStore } from '@/stores/socket.store';
 
@@ -23,7 +23,11 @@ export function useSocket() {
 
   useEffect(() => {
     if (!accessToken || !user) {
-      socketRef.current?.disconnect();
+      // Full teardown, not just a disconnect — clears the module-level
+      // singleton so the next login (same tab, possibly a different user on
+      // a shared terminal) mints a fresh socket under the new session's
+      // token instead of reusing this one's stale auth object.
+      resetSocket();
       socketRef.current = null;
       setConnected(false);
       return;

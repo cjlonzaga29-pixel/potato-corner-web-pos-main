@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -37,8 +37,9 @@ import { FinancialSummaryPanel } from '@/components/reports/financial-summary-pa
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
-import { expenseColumns } from '@/components/admin/expense-columns';
+import { createExpenseColumns, categoryLabel } from '@/components/admin/expense-columns';
 import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
+import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
 import { downloadCsv, formatCurrency, formatDateTime } from '@/lib/utils';
 import { movementTypeLabel } from '@/lib/inventory-movement-labels';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
@@ -468,6 +469,7 @@ function AdminReportsPageContent() {
   const [drilldownRow, setDrilldownRow] = useState<DailySalesReportRow | null>(null);
   const [discountDrilldownRow, setDiscountDrilldownRow] = useState<DiscountComplianceReportRow | null>(null);
   const [movementProofRow, setMovementProofRow] = useState<InventoryMovementReportRow | null>(null);
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
 
   const requestExport = useRequestExport();
 
@@ -510,6 +512,21 @@ function AdminReportsPageContent() {
     page: 1,
     limit: 100,
   });
+  const expenseColumns = useMemo(() => createExpenseColumns((row) => setSelectedExpenseId(row.id)), []);
+  const selectedExpense = expenses.data?.expenses.find((row) => row.id === selectedExpenseId) ?? null;
+  const selectedExpenseReceipt: ExpenseReceiptProofData | null =
+    selectedExpense && selectedExpense.receipt_url
+      ? {
+          id: selectedExpense.id,
+          receiptUrl: selectedExpense.receipt_url,
+          branchName: selectedExpense.branch_name,
+          categoryLabel: categoryLabel(selectedExpense.category),
+          vendorName: selectedExpense.vendor_name,
+          amount: selectedExpense.amount,
+          incurredAt: selectedExpense.incurred_at,
+          createdByName: selectedExpense.created_by_name,
+        }
+      : null;
 
   /** Broad invalidate rather than a single per-tab refetch — Refresh now needs to cover Financial Summary and Inventory Analytics panels too, which own their queries internally. Already rate-limited by the cooldown below. */
   function handleRefresh() {
@@ -998,6 +1015,12 @@ function AdminReportsPageContent() {
         branchId={movementProofRow?.branch_id ?? null}
         movementId={movementProofRow?.movement_id ?? null}
         onOpenChange={(o) => !o && setMovementProofRow(null)}
+      />
+
+      <ViewExpenseReceiptDialog
+        expense={selectedExpenseReceipt}
+        onOpenChange={(o) => !o && setSelectedExpenseId(null)}
+        onRetry={() => void expenses.refetch()}
       />
     </div>
   );

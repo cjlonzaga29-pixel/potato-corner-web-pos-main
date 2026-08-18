@@ -156,3 +156,57 @@ describe('ExpensesView — receipt proof upload', () => {
     expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ExpensesView — receipt proof viewing', () => {
+  function setup(receiptUrl: string | null) {
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) =>
+      selector({ activeBranchId: BRANCH_ID }),
+    );
+    mockUseExpenses.mockReturnValue({
+      data: {
+        expenses: [
+          {
+            id: 'expense-1',
+            branch_id: BRANCH_ID,
+            branch_name: 'Main Branch',
+            category: 'utilities',
+            amount: 1250.5,
+            vendor_name: 'Meralco',
+            description: null,
+            receipt_url: receiptUrl,
+            incurred_at: '2026-08-18T00:00:00.000Z',
+            created_by: 'user-1',
+            created_by_name: 'Juan Dela Cruz',
+            created_at: '2026-08-18T00:00:00.000Z',
+          },
+        ],
+        total: 1,
+        total_amount: 1250.5,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    mockUseCreateExpense.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockUseUploadExpenseReceiptForExpense.mockReturnValue({ mutateAsync: mockUploadMutateAsync, isPending: false });
+    render(<ExpensesView />);
+  }
+
+  it('shows "No Proof" when the expense has no receipt', () => {
+    setup(null);
+    expect(screen.getByText('No Proof')).toBeInTheDocument();
+  });
+
+  it('opens the receipt in an in-page modal — scoped to the branch\'s own expense — instead of a new tab', () => {
+    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    setup('https://storage.example.com/branch-receipt.jpg');
+
+    fireEvent.click(screen.getByRole('button', { name: 'View Proof' }));
+
+    expect(screen.getByText('Expense Receipt')).toBeInTheDocument();
+    expect(screen.getByAltText('Expense receipt for Main Branch')).toBeInTheDocument();
+    expect(windowOpenSpy).not.toHaveBeenCalled();
+
+    windowOpenSpy.mockRestore();
+  });
+});

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Loader2, Plus, Receipt } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
 import { useBranchStore } from '@/stores/branch.store';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { manilaToday } from '@/lib/manila-date';
@@ -203,37 +204,45 @@ function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onO
   );
 }
 
-const columns: ColumnDef<ExpenseRow>[] = [
-  { id: 'incurred_at', header: 'Date', cell: ({ row }) => formatDate(row.original.incurred_at) },
-  { id: 'category', header: 'Category', cell: ({ row }) => CATEGORY_LABEL[row.original.category] },
-  { id: 'vendor_name', header: 'Vendor', cell: ({ row }) => row.original.vendor_name ?? '—' },
-  {
-    id: 'description',
-    header: 'Description',
-    cell: ({ row }) => <span className="line-clamp-1 max-w-xs text-muted-foreground">{row.original.description ?? '—'}</span>,
-  },
-  { id: 'amount', header: 'Amount', cell: ({ row }) => formatCurrency(row.original.amount) },
-  { id: 'created_by_name', header: 'Recorded By', cell: ({ row }) => row.original.created_by_name },
-  {
-    id: 'proof',
-    header: 'Proof',
-    cell: ({ row }) =>
-      row.original.receipt_url ? (
-        <a href={row.original.receipt_url} target="_blank" rel="noreferrer" className="text-primary underline">
-          View Proof
-        </a>
-      ) : (
-        <span className="text-xs text-muted-foreground">No Proof</span>
-      ),
-  },
-];
+function createColumns(onViewReceipt: (expense: ExpenseRow) => void): ColumnDef<ExpenseRow>[] {
+  return [
+    { id: 'incurred_at', header: 'Date', cell: ({ row }) => formatDate(row.original.incurred_at) },
+    { id: 'category', header: 'Category', cell: ({ row }) => CATEGORY_LABEL[row.original.category] },
+    { id: 'vendor_name', header: 'Vendor', cell: ({ row }) => row.original.vendor_name ?? '—' },
+    {
+      id: 'description',
+      header: 'Description',
+      cell: ({ row }) => <span className="line-clamp-1 max-w-xs text-muted-foreground">{row.original.description ?? '—'}</span>,
+    },
+    { id: 'amount', header: 'Amount', cell: ({ row }) => formatCurrency(row.original.amount) },
+    { id: 'created_by_name', header: 'Recorded By', cell: ({ row }) => row.original.created_by_name },
+    {
+      id: 'proof',
+      header: 'Proof',
+      cell: ({ row }) =>
+        row.original.receipt_url ? (
+          <button
+            type="button"
+            onClick={() => onViewReceipt(row.original)}
+            className="text-primary underline underline-offset-2 hover:no-underline"
+          >
+            View Proof
+          </button>
+        ) : (
+          <span className="text-xs text-muted-foreground">No Proof</span>
+        ),
+    },
+  ];
+}
 
 /** Shared body behind both `/supervisor/expenses` and `/branch/expenses`. */
 export function ExpensesView() {
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   useExpensesRealtimeSync();
   const [createOpen, setCreateOpen] = useState(false);
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
   const { data, isLoading, isError, refetch } = useExpenses({ branch_id: activeBranchId ?? undefined, limit: 25 });
+  const columns = useMemo(() => createColumns((row) => setSelectedExpenseId(row.id)), []);
 
   if (!activeBranchId) {
     return (
@@ -248,6 +257,20 @@ export function ExpensesView() {
   }
 
   const expenses = data?.expenses ?? [];
+  const selectedExpense = expenses.find((row) => row.id === selectedExpenseId) ?? null;
+  const selectedExpenseReceipt: ExpenseReceiptProofData | null =
+    selectedExpense && selectedExpense.receipt_url
+      ? {
+          id: selectedExpense.id,
+          receiptUrl: selectedExpense.receipt_url,
+          branchName: selectedExpense.branch_name,
+          categoryLabel: CATEGORY_LABEL[selectedExpense.category],
+          vendorName: selectedExpense.vendor_name,
+          amount: selectedExpense.amount,
+          incurredAt: selectedExpense.incurred_at,
+          createdByName: selectedExpense.created_by_name,
+        }
+      : null;
 
   return (
     <div className="space-y-6">
@@ -280,6 +303,12 @@ export function ExpensesView() {
       />
 
       {createOpen && <CreateExpenseDialog branchId={activeBranchId} onOpenChange={setCreateOpen} />}
+
+      <ViewExpenseReceiptDialog
+        expense={selectedExpenseReceipt}
+        onOpenChange={(o) => !o && setSelectedExpenseId(null)}
+        onRetry={() => void refetch()}
+      />
     </div>
   );
 }

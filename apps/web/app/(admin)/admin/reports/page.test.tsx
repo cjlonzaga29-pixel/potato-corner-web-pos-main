@@ -462,6 +462,42 @@ describe('AdminReportsPage', () => {
       expect(toast.error).not.toHaveBeenCalledWith('PDF export is not available for Expenses', expect.anything());
     });
 
+    it('opens the expense receipt inside an in-page modal instead of a new tab', () => {
+      vi.mocked(expensesHooks.useExpenses).mockReturnValue({
+        data: {
+          expenses: [
+            {
+              id: 'exp-2',
+              incurred_at: '2026-08-10',
+              branch_id: 'branch-1',
+              branch_name: 'Main Branch',
+              category: 'supplies',
+              vendor_name: 'Acme Corp',
+              description: null,
+              amount: 500,
+              created_by_name: 'Admin One',
+              receipt_url: 'https://storage.example.com/exp-2.jpg',
+            },
+          ],
+          total: 1,
+          total_amount: 500,
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      } as never);
+      const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      fireEvent.click(screen.getByRole('button', { name: /Yes · View Receipt/ }));
+
+      expect(screen.getByText('Expense Receipt')).toBeInTheDocument();
+      expect(windowOpenSpy).not.toHaveBeenCalled();
+
+      windowOpenSpy.mockRestore();
+    });
+
     it('invokes the same requestExport() mutation every other report tab uses, with report_type EXPENSES and format pdf', () => {
       render(<AdminReportsPage />);
       selectReportTab('Expenses');

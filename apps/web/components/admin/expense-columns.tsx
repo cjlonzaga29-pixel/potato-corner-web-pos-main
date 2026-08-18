@@ -21,7 +21,12 @@ const CATEGORY_BADGE_VARIANTS: Record<string, BadgeProps['variant']> = {
   miscellaneous: 'inactive',
 };
 
-export const expenseColumns: ColumnDef<ExpenseRow>[] = [
+export function categoryLabel(category: string): string {
+  return CATEGORY_LABELS[category] ?? category;
+}
+
+export function createExpenseColumns(onViewReceipt: (expense: ExpenseRow) => void): ColumnDef<ExpenseRow>[] {
+  return [
   {
     id: 'incurredAt',
     header: 'Date',
@@ -61,9 +66,13 @@ export const expenseColumns: ColumnDef<ExpenseRow>[] = [
     header: 'Proof',
     cell: ({ row }) =>
       row.original.receipt_url ? (
-        <a href={row.original.receipt_url} target="_blank" rel="noreferrer" className="text-primary underline">
+        <button
+          type="button"
+          onClick={() => onViewReceipt(row.original)}
+          className="text-primary underline underline-offset-2 hover:no-underline"
+        >
           Yes · View Receipt
-        </a>
+        </button>
       ) : (
         <span className="text-xs text-muted-foreground">No Proof</span>
       ),
@@ -77,4 +86,5 @@ export const expenseColumns: ColumnDef<ExpenseRow>[] = [
       </Button>
     ),
   },
-];
+  ];
+}

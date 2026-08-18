@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import type { PaginationState } from '@tanstack/react-table';
 import { Download, Receipt } from 'lucide-react';
@@ -8,8 +8,9 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { expenseColumns } from '@/components/admin/expense-columns';
+import { createExpenseColumns, categoryLabel } from '@/components/admin/expense-columns';
 import { ExpenseFilterBar } from '@/components/admin/expense-filter-bar';
+import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
 import { useExpenses, useExpensesRealtimeSync, type ExpenseCategory } from '@/hooks/queries/use-expenses';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { downloadCsv, formatCurrency } from '@/lib/utils';
@@ -58,6 +59,23 @@ function ExpensesPageContent() {
 
   const { data, isLoading, isError, refetch } = useExpenses(filters);
   const rows = data?.expenses ?? [];
+
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+  const expenseColumns = useMemo(() => createExpenseColumns((row) => setSelectedExpenseId(row.id)), []);
+  const selectedExpense = rows.find((row) => row.id === selectedExpenseId) ?? null;
+  const selectedExpenseReceipt: ExpenseReceiptProofData | null =
+    selectedExpense && selectedExpense.receipt_url
+      ? {
+          id: selectedExpense.id,
+          receiptUrl: selectedExpense.receipt_url,
+          branchName: selectedExpense.branch_name,
+          categoryLabel: categoryLabel(selectedExpense.category),
+          vendorName: selectedExpense.vendor_name,
+          amount: selectedExpense.amount,
+          incurredAt: selectedExpense.incurred_at,
+          createdByName: selectedExpense.created_by_name,
+        }
+      : null;
 
   const hasActiveFilters = branchId !== ALL_BRANCHES || category !== ALL_CATEGORIES || dateFrom !== '' || dateTo !== '';
 
@@ -151,6 +169,12 @@ function ExpensesPageContent() {
             />
           )
         }
+      />
+
+      <ViewExpenseReceiptDialog
+        expense={selectedExpenseReceipt}
+        onOpenChange={(o) => !o && setSelectedExpenseId(null)}
+        onRetry={() => void refetch()}
       />
     </div>
   );

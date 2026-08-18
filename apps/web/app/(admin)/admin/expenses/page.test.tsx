@@ -245,4 +245,61 @@ describe('ExpensesPage', () => {
 
     expect(screen.getByRole('button', { name: /Export CSV/ })).toBeDisabled();
   });
+
+  it('shows "No Proof" for a row without a receipt', () => {
+    mockUseExpenses.mockReturnValue({
+      data: expenseListResponse({ expenses: [expense({ receipt_url: null })] }),
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ExpensesPage />);
+
+    expect(screen.getByText('No Proof')).toBeInTheDocument();
+    expect(screen.queryByText(/View Receipt/)).not.toBeInTheDocument();
+  });
+
+  it('opens the receipt inside an in-page modal when "View Receipt" is clicked, without navigating or opening a new tab', () => {
+    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    mockUseExpenses.mockReturnValue({
+      data: expenseListResponse({
+        expenses: [expense({ id: 'expense-9', receipt_url: 'https://storage.example.com/receipt-9.jpg', branch_name: 'Main Branch' })],
+      }),
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ExpensesPage />);
+
+    expect(screen.queryByText('Expense Receipt')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Yes · View Receipt/ }));
+
+    expect(screen.getByText('Expense Receipt')).toBeInTheDocument();
+    expect(screen.getByAltText('Expense receipt for Main Branch')).toBeInTheDocument();
+    expect(windowOpenSpy).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalledWith(expect.stringContaining('receipt-9.jpg'));
+
+    windowOpenSpy.mockRestore();
+  });
+
+  it('closes the receipt modal via its close button', () => {
+    mockUseExpenses.mockReturnValue({
+      data: expenseListResponse({
+        expenses: [expense({ id: 'expense-9', receipt_url: 'https://storage.example.com/receipt-9.jpg' })],
+      }),
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<ExpensesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Yes · View Receipt/ }));
+    expect(screen.getByText('Expense Receipt')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(screen.queryByText('Expense Receipt')).not.toBeInTheDocument();
+  });
 });

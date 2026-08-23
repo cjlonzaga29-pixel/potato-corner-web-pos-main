@@ -3,8 +3,7 @@
 import { use, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ShieldAlert } from 'lucide-react';
-import type { ColumnDef } from '@tanstack/react-table';
-import { ROLE_LABELS, type AuditLogResponse } from '@potato-corner/shared';
+import { ROLE_LABELS } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -16,9 +15,6 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { RoleGuard } from '@/components/shared/role-guard';
 import { formatDate, formatDateTime } from '@/lib/utils';
 import { useEmployee, useEmployeeActivity } from '@/hooks/queries/use-employees';
-import { useAuditLogs } from '@/hooks/queries/use-audit-logs';
-import { DataTable } from '@/components/shared/data-table';
-import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { PayrollDataDialog } from '@/components/admin/employees/payroll-data-dialog';
 import { ManageBranchesDialog } from '@/components/admin/employees/manage-branches-dialog';
 
@@ -204,16 +200,8 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
   );
 }
 
-const employeeActivityColumns: ColumnDef<AuditLogResponse>[] = [
-  { id: 'created_at', header: 'Timestamp', cell: ({ row }) => formatDateTime(row.original.created_at) },
-  { accessorKey: 'action', header: 'Action' },
-  { accessorKey: 'entity_type', header: 'Entity Type' },
-  { id: 'ip_address', header: 'IP Address', cell: ({ row }) => row.original.ip_address ?? '—' },
-];
-
 function ActivityTab({ employeeId }: { employeeId: string }) {
   const { data: activity, isLoading, isError, refetch } = useEmployeeActivity(employeeId);
-  const auditLogs = useAuditLogs({ actor_id: employeeId, limit: 25 });
 
   if (isLoading) {
     return (
@@ -227,33 +215,11 @@ function ActivityTab({ employeeId }: { employeeId: string }) {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile label="Last Login" value={activity.last_login_at ? formatDateTime(activity.last_login_at) : 'Never'} />
-        <StatTile label="Shifts This Month" value={String(activity.total_shifts_this_month)} />
-        <StatTile label="Transactions This Month" value={String(activity.total_transactions_this_month)} />
-        <StatTile
-          label="Open Fraud Alerts"
-          value={String(activity.open_fraud_alerts_count)}
-          href={activity.open_fraud_alerts_count > 0 ? '/admin/reports?tab=FRAUD_ALERT_SUMMARY' : undefined}
-        />
-      </div>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Recent Activity Log</CardTitle>
-          <CardDescription>Audit log entries for this employee.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            columns={employeeActivityColumns}
-            data={auditLogs.data?.logs ?? []}
-            isLoading={auditLogs.isLoading}
-            isError={auditLogs.isError}
-            onRetry={() => void auditLogs.refetch()}
-            emptyState={<EmptyState title="No activity recorded" description="No audit log entries for this employee yet." />}
-          />
-        </CardContent>
-      </Card>
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <StatTile label="Last Login" value={activity.last_login_at ? formatDateTime(activity.last_login_at) : 'Never'} />
+      <StatTile label="Shifts This Month" value={String(activity.total_shifts_this_month)} />
+      <StatTile label="Transactions This Month" value={String(activity.total_transactions_this_month)} />
+      <StatTile label="Open Fraud Alerts" value={String(activity.open_fraud_alerts_count)} />
     </div>
   );
 }

@@ -7,14 +7,12 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { toast } from 'sonner';
 import type {
   DailySalesReportRow,
-  CashReconciliationReportRow,
   VoidRefundReportRow,
   DiscountComplianceReportRow,
   InventoryMovementReportRow,
   IngredientWeightKgRow,
   PackagingPcRow,
   AttendanceSummaryReportRow,
-  FraudAlertSummaryReportRow,
   ExportReadyPayload,
   ExportRequestInput,
 } from '@potato-corner/shared';
@@ -30,9 +28,6 @@ import { ReportFilterBar } from '@/components/reports/report-filter-bar';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { DailySalesDrilldown } from '@/components/reports/daily-sales-drilldown';
 import { DiscountComplianceDrilldown } from '@/components/reports/discount-compliance-drilldown';
-import { FraudAlertManagementPanel } from '@/components/reports/fraud-alert-management-panel';
-import { ShiftLogPanel } from '@/components/reports/shift-log-panel';
-import { LoginAuditPanel } from '@/components/reports/login-audit-panel';
 import { FinancialSummaryPanel } from '@/components/reports/financial-summary-panel';
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
@@ -48,14 +43,11 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useExpenses, useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import {
   useDailySalesReport,
-  useCashReconciliationReport,
   useVoidRefundReport,
   useDiscountComplianceReport,
   useInventoryMovementReport,
-  useInventoryValueSummaryReport,
   useInventorySummaryReport,
   useAttendanceSummaryReport,
-  useFraudAlertSummaryReport,
   useRequestExport,
   useReportsRealtimeSync,
   useReportsTrendsRealtimeSync,
@@ -88,14 +80,6 @@ function humanize(value: string): string {
     .join(' ');
 }
 
-/** Mirrors the fallback severity treatment in fraud-alert-columns.tsx — StatusBadge has no severity map. */
-const REPORT_SEVERITY_CLASSES: Record<string, string> = {
-  critical: 'border-transparent bg-destructive/15 text-destructive',
-  high: 'border-transparent bg-warning/15 text-warning',
-  medium: 'border-transparent bg-accent/15 text-accent',
-  low: 'border-transparent bg-info/15 text-info',
-};
-
 /** voided/refunded aren't covered by StatusBadge's status maps, so they get an explicit Badge variant here (same fallback pattern used elsewhere for domains StatusBadge doesn't know about). */
 const VOID_REFUND_BADGE_VARIANT: Record<VoidRefundReportRow['status'], BadgeProps['variant']> = {
   voided: 'critical',
@@ -124,32 +108,6 @@ function getDailySalesColumns(onViewTransactions: (row: DailySalesReportRow) => 
   ];
 }
 
-const cashReconciliationColumns: ColumnDef<CashReconciliationReportRow>[] = [
-  { accessorKey: 'cashier_name', header: 'Cashier' },
-  { accessorKey: 'branch_name', header: 'Branch' },
-  {
-    id: 'status',
-    header: 'Status',
-    cell: ({ row }) => <StatusBadge status={row.original.status} type="shift" />,
-  },
-  { accessorKey: 'opening_counted_total', header: 'Opening', cell: ({ row }) => formatCurrency(row.original.opening_counted_total) },
-  {
-    accessorKey: 'closing_counted_total',
-    header: 'Closing',
-    cell: ({ row }) => (row.original.closing_counted_total !== null ? formatCurrency(row.original.closing_counted_total) : '—'),
-  },
-  {
-    accessorKey: 'cash_variance',
-    header: 'Variance',
-    cell: ({ row }) => (row.original.cash_variance !== null ? formatCurrency(row.original.cash_variance) : '—'),
-  },
-  {
-    accessorKey: 'variance_approved',
-    header: 'Approved',
-    cell: ({ row }) => (row.original.variance_approved === null ? '—' : row.original.variance_approved ? 'Yes' : 'No'),
-  },
-];
-
 const voidRefundColumns: ColumnDef<VoidRefundReportRow>[] = [
   { accessorKey: 'transaction_number', header: 'Receipt #' },
   { accessorKey: 'branch_name', header: 'Branch' },
@@ -164,26 +122,6 @@ const voidRefundColumns: ColumnDef<VoidRefundReportRow>[] = [
   { accessorKey: 'total_amount', header: 'Amount', cell: ({ row }) => formatCurrency(row.original.total_amount) },
   { accessorKey: 'reason', header: 'Reason', cell: ({ row }) => row.original.reason ?? '—' },
   { accessorKey: 'actioned_by_name', header: 'Actioned By', cell: ({ row }) => row.original.actioned_by_name ?? '—' },
-];
-
-const fraudAlertSummaryColumns: ColumnDef<FraudAlertSummaryReportRow>[] = [
-  { accessorKey: 'alert_type', header: 'Type' },
-  {
-    id: 'severity',
-    header: 'Severity',
-    cell: ({ row }) => (
-      <Badge className={REPORT_SEVERITY_CLASSES[row.original.severity] ?? undefined}>
-        {humanize(row.original.severity)}
-      </Badge>
-    ),
-  },
-  { accessorKey: 'branch_name', header: 'Branch', cell: ({ row }) => row.original.branch_name ?? 'All Branches' },
-  {
-    id: 'status',
-    header: 'Status',
-    cell: ({ row }) => <StatusBadge status={row.original.status} type="fraud" />,
-  },
-  { accessorKey: 'created_at', header: 'Created', cell: ({ row }) => formatDateTime(row.original.created_at) },
 ];
 
 /**
@@ -235,16 +173,6 @@ function createInventoryMovementColumns(onViewProof: (row: InventoryMovementRepo
       id: 'quantity_after',
       header: 'Balance After',
       cell: ({ row }) => `${row.original.quantity_after} ${row.original.unit}`,
-    },
-    {
-      id: 'unit_cost',
-      header: 'Unit Cost',
-      cell: ({ row }) => (row.original.unit_cost === null ? '—' : formatCurrency(row.original.unit_cost)),
-    },
-    {
-      id: 'total_cost',
-      header: 'Total Cost',
-      cell: ({ row }) => (row.original.total_cost === null ? '—' : formatCurrency(row.original.total_cost)),
     },
     { accessorKey: 'recorded_by_name', header: 'Recorded By', cell: ({ row }) => row.original.recorded_by_name ?? '—' },
     {
@@ -388,7 +316,6 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
     reports: [
       { value: 'FINANCIAL_SUMMARY', label: 'Financial Summary' },
       { value: 'DAILY_SALES', label: 'Daily Sales' },
-      { value: 'CASH_RECONCILIATION', label: 'Cash Reconciliation' },
       { value: 'EXPENSES', label: 'Expenses' },
     ],
   },
@@ -402,18 +329,13 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
   },
   {
     category: 'Operations',
-    reports: [
-      { value: 'SHIFT_SUMMARY', label: 'Shift Reports' },
-      { value: 'ATTENDANCE_SUMMARY', label: 'Attendance Summary' },
-    ],
+    reports: [{ value: 'ATTENDANCE_SUMMARY', label: 'Attendance Summary' }],
   },
   {
     category: 'Compliance',
     reports: [
       { value: 'VOID_REFUND', label: 'Void / Refund' },
-      { value: 'FRAUD_ALERT_SUMMARY', label: 'Alerts' },
       { value: 'DISCOUNT_COMPLIANCE', label: 'Discount Compliance' },
-      { value: 'AUDIT_LOG', label: 'Audit Log' },
     ],
   },
 ];
@@ -423,7 +345,6 @@ const ALL_REPORT_VALUES = new Set(REPORT_GROUPS.flatMap((g) => g.reports.map((r)
 /** Mirrors the `!selectedBranchId` gate already on each of these tabs' "Select a branch" empty state below — kept as one set so the export controls stay in sync with the on-screen gate instead of drifting from it. */
 const BRANCH_REQUIRED_REPORTS = new Set([
   'DAILY_SALES',
-  'CASH_RECONCILIATION',
   'VOID_REFUND',
   'DISCOUNT_COMPLIANCE',
   'INVENTORY_MOVEMENT',
@@ -497,12 +418,9 @@ function AdminReportsPageContent() {
   const realtimeFilters = { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 };
 
   const dailySales = useDailySalesReport(realtimeFilters, activeReport === 'DAILY_SALES');
-  const cashReconciliation = useCashReconciliationReport(realtimeFilters, activeReport === 'CASH_RECONCILIATION');
   const voidRefund = useVoidRefundReport(realtimeFilters, activeReport === 'VOID_REFUND');
-  const fraudAlertSummary = useFraudAlertSummaryReport(realtimeFilters, activeReport === 'FRAUD_ALERT_SUMMARY');
   const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeReport === 'DISCOUNT_COMPLIANCE');
   const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
-  const inventoryValueSummary = useInventoryValueSummaryReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
   const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
   const expenses = useExpenses({
@@ -709,36 +627,6 @@ function AdminReportsPageContent() {
               </>}
             </TabsContent>
 
-            <TabsContent value="CASH_RECONCILIATION">
-              {!selectedBranchId ? (
-                <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
-              ) : cashReconciliation.isError ? <ErrorState retry={() => cashReconciliation.refetch()} /> : <>
-              <ReportLastUpdated timestamp={cashReconciliation.data?.generated_at} isLoading={cashReconciliation.isLoading} />
-              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                <KpiCard title="Closed/Flagged Shifts" value={(cashReconciliation.data?.data ?? []).length} isLoading={cashReconciliation.isLoading} />
-                <KpiCard
-                  title="Flagged"
-                  value={(cashReconciliation.data?.data ?? []).filter((r) => r.status === 'flagged').length}
-                  isLoading={cashReconciliation.isLoading}
-                  tone="danger"
-                />
-                <KpiCard
-                  title="Unapproved Variance"
-                  value={(cashReconciliation.data?.data ?? []).filter((r) => r.cash_variance !== null && r.cash_variance !== 0 && !r.variance_approved).length}
-                  isLoading={cashReconciliation.isLoading}
-                  tone="warning"
-                />
-              </div>
-              <DataTable
-                stickyHeader
-                columns={cashReconciliationColumns}
-                data={cashReconciliation.data?.data ?? []}
-                isLoading={cashReconciliation.isLoading}
-                emptyState={<EmptyState title="No closed or flagged shifts in this range" />}
-              />
-              </>}
-            </TabsContent>
-
             <TabsContent value="EXPENSES">
               {expenses.isError ? <ErrorState retry={() => expenses.refetch()} /> : <>
               <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -777,35 +665,6 @@ function AdminReportsPageContent() {
                 isLoading={voidRefund.isLoading}
                 emptyState={<EmptyState title="No voids or refunds in this range" />}
               />
-              </>}
-            </TabsContent>
-
-            <TabsContent value="SHIFT_SUMMARY">
-              <ShiftLogPanel />
-            </TabsContent>
-
-            <TabsContent value="FRAUD_ALERT_SUMMARY">
-              {fraudAlertSummary.isError ? <ErrorState retry={() => fraudAlertSummary.refetch()} /> : <>
-              <ReportLastUpdated timestamp={fraudAlertSummary.data?.generated_at} isLoading={fraudAlertSummary.isLoading} />
-              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                <KpiCard title="Alerts" value={(fraudAlertSummary.data?.data ?? []).length} isLoading={fraudAlertSummary.isLoading} />
-                <KpiCard
-                  title="Critical/High"
-                  value={(fraudAlertSummary.data?.data ?? []).filter((r) => r.severity === 'critical' || r.severity === 'high').length}
-                  isLoading={fraudAlertSummary.isLoading}
-                  tone="danger"
-                />
-              </div>
-              <DataTable
-                stickyHeader
-                columns={fraudAlertSummaryColumns}
-                data={fraudAlertSummary.data?.data ?? []}
-                isLoading={fraudAlertSummary.isLoading}
-                emptyState={<EmptyState title="No fraud alerts in this range" />}
-              />
-              <div className="mt-6 border-t pt-6">
-                <FraudAlertManagementPanel />
-              </div>
               </>}
             </TabsContent>
 
@@ -859,52 +718,6 @@ function AdminReportsPageContent() {
                   value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'WASTE').length}
                   isLoading={inventoryMovement.isLoading}
                   tone="warning"
-                />
-              </div>
-              <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <KpiCard
-                  title="Current Inventory Value"
-                  value={inventoryValueSummary.data?.current_inventory_value ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
-                />
-                <KpiCard
-                  title="Stock Received Value"
-                  value={inventoryValueSummary.data?.stock_received_value ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
-                />
-                <KpiCard
-                  title="Waste Cost"
-                  value={inventoryValueSummary.data?.waste_cost ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
-                  tone="warning"
-                />
-                <KpiCard
-                  title="Adjustment In Value"
-                  value={inventoryValueSummary.data?.adjustment_in_value ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
-                />
-                <KpiCard
-                  title="Adjustment Out Value"
-                  value={inventoryValueSummary.data?.adjustment_out_value ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
-                  tone="warning"
-                />
-                <KpiCard
-                  title="Transfer In Value"
-                  value={inventoryValueSummary.data?.transfer_in_value ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
-                />
-                <KpiCard
-                  title="Transfer Out Value"
-                  value={inventoryValueSummary.data?.transfer_out_value ?? 0}
-                  prefix="₱"
-                  isLoading={inventoryValueSummary.isLoading}
                 />
               </div>
               <DataTable
@@ -988,9 +801,6 @@ function AdminReportsPageContent() {
               </>}
             </TabsContent>
 
-            <TabsContent value="AUDIT_LOG">
-          <LoginAuditPanel />
-        </TabsContent>
       </Tabs>
 
       <DailySalesDrilldown

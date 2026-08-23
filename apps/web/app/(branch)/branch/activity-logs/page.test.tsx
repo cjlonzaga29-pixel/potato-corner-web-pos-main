@@ -1,16 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
-import type { AuditLogResponse } from '@potato-corner/shared';
+import { render, screen, cleanup } from '@testing-library/react';
 import BranchActivityLogsPage from './page';
 
-const { mockUseAuditLogs, mockUseShifts, mockUseBranchStore } = vi.hoisted(() => ({
-  mockUseAuditLogs: vi.fn(),
+const { mockUseShifts, mockUseBranchStore } = vi.hoisted(() => ({
   mockUseShifts: vi.fn(),
   mockUseBranchStore: vi.fn(),
-}));
-
-vi.mock('@/hooks/queries/use-audit-logs', () => ({
-  useAuditLogs: mockUseAuditLogs,
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
@@ -21,57 +15,13 @@ vi.mock('@/stores/branch.store', () => ({
   useBranchStore: mockUseBranchStore,
 }));
 
-function log(overrides: Partial<AuditLogResponse> = {}): AuditLogResponse {
-  return {
-    id: 'log-1',
-    action: 'SHIFT_OPENED',
-    entity_type: 'shift',
-    entity_id: 'shift-1',
-    actor_id: 'user-1',
-    actor_role: 'staff',
-    branch_id: 'branch-1',
-    before_state: null,
-    after_state: null,
-    ip_address: '127.0.0.1',
-    created_at: '2026-07-30T08:00:00.000Z',
-    ...overrides,
-  } as AuditLogResponse;
-}
-
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
 
-describe('BranchActivityLogsPage — pagination', () => {
-  it('requests page 1 with a 25-row page size by default (not the old fixed limit of 50)', () => {
-    mockUseAuditLogs.mockReturnValue({ data: { logs: [], total: 0 }, isLoading: false, isError: false, refetch: vi.fn() });
-
-    render(<BranchActivityLogsPage />);
-
-    expect(mockUseAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 25 }));
-  });
-
-  it('shows pagination controls and requests the next page when there are more rows than fit on one page', () => {
-    mockUseAuditLogs.mockReturnValue({
-      data: { logs: [log()], total: 60 },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<BranchActivityLogsPage />);
-
-    expect(screen.getByText(/page 1 of 3/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
-
-    expect(mockUseAuditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, limit: 25 }));
-  });
-});
-
-describe('BranchActivityLogsPage — Historical Shift Records (Reports §8/§9, read-only)', () => {
-  it('shows a read-only historical shift tab, not a primary Reports option, with no approve/reject controls', () => {
-    mockUseAuditLogs.mockReturnValue({ data: { logs: [], total: 0 }, isLoading: false, isError: false, refetch: vi.fn() });
+describe('BranchActivityLogsPage — P1 cost/audit UI retirement', () => {
+  it('has no Audit Log tab or table — Historical Shift Records renders directly with no tab bar', () => {
     mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId: 'branch-1' }));
     mockUseShifts.mockReturnValue({
       data: {
@@ -105,8 +55,9 @@ describe('BranchActivityLogsPage — Historical Shift Records (Reports §8/§9, 
     });
 
     render(<BranchActivityLogsPage />);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Historical Shift Records' }));
 
+    expect(screen.queryByRole('tab', { name: 'Audit Log' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Historical Shift Records' })).not.toBeInTheDocument();
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /reject/i })).not.toBeInTheDocument();

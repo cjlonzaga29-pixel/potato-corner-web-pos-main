@@ -14,12 +14,9 @@ vi.mock('@/hooks/queries/use-reports', () => {
   const empty = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() };
   return {
     useDailySalesReport: vi.fn(() => empty),
-    useCashReconciliationReport: vi.fn(() => empty),
     useVoidRefundReport: vi.fn(() => empty),
-    useFraudAlertSummaryReport: vi.fn(() => empty),
     useDiscountComplianceReport: vi.fn(() => empty),
     useInventoryMovementReport: vi.fn(() => empty),
-    useInventoryValueSummaryReport: vi.fn(() => empty),
     useInventoryConsumptionSummaryReport: vi.fn(() => empty),
     useInventorySummaryReport: vi.fn(() => empty),
     useAttendanceSummaryReport: vi.fn(() => empty),
@@ -53,19 +50,6 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
 
 vi.mock('@/hooks/queries/use-employees', () => ({
   useEmployees: vi.fn(() => ({ data: undefined, isLoading: false })),
-}));
-
-vi.mock('@/hooks/queries/use-shifts', () => ({
-  useShifts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
-  useShiftsRealtimeSync: vi.fn(),
-}));
-
-vi.mock('@/hooks/queries/use-fraud-alerts', () => ({
-  useFraudAlerts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
-  useFraudAlertsRealtimeSync: vi.fn(),
-  useInvestigateAlert: vi.fn(() => ({ isPending: false, variables: undefined, mutateAsync: vi.fn() })),
-  useDismissAlert: vi.fn(() => ({ isPending: false, variables: undefined, mutateAsync: vi.fn() })),
-  useEscalateAlert: vi.fn(() => ({ isPending: false, variables: undefined, mutateAsync: vi.fn() })),
 }));
 
 vi.mock('@/hooks/queries/use-branches', () => ({
@@ -166,10 +150,10 @@ describe('AdminReportsPage', () => {
     expect(screen.getByRole('button', { name: 'Finance' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('tab', { name: 'Financial Summary' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Daily Sales' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Cash Reconciliation' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Expenses' })).toBeInTheDocument();
     expect(screen.getByText('Financial Summary Panel')).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Inventory Analytics' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Cash Reconciliation' })).not.toBeInTheDocument();
   });
 
   it('switches the visible report tabs when a different category is selected', () => {
@@ -187,10 +171,10 @@ describe('AdminReportsPage', () => {
   it('renders every report across all four categories', () => {
     render(<AdminReportsPage />);
     const categories: Record<string, string[]> = {
-      Finance: ['Financial Summary', 'Daily Sales', 'Cash Reconciliation', 'Expenses'],
+      Finance: ['Financial Summary', 'Daily Sales', 'Expenses'],
       Inventory: ['Inventory Analytics', 'Inventory Movement', 'Inventory Summary'],
-      Operations: ['Shift Reports', 'Attendance Summary'],
-      Compliance: ['Void / Refund', 'Alerts', 'Discount Compliance', 'Audit Log'],
+      Operations: ['Attendance Summary'],
+      Compliance: ['Void / Refund', 'Discount Compliance'],
     };
     for (const [category, tabs] of Object.entries(categories)) {
       selectCategory(category);
@@ -360,9 +344,7 @@ describe('AdminReportsPage', () => {
     render(<AdminReportsPage />);
     selectReportTab('Daily Sales');
     expect(reportsHooks.useDailySalesReport).toHaveBeenCalledWith(expect.anything(), true);
-    expect(reportsHooks.useCashReconciliationReport).toHaveBeenCalledWith(expect.anything(), false);
     expect(reportsHooks.useVoidRefundReport).toHaveBeenCalledWith(expect.anything(), false);
-    expect(reportsHooks.useFraudAlertSummaryReport).toHaveBeenCalledWith(expect.anything(), false);
   });
 
   it('disables the refresh button for 60 seconds after click, showing a countdown', async () => {
@@ -703,17 +685,29 @@ describe('AdminReportsPage', () => {
     expect(screen.getByText('No expenses recorded')).toBeInTheDocument();
   });
 
-  it('renders the ShiftLogPanel when the Shift Reports tab is active', () => {
+  it('P1 cost UI retirement — Finance category has no Cash Reconciliation tab', () => {
     render(<AdminReportsPage />);
-    selectCategory('Operations');
-    selectReportTab('Shift Reports');
-    expect(screen.getByText('Every Shift, Every Branch')).toBeInTheDocument();
+    selectCategory('Finance');
+    expect(screen.queryByRole('tab', { name: 'Cash Reconciliation' })).not.toBeInTheDocument();
   });
 
-  it('renders the FraudAlertManagementPanel when the Alerts tab is active', () => {
+  it('P1 cost UI retirement — Operations category has no Shift Reports tab', () => {
+    render(<AdminReportsPage />);
+    selectCategory('Operations');
+    expect(screen.queryByRole('tab', { name: 'Shift Reports' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Every Shift, Every Branch')).not.toBeInTheDocument();
+  });
+
+  it('P1 cost UI retirement — Compliance category has no Alerts management tab', () => {
     render(<AdminReportsPage />);
     selectCategory('Compliance');
-    selectReportTab('Alerts');
-    expect(screen.getByText('Alert Management')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Alerts' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Alert Management')).not.toBeInTheDocument();
+  });
+
+  it('P1 cost UI retirement — Compliance category has no Audit Log tab', () => {
+    render(<AdminReportsPage />);
+    selectCategory('Compliance');
+    expect(screen.queryByRole('tab', { name: 'Audit Log' })).not.toBeInTheDocument();
   });
 });

@@ -50,8 +50,8 @@ export interface CreateStockMovementInput {
   notes?: string;
   performedByUserId?: string;
   /** Carrying cost snapshot at movement time — see schema.prisma's InventoryStockMovement doc comment. */
-  unitCost?: Prisma.Decimal;
-  totalCost?: Prisma.Decimal;
+  unitCost?: Prisma.Decimal | null;
+  totalCost?: Prisma.Decimal | null;
   /** WASTE only: accountable staff member, distinct from performedByUserId. */
   responsibleUserId?: string;
   /** RECEIVING/WASTE only: purchase-unit quantity/unit as entered, distinct from quantityChange/unitId (always base-unit). See schema.prisma's InventoryStockMovement doc comment. */

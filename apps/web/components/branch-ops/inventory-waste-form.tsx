@@ -57,9 +57,6 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   const waste = useWasteInventoryStock(activeBranchId, inventoryItemId);
   const uploadProof = useUploadMovementProof(activeBranchId);
   const [proofFile, setProofFile] = useState<File | null>(null);
-  const quantity = form.watch('quantity');
-  const wasteCost = item?.avg_unit_cost != null ? Number(quantity || 0) * item.avg_unit_cost : null;
-
   const currentUser = useAuthStore((s) => s.user);
   const { data: staffData } = useEmployees({ branchId: activeBranchId ?? undefined, isActive: true }, { enabled: Boolean(activeBranchId) });
   const staff = staffData?.employees ?? [];
@@ -150,18 +147,6 @@ function WasteFormContent({ basePath }: { basePath: string }) {
           <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Wasted${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
-
-          {item && (
-            <p className="rounded-md border bg-muted/30 p-3 text-sm">
-              Current Unit Cost:{' '}
-              <span className="font-medium">{item.avg_unit_cost === null ? 'Cost not initialized' : `₱${item.avg_unit_cost.toFixed(4)}`}</span>
-              {wasteCost !== null && (
-                <>
-                  {' — '}Estimated Waste Cost: <span className="font-medium">₱{wasteCost.toFixed(2)}</span>
-                </>
-              )}
-            </p>
-          )}
 
           <FormField
             control={form.control}

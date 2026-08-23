@@ -620,6 +620,35 @@ describe('universalInventoryService.receiveStock — Test B (direct receiving)',
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'INVENTORY_STOCK_RECEIVED' }));
   });
 
+  it('P1 cost UI retirement — succeeds with total_cost omitted, recording the movement with no cost and leaving the carrying-cost average untouched', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10), unitCost: dec(8) }) as never);
+    vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(15) } as never);
+
+    const result = await universalInventoryService.receiveStock(
+      { branchId: 'branch-1', inventoryItemId: 'item-1', quantity: 5, deliveryReference: 'PO-1002' },
+      ACTOR,
+      null,
+    );
+
+    // No cost supplied: the 5th argument to incrementStockQuantity must be
+    // undefined (not a fabricated 0/null), leaving InventoryStock.unitCost
+    // untouched by the spread-guard in incrementStockQuantity.
+    expect(repo.incrementStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(5), {}, undefined);
+    expect(repo.createStockMovement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchId: 'branch-1',
+        inventoryItemId: 'item-1',
+        movementType: 'RECEIVING',
+        quantityBefore: dec(10),
+        quantityAfter: dec(15),
+        unitCost: null,
+        totalCost: null,
+      }),
+      {},
+    );
+    expect(result.movement_type).toBe('RECEIVING');
+  });
+
   it('blends with the existing average cost when one is already set', async () => {
     vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(50), unitCost: dec(8) }) as never);
     vi.mocked(repo.incrementStockQuantity).mockResolvedValue({ quantityOnHand: dec(150) } as never);

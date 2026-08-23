@@ -846,8 +846,12 @@ export const universalInventoryService = {
     // previous unit_cost-based contract computed unitCostPerBaseUnit then
     // re-multiplied, an unnecessary round trip through Decimal division
     // twice).
-    const totalCost = new Prisma.Decimal(data.totalCost);
-    const unitCostPerBaseUnit = totalCost.div(baseQuantity);
+    // P1 cost UI retirement: total_cost is now optional — when omitted, no
+    // cost is recorded for this delivery and the carrying-cost average is
+    // left untouched (blendWeightedAverageCost is only invoked when a cost
+    // was actually supplied).
+    const totalCost = data.totalCost !== undefined ? new Prisma.Decimal(data.totalCost) : null;
+    const unitCostPerBaseUnit = totalCost !== null ? totalCost.div(baseQuantity) : null;
 
     const movement = await prisma.$transaction(async (tx) => {
       const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
@@ -855,7 +859,8 @@ export const universalInventoryService = {
         throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
       }
       const quantityBefore = stock.quantityOnHand;
-      const newAverageCost = blendWeightedAverageCost(quantityBefore, stock.unitCost, baseQuantity, unitCostPerBaseUnit);
+      const newAverageCost =
+        unitCostPerBaseUnit !== null ? blendWeightedAverageCost(quantityBefore, stock.unitCost, baseQuantity, unitCostPerBaseUnit) : undefined;
       const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity, tx, newAverageCost);
       const quantityAfter = updated.quantityOnHand;
       return repo.createStockMovement(

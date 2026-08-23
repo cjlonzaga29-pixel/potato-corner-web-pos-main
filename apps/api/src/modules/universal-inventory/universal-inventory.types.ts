@@ -87,8 +87,8 @@ export interface ReceiveInventoryStockData {
   branchId: string;
   inventoryItemId: string;
   quantity: number;
-  /** Total peso cost for this delivery, as printed on the receipt — replaces the former per-unit unitCost input (Receiving Simplification V2). Per-base-unit carrying cost is derived server-side. */
-  totalCost: number;
+  /** Total peso cost for this delivery, as printed on the receipt — replaces the former per-unit unitCost input (Receiving Simplification V2). Per-base-unit carrying cost is derived server-side. Optional (P1 cost UI retirement): omitted means no cost is recorded for this delivery. */
+  totalCost?: number;
   enteredUnitId?: string;
   deliveryReference?: string;
   notes?: string;

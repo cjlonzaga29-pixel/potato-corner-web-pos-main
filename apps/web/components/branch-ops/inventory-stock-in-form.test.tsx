@@ -96,10 +96,9 @@ function selectItemAndFillForm() {
   if (!itemSelect) throw new Error('item select not found');
   fireEvent.change(itemSelect, { target: { value: ITEM_ID } });
 
-  const [quantityInput, totalCostInput] = screen.getAllByRole('spinbutton');
-  if (!quantityInput || !totalCostInput) throw new Error('quantity/total cost inputs not found');
+  const [quantityInput] = screen.getAllByRole('spinbutton');
+  if (!quantityInput) throw new Error('quantity input not found');
   fireEvent.change(quantityInput, { target: { value: '10' } });
-  fireEvent.change(totalCostInput, { target: { value: '500' } });
 
   const fileInput = document.querySelector('input[type="file"]');
   if (!fileInput) throw new Error('file input not found');
@@ -202,5 +201,26 @@ describe('InventoryStockInForm — proof upload failure recovery', () => {
     expect(stockInMutateAsync).toHaveBeenCalledTimes(1);
     expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Receiving was recorded, but the receipt photo could not be uploaded.')).not.toBeInTheDocument();
+  });
+});
+
+describe('InventoryStockInForm — P1 cost UI retirement', () => {
+  it('submits the same quantity as before with no total_cost field in the payload', async () => {
+    const stockInMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-999' });
+    mockUseReceiveInventoryStock.mockReturnValue({ mutateAsync: stockInMutateAsync, isPending: false });
+    mockUseUploadMovementProof.mockReturnValue({ mutateAsync: vi.fn().mockResolvedValue({}), isPending: false });
+
+    render(<InventoryStockInForm basePath="/branch" />);
+
+    expect(screen.queryByText('Total Purchase Cost')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(1);
+
+    selectItemAndFillForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Record Receiving' }));
+
+    await waitFor(() => expect(stockInMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = stockInMutateAsync.mock.calls[0]?.[0];
+    expect(payload).toMatchObject({ quantity: 10 });
+    expect(payload).not.toHaveProperty('total_cost');
   });
 });

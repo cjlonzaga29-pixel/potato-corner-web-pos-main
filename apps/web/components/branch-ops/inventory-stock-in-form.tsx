@@ -25,13 +25,12 @@ const formSchema = z.object({
   inventory_item_id: z.uuid('Select an item'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
   entered_unit_id: z.uuid('Select a purchase unit'),
-  total_cost: z.coerce.number().positive('Total cost is required to record acquisition cost'),
   notes: z.string().optional(),
 });
 
 type FormValues = z.input<typeof formSchema>;
 
-const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity: 0, entered_unit_id: '', total_cost: 0, notes: '' };
+const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity: 0, entered_unit_id: '', notes: '' };
 
 /**
  * Purchase-unit options for an item: its own base unit (always available,
@@ -98,10 +97,8 @@ function StockInFormContent({ basePath }: { basePath: string }) {
 
   const quantity = form.watch('quantity');
   const enteredUnitId = form.watch('entered_unit_id');
-  const totalCost = form.watch('total_cost');
   const selectedUnit = purchaseUnitOptions.find((u) => u.unitId === enteredUnitId);
   const baseQuantityAdded = selectedUnit ? Number(quantity || 0) * selectedUnit.baseUnitsPerPurchaseUnit : 0;
-  const costPerBaseUnit = baseQuantityAdded > 0 ? Number(totalCost || 0) / baseQuantityAdded : 0;
 
   useEffect(() => {
     const preselected = searchParams.get('inventory_item_id');
@@ -124,7 +121,6 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     const movement = await stockIn.mutateAsync({
       quantity: parsed.quantity,
       entered_unit_id: parsed.entered_unit_id,
-      total_cost: parsed.total_cost,
       notes: parsed.notes || undefined,
     });
     setRecordedMovement({ id: movement.id });
@@ -178,7 +174,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
     <div className="mx-auto max-w-lg space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Stock In</h1>
-        <p className="text-sm text-muted-foreground">Record what&apos;s on the receipt — the system converts it and works out the cost.</p>
+        <p className="text-sm text-muted-foreground">Record what&apos;s on the receipt — the system converts the quantity into inventory units.</p>
       </div>
 
       <Form {...form}>
@@ -254,10 +250,6 @@ function StockInFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
-          <FormFieldWrapper<FormValues> name="total_cost" label="Total Purchase Cost" description="The whole delivery's cost, as printed on the receipt" required>
-            <Input type="number" step="any" inputMode="decimal" />
-          </FormFieldWrapper>
-
           <InventoryProofPhotoPicker label="Receipt / Delivery Proof" file={proofFile} onChange={setProofFile} />
 
           <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
@@ -269,12 +261,6 @@ function StockInFormContent({ basePath }: { basePath: string }) {
               <p className="font-medium">Calculated by System</p>
               <p>
                 Inventory Quantity Added: <span className="font-medium">{baseQuantityAdded.toFixed(3)}</span> {item.base_unit_code}
-              </p>
-              <p>
-                Cost Per Inventory Unit: <span className="font-medium">₱{costPerBaseUnit.toFixed(4)}</span>
-              </p>
-              <p>
-                Total Purchase Cost: <span className="font-medium">₱{Number(totalCost || 0).toFixed(2)}</span>
               </p>
             </div>
           )}

@@ -187,7 +187,10 @@ export const receiveInventoryStockSchema = z.object({
   // per-base-unit carrying cost is derived server-side (total_cost /
   // converted base quantity), never entered by the caller. Replaces the
   // former unit_cost field (Receiving Simplification V2 §1/§4).
-  total_cost: z.number().positive('Total cost is required to record acquisition cost'),
+  // Optional (P1 cost UI retirement): receiving no longer requires a cost to
+  // record acquisition of stock; when omitted, no cost is recorded and the
+  // carrying-cost average is left untouched.
+  total_cost: z.number().positive('Total cost must be greater than zero').optional(),
   entered_unit_id: z.uuid().optional(),
   delivery_reference: z.string().max(100).optional(),
   notes: z.string().optional(),

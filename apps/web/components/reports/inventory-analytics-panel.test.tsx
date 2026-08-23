@@ -54,16 +54,17 @@ function analyticsData() {
 }
 
 describe('InventoryAnalyticsPanel', () => {
-  it('renders Inventory Cost Consumed and Waste Cost KPIs from the analytics summary', () => {
+  it('P1 cost UI retirement — renders quantity-based KPIs (Total Movements, Avg Turnover Rate) with no monetary Inventory Cost Consumed / Waste Cost cards', () => {
     mockUseInventoryAnalytics.mockReturnValue({ data: analyticsData(), isLoading: false, isError: false, refetch: vi.fn() });
     mockUseInventoryMovementReport.mockReturnValue({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() });
 
     render(<InventoryAnalyticsPanel branchId={null} />);
 
-    expect(screen.getByText('Inventory Cost Consumed')).toBeInTheDocument();
-    expect(screen.getByText('₱5000')).toBeInTheDocument();
-    expect(screen.getByText('Waste Cost')).toBeInTheDocument();
-    expect(screen.getByText('₱150')).toBeInTheDocument();
+    expect(screen.getByText('Total Movements')).toBeInTheDocument();
+    expect(screen.getByText('40')).toBeInTheDocument();
+    expect(screen.getByText('Avg Turnover Rate')).toBeInTheDocument();
+    expect(screen.queryByText('Inventory Cost Consumed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waste Cost')).not.toBeInTheDocument();
   });
 
   it('renders the Top Consumed Products table from fast_movers', () => {

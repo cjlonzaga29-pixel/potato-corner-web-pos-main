@@ -19,7 +19,6 @@ const {
   mockUseRequestExport,
   mockUseReportsRealtimeSync,
   mockUseDiscountComplianceReport,
-  mockUseInventoryValueSummaryReport,
   mockUseDiscountAuditTrail,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
@@ -37,7 +36,6 @@ const {
   mockUseRequestExport: vi.fn(),
   mockUseReportsRealtimeSync: vi.fn(),
   mockUseDiscountComplianceReport: vi.fn(),
-  mockUseInventoryValueSummaryReport: vi.fn(),
   mockUseDiscountAuditTrail: vi.fn(),
 }));
 
@@ -89,7 +87,6 @@ vi.mock('@/hooks/queries/use-reports', () => ({
   useRequestExport: mockUseRequestExport,
   useReportsRealtimeSync: mockUseReportsRealtimeSync,
   useDiscountComplianceReport: mockUseDiscountComplianceReport,
-  useInventoryValueSummaryReport: mockUseInventoryValueSummaryReport,
 }));
 
 /** Swaps Framer Motion's async NumberTicker for a synchronous text node — same approach as the supervisor/admin reports page tests. */
@@ -206,9 +203,6 @@ beforeEach(() => {
   // from completedTransactions; default empty so tests that don't care
   // about discount numbers specifically still render without crashing.
   mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [] }, isLoading: false });
-  // Business Accountability V2 §B1 — value-based inventory summary cards;
-  // default empty so tests that don't care about these values still render.
-  mockUseInventoryValueSummaryReport.mockReturnValue({ data: undefined, isLoading: false });
   // Task: Discount Compliance parity — sources the Customer ID / Reference
   // column via a Map keyed by transaction id, same discount-audit endpoint
   // the Admin drilldown already calls; default empty so tests that don't

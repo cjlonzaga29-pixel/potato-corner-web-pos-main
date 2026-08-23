@@ -66,7 +66,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
 
   const wasteTrendData = (analytics.data?.waste_trends ?? []).map((point) => ({
     date: point.date,
-    waste_cost: point.total_waste_cost,
+    waste_quantity: point.total_waste_quantity,
   }));
 
   const adjustmentBreakdown = useMemo(() => {
@@ -99,15 +99,14 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
         </Select>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <KpiCard title="Inventory Cost Consumed" value={analytics.data?.summary.total_consumption_cost ?? 0} prefix="₱" isLoading={isLoading} />
-        <KpiCard title="Waste Cost" value={analytics.data?.summary.total_waste_cost ?? 0} prefix="₱" isLoading={isLoading} tone="warning" />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <KpiCard title="Total Movements" value={analytics.data?.summary.total_movements ?? 0} isLoading={isLoading} />
         <KpiCard title="Avg Turnover Rate" value={analytics.data?.summary.avg_turnover_rate ?? 0} isLoading={isLoading} />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm font-medium">Daily Inventory Waste Cost</CardTitle>
+          <CardTitle className="text-sm font-medium">Daily Inventory Waste Quantity</CardTitle>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -117,7 +116,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
           ) : (
             <AreaChart
               data={wasteTrendData}
-              areas={[{ dataKey: 'waste_cost', color: 'hsl(var(--destructive))', name: 'Waste Cost' }]}
+              areas={[{ dataKey: 'waste_quantity', color: 'hsl(var(--destructive))', name: 'Waste Quantity' }]}
               xAxisKey="date"
               animate={false}
             />

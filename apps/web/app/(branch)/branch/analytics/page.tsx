@@ -53,12 +53,6 @@ const valuationColumns: ColumnDef<InventoryValuationReportRow>[] = [
     header: 'Current Stock',
     cell: ({ row }) => `${row.original.current_stock} ${row.original.unit}`,
   },
-  {
-    id: 'unit_cost',
-    header: 'Unit Cost',
-    cell: ({ row }) => (row.original.unit_cost !== null ? formatCurrency(row.original.unit_cost) : '—'),
-  },
-  { id: 'total_value', header: 'Total Value', cell: ({ row }) => formatCurrency(row.original.total_value) },
   { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="inventory" /> },
 ];
 
@@ -111,7 +105,7 @@ export default function BranchAnalyticsPage() {
           <TabsTrigger value="product-performance">Product Performance</TabsTrigger>
           <TabsTrigger value="flavor-performance">Flavor Performance</TabsTrigger>
           <TabsTrigger value="employee-performance">Employee Performance</TabsTrigger>
-          <TabsTrigger value="inventory-valuation">Inventory Valuation</TabsTrigger>
+          <TabsTrigger value="inventory-valuation">Inventory Status</TabsTrigger>
           <TabsTrigger value="inventory-analytics">Inventory Analytics</TabsTrigger>
         </TabsList>
 
@@ -151,9 +145,8 @@ export default function BranchAnalyticsPage() {
         <TabsContent value="inventory-valuation" className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <KpiCard
-              title="Total Inventory Value"
-              value={(inventoryValuation.data?.data ?? []).reduce((sum, r) => sum + r.total_value, 0)}
-              prefix="₱"
+              title="Total Ingredients"
+              value={(inventoryValuation.data?.data ?? []).length}
               isLoading={inventoryValuation.isLoading}
             />
             <KpiCard
@@ -169,7 +162,7 @@ export default function BranchAnalyticsPage() {
             isLoading={inventoryValuation.isLoading}
             isError={inventoryValuation.isError}
             onRetry={() => void inventoryValuation.refetch()}
-            emptyState={<EmptyState title="No ingredients yet" description="Inventory valuation will appear once ingredients are stocked." />}
+            emptyState={<EmptyState title="No ingredients yet" description="Inventory status will appear once ingredients are stocked." />}
           />
         </TabsContent>
 
@@ -192,10 +185,8 @@ export default function BranchAnalyticsPage() {
             <EmptyState title="Failed to load inventory analytics" description="Try refreshing the page." />
           ) : (
             <>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <KpiCard title="Total Movements" value={analytics?.summary.total_movements ?? 0} isLoading={inventoryAnalytics.isLoading} />
-                <KpiCard title="Waste Cost" value={analytics?.summary.total_waste_cost ?? 0} prefix="₱" isLoading={inventoryAnalytics.isLoading} tone="warning" />
-                <KpiCard title="Consumption Cost" value={analytics?.summary.total_consumption_cost ?? 0} prefix="₱" isLoading={inventoryAnalytics.isLoading} />
                 <KpiCard title="Avg Turnover Rate" value={analytics?.summary.avg_turnover_rate ?? 0} isLoading={inventoryAnalytics.isLoading} />
               </div>
 

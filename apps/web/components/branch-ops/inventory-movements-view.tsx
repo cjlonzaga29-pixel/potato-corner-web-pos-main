@@ -73,24 +73,6 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
       ),
     },
     {
-      id: 'unit_cost',
-      header: 'Unit Cost',
-      cell: ({ row }) => (
-        <span className="tabular-nums text-muted-foreground">
-          {row.original.unit_cost === null ? '—' : `₱${row.original.unit_cost.toFixed(4)}`}
-        </span>
-      ),
-    },
-    {
-      id: 'total_cost',
-      header: 'Cost',
-      cell: ({ row }) => (
-        <span className="tabular-nums text-muted-foreground">
-          {row.original.total_cost === null ? '—' : `₱${Math.abs(row.original.total_cost).toFixed(2)}`}
-        </span>
-      ),
-    },
-    {
       id: 'purchase_quantity',
       header: 'Purchase Qty/Unit',
       cell: ({ row }) =>

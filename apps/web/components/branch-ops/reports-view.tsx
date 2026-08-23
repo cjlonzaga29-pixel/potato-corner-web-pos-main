@@ -37,7 +37,7 @@ import { useDiscountAuditTrail, useTransaction, useTransactions, useTransactions
 import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
-import { useDiscountComplianceReport, useInventoryValueSummaryReport, useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
+import { useDiscountComplianceReport, useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
 
 const DEFAULT_RANGE_DAYS = 7;
 const QUERY_LIMIT = 100;
@@ -389,16 +389,6 @@ function createInventoryStockMovementColumns(
       header: 'Unit',
       cell: ({ row }) => (row.original.unit_id ? (unitCodes.get(row.original.unit_id) ?? '—') : '—'),
     },
-    {
-      id: 'unit_cost',
-      header: 'Unit Cost',
-      cell: ({ row }) => (row.original.unit_cost === null ? '—' : `₱${row.original.unit_cost.toFixed(4)}`),
-    },
-    {
-      id: 'total_cost',
-      header: 'Total Cost',
-      cell: ({ row }) => (row.original.total_cost === null ? '—' : `₱${Math.abs(row.original.total_cost).toFixed(2)}`),
-    },
     { id: 'reference_type', header: 'Reference Type', cell: ({ row }) => row.original.reference_type ?? '—' },
     { id: 'reference_id', header: 'Reference ID', cell: ({ row }) => row.original.reference_id ?? '—' },
     { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
@@ -612,11 +602,6 @@ export function ReportsView() {
     limit: QUERY_LIMIT,
   });
   const movementsQuery = useInventoryStockMovements(activeBranchId, { from_date: movementRangeStartISO, to_date: movementRangeEndISO, page: 1, limit: QUERY_LIMIT });
-  const inventoryValueSummaryQuery = useInventoryValueSummaryReport({
-    branch_id: activeBranchId ?? undefined,
-    date_from: movementRangeStartISO,
-    date_to: movementRangeEndISO,
-  });
   const attendanceQuery = useAttendanceByBranch(activeBranchId, { from: rangeStartISO, to: rangeEndISO, page: 1, limit: QUERY_LIMIT });
   const employeesQuery = useEmployees({ branchId: activeBranchId ?? undefined, limit: QUERY_LIMIT });
   const unitsQuery = useUnitsOfMeasure();
@@ -1052,50 +1037,6 @@ export function ReportsView() {
             <KpiCard title="Receiving" value={receivingCount} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Waste" value={wasteCount} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Adjustments" value={adjustmentsCount} isLoading={movementsQuery.isLoading} />
-          </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard
-              title="Current Inventory Value"
-              value={inventoryValueSummaryQuery.data?.current_inventory_value ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
-            <KpiCard
-              title="Stock Received Value"
-              value={inventoryValueSummaryQuery.data?.stock_received_value ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
-            <KpiCard
-              title="Waste Cost"
-              value={inventoryValueSummaryQuery.data?.waste_cost ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
-            <KpiCard
-              title="Adjustment In Value"
-              value={inventoryValueSummaryQuery.data?.adjustment_in_value ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
-            <KpiCard
-              title="Adjustment Out Value"
-              value={inventoryValueSummaryQuery.data?.adjustment_out_value ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
-            <KpiCard
-              title="Transfer In Value"
-              value={inventoryValueSummaryQuery.data?.transfer_in_value ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
-            <KpiCard
-              title="Transfer Out Value"
-              value={inventoryValueSummaryQuery.data?.transfer_out_value ?? 0}
-              prefix="₱"
-              isLoading={inventoryValueSummaryQuery.isLoading}
-            />
           </div>
           <DataTable
             stickyHeader

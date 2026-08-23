@@ -85,28 +85,24 @@ function mockDefaults() {
 }
 
 describe('FinancialSummaryPanel', () => {
-  it('renders the finance waterfall summed from DAILY_SALES rows — no second formula engine', () => {
+  it('P1 cost UI retirement — renders only Gross Sales/Discounts/Net Sales/Operating Expenses summed from DAILY_SALES rows, with no COGS/Gross Profit/Gross Margin/Waste Cost/Operating Result/Waterfall', () => {
     mockDefaults();
     render(<FinancialSummaryPanel branchId={null} dateFrom="2026-07-01" dateTo="2026-07-02" />);
 
-    // Labels below also appear as their own row in the Financial Waterfall
-    // card (Business Accountability V2 §D2), rendered alongside the KpiCard
-    // grid — so these four are asserted with getAllByText, not getByText.
-    expect(screen.getAllByText('Gross Sales').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
-    expect(screen.getAllByText('Net Sales').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Discounts')).toBeInTheDocument();
+    expect(screen.getByText('Net Sales')).toBeInTheDocument();
     expect(screen.getByText('₱1350')).toBeInTheDocument();
-    expect(screen.getByText('Cost of Goods Sold')).toBeInTheDocument();
-    expect(screen.getByText('₱600')).toBeInTheDocument();
-    expect(screen.getAllByText('Gross Profit').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('₱750')).toBeInTheDocument();
-    expect(screen.getByText('Waste Cost')).toBeInTheDocument();
-    expect(screen.getByText('₱30')).toBeInTheDocument();
     expect(screen.getByText('Operating Expenses')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();
-    expect(screen.getAllByText('Operating Result').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('₱420')).toBeInTheDocument();
-    expect(screen.getByText('Discounts')).toBeInTheDocument();
+
+    expect(screen.queryByText('Cost of Goods Sold')).not.toBeInTheDocument();
+    expect(screen.queryByText('Gross Profit')).not.toBeInTheDocument();
+    expect(screen.queryByText('Gross Margin')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waste Cost')).not.toBeInTheDocument();
+    expect(screen.queryByText('Operating Result')).not.toBeInTheDocument();
+    expect(screen.queryByText('Financial Waterfall')).not.toBeInTheDocument();
   });
 
   it('renders an error state with retry when any underlying query errors', () => {

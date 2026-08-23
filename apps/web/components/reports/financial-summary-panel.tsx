@@ -11,7 +11,6 @@ import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
 import { useDashboardSalesTrendReport, usePaymentMethodMixReport } from '@/hooks/queries/use-reports';
-import { formatCurrency } from '@/lib/utils';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 type Granularity = 'daily' | 'weekly' | 'monthly';
@@ -66,26 +65,23 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
   // computeFinancialMetrics()-derived values the Daily Sales report and its
   // CSV/PDF export show, so this panel never diverges from them (no second
   // financial formula engine).
+  //
+  // COGS/Gross Profit/Gross Margin/Waste Cost/Operating Result are
+  // intentionally not surfaced here (P1 cost UI retirement) — the backend
+  // still computes them, but Operating Result's formula still nets COGS/
+  // waste against sales, which would be a misleading label until P2
+  // redefines it as Net Sales minus Operating Expenses. Do not reintroduce
+  // these cards without that backend change landing first.
   const rows = salesTrend.data?.data;
-  const { grossSales, discountTotal, netSales, cogs, grossProfit, wasteCost, totalExpenses, operatingResult, isProfitEstimated } = useMemo(() => {
+  const { grossSales, discountTotal, netSales, totalExpenses } = useMemo(() => {
     const data = rows ?? [];
     return {
       grossSales: data.reduce((sum, row) => sum + row.gross_sales, 0),
       discountTotal: data.reduce((sum, row) => sum + row.discount_total, 0),
       netSales: data.reduce((sum, row) => sum + row.net_sales, 0),
-      cogs: data.reduce((sum, row) => sum + row.cogs, 0),
-      grossProfit: data.reduce((sum, row) => sum + row.gross_profit, 0),
-      wasteCost: data.reduce((sum, row) => sum + row.waste_cost, 0),
       totalExpenses: data.reduce((sum, row) => sum + row.expense_total, 0),
-      operatingResult: data.reduce((sum, row) => sum + row.operating_result, 0),
-      isProfitEstimated: data.some((row) => row.is_profit_estimated),
     };
   }, [rows]);
-
-  // Derived purely from the canonical grossProfit/netSales already summed above —
-  // not a competing formula, just a ratio of two existing canonical figures.
-  const grossMarginPct = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
-  const operatingResultTone = operatingResult > 0 ? 'positive' : operatingResult < 0 ? 'negative' : 'default';
 
   const trendData = useMemo(() => {
     const rows = salesTrend.data?.data ?? [];
@@ -129,86 +125,8 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
         />
         <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tooltip="PWD, Senior, and other discounts applied to completed sales." />
         <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} emphasize tooltip="Gross Sales minus discounts and refunds." />
-
-        <KpiCard
-          title="Cost of Goods Sold"
-          value={cogs}
-          prefix="₱"
-          isLoading={isLoading}
-          tooltip={isProfitEstimated ? 'Some sales in this range predate cost capture — COGS is partly estimated from current cost.' : 'Sourced from each sale’s frozen cost snapshot at checkout time.'}
-        />
-        <KpiCard
-          title="Gross Profit"
-          value={grossProfit}
-          prefix="₱"
-          isLoading={isLoading}
-          tone={grossProfit >= 0 ? 'positive' : 'negative'}
-          emphasize
-          tooltip="Net Sales minus Cost of Goods Sold."
-        />
-        <KpiCard title="Gross Margin" value={grossMarginPct} suffix="%" isLoading={isLoading} tooltip="Gross Profit as a percentage of Net Sales." />
-
-        <KpiCard
-          title="Waste Cost"
-          value={wasteCost}
-          prefix="₱"
-          isLoading={isLoading}
-          tone={wasteCost > 0 ? 'negative' : 'default'}
-          tooltip="Inventory lost to spoilage/damage/error, at its cost when wasted."
-        />
         <KpiCard title="Operating Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} tooltip="Recorded Expenses for the selected range." />
-        <KpiCard
-          title="Operating Result"
-          value={operatingResult}
-          prefix="₱"
-          isLoading={isLoading}
-          tone={operatingResultTone}
-          emphasize
-          tooltip="Gross Profit minus Waste Cost minus Operating Expenses."
-        />
       </div>
-
-      {!isLoading && (
-        <Card>
-          <CardHeader className="app-card-padding pb-2">
-            <CardTitle className="text-sm font-medium">Financial Waterfall</CardTitle>
-          </CardHeader>
-          <CardContent className="app-card-padding space-y-1 pt-0 font-mono text-sm">
-            <div className="flex justify-between">
-              <span>Gross Sales</span>
-              <span className="tabular-nums">{formatCurrency(grossSales)}</span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Less: Discounts</span>
-              <span className="tabular-nums">-{formatCurrency(discountTotal)}</span>
-            </div>
-            <div className="flex justify-between border-t pt-1 font-semibold">
-              <span>Net Sales</span>
-              <span className="tabular-nums">{formatCurrency(netSales)}</span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Less: COGS</span>
-              <span className="tabular-nums">-{formatCurrency(cogs)}</span>
-            </div>
-            <div className="flex justify-between border-t pt-1 font-semibold">
-              <span>Gross Profit</span>
-              <span className="tabular-nums">{formatCurrency(grossProfit)}</span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Less: Waste</span>
-              <span className="tabular-nums">-{formatCurrency(wasteCost)}</span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Less: Expenses</span>
-              <span className="tabular-nums">-{formatCurrency(totalExpenses)}</span>
-            </div>
-            <div className={`flex justify-between border-t pt-1 text-base font-bold ${operatingResultTone === 'positive' ? 'text-success' : operatingResultTone === 'negative' ? 'text-destructive' : ''}`}>
-              <span>Operating Result</span>
-              <span className="tabular-nums">{formatCurrency(operatingResult)}</span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

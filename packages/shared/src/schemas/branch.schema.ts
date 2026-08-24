@@ -117,14 +117,10 @@ export const branchStatsResponseSchema = z.object({
   todayRefundTotal: z.number(),
   todayNetSales: z.number(),
   todayVat: z.number(),
-  todayCogs: z.number(),
-  todayGrossProfit: z.number(),
   todayExpenses: z.number(),
-  todayNetProfit: z.number(),
-  // True when any component's cost couldn't be resolved (no InventoryStock/InventoryItem
-  // unit cost captured or currently available) — the audit's "Estimated Net Profit" rule.
-  isNetProfitEstimated: z.boolean(),
-  missingCostItemCount: z.number().int(),
+  // Canonical P2 formula: todayNetSales - todayExpenses. No COGS/waste
+  // dependency — see lib/financial-metrics.ts's computeFinancialMetrics.
+  todayNetOperatingResult: z.number(),
   paymentBreakdown: paymentBreakdownSchema,
   activeStaffCount: z.number().int(),
   staffTimedInCount: z.number().int(),

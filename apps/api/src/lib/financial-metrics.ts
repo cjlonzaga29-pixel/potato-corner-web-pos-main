@@ -9,8 +9,6 @@ export interface FinancialMetricsInput {
   discountTotal: number;
   /** Value of refunded completed sales (Transaction.totalAmount where status = refunded). */
   refundTotal: number;
-  /** Cost of inventory components consumed by valid completed sales — see lib/cogs.ts. */
-  cogs: number;
   /** Sum of logged expenses for the same period/branch scope. */
   expenseTotal: number;
 }
@@ -20,29 +18,32 @@ export interface FinancialMetrics {
   discountTotal: number;
   refundTotal: number;
   netSales: number;
-  cogs: number;
-  grossProfit: number;
   expenseTotal: number;
-  netProfit: number;
+  netOperatingResult: number;
 }
 
 /**
- * The one formula set every dashboard/report reads from — Simple
- * Operational Audit §2 "Correct financial metrics". VAT is never subtracted
- * a second time here: Transaction.totalAmount (and therefore grossSales -
- * discountTotal, its equivalent) is already VAT-inclusive pricing with the
- * VAT component merely extracted for display, not added on top.
+ * The one formula set every dashboard/report reads from — P2 Canonical
+ * Finance Simplification. Net Sales = Gross Sales - Discounts - Refunds;
+ * Net Operating Result = Net Sales - Operating Expenses. Inventory cost
+ * (COGS, waste valuation) is deliberately excluded from this formula: the
+ * owner-approved operational model does not derive profitability from
+ * inventory cost. Receiving/waste/adjustments/transfers remain inventory
+ * quantity events only and never affect this figure — see lib/cogs.ts,
+ * which still exists for non-finance inventory-valuation reporting but is
+ * no longer read by this function. VAT is never subtracted a second time
+ * here: Transaction.totalAmount (and therefore grossSales - discountTotal,
+ * its equivalent) is already VAT-inclusive pricing with the VAT component
+ * merely extracted for display, not added on top.
  */
 export function computeFinancialMetrics(input: FinancialMetricsInput): FinancialMetrics {
   const grossSales = round2(input.grossSales);
   const discountTotal = round2(input.discountTotal);
   const refundTotal = round2(input.refundTotal);
-  const cogs = round2(input.cogs);
   const expenseTotal = round2(input.expenseTotal);
 
   const netSales = round2(grossSales - discountTotal - refundTotal);
-  const grossProfit = round2(netSales - cogs);
-  const netProfit = round2(grossProfit - expenseTotal);
+  const netOperatingResult = round2(netSales - expenseTotal);
 
-  return { grossSales, discountTotal, refundTotal, netSales, cogs, grossProfit, expenseTotal, netProfit };
+  return { grossSales, discountTotal, refundTotal, netSales, expenseTotal, netOperatingResult };
 }

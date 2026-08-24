@@ -1082,12 +1082,8 @@ describe('branchesService.getAllBranchStats', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
-      todayCogs: 0,
-      todayGrossProfit: 500,
       todayExpenses: 100,
-      todayNetProfit: 346.43,
-      isNetProfitEstimated: false,
-      missingCostItemCount: 0,
+      todayNetOperatingResult: 346.43,
       paymentBreakdown: {
         cash: { total: 500, count: 3 },
         gcash: { total: 0, count: 0 },
@@ -1133,12 +1129,8 @@ describe('branchesService.getAllBranchStats', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
-      todayCogs: 0,
-      todayGrossProfit: 500,
       todayExpenses: 100,
-      todayNetProfit: 346.43,
-      isNetProfitEstimated: false,
-      missingCostItemCount: 0,
+      todayNetOperatingResult: 346.43,
       paymentBreakdown: {
         cash: { total: 500, count: 3 },
         gcash: { total: 0, count: 0 },
@@ -1170,7 +1162,7 @@ describe('branchesService.getAllBranchStats', () => {
     expect(branchesRepository.findAllStatsGrouped).not.toHaveBeenCalled();
   });
 
-  it('passes through the new financial fields (todayGrossSales, todayVat, todayExpenses, todayNetProfit) unchanged', async () => {
+  it('passes through the new financial fields (todayGrossSales, todayVat, todayExpenses, todayNetOperatingResult) unchanged', async () => {
     vi.mocked(branchesRepository.findAllStatsGrouped).mockResolvedValue([
       statsRow({ branchId: 'branch-1' }),
     ] as never);
@@ -1181,7 +1173,7 @@ describe('branchesService.getAllBranchStats', () => {
       todayGrossSales: 500,
       todayVat: 53.57,
       todayExpenses: 100,
-      todayNetProfit: 346.43,
+      todayNetOperatingResult: 346.43,
     });
   });
 
@@ -1194,12 +1186,8 @@ describe('branchesService.getAllBranchStats', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
-      todayCogs: 0,
-      todayGrossProfit: 500,
       todayExpenses: 100,
-      todayNetProfit: 346.43,
-      isNetProfitEstimated: false,
-      missingCostItemCount: 0,
+      todayNetOperatingResult: 346.43,
       paymentBreakdown: {
         cash: { total: 500, count: 3 },
         gcash: { total: 0, count: 0 },
@@ -1217,7 +1205,7 @@ describe('branchesService.getAllBranchStats', () => {
       todayGrossSales: 500,
       todayVat: 53.57,
       todayExpenses: 100,
-      todayNetProfit: 346.43,
+      todayNetOperatingResult: 346.43,
     });
   });
 });
@@ -1498,12 +1486,8 @@ describe('branchesService.getBranchStats (single branch)', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
-      todayCogs: 0,
-      todayGrossProfit: 500,
       todayExpenses: 100,
-      todayNetProfit: 346.43,
-      isNetProfitEstimated: false,
-      missingCostItemCount: 0,
+      todayNetOperatingResult: 346.43,
       paymentBreakdown: {
         cash: { total: 500, count: 3 },
         gcash: { total: 0, count: 0 },

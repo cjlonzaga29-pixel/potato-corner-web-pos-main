@@ -1095,12 +1095,8 @@ describe('GET /api/branches/:branchId/stats — role guard', () => {
       todayRefundTotal: 0,
       todayNetSales: 0,
       todayVat: 0,
-      todayCogs: 0,
-      todayGrossProfit: 0,
       todayExpenses: 0,
-      todayNetProfit: 0,
-      isNetProfitEstimated: false,
-      missingCostItemCount: 0,
+      todayNetOperatingResult: 0,
       paymentBreakdown: {
         cash: { total: 0, count: 0 },
         gcash: { total: 0, count: 0 },

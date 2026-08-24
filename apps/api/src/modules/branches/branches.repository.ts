@@ -4,7 +4,6 @@ import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import { dayBounds } from '../../lib/manila-time.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
-import { computeCogsForItems } from '../../lib/cogs.js';
 import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
 
 function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: number }> {
@@ -318,7 +317,6 @@ export const branchesRepository = {
       todayTransactions,
       todayRefunds,
       paymentGroups,
-      todayTransactionItems,
       activeStaffCount,
       staffTimedInCount,
       todayExpenses,
@@ -347,10 +345,6 @@ export const branchesRepository = {
         _sum: { totalAmount: true },
         _count: { _all: true },
       }),
-      prisma.transactionItem.findMany({
-        where: { transaction: { branchId, createdAt: todayRange, status: 'completed' } },
-        select: { deductionSnapshot: true },
-      }),
       prisma.userBranchAssignment.count({
         where: { branchId, removedAt: null, user: { role: 'staff' } },
       }),
@@ -369,15 +363,12 @@ export const branchesRepository = {
       countLowStock(branchId),
     ]);
 
-    const { cogs, isEstimated, missingCostItemCount } = await computeCogsForItems(
-      todayTransactionItems.map((item) => ({ branchId, deductionSnapshot: item.deductionSnapshot })),
-    );
-
+    // P2 Canonical Finance Simplification: no COGS input — inventory cost is
+    // not part of this financial model (see lib/financial-metrics.ts).
     const metrics = computeFinancialMetrics({
       grossSales: Number(todayTransactions._sum.subtotal ?? 0),
       discountTotal: Number(todayTransactions._sum.discountAmount ?? 0),
       refundTotal: Number(todayRefunds._sum.totalAmount ?? 0),
-      cogs,
       expenseTotal: Number(todayExpenses._sum.amount ?? 0),
     });
 
@@ -397,12 +388,8 @@ export const branchesRepository = {
       todayRefundTotal: metrics.refundTotal,
       todayNetSales: metrics.netSales,
       todayVat: Number(todayTransactions._sum.vatAmount ?? 0),
-      todayCogs: metrics.cogs,
-      todayGrossProfit: metrics.grossProfit,
       todayExpenses: metrics.expenseTotal,
-      todayNetProfit: metrics.netProfit,
-      isNetProfitEstimated: isEstimated,
-      missingCostItemCount,
+      todayNetOperatingResult: metrics.netOperatingResult,
       paymentBreakdown,
       activeStaffCount,
       staffTimedInCount,
@@ -441,7 +428,6 @@ export const branchesRepository = {
       txnGroups,
       refundGroups,
       paymentGroups,
-      todayTransactionItems,
       expenseGroups,
     ] = await Promise.all([
       prisma.branch.findMany({
@@ -478,10 +464,6 @@ export const branchesRepository = {
         _sum: { totalAmount: true },
         _count: { _all: true },
       }),
-      prisma.transactionItem.findMany({
-        where: { transaction: { status: 'completed', createdAt: todayRange } },
-        select: { deductionSnapshot: true, transaction: { select: { branchId: true } } },
-      }),
       prisma.expense.groupBy({
         by: ['branchId'],
         where: { deletedAt: null, incurredAt: todayRange },
@@ -494,34 +476,15 @@ export const branchesRepository = {
     // InventoryMovement ledger.
     const lowStockByBranch = await countLowStockByBranch(branches.map((b) => b.id));
 
-    const itemsByBranch = new Map<string, { branchId: string; deductionSnapshot: Prisma.JsonValue | null }[]>();
-    for (const item of todayTransactionItems) {
-      const branchId = item.transaction.branchId;
-      const list = itemsByBranch.get(branchId) ?? [];
-      list.push({ branchId, deductionSnapshot: item.deductionSnapshot });
-      itemsByBranch.set(branchId, list);
-    }
-
-    const cogsByBranch = new Map<string, Awaited<ReturnType<typeof computeCogsForItems>>>();
-    await Promise.all(
-      branches.map(async (b) => {
-        cogsByBranch.set(b.id, await computeCogsForItems(itemsByBranch.get(b.id) ?? []));
-      }),
-    );
-
     return branches.map((b) => {
       const txnGroup = txnGroups.find((g) => g.branchId === b.id);
-      const { cogs, isEstimated, missingCostItemCount } = cogsByBranch.get(b.id) ?? {
-        cogs: 0,
-        isEstimated: false,
-        missingCostItemCount: 0,
-      };
 
+      // P2 Canonical Finance Simplification: no COGS input — inventory cost
+      // is not part of this financial model (see lib/financial-metrics.ts).
       const metrics = computeFinancialMetrics({
         grossSales: Number(txnGroup?._sum.subtotal ?? 0),
         discountTotal: Number(txnGroup?._sum.discountAmount ?? 0),
         refundTotal: Number(refundGroups.find((g) => g.branchId === b.id)?._sum.totalAmount ?? 0),
-        cogs,
         expenseTotal: Number(expenseGroups.find((g) => g.branchId === b.id)?._sum.amount ?? 0),
       });
 
@@ -544,12 +507,8 @@ export const branchesRepository = {
         todayRefundTotal: metrics.refundTotal,
         todayNetSales: metrics.netSales,
         todayVat: Number(txnGroup?._sum.vatAmount ?? 0),
-        todayCogs: metrics.cogs,
-        todayGrossProfit: metrics.grossProfit,
         todayExpenses: metrics.expenseTotal,
-        todayNetProfit: metrics.netProfit,
-        isNetProfitEstimated: isEstimated,
-        missingCostItemCount,
+        todayNetOperatingResult: metrics.netOperatingResult,
         paymentBreakdown,
         lowStockIngredientCount: lowStockByBranch.get(b.id) ?? 0,
       };

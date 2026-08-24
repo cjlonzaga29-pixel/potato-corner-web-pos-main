@@ -48,15 +48,11 @@ beforeEach(() => {
 });
 
 describe('reportsRepository.getDailySales', () => {
-  // Finance waterfall fields (cogs/gross_profit/waste_cost/expense_total/
-  // operating_result) default to empty/zero here — dedicated tests below
-  // exercise them explicitly. Every pre-existing test in this block only
-  // asserts sales/discount/VAT fields, so leaving cost inputs at "no data"
-  // keeps them at their old expected values (0).
+  // P2 Canonical Finance Simplification: expense_total/net_operating_result
+  // default to zero here — dedicated tests below exercise them explicitly.
+  // No COGS/waste queries are issued by this report anymore.
   beforeEach(() => {
-    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([]);
     vi.mocked(prisma.expense.findMany).mockResolvedValue([]);
-    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([]);
   });
 
   it('buckets completed/voided/refunded transactions by report_date and branch', async () => {
@@ -75,17 +71,14 @@ describe('reportsRepository.getDailySales', () => {
         branch_name: 'SM North',
         gross_sales: 112,
         discount_total: 0,
+        refund_total: 0,
         vat_total: 12,
         net_sales: 112,
+        expense_total: 0,
+        net_operating_result: 112,
         completed_count: 1,
         voided_count: 1,
         refunded_count: 0,
-        cogs: 0,
-        gross_profit: 112,
-        waste_cost: 0,
-        expense_total: 0,
-        operating_result: 112,
-        is_profit_estimated: false,
       },
     ]);
     expect(prisma.transaction.findMany).toHaveBeenCalledWith(
@@ -142,51 +135,49 @@ describe('reportsRepository.getDailySales', () => {
     expect(row?.discount_total).toBe(40);
   });
 
-  it('wires COGS (from frozen deductionSnapshot), Waste Cost, and Expenses into gross_profit/operating_result without double-counting', async () => {
+  it('wires Expenses into net_operating_result with no COGS/waste dependency (P2 Canonical Finance Simplification)', async () => {
     vi.mocked(prisma.transaction.findMany).mockResolvedValue([
       { branchId: 'b1', status: 'completed', subtotal: decimal(1000), totalAmount: decimal(1000), discountAmount: decimal(0), vatAmount: decimal(107.14), createdAt: new Date('2026-07-01T10:00:00.000Z') },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
-    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([
-      {
-        deductionSnapshot: [{ inventoryItemId: 'item-1', quantity: 10, componentUnitCost: 30, componentCost: 300 }],
-        transaction: { branchId: 'b1', createdAt: new Date('2026-07-01T10:00:00.000Z') },
-      },
-    ] as never);
     vi.mocked(prisma.expense.findMany).mockResolvedValue([{ branchId: 'b1', amount: decimal(150), incurredAt: new Date('2026-07-01T09:00:00.000Z') }] as never);
-    vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
-      { branchId: 'b1', totalCost: decimal(50), createdAt: new Date('2026-07-01T08:00:00.000Z') },
-    ] as never);
 
     const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
 
-    // gross_sales 1000, cogs 300 -> gross_profit 700; operating_result =
-    // gross_profit(700) - waste_cost(50) - expense_total(150) = 500, and
-    // expense_total must appear exactly once (not folded into cogs/waste).
+    // gross_sales 1000, no discounts/refunds -> net_sales 1000;
+    // net_operating_result = net_sales(1000) - expense_total(150) = 850.
     expect(row).toMatchObject({
       gross_sales: 1000,
-      cogs: 300,
-      gross_profit: 700,
-      waste_cost: 50,
+      net_sales: 1000,
       expense_total: 150,
-      operating_result: 500,
-      is_profit_estimated: false,
+      net_operating_result: 850,
     });
+    expect(row).not.toHaveProperty('cogs');
+    expect(row).not.toHaveProperty('gross_profit');
+    expect(row).not.toHaveProperty('waste_cost');
+    expect(row).not.toHaveProperty('is_profit_estimated');
+    expect(prisma.transactionItem.findMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryStockMovement.findMany).not.toHaveBeenCalled();
   });
 
-  it('flags is_profit_estimated when a sale predates cost-snapshot capture', async () => {
+  it('canonical worked example: gross 10000, discounts 500, refunds 1000, expenses 2000 -> net sales 8500, net operating result 6500', async () => {
     vi.mocked(prisma.transaction.findMany).mockResolvedValue([
-      { branchId: 'b1', status: 'completed', subtotal: decimal(500), totalAmount: decimal(500), discountAmount: decimal(0), vatAmount: decimal(53.57), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+      { branchId: 'b1', status: 'completed', subtotal: decimal(10000), totalAmount: decimal(9500), discountAmount: decimal(500), vatAmount: decimal(1017.86), createdAt: new Date('2026-07-01T10:00:00.000Z') },
+      { branchId: 'b1', status: 'refunded', subtotal: decimal(1000), totalAmount: decimal(1000), discountAmount: decimal(0), vatAmount: decimal(107.14), createdAt: new Date('2026-07-01T11:00:00.000Z') },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
-    // Legacy row: no deductionSnapshot at all.
-    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([
-      { deductionSnapshot: null, transaction: { branchId: 'b1', createdAt: new Date('2026-07-01T10:00:00.000Z') } },
-    ] as never);
+    vi.mocked(prisma.expense.findMany).mockResolvedValue([{ branchId: 'b1', amount: decimal(2000), incurredAt: new Date('2026-07-01T09:00:00.000Z') }] as never);
 
     const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
 
-    expect(row?.is_profit_estimated).toBe(true);
+    expect(row).toMatchObject({
+      gross_sales: 10000,
+      discount_total: 500,
+      refund_total: 1000,
+      net_sales: 8500,
+      expense_total: 2000,
+      net_operating_result: 6500,
+    });
   });
 });
 

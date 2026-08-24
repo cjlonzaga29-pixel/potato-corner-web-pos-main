@@ -140,12 +140,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
         todayRefundTotal: 0,
         todayNetSales: 0,
         todayVat: 0,
-        todayCogs: 0,
-        todayGrossProfit: 0,
         todayExpenses: 0,
-        todayNetProfit: 0,
-        isNetProfitEstimated: false,
-        missingCostItemCount: 0,
+        todayNetOperatingResult: 0,
         paymentBreakdown: EMPTY_PAYMENT_BREAKDOWN,
         lowStockIngredientCount: 0,
       },
@@ -160,12 +156,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
         todayRefundTotal: 0,
         todayNetSales: 0,
         todayVat: 0,
-        todayCogs: 0,
-        todayGrossProfit: 0,
         todayExpenses: 0,
-        todayNetProfit: 0,
-        isNetProfitEstimated: false,
-        missingCostItemCount: 0,
+        todayNetOperatingResult: 0,
         paymentBreakdown: EMPTY_PAYMENT_BREAKDOWN,
         lowStockIngredientCount: 0,
       },
@@ -258,7 +250,7 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     );
   });
 
-  it('computes Net Sales / Gross Profit / Net Profit per branch using the shared financial-metrics formula (no VAT double-subtraction)', async () => {
+  it('computes Net Sales / Net Operating Result per branch using the shared financial-metrics formula (no VAT double-subtraction, no COGS dependency)', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
     mockTransactionGroupBy({
       txn: [
@@ -274,30 +266,16 @@ describe('branchesRepository.findAllStatsGrouped', () => {
 
     const rows = await branchesRepository.findAllStatsGrouped();
 
-    // grossSales 1120, discount 20, refund 100 -> netSales 1000; cogs 0 (no items) -> grossProfit 1000; expenses 300 -> netProfit 700
+    // grossSales 1120, discount 20, refund 100 -> netSales 1000; expenses 300 -> netOperatingResult 700
     expect(rows[0]).toMatchObject({
       todayGrossSales: 1120,
       todayDiscountTotal: 20,
       todayRefundTotal: 100,
       todayNetSales: 1000,
       todayVat: 120,
-      todayCogs: 0,
-      todayGrossProfit: 1000,
       todayExpenses: 300,
-      todayNetProfit: 700,
-      isNetProfitEstimated: false,
+      todayNetOperatingResult: 700,
     });
-  });
-
-  it('marks isNetProfitEstimated and missingCostItemCount when a branch has sold items with no resolvable cost', async () => {
-    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
-    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([
-      { deductionSnapshot: null, transaction: { branchId: 'branch-1' } },
-    ] as never);
-
-    const rows = await branchesRepository.findAllStatsGrouped();
-
-    expect(rows[0]).toMatchObject({ isNetProfitEstimated: true, missingCostItemCount: 1, todayCogs: 0 });
   });
 
   it('builds a per-branch payment breakdown from paymentMethod groupBy rows, defaulting untouched methods to zero', async () => {
@@ -346,7 +324,7 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     expect(branch1.todayGrossSales).toBe(700);
   });
 
-  it('does not leak one branch\'s transactions/items/expenses into another branch\'s totals (no double counting)', async () => {
+  it('does not leak one branch\'s transactions/expenses into another branch\'s totals (no double counting)', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }, { id: 'branch-2' }] as never);
     mockTransactionGroupBy({
       txn: [
@@ -354,10 +332,6 @@ describe('branchesRepository.findAllStatsGrouped', () => {
         { branchId: 'branch-2', _sum: { subtotal: decimal(2000), discountAmount: decimal(0), vatAmount: decimal(0) }, _count: { _all: 1 } },
       ],
     });
-    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([
-      { deductionSnapshot: [{ inventoryItemId: 'i1', quantity: 1, componentCost: 40 }], transaction: { branchId: 'branch-1' } },
-      { deductionSnapshot: [{ inventoryItemId: 'i2', quantity: 1, componentCost: 900 }], transaction: { branchId: 'branch-2' } },
-    ] as never);
     vi.mocked(prisma.expense.groupBy).mockResolvedValue([
       { branchId: 'branch-1', _sum: { amount: decimal(50) } },
       { branchId: 'branch-2', _sum: { amount: decimal(75) } },
@@ -368,8 +342,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     const branch1 = rows.find((r) => r.branchId === 'branch-1');
     const branch2 = rows.find((r) => r.branchId === 'branch-2');
 
-    expect(branch1).toMatchObject({ todayGrossSales: 1000, todayCogs: 40, todayExpenses: 50, todayNetProfit: 910 });
-    expect(branch2).toMatchObject({ todayGrossSales: 2000, todayCogs: 900, todayExpenses: 75, todayNetProfit: 1025 });
+    expect(branch1).toMatchObject({ todayGrossSales: 1000, todayExpenses: 50, todayNetOperatingResult: 950 });
+    expect(branch2).toMatchObject({ todayGrossSales: 2000, todayExpenses: 75, todayNetOperatingResult: 1925 });
 
     // Consolidated admin total should equal the plain sum of the two branch rows, not double-count either.
     const totalNetSales = rows.reduce((sum, r) => sum + r.todayNetSales, 0);
@@ -411,7 +385,7 @@ describe('branchesRepository.branchStats', () => {
     expect(stats.todayExpenses).toBe(0);
   });
 
-  it('computes Net Sales / Gross Profit / Net Profit using the shared financial-metrics formula (no VAT double-subtraction)', async () => {
+  it('computes Net Sales / Net Operating Result using the shared financial-metrics formula (no VAT double-subtraction, no COGS dependency)', async () => {
     mockTransactionAggregate(
       { _count: { _all: 5 }, _sum: { subtotal: decimal(1120), discountAmount: decimal(20), vatAmount: decimal(120) } },
       { _sum: { totalAmount: decimal(100) } },
@@ -425,11 +399,8 @@ describe('branchesRepository.branchStats', () => {
     expect(stats.todayRefundTotal).toBe(100);
     expect(stats.todayNetSales).toBe(1000);
     expect(stats.todayVat).toBe(120);
-    expect(stats.todayCogs).toBe(0);
-    expect(stats.todayGrossProfit).toBe(1000);
-    expect(stats.todayNetProfit).toBe(700);
-    expect(stats.isNetProfitEstimated).toBe(false);
-    expect(stats.missingCostItemCount).toBe(0);
+    expect(stats.todayExpenses).toBe(300);
+    expect(stats.todayNetOperatingResult).toBe(700);
   });
 
   it('counts staffTimedInCount only for active employees with a live assignment to this branch — stale/terminated/reassigned rows are excluded', async () => {
@@ -448,15 +419,6 @@ describe('branchesRepository.branchStats', () => {
     expect(prisma.attendanceRecord.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { branchId: 'branch-1', clockOutServerTime: null, deletedAt: null } }),
     );
-  });
-
-  it('flags isNetProfitEstimated and reports missingCostItemCount when a sold item has no resolvable cost, rather than silently treating COGS as zero', async () => {
-    vi.mocked(prisma.transactionItem.findMany).mockResolvedValue([{ deductionSnapshot: null }] as never);
-
-    const stats = await branchesRepository.branchStats('branch-1');
-
-    expect(stats.isNetProfitEstimated).toBe(true);
-    expect(stats.missingCostItemCount).toBe(1);
   });
 
   it('builds a payment-method breakdown of today\'s completed sales, keyed by cash/gcash/maya/other', async () => {

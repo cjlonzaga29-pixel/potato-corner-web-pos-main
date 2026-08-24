@@ -71,26 +71,21 @@ export const DailySalesReportRowSchema = z.object({
   branch_name: z.string(),
   gross_sales: z.number(),
   discount_total: z.number(),
+  refund_total: z.number(),
   vat_total: z.number(),
   net_sales: z.number(),
+  expense_total: z.number(),
+  // Canonical financial waterfall (P2 Canonical Finance Simplification):
+  // net_sales = gross_sales - discount_total - refund_total;
+  // net_operating_result = net_sales - expense_total. Sourced from the same
+  // computeFinancialMetrics() every other report/dashboard uses. COGS/gross
+  // profit/waste cost are deliberately excluded — inventory cost is not
+  // part of this financial model (receiving/waste/adjustments/transfers
+  // remain inventory quantity events only).
+  net_operating_result: z.number(),
   completed_count: z.number().int(),
   voided_count: z.number().int(),
   refunded_count: z.number().int(),
-  // Finance waterfall (Simple Operational Audit §6): net_sales - cogs =
-  // gross_profit; gross_profit - waste_cost - expense_total =
-  // operating_result. Sourced from the same computeFinancialMetrics() every
-  // other report/dashboard uses, plus waste_cost as a separate line (never
-  // folded into cogs — a wasted unit was never sold).
-  cogs: z.number(),
-  gross_profit: z.number(),
-  waste_cost: z.number(),
-  expense_total: z.number(),
-  operating_result: z.number(),
-  // True when any completed sale in this bucket had to estimate its COGS
-  // from current cost (no point-in-time capture) or had no resolvable cost
-  // at all — mirrors the dashboard's isNetProfitEstimated rule so this
-  // report never presents an inaccurate figure as definitive.
-  is_profit_estimated: z.boolean(),
 });
 export type DailySalesReportRow = z.infer<typeof DailySalesReportRowSchema>;
 

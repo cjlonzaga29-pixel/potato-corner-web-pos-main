@@ -5,7 +5,6 @@ import { classifyStockStatus } from '../universal-inventory/universal-inventory.
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
-import { computeCogsForItems } from '../../lib/cogs.js';
 import { decryptField } from '../../lib/encryption.js';
 import type {
   ReportFilters,
@@ -228,60 +227,26 @@ export const reportsRepository = {
       ...(filters.branchId && { branchId: filters.branchId }),
       ...(createdAt && { createdAt }),
     };
-    const [rows, branches, completedItems, expenseRows, wasteRows] = await Promise.all([
+    const [rows, branches, expenseRows] = await Promise.all([
       prisma.transaction.findMany({
         where,
         select: { branchId: true, status: true, subtotal: true, totalAmount: true, discountAmount: true, vatAmount: true, createdAt: true },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
-      // Same source computeCogsForItems always reads: completed sales' frozen
-      // deductionSnapshot, never a re-derivation from today's average cost.
-      prisma.transactionItem.findMany({
-        where: { transaction: { status: 'completed', ...where } },
-        select: { deductionSnapshot: true, transaction: { select: { branchId: true, createdAt: true } } },
-      }),
       prisma.expense.findMany({
         where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }), ...(createdAt && { incurredAt: createdAt }) },
         select: { branchId: true, amount: true, incurredAt: true },
-      }),
-      // Snapshotted cost on the movement itself (frozen at waste time) — never
-      // recomputed from today's average, same rule as getInventoryAnalytics's waste trends.
-      prisma.inventoryStockMovement.findMany({
-        where: { movementType: 'WASTE', ...(filters.branchId && { branchId: filters.branchId }), ...(createdAt && { createdAt }) },
-        select: { branchId: true, totalCost: true, createdAt: true },
       }),
     ]);
     const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
 
     const bucketKey = (date: Date, branchId: string) => `${manilaDateKey(date)}_${branchId}`;
 
-    const itemsByBucket = new Map<string, { branchId: string; deductionSnapshot: Prisma.JsonValue | null }[]>();
-    for (const item of completedItems) {
-      const key = bucketKey(item.transaction.createdAt, item.transaction.branchId);
-      const list = itemsByBucket.get(key) ?? [];
-      list.push({ branchId: item.transaction.branchId, deductionSnapshot: item.deductionSnapshot });
-      itemsByBucket.set(key, list);
-    }
-
     const expenseByBucket = new Map<string, number>();
     for (const expense of expenseRows) {
       const key = bucketKey(expense.incurredAt, expense.branchId);
       expenseByBucket.set(key, (expenseByBucket.get(key) ?? 0) + expense.amount.toNumber());
     }
-
-    const wasteByBucket = new Map<string, number>();
-    for (const waste of wasteRows) {
-      const key = bucketKey(waste.createdAt, waste.branchId);
-      wasteByBucket.set(key, (wasteByBucket.get(key) ?? 0) + (waste.totalCost?.toNumber() ?? 0));
-    }
-
-    const cogsByBucket = new Map<string, { cogs: number; isEstimated: boolean }>();
-    await Promise.all(
-      [...itemsByBucket.entries()].map(async ([key, items]) => {
-        const result = await computeCogsForItems(items);
-        cogsByBucket.set(key, result);
-      }),
-    );
 
     interface Bucket {
       reportDate: string;
@@ -335,19 +300,18 @@ export const reportsRepository = {
     return [...buckets.values()]
       .map((b) => {
         const key = `${b.reportDate}_${b.branchId}`;
-        const { cogs, isEstimated } = cogsByBucket.get(key) ?? { cogs: 0, isEstimated: false };
         const expenseTotal = expenseByBucket.get(key) ?? 0;
-        const wasteCost = round2(wasteByBucket.get(key) ?? 0);
         // computeFinancialMetrics is the one formula every dashboard/report
         // reads from — reusing it here (rather than re-deriving net_sales as
         // totalAmount - vatAmount) keeps this report's net_sales identical to
         // the dashboard's todayNetSales/monthly-sum for the same branch/range,
         // per the "zero calculation differences" reconciliation requirement.
+        // P2 Canonical Finance Simplification: no COGS/waste input — inventory
+        // cost is not part of this financial model (see lib/financial-metrics.ts).
         const metrics = computeFinancialMetrics({
           grossSales: b.grossSales,
           discountTotal: b.discountTotal,
           refundTotal: b.refundTotal,
-          cogs,
           expenseTotal,
         });
         return {
@@ -356,21 +320,14 @@ export const reportsRepository = {
           branch_name: b.branchName,
           gross_sales: metrics.grossSales,
           discount_total: metrics.discountTotal,
+          refund_total: metrics.refundTotal,
           vat_total: round2(b.vatTotal),
           net_sales: metrics.netSales,
+          expense_total: round2(expenseTotal),
+          net_operating_result: metrics.netOperatingResult,
           completed_count: b.completedCount,
           voided_count: b.voidedCount,
           refunded_count: b.refundedCount,
-          cogs: metrics.cogs,
-          gross_profit: metrics.grossProfit,
-          waste_cost: wasteCost,
-          expense_total: round2(expenseTotal),
-          // Waste is a separate loss line, subtracted after gross profit —
-          // never folded into COGS (a wasted unit was never sold) and never
-          // double-counted against metrics.netProfit, which already
-          // subtracts expenseTotal alone.
-          operating_result: round2(metrics.netProfit - wasteCost),
-          is_profit_estimated: isEstimated,
         };
       })
       .sort((a, b) => a.report_date.localeCompare(b.report_date) || a.branch_name.localeCompare(b.branch_name));

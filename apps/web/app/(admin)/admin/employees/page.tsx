@@ -18,7 +18,6 @@ import { AdminCreateEmployeeDialog } from '@/components/admin/employees/create-e
 
 const ROLE_FILTERS: { value: string; label: string }[] = [
   { value: 'all', label: 'All Roles' },
-  { value: 'super_admin', label: 'Super Admin' },
   { value: 'supervisor', label: 'Supervisor' },
   { value: 'staff', label: 'Staff' },
 ];

@@ -578,24 +578,27 @@ describe('employeesService.getAllEmployees', () => {
     );
   });
 
-  it('for a supervisor excludes super_admin role employees at the query level', async () => {
+  it('for a supervisor excludes super_admin and branch role employees at the query level', async () => {
     vi.mocked(employeesRepository.findAll).mockResolvedValue({ employees: [], total: 0 });
 
     await employeesService.getAllEmployees(SUPERVISOR_USER, { page: 1, limit: 25 });
 
     expect(employeesRepository.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ excludeRoles: [ROLES.SUPER_ADMIN] }),
+      expect.objectContaining({ excludeRoles: [ROLES.SUPER_ADMIN, ROLES.BRANCH] }),
     );
   });
 
-  it('for a super_admin does not restrict by branch or exclude any role', async () => {
+  // P3B P0-3 — Employees directory = staff + supervisor only, even for a
+  // super_admin caller. Super Admin and Branch accounts have their own pages
+  // and must never appear here, regardless of who is asking.
+  it('for a super_admin does not restrict by branch but still excludes super_admin and branch role employees', async () => {
     vi.mocked(employeesRepository.findAll).mockResolvedValue({ employees: [], total: 0 });
 
     await employeesService.getAllEmployees(SUPER_ADMIN_USER, { page: 1, limit: 25 });
 
     const callArgs = vi.mocked(employeesRepository.findAll).mock.calls[0]?.[0];
     expect(callArgs?.branchIds).toBeUndefined();
-    expect(callArgs?.excludeRoles).toBeUndefined();
+    expect(callArgs?.excludeRoles).toEqual([ROLES.SUPER_ADMIN, ROLES.BRANCH]);
   });
 });
 

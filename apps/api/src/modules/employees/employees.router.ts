@@ -20,8 +20,11 @@ import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
 
-const roleValues = Object.values(ROLES) as [Role, ...Role[]];
 const employmentTypeValues = Object.values(EMPLOYMENT_TYPE) as [EmploymentType, ...EmploymentType[]];
+// Employees directory = staff + supervisor only (super_admin and branch
+// accounts live on their own pages) — reject those role values at the API
+// boundary rather than silently filtering them out downstream.
+const employeeDirectoryRoleValues = [ROLES.STAFF, ROLES.SUPERVISOR] as [Role, ...Role[]];
 
 /** "true"/"false" only â€” z.coerce.boolean() would treat the literal string "false" as truthy. */
 const booleanQueryParam = z
@@ -30,7 +33,7 @@ const booleanQueryParam = z
   .optional();
 
 const listQuerySchema = z.object({
-  role: z.enum(roleValues).optional(),
+  role: z.enum(employeeDirectoryRoleValues).optional(),
   employment_type: z.enum(employmentTypeValues).optional(),
   is_active: booleanQueryParam,
   branch_id: z.uuid().optional(),

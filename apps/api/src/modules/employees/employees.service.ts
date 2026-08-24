@@ -103,11 +103,16 @@ async function assertEmployeeAccess(requestingUser: JwtPayload, employee: Employ
   }
 }
 
+// Employees directory = staff + supervisor only. Super Admin and Branch
+// accounts live on their own pages (Branch Accounts for `branch`; super_admin
+// never appears in either directory) — enforced here unconditionally so the
+// restriction cannot be bypassed by caller role or a client-supplied `role` filter.
+const EXCLUDED_EMPLOYEE_DIRECTORY_ROLES: Role[] = [ROLES.SUPER_ADMIN, ROLES.BRANCH];
+
 export const employeesService = {
   async getAllEmployees(requestingUser: JwtPayload, filters: EmployeeListQuery): Promise<EmployeeListResponse> {
     const accessible = await getAccessibleBranchIds(requestingUser);
     let branchIds: string[] | undefined;
-    let excludeRoles: Role[] | undefined;
 
     if (accessible === 'all') {
       branchIds = filters.branchId ? [filters.branchId] : undefined;
@@ -117,8 +122,8 @@ export const employeesService = {
         throw new EmployeeError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
       }
       branchIds = filters.branchId ? [filters.branchId] : accessible;
-      excludeRoles = [ROLES.SUPER_ADMIN];
     }
+    const excludeRoles = EXCLUDED_EMPLOYEE_DIRECTORY_ROLES;
 
     const { employees, total } = await employeesRepository.findAll({
       role: filters.role,

@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
+import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
 import { useDiscountAuditTrail, useTransaction, useTransactions } from '@/hooks/queries/use-transactions';
 
@@ -50,6 +51,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 });
   const [receiptTransactionId, setReceiptTransactionId] = useState<string | null>(null);
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
+  const [discountProofTransactionId, setDiscountProofTransactionId] = useState<string | null>(null);
 
   const { data: receiptTransaction } = useTransaction(receiptTransactionId);
 
@@ -121,6 +123,19 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
         if (!txn.has_payment_proof) return <span className="text-muted-foreground text-xs">No payment proof uploaded</span>;
         return (
           <Button type="button" variant="ghost" size="sm" onClick={() => setProofTransactionId(txn.id)}>
+            View Proof
+          </Button>
+        );
+      },
+    },
+    {
+      id: 'discount_proof',
+      header: 'Discount Proof',
+      cell: ({ row }) => {
+        const txn = row.original;
+        if (!txn.has_discount_proof) return <span className="text-muted-foreground text-xs">—</span>;
+        return (
+          <Button type="button" variant="ghost" size="sm" onClick={() => setDiscountProofTransactionId(txn.id)}>
             View Proof
           </Button>
         );
@@ -228,6 +243,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
 
       <ReceiptModal transaction={receiptTransaction ?? null} onClose={() => setReceiptTransactionId(null)} />
       <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
+      <ViewDiscountProofDialog transactionId={discountProofTransactionId} onOpenChange={(o) => !o && setDiscountProofTransactionId(null)} />
     </>
   );
 }

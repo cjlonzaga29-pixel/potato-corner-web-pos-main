@@ -11,6 +11,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useDiscountAuditTrail: (...args: unknown[]) => mockUseDiscountAuditTrail(...args),
   useMarkReceiptPrinted: () => ({ mutateAsync: vi.fn() }),
   usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
+  useDiscountProof: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock('@/hooks/use-auth', () => ({
@@ -34,6 +35,7 @@ const CASH_TXN = {
   total_amount: 504,
   status: 'completed',
   has_payment_proof: false,
+  has_discount_proof: false,
   created_at: '2026-07-30T23:07:29.056Z',
 };
 
@@ -168,5 +170,63 @@ describe('DailySalesDrilldown', () => {
     // several cells legitimately match — assert at least one exists rather
     // than requiring uniqueness.
     expect(within(row as HTMLElement).getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  // P3B P0-1 — Payment Proof and Discount Proof are separate evidence and
+  // must be surfaced independently, not merged.
+  it('shows Discount Proof but not Payment Proof for a cash transaction with a PWD discount proof', () => {
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [{ ...CASH_TXN, id: 'txn-cash-pwd', discount_type: 'pwd', discount_amount: 20, has_payment_proof: false, has_discount_proof: true }],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(
+      <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
+    );
+    const row = screen.getByText('PC-GMA-001-20260731-000001').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByRole('button', { name: 'View Proof' })).toBeInTheDocument();
+    expect(within(row as HTMLElement).getAllByRole('button', { name: 'View Proof' })).toHaveLength(1);
+  });
+
+  it('shows Payment Proof but not Discount Proof for a GCash transaction with no discount', () => {
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [GCASH_TXN], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(
+      <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
+    );
+    const row = screen.getByText('PC-GMA-001-20260731-000002').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getAllByRole('button', { name: 'View Proof' })).toHaveLength(1);
+  });
+
+  it('shows both Payment Proof and Discount Proof independently for a GCash transaction with a PWD discount', () => {
+    mockUseTransactions.mockReturnValue({
+      data: {
+        transactions: [{ ...GCASH_TXN, id: 'txn-gcash-pwd', discount_type: 'pwd', discount_amount: 20, has_payment_proof: true, has_discount_proof: true }],
+        total: 1,
+        page: 1,
+        limit: 100,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(
+      <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
+    );
+    const row = screen.getByText('PC-GMA-001-20260731-000002').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getAllByRole('button', { name: 'View Proof' })).toHaveLength(2);
   });
 });

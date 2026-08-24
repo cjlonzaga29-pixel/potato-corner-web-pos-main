@@ -1,26 +1,16 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 
-const {
-  mockUseDashboardSalesTrendReport,
-  mockUsePaymentMethodMixReport,
-  mockUseInventoryAnalytics,
-  mockUseReportsTrendsRealtimeSync,
-  mockUseInventoryAnalyticsRealtimeSync,
-} = vi.hoisted(() => ({
+const { mockUseDashboardSalesTrendReport, mockUsePaymentMethodMixReport, mockUseReportsTrendsRealtimeSync } = vi.hoisted(() => ({
   mockUseDashboardSalesTrendReport: vi.fn(),
   mockUsePaymentMethodMixReport: vi.fn(),
-  mockUseInventoryAnalytics: vi.fn(),
   mockUseReportsTrendsRealtimeSync: vi.fn(),
-  mockUseInventoryAnalyticsRealtimeSync: vi.fn(),
 }));
 
 vi.mock('@/hooks/queries/use-reports', () => ({
   useDashboardSalesTrendReport: mockUseDashboardSalesTrendReport,
   usePaymentMethodMixReport: mockUsePaymentMethodMixReport,
-  useInventoryAnalytics: mockUseInventoryAnalytics,
   useReportsTrendsRealtimeSync: mockUseReportsTrendsRealtimeSync,
-  useInventoryAnalyticsRealtimeSync: mockUseInventoryAnalyticsRealtimeSync,
 }));
 
 vi.mock('@/components/shared/charts/kpi-card', () => ({
@@ -55,23 +45,24 @@ function mockDefaults() {
     isError: false,
     refetch: vi.fn(),
   });
-  mockUseInventoryAnalytics.mockReturnValue({
-    data: { summary: { total_consumption_cost: 400, total_waste_cost: 0, avg_turnover_rate: 0, total_movements: 0 } },
-    isLoading: false,
-    isError: false,
-    refetch: vi.fn(),
-  });
 }
 
 describe('SalesAnalyticsSection', () => {
-  it('renders Gross Sales summed from the trend report and Inventory Cost Consumed from the same-period inventory analytics summary', () => {
+  it('renders Gross Sales summed from the trend report', () => {
     mockDefaults();
     render(<SalesAnalyticsSection branchId={undefined} />);
 
     expect(screen.getByText('Gross Sales — Last 7 Days')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
-    expect(screen.getByText('Inventory Cost Consumed')).toBeInTheDocument();
-    expect(screen.getByText('₱400')).toBeInTheDocument();
+  });
+
+  // P3B P0-2 — Inventory Cost Consumed KPI removed from the shared dashboard
+  // component; no replacement cost/valuation metric was introduced.
+  it('does not render an Inventory Cost Consumed KPI or call inventory-analytics hooks', () => {
+    mockDefaults();
+    render(<SalesAnalyticsSection branchId={undefined} />);
+
+    expect(screen.queryByText('Inventory Cost Consumed')).not.toBeInTheDocument();
   });
 
   it('scopes every underlying query to the given branchId', () => {
@@ -80,20 +71,18 @@ describe('SalesAnalyticsSection', () => {
 
     expect(mockUseDashboardSalesTrendReport).toHaveBeenCalledWith(expect.objectContaining({ branch_id: 'branch-1' }));
     expect(mockUsePaymentMethodMixReport).toHaveBeenCalledWith(expect.objectContaining({ branch_id: 'branch-1' }));
-    expect(mockUseInventoryAnalytics).toHaveBeenCalledWith('branch-1', '7d');
   });
 
-  it('calls both realtime sync hooks on mount', () => {
+  it('calls the realtime sync hook on mount', () => {
     mockDefaults();
     render(<SalesAnalyticsSection branchId={undefined} />);
 
     expect(mockUseReportsTrendsRealtimeSync).toHaveBeenCalled();
-    expect(mockUseInventoryAnalyticsRealtimeSync).toHaveBeenCalled();
   });
 
   it('renders an error state with retry when any underlying query errors', () => {
     mockDefaults();
-    mockUseInventoryAnalytics.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
+    mockUsePaymentMethodMixReport.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
     render(<SalesAnalyticsSection branchId={undefined} />);
 
     expect(screen.getByText(/something went wrong|error/i)).toBeInTheDocument();

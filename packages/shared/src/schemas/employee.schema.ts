@@ -131,6 +131,21 @@ export const resetEmployeePasswordSchema = z.object({
   new_password: strongPasswordSchema.optional(),
 });
 
+/**
+ * Super-Admin-only Branch Account credential edit (Edit Account dialog on the
+ * Branch Accounts page). Unlike updateEmployeeSchema, email is editable here
+ * — the "immutable after creation" rule above applies to the general
+ * Employees directory, not to branch login accounts. Both fields are
+ * optional: omitting new_password keeps the existing password unchanged, and
+ * a password supplied here becomes permanent (does not force
+ * mustChangePassword) — see employees.service.ts's
+ * updateBranchAccountCredentials.
+ */
+export const updateBranchAccountCredentialsSchema = z.object({
+  email: z.email().optional(),
+  new_password: strongPasswordSchema.optional(),
+});
+
 export const employeeBranchAssignmentSchema = z.object({
   branch_id: z.uuid(),
   branch_name: z.string(),

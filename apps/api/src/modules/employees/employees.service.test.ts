@@ -12,6 +12,7 @@ vi.mock('./employees.repository.js', () => ({
     generateEmployeeId: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    updateEmail: vi.fn(),
     deactivate: vi.fn(),
     reactivate: vi.fn(),
     updateBranchAssignments: vi.fn(),
@@ -526,6 +527,118 @@ describe('employeesService.resetEmployeePassword', () => {
     ).rejects.toMatchObject({ code: 'EMPLOYEE_HAS_NO_CREDENTIALS', statusCode: 400 });
 
     expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('employeesService.updateBranchAccountCredentials', () => {
+  const targetEmployee = buildEmployee({
+    id: 'emp-1',
+    role: ROLES.BRANCH,
+    email: 'branch@example.com',
+    mustChangePassword: false,
+  });
+
+  it('updates email only, revokes sessions, and never touches the password', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.updateEmail).mockResolvedValue(
+      buildEmployee({ id: 'emp-1', role: ROLES.BRANCH, email: 'new@example.com' }) as never,
+    );
+
+    await employeesService.updateBranchAccountCredentials('emp-1', { email: 'new@example.com' }, ACTOR, null);
+
+    expect(employeesRepository.updateEmail).toHaveBeenCalledWith('emp-1', 'new@example.com');
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('emp-1');
+  });
+
+  it('sets a permanent password (mustChangePassword: false), not a forced-change one', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+
+    await employeesService.updateBranchAccountCredentials('emp-1', { new_password: 'NewPassword1!' }, ACTOR, null);
+
+    expect(authRepository.updatePasswordAndSetMustChange).toHaveBeenCalledWith('emp-1', expect.any(String), false);
+    expect(employeesRepository.updateEmail).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('emp-1');
+  });
+
+  it('updates both email and password in one call', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.updateEmail).mockResolvedValue(
+      buildEmployee({ id: 'emp-1', role: ROLES.BRANCH, email: 'new@example.com' }) as never,
+    );
+
+    await employeesService.updateBranchAccountCredentials(
+      'emp-1',
+      { email: 'new@example.com', new_password: 'NewPassword1!' },
+      ACTOR,
+      null,
+    );
+
+    expect(employeesRepository.updateEmail).toHaveBeenCalledWith('emp-1', 'new@example.com');
+    expect(authRepository.updatePasswordAndSetMustChange).toHaveBeenCalledWith('emp-1', expect.any(String), false);
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaving new_password blank keeps the existing password hash unchanged', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.updateEmail).mockResolvedValue(
+      buildEmployee({ id: 'emp-1', role: ROLES.BRANCH, email: 'new@example.com' }) as never,
+    );
+
+    await employeesService.updateBranchAccountCredentials('emp-1', { email: 'new@example.com' }, ACTOR, null);
+
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
+  });
+
+  it('accepts an unchanged email as a no-op (case/whitespace-insensitive) without a duplicate check or session revocation', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+
+    await employeesService.updateBranchAccountCredentials('emp-1', { email: '  Branch@Example.com  ' }, ACTOR, null);
+
+    expect(employeesRepository.findByEmail).not.toHaveBeenCalled();
+    expect(employeesRepository.updateEmail).not.toHaveBeenCalled();
+    expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('rejects a duplicate email already owned by another account', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+    vi.mocked(employeesRepository.findByEmail).mockResolvedValue({ id: 'someone-else' } as never);
+
+    await expect(
+      employeesService.updateBranchAccountCredentials('emp-1', { email: 'taken@example.com' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'EMAIL_ALREADY_EXISTS', statusCode: 409 });
+
+    expect(employeesRepository.updateEmail).not.toHaveBeenCalled();
+  });
+
+  it('rejects targeting a non-branch account (e.g. supervisor or staff)', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ id: 'emp-1', role: ROLES.SUPERVISOR }) as never);
+
+    await expect(
+      employeesService.updateBranchAccountCredentials('emp-1', { new_password: 'NewPassword1!' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'NOT_A_BRANCH_ACCOUNT', statusCode: 400 });
+
+    expect(authRepository.updatePasswordAndSetMustChange).not.toHaveBeenCalled();
+  });
+
+  it('records an audit log entry with only safe metadata, never the password or its hash', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
+
+    await employeesService.updateBranchAccountCredentials('emp-1', { new_password: 'NewPassword1!' }, ACTOR, null);
+
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'BRANCH_ACCOUNT_UPDATED',
+        entityType: 'user',
+        entityId: 'emp-1',
+        afterState: expect.objectContaining({ email_changed: false, password_changed: true }),
+      }),
+    );
+    const call = vi.mocked(recordAuditLog).mock.calls[0]?.[0];
+    expect(JSON.stringify(call)).not.toMatch(/NewPassword1!/);
   });
 });
 

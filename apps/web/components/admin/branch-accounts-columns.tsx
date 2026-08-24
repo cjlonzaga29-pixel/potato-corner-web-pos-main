@@ -3,19 +3,18 @@
 import { useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Button } from '@/components/ui/button';
-import { ResetBranchPasswordDialog } from '@/components/admin/reset-branch-password-dialog';
+import { EditBranchAccountDialog } from '@/components/admin/edit-branch-account-dialog';
 import type { BranchAccountOverview } from '@/hooks/queries/use-branches';
 
-function PasswordCell({ account }: { account: BranchAccountOverview }) {
+function ActionsCell({ account }: { account: BranchAccountOverview }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="flex items-center gap-2">
-      <p className="font-mono text-sm text-muted-foreground">••••••••</p>
+    <>
       <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
-        Reset Password
+        Edit
       </Button>
-      {open && <ResetBranchPasswordDialog open={open} onOpenChange={setOpen} account={account} />}
-    </div>
+      {open && <EditBranchAccountDialog open={open} onOpenChange={setOpen} account={account} />}
+    </>
   );
 }
 
@@ -33,9 +32,9 @@ export function createBranchAccountsColumns(): ColumnDef<BranchAccountOverview>[
     },
     { accessorKey: 'email', header: 'Email' },
     {
-      id: 'password',
-      header: 'Password',
-      cell: ({ row }) => <PasswordCell account={row.original} />,
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => <ActionsCell account={row.original} />,
     },
   ];
 }

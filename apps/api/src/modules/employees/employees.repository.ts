@@ -184,6 +184,11 @@ export const employeesRepository = {
     return prisma.user.update({ where: { id }, data, select: employeeSelect });
   },
 
+  /** Single-column write for Branch Account credential edit — email is otherwise immutable via update() (UpdateEmployeeData excludes it). */
+  updateEmail(id: string, email: string) {
+    return prisma.user.update({ where: { id }, data: { email }, select: employeeSelect });
+  },
+
   deactivate(id: string, deactivatedBy: string, reason: string) {
     return prisma.user.update({
       where: { id },

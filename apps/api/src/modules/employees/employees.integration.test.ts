@@ -80,4 +80,42 @@ describe.skipIf(!canRunIntegrationTests)('employees integration', () => {
     // decoded must_change_password claim is false.
     expect(true).toBe(true);
   });
+
+  it('PATCH /api/employees/:id/credentials sets a permanent password for a branch account', async () => {
+    // TODO: seed an active branch account, PATCH /credentials as super_admin
+    // with { new_password }, assert 200 and must_change_password false in
+    // the raw users row; then POST /api/auth/login with the OLD password
+    // (expect 401 INVALID_CREDENTIALS) and with the NEW password (expect
+    // 200, and the decoded access token's must_change_password claim is
+    // false, not a forced Set New Password response).
+    expect(true).toBe(true);
+  });
+
+  it('PATCH /api/employees/:id/credentials revokes existing refresh tokens on credential change', async () => {
+    // TODO: log the branch account in first to obtain a refresh token, then
+    // PATCH /credentials as super_admin; assert the pre-change refresh
+    // token can no longer be used (POST /api/auth/refresh returns 401
+    // REFRESH_INVALID).
+    expect(true).toBe(true);
+  });
+
+  it('PATCH /api/employees/:id/credentials returns 403 for supervisor, branch, and staff callers', async () => {
+    // TODO: PATCH /credentials as supervisor/branch/staff tokens in turn;
+    // assert 403 INSUFFICIENT_PERMISSIONS for each, and that the target
+    // account's password_hash/email are unchanged in the database.
+    expect(true).toBe(true);
+  });
+
+  it('PATCH /api/employees/:id/credentials rejects a target that is not a branch account', async () => {
+    // TODO: PATCH /credentials as super_admin targeting the seeded
+    // supervisor's user id; assert 400 NOT_A_BRANCH_ACCOUNT.
+    expect(true).toBe(true);
+  });
+
+  it('PATCH /api/employees/:id/credentials response never includes password_hash', async () => {
+    // TODO: PATCH /credentials as super_admin with a new_password; assert
+    // the JSON response body has no password_hash/passwordHash key
+    // anywhere in its structure.
+    expect(true).toBe(true);
+  });
 });

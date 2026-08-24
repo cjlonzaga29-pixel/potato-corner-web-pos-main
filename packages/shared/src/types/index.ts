@@ -22,6 +22,7 @@ export type CreateEmployeeInput = z.infer<typeof schemas.createEmployeeSchema>;
 export type UpdateEmployeeInput = z.infer<typeof schemas.updateEmployeeSchema>;
 export type DeactivateEmployeeInput = z.infer<typeof schemas.deactivateEmployeeSchema>;
 export type ResetEmployeePasswordInput = z.infer<typeof schemas.resetEmployeePasswordSchema>;
+export type UpdateBranchAccountCredentialsInput = z.infer<typeof schemas.updateBranchAccountCredentialsSchema>;
 export type EmployeeBranchAssignment = z.infer<typeof schemas.employeeBranchAssignmentSchema>;
 export type EmployeeResponse = z.infer<typeof schemas.employeeResponseSchema>;
 export type EmployeePayrollResponse = z.infer<typeof schemas.employeePayrollResponseSchema>;

@@ -202,30 +202,31 @@ export function useSetEmployeeStatus(employeeId: string) {
   });
 }
 
-export interface ResetEmployeePasswordInput {
+export interface UpdateBranchAccountCredentialsInput {
+  email?: string;
   new_password?: string;
 }
 
-export interface ResetEmployeePasswordResult {
-  success: boolean;
-  temporary_password: string | null;
-}
-
 /**
- * Admin/supervisor/branch-scoped password reset. Omitting new_password has
- * the server generate a secure temporary password, returned exactly once in
- * the response — the caller must display/copy it immediately, since it is
- * never persisted in plaintext and cannot be retrieved again afterward.
+ * Super-Admin-only Branch Account credential edit. Omitting a field leaves
+ * it unchanged — a supplied new_password becomes the account's permanent
+ * password (no forced change on next login).
  */
-export function useResetEmployeePassword(employeeId: string) {
+export function useUpdateBranchAccountCredentials(employeeId: string) {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: ResetEmployeePasswordInput) => {
-      const response = await apiClient<ResetEmployeePasswordResult>(`/api/employees/${employeeId}/reset-password`, {
-        method: 'POST',
+    mutationFn: async (input: UpdateBranchAccountCredentialsInput) => {
+      const response = await apiClient<EmployeeResponse>(`/api/employees/${employeeId}/credentials`, {
+        method: 'PATCH',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to reset password'));
+      if (!response.data) throwEmployeeApiError(response, 'Failed to update branch account');
       return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['branches', 'accounts-overview'] });
+      void queryClient.invalidateQueries({ queryKey: ['employee', employeeId] });
+      toast.success('Branch account updated');
     },
     onError: (error: Error) => toast.error(error.message),
   });

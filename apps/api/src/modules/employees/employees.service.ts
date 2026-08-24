@@ -12,6 +12,7 @@ import {
   type JwtPayload,
   type Role,
   type UpdateEmployeeInput,
+  type UpdateBranchAccountCredentialsInput,
 } from '@potato-corner/shared';
 import { employeesRepository, type EmployeeWithAssignments, type EmployeeWithGovernmentIds } from './employees.repository.js';
 import { EmployeeError } from './employees.types.js';
@@ -529,6 +530,74 @@ export const employeesService = {
     });
 
     return generatedPassword ? { temporaryPassword: generatedPassword } : {};
+  },
+
+  /**
+   * Super-Admin-only Branch Account credential edit (Edit Account dialog).
+   * Unlike resetEmployeePassword, a password set here is PERMANENT —
+   * mustChangePassword is explicitly cleared, not forced. Router-level
+   * adminOnly already restricts callers to super_admin; the role check below
+   * additionally rejects targeting any non-branch account so an arbitrary
+   * valid user id (supervisor/staff/super_admin) can't be edited through
+   * this branch-accounts-specific endpoint.
+   */
+  async updateBranchAccountCredentials(
+    employeeId: string,
+    data: UpdateBranchAccountCredentialsInput,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<EmployeeResponse> {
+    const employee = await employeesRepository.findById(employeeId);
+    if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    if (employee.role !== ROLES.BRANCH) {
+      throw new EmployeeError('NOT_A_BRANCH_ACCOUNT', 'This endpoint only edits branch login accounts', 400);
+    }
+
+    let emailChanged = false;
+    let normalizedEmail: string | undefined;
+    if (data.email) {
+      normalizedEmail = normalizeEmail(data.email);
+      if (normalizedEmail !== normalizeEmail(employee.email as string)) {
+        const existing = await employeesRepository.findByEmail(normalizedEmail);
+        if (existing && existing.id !== employeeId) {
+          throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'This email is already in use', 409);
+        }
+        emailChanged = true;
+      }
+    }
+
+    const passwordChanged = Boolean(data.new_password);
+
+    if (emailChanged && normalizedEmail) {
+      await employeesRepository.updateEmail(employeeId, normalizedEmail);
+    }
+    if (passwordChanged) {
+      const passwordHash = await bcrypt.hash(data.new_password as string, BCRYPT_COST_FACTOR);
+      // mustChangePassword: false — the core business rule distinguishing this
+      // path from resetEmployeePassword's forced-change temporary password.
+      await authRepository.updatePasswordAndSetMustChange(employeeId, passwordHash, false);
+    }
+    if (emailChanged || passwordChanged) {
+      // Identity/login claims (email) are embedded in the branch JWT payload,
+      // and the password itself changed — either way, existing sessions must
+      // not keep trusting stale credentials.
+      await authRepository.revokeAllUserTokens(employeeId);
+    }
+
+    await recordAuditLog({
+      action: 'BRANCH_ACCOUNT_UPDATED',
+      entityType: 'user',
+      entityId: employeeId,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId: employee.branchAssignments[0]?.branchId,
+      beforeState: { email: employee.email },
+      afterState: { email: emailChanged ? normalizedEmail : employee.email, email_changed: emailChanged, password_changed: passwordChanged },
+      ipAddress,
+    });
+
+    const updated = emailChanged ? await employeesRepository.findById(employeeId) : employee;
+    return toEmployeeResponse(updated as EmployeeWithAssignments);
   },
 
   async getEmployeeActivity(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeActivityResponse> {

@@ -5,6 +5,7 @@ import {
   updateEmployeeSchema,
   deactivateEmployeeSchema,
   resetEmployeePasswordSchema,
+  updateBranchAccountCredentialsSchema,
   setEmployeeStatusSchema,
   ROLES,
   EMPLOYMENT_TYPE,
@@ -225,6 +226,28 @@ router.post(
       const { new_password } = req.body as { new_password?: string };
       const result = await employeesService.resetEmployeePassword(req.params.employeeId as string, new_password, req.user, req.ip ?? null);
       res.status(200).json({ data: { success: true, temporary_password: result.temporaryPassword ?? null }, error: null, meta: null });
+    } catch (error) {
+      handleEmployeeError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/:employeeId/credentials',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updateBranchAccountCredentialsSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const employee = await employeesService.updateBranchAccountCredentials(
+        req.params.employeeId as string,
+        req.body,
+        req.user,
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: employee, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);
     }

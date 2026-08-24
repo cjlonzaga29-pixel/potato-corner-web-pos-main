@@ -146,9 +146,9 @@ export function AdminSidebar() {
                   href={firstChildHref}
                   prefetch={false}
                   className={cn(
-                    'flex items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150',
                     groupActive
-                      ? 'bg-primary text-primary-foreground'
+                      ? 'bg-primary/10 font-semibold text-primary'
                       : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                   )}
                 >
@@ -174,9 +174,9 @@ export function AdminSidebar() {
                   onClick={() => setExpandedGroups((prev) => ({ ...prev, [item.label]: !expanded }))}
                   aria-expanded={expanded}
                   className={cn(
-                    'flex w-full items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150',
                     groupActive
-                      ? 'text-foreground'
+                      ? 'font-semibold text-foreground'
                       : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                   )}
                 >
@@ -194,9 +194,9 @@ export function AdminSidebar() {
                           href={child.href}
                           prefetch={false}
                           className={cn(
-                            'flex items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                            'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150',
                             childActive
-                              ? 'bg-primary text-primary-foreground'
+                              ? 'bg-primary/10 font-semibold text-primary'
                               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                           )}
                         >
@@ -217,9 +217,9 @@ export function AdminSidebar() {
               href={item.href as string}
               prefetch={false}
               className={cn(
-                'flex items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150',
                 isActive
-                  ? 'bg-primary text-primary-foreground'
+                  ? 'bg-primary/10 font-semibold text-primary'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
               )}
             >
@@ -301,7 +301,7 @@ export function AdminSidebar() {
                   {sectionHeading}
                   <p
                     className={cn(
-                      'flex min-h-11 items-center gap-3 rounded-full px-3 py-2 text-sm font-semibold',
+                      'flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-semibold',
                       groupActive ? 'text-foreground' : 'text-muted-foreground',
                     )}
                   >
@@ -318,9 +318,9 @@ export function AdminSidebar() {
                           prefetch={false}
                           onClick={() => setMobileNavOpen(false)}
                           className={cn(
-                            'flex min-h-11 items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                            'flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150',
                             childActive
-                              ? 'bg-primary text-primary-foreground'
+                              ? 'bg-primary/10 font-semibold text-primary'
                               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                           )}
                         >
@@ -343,9 +343,9 @@ export function AdminSidebar() {
                   prefetch={false}
                   onClick={() => setMobileNavOpen(false)}
                   className={cn(
-                    'flex min-h-11 items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all duration-150',
+                    'flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150',
                     isActive
-                      ? 'bg-primary text-primary-foreground'
+                      ? 'bg-primary/10 font-semibold text-primary'
                       : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                   )}
                 >

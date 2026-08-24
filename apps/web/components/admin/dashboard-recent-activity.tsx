@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo } from 'react';
+import { History } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -38,7 +39,12 @@ export function DashboardRecentActivity({ branchId }: { branchId: string | undef
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-sm font-medium">Recent Activity</CardTitle>
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <History className="h-4 w-4" />
+          </div>
+          <CardTitle className="text-sm font-medium">Recent Activity</CardTitle>
+        </div>
         <Button variant="link" size="sm" className="h-auto p-0" asChild>
           <Link href="/admin/reports">View All</Link>
         </Button>
@@ -64,7 +70,7 @@ export function DashboardRecentActivity({ branchId }: { branchId: string | undef
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className="font-medium">{formatCurrency(txn.total_amount)}</span>
+                  <span className="font-semibold tabular-nums">{formatCurrency(txn.total_amount)}</span>
                   <StatusBadge status={txn.status} type="transaction" />
                 </div>
               </li>

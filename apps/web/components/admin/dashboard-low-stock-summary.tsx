@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo } from 'react';
+import { PackageSearch } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -39,7 +40,12 @@ export function DashboardLowStockSummary({ branchId }: DashboardLowStockSummaryP
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-sm font-medium">Low Stock Summary</CardTitle>
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-warning/10 text-warning">
+            <PackageSearch className="h-4 w-4" />
+          </div>
+          <CardTitle className="text-sm font-medium">Low Stock Summary</CardTitle>
+        </div>
         <Button variant="link" size="sm" className="h-auto p-0" asChild>
           <Link href="/admin/inventory">View Inventory</Link>
         </Button>
@@ -59,7 +65,7 @@ export function DashboardLowStockSummary({ branchId }: DashboardLowStockSummaryP
                 className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
               >
                 <span className="min-w-0 truncate font-medium">{branch.branch_name}</span>
-                <span className="shrink-0 text-muted-foreground">
+                <span className="shrink-0 text-warning">
                   {branch.low_stock_count} low
                   {branch.critical_stock_count > 0 && `, ${branch.critical_stock_count} critical`}
                   {branch.out_of_stock_count > 0 && `, ${branch.out_of_stock_count} out of stock`}

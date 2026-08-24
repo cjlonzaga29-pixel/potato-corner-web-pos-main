@@ -3,12 +3,14 @@
 import { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
-import { ChartSkeleton } from '@/components/shared/charts/chart-skeleton';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
+import { useDensityMode } from '@/hooks/use-density-mode';
+import { DENSITY_CHART_HEIGHT } from '@/lib/density-tokens';
 import { useDashboardSalesTrendReport, usePaymentMethodMixReport, useReportsTrendsRealtimeSync } from '@/hooks/queries/use-reports';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
@@ -35,6 +37,8 @@ interface SalesAnalyticsSectionProps {
  */
 export function SalesAnalyticsSection({ branchId }: SalesAnalyticsSectionProps) {
   const [period, setPeriod] = useState<Period>('7d');
+  const densityMode = useDensityMode();
+  const chartHeight = DENSITY_CHART_HEIGHT[densityMode];
   useReportsTrendsRealtimeSync();
 
   const filters = {
@@ -108,27 +112,32 @@ export function SalesAnalyticsSection({ branchId }: SalesAnalyticsSectionProps) 
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader>
+          <CardHeader className="app-card-padding pb-2">
             <CardTitle className="text-sm font-medium">Gross Sales ({PERIOD_LABEL[period]})</CardTitle>
           </CardHeader>
-          <CardContent>
-            {isLoading ? <ChartSkeleton /> : (
+          <CardContent className="app-card-padding pt-0">
+            {isLoading ? <Skeleton style={{ height: chartHeight }} className="w-full" /> : (
               <AreaChart
                 data={trendData}
                 areas={[{ dataKey: 'gross_sales', color: paletteColor(0), name: 'Gross Sales' }]}
                 xAxisKey="report_date"
                 animate={false}
+                height={chartHeight}
               />
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="app-card-padding pb-2">
             <CardTitle className="text-sm font-medium">Payment Breakdown</CardTitle>
           </CardHeader>
-          <CardContent>
-            {isLoading ? <ChartSkeleton /> : <DonutChart data={paymentBreakdownData} animate={false} />}
+          <CardContent className="app-card-padding pt-0">
+            {isLoading ? (
+              <Skeleton style={{ height: chartHeight }} className="w-full" />
+            ) : (
+              <DonutChart data={paymentBreakdownData} animate={false} height={chartHeight} />
+            )}
           </CardContent>
         </Card>
       </div>

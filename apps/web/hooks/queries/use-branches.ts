@@ -105,12 +105,8 @@ export interface BranchStatsOverview {
   todayRefundTotal: number;
   todayNetSales: number;
   todayVat: number;
-  todayCogs: number;
-  todayGrossProfit: number;
   todayExpenses: number;
-  todayNetProfit: number;
-  isNetProfitEstimated: boolean;
-  missingCostItemCount: number;
+  todayNetOperatingResult: number;
   paymentBreakdown: PaymentBreakdown;
   todayTransactionCount: number;
   lowStockIngredientCount: number;

@@ -41,16 +41,13 @@ function mockDefaults() {
           gross_sales: 1000,
           net_sales: 900,
           discount_total: 0,
+          refund_total: 100,
           vat_total: 0,
           completed_count: 10,
           voided_count: 0,
-          refunded_count: 0,
-          cogs: 400,
-          gross_profit: 500,
-          waste_cost: 20,
+          refunded_count: 1,
           expense_total: 100,
-          operating_result: 380,
-          is_profit_estimated: false,
+          net_operating_result: 800,
         },
         {
           report_date: '2026-07-02',
@@ -59,16 +56,13 @@ function mockDefaults() {
           gross_sales: 500,
           net_sales: 450,
           discount_total: 0,
+          refund_total: 50,
           vat_total: 0,
           completed_count: 5,
           voided_count: 0,
-          refunded_count: 0,
-          cogs: 200,
-          gross_profit: 250,
-          waste_cost: 10,
+          refunded_count: 1,
           expense_total: 200,
-          operating_result: 40,
-          is_profit_estimated: false,
+          net_operating_result: 250,
         },
       ],
     },
@@ -85,24 +79,28 @@ function mockDefaults() {
 }
 
 describe('FinancialSummaryPanel', () => {
-  it('P1 cost UI retirement — renders only Gross Sales/Discounts/Net Sales/Operating Expenses summed from DAILY_SALES rows, with no COGS/Gross Profit/Gross Margin/Waste Cost/Operating Result/Waterfall', () => {
+  it('P2 Canonical Finance Simplification — renders Gross Sales/Discounts/Refunds/Net Sales/Operating Expenses/Net Operating Result summed from DAILY_SALES rows, with no COGS/Gross Profit/Gross Margin/Waste Cost/Waterfall', () => {
     mockDefaults();
     render(<FinancialSummaryPanel branchId={null} dateFrom="2026-07-01" dateTo="2026-07-02" />);
 
     expect(screen.getByText('Gross Sales')).toBeInTheDocument();
     expect(screen.getByText('₱1500')).toBeInTheDocument();
     expect(screen.getByText('Discounts')).toBeInTheDocument();
+    expect(screen.getByText('Refunds')).toBeInTheDocument();
+    expect(screen.getByText('₱150')).toBeInTheDocument();
     expect(screen.getByText('Net Sales')).toBeInTheDocument();
     expect(screen.getByText('₱1350')).toBeInTheDocument();
     expect(screen.getByText('Operating Expenses')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();
+    expect(screen.getByText('Net Operating Result')).toBeInTheDocument();
+    expect(screen.getByText('₱1050')).toBeInTheDocument();
 
     expect(screen.queryByText('Cost of Goods Sold')).not.toBeInTheDocument();
     expect(screen.queryByText('Gross Profit')).not.toBeInTheDocument();
     expect(screen.queryByText('Gross Margin')).not.toBeInTheDocument();
     expect(screen.queryByText('Waste Cost')).not.toBeInTheDocument();
-    expect(screen.queryByText('Operating Result')).not.toBeInTheDocument();
     expect(screen.queryByText('Financial Waterfall')).not.toBeInTheDocument();
+    expect(screen.queryByText('Net Profit')).not.toBeInTheDocument();
   });
 
   it('renders an error state with retry when any underlying query errors', () => {

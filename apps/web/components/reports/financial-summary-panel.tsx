@@ -66,20 +66,21 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
   // CSV/PDF export show, so this panel never diverges from them (no second
   // financial formula engine).
   //
-  // COGS/Gross Profit/Gross Margin/Waste Cost/Operating Result are
-  // intentionally not surfaced here (P1 cost UI retirement) — the backend
-  // still computes them, but Operating Result's formula still nets COGS/
-  // waste against sales, which would be a misleading label until P2
-  // redefines it as Net Sales minus Operating Expenses. Do not reintroduce
-  // these cards without that backend change landing first.
+  // COGS/Gross Profit/Gross Margin/Waste Cost are intentionally not surfaced
+  // here (P1 cost UI retirement, made permanent by P2 Canonical Finance
+  // Simplification) — inventory cost is not part of this financial model.
+  // Net Operating Result is Net Sales minus Operating Expenses only; do not
+  // relabel it "Net Profit".
   const rows = salesTrend.data?.data;
-  const { grossSales, discountTotal, netSales, totalExpenses } = useMemo(() => {
+  const { grossSales, discountTotal, refundTotal, netSales, totalExpenses, netOperatingResult } = useMemo(() => {
     const data = rows ?? [];
     return {
       grossSales: data.reduce((sum, row) => sum + row.gross_sales, 0),
       discountTotal: data.reduce((sum, row) => sum + row.discount_total, 0),
+      refundTotal: data.reduce((sum, row) => sum + row.refund_total, 0),
       netSales: data.reduce((sum, row) => sum + row.net_sales, 0),
       totalExpenses: data.reduce((sum, row) => sum + row.expense_total, 0),
+      netOperatingResult: data.reduce((sum, row) => sum + row.net_operating_result, 0),
     };
   }, [rows]);
 
@@ -124,8 +125,17 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
           tooltip={`Completed sales from ${dateFrom} to ${dateTo}, before discounts/refunds.`}
         />
         <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tooltip="PWD, Senior, and other discounts applied to completed sales." />
+        <KpiCard title="Refunds" value={refundTotal} prefix="₱" isLoading={isLoading} tooltip="Value of completed sales later refunded, for the selected range." />
         <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} emphasize tooltip="Gross Sales minus discounts and refunds." />
         <KpiCard title="Operating Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} tooltip="Recorded Expenses for the selected range." />
+        <KpiCard
+          title="Net Operating Result"
+          value={netOperatingResult}
+          prefix="₱"
+          isLoading={isLoading}
+          emphasize
+          tooltip="Net Sales minus Operating Expenses. Does not account for inventory cost."
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

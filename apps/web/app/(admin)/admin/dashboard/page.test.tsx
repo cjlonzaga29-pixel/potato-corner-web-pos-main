@@ -140,12 +140,8 @@ function branchStat(overrides: Record<string, unknown> = {}) {
     todayRefundTotal: 0,
     todayNetSales: 0,
     todayVat: 0,
-    todayCogs: 0,
-    todayGrossProfit: 0,
     todayExpenses: 0,
-    todayNetProfit: 0,
-    isNetProfitEstimated: false,
-    missingCostItemCount: 0,
+    todayNetOperatingResult: 0,
     paymentBreakdown: {
       cash: { total: 0, count: 0 },
       gcash: { total: 0, count: 0 },
@@ -252,7 +248,7 @@ describe('AdminDashboardPage', () => {
 
   it('never renders Net Sales or (Estimated) Profit — removed in TASK 165', () => {
     mockUseAllBranchStats.mockReturnValue({
-      data: [branchStat({ branchId: 'b1', todayNetSales: 900, todayNetProfit: 300, isNetProfitEstimated: true, missingCostItemCount: 2 })],
+      data: [branchStat({ branchId: 'b1', todayNetSales: 900, todayNetOperatingResult: 300 })],
       isLoading: false,
       isError: false,
     });

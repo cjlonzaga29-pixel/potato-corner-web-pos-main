@@ -112,12 +112,8 @@ function statsRow(overrides: Record<string, unknown> = {}) {
     todayRefundTotal: 0,
     todayNetSales: 1000,
     todayVat: 107.14,
-    todayCogs: 200,
-    todayGrossProfit: 800,
     todayExpenses: 150,
-    todayNetProfit: 650,
-    isNetProfitEstimated: false,
-    missingCostItemCount: 0,
+    todayNetOperatingResult: 850,
     paymentBreakdown: {
       cash: { total: 700, count: 5 },
       gcash: { total: 200, count: 2 },
@@ -160,7 +156,7 @@ describe('BranchDashboardPage', () => {
   });
 
   it('never renders Net Sales or (Estimated) Profit — removed in TASK 165', () => {
-    setup(statsRow({ isNetProfitEstimated: true, missingCostItemCount: 4 }));
+    setup(statsRow());
     render(<BranchDashboardPage />);
 
     expect(screen.queryByText('Net Sales Today')).not.toBeInTheDocument();

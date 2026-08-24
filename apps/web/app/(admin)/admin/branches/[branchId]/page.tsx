@@ -264,10 +264,8 @@ function StatisticsTab({ branchId }: { branchId: string }) {
         <StatTile label="Active Shifts" value={String(stats.activeShiftsCount)} />
         <StatTile label="Transactions Today" value={String(stats.todayTransactionCount)} />
         <StatTile label="Net Sales" value={formatCurrency(stats.todayNetSales)} />
-        <StatTile
-          label={stats.isNetProfitEstimated ? 'Estimated Net Profit' : 'Net Profit'}
-          value={formatCurrency(stats.todayNetProfit)}
-        />
+        <StatTile label="Operating Expenses" value={formatCurrency(stats.todayExpenses)} />
+        <StatTile label="Net Operating Result" value={formatCurrency(stats.todayNetOperatingResult)} />
         <StatTile label="Active Staff" value={String(stats.activeStaffCount)} />
         <StatTile label="Staff Timed In" value={String(stats.staffTimedInCount)} />
         <StatTile label="Low Stock Items" value={String(stats.lowStockIngredientCount)} />

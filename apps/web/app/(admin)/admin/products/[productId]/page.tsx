@@ -329,10 +329,11 @@ function VariantsTab({
         <ConfirmDialog
           open
           onOpenChange={(open) => !open && setDeletingVariant(null)}
-          title={`Delete ${deletingVariant.name}?`}
-          description="This action cannot be undone."
-          confirmLabel="Delete"
+          title={`Permanently delete "${deletingVariant.name}"?`}
+          description="This permanently deletes the variant. This action cannot be undone. Variants with transaction history cannot be deleted — deactivate them instead."
+          confirmLabel="Permanently Delete"
           variant="danger"
+          requireTypedConfirmation="DELETE"
           onConfirm={async () => {
             await deleteVariant.mutateAsync(deletingVariant.id);
           }}

@@ -280,6 +280,21 @@ export const productOptionsRepository = {
     return prisma.productVariantOptionGroup.count({ where: { optionGroupId } });
   },
 
+  // P3D-P3: a group can have zero ProductVariantOptionGroup assignments
+  // (the check above) while an individual option under it is still
+  // referenced directly by a recipe/BOM component or an inventory
+  // mapping — both FKs are onDelete: Cascade, so a bare group delete
+  // would silently destroy that BOM/inventory config. Counted separately
+  // per option id so the caller can name the option(s) at fault.
+  async countOptionReferences(optionIds: string[]): Promise<number> {
+    if (optionIds.length === 0) return 0;
+    const [componentCount, inventoryMappingCount] = await Promise.all([
+      prisma.productComponent.count({ where: { productOptionId: { in: optionIds } } }),
+      prisma.productOptionInventoryMapping.count({ where: { productOptionId: { in: optionIds } } }),
+    ]);
+    return componentCount + inventoryMappingCount;
+  },
+
   // Options (and their ProductComponent/ProductOptionInventoryMapping
   // children, both onDelete: Cascade at the DB level) are removed first —
   // ProductOption.optionGroup has no onDelete clause (defaults to Restrict),

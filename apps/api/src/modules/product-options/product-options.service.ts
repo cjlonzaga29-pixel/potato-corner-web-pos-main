@@ -364,6 +364,21 @@ export const productOptionsService = {
       );
     }
 
+    // P3D-P3: block hard-delete when any option in this group is still
+    // referenced by a recipe/BOM component or inventory mapping — those
+    // FKs cascade-delete, which would silently alter live BOM/inventory
+    // deduction behavior. Deactivate the group/options instead.
+    const optionIds = before.options.map((o) => o.id);
+    const referenceCount = await repo.countOptionReferences(optionIds);
+    if (referenceCount > 0) {
+      throw new ProductOptionError(
+        'OPTION_GROUP_OPTIONS_REFERENCED',
+        'Cannot delete: one or more options in this group are used by a recipe/BOM component or inventory mapping. Deactivate the group or its options instead.',
+        409,
+        { referenceCount },
+      );
+    }
+
     await repo.deleteGroup(id);
 
     // entityId (not a FK, just an indexed string) still identifies the

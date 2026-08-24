@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../lib/prisma.js', () => ({
   prisma: {
     productVariantOptionGroup: { count: vi.fn() },
+    productComponent: { count: vi.fn() },
+    productOptionInventoryMapping: { count: vi.fn() },
     $transaction: vi.fn(),
   },
 }));
@@ -21,6 +23,29 @@ describe('productOptionsRepository.countVariantAssignments', () => {
     const result = await productOptionsRepository.countVariantAssignments('group-1');
 
     expect(prisma.productVariantOptionGroup.count).toHaveBeenCalledWith({ where: { optionGroupId: 'group-1' } });
+    expect(result).toBe(3);
+  });
+});
+
+describe('productOptionsRepository.countOptionReferences (P3D-P3)', () => {
+  it('returns 0 without querying prisma when given no option ids', async () => {
+    const result = await productOptionsRepository.countOptionReferences([]);
+
+    expect(result).toBe(0);
+    expect(prisma.productComponent.count).not.toHaveBeenCalled();
+    expect(prisma.productOptionInventoryMapping.count).not.toHaveBeenCalled();
+  });
+
+  it('sums ProductComponent and ProductOptionInventoryMapping rows scoped to the given option ids', async () => {
+    vi.mocked(prisma.productComponent.count).mockResolvedValue(2);
+    vi.mocked(prisma.productOptionInventoryMapping.count).mockResolvedValue(1);
+
+    const result = await productOptionsRepository.countOptionReferences(['option-1', 'option-2']);
+
+    expect(prisma.productComponent.count).toHaveBeenCalledWith({ where: { productOptionId: { in: ['option-1', 'option-2'] } } });
+    expect(prisma.productOptionInventoryMapping.count).toHaveBeenCalledWith({
+      where: { productOptionId: { in: ['option-1', 'option-2'] } },
+    });
     expect(result).toBe(3);
   });
 });

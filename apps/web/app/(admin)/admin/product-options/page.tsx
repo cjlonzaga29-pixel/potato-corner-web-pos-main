@@ -161,11 +161,13 @@ export default function ProductOptionsPage() {
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null);
         }}
-        title="Delete Product Option Group?"
+        title="Permanently delete this option group?"
         description={
           deleteTarget && (
             <>
-              This permanently deletes the option group, its options, and unused mappings. This action cannot be undone.
+              This permanently deletes the option group and its options. This action cannot be undone. Groups still assigned to a
+              variant, or whose options are referenced by a recipe/BOM component or inventory mapping, cannot be deleted —
+              deactivate them instead.
               <br />
               <br />
               <span className="font-medium text-foreground">{deleteTarget.name}</span> ({deleteTarget.code}) —{' '}
@@ -173,8 +175,9 @@ export default function ProductOptionsPage() {
             </>
           )
         }
-        confirmLabel="Delete Permanently"
+        confirmLabel="Permanently Delete"
         variant="danger"
+        requireTypedConfirmation="DELETE"
         onConfirm={handleDeleteConfirmed}
       />
     </div>

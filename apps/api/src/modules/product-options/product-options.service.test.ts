@@ -8,6 +8,7 @@ vi.mock('./product-options.repository.js', () => ({
     createGroup: vi.fn(),
     updateGroup: vi.fn(),
     countVariantAssignments: vi.fn(),
+    countOptionReferences: vi.fn(),
     deleteGroup: vi.fn(),
     findOptionById: vi.fn(),
     findOptionByCode: vi.fn(),
@@ -178,9 +179,23 @@ describe('productOptionsService.deleteGroup', () => {
     expect(repo.deleteGroup).not.toHaveBeenCalled();
   });
 
-  it('deletes the group and records an audit log when it has zero variant assignments', async () => {
+  it('409s when an option in the group is referenced by a recipe/BOM component or inventory mapping (P3D-P3)', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup({ options: [buildOption()] }) as never);
+    vi.mocked(repo.countVariantAssignments).mockResolvedValue(0);
+    vi.mocked(repo.countOptionReferences).mockResolvedValue(1);
+
+    await expect(productOptionsService.deleteGroup('group-1', ACTOR, null)).rejects.toMatchObject({
+      code: 'OPTION_GROUP_OPTIONS_REFERENCED',
+      statusCode: 409,
+    });
+    expect(repo.countOptionReferences).toHaveBeenCalledWith(['option-1']);
+    expect(repo.deleteGroup).not.toHaveBeenCalled();
+  });
+
+  it('deletes the group and records an audit log when it has zero variant assignments and zero option references', async () => {
     vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
     vi.mocked(repo.countVariantAssignments).mockResolvedValue(0);
+    vi.mocked(repo.countOptionReferences).mockResolvedValue(0);
     vi.mocked(repo.deleteGroup).mockResolvedValue(undefined as never);
     const { recordAuditLog } = await import('../../middleware/audit-log.js');
 

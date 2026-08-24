@@ -73,7 +73,7 @@ describe('ProductOptionsPage — Delete action', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete Flavor' }));
 
     const dialog = screen.getByRole('alertdialog');
-    expect(within(dialog).getByText('Delete Product Option Group?')).toBeInTheDocument();
+    expect(within(dialog).getByText('Permanently delete this option group?')).toBeInTheDocument();
     expect(within(dialog).getByText('(flavor)', { exact: false })).toBeInTheDocument();
     expect(within(dialog).getByText('3 options', { exact: false })).toBeInTheDocument();
   });
@@ -88,16 +88,38 @@ describe('ProductOptionsPage — Delete action', () => {
 
     expect(mutateAsync).not.toHaveBeenCalled();
     expect(mockPush).not.toHaveBeenCalled();
-    expect(screen.queryByText('Delete Product Option Group?')).not.toBeInTheDocument();
+    expect(screen.queryByText('Permanently delete this option group?')).not.toBeInTheDocument();
   });
 
-  it('calls the delete mutation exactly once with the group id when confirmed', async () => {
+  it('keeps the confirm button disabled until DELETE is typed exactly, and never mutates while typing', () => {
+    const mutateAsync = vi.fn();
+    mockUseDeleteProductOptionGroup.mockReturnValue({ mutateAsync, isPending: false });
+    renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Flavor' }));
+    const confirmButton = screen.getByRole('button', { name: 'Permanently Delete' });
+    const typeInput = screen.getByLabelText('Type DELETE to confirm');
+
+    expect(confirmButton).toBeDisabled();
+
+    for (const value of ['delete', 'Delete', ' DELETE', 'DELETE ', '']) {
+      fireEvent.change(typeInput, { target: { value } });
+      expect(confirmButton).toBeDisabled();
+    }
+    expect(mutateAsync).not.toHaveBeenCalled();
+
+    fireEvent.change(typeInput, { target: { value: 'DELETE' } });
+    expect(confirmButton).not.toBeDisabled();
+  });
+
+  it('calls the delete mutation exactly once with the group id when confirmed after typing DELETE', async () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     mockUseDeleteProductOptionGroup.mockReturnValue({ mutateAsync, isPending: false });
     renderPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Flavor' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Permanently' }));
+    fireEvent.change(screen.getByLabelText('Type DELETE to confirm'), { target: { value: 'DELETE' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently Delete' }));
 
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
     expect(mutateAsync).toHaveBeenCalledWith('group-1');
@@ -109,9 +131,10 @@ describe('ProductOptionsPage — Delete action', () => {
     renderPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Flavor' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Permanently' }));
+    fireEvent.change(screen.getByLabelText('Type DELETE to confirm'), { target: { value: 'DELETE' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently Delete' }));
 
-    await waitFor(() => expect(screen.queryByText('Delete Product Option Group?')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Permanently delete this option group?')).not.toBeInTheDocument());
   });
 
   it('prevents a second submission while the delete is pending, and keeps the dialog open on failure', async () => {
@@ -121,7 +144,8 @@ describe('ProductOptionsPage — Delete action', () => {
     renderPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Flavor' }));
-    const confirmButton = screen.getByRole('button', { name: 'Delete Permanently' });
+    fireEvent.change(screen.getByLabelText('Type DELETE to confirm'), { target: { value: 'DELETE' } });
+    const confirmButton = screen.getByRole('button', { name: 'Permanently Delete' });
     fireEvent.click(confirmButton);
     fireEvent.click(confirmButton);
 
@@ -129,6 +153,6 @@ describe('ProductOptionsPage — Delete action', () => {
     expect(confirmButton).toBeDisabled();
 
     resolveDelete();
-    await waitFor(() => expect(screen.queryByText('Delete Product Option Group?')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Permanently delete this option group?')).not.toBeInTheDocument());
   });
 });

@@ -16,7 +16,6 @@ import {
   ChevronDown,
   LogOut,
   Loader2,
-  Wallet,
   Boxes,
   Tags,
   Ruler,
@@ -46,7 +45,6 @@ export const ADMIN_NAV_ITEMS = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
-  { label: 'Payment Settings', href: '/admin/payments', icon: Wallet },
   {
     label: 'Product Creation',
     icon: ShoppingBag,

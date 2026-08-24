@@ -359,55 +359,6 @@ export const branchesService = {
     return uploadGcashQrToStorage(branchId, file);
   },
 
-  /**
-   * Uploads one QR image to every listed branch's own storage key, then
-   * persists gcashQrUrl/gcashQrKey per branch — mirroring the two-step
-   * upload-then-update flow the single-branch UI already does client-side
-   * (upload endpoint + PATCH). Non-fatal per branch: one failure doesn't
-   * stop the rest, so the response carries a partial-success shape.
-   */
-  async bulkAssignGcashQr(
-    branchIds: string[],
-    file: { buffer: Buffer; originalname: string },
-    assignedBy: { id: string; role: string },
-    ipAddress: string | null,
-  ): Promise<{
-    successful: Array<{ branchId: string; gcashQrUrl: string }>;
-    failed: Array<{ branchId: string; error: string }>;
-  }> {
-    const branches = await branchesRepository.findByIds(branchIds);
-    const foundIds = new Set(branches.map((b) => b.id));
-    const missingIds = branchIds.filter((id) => !foundIds.has(id));
-    if (missingIds.length > 0) {
-      throw new BranchError('BRANCH_NOT_FOUND', `Branch(es) not found: ${missingIds.join(', ')}`, 404);
-    }
-
-    const successful: Array<{ branchId: string; gcashQrUrl: string }> = [];
-    const failed: Array<{ branchId: string; error: string }> = [];
-
-    for (const branchId of branchIds) {
-      try {
-        const { url, key } = await uploadGcashQrToStorage(branchId, file);
-        await branchesRepository.update(branchId, { gcashQrUrl: url, gcashQrKey: key });
-        successful.push({ branchId, gcashQrUrl: url });
-      } catch (error) {
-        failed.push({ branchId, error: error instanceof Error ? error.message : 'Upload failed' });
-      }
-    }
-
-    await recordAuditLog({
-      action: 'BULK_GCASH_QR_ASSIGN',
-      entityType: 'branch',
-      entityId: branchIds.join(','),
-      actorId: assignedBy.id,
-      actorRole: assignedBy.role,
-      afterState: { branchIds, successCount: successful.length, failureCount: failed.length },
-      ipAddress,
-    });
-
-    return { successful, failed };
-  },
-
   async changeBranchStatus(
     branchId: string,
     status: BranchStatus,

@@ -14,7 +14,6 @@ import { randomUUID } from 'node:crypto';
  */
 vi.mock('./branches.service.js', () => ({
   branchesService: {
-    bulkAssignGcashQr: vi.fn(),
     getBranchById: vi.fn(),
     updateBranch: vi.fn(),
     deleteBranch: vi.fn(),
@@ -59,7 +58,7 @@ function mockReq(overrides: Partial<Request> = {}): Request {
     params: {},
     query: {},
     body: {},
-    originalUrl: '/api/branches/gcash-qr/bulk-assign',
+    originalUrl: '/api/branches',
     ...overrides,
   } as unknown as Request;
 }
@@ -108,120 +107,6 @@ async function runHandlers(handlers: Middleware[], req: Request, res: Response):
 
 beforeEach(() => {
   vi.clearAllMocks();
-});
-
-const ROUTE = '/gcash-qr/bulk-assign';
-
-describe('POST /api/branches/gcash-qr/bulk-assign — role guard', () => {
-  it('returns 401 with no Authorization header', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const res = mockRes();
-    await runHandlers(handlers, mockReq(), res);
-    expect(res.status).toHaveBeenCalledWith(401);
-  });
-
-  it('returns 403 for supervisor', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const token = generateSupervisorToken([randomUUID()]);
-    const res = mockRes();
-
-    await runHandlers(handlers, mockReq(authHeader(token)), res);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(branchesService.bulkAssignGcashQr).not.toHaveBeenCalled();
-  });
-
-  it('returns 403 for staff', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const token = generateStaffToken(randomUUID());
-    const res = mockRes();
-
-    await runHandlers(handlers, mockReq(authHeader(token)), res);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(branchesService.bulkAssignGcashQr).not.toHaveBeenCalled();
-  });
-});
-
-describe('POST /api/branches/gcash-qr/bulk-assign — validation', () => {
-  it('returns 422 when the file is missing', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const token = generateSuperAdminToken();
-    const res = mockRes();
-
-    await runHandlers(handlers, mockReq(authHeader(token)), res);
-
-    expect(res.status).toHaveBeenCalledWith(422);
-    expect(branchesService.bulkAssignGcashQr).not.toHaveBeenCalled();
-  });
-
-  it('returns 422 when branchIds is not valid JSON', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const token = generateSuperAdminToken();
-    const res = mockRes();
-    const req = mockReq({
-      ...authHeader(token),
-      file: { buffer: Buffer.from('fake'), originalname: 'qr.png' } as Express.Multer.File,
-      body: { branchIds: 'not-json' },
-    });
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(422);
-    expect(branchesService.bulkAssignGcashQr).not.toHaveBeenCalled();
-  });
-
-  it('returns 422 when branchIds fails schema validation', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const token = generateSuperAdminToken();
-    const res = mockRes();
-    const req = mockReq({
-      ...authHeader(token),
-      file: { buffer: Buffer.from('fake'), originalname: 'qr.png' } as Express.Multer.File,
-      body: { branchIds: JSON.stringify([]) },
-    });
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(422);
-    expect(branchesService.bulkAssignGcashQr).not.toHaveBeenCalled();
-  });
-});
-
-describe('POST /api/branches/gcash-qr/bulk-assign — success', () => {
-  it('returns 200 with the partial-success shape', async () => {
-    const handlers = getRouteHandlers(branchesRouter, 'post', ROUTE);
-    const token = generateSuperAdminToken();
-    const res = mockRes();
-    const branchId1 = randomUUID();
-    const branchId2 = randomUUID();
-    const req = mockReq({
-      ...authHeader(token),
-      file: { buffer: Buffer.from('fake'), originalname: 'qr.png' } as Express.Multer.File,
-      body: { branchIds: JSON.stringify([branchId1, branchId2]) },
-    });
-    vi.mocked(branchesService.bulkAssignGcashQr).mockResolvedValue({
-      successful: [{ branchId: branchId1, gcashQrUrl: 'https://cdn.test/qr.webp' }],
-      failed: [{ branchId: branchId2, error: 'Failed to upload the GCash QR image' }],
-    });
-
-    await runHandlers(handlers, req, res);
-
-    expect(branchesService.bulkAssignGcashQr).toHaveBeenCalledWith(
-      [branchId1, branchId2],
-      { buffer: expect.any(Buffer), originalname: 'qr.png' },
-      expect.objectContaining({ role: 'super_admin' }),
-      null,
-    );
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect((res as Response & { jsonBody?: unknown }).jsonBody).toMatchObject({
-      data: {
-        successful: [{ branchId: branchId1, gcashQrUrl: 'https://cdn.test/qr.webp' }],
-        failed: [{ branchId: branchId2, error: 'Failed to upload the GCash QR image' }],
-      },
-      error: null,
-    });
-  });
 });
 
 describe('GET /api/branches — limit ceiling', () => {

@@ -53,10 +53,31 @@ export const notificationsRepository = {
     });
   },
 
-  /** Supervisors assigned to the given branch only — no super admins (void_requested, offline_transactions_synced). */
+  /** Supervisors assigned to the given branch only — no super admins (offline_transactions_synced). */
   findBranchSupervisorUserIds(branchId: string) {
     return prisma.user.findMany({
       where: { isActive: true, role: 'supervisor', branchAssignments: { some: { branchId, removedAt: null } } },
+      select: { id: true },
+    });
+  },
+
+  /**
+   * P3D-P6.1 — supervisors assigned to the branch plus the branch's own
+   * `branch`-role account, no super admins. void_requested's established
+   * recipient matrix (Task 6) intentionally excludes super admins; this adds
+   * the requesting branch's own account (previously unreachable, same gap
+   * findBranchAllRolesUserIds closed for the operational-visibility events)
+   * without widening to super admin.
+   */
+  findBranchSupervisorAndOwnUserIds(branchId: string) {
+    return prisma.user.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { role: 'supervisor', branchAssignments: { some: { branchId, removedAt: null } } },
+          { role: 'branch', branchAssignments: { some: { branchId, removedAt: null } } },
+        ],
+      },
       select: { id: true },
     });
   },

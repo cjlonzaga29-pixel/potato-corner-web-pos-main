@@ -9,18 +9,21 @@ export interface TestTokenOptions {
   branchIds?: string[];
   /** Signs a token whose `exp` is already in the past. */
   expired?: boolean;
+  /** Sets the JWT's `must_change_password` claim — see middleware/require-password-change.ts. */
+  mustChangePassword?: boolean;
 }
 
 function buildPayload(role: Role, options: TestTokenOptions): Record<string, unknown> {
   const userId = options.userId ?? randomUUID();
   const email = options.email ?? `${role}@potatocorner.test`;
+  const mustChangePassword = options.mustChangePassword === undefined ? undefined : { must_change_password: options.mustChangePassword };
 
   if (role === ROLES.SUPER_ADMIN) {
-    return { user_id: userId, role, email };
+    return { user_id: userId, role, email, ...mustChangePassword };
   }
 
   const branchIds = options.branchIds ?? [randomUUID()];
-  return { user_id: userId, role, email, branch_ids: branchIds };
+  return { user_id: userId, role, email, branch_ids: branchIds, ...mustChangePassword };
 }
 
 /**

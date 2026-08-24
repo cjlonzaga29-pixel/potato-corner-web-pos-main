@@ -45,6 +45,7 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
     findSuperAdminUserIds: vi.fn(),
     findBranchSupervisorAndAdminUserIds: vi.fn(),
     findBranchSupervisorUserIds: vi.fn(),
+    findBranchSupervisorAndOwnUserIds: vi.fn(),
     findBranchAllRolesUserIds: vi.fn(),
     findPreferences: vi.fn(),
   },
@@ -200,15 +201,15 @@ describe('processNotification — low_stock_alert', () => {
     };
   }
 
-  it('emits the low-stock socket event to branch and super admin, and persists a low_stock Notification per branch supervisor/admin', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+  it('emits the low-stock socket event to branch and super admin, and persists a low_stock Notification per branch-all-roles recipient (incl. the branch account itself)', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = stockJobData();
 
     await processNotification('low_stock_alert', data);
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'inventory:low_stock', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('inventory:low_stock', data);
-    expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.findBranchAllRolesUserIds).toHaveBeenCalledWith('branch-1');
     expect(notificationsRepository.create).toHaveBeenCalledWith({
       type: 'low_stock',
       payload: {
@@ -226,7 +227,7 @@ describe('processNotification — low_stock_alert', () => {
   });
 
   it('persists type critical_stock when severity is critical and stock is still above zero', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
     const data = stockJobData({ currentStock: 2, severity: 'critical' as const });
 
     await processNotification('low_stock_alert', data);
@@ -235,7 +236,7 @@ describe('processNotification — low_stock_alert', () => {
   });
 
   it('persists type out_of_stock when currentStock is zero or below, regardless of severity', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
     const data = stockJobData({ currentStock: 0, severity: 'critical' as const });
 
     await processNotification('low_stock_alert', data);
@@ -311,8 +312,8 @@ describe('processNotification — inventory_product_unavailable', () => {
 });
 
 describe('processNotification — cash_variance_flagged', () => {
-  it('emits the socket event and persists a Notification per branch supervisor/admin', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+  it('emits the socket event and persists a Notification per branch-all-roles recipient (incl. the branch account itself)', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = {
       type: 'cash_variance_flagged' as const,
       shiftId: 'shift-1',
@@ -327,7 +328,7 @@ describe('processNotification — cash_variance_flagged', () => {
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'cash:variance_flagged', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('cash:variance_flagged', data);
-    expect(notificationsRepository.findBranchSupervisorAndAdminUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.findBranchAllRolesUserIds).toHaveBeenCalledWith('branch-1');
     expect(notificationsRepository.create).toHaveBeenCalledWith({
       type: 'cash_variance_flagged',
       payload: data,
@@ -338,8 +339,8 @@ describe('processNotification — cash_variance_flagged', () => {
 });
 
 describe('processNotification — void_requested', () => {
-  it('emits the socket event and persists a Notification per branch supervisor only (no super admins)', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+  it('emits the socket event and persists a Notification per branch supervisor + the branch account itself (no super admins)', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndOwnUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     const data = {
       type: 'void_requested' as const,
       branchId: 'branch-1',
@@ -353,7 +354,7 @@ describe('processNotification — void_requested', () => {
 
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'void:requested', data);
     expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', data);
-    expect(notificationsRepository.findBranchSupervisorUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.findBranchSupervisorAndOwnUserIds).toHaveBeenCalledWith('branch-1');
     expect(notificationsRepository.create).toHaveBeenCalledWith({
       type: 'void_requested',
       payload: data,
@@ -683,6 +684,40 @@ describe('processNotification — branch_online', () => {
   });
 });
 
+describe('processNotification — branch_status_changed', () => {
+  it('persists a Notification per branch-all-roles recipient (naturally excludes a just-deactivated branch account since it filters isActive: true)', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'admin-1' }, { id: 'supervisor-1' }] as never);
+    const data = { type: 'branch_status_changed' as const, branchId: 'branch-1', branchName: 'Manila', status: 'inactive' as const, changedByRole: 'super_admin' };
+
+    await processNotification('branch_status_changed', data);
+
+    expect(notificationsRepository.findBranchAllRolesUserIds).toHaveBeenCalledWith('branch-1');
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'branch_status_changed',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
+    expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'supervisor-1' }));
+  });
+});
+
+describe('processNotification — branch_credentials_updated', () => {
+  it('persists a Notification per branch-all-roles recipient, without any password/email value in the payload', async () => {
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'admin-1' }] as never);
+    const data = { type: 'branch_credentials_updated' as const, branchId: 'branch-1', emailChanged: false, passwordChanged: true };
+
+    await processNotification('branch_credentials_updated', data);
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith({
+      type: 'branch_credentials_updated',
+      payload: data,
+      recipientUserId: 'admin-1',
+      branchId: 'branch-1',
+    });
+  });
+});
+
 describe('processNotification — eod_summary', () => {
   it('emits the socket event to super admins, persists a Notification per super admin, and emails each super admin', async () => {
     vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
@@ -744,7 +779,7 @@ describe('processNotification — eod_summary', () => {
 
 describe('processNotification — alert preference gating', () => {
   it('skips persisting low_stock_alert for a recipient with alertLowStock disabled, but still persists for one who has it enabled', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([
       { id: 'supervisor-1' },
       { id: 'admin-1' },
     ] as never);
@@ -767,7 +802,7 @@ describe('processNotification — alert preference gating', () => {
   });
 
   it('skips persisting cash_variance_flagged for a recipient inside their own DND window', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { dndEnabled: true })] as never);
     vi.mocked(manilaHour).mockReturnValueOnce(23); // inside the 22-7 DND window
 
@@ -785,7 +820,7 @@ describe('processNotification — alert preference gating', () => {
   });
 
   it('still persists cash_variance_flagged for a recipient with DND enabled but outside the window', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    vi.mocked(notificationsRepository.findBranchAllRolesUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { dndEnabled: true })] as never);
     vi.mocked(manilaHour).mockReturnValueOnce(12); // outside the 22-7 DND window
 
@@ -803,7 +838,7 @@ describe('processNotification — alert preference gating', () => {
   });
 
   it('skips persisting void_requested for a recipient with alertVoidRequests disabled', async () => {
-    vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    vi.mocked(notificationsRepository.findBranchSupervisorAndOwnUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
     vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { alertVoidRequests: false })] as never);
 
     await processNotification('void_requested', {

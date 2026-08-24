@@ -16,6 +16,7 @@ import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 import { prisma } from '../../lib/prisma.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -493,6 +494,22 @@ export const branchesService = {
       branchId: branch.id,
       status: branch.status,
     });
+
+    // P3D-P6.1 — no persisted Notification previously existed for branch
+    // status changes at all (audit gap). Guarded by before.status !== status
+    // so a no-op status write (e.g. re-saving 'active') doesn't spam
+    // recipients. Recipients resolved via findBranchAllRolesUserIds inside
+    // the queue handler, which naturally excludes the branch account this
+    // same call may have just deactivated above.
+    if (before.status !== branch.status) {
+      await enqueueNotification('branch_status_changed', {
+        type: 'branch_status_changed',
+        branchId: branch.id,
+        branchName: branch.name,
+        status: branch.status,
+        changedByRole: changedBy.role,
+      });
+    }
 
     return toBranchResponse(branch);
   },

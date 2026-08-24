@@ -100,6 +100,10 @@ function hrefFor(type: string, role: string | undefined): string | undefined {
       return base === '/admin' ? `${base}/shifts` : `${base}/cash`;
     case 'eod_summary':
       return base === '/admin' ? `${base}/reports` : undefined;
+    case 'branch_status_changed':
+      return base === '/admin' ? `${base}/branches` : undefined;
+    case 'branch_credentials_updated':
+      return base === '/admin' ? `${base}/branch-accounts` : undefined;
     default:
       return undefined;
   }
@@ -164,6 +168,15 @@ function describe(row: NotificationRow): { icon: LucideIcon; severity: Notificat
       return { icon: WifiOff, severity: 'warning', title: 'Branch Offline', detail: str(p, 'branchName') || 'No active connection' };
     case 'branch_online':
       return { icon: Wifi, severity: 'normal', title: 'Branch Online', detail: str(p, 'branchName') || 'Back online' };
+    case 'branch_status_changed':
+      return {
+        icon: AlertTriangle,
+        severity: str(p, 'status') === 'active' ? 'normal' : 'warning',
+        title: str(p, 'status') === 'active' ? 'Branch Reactivated' : 'Branch Deactivated',
+        detail: str(p, 'branchName') || 'Branch status changed',
+      };
+    case 'branch_credentials_updated':
+      return { icon: ShieldAlert, severity: 'warning', title: 'Branch Account Updated', detail: 'Login credentials were updated by Super Admin.' };
     default:
       return { icon: AlertTriangle, severity: 'normal', title: row.type, detail: '' };
   }

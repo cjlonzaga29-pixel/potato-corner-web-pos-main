@@ -596,6 +596,20 @@ export const employeesService = {
       ipAddress,
     });
 
+    // P3D-P6.1 — no persisted Notification previously existed for this
+    // credential edit at all. Only which fields changed, never the new
+    // password/email value itself. Skipped entirely when neither changed
+    // (a no-op edit).
+    const branchIdForNotification = employee.branchAssignments[0]?.branchId;
+    if ((emailChanged || passwordChanged) && branchIdForNotification) {
+      await enqueueRawNotificationJob('branch_credentials_updated', {
+        type: 'branch_credentials_updated',
+        branchId: branchIdForNotification,
+        emailChanged,
+        passwordChanged,
+      });
+    }
+
     const updated = emailChanged ? await employeesRepository.findById(employeeId) : employee;
     return toEmployeeResponse(updated as EmployeeWithAssignments);
   },

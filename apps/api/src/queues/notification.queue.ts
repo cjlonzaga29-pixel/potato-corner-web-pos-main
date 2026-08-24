@@ -165,8 +165,11 @@ export async function processNotification(jobName: string, data: unknown): Promi
       lowStockThreshold: payload.lowStockThreshold,
       criticalThreshold: payload.criticalThreshold,
     } as NotificationPayload;
+    // P3D-P6.1 — findBranchAllRolesUserIds (not findBranchSupervisorAndAdminUserIds)
+    // so the branch's own account sees its own low-stock state, matching the
+    // operational-visibility events below (Task 220).
     const recipients = await filterAlertRecipients(
-      await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId),
+      await notificationsRepository.findBranchAllRolesUserIds(payload.branchId),
       'alertLowStock',
     );
     await Promise.all(
@@ -238,8 +241,10 @@ export async function processNotification(jobName: string, data: unknown): Promi
     const payload = data as Extract<NotificationPayload, { type: 'cash_variance_flagged' }>;
     notifyBranch(payload.branchId, SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, payload);
     notifySuperAdmin(SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, payload);
+    // P3D-P6.1 — branch account is responsible for its own cash handling and
+    // needs visibility into its own variance, same reasoning as low_stock above.
     const recipients = await filterAlertRecipients(
-      await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId),
+      await notificationsRepository.findBranchAllRolesUserIds(payload.branchId),
       'alertCashVariance',
     );
     await Promise.all(
@@ -253,10 +258,11 @@ export async function processNotification(jobName: string, data: unknown): Promi
     const payload = data as Extract<NotificationPayload, { type: 'void_requested' }>;
     notifyBranch(payload.branchId, SOCKET_EVENTS.VOID_REQUESTED, payload);
     notifySuperAdmin(SOCKET_EVENTS.VOID_REQUESTED, payload);
-    // Branch supervisors only (Task 6 recipient matrix) — no super admins,
-    // unlike cash_variance_flagged/low_stock above.
+    // Branch supervisors + the branch's own account (P3D-P6.1) — still no
+    // super admins, per Task 6's recipient matrix, unlike
+    // cash_variance_flagged/low_stock above.
     const recipients = await filterAlertRecipients(
-      await notificationsRepository.findBranchSupervisorUserIds(payload.branchId),
+      await notificationsRepository.findBranchSupervisorAndOwnUserIds(payload.branchId),
       'alertVoidRequests',
     );
     await Promise.all(
@@ -450,6 +456,36 @@ export async function processNotification(jobName: string, data: unknown): Promi
       // Recipients are always super_admin rows (never `staff`), which always have an email.
       recipients.map((recipient) =>
         sendEmailBestEffort(() => sendEodSummaryEmail(recipient.email as string, payload), `EOD summary email to ${recipient.email}`),
+      ),
+    );
+    return;
+  }
+  // P3D-P6.1 — branches.service.ts/employees.service.ts had no notification
+  // trigger for branch status changes or branch-account credential edits.
+  // findBranchAllRolesUserIds naturally excludes a just-deactivated branch
+  // account (isActive: true filter), so no separate "don't notify a
+  // deactivated account" check is needed here.
+  if (jobName === 'branch_status_changed') {
+    const payload = data as Extract<NotificationPayload, { type: 'branch_status_changed' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({ type: 'branch_status_changed', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
+      ),
+    );
+    return;
+  }
+  if (jobName === 'branch_credentials_updated') {
+    const payload = data as Extract<NotificationPayload, { type: 'branch_credentials_updated' }>;
+    const recipients = await notificationsRepository.findBranchAllRolesUserIds(payload.branchId);
+    await Promise.all(
+      recipients.map((recipient) =>
+        notificationsRepository.create({
+          type: 'branch_credentials_updated',
+          payload,
+          recipientUserId: recipient.id,
+          branchId: payload.branchId,
+        }),
       ),
     );
     return;

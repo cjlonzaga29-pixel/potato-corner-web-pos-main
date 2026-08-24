@@ -212,6 +212,27 @@ export interface TransferCompletedNotificationPayload {
   quantity: number;
 }
 
+// P3D-P6.1 — branch status (deactivate/reactivate) had no notification
+// trigger at all. status/branchName only; no credentials, no deactivation
+// reason beyond the already-safe operational label.
+export interface BranchStatusChangedNotificationPayload {
+  type: 'branch_status_changed';
+  branchId: string;
+  branchName: string;
+  status: 'active' | 'inactive' | 'closed';
+  changedByRole: string;
+}
+
+// P3D-P6.1 — Super-Admin branch-account credential edit (updateBranchAccountCredentials)
+// had no notification trigger. Deliberately carries no password/hash/token —
+// only which fields changed.
+export interface BranchCredentialsUpdatedNotificationPayload {
+  type: 'branch_credentials_updated';
+  branchId: string;
+  emailChanged: boolean;
+  passwordChanged: boolean;
+}
+
 export type NotificationPayload =
   | LowStockNotificationPayload
   | CriticalStockNotificationPayload
@@ -232,7 +253,9 @@ export type NotificationPayload =
   | ExpenseCreatedNotificationPayload
   | ReceivingRecordedNotificationPayload
   | WasteRecordedNotificationPayload
-  | TransferCompletedNotificationPayload;
+  | TransferCompletedNotificationPayload
+  | BranchStatusChangedNotificationPayload
+  | BranchCredentialsUpdatedNotificationPayload;
 
 export type NotificationType = NotificationPayload['type'];
 

@@ -3,6 +3,7 @@ import { notificationListQuerySchema } from '@potato-corner/shared';
 import { notificationsService } from './notifications.service.js';
 import { NotificationError } from './notifications.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 
 const router: Router = Router();
 
@@ -22,9 +23,10 @@ function handleNotificationError(error: unknown, res: Response, next: NextFuncti
   next(error);
 }
 
-// Every route: authenticate only — every role reads/marks its own
-// notifications, there is no admin-only view of another user's inbox.
-router.get('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+// Every route: authenticate + requirePasswordChange only — every role
+// reads/marks its own notifications, there is no admin-only view of
+// another user's inbox.
+router.get('/', authenticate, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = notificationListQuerySchema.safeParse(req.query);
@@ -46,7 +48,7 @@ router.get('/', authenticate, async (req: Request, res: Response, next: NextFunc
   }
 });
 
-router.patch('/read-all', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/read-all', authenticate, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await notificationsService.markAllRead(req.user.user_id);
@@ -56,7 +58,7 @@ router.patch('/read-all', authenticate, async (req: Request, res: Response, next
   }
 });
 
-router.patch('/:id/read', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id/read', authenticate, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await notificationsService.markRead(req.params.id as string, req.user.user_id);

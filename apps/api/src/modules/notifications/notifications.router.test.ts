@@ -205,3 +205,60 @@ describe('PATCH /read-all', () => {
     });
   });
 });
+
+// P3D-P6.1 — requirePasswordChange gate. Previously missing from this router
+// (see middleware/require-password-change.ts's comment), so an account
+// flagged must_change_password could still read/mutate its notification
+// inbox while every other gated module already blocked it. Henlin already
+// had this gate; this closes the parity gap.
+describe('notifications routes — requirePasswordChange gate', () => {
+  it('blocks GET / with 403 MUST_CHANGE_PASSWORD for a flagged account', async () => {
+    const handlers = getRouteHandlers(notificationsRouter, 'get', '/');
+    const token = generateStaffToken(randomUUID(), { mustChangePassword: true });
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'MUST_CHANGE_PASSWORD' } }));
+    expect(notificationsService.listForRecipient).not.toHaveBeenCalled();
+  });
+
+  it('blocks PATCH /:id/read with 403 MUST_CHANGE_PASSWORD for a flagged account', async () => {
+    const handlers = getRouteHandlers(notificationsRouter, 'patch', '/:id/read');
+    const token = generateSuperAdminToken({ mustChangePassword: true });
+    const req = mockReq({ ...authHeader(token), params: { id: NOTIF_1 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(notificationsService.markRead).not.toHaveBeenCalled();
+  });
+
+  it('blocks PATCH /read-all with 403 MUST_CHANGE_PASSWORD for a flagged account', async () => {
+    const handlers = getRouteHandlers(notificationsRouter, 'patch', '/read-all');
+    const token = generateSuperAdminToken({ mustChangePassword: true });
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(notificationsService.markAllRead).not.toHaveBeenCalled();
+  });
+
+  it('allows GET / once must_change_password is false (post password-change)', async () => {
+    const handlers = getRouteHandlers(notificationsRouter, 'get', '/');
+    const token = generateStaffToken(randomUUID(), { mustChangePassword: false });
+    const req = mockReq(authHeader(token));
+    const res = mockRes();
+    vi.mocked(notificationsService.listForRecipient).mockResolvedValue({ notifications: [], total: 0, unread_count: 0, page: 1, limit: 25 });
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(notificationsService.listForRecipient).toHaveBeenCalled();
+  });
+});

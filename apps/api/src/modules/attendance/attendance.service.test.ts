@@ -62,11 +62,22 @@ vi.mock('../branches/branches.repository.js', () => ({
   },
 }));
 
+// P3D-P4 — attendance.service.ts resolves the regular-shift threshold
+// through settingsService.getRegularShiftMinutes() instead of a hardcoded
+// constant. Mocked here so clockOut/manualOverride tests can exercise both
+// the 480-minute default and a custom configured threshold.
+vi.mock('../settings/settings.service.js', () => ({
+  settingsService: {
+    getRegularShiftMinutes: vi.fn(),
+  },
+}));
+
 const { attendanceRepository } = await import('./attendance.repository.js');
 const { cashRepository } = await import('../cash/cash.repository.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifyBranch, notifySuperAdmin } = await import('../../lib/notify.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
+const { settingsService } = await import('../settings/settings.service.js');
 const { prisma } = await import('../../lib/prisma.js');
 const { attendanceService } = await import('./attendance.service.js');
 
@@ -173,6 +184,9 @@ function shiftRow(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: the pre-P3D-P4 hardcoded 8h/480min threshold — matches
+  // production behavior when no work_hours_policy row exists.
+  vi.mocked(settingsService.getRegularShiftMinutes).mockResolvedValue(480);
   // Default: no open POS shift — most clockOut tests aren't exercising the
   // shift-link guard (§6), only the dedicated auto-close test overrides this.
   vi.mocked(cashRepository.findActiveShift).mockResolvedValue(null);
@@ -428,6 +442,79 @@ describe('attendanceService.clockOut', () => {
     });
     expect(attendanceRepository.clockOut).not.toHaveBeenCalled();
   });
+
+  // P3D-P4 — regular/overtime split now resolves the threshold through
+  // settingsService.getRegularShiftMinutes() instead of a hardcoded 480.
+  describe('regular/overtime split (P3D-P4)', () => {
+    async function clockOutAfter(clockInIso: string, clockOutIso: string, breakMinutes = 0) {
+      const active = attendanceRow({ clockInServerTime: new Date(clockInIso), breakMinutes: 0 });
+      vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(active as never);
+      vi.mocked(attendanceRepository.clockOut).mockResolvedValue(attendanceRow() as never);
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(clockOutIso));
+      try {
+        await attendanceService.clockOut('employee-1', { breakMinutes }, STAFF);
+      } finally {
+        vi.useRealTimers();
+      }
+      return vi.mocked(attendanceRepository.clockOut).mock.calls.at(-1)?.[1] as { actualWorkMinutes: number; overtimeMinutes: number };
+    }
+
+    it('default 8h threshold: exactly 8h worked → 0 OT', async () => {
+      const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T16:00:00.000Z');
+      expect(call.actualWorkMinutes).toBe(480);
+      expect(call.overtimeMinutes).toBe(0);
+    });
+
+    it('default 8h threshold: 7h59m worked → 0 OT (all regular)', async () => {
+      const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T15:59:00.000Z');
+      expect(call.overtimeMinutes).toBe(0);
+    });
+
+    it('default 8h threshold: 8h01m worked → 1m OT', async () => {
+      const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T16:01:00.000Z');
+      expect(call.overtimeMinutes).toBe(1);
+    });
+
+    it('default 8h threshold: 10h worked → 2h (120m) OT', async () => {
+      const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T18:00:00.000Z');
+      expect(call.overtimeMinutes).toBe(120);
+    });
+
+    it('9h elapsed with a 1h break under the 8h threshold → 8h actual, 0 OT', async () => {
+      const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T17:00:00.000Z', 60);
+      expect(call.actualWorkMinutes).toBe(480);
+      expect(call.overtimeMinutes).toBe(0);
+    });
+
+    it('overnight shift (10 PM to 7 AM) computes elapsed duration correctly across the day boundary', async () => {
+      const call = await clockOutAfter('2026-07-15T22:00:00.000Z', '2026-07-16T07:00:00.000Z');
+      // 9h elapsed; default 8h threshold → 1h (60m) OT.
+      expect(call.actualWorkMinutes).toBe(540);
+      expect(call.overtimeMinutes).toBe(60);
+    });
+
+    describe('custom configured threshold (9h)', () => {
+      beforeEach(() => {
+        vi.mocked(settingsService.getRegularShiftMinutes).mockResolvedValue(540);
+      });
+
+      it('8h worked under a 9h threshold → 0 OT', async () => {
+        const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T16:00:00.000Z');
+        expect(call.overtimeMinutes).toBe(0);
+      });
+
+      it('9h worked under a 9h threshold → 0 OT', async () => {
+        const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T17:00:00.000Z');
+        expect(call.overtimeMinutes).toBe(0);
+      });
+
+      it('10h worked under a 9h threshold → 1h (60m) OT', async () => {
+        const call = await clockOutAfter('2026-07-15T08:00:00.000Z', '2026-07-15T18:00:00.000Z');
+        expect(call.overtimeMinutes).toBe(60);
+      });
+    });
+  });
 });
 
 describe('attendanceService.manualOverride', () => {
@@ -481,6 +568,29 @@ describe('attendanceService.manualOverride', () => {
       attendanceService.manualOverride('record-1', { correctionReason: 'Some correction reason' }, SUPERVISOR),
     ).rejects.toMatchObject({ code: 'BRANCH_ACCESS_DENIED', statusCode: 403 });
     expect(attendanceRepository.createOverride).not.toHaveBeenCalled();
+  });
+
+  // P3D-P4 — manual correction must use the same canonical threshold
+  // resolver as clockOut, not a duplicated/stale hardcoded value.
+  it('uses the configured threshold (9h), same as clockOut, when recomputing a correction', async () => {
+    vi.mocked(settingsService.getRegularShiftMinutes).mockResolvedValue(540);
+    const original = attendanceRow({ clockInServerTime: new Date('2026-07-15T08:00:00.000Z') });
+    vi.mocked(attendanceRepository.findById).mockResolvedValue(original as never);
+    vi.mocked(attendanceRepository.findBranchAssignment).mockResolvedValue({ id: 'assignment-1' } as never);
+    vi.mocked(attendanceRepository.createOverride).mockResolvedValue(attendanceRow({ id: 'record-2' }) as never);
+    vi.mocked(attendanceRepository.softDelete).mockResolvedValue(attendanceRow({ deletedAt: new Date() }) as never);
+
+    await attendanceService.manualOverride(
+      'record-1',
+      { correctionReason: 'Corrected clock-out time', clockOutServerTime: new Date('2026-07-15T18:00:00.000Z') },
+      SUPERVISOR,
+    );
+
+    // 10h elapsed against a 9h configured threshold → 1h (60m) OT, not the
+    // pre-P3D-P4 hardcoded-480 answer of 2h (120m).
+    expect(attendanceRepository.createOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ actualWorkMinutes: 600, overtimeMinutes: 60 }),
+    );
   });
 });
 

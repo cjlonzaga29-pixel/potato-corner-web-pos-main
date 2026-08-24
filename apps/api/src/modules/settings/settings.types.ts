@@ -1,4 +1,4 @@
-import type { SecurityPolicy, DiscountPolicy, ConfigurableDiscountType } from '@potato-corner/shared';
+import type { SecurityPolicy, DiscountPolicy, ConfigurableDiscountType, WorkHoursPolicy } from '@potato-corner/shared';
 
 /** Key of the single SystemSetting row that stores the security policy JSON blob. */
 export const SECURITY_POLICY_KEY = 'security_policy';
@@ -62,6 +62,19 @@ export const DEFAULT_DISCOUNT_POLICY: DiscountPolicy = {
 };
 
 export type UpdateDiscountPolicyData = Partial<Record<ConfigurableDiscountType, { percentage?: number; isEnabled?: boolean }>>;
+
+/** Key of the single SystemSetting row that stores the regular-work-hours policy JSON blob (P3D-P4). */
+export const WORK_HOURS_POLICY_KEY = 'work_hours_policy';
+
+/**
+ * Fallback used when no `work_hours_policy` SystemSetting row exists yet —
+ * mirrors the STANDARD_SHIFT_MINUTES = 8 * 60 constant attendance.service.ts
+ * hardcoded before this setting existed, so an absent row preserves current
+ * production behavior exactly.
+ */
+export const DEFAULT_WORK_HOURS_POLICY: WorkHoursPolicy = {
+  regularHours: 8,
+};
 
 /** Mirrors auth.types.ts's AuthError / employees.types.ts's EmployeeError — this module's own domain error → HTTP status mapping. */
 export class SettingsError extends Error {

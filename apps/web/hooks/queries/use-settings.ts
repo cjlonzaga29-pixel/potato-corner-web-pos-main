@@ -7,6 +7,8 @@ import type {
   DiscountPolicyResponse,
   UpdateNotificationPreferencesInput,
   UpdateDiscountPolicyInput,
+  WorkHoursPolicyResponse,
+  UpdateWorkHoursPolicyInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
@@ -52,6 +54,43 @@ export function useUpdateDiscountPolicy() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-policy'] });
       toast.success('Discount settings updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * P3D-P4 — the configured regular-shift length (hours) before overtime
+ * accrues, resolved server-side by settingsService.getRegularShiftMinutes()
+ * for both clock-out and manual-override attendance calculations. Readable
+ * by every role (allRoles) so attendance views can label Regular/OT
+ * consistently; only Super Admin can write it (adminOnly on the PUT route).
+ */
+export function useWorkHoursPolicy() {
+  const { accessToken, isLoading } = useAuth();
+
+  return useQuery({
+    queryKey: ['settings', 'work-hours'],
+    queryFn: async () => {
+      const response = await apiClient<WorkHoursPolicyResponse>('/api/settings/work-hours');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load work hours settings'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading,
+  });
+}
+
+export function useUpdateWorkHoursPolicy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateWorkHoursPolicyInput) => {
+      const response = await apiClient<WorkHoursPolicyResponse>('/api/settings/work-hours', { method: 'PUT', body: JSON.stringify(input) });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update work hours settings'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'work-hours'] });
+      toast.success('Work hours settings updated');
     },
     onError: (error: Error) => toast.error(error.message),
   });

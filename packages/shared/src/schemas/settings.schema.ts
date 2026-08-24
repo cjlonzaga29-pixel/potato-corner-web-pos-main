@@ -103,3 +103,23 @@ export const discountPolicyResponseSchema = discountPolicySchema.extend({
   updatedAt: z.iso.datetime().nullable(),
   updatedBy: z.string().nullable(),
 });
+
+/**
+ * P3D-P4 — Super Admin-configurable regular-shift length before overtime
+ * accrues. Stored as SystemSetting(key='work_hours_policy').value, same KV
+ * pattern as securityPolicySchema/discountPolicySchema above. The Admin-
+ * facing unit is HOURS; attendance.service.ts converts to minutes and is the
+ * only place that reads this for the canonical regular/overtime split.
+ * Bounds (1-24) block zero/negative/absurd values without pretending every
+ * value in range is realistic — that judgment stays with the Super Admin.
+ */
+export const workHoursPolicySchema = z.object({
+  regularHours: z.number().finite().min(1).max(24),
+});
+
+export const updateWorkHoursPolicySchema = workHoursPolicySchema;
+
+export const workHoursPolicyResponseSchema = workHoursPolicySchema.extend({
+  updatedAt: z.iso.datetime().nullable(),
+  updatedBy: z.string().nullable(),
+});

@@ -8,14 +8,13 @@ import { cashService } from '../cash/cash.service.js';
 import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 import { prisma } from '../../lib/prisma.js';
 import { attendanceOpenSessionLockId } from '../../lib/pg-lock.js';
+import { settingsService } from '../settings/settings.service.js';
 
 type ActorContext = { id: string; role: string };
 type GpsStatus = 'within_radius' | 'outside_radius' | 'no_gps_data';
 
 /** See the architecture doc's "time-delta flagging" — a device clock more than 5 minutes off from the server is flagged for supervisor review, not rejected outright. */
 const TIME_DELTA_FLAG_THRESHOLD_MS = 5 * 60 * 1000;
-/** Standard 8-hour shift; minutes worked beyond this count toward overtimeMinutes. No per-employee shift-length model exists yet, so this is a single flat constant. */
-const STANDARD_SHIFT_MINUTES = 8 * 60;
 const EARTH_RADIUS_METERS = 6371000;
 
 interface DecimalLike {
@@ -252,7 +251,8 @@ export const attendanceService = {
     const breakMinutes = data.breakMinutes ?? active.breakMinutes;
     const totalMinutes = Math.max(0, Math.round((clockOutServerTime.getTime() - active.clockInServerTime.getTime()) / 60000));
     const actualWorkMinutes = Math.max(0, totalMinutes - breakMinutes);
-    const overtimeMinutes = Math.max(0, actualWorkMinutes - STANDARD_SHIFT_MINUTES);
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes();
+    const overtimeMinutes = Math.max(0, actualWorkMinutes - regularShiftMinutes);
 
     const updated = (await attendanceRepository.clockOut(active.id, {
       clockOutServerTime,
@@ -301,7 +301,8 @@ export const attendanceService = {
     const actualWorkMinutes = clockOutServerTime
       ? Math.max(0, Math.round((clockOutServerTime.getTime() - clockInServerTime.getTime()) / 60000) - breakMinutes)
       : null;
-    const overtimeMinutes = actualWorkMinutes !== null ? Math.max(0, actualWorkMinutes - STANDARD_SHIFT_MINUTES) : 0;
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes();
+    const overtimeMinutes = actualWorkMinutes !== null ? Math.max(0, actualWorkMinutes - regularShiftMinutes) : 0;
 
     const correction = (await attendanceRepository.createOverride({
       employeeId: original.employeeId,

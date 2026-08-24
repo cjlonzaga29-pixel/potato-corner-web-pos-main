@@ -6,11 +6,13 @@ import {
   type SecurityPolicy,
   type DiscountPolicy,
   type DiscountPolicyResponse,
+  type WorkHoursPolicyResponse,
   type UpdateNotificationPreferencesInput,
   type UpdatePaymentMethodConfigInput,
   type UpdateReceiptConfigInput,
   type UpdateSecurityPolicyInput,
   type UpdateDiscountPolicyInput,
+  type UpdateWorkHoursPolicyInput,
   CONFIGURABLE_DISCOUNT_TYPES,
 } from '@potato-corner/shared';
 import type {
@@ -25,6 +27,8 @@ import {
   SECURITY_POLICY_KEY,
   DEFAULT_DISCOUNT_POLICY,
   DISCOUNT_POLICY_KEY,
+  DEFAULT_WORK_HOURS_POLICY,
+  WORK_HOURS_POLICY_KEY,
   SettingsError,
 } from './settings.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -278,5 +282,63 @@ export const settingsService = {
 
     const updated = await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY);
     return { ...merged, updatedAt: updated?.updatedAt.toISOString() ?? new Date().toISOString(), updatedBy: updatedBy.user_id };
+  },
+
+  /**
+   * P3D-P4 — Super Admin-configurable regular-shift length. Same KV
+   * precedent as getDiscountPolicy/getSecurityPolicy: an absent SystemSetting
+   * row means DEFAULT_WORK_HOURS_POLICY (8h), which is the exact value
+   * attendance.service.ts's STANDARD_SHIFT_MINUTES hardcoded before this
+   * setting existed — a fresh install or pre-save state behaves identically
+   * to today's production.
+   */
+  async getWorkHoursPolicy(): Promise<WorkHoursPolicyResponse> {
+    const setting = await settingsRepository.findSystemSetting(WORK_HOURS_POLICY_KEY);
+    if (!setting) return { ...DEFAULT_WORK_HOURS_POLICY, updatedAt: null, updatedBy: null };
+    const value = setting.value as unknown as { regularHours: number };
+    return { ...value, updatedAt: setting.updatedAt.toISOString(), updatedBy: setting.updatedBy };
+  },
+
+  async updateWorkHoursPolicy(
+    data: UpdateWorkHoursPolicyInput,
+    updatedBy: ActorContext,
+    ipAddress: string | null,
+  ): Promise<WorkHoursPolicyResponse> {
+    const before = await settingsService.getWorkHoursPolicy();
+
+    await settingsRepository.upsertSystemSetting(
+      WORK_HOURS_POLICY_KEY,
+      data as unknown as Prisma.InputJsonValue,
+      updatedBy.user_id,
+      'Configurable regular work hours per shift before overtime accrues',
+    );
+
+    await recordAuditLog({
+      action: 'WORK_HOURS_POLICY_UPDATED',
+      entityType: 'system_setting',
+      entityId: WORK_HOURS_POLICY_KEY,
+      actorId: updatedBy.user_id,
+      actorRole: updatedBy.role,
+      beforeState: before,
+      afterState: data,
+      ipAddress,
+    });
+
+    const updated = await settingsRepository.findSystemSetting(WORK_HOURS_POLICY_KEY);
+    return { ...data, updatedAt: updated?.updatedAt.toISOString() ?? new Date().toISOString(), updatedBy: updatedBy.user_id };
+  },
+
+  /**
+   * Canonical resolver for the regular-shift threshold in minutes — the ONE
+   * place attendance.service.ts (clockOut and manualOverride alike) reads
+   * this from, so the configured value can never drift between the two call
+   * sites. Converts the admin-facing hours value to integer minutes via
+   * Math.round to avoid fractional-minute ambiguity (e.g. 7.501h). Falls
+   * back to DEFAULT_WORK_HOURS_POLICY (480 minutes) on a missing row, same
+   * fallback semantics as getWorkHoursPolicy.
+   */
+  async getRegularShiftMinutes(): Promise<number> {
+    const policy = await settingsService.getWorkHoursPolicy();
+    return Math.round(policy.regularHours * 60);
   },
 };

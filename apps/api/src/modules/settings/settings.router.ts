@@ -5,6 +5,7 @@ import {
   updateReceiptConfigSchema,
   updatePaymentMethodConfigSchema,
   updateDiscountPolicySchema,
+  updateWorkHoursPolicySchema,
 } from '@potato-corner/shared';
 import { settingsService } from './settings.service.js';
 import { SettingsError } from './settings.types.js';
@@ -120,6 +121,39 @@ router.put(
     try {
       if (!requireUser(req, res)) return;
       const policy = await settingsService.updateDiscountPolicy(req.body, req.user, req.ip ?? null);
+      res.status(200).json({ data: policy, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+/**
+ * P3D-P4 — GET is `allRoles` (mirrors discount-policy's precedent above):
+ * the attendance UI needs the configured threshold to label Regular/OT
+ * consistently for every role that can view attendance. PUT is `adminOnly`
+ * per the spec's RBAC requirement — only Super Admin may change this global
+ * threshold (unlike discount-policy's adminOrSupervisor).
+ */
+router.get('/work-hours', authenticate, allRoles, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const policy = await settingsService.getWorkHoursPolicy();
+    res.status(200).json({ data: policy, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+router.put(
+  '/work-hours',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updateWorkHoursPolicySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const policy = await settingsService.updateWorkHoursPolicy(req.body, req.user, req.ip ?? null);
       res.status(200).json({ data: policy, error: null, meta: null });
     } catch (error) {
       handleSettingsError(error, res, next);

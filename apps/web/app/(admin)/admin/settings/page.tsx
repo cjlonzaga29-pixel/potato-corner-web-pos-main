@@ -5,8 +5,9 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
 import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
+import { WorkHoursSettingsSection } from '@/components/settings/work-hours-settings-section';
 
-const TABS = ['notifications', 'discounts'] as const;
+const TABS = ['notifications', 'discounts', 'work-hours'] as const;
 type TabValue = (typeof TABS)[number];
 const DEFAULT_TAB: TabValue = 'notifications';
 
@@ -32,13 +33,14 @@ function SettingsPageContent() {
     <div className="app-section app-section-gap">
       <div>
         <h1 className="text-xl font-semibold">System Settings</h1>
-        <p className="text-muted-foreground text-sm">Notification and discount configuration.</p>
+        <p className="text-muted-foreground text-sm">Notification, discount, and work hours configuration.</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="discounts">Discount Settings</TabsTrigger>
+          <TabsTrigger value="work-hours">Work Hours</TabsTrigger>
         </TabsList>
 
         <TabsContent value="notifications">
@@ -47,6 +49,10 @@ function SettingsPageContent() {
 
         <TabsContent value="discounts">
           <DiscountSettingsSection />
+        </TabsContent>
+
+        <TabsContent value="work-hours">
+          <WorkHoursSettingsSection />
         </TabsContent>
       </Tabs>
     </div>

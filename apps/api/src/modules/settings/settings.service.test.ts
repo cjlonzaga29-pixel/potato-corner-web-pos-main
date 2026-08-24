@@ -441,3 +441,119 @@ describe('settingsService.updateDiscountPolicy', () => {
     expect(updateDiscountPolicySchema.safeParse({ pwd: { percentage: 10 } }).success).toBe(true);
   });
 });
+
+// P3D-P4 — Super Admin-configurable regular-shift length before overtime accrues.
+describe('settingsService.getWorkHoursPolicy', () => {
+  it('returns the pre-settings-model default (8h) when no work_hours_policy row exists', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+
+    const policy = await settingsService.getWorkHoursPolicy();
+
+    expect(policy.regularHours).toBe(8);
+    expect(policy.updatedAt).toBeNull();
+    expect(policy.updatedBy).toBeNull();
+  });
+
+  it('returns the persisted value once a Super Admin has saved one', async () => {
+    const savedAt = new Date('2026-08-01T00:00:00.000Z');
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'work_hours_policy',
+      value: { regularHours: 9 },
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: savedAt,
+      updatedAt: savedAt,
+    } as never);
+
+    const policy = await settingsService.getWorkHoursPolicy();
+
+    expect(policy.regularHours).toBe(9);
+    expect(policy.updatedBy).toBe('admin-1');
+    expect(policy.updatedAt).toBe(savedAt.toISOString());
+  });
+});
+
+describe('settingsService.updateWorkHoursPolicy', () => {
+  it('persists to SystemSetting table and records an audit log', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'work_hours_policy',
+      value: { regularHours: 9 },
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: new Date(),
+      updatedAt: new Date('2026-08-13T00:00:00.000Z'),
+    } as never);
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+
+    const result = await settingsService.updateWorkHoursPolicy({ regularHours: 9 }, ACTOR, null);
+
+    expect(result.regularHours).toBe(9);
+    expect(settingsRepository.upsertSystemSetting).toHaveBeenCalledWith(
+      'work_hours_policy',
+      { regularHours: 9 },
+      'admin-1',
+      expect.any(String),
+    );
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'WORK_HOURS_POLICY_UPDATED',
+        entityType: 'system_setting',
+        entityId: 'work_hours_policy',
+        actorId: 'admin-1',
+        beforeState: expect.objectContaining({ regularHours: 8 }),
+        afterState: { regularHours: 9 },
+      }),
+    );
+  });
+
+  it('does not silently accept zero, negative, NaN, or absurd values — validation is the zod schema layer, exercised here directly', async () => {
+    const { updateWorkHoursPolicySchema } = await import('@potato-corner/shared');
+
+    expect(updateWorkHoursPolicySchema.safeParse({ regularHours: 0 }).success).toBe(false);
+    expect(updateWorkHoursPolicySchema.safeParse({ regularHours: -1 }).success).toBe(false);
+    expect(updateWorkHoursPolicySchema.safeParse({ regularHours: Number.NaN }).success).toBe(false);
+    expect(updateWorkHoursPolicySchema.safeParse({ regularHours: 25 }).success).toBe(false);
+    expect(updateWorkHoursPolicySchema.safeParse({}).success).toBe(false);
+    expect(updateWorkHoursPolicySchema.safeParse({ regularHours: 8 }).success).toBe(true);
+    expect(updateWorkHoursPolicySchema.safeParse({ regularHours: 7.5 }).success).toBe(true);
+  });
+});
+
+describe('settingsService.getRegularShiftMinutes', () => {
+  it('converts the default 8h policy to 480 minutes when no row exists', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+
+    await expect(settingsService.getRegularShiftMinutes()).resolves.toBe(480);
+  });
+
+  it('converts a configured 9h policy to 540 minutes', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'work_hours_policy',
+      value: { regularHours: 9 },
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+
+    await expect(settingsService.getRegularShiftMinutes()).resolves.toBe(540);
+  });
+
+  it('rounds a fractional-hour policy (7.5h) to whole minutes (450)', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'work_hours_policy',
+      value: { regularHours: 7.5 },
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+
+    await expect(settingsService.getRegularShiftMinutes()).resolves.toBe(450);
+  });
+});

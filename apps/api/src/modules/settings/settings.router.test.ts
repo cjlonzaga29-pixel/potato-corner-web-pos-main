@@ -14,6 +14,8 @@ vi.mock('./settings.service.js', () => ({
   settingsService: {
     getDiscountPolicy: vi.fn(),
     updateDiscountPolicy: vi.fn(),
+    getWorkHoursPolicy: vi.fn(),
+    updateWorkHoursPolicy: vi.fn(),
   },
 }));
 
@@ -178,4 +180,104 @@ describe('PUT /discount-policy — only Supervisor/Super Admin may write (Cashie
     expect(res.status).toHaveBeenCalledWith(422);
     expect(settingsService.updateDiscountPolicy).not.toHaveBeenCalled();
   });
+});
+
+const DEFAULT_WORK_HOURS_POLICY = { regularHours: 8, updatedAt: null, updatedBy: null };
+
+// P3D-P4 — GET/PUT /api/settings/work-hours authorization. Same
+// no-supertest technique as discount-policy above.
+describe('GET /work-hours — all roles may read', () => {
+  it.each([
+    ['super_admin', () => generateSuperAdminToken()],
+    ['supervisor', () => generateSupervisorToken([BRANCH_1])],
+    ['staff', () => generateStaffToken(BRANCH_1)],
+    ['branch account', () => generateBranchToken(BRANCH_1)],
+  ])('%s can GET the work hours policy — 200', async (_label, makeToken) => {
+    vi.mocked(settingsService.getWorkHoursPolicy).mockResolvedValue(DEFAULT_WORK_HOURS_POLICY as never);
+    const handlers = getRouteHandlers(settingsRouter, 'get', '/work-hours');
+    const req = mockReq(authHeader(makeToken()));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(settingsService.getWorkHoursPolicy).toHaveBeenCalled();
+  });
+
+  it('an unauthenticated request (no Bearer token) gets 401, never reaches the service', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'get', '/work-hours');
+    const req = mockReq();
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(settingsService.getWorkHoursPolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT /work-hours — only Super Admin may write', () => {
+  it('staff cannot update the work hours policy — 403, service never reached', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/work-hours');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: { regularHours: 9 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
+  });
+
+  it('a branch account cannot update the work hours policy — 403, service never reached', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/work-hours');
+    const token = generateBranchToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), body: { regularHours: 9 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
+  });
+
+  it('a supervisor cannot update the work hours policy — 403, service never reached (unlike discount-policy, this is adminOnly)', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/work-hours');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), body: { regularHours: 9 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
+  });
+
+  it('a super admin can update the work hours policy — 200', async () => {
+    vi.mocked(settingsService.updateWorkHoursPolicy).mockResolvedValue({ regularHours: 9, updatedAt: new Date().toISOString(), updatedBy: 'admin-1' } as never);
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/work-hours');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), body: { regularHours: 9 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(settingsService.updateWorkHoursPolicy).toHaveBeenCalled();
+  });
+
+  it.each([[0], [-1], [25], [Number.NaN]])(
+    'an invalid regularHours value (%s) is rejected by validate() before reaching the service — 422',
+    async (regularHours) => {
+      const handlers = getRouteHandlers(settingsRouter, 'put', '/work-hours');
+      const token = generateSuperAdminToken();
+      const req = mockReq({ ...authHeader(token), body: { regularHours } });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(422);
+      expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -58,8 +58,9 @@ export default function AdminAttendancePage() {
   const branches = branchesData?.branches ?? [];
   const branchNames = new Map(branches.map((branch) => [branch.id, branch.name]));
   const employeeNames = new Map((employeesData?.employees ?? []).map((employee) => [employee.id, `${employee.first_name} ${employee.last_name}`]));
+  const employeeRoles = new Map((employeesData?.employees ?? []).map((employee) => [employee.id, employee.role]));
   const records = data?.records ?? [];
-  const columns = createAttendanceColumns({ employeeNames, branchNames });
+  const columns = createAttendanceColumns({ employeeNames, branchNames, employeeRoles });
 
   function resetToFirstPage() {
     setPagination((prev) => ({ ...prev, pageIndex: 0 }));

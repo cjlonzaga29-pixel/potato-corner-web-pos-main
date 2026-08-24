@@ -192,9 +192,13 @@ describe('AdminAttendancePage', () => {
     expect(screen.getByText('Records This Page')).toBeInTheDocument();
     expect(screen.getByText('Currently Clocked In')).toBeInTheDocument();
     expect(screen.getByText('Corrections')).toBeInTheDocument();
+    expect(screen.getByText('Worked Hours')).toBeInTheDocument();
+    expect(screen.getByText('Regular Hours')).toBeInTheDocument();
+    expect(screen.getByText('Overtime Hours')).toBeInTheDocument();
     const table = screen.getByRole('table');
     expect(table).toBeInTheDocument();
     expect(within(table).getByText('Juan Dela Cruz')).toBeInTheDocument();
+    expect(within(table).getByText('staff')).toBeInTheDocument();
   });
 
   it('renders loading skeletons while attendance is loading', () => {

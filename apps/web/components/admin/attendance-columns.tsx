@@ -23,10 +23,11 @@ function isStaleOpenShift(record: AttendanceResponse): boolean {
 export interface AttendanceColumnOptions {
   employeeNames: Map<string, string>;
   branchNames: Map<string, string>;
+  employeeRoles: Map<string, string>;
 }
 
 /** Read-only column set for the admin monitoring table — no actions column, unlike the supervisor page's equivalent. */
-export function createAttendanceColumns({ employeeNames, branchNames }: AttendanceColumnOptions): ColumnDef<AttendanceResponse>[] {
+export function createAttendanceColumns({ employeeNames, branchNames, employeeRoles }: AttendanceColumnOptions): ColumnDef<AttendanceResponse>[] {
   return [
     {
       id: 'employee_id',
@@ -47,6 +48,14 @@ export function createAttendanceColumns({ employeeNames, branchNames }: Attendan
       id: 'branch_id',
       header: 'Branch',
       cell: ({ row }) => branchNames.get(row.original.branch_id) ?? truncateId(row.original.branch_id),
+    },
+    {
+      id: 'role',
+      header: 'Role',
+      cell: ({ row }) => {
+        const role = employeeRoles.get(row.original.employee_id);
+        return role ? <span className="capitalize">{role}</span> : '—';
+      },
     },
     {
       id: 'clock_in_server_time',
@@ -84,12 +93,21 @@ export function createAttendanceColumns({ employeeNames, branchNames }: Attendan
     {
       id: 'actual_work_minutes',
       header: 'Worked',
-      cell: ({ row }) => (row.original.actual_work_minutes === null ? '—' : formatDuration(row.original.actual_work_minutes)),
+      cell: ({ row }) => (row.original.actual_work_minutes === null ? 'In Progress' : formatDuration(row.original.actual_work_minutes)),
+    },
+    {
+      id: 'regular_minutes',
+      header: 'Regular',
+      // Derived from the record's own stored actual/overtime minutes — never
+      // recomputed against the current Regular Work Hours setting, so a
+      // historical record keeps the split it was closed with (P3D-P4).
+      cell: ({ row }) =>
+        row.original.actual_work_minutes === null ? '—' : formatDuration(row.original.actual_work_minutes - row.original.overtime_minutes),
     },
     {
       id: 'overtime_minutes',
       header: 'Overtime',
-      cell: ({ row }) => formatDuration(row.original.overtime_minutes),
+      cell: ({ row }) => (row.original.actual_work_minutes === null ? '—' : formatDuration(row.original.overtime_minutes)),
     },
     {
       id: 'clock_in_gps_status',

@@ -37,9 +37,10 @@ function attendanceRecord(overrides: Partial<AttendanceResponse> = {}): Attendan
 
 const employeeNames = new Map([['employee-1', 'Juan Dela Cruz']]);
 const branchNames = new Map([['branch-1', 'Manila Branch']]);
+const employeeRoles = new Map([['employee-1', 'staff']]);
 
 function renderRecord(record: AttendanceResponse) {
-  const columns = createAttendanceColumns({ employeeNames, branchNames });
+  const columns = createAttendanceColumns({ employeeNames, branchNames, employeeRoles });
   render(<DataTable columns={columns} data={[record]} />);
 }
 
@@ -70,6 +71,27 @@ describe('createAttendanceColumns', () => {
     renderRecord(attendanceRecord({ clock_in_server_time: `${manilaToday()}T08:00:00.000Z`, actual_work_minutes: null, clock_out_server_time: null }));
 
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('shows In Progress and never a fabricated regular/overtime split for an open shift', () => {
+    renderRecord(attendanceRecord({ clock_in_server_time: `${manilaToday()}T08:00:00.000Z`, actual_work_minutes: null, clock_out_server_time: null }));
+
+    expect(screen.getByText('In Progress')).toBeInTheDocument();
+  });
+
+  it('derives Regular hours from actual minus overtime, in hours/minutes, not raw minutes', () => {
+    renderRecord(attendanceRecord({ actual_work_minutes: 600, overtime_minutes: 120 }));
+
+    expect(screen.getByText('8h')).toBeInTheDocument();
+    expect(screen.getByText('2h')).toBeInTheDocument();
+    expect(screen.queryByText('600')).not.toBeInTheDocument();
+    expect(screen.queryByText('120')).not.toBeInTheDocument();
+  });
+
+  it('shows the employee role when available', () => {
+    renderRecord(attendanceRecord());
+
+    expect(screen.getByText('staff')).toBeInTheDocument();
   });
 
   it('flags a still-open record from a prior day as a stale open shift needing review, without rewriting its status', () => {

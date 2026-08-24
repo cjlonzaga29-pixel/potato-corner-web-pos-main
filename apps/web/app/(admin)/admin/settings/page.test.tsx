@@ -54,17 +54,11 @@ vi.mock('@/components/ui/tabs', () => {
   return { Tabs, TabsList, TabsTrigger, TabsContent };
 });
 
-vi.mock('@/components/settings/security-policy-section', () => ({
-  SecurityPolicySection: () => <div>Security Section Content</div>,
-}));
 vi.mock('@/components/settings/notification-preferences-section', () => ({
   NotificationPreferencesSection: () => <div>Notifications Section Content</div>,
 }));
-vi.mock('@/components/settings/receipt-templates-section', () => ({
-  ReceiptTemplatesSection: () => <div>Receipts Section Content</div>,
-}));
-vi.mock('@/components/settings/payment-methods-section', () => ({
-  PaymentMethodsSection: () => <div>Payment Methods Section Content</div>,
+vi.mock('@/components/settings/discount-settings-section', () => ({
+  DiscountSettingsSection: () => <div>Discounts Section Content</div>,
 }));
 
 afterEach(() => {
@@ -74,42 +68,32 @@ afterEach(() => {
 });
 
 describe('SettingsPage', () => {
-  it('renders 4 tabs', () => {
+  it('renders 2 tabs', () => {
     render(<SettingsPage />);
 
-    expect(screen.getByRole('tab', { name: 'Security' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Notifications' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Receipt Templates' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Payment Methods' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Discount Settings' })).toBeInTheDocument();
   });
 
-  it('default tab is Security', () => {
+  it('default tab is Notifications', () => {
     render(<SettingsPage />);
 
-    expect(screen.getByRole('tab', { name: 'Security', selected: true })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Notifications', selected: true })).toBeInTheDocument();
   });
 
   it('tab change updates URL search param', () => {
     render(<SettingsPage />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Discount Settings' }));
 
-    expect(mockPush).toHaveBeenCalledWith('/admin/settings?tab=notifications', { scroll: false });
+    expect(mockPush).toHaveBeenCalledWith('/admin/settings?tab=discounts', { scroll: false });
   });
 
   it('renders correct section per tab', () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams('tab=receipts'));
+    mockUseSearchParams.mockReturnValue(new URLSearchParams('tab=discounts'));
 
     render(<SettingsPage />);
 
-    expect(screen.getByText('Receipts Section Content')).toBeInTheDocument();
-  });
-
-  it('renders payment methods section for the payments tab', () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams('tab=payments'));
-
-    render(<SettingsPage />);
-
-    expect(screen.getByText('Payment Methods Section Content')).toBeInTheDocument();
+    expect(screen.getByText('Discounts Section Content')).toBeInTheDocument();
   });
 });

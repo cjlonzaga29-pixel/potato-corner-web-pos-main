@@ -3,15 +3,12 @@
 import { Suspense } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { SecurityPolicySection } from '@/components/settings/security-policy-section';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
-import { ReceiptTemplatesSection } from '@/components/settings/receipt-templates-section';
-import { PaymentMethodsSection } from '@/components/settings/payment-methods-section';
 import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
 
-const TABS = ['security', 'notifications', 'receipts', 'payments', 'discounts'] as const;
+const TABS = ['notifications', 'discounts'] as const;
 type TabValue = (typeof TABS)[number];
-const DEFAULT_TAB: TabValue = 'security';
+const DEFAULT_TAB: TabValue = 'notifications';
 
 function isTabValue(value: string | null): value is TabValue {
   return TABS.includes(value as TabValue);
@@ -35,32 +32,17 @@ function SettingsPageContent() {
     <div className="app-section app-section-gap">
       <div>
         <h1 className="text-xl font-semibold">System Settings</h1>
-        <p className="text-muted-foreground text-sm">Security, notification, receipt, and payment method configuration.</p>
+        <p className="text-muted-foreground text-sm">Notification and discount configuration.</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
-          <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
-          <TabsTrigger value="receipts">Receipt Templates</TabsTrigger>
-          <TabsTrigger value="payments">Payment Methods</TabsTrigger>
           <TabsTrigger value="discounts">Discount Settings</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="security">
-          <SecurityPolicySection />
-        </TabsContent>
-
         <TabsContent value="notifications">
           <NotificationPreferencesSection />
-        </TabsContent>
-
-        <TabsContent value="receipts">
-          <ReceiptTemplatesSection />
-        </TabsContent>
-
-        <TabsContent value="payments">
-          <PaymentMethodsSection />
         </TabsContent>
 
         <TabsContent value="discounts">

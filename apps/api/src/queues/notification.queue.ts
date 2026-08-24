@@ -2,8 +2,46 @@ import { SOCKET_EVENTS } from '@potato-corner/shared';
 import { runFireAndForget, runWithRetry } from '../lib/job-runner.js';
 import { sendWelcomeEmail, sendFraudAlertEmail, sendLargeAdjustmentApprovalEmail, sendEodSummaryEmail } from '../lib/email.js';
 import { notifyBranch, notifySuperAdmin } from '../lib/notify.js';
+import { manilaHour } from '../lib/manila-time.js';
 import { notificationsRepository } from '../modules/notifications/notifications.repository.js';
 import type { NotificationPayload, NotificationType } from '../modules/notifications/notifications.types.js';
+
+type AlertPreferenceKey = 'alertFraud' | 'alertLowStock' | 'alertCashVariance' | 'alertVoidRequests';
+
+function isWithinDndWindow(startHour: number, endHour: number, currentHour: number): boolean {
+  if (startHour === endHour) return false;
+  // A DND window can wrap past midnight (e.g. 22 -> 7), so equal bounds mean
+  // "always off" and start > end means the window spans two calendar days.
+  if (startHour < endHour) return currentHour >= startHour && currentHour < endHour;
+  return currentHour >= startHour || currentHour < endHour;
+}
+
+/**
+ * Settings > Notification Preferences persists per-user alert toggles and a
+ * DND window, but nothing previously read them back at delivery time — the
+ * toggles were cosmetic. This is the enforcement point: recipients who
+ * disabled `alertKey` or are inside their own DND window are dropped before
+ * the persisted Notification row (and, for fraud, the email) is created. A
+ * recipient with no preference row yet gets the schema defaults (all alerts
+ * on, DND off), so accounts that never opened Settings see no behavior
+ * change. Socket broadcasts (notifyBranch/notifySuperAdmin) are untouched —
+ * they're documented in lib/notify.ts as a transient, room-scoped push, and
+ * the per-user REST list (GET /api/notifications) is what actually decides
+ * what a given recipient sees, so gating the persisted row is sufficient.
+ */
+async function filterAlertRecipients<T extends { id: string }>(recipients: T[], alertKey: AlertPreferenceKey): Promise<T[]> {
+  if (recipients.length === 0) return recipients;
+  const preferences = await notificationsRepository.findPreferences(recipients.map((recipient) => recipient.id));
+  const preferenceByUserId = new Map(preferences.map((preference) => [preference.userId, preference]));
+  const currentHour = manilaHour(new Date());
+  return recipients.filter((recipient) => {
+    const preference = preferenceByUserId.get(recipient.id);
+    if (!preference) return true;
+    if (!preference[alertKey]) return false;
+    if (preference.dndEnabled && isWithinDndWindow(preference.dndStartHour, preference.dndEndHour, currentHour)) return false;
+    return true;
+  });
+}
 
 /**
  * Phase 21: BullMQ (Queue + Worker backed by Redis) removed — jobs now run
@@ -127,7 +165,10 @@ export async function processNotification(jobName: string, data: unknown): Promi
       lowStockThreshold: payload.lowStockThreshold,
       criticalThreshold: payload.criticalThreshold,
     } as NotificationPayload;
-    const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId);
+    const recipients = await filterAlertRecipients(
+      await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId),
+      'alertLowStock',
+    );
     await Promise.all(
       recipients.map((recipient) =>
         notificationsRepository.create({
@@ -197,7 +238,10 @@ export async function processNotification(jobName: string, data: unknown): Promi
     const payload = data as Extract<NotificationPayload, { type: 'cash_variance_flagged' }>;
     notifyBranch(payload.branchId, SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, payload);
     notifySuperAdmin(SOCKET_EVENTS.CASH_VARIANCE_FLAGGED, payload);
-    const recipients = await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId);
+    const recipients = await filterAlertRecipients(
+      await notificationsRepository.findBranchSupervisorAndAdminUserIds(payload.branchId),
+      'alertCashVariance',
+    );
     await Promise.all(
       recipients.map((recipient) =>
         notificationsRepository.create({ type: 'cash_variance_flagged', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
@@ -211,7 +255,10 @@ export async function processNotification(jobName: string, data: unknown): Promi
     notifySuperAdmin(SOCKET_EVENTS.VOID_REQUESTED, payload);
     // Branch supervisors only (Task 6 recipient matrix) — no super admins,
     // unlike cash_variance_flagged/low_stock above.
-    const recipients = await notificationsRepository.findBranchSupervisorUserIds(payload.branchId);
+    const recipients = await filterAlertRecipients(
+      await notificationsRepository.findBranchSupervisorUserIds(payload.branchId),
+      'alertVoidRequests',
+    );
     await Promise.all(
       recipients.map((recipient) =>
         notificationsRepository.create({ type: 'void_requested', payload, recipientUserId: recipient.id, branchId: payload.branchId }),
@@ -253,7 +300,7 @@ export async function processNotification(jobName: string, data: unknown): Promi
     // detection.service.ts's own notifySuperAdmin call already broadcasts
     // this at alert-creation time — not duplicated here, same reasoning as
     // inventory_product_unavailable above.
-    const recipients = await notificationsRepository.findSuperAdminUserIds();
+    const recipients = await filterAlertRecipients(await notificationsRepository.findSuperAdminUserIds(), 'alertFraud');
     await Promise.all(
       recipients.map((recipient) =>
         notificationsRepository.create({ type: 'fraud_alert_created', payload, recipientUserId: recipient.id, branchId: payload.branchId }),

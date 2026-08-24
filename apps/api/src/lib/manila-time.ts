@@ -104,6 +104,16 @@ export function formatManilaDateTime(value: string | Date): string {
 }
 
 /**
+ * The Manila hour-of-day (0-23) a UTC instant falls on — same offset
+ * arithmetic as dayBounds/manilaDateKey. Used for notification-preference DND
+ * window checks, so "quiet hours" match the Philippine business day the rest
+ * of this module already anchors to, not the server process's own TZ.
+ */
+export function manilaHour(evaluationDate: Date): number {
+  return new Date(evaluationDate.getTime() + MANILA_OFFSET_MS).getUTCHours();
+}
+
+/**
  * Same reasoning as dayBounds, for a Manila calendar month — used by
  * "this month" activity windows (e.g. employee monthly stats) that must
  * agree with dayBounds on where a Manila day starts.

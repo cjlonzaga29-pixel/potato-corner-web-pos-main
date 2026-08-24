@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { dayBounds, monthBounds, manilaDateKey, manilaDateStringToUtc, resolveDateRangeBoundary } from './manila-time.js';
+import { dayBounds, monthBounds, manilaDateKey, manilaDateStringToUtc, resolveDateRangeBoundary, manilaHour } from './manila-time.js';
+
+describe('manilaHour', () => {
+  it('returns the Manila hour-of-day for a UTC instant, not the UTC hour', () => {
+    // 2026-07-17T15:00:00.000Z == 2026-07-17T23:00:00+08:00
+    expect(manilaHour(new Date('2026-07-17T15:00:00.000Z'))).toBe(23);
+  });
+
+  it('wraps into the next Manila calendar day near UTC midnight', () => {
+    // 2026-07-17T23:00:00.000Z == 2026-07-18T07:00:00+08:00
+    expect(manilaHour(new Date('2026-07-17T23:00:00.000Z'))).toBe(7);
+  });
+});
 
 describe('dayBounds', () => {
   it('returns the Manila-calendar-day window in UTC instants for a run that fires at 23:00 Manila', () => {

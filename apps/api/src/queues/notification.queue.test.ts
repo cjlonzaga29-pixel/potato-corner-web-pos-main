@@ -34,6 +34,11 @@ vi.mock('../lib/notify.js', () => ({
   notifySuperAdmin: vi.fn(),
 }));
 
+vi.mock('../lib/manila-time.js', () => ({
+  // Fixed inside the default 22-7 DND window (schema defaults) unless a test overrides it — deterministic without mocking the system clock.
+  manilaHour: vi.fn(() => 23),
+}));
+
 vi.mock('../modules/notifications/notifications.repository.js', () => ({
   notificationsRepository: {
     create: vi.fn(),
@@ -41,17 +46,40 @@ vi.mock('../modules/notifications/notifications.repository.js', () => ({
     findBranchSupervisorAndAdminUserIds: vi.fn(),
     findBranchSupervisorUserIds: vi.fn(),
     findBranchAllRolesUserIds: vi.fn(),
+    findPreferences: vi.fn(),
   },
 }));
 
 const { runWithRetry } = await import('../lib/job-runner.js');
 const { sendWelcomeEmail, sendFraudAlertEmail, sendLargeAdjustmentApprovalEmail, sendEodSummaryEmail } = await import('../lib/email.js');
 const { notifyBranch, notifySuperAdmin } = await import('../lib/notify.js');
+const { manilaHour } = await import('../lib/manila-time.js');
 const { notificationsRepository } = await import('../modules/notifications/notifications.repository.js');
 const { processNotification, enqueueNotification, enqueueRawNotificationJob } = await import('./notification.queue.js');
 
+function preferenceRow(userId: string, overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: `pref-${userId}`,
+    userId,
+    emailDigestEnabled: true,
+    emailDigestFrequency: 'daily',
+    alertFraud: true,
+    alertLowStock: true,
+    alertCashVariance: true,
+    alertVoidRequests: true,
+    dndEnabled: false,
+    dndStartHour: 22,
+    dndEndHour: 7,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // No preference row for a recipient means the schema defaults apply (all
+  // alerts on, DND off) — every existing gated-handler test relies on this
+  // pass-through default unless it explicitly mocks findPreferences itself.
+  vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([]);
   // vi.clearAllMocks() only clears call history, not a mock's configured
   // implementation — reset these back to their happy-path default so a
   // preceding test's mockRejectedValue(...) can't bleed into the next test.
@@ -711,5 +739,111 @@ describe('processNotification — eod_summary', () => {
 
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
+  });
+});
+
+describe('processNotification — alert preference gating', () => {
+  it('skips persisting low_stock_alert for a recipient with alertLowStock disabled, but still persists for one who has it enabled', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
+      { id: 'supervisor-1' },
+      { id: 'admin-1' },
+    ] as never);
+    vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { alertLowStock: false })] as never);
+
+    await processNotification('low_stock_alert', {
+      branchId: 'branch-1',
+      ingredientId: 'ing-1',
+      ingredientName: 'Potato',
+      currentStock: 5,
+      lowStockThreshold: 10,
+      criticalThreshold: 3,
+      severity: 'low',
+    });
+
+    expect(notificationsRepository.create).toHaveBeenCalledTimes(1);
+    expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'admin-1' }));
+    // The room-level socket broadcast is unaffected by per-user preferences — only the persisted row is gated.
+    expect(notifyBranch).toHaveBeenCalled();
+  });
+
+  it('skips persisting cash_variance_flagged for a recipient inside their own DND window', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { dndEnabled: true })] as never);
+    vi.mocked(manilaHour).mockReturnValueOnce(23); // inside the 22-7 DND window
+
+    await processNotification('cash_variance_flagged', {
+      type: 'cash_variance_flagged',
+      shiftId: 'shift-1',
+      branchId: 'branch-1',
+      expectedAmount: 1000,
+      actualAmount: 850,
+      variance: -150,
+      flaggedBy: 'supervisor-1',
+    });
+
+    expect(notificationsRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('still persists cash_variance_flagged for a recipient with DND enabled but outside the window', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { dndEnabled: true })] as never);
+    vi.mocked(manilaHour).mockReturnValueOnce(12); // outside the 22-7 DND window
+
+    await processNotification('cash_variance_flagged', {
+      type: 'cash_variance_flagged',
+      shiftId: 'shift-1',
+      branchId: 'branch-1',
+      expectedAmount: 1000,
+      actualAmount: 850,
+      variance: -150,
+      flaggedBy: 'supervisor-1',
+    });
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'supervisor-1' }));
+  });
+
+  it('skips persisting void_requested for a recipient with alertVoidRequests disabled', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorUserIds).mockResolvedValue([{ id: 'supervisor-1' }] as never);
+    vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('supervisor-1', { alertVoidRequests: false })] as never);
+
+    await processNotification('void_requested', {
+      type: 'void_requested',
+      branchId: 'branch-1',
+      transactionNumber: 'PC-TES-20260717-000001',
+      requestedByUserId: 'admin-1',
+      amount: 250,
+      reason: 'customer changed mind',
+    });
+
+    expect(notificationsRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('skips both the persisted row and the email for fraud_alert_created when alertFraud is disabled', async () => {
+    vi.mocked(notificationsRepository.findSuperAdminUserIds).mockResolvedValue([{ id: 'admin-1', email: 'admin-1@potatocorner.test' }] as never);
+    vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('admin-1', { alertFraud: false })] as never);
+    const data = { type: 'fraud_alert_created' as const, branchId: 'branch-1', alertId: 'alert-1', severity: 'high' };
+
+    await processNotification('fraud_alert_created', data);
+
+    expect(notificationsRepository.create).not.toHaveBeenCalled();
+    expect(sendFraudAlertEmail).not.toHaveBeenCalled();
+  });
+
+  it('does not gate large_adjustment_approval_needed — no preference toggle exists for it', async () => {
+    vi.mocked(notificationsRepository.findBranchSupervisorAndAdminUserIds).mockResolvedValue([
+      { id: 'admin-1', email: 'admin-1@potatocorner.test' },
+    ] as never);
+    vi.mocked(notificationsRepository.findPreferences).mockResolvedValue([preferenceRow('admin-1', { alertFraud: false, alertLowStock: false })] as never);
+
+    await processNotification('large_adjustment_approval_needed', {
+      type: 'large_adjustment_approval_needed',
+      branchId: 'branch-1',
+      adjustmentId: 'adj-1',
+      ingredientName: 'Potato',
+      quantityChange: -500,
+      requestedByUserId: 'staff-1',
+    });
+
+    expect(notificationsRepository.create).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'admin-1' }));
   });
 });

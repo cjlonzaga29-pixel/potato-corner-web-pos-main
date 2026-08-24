@@ -20,6 +20,9 @@ vi.mock('../../lib/prisma.js', () => {
     branch: {
       findMany: vi.fn(),
     },
+    notificationPreference: {
+      findMany: vi.fn(),
+    },
   };
   return { prisma: prismaMock };
 });
@@ -156,6 +159,23 @@ describe('notificationsRepository.findBranchNames', () => {
   it('skips the query entirely for an empty id list', async () => {
     const result = await notificationsRepository.findBranchNames([]);
     expect(prisma.branch.findMany).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
+  });
+});
+
+describe('notificationsRepository.findPreferences', () => {
+  it('batch-fetches preference rows for the given user ids', async () => {
+    vi.mocked(prisma.notificationPreference.findMany).mockResolvedValue([{ id: 'pref-1', userId: 'user-1' }] as never);
+
+    const result = await notificationsRepository.findPreferences(['user-1']);
+
+    expect(prisma.notificationPreference.findMany).toHaveBeenCalledWith({ where: { userId: { in: ['user-1'] } } });
+    expect(result).toEqual([{ id: 'pref-1', userId: 'user-1' }]);
+  });
+
+  it('skips the query entirely for an empty id list', async () => {
+    const result = await notificationsRepository.findPreferences([]);
+    expect(prisma.notificationPreference.findMany).not.toHaveBeenCalled();
     expect(result).toEqual([]);
   });
 });

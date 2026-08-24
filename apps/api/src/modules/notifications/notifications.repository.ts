@@ -123,4 +123,10 @@ export const notificationsRepository = {
     if (branchIds.length === 0) return Promise.resolve([]);
     return prisma.branch.findMany({ where: { id: { in: branchIds } }, select: { id: true, name: true } });
   },
+
+  /** Preference rows for a batch of recipient user ids — a user with no row yet gets the schema defaults (all alerts on, DND off) via the caller's fallback, not here. */
+  findPreferences(userIds: string[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
+    return prisma.notificationPreference.findMany({ where: { userId: { in: userIds } } });
+  },
 };

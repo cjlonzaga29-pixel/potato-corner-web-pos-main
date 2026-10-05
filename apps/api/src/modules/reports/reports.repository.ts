@@ -1241,7 +1241,7 @@ export const reportsRepository = {
       // lib/financial-metrics.ts's canonical grossSales definition, see getDailySales.
       prisma.transaction.groupBy({ by: ['branchId'], where: { status: 'completed', ...(range && { createdAt: range }) }, _sum: { subtotal: true }, _count: { _all: true } }),
       prisma.shift.findMany({ where: { status: 'active' }, select: { branchId: true } }),
-      prisma.inventoryStock.findMany({ where: { inventoryItem: { deletedAt: null } }, select: { branchId: true, quantityOnHand: true, lowStockThreshold: true } }),
+      prisma.inventoryStock.findMany({ where: { inventoryItem: { deletedAt: null } }, select: { branchId: true, quantityOnHand: true, quantityReserved: true, lowStockThreshold: true } }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
 
@@ -1251,7 +1251,13 @@ export const reportsRepository = {
     const lowStockCountByBranch = new Map<string, number>();
     for (const stock of stocks) {
       const lowThreshold = stock.lowStockThreshold?.toNumber() ?? null;
-      if (lowThreshold !== null && stock.quantityOnHand.toNumber() <= lowThreshold) {
+      // POS-PERF-P15R2 — readiness here means *sellable* stock, so it's
+      // judged against available (on-hand minus what pending sales already
+      // reserved), the same quantity the checkout/adjust/waste/transfer/
+      // physical-count writers treat as the real ceiling — not raw on-hand,
+      // which this report never uses for valuation anyway.
+      const available = Math.max(0, stock.quantityOnHand.toNumber() - stock.quantityReserved.toNumber());
+      if (lowThreshold !== null && available <= lowThreshold) {
         lowStockCountByBranch.set(stock.branchId, (lowStockCountByBranch.get(stock.branchId) ?? 0) + 1);
       }
     }

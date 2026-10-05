@@ -10,6 +10,8 @@ function alert(overrides: Partial<InventoryStockAlert> = {}): InventoryStockAler
     inventory_item_id: 'item-1',
     name: 'Cheddar Powder',
     quantity_on_hand: 2,
+    quantity_reserved: 0,
+    quantity_available: 2,
     threshold: 5,
     severity: 'low',
     ...overrides,

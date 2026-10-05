@@ -1251,8 +1251,8 @@ describe('reportsRepository.getBranchComparison', () => {
     ] as never);
     vi.mocked(prisma.shift.findMany).mockResolvedValue([{ branchId: 'b1' }] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
-      { branchId: 'b1', quantityOnHand: decimal(3), lowStockThreshold: decimal(10) },
-      { branchId: 'b1', quantityOnHand: decimal(50), lowStockThreshold: decimal(10) },
+      { branchId: 'b1', quantityOnHand: decimal(3), quantityReserved: decimal(0), lowStockThreshold: decimal(10) },
+      { branchId: 'b1', quantityOnHand: decimal(50), quantityReserved: decimal(0), lowStockThreshold: decimal(10) },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 
@@ -1283,13 +1283,29 @@ describe('reportsRepository.getBranchComparison', () => {
     vi.mocked(prisma.transaction.groupBy).mockResolvedValue([] as never);
     vi.mocked(prisma.shift.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
-      { branchId: 'b1', quantityOnHand: decimal(0), lowStockThreshold: null },
+      { branchId: 'b1', quantityOnHand: decimal(0), quantityReserved: decimal(0), lowStockThreshold: null },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 
     const rows = await reportsRepository.getBranchComparison(baseFilters);
 
     expect(rows[0]?.low_stock_ingredient_count).toBe(0);
+  });
+
+  // POS-PERF-P15R2 — low-stock readiness must reflect reservations: an item
+  // with on-hand well above threshold but almost entirely reserved for
+  // pending sales is not actually available, and must still count as low.
+  it('counts a mostly-reserved row as low-stock even though raw on-hand is well above threshold', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([] as never);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { branchId: 'b1', quantityOnHand: decimal(50), quantityReserved: decimal(45), lowStockThreshold: decimal(10) },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getBranchComparison(baseFilters);
+
+    expect(rows[0]?.low_stock_ingredient_count).toBe(1);
   });
 });
 

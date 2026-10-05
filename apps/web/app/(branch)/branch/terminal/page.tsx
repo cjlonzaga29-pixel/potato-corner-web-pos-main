@@ -39,13 +39,20 @@ import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useClockInLocation } from '@/hooks/use-clock-in-location';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
-import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof } from '@/hooks/queries/use-transactions';
+import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof, TransactionApiError } from '@/hooks/queries/use-transactions';
 import { useDiscountPolicy } from '@/hooks/queries/use-settings';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { SaleStatusModal, type SaleSnapshot, type SalePopupPhase } from '@/components/pos/sale-status-modal';
+import {
+  resolveCheckoutAttempt,
+  savePendingCheckoutAttempt,
+  clearPendingCheckoutAttempt,
+  readPendingCheckoutAttempt,
+  transactionToSaleSnapshot,
+} from '@/lib/checkout-recovery';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 
 // Task 140 — the same allowed-roles set ViewTransactionDetailDialog itself
@@ -477,8 +484,13 @@ export default function TerminalPage() {
   const [isReceiptViewOpen, setIsReceiptViewOpen] = useState(false);
   // One idempotency key per checkout *attempt* — generated on the first
   // Charge click and reused verbatim by Retry, so a retry after a dropped
-  // response replays the same sale instead of risking a duplicate. Reset
-  // to null only once that attempt reaches a terminal success (New Sale).
+  // response replays the same sale instead of risking a duplicate. Reset to
+  // null on a confirmed-success, a definite server rejection (one that
+  // proves nothing was persisted — see handleCharge's catch block), or a
+  // resolve-check that comes back 'not-found'. Left set on anything
+  // inconclusive (network failure, unreadable response) so the
+  // resolve-before-remint gate in handleCharge — or, across a reload, the
+  // mount-time recovery effect — settles the prior attempt's fate first.
   const idempotencyKeyRef = useRef<string | null>(null);
   // Fingerprint of the exact cart/payment fields the current idempotencyKey
   // was minted for. Edit Cart deliberately does not clear idempotencyKeyRef
@@ -495,6 +507,81 @@ export default function TerminalPage() {
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [isVoidRefundOpen, setIsVoidRefundOpen] = useState(false);
+  // POS-PERF-P15R2 — true while a dropped-response checkout attempt (this
+  // tab's own error, or one recovered after a reload/browser-close) is
+  // being resolved against the server before any new checkout under a
+  // different cart is allowed to start. See checkout-recovery.ts.
+  const [isResolvingPriorAttempt, setIsResolvingPriorAttempt] = useState(false);
+  // Set only when resolution came back 'unknown' (every status check
+  // network-failed) — the prior attempt's fate is still genuinely unknown,
+  // so cart edits stay blocked and this banner stays up until the cashier
+  // retries the check (same-cart Retry is unaffected; it's safe regardless).
+  const [unresolvedAttemptNotice, setUnresolvedAttemptNotice] = useState(false);
+
+  // POS-PERF-P15R2 — reload/browser-close recovery. A checkout attempt's
+  // idempotency key is persisted (lib/checkout-recovery.ts) the instant the
+  // charge request is sent, *before* it's known whether the request will
+  // succeed, time out, or the tab will close mid-flight. On the next mount
+  // of this page, any attempt left pending for this branch is resolved
+  // against the server exactly like an in-session dropped response is
+  // (same bounded poll) — this tab's own cart/payment state is gone after a
+  // reload, but the server's record of what actually happened is not.
+  useEffect(() => {
+    if (!branchId) return;
+    const pending = readPendingCheckoutAttempt(branchId);
+    if (!pending) return;
+
+    let cancelled = false;
+    setIsResolvingPriorAttempt(true);
+    void resolveCheckoutAttempt(pending.idempotencyKey).then((outcome) => {
+      if (cancelled) return;
+      setIsResolvingPriorAttempt(false);
+      if (outcome.status === 'found') {
+        clearPendingCheckoutAttempt(branchId);
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleTransaction(outcome.transaction);
+        setSalePhase('success');
+      } else if (outcome.status === 'not-found') {
+        clearPendingCheckoutAttempt(branchId);
+      } else {
+        setUnresolvedAttemptNotice(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately branchId-only: this recovers at most once per mount per
+    // branch, not every time unrelated state changes.
+  }, [branchId]);
+
+  function handleRecheckPendingAttempt() {
+    if (!branchId) return;
+    const pending = readPendingCheckoutAttempt(branchId);
+    if (!pending) {
+      setUnresolvedAttemptNotice(false);
+      return;
+    }
+    setIsResolvingPriorAttempt(true);
+    void resolveCheckoutAttempt(pending.idempotencyKey).then((outcome) => {
+      setIsResolvingPriorAttempt(false);
+      if (outcome.status === 'found') {
+        clearPendingCheckoutAttempt(branchId);
+        setUnresolvedAttemptNotice(false);
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleTransaction(outcome.transaction);
+        setSalePhase('success');
+      } else if (outcome.status === 'not-found') {
+        clearPendingCheckoutAttempt(branchId);
+        setUnresolvedAttemptNotice(false);
+      }
+      // 'unknown' — leave the banner up, nothing changed.
+    });
+  }
 
   // GCash/Maya/Other proof capture requires a live connection (see
   // createTransactionSchema's offline-must-be-cash rule) — there's no
@@ -1063,7 +1150,7 @@ export default function TerminalPage() {
     // isChargingRef is the real synchronous guard (see comment at its
     // declaration) — createTransaction.isPending alone does not reliably
     // block a second click event queued before React re-renders.
-    if (!branchId || createTransaction.isPending || isChargingRef.current) return;
+    if (!branchId || createTransaction.isPending || isChargingRef.current || isResolvingPriorAttempt) return;
     isChargingRef.current = true;
     setChargeError(null);
     const chargeClickedAt = performance.now();
@@ -1132,16 +1219,13 @@ export default function TerminalPage() {
     const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '');
     const previousKey = idempotencyKeyRef.current;
     const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
-    const idempotencyKey = isUnmodifiedRetry ? previousKey : crypto.randomUUID();
-    idempotencyKeyRef.current = idempotencyKey;
-    lastChargeFingerprintRef.current = chargeFingerprint;
-    const payloadWithIdempotency: CreateTransactionInput = { ...payload, idempotency_key: idempotencyKey };
 
     // The submitted-order snapshot, built entirely from client state already
-    // on screen — no server round trip has happened yet. Opening the popup
-    // (and closing the checkout review dialog) happens synchronously, right
-    // here, before the `await` below — Checkout must open the popup
-    // immediately, not once the network call resolves.
+    // on screen — no server round trip has happened yet. Computed before the
+    // resolve-gate below (not just before the request) so a 'saving' popup
+    // can show immediately even while that gate is still polling — otherwise
+    // a changed-cart charge after a dropped response would look like
+    // nothing happened for however long resolution takes.
     const snapshot: SaleSnapshot = {
       items: cartLines.map((line) => ({
         id: `${line.item.product_variant_id}-${line.index}`,
@@ -1170,6 +1254,57 @@ export default function TerminalPage() {
     setSalePhase('saving');
     setIsCheckoutOpen(false);
 
+    // POS-PERF-P15R2 — a changed cart after a *prior* attempt (one that
+    // this click's fingerprint no longer matches) must not just assume that
+    // prior attempt is done and safely mint a new key: the earlier dropped
+    // response proved nothing, and the earlier request can still be
+    // mid-flight server-side. Resolve it first — found means it already
+    // committed, so the right move is to show that confirmation, not charge
+    // the edited cart a second time; not-found means it's actually safe to
+    // proceed; unknown means stay blocked rather than guess.
+    if (previousKey !== null && !isUnmodifiedRetry) {
+      setIsResolvingPriorAttempt(true);
+      const outcome = await resolveCheckoutAttempt(previousKey);
+      setIsResolvingPriorAttempt(false);
+
+      if (outcome.status === 'found') {
+        clearPendingCheckoutAttempt(branchId);
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        clearCart();
+        resetPaymentFields();
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleTransaction(outcome.transaction);
+        setSalePhase('success');
+        isChargingRef.current = false;
+        return;
+      }
+      if (outcome.status === 'unknown') {
+        setUnresolvedAttemptNotice(true);
+        setSaleErrorMessage(
+          'Could not confirm whether the previous checkout attempt went through. Check your connection, then try again before charging a different cart.',
+        );
+        setSalePhase('error');
+        isChargingRef.current = false;
+        return;
+      }
+      // 'not-found' — confirmed nothing committed under the old key; safe
+      // to proceed and mint a fresh one below.
+      clearPendingCheckoutAttempt(branchId);
+      setUnresolvedAttemptNotice(false);
+    }
+
+    const idempotencyKey = isUnmodifiedRetry ? (previousKey as string) : crypto.randomUUID();
+    idempotencyKeyRef.current = idempotencyKey;
+    lastChargeFingerprintRef.current = chargeFingerprint;
+    const payloadWithIdempotency: CreateTransactionInput = { ...payload, idempotency_key: idempotencyKey };
+    // Persisted *before* the request is sent — a reload/browser-close any
+    // time after this line is now recoverable (see the mount effect above).
+    // Overwrites the record from an unmodified retry with the same key,
+    // which is a no-op; overwrites a stale one from a cart edit that just
+    // resolved 'not-found' above, which is exactly what should happen.
+    savePendingCheckoutAttempt(branchId, idempotencyKey);
+
     try {
       const requestStartedAt = performance.now();
       const transaction = await createTransaction.mutateAsync(payloadWithIdempotency);
@@ -1179,6 +1314,7 @@ export default function TerminalPage() {
       resetPaymentFields();
       idempotencyKeyRef.current = null;
       lastChargeFingerprintRef.current = null;
+      clearPendingCheckoutAttempt(branchId);
       setSaleTransaction(transaction);
       setSalePhase('success');
       // No cart contents/payment data — branch id and durations only, same
@@ -1190,10 +1326,29 @@ export default function TerminalPage() {
         responseToCheckoutCloseMs: Math.round(performance.now() - closeStartedAt),
       });
     } catch (error) {
-      // Cart and idempotencyKeyRef are deliberately left untouched — Retry
-      // resubmits the exact same sale under the same key, and Edit Cart
-      // (onEditCart below) returns to the checkout review dialog with
-      // every submitted item exactly as entered.
+      // Cart is deliberately left untouched either way — Retry resubmits
+      // the exact same sale under the same key, and Edit Cart (onEditCart
+      // below) returns to the checkout review dialog with every submitted
+      // item exactly as entered.
+      //
+      // POS-PERF-P15R2 — idempotencyKeyRef/the persisted pending record are
+      // only cleared here when the server actually gave a conclusive
+      // answer. A TransactionApiError with any code other than the two
+      // apiClient uses for "the response itself is unusable" (NETWORK_ERROR
+      // for a failed fetch, UNREADABLE_RESPONSE for a non-JSON/unparseable
+      // body) is a clean rejection the server processed and definitely did
+      // not persist (insufficient stock, validation, closed shift, …) — safe
+      // to treat as resolved immediately. Anything else (network failure, a
+      // thrown non-API error, an unreadable response) proves nothing, so the
+      // key/pending record stay live for the resolve-before-remint gate
+      // above (or the mount-time recovery effect, if the tab reloads first).
+      const isInconclusive =
+        !(error instanceof TransactionApiError) || error.code === 'NETWORK_ERROR' || error.code === 'UNREADABLE_RESPONSE' || error.code === undefined;
+      if (!isInconclusive) {
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        clearPendingCheckoutAttempt(branchId);
+      }
       setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
       setSalePhase('error');
     } finally {
@@ -1473,6 +1628,22 @@ export default function TerminalPage() {
       {!isOnline && (
         <div className="bg-warning px-4 py-1 text-center text-xs font-medium text-warning-foreground">
           Offline — sales will be queued and synced automatically once you reconnect.
+        </div>
+      )}
+
+      {/* POS-PERF-P15R2 — a prior checkout attempt's fate could not be confirmed against the server (every status check network-failed), so charging a different cart stays blocked until this resolves. A same-cart Retry from the error popup is unaffected — that path never needed this check. */}
+      {unresolvedAttemptNotice && (
+        <div className="flex items-center justify-between gap-3 bg-destructive px-4 py-1.5 text-xs font-medium text-destructive-foreground">
+          <span>Could not confirm whether a previous checkout attempt went through. Charging a different cart is blocked until this is resolved.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 shrink-0 bg-background px-2 text-xs text-foreground"
+            disabled={isResolvingPriorAttempt}
+            onClick={handleRecheckPendingAttempt}
+          >
+            {isResolvingPriorAttempt ? <LoadingSpinner size="sm" /> : 'Check again'}
+          </Button>
         </div>
       )}
 

@@ -540,6 +540,41 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
   }
 });
 
+// POS-PERF-P15R2 — lets the terminal UI resolve a checkout attempt whose
+// HTTP response was lost (timeout, dropped connection, reload/browser-close
+// mid-request) against the database itself, instead of treating "I never
+// got a response" as proof the sale never happened. Must be declared before
+// the generic '/:transactionId' GET below — Express matches routes in
+// registration order, and 'by-idempotency-key' would otherwise be consumed
+// as a (nonexistent) transactionId. allRoles, same as the plain
+// GET /:transactionId right below: a cashier/branch account needs to resolve
+// its own uncertain attempt just as much as an admin reviewing one later;
+// hasBranchAccess still gates which branch's sale it's allowed to see.
+router.get(
+  '/by-idempotency-key/:key',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const transaction = await transactionsService.getTransactionByIdempotencyKey(req.params.key as string);
+      if (!transaction) {
+        res.status(404).json({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
+        return;
+      }
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      res.status(200).json({ data: transaction, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
 router.get('/:transactionId', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;

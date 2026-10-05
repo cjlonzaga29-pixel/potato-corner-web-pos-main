@@ -399,6 +399,7 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       {
         inventoryItemId: 'item-healthy',
         quantityOnHand: decimal(50),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Flour', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -406,6 +407,7 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       {
         inventoryItemId: 'item-low',
         quantityOnHand: decimal(8),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Sugar', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -413,6 +415,7 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       {
         inventoryItemId: 'item-critical',
         quantityOnHand: decimal(2),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Cheese Powder', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -420,6 +423,7 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       {
         inventoryItemId: 'item-no-threshold',
         quantityOnHand: decimal(0),
+        quantityReserved: decimal(0),
         lowStockThreshold: null,
         criticalThreshold: null,
         inventoryItem: { name: 'Napkins', sku: null, category: null, baseUnit: { code: 'pc' } },
@@ -436,11 +440,37 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
     ]);
   });
 
+  // POS-PERF-P15R2 — status/availability must reflect reservations: an item
+  // with plenty on hand but almost all of it reserved for pending sales is
+  // not actually sellable, and must surface as low/critical, not healthy.
+  it('classifies status from available (on hand minus reserved), not raw on-hand, and reports on-hand/reserved/available separately', async () => {
+    vi.mocked(repo.findBranchStockRows).mockResolvedValue([
+      {
+        inventoryItemId: 'item-mostly-reserved',
+        quantityOnHand: decimal(50),
+        quantityReserved: decimal(42),
+        lowStockThreshold: decimal(10),
+        criticalThreshold: decimal(5),
+        inventoryItem: { name: 'Flour', sku: null, category: null, baseUnit: { code: 'kg' } },
+      },
+    ] as never);
+
+    const result = await universalInventoryService.getBranchStock('branch-1');
+
+    expect(result.items[0]).toMatchObject({
+      quantity_on_hand: 50,
+      quantity_reserved: 42,
+      quantity_available: 8,
+      status: 'low',
+    });
+  });
+
   it('attaches consumed_today from getConsumedTodayByBranch, defaulting to 0 for items with no sales today', async () => {
     vi.mocked(repo.findBranchStockRows).mockResolvedValue([
       {
         inventoryItemId: 'item-sold',
         quantityOnHand: decimal(50),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Flour', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -448,6 +478,7 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       {
         inventoryItemId: 'item-unsold',
         quantityOnHand: decimal(20),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Sugar', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -478,6 +509,7 @@ describe('universalInventoryService.getBranchStockAlerts — Test I (dashboard a
       {
         inventoryItemId: 'item-healthy',
         quantityOnHand: decimal(50),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Flour', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -485,6 +517,7 @@ describe('universalInventoryService.getBranchStockAlerts — Test I (dashboard a
       {
         inventoryItemId: 'item-low',
         quantityOnHand: decimal(8),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Sugar', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -492,6 +525,7 @@ describe('universalInventoryService.getBranchStockAlerts — Test I (dashboard a
       {
         inventoryItemId: 'item-critical',
         quantityOnHand: decimal(2),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         inventoryItem: { name: 'Cheese Powder', sku: null, category: null, baseUnit: { code: 'kg' } },
@@ -501,8 +535,27 @@ describe('universalInventoryService.getBranchStockAlerts — Test I (dashboard a
     const result = await universalInventoryService.getBranchStockAlerts('branch-1');
 
     expect(result.alerts).toEqual([
-      { inventory_item_id: 'item-low', name: 'Sugar', quantity_on_hand: 8, threshold: 10, severity: 'low' },
-      { inventory_item_id: 'item-critical', name: 'Cheese Powder', quantity_on_hand: 2, threshold: 5, severity: 'critical' },
+      { inventory_item_id: 'item-low', name: 'Sugar', quantity_on_hand: 8, quantity_reserved: 0, quantity_available: 8, threshold: 10, severity: 'low' },
+      { inventory_item_id: 'item-critical', name: 'Cheese Powder', quantity_on_hand: 2, quantity_reserved: 0, quantity_available: 2, threshold: 5, severity: 'critical' },
+    ]);
+  });
+
+  it('surfaces a mostly-reserved item as an alert even though on-hand alone looks healthy', async () => {
+    vi.mocked(repo.findBranchStockRows).mockResolvedValue([
+      {
+        inventoryItemId: 'item-mostly-reserved',
+        quantityOnHand: decimal(50),
+        quantityReserved: decimal(48),
+        lowStockThreshold: decimal(10),
+        criticalThreshold: decimal(5),
+        inventoryItem: { name: 'Flour', sku: null, category: null, baseUnit: { code: 'kg' } },
+      },
+    ] as never);
+
+    const result = await universalInventoryService.getBranchStockAlerts('branch-1');
+
+    expect(result.alerts).toEqual([
+      { inventory_item_id: 'item-mostly-reserved', name: 'Flour', quantity_on_hand: 50, quantity_reserved: 48, quantity_available: 2, threshold: 5, severity: 'critical' },
     ]);
   });
 });
@@ -1200,6 +1253,52 @@ describe('universalInventoryService.submitPhysicalCount — Test F (physical cou
         null,
       ),
     ).rejects.toMatchObject({ code: 'INVENTORY_ITEM_NOT_FOUND' });
+  });
+
+  // POS-PERF-P15R2 — a physical count is an absolute-set write, so it must
+  // reject a resulting quantityOnHand below quantityReserved just like
+  // adjust/waste/transfer reject a resulting available (on hand - reserved)
+  // balance below zero. Pending sales have already reserved that stock.
+  it('rejects a counted quantity below quantityReserved (pending sales reserve stock)', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10), quantityReserved: dec(4) }) as never);
+
+    await expect(
+      universalInventoryService.submitPhysicalCount(
+        { branchId: 'branch-1', counts: [{ inventoryItemId: 'item-1', countedQuantity: 3 }] },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PHYSICAL_COUNT_BELOW_RESERVED', statusCode: 409 });
+
+    expect(repo.updateStockQuantity).not.toHaveBeenCalled();
+    expect(repo.createStockMovement).not.toHaveBeenCalled();
+  });
+
+  it('accepts a counted quantity exactly equal to quantityReserved', async () => {
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10), quantityReserved: dec(4) }) as never);
+
+    await universalInventoryService.submitPhysicalCount(
+      { branchId: 'branch-1', counts: [{ inventoryItemId: 'item-1', countedQuantity: 4 }] },
+      ACTOR,
+      null,
+    );
+
+    expect(repo.updateStockQuantity).toHaveBeenCalledWith('branch-1', 'item-1', dec(4), {});
+  });
+
+  it('checks quantityReserved against the same locked row the write uses, not an earlier unlocked read', async () => {
+    // Simulates a reservation landing between an unlocked precheck and the
+    // locked read: lockAndGetStock (inside the transaction) is the only value
+    // consulted, so this proves the guard reads post-lock state.
+    vi.mocked(repo.lockAndGetStock).mockResolvedValue(buildStock({ quantityOnHand: dec(10), quantityReserved: dec(9) }) as never);
+
+    await expect(
+      universalInventoryService.submitPhysicalCount(
+        { branchId: 'branch-1', counts: [{ inventoryItemId: 'item-1', countedQuantity: 5 }] },
+        ACTOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PHYSICAL_COUNT_BELOW_RESERVED' });
   });
 });
 

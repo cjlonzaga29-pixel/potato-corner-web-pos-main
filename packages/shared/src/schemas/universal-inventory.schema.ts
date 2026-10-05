@@ -289,6 +289,8 @@ export const branchInventoryStockRowSchema = z.object({
   base_unit_id: z.uuid(),
   base_unit_code: z.string(),
   quantity_on_hand: z.number(),
+  quantity_reserved: z.number(),
+  quantity_available: z.number(),
   low_stock_threshold: z.number().nullable(),
   critical_threshold: z.number().nullable(),
   status: z.enum(['healthy', 'low', 'critical']),
@@ -307,6 +309,8 @@ export const inventoryStockAlertSchema = z.object({
   inventory_item_id: z.uuid(),
   name: z.string(),
   quantity_on_hand: z.number(),
+  quantity_reserved: z.number(),
+  quantity_available: z.number(),
   threshold: z.number(),
   severity: z.enum(['low', 'critical']),
 });

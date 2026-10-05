@@ -57,6 +57,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   // role to 'supervisor'.
   useVoidTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRefundTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRetryInventoryDeduction: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({

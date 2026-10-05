@@ -49,6 +49,24 @@ export function InventoryList({ basePath }: { basePath: string }) {
       ),
     },
     {
+      id: 'quantity_reserved',
+      header: 'Reserved',
+      cell: ({ row }) => (
+        <span className="tabular-nums text-muted-foreground">
+          {row.original.quantity_reserved > 0 ? `${row.original.quantity_reserved} ${row.original.base_unit_code}` : '—'}
+        </span>
+      ),
+    },
+    {
+      id: 'quantity_available',
+      header: 'Available',
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {row.original.quantity_available} {row.original.base_unit_code}
+        </span>
+      ),
+    },
+    {
       id: 'consumed_today',
       header: 'Consumed Today',
       cell: ({ row }) => (

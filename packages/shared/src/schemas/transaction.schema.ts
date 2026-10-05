@@ -123,6 +123,15 @@ export const refundTransactionRequestSchema = z.object({
   refund_reason: z.string().min(10),
 });
 
+// POS-PERF-P15R2 — response shape for POST /:transactionId/retry-inventory-deduction
+// (transactionsService.retryInventoryDeduction). status is always 'pending'
+// on success — the requeued job hasn't been picked up by the worker yet.
+export const retryInventoryDeductionResponseSchema = z.object({
+  transaction_id: z.uuid(),
+  job_id: z.uuid(),
+  status: z.literal('pending'),
+});
+
 export const transactionListQuerySchema = z.object({
   branch_id: z.uuid().optional(),
   shift_id: z.uuid().optional(),

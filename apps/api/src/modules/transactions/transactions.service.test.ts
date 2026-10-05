@@ -2146,6 +2146,30 @@ describe('transactionsService.getTransactionById', () => {
   });
 });
 
+// POS-PERF-P15R2 — a plain, side-effect-free read the terminal UI polls to
+// resolve a checkout attempt whose HTTP response was lost (timeout, dropped
+// connection, reload/browser-close mid-request). Unlike every other lookup
+// in this file it must return null rather than throw on a miss: "no sale
+// with this key yet" is an ordinary, expected outcome the caller polls
+// against, not an error.
+describe('transactionsService.getTransactionByIdempotencyKey (POS-PERF-P15R2)', () => {
+  it('returns the mapped transaction when a sale carries this idempotency key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValue(transactionRow({ id: 'txn-1' }) as never);
+
+    const result = await transactionsService.getTransactionByIdempotencyKey('key-1');
+
+    expect(result?.id).toBe('txn-1');
+  });
+
+  it('returns null (never throws) when no sale carries this key yet', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValue(null);
+
+    const result = await transactionsService.getTransactionByIdempotencyKey('key-missing');
+
+    expect(result).toBeNull();
+  });
+});
+
 // FAST FIX — Reports (Daily Sales/Sold Product Transactions/Discount
 // Compliance) was falling back to the raw cashier_id UUID whenever the
 // client-side employees list (branch/page-scoped) didn't have a match, e.g.

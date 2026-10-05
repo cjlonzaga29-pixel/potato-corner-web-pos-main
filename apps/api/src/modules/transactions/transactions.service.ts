@@ -2005,6 +2005,24 @@ export const transactionsService = {
     return toTransactionResponse(transaction as TransactionRow);
   },
 
+  /**
+   * POS-PERF-P15R2 — lets a client resolve an *uncertain* checkout attempt
+   * (the charge request timed out, the connection dropped, or the tab
+   * reloaded/closed before a response arrived) against the database itself,
+   * instead of assuming "I never got a response" means "nothing was
+   * charged". A dropped response proves nothing about the server-side
+   * outcome — the original request may still be mid-flight and commit a
+   * moment later. This is a plain read with no side effects, safe to poll:
+   * null means "no committed sale carries this key *yet*", not a permanent
+   * guarantee one never will, which is why the terminal UI only treats a
+   * null result as conclusive after polling it across a bounded window
+   * (see the terminal page's resolveCheckoutAttempt).
+   */
+  async getTransactionByIdempotencyKey(idempotencyKey: string) {
+    const transaction = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
+    return transaction ? toTransactionResponse(transaction as TransactionRow) : null;
+  },
+
   async listTransactions(filters: TransactionListFilters) {
     const { transactions, total } = await transactionsRepository.listTransactions(filters);
     return {

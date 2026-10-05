@@ -294,6 +294,7 @@ export function classifyStockStatus(quantityOnHand: number, lowThreshold: number
 interface StockRow {
   inventoryItemId: string;
   quantityOnHand: { toNumber(): number };
+  quantityReserved: { toNumber(): number };
   lowStockThreshold: { toNumber(): number } | null;
   criticalThreshold: { toNumber(): number } | null;
   unitCost: { toNumber(): number } | null;
@@ -308,6 +309,16 @@ interface StockRow {
 
 function toStockRowResponse(row: StockRow) {
   const quantity = row.quantityOnHand.toNumber();
+  const reserved = row.quantityReserved.toNumber();
+  // POS-PERF-P15R2 — "available" (sellable) stock is on-hand minus what
+  // pending sales have already reserved; readiness status (healthy/low/
+  // critical) is evaluated against *available*, matching the same
+  // on-hand-minus-reserved check the checkout/adjust/waste/transfer/physical-
+  // count writers use (see submitPhysicalCount above). quantity_on_hand and
+  // inventory_value stay the full physical/accounting count — reservations
+  // never get subtracted from valuation or the physical-stock figure itself,
+  // only from the "is this low?" judgment.
+  const available = Math.max(0, quantity - reserved);
   const lowThreshold = row.lowStockThreshold?.toNumber() ?? null;
   const criticalThreshold = row.criticalThreshold?.toNumber() ?? null;
   // Branch-specific InventoryStock.unitCost overrides InventoryItem.unitCost
@@ -321,9 +332,11 @@ function toStockRowResponse(row: StockRow) {
     base_unit_id: row.inventoryItem.baseUnit.id,
     base_unit_code: row.inventoryItem.baseUnit.code,
     quantity_on_hand: quantity,
+    quantity_reserved: reserved,
+    quantity_available: available,
     low_stock_threshold: lowThreshold,
     critical_threshold: criticalThreshold,
-    status: classifyStockStatus(quantity, lowThreshold, criticalThreshold),
+    status: classifyStockStatus(available, lowThreshold, criticalThreshold),
     avg_unit_cost: avgUnitCost,
     inventory_value: avgUnitCost !== null ? Math.round(avgUnitCost * quantity * 100) / 100 : null,
   };
@@ -777,6 +790,8 @@ export const universalInventoryService = {
         inventory_item_id: r.inventory_item_id,
         name: r.name,
         quantity_on_hand: r.quantity_on_hand,
+        quantity_reserved: r.quantity_reserved,
+        quantity_available: r.quantity_available,
         threshold: r.status === 'critical' ? (r.critical_threshold ?? 0) : (r.low_stock_threshold ?? 0),
         severity: r.status as 'low' | 'critical',
       }));
@@ -1284,6 +1299,23 @@ export const universalInventoryService = {
         const quantityBefore = stock.quantityOnHand;
         const quantityAfter = new Prisma.Decimal(count.countedQuantity);
         const varianceAmount = quantityAfter.minus(quantityBefore);
+
+        // POS-PERF-P15R2: a physical count is an absolute-set write, so unlike
+        // adjust/waste/transfer it can't just reject a negative delta — it must
+        // reject the *resulting* quantityOnHand landing below quantityReserved,
+        // checked against the same lockAndGetStock-held row those writers use
+        // (not an unlocked precheck a concurrent reservation/deduction could
+        // invalidate between read and write). Pending sales have already
+        // reserved this stock; a count that ignores that would let the count
+        // silently hand reserved units to someone else before those sales
+        // complete or roll back.
+        if (quantityAfter.lessThan(stock.quantityReserved)) {
+          throw new UniversalInventoryError(
+            'PHYSICAL_COUNT_BELOW_RESERVED',
+            `Counted quantity (${quantityAfter.toNumber()}) is below the ${stock.quantityReserved.toNumber()} units already reserved for pending sales at this branch. Those sales must complete, be voided, or their jobs retried before this count can be accepted.`,
+            409,
+          );
+        }
 
         await repo.updateStockQuantity(data.branchId, count.inventoryItemId, quantityAfter, tx);
 

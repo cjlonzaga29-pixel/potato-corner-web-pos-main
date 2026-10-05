@@ -1347,6 +1347,211 @@ describe('transactionsService.createTransaction — Phase 4 Mix & Max slot-based
   });
 });
 
+// POS-PERF-P5 — resolveCartItems used to fetch branch product/flavor
+// availability twice: once inside productReadinessService's own
+// fetchReadinessData, once again directly via a second
+// findBranchProductAvailabilityMap/findBranchFlavorAvailabilityMap call.
+// These tests pin the fix: the direct call is gone (call count drops to
+// what readiness alone needs), coverage for every scope checkout actually
+// validates is retained (including the Mix & Max snack-flavor scope that
+// readiness's own flavorLinksConsistent check never needed before), and
+// every existing rejection/acceptance/payload outcome is unchanged.
+describe('transactionsService.createTransaction — POS-PERF-P5 checkout availability read reuse', () => {
+  it('fetches branch product availability exactly once for a single-line cart (previously fetched twice)', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.findBranchProductAvailabilityMap).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches branch product availability exactly once for a multi-line cart with distinct variants (bounded, not per-line)', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ id: 'variant-1' }),
+      variantRow({ id: 'variant-2', name: 'Large' }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      {
+        ...baseInput,
+        items: [
+          { productId: 'product-1', productVariantId: 'variant-1', quantity: 1 },
+          { productId: 'product-1', productVariantId: 'variant-2', quantity: 1 },
+        ],
+      },
+      null,
+    );
+
+    expect(transactionsRepository.findBranchProductAvailabilityMap).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call findBranchFlavorAvailabilityMap at all when no cart line selects a flavor', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.findBranchFlavorAvailabilityMap).not.toHaveBeenCalled();
+  });
+
+  it('fetches branch flavor availability exactly once for a cart line with a selected flavor', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+
+    await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+      null,
+    );
+
+    expect(transactionsRepository.findBranchFlavorAvailabilityMap).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rejects an item whose product is unavailable at the branch (absent-row and false-row semantics both retained)', async () => {
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: false }] as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('treats an absent product-availability row as unavailable, same as before the fix (fail-closed)', async () => {
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([] as never);
+
+    await expect(transactionsService.createTransaction(baseInput, null)).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+  });
+
+  it('treats an absent flavor-availability row as available, same as before the fix (fail-open)', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(5), flavor: { id: 'flavor-1', name: 'Sour Cream', isActive: true } }],
+      }),
+    ] as never);
+    vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', flavorId: 'flavor-1', quantity: 1 }] },
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('rejects a Mix & Max slot selection whose snack-specific flavor is disabled at the branch, a scope the direct fetch used to cover and the shared fetch must cover too', async () => {
+    // Parent variant deliberately has NO variantFlavors of its own — only the
+    // chosen snack links flavor-1. Before POS-PERF-P5, checkout's own direct
+    // findBranchFlavorAvailabilityMap(branchId, slotFlavorIds) call was the
+    // only thing that ever fetched this row; readiness's internal fetch
+    // never requested it. This proves product-readiness.service.ts's
+    // extended flavorIds collection (snack variantFlavors, not just the
+        // parent's) now covers it instead.
+    const snack = {
+      id: 'snack-1',
+      isActive: true,
+      product: { id: 'snack-product-1', status: 'active' },
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } }],
+    };
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [],
+        flavorSlots: [{ id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', unit: 'scoop', required: true, snackOptions: [{ snackProductVariantId: snack.id, snackProductVariant: snack }] }],
+      }),
+    ] as never);
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([
+      { productId: 'product-1', isAvailable: true },
+      { productId: 'snack-product-1', isAvailable: true },
+    ] as never);
+    vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([{ flavorId: 'flavor-1', isAvailable: false }] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [{ slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' }],
+            },
+          ],
+        },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'PRODUCT_UNAVAILABLE' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts the same Mix & Max slot selection once the branch re-enables the snack flavor, proving the shared fetch reflects per-checkout availability (no caching)', async () => {
+    const snack = {
+      id: 'snack-1',
+      isActive: true,
+      product: { id: 'snack-product-1', status: 'active' },
+      variantFlavors: [{ flavorId: 'flavor-1', isAvailable: true, pricePremium: decimal(0), flavor: { id: 'flavor-1', name: 'Cheese', isActive: true } }],
+    };
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({
+        variantFlavors: [],
+        flavorSlots: [{ id: 'slot-1', productVariantId: 'variant-1', slotIndex: 1, label: 'Flavor 1', unit: 'scoop', required: true, snackOptions: [{ snackProductVariantId: snack.id, snackProductVariant: snack }] }],
+      }),
+    ] as never);
+    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([
+      { productId: 'product-1', isAvailable: true },
+      { productId: 'snack-product-1', isAvailable: true },
+    ] as never);
+    vi.mocked(transactionsRepository.findBranchFlavorAvailabilityMap).mockResolvedValue([{ flavorId: 'flavor-1', isAvailable: true }] as never);
+
+    await expect(
+      transactionsService.createTransaction(
+        {
+          ...baseInput,
+          items: [
+            {
+              productId: 'product-1',
+              productVariantId: 'variant-1',
+              quantity: 1,
+              selectedFlavors: [{ slotIndex: 1, snackProductVariantId: 'snack-1', flavorId: 'flavor-1' }],
+            },
+          ],
+        },
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('produces an unchanged payload (totals, options, deduction snapshot) for a fixed single-line cart after the read-reuse change', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [optionAssignment('option-1', 10)] }),
+    ] as never);
+    // transactionResponseSchema requires UUID-shaped ids — the suite-wide
+    // default transactionRow() uses readable fixture ids ('txn-1', etc.)
+    // which aren't UUIDs, so this override matches the existing "side
+    // effects" schema-validity test's pattern, not a POS-PERF-P5-specific need.
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(
+      transactionRow({ id: randomUUID(), branchId: randomUUID(), shiftId: randomUUID(), cashierId: randomUUID() }) as never,
+    );
+
+    const result = await transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1, selectedOptionIds: ['option-1'] }] },
+      null,
+    );
+
+    expect(transactionResponseSchema.safeParse(result).success).toBe(true);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subtotal: 110,
+        totalAmount: 110,
+        items: [
+          expect.objectContaining({
+            unitPrice: 110,
+            quantity: 1,
+            lineTotal: 110,
+            recipeVersion: 1,
+            selectedOptions: [expect.objectContaining({ optionId: 'option-1', priceAdjustment: 10 })],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+});
+
 describe('transactionsService.createTransaction — side effects', () => {
   it('broadcasts TRANSACTION_COMPLETED to the branch room and Super Admin with a payload matching transactionResponseSchema', async () => {
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(

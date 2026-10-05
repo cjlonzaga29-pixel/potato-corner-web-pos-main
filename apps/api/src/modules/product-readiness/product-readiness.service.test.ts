@@ -478,3 +478,101 @@ describe('productReadinessService.evaluateProductReadiness (Phase D1 — Admin R
     expect(result.variants[0]?.status).toBe('NOT_READY');
   });
 });
+
+// POS-PERF-P5 — checkout (resolveCartItems) reuses this function's
+// productAvailabilityMap/flavorAvailabilityMap instead of re-querying the
+// same rows a second time. These tests pin down the contract that reuse
+// depends on: the results match evaluateProductVariantReadinessForVariants
+// exactly, the returned maps have the same coverage fetchReadinessData would
+// have produced on its own, and the empty-input short-circuit still issues
+// zero queries.
+describe('productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability', () => {
+  it('returns the same readiness results as evaluateProductVariantReadinessForVariants for the same input', async () => {
+    const variants = [buildVariant({ id: VARIANT_1 })];
+    mockDefaults({ variants });
+
+    const direct = await productReadinessService.evaluateProductVariantReadinessForVariants(BRANCH_1, variants as never, [VARIANT_1]);
+    vi.clearAllMocks();
+    mockDefaults({ variants });
+    const withAvailability = await productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability(
+      BRANCH_1,
+      variants as never,
+      [VARIANT_1],
+    );
+
+    expect(withAvailability.results).toEqual(direct);
+  });
+
+  it('exposes a productAvailabilityMap/flavorAvailabilityMap covering every row fetchReadinessData queried', async () => {
+    const variants = [buildVariant({ id: VARIANT_1, variantFlavors: [{ flavorId: FLAVOR_1, isAvailable: true }] })];
+    mockDefaults({
+      variants,
+      productAvailability: [{ productId: PRODUCT_1, isAvailable: true }],
+      flavorAvailability: [{ flavorId: FLAVOR_1, isAvailable: false }],
+    });
+
+    const { productAvailabilityMap, flavorAvailabilityMap } = await productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability(
+      BRANCH_1,
+      variants as never,
+      [VARIANT_1],
+    );
+
+    expect(productAvailabilityMap.get(PRODUCT_1)).toBe(true);
+    expect(flavorAvailabilityMap.get(FLAVOR_1)).toBe(false);
+  });
+
+  it('issues exactly one round of batched queries, same as evaluateProductVariantReadinessBatch', async () => {
+    const variants = [buildVariant({ id: VARIANT_1 }), buildVariant({ id: 'variant-2', basePrice: 0 })];
+    mockDefaults({ variants, componentRows: [componentRow(VARIANT_1), componentRow('variant-2')] });
+
+    await productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability(BRANCH_1, variants as never, [VARIANT_1, 'variant-2']);
+
+    expect(transactionsRepository.findBranchProductAvailabilityMap).toHaveBeenCalledTimes(1);
+    expect(prisma.productComponent.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns empty results and empty maps without issuing any queries for an empty input', async () => {
+    const result = await productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability(BRANCH_1, [], []);
+
+    expect(result.results).toEqual([]);
+    expect(result.productAvailabilityMap.size).toBe(0);
+    expect(result.flavorAvailabilityMap.size).toBe(0);
+    expect(transactionsRepository.findBranchProductAvailabilityMap).not.toHaveBeenCalled();
+    expect(prisma.productComponent.findMany).not.toHaveBeenCalled();
+  });
+
+  it("includes a Mix & Max snack variant's own flavor links in flavorAvailabilityMap, not just the parent variant's", async () => {
+    const snackVariant = {
+      id: 'snack-1',
+      isActive: true,
+      product: { id: 'snack-product-1', status: 'active' },
+      variantFlavors: [{ flavorId: 'snack-flavor-1', isAvailable: true, flavor: { id: 'snack-flavor-1', name: 'Snack Flavor', isActive: true } }],
+    };
+    const variant = {
+      ...buildVariant({ id: VARIANT_1, variantFlavors: [] }),
+      flavorSlots: [
+        {
+          id: 'slot-1',
+          label: 'Slot 1',
+          required: true,
+          snackOptions: [{ snackProductVariant: snackVariant }],
+        },
+      ],
+    };
+    mockDefaults({
+      variants: [variant as unknown as ReturnType<typeof buildVariant>],
+      flavorAvailability: [{ flavorId: 'snack-flavor-1', isAvailable: false }],
+      componentRows: [componentRow(VARIANT_1), componentRow('snack-1')],
+    });
+
+    const { flavorAvailabilityMap } = await productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability(
+      BRANCH_1,
+      [variant] as never,
+      [VARIANT_1],
+    );
+
+    expect(flavorAvailabilityMap.get('snack-flavor-1')).toBe(false);
+    expect(transactionsRepository.findBranchFlavorAvailabilityMap).toHaveBeenCalledWith(BRANCH_1, ['snack-flavor-1']);
+  });
+});

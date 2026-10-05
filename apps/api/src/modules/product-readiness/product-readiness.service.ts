@@ -48,7 +48,21 @@ async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]):
     ...new Set(variants.flatMap((v) => [v.productId, ...(v.flavorSlots ?? []).flatMap((s) => s.snackOptions.map((so) => so.snackProductVariant.product.id))])),
   ];
 
-  const flavorIds = [...new Set(variants.flatMap((v) => v.variantFlavors.map((vf) => vf.flavorId)))];
+  // POS-PERF-P5 — includes every Mix & Max snack variant's own flavor links
+  // too (not just the parent variant's variantFlavors), so this map is a
+  // superset covering both readiness's own flavorLinksConsistent check
+  // (parent-variant flavors only) and checkout's slot-flavor validation
+  // (snack-variant flavors) — see evaluateFromLoadedVariantsWithAvailability.
+  // buildReadinessResult below never looks up a snack flavor id here, so the
+  // extra entries are inert for every existing caller.
+  const flavorIds = [
+    ...new Set(
+      variants.flatMap((v) => [
+        ...v.variantFlavors.map((vf) => vf.flavorId),
+        ...(v.flavorSlots ?? []).flatMap((s) => s.snackOptions.flatMap((so) => so.snackProductVariant.variantFlavors.map((vf) => vf.flavorId))),
+      ]),
+    ),
+  ];
 
   const [productAvailabilityRows, flavorAvailabilityRows, componentRows] = await Promise.all([
     productIds.length ? transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds) : Promise.resolve([]),
@@ -356,6 +370,22 @@ function buildReadinessResult(variant: SaleVariantRow, data: ReadinessData): Pro
  * checkout gate on the same readiness data without a second, redundant fetch
  * of the same variant rows.
  */
+async function buildResultsFromFetchedData(
+  branchId: string,
+  variants: SaleVariantRow[],
+  productVariantIds: string[],
+): Promise<{ results: ProductVariantReadinessResult[]; data: ReadinessData }> {
+  const variantMap = new Map(variants.map((v) => [v.id, v]));
+  const data = await fetchReadinessData(branchId, variants);
+
+  const results = productVariantIds.map((id) => {
+    const variant = variantMap.get(id);
+    return variant ? buildReadinessResult(variant, data) : notFoundResult(branchId, id);
+  });
+
+  return { results, data };
+}
+
 async function evaluateFromLoadedVariants(
   branchId: string,
   variants: SaleVariantRow[],
@@ -363,13 +393,28 @@ async function evaluateFromLoadedVariants(
 ): Promise<ProductVariantReadinessResult[]> {
   if (productVariantIds.length === 0) return [];
 
-  const variantMap = new Map(variants.map((v) => [v.id, v]));
-  const data = await fetchReadinessData(branchId, variants);
+  const { results } = await buildResultsFromFetchedData(branchId, variants, productVariantIds);
+  return results;
+}
 
-  return productVariantIds.map((id) => {
-    const variant = variantMap.get(id);
-    return variant ? buildReadinessResult(variant, data) : notFoundResult(branchId, id);
-  });
+/**
+ * POS-PERF-P5 — same evaluation as evaluateFromLoadedVariants, but also
+ * returns the productAvailabilityMap/flavorAvailabilityMap fetchReadinessData
+ * already built, so a caller that needs branch-availability data for its own
+ * validation (checkout's resolveCartItems) can reuse this single fetch
+ * instead of re-querying the same rows a second time.
+ */
+async function evaluateFromLoadedVariantsWithAvailability(
+  branchId: string,
+  variants: SaleVariantRow[],
+  productVariantIds: string[],
+): Promise<{ results: ProductVariantReadinessResult[]; productAvailabilityMap: Map<string, boolean>; flavorAvailabilityMap: Map<string, boolean> }> {
+  if (productVariantIds.length === 0) {
+    return { results: [], productAvailabilityMap: new Map(), flavorAvailabilityMap: new Map() };
+  }
+
+  const { results, data } = await buildResultsFromFetchedData(branchId, variants, productVariantIds);
+  return { results, productAvailabilityMap: data.productAvailabilityMap, flavorAvailabilityMap: data.flavorAvailabilityMap };
 }
 
 /**
@@ -468,6 +513,15 @@ export const productReadinessService = {
 
   /** Same evaluation as evaluateProductVariantReadinessBatch, but reuses a findVariantsForSale result the caller already fetched. */
   evaluateProductVariantReadinessForVariants: evaluateFromLoadedVariants,
+
+  /**
+   * POS-PERF-P5 — same contract as evaluateProductVariantReadinessForVariants
+   * plus the productAvailabilityMap/flavorAvailabilityMap it already
+   * computed. checkout's resolveCartItems uses this so its own
+   * branch-availability checks reuse readiness's single fetch instead of
+   * issuing a second, duplicate query for the same rows.
+   */
+  evaluateProductVariantReadinessForVariantsWithAvailability: evaluateFromLoadedVariantsWithAvailability,
 
   /**
    * Branch-agnostic BOM structural readiness — the same RECIPE_MISSING /

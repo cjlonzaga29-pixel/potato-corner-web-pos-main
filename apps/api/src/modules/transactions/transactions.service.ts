@@ -567,35 +567,19 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
   const variants = await transactionsRepository.findVariantsForSale(variantIds);
   const variantMap = new Map(variants.map((v) => [v.id, v]));
 
-  const productIds = [
-    ...new Set(
-      variants.flatMap((v) => [
-        v.productId,
-        ...(v.flavorSlots ?? []).flatMap((s) => s.snackOptions.map((so) => so.snackProductVariant.product.id)),
-      ]),
-    ),
-  ];
-  const slotFlavorIds = items.flatMap((i) => (i.selectedFlavors ?? []).map((sf) => sf.flavorId));
-  const flavorIds = [...new Set([...items.filter((i) => i.flavorId).map((i) => i.flavorId as string), ...slotFlavorIds])];
-
-  // Task 209.56E — none of these four reads depend on each other's result
-  // (readiness and product-availability both derive solely from `variants`,
-  // resolved above; flavor-availability depends only on the cart's own
-  // flavorIds). They were previously four back-to-back round trips
-  // (readiness alone already does its own internal product-availability
-  // fetch — see fetchReadinessData in product-readiness.service.ts — so the
-  // sequential findBranchProductAvailabilityMap call below was a second,
-  // fully redundant fetch of the same rows). Running them concurrently
-  // doesn't change any validation outcome: each result is only consumed
-  // independently below, never used to decide whether to run another.
-  const [readinessResults, productAvailability, flavorAvailability] = await Promise.all([
-    productReadinessService.evaluateProductVariantReadinessForVariants(branchId, variants, variantIds),
-    transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds),
-    flavorIds.length ? transactionsRepository.findBranchFlavorAvailabilityMap(branchId, flavorIds) : Promise.resolve([]),
-  ]);
+  // POS-PERF-P5 — productAvailabilityMap/flavorAvailabilityMap below used to
+  // be fetched a second time here via a direct findBranchProductAvailabilityMap/
+  // findBranchFlavorAvailabilityMap call, duplicating a read
+  // evaluateProductVariantReadinessForVariantsWithAvailability's own
+  // fetchReadinessData already performs internally (same productIds
+  // computation — parent variant + every Mix & Max snack variant's product;
+  // and, since product-readiness.service.ts's flavorIds now also covers
+  // every snack variant's own variantFlavors, a superset of whatever flavor
+  // id this cart could possibly select). Reusing the maps it returns removes
+  // that duplicate round trip without changing which rows are checked.
+  const { results: readinessResults, productAvailabilityMap, flavorAvailabilityMap } =
+    await productReadinessService.evaluateProductVariantReadinessForVariantsWithAvailability(branchId, variants, variantIds);
   const readinessMap = new Map(readinessResults.map((r) => [r.productVariantId, r]));
-  const productAvailabilityMap = new Map(productAvailability.map((r) => [r.productId, r.isAvailable]));
-  const flavorAvailabilityMap = new Map(flavorAvailability.map((r) => [r.flavorId, r.isAvailable]));
 
   // Task 209.3 — each item's resolution (recipe-version lookup + BOM
   // deduction computation) only reads data already snapshotted above

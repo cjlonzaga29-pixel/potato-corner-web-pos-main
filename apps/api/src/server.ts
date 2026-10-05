@@ -9,7 +9,7 @@ import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 import { scheduleEvery } from './lib/daily-scheduler.js';
 import { createInventoryDeductionWorker } from './modules/inventory-deduction/inventory-deduction.worker.js';
 import { authRepository } from './modules/auth/auth.repository.js';
-import { prisma } from './lib/prisma.js';
+import { disconnectPrisma, prisma } from './lib/prisma.js';
 import {
   extractSafeConnectionMetadata,
   maybeRunDatabaseRoundTripDiagnostics,
@@ -80,6 +80,26 @@ async function start(): Promise<void> {
 
   const httpServer = createServer(app);
   createSocketServer(httpServer);
+
+  // POS-PERF-P15 / deploy-overlap — ordered shutdown so a rolling deploy's
+  // SIGTERM never tears the DB pool out from under the worker's in-flight
+  // claim/apply transaction: stop accepting new HTTP connections, let the
+  // worker's current cycle finish (or abandon cleanly — its claim guard
+  // means a killed-mid-cycle job just falls back to the stale-lock reclaim
+  // path on whichever instance picks it up next), then disconnect Prisma
+  // last. Idempotent against a second signal arriving mid-shutdown.
+  let shuttingDown = false;
+  async function shutdown(signal: NodeJS.Signals): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received — shutting down gracefully.`);
+    await inventoryDeductionWorker.stop();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await disconnectPrisma();
+    process.exit(0);
+  }
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 
   httpServer.listen(config.port, () => {
     console.log(`API listening on http://localhost:${config.port} [env: ${config.nodeEnv}]`);

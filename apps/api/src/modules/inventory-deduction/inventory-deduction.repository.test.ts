@@ -90,6 +90,22 @@ describe('inventoryDeductionRepository.claimBatch', () => {
       | undefined;
     expect(staleBranch?.lockedAt?.lt).toBeInstanceOf(Date);
   });
+
+  it('gates the pending branch of the claim query on nextAttemptAt — a retried job must not be reclaimable before its backoff elapses', async () => {
+    vi.mocked(prisma.inventoryDeductionJob.findMany).mockResolvedValueOnce([] as never);
+
+    await inventoryDeductionRepository.claimBatch(25, 300_000);
+
+    const [firstFindManyArgs] = vi.mocked(prisma.inventoryDeductionJob.findMany).mock.calls[0] as unknown as [
+      { where: { OR: Array<Record<string, unknown>> } },
+    ];
+    const pendingBranch = firstFindManyArgs.where.OR.find((clause) => 'status' in clause && (clause as { status?: unknown }).status !== 'processing') as
+      | { OR?: Array<Record<string, unknown>> }
+      | undefined;
+    expect(pendingBranch?.OR).toEqual(
+      expect.arrayContaining([{ nextAttemptAt: null }, expect.objectContaining({ nextAttemptAt: expect.objectContaining({ lte: expect.any(Date) }) })]),
+    );
+  });
 });
 
 describe('inventoryDeductionRepository.applyDeduction', () => {
@@ -148,10 +164,42 @@ describe('inventoryDeductionRepository.applyDeduction', () => {
       },
     });
     expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledWith(
-      [expect.objectContaining({ branchId: 'branch-1', inventoryItemId: 'item-flour', movementType: 'SALE', referenceId: 'txn-1' })],
+      [
+        expect.objectContaining({
+          branchId: 'branch-1',
+          inventoryItemId: 'item-flour',
+          movementType: 'SALE',
+          referenceId: 'txn-1',
+          // Carrying cost snapshot at the exact moment of the real deduction
+          // (stock.unitCost from this same locked read) — the equivalent of
+          // the removed "snapshots unit_cost/total_cost on every component
+          // SALE movement" coverage from the old synchronous deduction test.
+          unitCost: decimal(3),
+          totalCost: decimal(6),
+        }),
+      ],
       expect.anything(),
     );
     expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalledWith('txn-1', 'completed', expect.anything());
+  });
+
+  it('leaves unitCost/totalCost undefined on a SALE movement when the item has no carrying cost yet — equivalent to the removed synchronous-deduction coverage', async () => {
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      { deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] },
+    ] as never);
+    vi.mocked(prisma.inventoryItem.findMany).mockResolvedValueOnce([{ id: 'item-flour', name: 'Flour' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantityOnHand: decimal(10), quantityReserved: decimal(2), unitCost: null, lowStockThreshold: null, criticalThreshold: null },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({ id: 'stock-1', quantityOnHand: decimal(8), lowStockThreshold: null, criticalThreshold: null } as never);
+
+    await inventoryDeductionRepository.applyDeduction({ jobId: 'job-1', claimToken: 'tok', transactionId: 'txn-1', branchId: 'branch-1' });
+
+    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledWith(
+      [expect.objectContaining({ unitCost: undefined, totalCost: undefined })],
+      expect.anything(),
+    );
   });
 
   it('floors the quantityReserved release at the actually-reserved amount, never driving it negative', async () => {

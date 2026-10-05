@@ -480,6 +480,18 @@ export default function TerminalPage() {
   // response replays the same sale instead of risking a duplicate. Reset
   // to null only once that attempt reaches a terminal success (New Sale).
   const idempotencyKeyRef = useRef<string | null>(null);
+  // Fingerprint of the exact cart/payment fields the current idempotencyKey
+  // was minted for. Edit Cart deliberately does not clear idempotencyKeyRef
+  // (clearing it would risk a duplicate sale if the original request
+  // actually succeeded server-side and the cashier only saw a dropped
+  // response) — but if the cashier then genuinely *changes* the cart before
+  // charging again, resubmitting under the old key would hit the backend's
+  // idempotency-reuse guard (transactions.service.ts
+  // isIdempotencyReplayMatches) and charge would fail forever for that
+  // cart. Comparing against this fingerprint at charge time is what lets a
+  // charge-after-edit mint a fresh key instead, while an unmodified
+  // Retry/re-Charge still reuses the same one.
+  const lastChargeFingerprintRef = useRef<string | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [isVoidRefundOpen, setIsVoidRefundOpen] = useState(false);
@@ -1109,12 +1121,20 @@ export default function TerminalPage() {
     }
 
     // POS-PERF-P15 — one idempotency key per checkout attempt, generated on
-    // the first click and reused verbatim by Retry (idempotencyKeyRef is
-    // only ever cleared on a confirmed success/New Sale below) — a retried
-    // request that actually succeeded server-side replays that same sale
-    // instead of creating a duplicate.
-    const idempotencyKey = idempotencyKeyRef.current ?? crypto.randomUUID();
+    // the first click and reused verbatim by Retry/unmodified re-Charge
+    // (idempotencyKeyRef is only ever cleared on a confirmed success/New
+    // Sale below) — a retried request that actually succeeded server-side
+    // replays that same sale instead of creating a duplicate. A fresh key
+    // is minted instead whenever the cart/payment fields actually changed
+    // since the last attempt (see lastChargeFingerprintRef's doc comment) —
+    // otherwise a charge-after-Edit-Cart with a genuinely different cart
+    // would keep colliding with the backend's reuse guard forever.
+    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '');
+    const previousKey = idempotencyKeyRef.current;
+    const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
+    const idempotencyKey = isUnmodifiedRetry ? previousKey : crypto.randomUUID();
     idempotencyKeyRef.current = idempotencyKey;
+    lastChargeFingerprintRef.current = chargeFingerprint;
     const payloadWithIdempotency: CreateTransactionInput = { ...payload, idempotency_key: idempotencyKey };
 
     // The submitted-order snapshot, built entirely from client state already
@@ -1158,6 +1178,7 @@ export default function TerminalPage() {
       clearCart();
       resetPaymentFields();
       idempotencyKeyRef.current = null;
+      lastChargeFingerprintRef.current = null;
       setSaleTransaction(transaction);
       setSalePhase('success');
       // No cart contents/payment data — branch id and durations only, same

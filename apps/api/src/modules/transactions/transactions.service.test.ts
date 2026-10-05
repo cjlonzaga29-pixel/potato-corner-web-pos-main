@@ -1762,8 +1762,26 @@ describe('transactionsService.createTransaction — inventory deduction status r
 
 // POS-PERF-P15 — stable idempotency key for checkout retries/double-clicks.
 describe('transactionsService.createTransaction — idempotency key', () => {
+  const idempotentReplayItems = [
+    {
+      id: 'item-1',
+      productId: 'product-1',
+      productVariantId: 'variant-1',
+      flavorId: null,
+      productNameSnapshot: 'Regular',
+      variantNameSnapshot: 'Solo',
+      flavorNameSnapshot: null,
+      unitPriceSnapshot: decimal(100),
+      quantity: 1,
+      lineTotal: decimal(100),
+      recipeVersion: 1,
+    },
+  ];
+
   it('replays the prior result on the fast path, without resolving the cart or touching the database at all', async () => {
-    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-prior' }) as never);
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-prior', items: idempotentReplayItems }) as never,
+    );
 
     const result = await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1' }, null);
 
@@ -1771,6 +1789,28 @@ describe('transactionsService.createTransaction — idempotency key', () => {
     expect(transactionsRepository.findBranch).not.toHaveBeenCalled();
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
     expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects the replay (never returns the stored row) when the stored sale belongs to a different branch/shift/cashier than the request presenting the key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-other-cashier', cashierId: 'user-9', items: idempotentReplayItems }) as never,
+    );
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1b' }, null)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REUSE',
+    });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects the replay when the stored sale has a different cart than the request presenting the key (key reused for a different sale)', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-different-cart', items: [{ productVariantId: 'variant-9', flavorId: null, quantity: 3 }] }) as never,
+    );
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1c' }, null)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REUSE',
+    });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
   it('threads the idempotency key through to the repository create call', async () => {
@@ -1795,7 +1835,9 @@ describe('transactionsService.createTransaction — idempotency key', () => {
       meta: { target: ['idempotency_key'] },
     });
     vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2002);
-    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null).mockResolvedValueOnce(transactionRow({ id: 'txn-winner' }) as never);
+    vi.mocked(transactionsRepository.findByIdempotencyKey)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(transactionRow({ id: 'txn-winner', items: idempotentReplayItems }) as never);
 
     const result = await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-3' }, null);
 

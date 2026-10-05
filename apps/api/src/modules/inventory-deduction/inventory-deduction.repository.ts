@@ -32,10 +32,22 @@ function totalsFromSnapshots(items: { deductionSnapshot: unknown }[]): Map<strin
   return computeDeductionTotals(lines);
 }
 
-/** Rows eligible for a claim attempt this cycle: `pending` rows, plus `processing` rows whose lock is older than `staleLockMs` — a worker that crashed or restarted mid-deduction eventually releases its claim to whoever polls next. */
-function claimableWhere(staleCutoff: Date): Prisma.InventoryDeductionJobWhereInput {
+/**
+ * Rows eligible for a claim attempt this cycle: `pending` rows whose
+ * `nextAttemptAt` backoff has elapsed (or was never set — a first attempt),
+ * plus `processing` rows whose lock is older than `staleLockMs` — a worker
+ * that crashed or restarted mid-deduction eventually releases its claim to
+ * whoever polls next. Without the `nextAttemptAt` gate here, recordFailure's
+ * bounded backoff would be computed and persisted but never actually
+ * enforced — a retried job would be immediately reclaimable on the very
+ * next poll cycle instead of waiting out its delay.
+ */
+function claimableWhere(now: Date, staleCutoff: Date): Prisma.InventoryDeductionJobWhereInput {
   return {
-    OR: [{ status: { in: CLAIMABLE_STATUSES } }, { status: 'processing', lockedAt: { lt: staleCutoff } }],
+    OR: [
+      { status: { in: CLAIMABLE_STATUSES }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+      { status: 'processing', lockedAt: { lt: staleCutoff } },
+    ],
   };
 }
 
@@ -57,7 +69,7 @@ export const inventoryDeductionRepository = {
     const claimToken = randomUUID();
 
     const candidates = await prisma.inventoryDeductionJob.findMany({
-      where: claimableWhere(staleCutoff),
+      where: claimableWhere(now, staleCutoff),
       orderBy: { createdAt: 'asc' },
       take: batchSize,
       select: { id: true },
@@ -66,7 +78,7 @@ export const inventoryDeductionRepository = {
     const candidateIds = candidates.map((row) => row.id);
 
     await prisma.inventoryDeductionJob.updateMany({
-      where: { id: { in: candidateIds }, ...claimableWhere(staleCutoff) },
+      where: { id: { in: candidateIds }, ...claimableWhere(now, staleCutoff) },
       data: { status: 'processing', claimToken, lockedAt: now },
     });
 

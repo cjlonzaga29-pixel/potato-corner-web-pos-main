@@ -897,6 +897,48 @@ function isIdempotencyKeyConflict(error: unknown): boolean {
 }
 
 /**
+ * POS-PERF-P15 — guards the idempotent-replay path against two distinct
+ * failure modes the bare `findByIdempotencyKey` lookup cannot catch on its
+ * own, since a unique index only guarantees the *key* is unique, never that
+ * the caller replaying it is the same authorized party with the same cart:
+ *
+ *   1. Cross-tenant replay: the stored row belongs to a different branch,
+ *      shift, or cashier than the request presenting the key. The key is
+ *      client-generated (a UUID the client is trusted to keep unique per
+ *      attempt, not per security boundary) — without this check, a second
+ *      session that happened to submit the same key would silently receive
+ *      another cashier's completed sale back as if it were its own.
+ *   2. Payload-mismatch replay: same authorized scope, but a different cart
+ *      (a client bug reusing a key across what the cashier intends as two
+ *      separate sales). Replaying the old result would look like success
+ *      while silently discarding — never actually charging or deducting
+ *      stock for — the second, different cart.
+ *
+ * Returns true only when scope and cart composition both match, i.e. this
+ * really is the same checkout attempt being retried.
+ */
+function idempotencyReplayMatches(existing: TransactionRow, data: CreateTransactionData): boolean {
+  if (existing.branchId !== data.branchId || existing.shiftId !== data.shiftId || existing.cashierId !== data.cashierId) {
+    return false;
+  }
+  if (existing.paymentMethod !== data.paymentMethod) return false;
+  const normalize = (items: { productVariantId: string; flavorId: string | null; quantity: number }[]) =>
+    items
+      .map((item) => `${item.productVariantId}:${item.flavorId ?? ''}:${item.quantity}`)
+      .sort()
+      .join('|');
+  const existingSignature = normalize((existing.items ?? []).map((item) => ({
+    productVariantId: item.productVariantId,
+    flavorId: item.flavorId,
+    quantity: item.quantity,
+  })));
+  const requestedSignature = normalize(
+    data.items.map((item) => ({ productVariantId: item.productVariantId, flavorId: item.flavorId ?? null, quantity: item.quantity })),
+  );
+  return existingSignature === requestedSignature;
+}
+
+/**
  * POS-PERF-P15 — replaces the old synchronous deductInventoryForSale on the
  * checkout path. Runs inside the same DB transaction as the sale itself, but
  * no longer performs the real inventory deduction (ledger write, audit row,
@@ -1410,7 +1452,16 @@ export const transactionsService = {
     // the P2002 catch below for that race path.
     if (data.idempotencyKey) {
       const existing = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
-      if (existing) return toTransactionResponse(existing as TransactionRow);
+      if (existing) {
+        if (!idempotencyReplayMatches(existing as TransactionRow, data)) {
+          throw new TransactionError(
+            'IDEMPOTENCY_KEY_REUSE',
+            'This idempotency key was already used for a different sale',
+            409,
+          );
+        }
+        return toTransactionResponse(existing as TransactionRow);
+      }
     }
 
     // Task 209.3 — branch and shift are looked up by independent ids
@@ -1659,7 +1710,16 @@ export const transactionsService = {
       // (or, worse, retrying and creating a second sale).
       if (data.idempotencyKey && isIdempotencyKeyConflict(error)) {
         const winner = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
-        if (winner) return toTransactionResponse(winner as TransactionRow);
+        if (winner) {
+          if (!idempotencyReplayMatches(winner as TransactionRow, data)) {
+            throw new TransactionError(
+              'IDEMPOTENCY_KEY_REUSE',
+              'This idempotency key was already used for a different sale',
+              409,
+            );
+          }
+          return toTransactionResponse(winner as TransactionRow);
+        }
       }
       // P2028 = "Transaction API error: Transaction already closed" —
       // fired when the interactive transaction exceeds maxWait/timeout

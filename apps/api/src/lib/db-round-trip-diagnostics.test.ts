@@ -4,6 +4,7 @@ import {
   extractSafeConnectionMetadata,
   maybeRunDatabaseRoundTripDiagnostics,
   runDatabaseRoundTripDiagnostics,
+  scheduleSettledDatabaseRoundTripDiagnostics,
 } from './db-round-trip-diagnostics.js';
 
 function makeFakePrisma(queryRaw: (...args: unknown[]) => Promise<unknown>) {
@@ -105,5 +106,91 @@ describe('runDatabaseRoundTripDiagnostics', () => {
       throw new Error('connection refused');
     });
     await expect(runDatabaseRoundTripDiagnostics(prisma, METADATA, vi.fn())).resolves.toBeUndefined();
+  });
+});
+
+describe('scheduleSettledDatabaseRoundTripDiagnostics', () => {
+  function makeFakeScheduler() {
+    let pendingCallback: (() => void) | undefined;
+    let capturedDelayMs: number | undefined;
+    const scheduleFn = vi.fn((callback: () => void, ms: number) => {
+      pendingCallback = callback;
+      capturedDelayMs = ms;
+      return 0;
+    });
+    return {
+      scheduleFn,
+      fire: () => pendingCallback?.(),
+      get delayMs() {
+        return capturedDelayMs;
+      },
+    };
+  }
+
+  it('disabled: never schedules a timer', () => {
+    const { scheduleFn } = makeFakeScheduler();
+    scheduleSettledDatabaseRoundTripDiagnostics(false, makeFakePrisma(async () => [1]), METADATA, Promise.resolve('completed'), vi.fn(), 60_000, scheduleFn);
+    expect(scheduleFn).not.toHaveBeenCalled();
+  });
+
+  it('enabled: schedules exactly one timer at the given delay', () => {
+    const { scheduleFn } = makeFakeScheduler();
+    scheduleSettledDatabaseRoundTripDiagnostics(
+      true,
+      makeFakePrisma(async () => [1]),
+      METADATA,
+      Promise.resolve('completed'),
+      vi.fn(),
+      60_000,
+      scheduleFn,
+    );
+    expect(scheduleFn).toHaveBeenCalledTimes(1);
+    expect(scheduleFn).toHaveBeenCalledWith(expect.any(Function), 60_000);
+  });
+
+  it('after a completed startup run, fires the settled sequence (six more probes, labeled "settled")', async () => {
+    const prisma = makeFakePrisma(async () => [{ '?column?': 1 }]);
+    const log = vi.fn();
+    const scheduler = makeFakeScheduler();
+    scheduleSettledDatabaseRoundTripDiagnostics(true, prisma, METADATA, Promise.resolve('completed'), log, 60_000, scheduler.scheduleFn);
+
+    scheduler.fire();
+    await vi.waitFor(() => expect(prisma.$queryRaw).toHaveBeenCalledTimes(6));
+    const allLoggedText = JSON.stringify(log.mock.calls);
+    expect(allLoggedText).toContain('settled');
+  });
+
+  it('skips the settled sequence when the startup run timed out with a query still outstanding', async () => {
+    const prisma = makeFakePrisma(async () => [{ '?column?': 1 }]);
+    const log = vi.fn();
+    const scheduler = makeFakeScheduler();
+    scheduleSettledDatabaseRoundTripDiagnostics(true, prisma, METADATA, Promise.resolve('timed-out'), log, 60_000, scheduler.scheduleFn);
+
+    scheduler.fire();
+    await vi.waitFor(() => expect(log).toHaveBeenCalled());
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    const allLoggedText = JSON.stringify(log.mock.calls);
+    expect(allLoggedText).toContain('skipped');
+    expect(allLoggedText).not.toContain('idle');
+    expect(allLoggedText).not.toContain('connection-warmed');
+    expect(allLoggedText).not.toContain('warmed');
+  });
+
+  it('does not start the settled sequence until the startup run has actually settled (no overlap)', async () => {
+    const prisma = makeFakePrisma(async () => [{ '?column?': 1 }]);
+    const log = vi.fn();
+    const scheduler = makeFakeScheduler();
+    let resolveStartup: ((outcome: 'completed') => void) | undefined;
+    const startupOutcome = new Promise<'completed'>((resolve) => {
+      resolveStartup = resolve;
+    });
+    scheduleSettledDatabaseRoundTripDiagnostics(true, prisma, METADATA, startupOutcome, log, 60_000, scheduler.scheduleFn);
+
+    scheduler.fire();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+
+    resolveStartup?.('completed');
+    await vi.waitFor(() => expect(prisma.$queryRaw).toHaveBeenCalledTimes(6));
   });
 });

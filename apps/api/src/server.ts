@@ -9,7 +9,11 @@ import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 import { scheduleEvery } from './lib/daily-scheduler.js';
 import { authRepository } from './modules/auth/auth.repository.js';
 import { prisma } from './lib/prisma.js';
-import { extractSafeConnectionMetadata, maybeRunDatabaseRoundTripDiagnostics } from './lib/db-round-trip-diagnostics.js';
+import {
+  extractSafeConnectionMetadata,
+  maybeRunDatabaseRoundTripDiagnostics,
+  scheduleSettledDatabaseRoundTripDiagnostics,
+} from './lib/db-round-trip-diagnostics.js';
 
 // Importing `config` above already validated every required env var (it
 // fails fast with a clear field-level error if anything is missing) —
@@ -72,13 +76,26 @@ async function start(): Promise<void> {
     // Fire-and-forget: must never delay readiness or crash the already-listening
     // API. maybeRunDatabaseRoundTripDiagnostics never throws, but .catch is kept
     // as defense-in-depth against an unexpected synchronous/async failure.
-    void maybeRunDatabaseRoundTripDiagnostics(
+    const connectionMetadata = extractSafeConnectionMetadata(config.database.url);
+    const startupProbeOutcome = maybeRunDatabaseRoundTripDiagnostics(
       config.databaseRoundTripDiagnosticsEnabled,
       prisma,
-      extractSafeConnectionMetadata(config.database.url),
-    ).catch(() => {
+      connectionMetadata,
+    ).catch((): undefined => {
       console.error(`[db-round-trip-diagnostics] unexpected diagnostic failure (sanitized)`);
+      return undefined;
     });
+
+    // POS-PERF-P11: one additional "settled" repeat of the same sequence
+    // ~60s after listening, so startup and settled durations can be
+    // compared. Skipped entirely (inside scheduleSettledDatabaseRoundTripDiagnostics)
+    // if the startup run left a query outstanding past its timeout.
+    scheduleSettledDatabaseRoundTripDiagnostics(
+      config.databaseRoundTripDiagnosticsEnabled,
+      prisma,
+      connectionMetadata,
+      startupProbeOutcome,
+    );
   });
 }
 

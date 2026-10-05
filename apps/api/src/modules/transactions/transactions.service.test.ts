@@ -2330,6 +2330,54 @@ describe('transactionsService.voidTransaction — inventory deduction job dispat
   });
 });
 
+describe('transactionsService.retryInventoryDeduction — admin-actionable failed-job recovery (POS-PERF-P15R)', () => {
+  it('requeues a failed job back to pending without touching the Transaction status to void/refund', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'failed' } as never);
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+
+    const result = await transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(result).toEqual({ transaction_id: 'txn-1', job_id: 'job-1', status: 'pending' });
+    expect(prisma.inventoryDeductionJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'failed' },
+      data: { status: 'pending', attempts: 0, lastError: null, nextAttemptAt: null, claimToken: null, lockedAt: null },
+    });
+    expect(prisma.transaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'txn-1' }, data: expect.objectContaining({ inventoryDeductionStatus: 'pending' }) }),
+    );
+  });
+
+  it('rejects with 404 when the transaction has no inventory deduction job at all', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce(null as never);
+
+    await expect(
+      transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_JOB_NOT_FOUND', statusCode: 404 });
+  });
+
+  it("rejects with 409 when the job isn't actually failed (e.g. still pending, processing, or already completed)", async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'completed' } as never);
+
+    await expect(
+      transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_NOT_FAILED', statusCode: 409 });
+    expect(prisma.inventoryDeductionJob.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 409 when the requeue guard loses a race (job left failed between the read and the requeue attempt)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'failed' } as never);
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+
+    await expect(
+      transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_IN_PROGRESS', statusCode: 409 });
+  });
+});
+
 // Task 93 — the response mapping (toTransactionResponse, exercised here via
 // getTransactionById) must surface the persisted selectedOptions snapshot as
 // selected_options, and default to [] for older rows written before this

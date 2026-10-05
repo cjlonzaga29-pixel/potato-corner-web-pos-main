@@ -326,3 +326,27 @@ describe('inventoryDeductionRepository.cancelAndReleaseReservation', () => {
     expect(prisma.transactionItem.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe('inventoryDeductionRepository.requeueFailedJob', () => {
+  it('resets a failed job back to pending (fresh attempts/backoff) and flips the Transaction status back to pending', async () => {
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+
+    const requeued = await inventoryDeductionRepository.requeueFailedJob('job-1', 'txn-1');
+
+    expect(requeued).toBe(true);
+    expect(prisma.inventoryDeductionJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'failed' },
+      data: { status: 'pending', attempts: 0, lastError: null, nextAttemptAt: null, claimToken: null, lockedAt: null },
+    });
+    expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalledWith('txn-1', 'pending', expect.anything());
+  });
+
+  it('does nothing and returns false when the job already left the failed status (e.g. claimed by a worker since the caller read it)', async () => {
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+
+    const requeued = await inventoryDeductionRepository.requeueFailedJob('job-1', 'txn-1');
+
+    expect(requeued).toBe(false);
+    expect(inventoryRepository.updateTransactionDeductionStatus).not.toHaveBeenCalled();
+  });
+});

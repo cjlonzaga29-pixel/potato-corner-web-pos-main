@@ -593,6 +593,36 @@ router.get('/:transactionId/discount-proof', authenticate, allRoles, requireActi
   }
 });
 
+// POS-PERF-P15R — admin-actionable recovery for a sale whose background
+// inventory deduction exhausted its retries ('failed'): requeue the job
+// without touching the sale itself. adminOrSupervisor only, same as the
+// other inventory-correcting actions in this file — a cashier/branch
+// account cannot force a reprocessing attempt.
+router.post(
+  '/:transactionId/retry-inventory-deduction',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      const result = await transactionsService.retryInventoryDeduction(
+        req.params.transactionId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
 router.post(
   '/:transactionId/void',
   authenticate,

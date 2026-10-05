@@ -2015,6 +2015,55 @@ export const transactionsService = {
     };
   },
 
+  /**
+   * POS-PERF-P15R — actionable recovery for a sale whose background
+   * inventory deduction exhausted its retries (job status 'failed',
+   * surfaced as the critical badge in view-transaction-detail-dialog.tsx).
+   * The sale itself is already valid and paid for; this requeues only the
+   * stuck deduction job so the worker claims and retries it fresh on its
+   * next poll cycle, without touching the Transaction's own status (never
+   * voids or refunds anything) — see inventory-deduction.repository.ts
+   * requeueFailedJob's doc comment for why voiding was the wrong fallback.
+   */
+  async retryInventoryDeduction(transactionId: string, actor: ActorContext, ipAddress: string | null) {
+    const transaction = (await transactionsRepository.findTransactionById(transactionId)) as TransactionRow | null;
+    if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
+
+    const job = await inventoryDeductionRepository.findJobByTransactionId(transactionId);
+    if (!job) {
+      throw new TransactionError('INVENTORY_DEDUCTION_JOB_NOT_FOUND', 'This sale has no background inventory deduction job to retry', 404);
+    }
+    if (job.status !== 'failed') {
+      throw new TransactionError(
+        'INVENTORY_DEDUCTION_NOT_FAILED',
+        `This sale's inventory deduction is '${job.status}', not 'failed' — nothing to retry`,
+        409,
+      );
+    }
+
+    const requeued = await inventoryDeductionRepository.requeueFailedJob(job.id, transactionId);
+    if (!requeued) {
+      throw new TransactionError(
+        'INVENTORY_DEDUCTION_IN_PROGRESS',
+        'This job changed status just now (likely already claimed) — refresh and check its current status',
+        409,
+      );
+    }
+
+    void recordAuditLog({
+      action: 'INVENTORY_DEDUCTION_RETRY_REQUESTED',
+      entityType: 'inventory_deduction_job',
+      entityId: job.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: transaction.branchId,
+      afterState: { transaction_id: transactionId, previous_status: 'failed', new_status: 'pending' },
+      ipAddress,
+    });
+
+    return { transaction_id: transactionId, job_id: job.id, status: 'pending' as const };
+  },
+
   async voidTransaction(id: string, voidReason: string, actor: ActorContext, ipAddress: string | null) {
     const transaction = (await transactionsRepository.findTransactionById(id)) as TransactionRow | null;
     if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);

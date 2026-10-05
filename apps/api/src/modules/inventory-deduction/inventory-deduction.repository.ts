@@ -330,4 +330,36 @@ export const inventoryDeductionRepository = {
   findJobByTransactionId(transactionId: string, tx?: Prisma.TransactionClient) {
     return (tx ?? prisma).inventoryDeductionJob.findUnique({ where: { transactionId } });
   },
+
+  /**
+   * POS-PERF-P15R — the admin-actionable recovery path for a job that
+   * exhausted its retries: by design (see recordFailure) nothing here ever
+   * auto-retries a `failed` job again, so without this, the only path back
+   * to a correct ledger was voiding an otherwise-valid, already-paid-for
+   * sale just to force the reservation to release — exactly the outcome
+   * review item 9 flagged as unacceptable (a fulfilled sale must not have
+   * to be undone merely to recover inventory processing).
+   *
+   * Guarded `updateMany` on `status: 'failed'`: resets attempts/backoff/
+   * lastError so the very next worker poll cycle claims it fresh, same as
+   * any other pending job — no separate "retry" code path in the worker to
+   * keep in sync. Also flips the Transaction's own inventoryDeductionStatus
+   * back to 'pending' (recordFailure is what moved it to 'failed' in the
+   * first place), so the admin UI's badge reflects that it's back in
+   * flight. Returns false if the job had already left `failed` (claimed by
+   * a worker through some other path, or already resolved) between the
+   * caller's read and this call — the caller must not assume anything was
+   * requeued in that case.
+   */
+  async requeueFailedJob(jobId: string, transactionId: string): Promise<boolean> {
+    return prisma.$transaction(async (tx) => {
+      const guard = await tx.inventoryDeductionJob.updateMany({
+        where: { id: jobId, status: 'failed' },
+        data: { status: 'pending', attempts: 0, lastError: null, nextAttemptAt: null, claimToken: null, lockedAt: null },
+      });
+      if (guard.count === 0) return false;
+      await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.PENDING, tx);
+      return true;
+    });
+  },
 };

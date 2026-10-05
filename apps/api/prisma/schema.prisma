@@ -74,6 +74,21 @@ enum InventoryDeductionStatus {
   failed
 }
 
+/// POS-PERF-P15 — durable background inventory deduction work item status.
+/// Mirrors InventoryProjectionOutboxStatus's claim-token worker pattern
+/// (deliberately without that enum's `deferred`, which models a missing
+/// catalog mapping this job type never has). `cancelled` is unique to this
+/// job: a void/refund racing a still-pending (never-claimed) or exhausted
+/// (`failed`) job cancels it in place rather than letting a worker claim a
+/// job for a sale that no longer stands.
+enum InventoryDeductionJobStatus {
+  pending
+  processing
+  completed
+  failed
+  cancelled
+}
+
 enum HoldOrderStatus {
   held
   released
@@ -1232,6 +1247,16 @@ model InventoryStock {
   branchId          String   @map("branch_id")
   inventoryItemId   String   @map("inventory_item_id")
   quantityOnHand    Decimal  @default(0) @map("quantity_on_hand") @db.Decimal(10, 3)
+  /// POS-PERF-P15 — quantity already committed to a sale whose inventory
+  /// deduction job hasn't run yet (status pending/processing on
+  /// InventoryDeductionJob). Available-for-sale quantity is always
+  /// `quantityOnHand - quantityReserved`, never quantityOnHand alone — see
+  /// the reservation helper in modules/inventory-deduction/
+  /// inventory-deduction.repository.ts, which is the only place this column
+  /// is written. Released (decremented) either by the deduction worker when
+  /// it actually decrements quantityOnHand, or by a void/refund that cancels
+  /// a still-pending/failed job before the worker ever claimed it.
+  quantityReserved  Decimal  @default(0) @map("quantity_reserved") @db.Decimal(10, 3)
   lowStockThreshold Decimal? @map("low_stock_threshold") @db.Decimal(10, 3)
   criticalThreshold Decimal? @map("critical_threshold") @db.Decimal(10, 3)
   // Branch-specific override of InventoryItem.unitCost for valuation (e.g. a
@@ -1593,6 +1618,16 @@ model Transaction {
   // with itself in the unique index below (Postgres NULL <> NULL), which is
   // exactly what keeps legacy rows and online sales unaffected.
   deviceId                    String?                  @map("device_id")
+  // POS-PERF-P15 — client-generated UUID, one per checkout *attempt*
+  // (stable across that attempt's retries/double-clicks, fresh for a new
+  // cart). The DB-level idempotency authority for online checkout retries,
+  // same role deviceId+offlineProvisionalNumber plays for offline sync.
+  // Null for legacy rows and for any client that omits it (fails open: no
+  // idempotency protection, same as before this column existed, never a
+  // hard requirement). Enforced via the unique index below, not just an
+  // app-level check-then-insert, so two concurrent requests for the same
+  // key can never both commit a Transaction row.
+  idempotencyKey              String?                  @unique @map("idempotency_key")
   syncedAt                    DateTime?                @map("synced_at")
   receiptPrinted              Boolean                  @default(false) @map("receipt_printed")
   voidedAt                    DateTime?                @map("voided_at")
@@ -1609,6 +1644,7 @@ model Transaction {
   refundedBy             User?             @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
   paymentProofVerifiedBy User?             @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
   items                  TransactionItem[]
+  deductionJob           InventoryDeductionJob?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1674,6 +1710,38 @@ model TransactionItem {
   @@index([transactionId])
   @@index([productVariantId])
   @@map("transaction_items")
+}
+
+/// POS-PERF-P15 — durable outbox for the inventory deduction a checkout no
+/// longer performs synchronously. Created atomically with its Transaction
+/// (same $transaction as the sale insert — see transactions.service.ts
+/// createTransaction), one row per transaction (transactionId unique), so a
+/// worker can claim and process it independently of the checkout request
+/// ever completing from the cashier's point of view. The deduction *inputs*
+/// are not duplicated onto this row: TransactionItem.deductionSnapshot
+/// (already immutable, CR-004) is the source the worker reads. Mirrors
+/// InventoryProjectionOutbox's claim-token pattern exactly (claimBatch /
+/// processing / claimToken / lockedAt / attempts / lastError / nextAttemptAt)
+/// — see inventory-deduction.repository.ts.
+model InventoryDeductionJob {
+  id            String                      @id @default(uuid())
+  transactionId String                      @unique @map("transaction_id")
+  branchId      String                      @map("branch_id")
+  status        InventoryDeductionJobStatus @default(pending)
+  attempts      Int                         @default(0)
+  lastError     String?                     @map("last_error")
+  nextAttemptAt DateTime?                   @map("next_attempt_at")
+  lockedAt      DateTime?                   @map("locked_at")
+  claimToken    String?                     @map("claim_token")
+  processedAt   DateTime?                   @map("processed_at")
+  createdAt     DateTime                    @default(now()) @map("created_at")
+  updatedAt     DateTime                    @updatedAt @map("updated_at")
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([branchId])
+  @@map("inventory_deduction_jobs")
 }
 
 model Shift {

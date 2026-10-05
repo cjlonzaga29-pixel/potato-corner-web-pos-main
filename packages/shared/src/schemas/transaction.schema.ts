@@ -85,6 +85,11 @@ export const createTransactionSchema = z
     discount_proof_type: z.enum(imageProofTypeValues).optional(),
     is_offline_transaction: z.boolean().default(false),
     offline_provisional_number: z.string().optional(),
+    // POS-PERF-P15 — client-generated UUID, one per checkout attempt
+    // (stable across that attempt's retries/double-clicks, fresh for a new
+    // cart). Optional: a client that omits it gets no idempotency
+    // protection, same as before this field existed.
+    idempotency_key: z.uuid().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.payment_method === PAYMENT_METHOD.CASH && data.cash_tendered === undefined) {

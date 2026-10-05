@@ -45,6 +45,7 @@ import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cach
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
+import { SaleStatusModal, type SaleSnapshot, type SalePopupPhase } from '@/components/pos/sale-status-modal';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 
 // Task 140 — the same allowed-roles set ViewTransactionDetailDialog itself
@@ -459,7 +460,26 @@ export default function TerminalPage() {
   const [discountProofKey, setDiscountProofKey] = useState<string | null>(null);
   const [discountProofType, setDiscountProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
   const [discountProofPreviewUrl, setDiscountProofPreviewUrl] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
+  // POS-PERF-P15 — salePhase null means the sale popup is closed; non-null
+  // (with saleSnapshot always populated alongside it) drives ReceiptModal
+  // through 'saving' -> 'success' | 'error'. saleTransaction is only ever
+  // populated once phase is 'success' — see receipt-modal.tsx's doc
+  // comment for why the snapshot and the server-confirmed transaction are
+  // deliberately never merged into one object.
+  const [salePhase, setSalePhase] = useState<SalePopupPhase | null>(null);
+  const [saleSnapshot, setSaleSnapshot] = useState<SaleSnapshot | null>(null);
+  const [saleTransaction, setSaleTransaction] = useState<TransactionResponse | null>(null);
+  const [saleErrorMessage, setSaleErrorMessage] = useState<string | null>(null);
+  // "View Receipt" on the success confirmation opens the full ReceiptModal
+  // on top of it — kept as its own flag rather than folded into salePhase
+  // so closing the receipt view returns to the compact confirmation instead
+  // of closing everything.
+  const [isReceiptViewOpen, setIsReceiptViewOpen] = useState(false);
+  // One idempotency key per checkout *attempt* — generated on the first
+  // Charge click and reused verbatim by Retry, so a retry after a dropped
+  // response replays the same sale instead of risking a duplicate. Reset
+  // to null only once that attempt reaches a terminal success (New Sale).
+  const idempotencyKeyRef = useRef<string | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [isVoidRefundOpen, setIsVoidRefundOpen] = useState(false);
@@ -1088,15 +1108,58 @@ export default function TerminalPage() {
       return;
     }
 
+    // POS-PERF-P15 — one idempotency key per checkout attempt, generated on
+    // the first click and reused verbatim by Retry (idempotencyKeyRef is
+    // only ever cleared on a confirmed success/New Sale below) — a retried
+    // request that actually succeeded server-side replays that same sale
+    // instead of creating a duplicate.
+    const idempotencyKey = idempotencyKeyRef.current ?? crypto.randomUUID();
+    idempotencyKeyRef.current = idempotencyKey;
+    const payloadWithIdempotency: CreateTransactionInput = { ...payload, idempotency_key: idempotencyKey };
+
+    // The submitted-order snapshot, built entirely from client state already
+    // on screen — no server round trip has happened yet. Opening the popup
+    // (and closing the checkout review dialog) happens synchronously, right
+    // here, before the `await` below — Checkout must open the popup
+    // immediately, not once the network call resolves.
+    const snapshot: SaleSnapshot = {
+      items: cartLines.map((line) => ({
+        id: `${line.item.product_variant_id}-${line.index}`,
+        productName: line.productName,
+        variantName: line.variantName,
+        flavorName: line.flavorName,
+        quantity: line.quantity,
+        lineTotal: line.lineTotal,
+        optionSelections: line.optionSelections.map((option) => ({
+          option_id: option.option_id,
+          option_name: option.option_name,
+          price_adjustment: option.price_adjustment,
+        })),
+      })),
+      subtotal,
+      discountAmount,
+      discountType: discountType === 'none' ? null : discountType,
+      vatAmount,
+      totalAmount,
+      paymentMethod,
+      cashTendered: paymentMethod === 'cash' ? tenderedNumber : null,
+      changeGiven: paymentMethod === 'cash' ? change : null,
+    };
+    setSaleSnapshot(snapshot);
+    setSaleErrorMessage(null);
+    setSalePhase('saving');
+    setIsCheckoutOpen(false);
+
     try {
       const requestStartedAt = performance.now();
-      const transaction = await createTransaction.mutateAsync(payload);
+      const transaction = await createTransaction.mutateAsync(payloadWithIdempotency);
       const networkMs = performance.now() - requestStartedAt;
       const closeStartedAt = performance.now();
       clearCart();
       resetPaymentFields();
-      setIsCheckoutOpen(false);
-      setReceipt(transaction);
+      idempotencyKeyRef.current = null;
+      setSaleTransaction(transaction);
+      setSalePhase('success');
       // No cart contents/payment data — branch id and durations only, same
       // convention as the backend's "POS checkout stage timing" log.
       console.warn('[checkout] charge timing', {
@@ -1106,10 +1169,48 @@ export default function TerminalPage() {
         responseToCheckoutCloseMs: Math.round(performance.now() - closeStartedAt),
       });
     } catch (error) {
-      setChargeError(error instanceof Error ? error.message : 'Failed to record transaction');
+      // Cart and idempotencyKeyRef are deliberately left untouched — Retry
+      // resubmits the exact same sale under the same key, and Edit Cart
+      // (onEditCart below) returns to the checkout review dialog with
+      // every submitted item exactly as entered.
+      setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
+      setSalePhase('error');
     } finally {
       isChargingRef.current = false;
     }
+  }
+
+  // POS-PERF-P15 — resubmits the exact same cart under the exact same
+  // idempotencyKeyRef (handleCharge only generates a fresh one when the ref
+  // is null, which it isn't after a failed attempt): if the original
+  // request actually persisted server-side and only the response was lost,
+  // the server replays that same sale instead of creating a duplicate.
+  function handleRetryCharge() {
+    void handleCharge();
+  }
+
+  // Error phase only: dismiss the popup and return to the checkout review
+  // dialog. Cart and payment fields were never touched on failure, so the
+  // cashier lands back exactly where they left off.
+  function handleEditCartFromSaleError() {
+    setSalePhase(null);
+    setSaleSnapshot(null);
+    setSaleErrorMessage(null);
+    setIsCheckoutOpen(true);
+  }
+
+  function handleViewReceipt() {
+    setIsReceiptViewOpen(true);
+  }
+
+  // Success phase only: opens a new empty cart immediately — never waits on
+  // the server's background inventory deduction, which runs independently
+  // on the server (the inventory-deduction worker — see server.ts).
+  function handleNewSale() {
+    setSalePhase(null);
+    setSaleSnapshot(null);
+    setSaleTransaction(null);
+    setIsReceiptViewOpen(false);
   }
 
   // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
@@ -1673,7 +1774,18 @@ export default function TerminalPage() {
 
       {checkoutWorkspaceElement}
 
-      <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />
+      {salePhase && saleSnapshot && (
+        <SaleStatusModal
+          phase={salePhase}
+          snapshot={saleSnapshot}
+          errorMessage={saleErrorMessage}
+          onRetry={handleRetryCharge}
+          onEditCart={handleEditCartFromSaleError}
+          onViewReceipt={handleViewReceipt}
+          onNewSale={handleNewSale}
+        />
+      )}
+      {isReceiptViewOpen && <ReceiptModal transaction={saleTransaction} onClose={handleNewSale} />}
 
       {canManageVoidRefund && (
         <VoidRefundSaleDialog branchId={branchId} open={isVoidRefundOpen} onOpenChange={setIsVoidRefundOpen} />

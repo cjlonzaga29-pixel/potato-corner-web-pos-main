@@ -137,6 +137,11 @@ function buildStock(overrides: Partial<Record<string, unknown>> = {}) {
     branchId: 'branch-1',
     inventoryItemId: 'item-1',
     quantityOnHand: dec(10),
+    // POS-PERF-P15 — defaults to "nothing reserved" so every pre-existing
+    // fixture (none of which exercise a concurrent pending sale) behaves
+    // exactly as before; tests that want to exercise the
+    // quantityReserved-aware availability check override this directly.
+    quantityReserved: dec(0),
     unitCost: null,
     lowStockThreshold: null,
     criticalThreshold: null,

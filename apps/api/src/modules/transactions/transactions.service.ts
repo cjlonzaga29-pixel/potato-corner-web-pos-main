@@ -5,10 +5,8 @@ import {
   DISCOUNT_TYPE,
   SOCKET_EVENTS,
   MOVEMENT_TYPE,
-  INVENTORY_DEDUCTION_STATUS,
   PAYMENT_METHOD,
   type ImageProofType,
-  type InventoryDeductionStatus,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
 import { transactionsRepository, type SelectedOptionSnapshot } from './transactions.repository.js';
@@ -44,7 +42,7 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
 import { hashToLockId, inventoryStockLockId, branchShiftLockId } from '../../lib/pg-lock.js';
 import { sha256Hex } from '../../lib/hash.js';
-import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
 import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
@@ -54,7 +52,9 @@ import { attachCostToDeductionLines } from '../../lib/cogs.js';
 import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
 import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
-import { createCheckoutLatencyRecorder, timeStage, type CheckoutLatencyRecorder } from '../../lib/checkout-latency-diagnostics.js';
+import { createCheckoutLatencyRecorder, timeStage } from '../../lib/checkout-latency-diagnostics.js';
+import { computeDeductionTotals, sortedDeductionTotalEntries } from '../../lib/deduction-totals.js';
+import { inventoryDeductionRepository } from '../inventory-deduction/inventory-deduction.repository.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -882,182 +882,79 @@ function isOfflineSyncUniqueConflict(error: unknown): boolean {
 }
 
 /**
- * Runs inside the same DB transaction as the sale itself (Phase 8's deduction
- * moved from a fire-and-forget queue job to here) so a stock shortfall rolls
- * back the whole sale instead of leaving a completed transaction with no
- * matching deduction. Side effects that aren't part of the atomic write
- * (audit log, notifications, socket broadcasts) are returned as deferred
- * callbacks and only run after the transaction commits.
+ * POS-PERF-P15 — narrowly recognizes the transactions_idempotency_key_key
+ * unique-constraint violation (P2002), same narrow-match reasoning as
+ * isOfflineSyncUniqueConflict above: only *this specific* constraint means
+ * "a concurrent request for the same idempotency key already won" — any
+ * other P2002 must keep surfacing as a real error.
  */
-async function deductInventoryForSale(
+function isIdempotencyKeyConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  if (typeof target === 'string') return target.includes('transactions_idempotency_key_key');
+  if (Array.isArray(target)) return target.includes('idempotency_key') || target.includes('idempotencyKey');
+  return false;
+}
+
+/**
+ * POS-PERF-P15 — replaces the old synchronous deductInventoryForSale on the
+ * checkout path. Runs inside the same DB transaction as the sale itself, but
+ * no longer performs the real inventory deduction (ledger write, audit row,
+ * low-stock notification) here at all — it only reserves the quantity this
+ * sale will need (InventoryStock.quantityReserved) and writes a durable
+ * InventoryDeductionJob row, so a background worker can claim and perform
+ * the actual deduction independently of this request ever completing from
+ * the cashier's point of view (see modules/inventory-deduction/).
+ *
+ * Each reservation is a single atomic conditional UPDATE —
+ * `quantity_on_hand - quantity_reserved >= needed` in the WHERE clause —
+ * rather than the old advisory-lock-then-read-then-validate-then-write
+ * sequence: Postgres's own row-level write lock on the UPDATE statement
+ * already serializes two concurrent reservations against the same row, so
+ * no separate pg_advisory_xact_lock call is needed for this check-and-
+ * increment (unlike the worker's own real deduction, which still takes that
+ * lock before its read+write — see inventory-deduction.service.ts for why
+ * that path still needs it). A shortfall anywhere in the cart throws before
+ * any job row is created, rolling back every reservation already applied in
+ * this same $transaction along with the rest of the sale.
+ */
+async function reserveStockForSale(
   tx: Prisma.TransactionClient,
   branchId: string,
   transactionId: string,
   items: { lines: BomDeductionLine[] }[],
-  diag: CheckoutLatencyRecorder = createCheckoutLatencyRecorder(false),
-): Promise<{ effects: Array<() => Promise<void>>; deductionStatus: InventoryDeductionStatus }> {
-  const totals = new Map<string, { quantity: number; baseUnitId: string }>();
-  for (const item of items) {
-    for (const line of item.lines) {
-      const existing = totals.get(line.inventoryItemId);
-      totals.set(line.inventoryItemId, { quantity: (existing?.quantity ?? 0) + line.quantity, baseUnitId: line.baseUnitId });
-    }
-  }
+): Promise<void> {
+  const totals = computeDeductionTotals(items);
+  // Deterministic order (sorted by inventoryItemId) — two sales reserving an
+  // overlapping ingredient set always take their row locks in the same
+  // order, so they serialize instead of risking a Postgres deadlock.
+  const sortedEntries = sortedDeductionTotalEntries(totals);
 
-  // Deterministic order (sorted by inventoryItemId) for every pass below,
-  // locks included — two transactions deducting an overlapping ingredient
-  // set must always request their advisory locks in the same order, or
-  // Postgres can deadlock them against each other instead of one simply
-  // waiting for the other.
-  const sortedEntries = [...totals.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const inventoryItemIds = sortedEntries.map(([id]) => id);
-
-  const itemNames = new Map(
-    (await tx.inventoryItem.findMany({ where: { id: { in: inventoryItemIds } }, select: { id: true, name: true } })).map((i) => [
-      i.id,
-      i.name,
-    ]),
-  );
-
-  // One pg_advisory_xact_lock call per ingredient (same primitive as
-  // before), now taken up front in sorted order before any read — every
-  // concurrent sale touching an overlapping ingredient set serializes on
-  // this same lock order instead of racing. Branch-scoped key (matches
-  // universal-inventory.repository.ts's lockAndGetStock) so a sale
-  // deduction and a manual stock operation against the same branch+item
-  // always contend on the same advisory lock.
-  await timeStage(diag, 'advisoryLocks', async () => {
-    for (const inventoryItemId of inventoryItemIds) {
-      const lockId = inventoryStockLockId(branchId, inventoryItemId);
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
-    }
-  });
-
-  // One batched read for every InventoryStock row instead of one
-  // findUnique per ingredient — safe to treat as a single snapshot because
-  // every row's advisory lock is already held above, so nothing else can
-  // change them out from under this pass.
-  const stockRows = await timeStage(diag, 'stockRead', () =>
-    tx.inventoryStock.findMany({
-      where: { branchId, inventoryItemId: { in: inventoryItemIds } },
-    }),
-  );
-  const stockByItemId = new Map(stockRows.map((row) => [row.inventoryItemId, row]));
-
-  // Validate every row before writing any of them — a shortfall anywhere in
-  // the cart must still roll back the whole sale, never leave a partial
-  // deduction behind.
   for (const [inventoryItemId, { quantity }] of sortedEntries) {
-    const stock = stockByItemId.get(inventoryItemId);
-    const currentStock = stock?.quantityOnHand.toNumber() ?? 0;
-    if (!stock || currentStock < quantity) {
-      const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
+    const decimalQuantity = new Prisma.Decimal(quantity);
+    const affected = await tx.$executeRaw`
+      UPDATE "inventory_stocks"
+      SET "quantity_reserved" = "quantity_reserved" + ${decimalQuantity}, "version" = "version" + 1, "updated_at" = now()
+      WHERE "branch_id" = ${branchId} AND "inventory_item_id" = ${inventoryItemId}
+        AND "quantity_on_hand" - "quantity_reserved" >= ${decimalQuantity}
+    `;
+    if (affected === 0) {
+      // Shortfall path only — the common case never pays for this read.
+      const [stock, item] = await Promise.all([
+        tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } }),
+        tx.inventoryItem.findUnique({ where: { id: inventoryItemId }, select: { name: true } }),
+      ]);
+      const itemName = item?.name ?? inventoryItemId;
+      const available = stock ? stock.quantityOnHand.toNumber() - stock.quantityReserved.toNumber() : 0;
       throw new TransactionError(
         'INSUFFICIENT_STOCK',
-        `Insufficient stock for ${itemName}: need ${quantity}, have ${currentStock}`,
+        `Insufficient stock for ${itemName}: need ${quantity}, have ${available} available`,
         409,
       );
     }
   }
 
-  // Prisma has no single-call bulk update for rows that each decrement by a
-  // different quantity, so this pass still costs one `update` per
-  // ingredient — the locks taken above already make each of these safe
-  // against a concurrent writer, so the round trips saved were entirely in
-  // the read and ledger-insert passes around it.
-  const effects: Array<() => Promise<void>> = [];
-  const movementInputs: Parameters<typeof universalInventoryRepository.createStockMovements>[0] = [];
-
-  const stockUpdateStartedAt = diag.enabled ? performance.now() : 0;
-  for (const [inventoryItemId, { quantity, baseUnitId }] of sortedEntries) {
-    const stock = stockByItemId.get(inventoryItemId);
-    if (!stock) continue; // unreachable — every row was validated above
-    const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
-
-    const updated = await tx.inventoryStock.update({
-      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
-      data: { quantityOnHand: { decrement: quantity }, version: { increment: 1 } },
-    });
-
-    // Carrying cost snapshot at the exact moment of deduction — `stock` here
-    // is the same InventoryStock row read (and advisory-locked) above, so
-    // this can never race a concurrent receiving the way a cost lookup after
-    // releasing the lock could. Same stock.unitCost-only convention as
-    // WASTE/TRANSFER_OUT (universal-inventory.service.ts) — no InventoryItem
-    // fallback here; that fallback is cogs.ts's separate concern for
-    // TransactionItem.deductionSnapshot, which this must not duplicate or
-    // diverge from. Null (never fabricated as 0) when cost was never
-    // initialized for this item.
-    const unitCost = stock.unitCost;
-    const totalCost = unitCost ? unitCost.mul(quantity) : null;
-
-    movementInputs.push({
-      branchId,
-      inventoryItemId,
-      movementType: 'SALE',
-      quantityChange: new Prisma.Decimal(quantity).negated(),
-      quantityBefore: stock.quantityOnHand,
-      quantityAfter: updated.quantityOnHand,
-      unitId: baseUnitId,
-      referenceType: 'transaction',
-      referenceId: transactionId,
-      unitCost: unitCost ?? undefined,
-      totalCost: totalCost ?? undefined,
-    });
-
-    effects.push(() =>
-      recordAuditLog({
-        action: 'INVENTORY_SALE_DEDUCTED',
-        entityType: 'inventory_stock',
-        entityId: updated.id,
-        actorId: null,
-        actorRole: 'system',
-        branchId,
-        afterState: {
-          inventory_item_id: inventoryItemId,
-          quantity_change: -quantity,
-          quantity_after: updated.quantityOnHand.toNumber(),
-          reference_id: transactionId,
-        },
-      }),
-    );
-
-    const stockAfter = updated.quantityOnHand.toNumber();
-    const lowThreshold = updated.lowStockThreshold?.toNumber() ?? null;
-    const criticalThreshold = updated.criticalThreshold?.toNumber() ?? null;
-    if (lowThreshold !== null && stockAfter <= lowThreshold) {
-      effects.push(() =>
-        enqueueRawNotificationJob('low_stock_alert', {
-          branchId,
-          inventoryItemId,
-          ingredientName: itemName,
-          currentStock: stockAfter,
-          lowStockThreshold: lowThreshold,
-          criticalThreshold: criticalThreshold ?? lowThreshold,
-          severity: criticalThreshold !== null && stockAfter <= criticalThreshold ? 'critical' : 'low',
-        }),
-      );
-    }
-  }
-
-  if (diag.enabled) diag.mark('stockUpdates', performance.now() - stockUpdateStartedAt);
-
-  // One batched insert for every SALE movement row instead of one `create`
-  // per ingredient.
-  if (movementInputs.length > 0) {
-    await timeStage(diag, 'ledgerWrites', () => universalInventoryRepository.createStockMovements(movementInputs, tx));
-  }
-
-  // Read back the row this same write just persisted (rather than assuming
-  // COMPLETED) so the caller's response can never drift from the committed
-  // state — see transactions.service.ts createTransaction, which discarded
-  // this update and kept returning the pre-deduction "pending" INSERT
-  // snapshot instead (Task 209.47E).
-  const updated = await timeStage(diag, 'deductionStatusWrite', () =>
-    inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx),
-  );
-
-  return { effects, deductionStatus: updated.inventoryDeductionStatus };
+  await tx.inventoryDeductionJob.create({ data: { transactionId, branchId } });
 }
 
 /**
@@ -1205,6 +1102,62 @@ async function reverseInventoryForTransaction(
         totalCost: reversalTotalCost ?? undefined,
       },
       tx,
+    );
+  }
+}
+
+/**
+ * POS-PERF-P15 — void/refund entry point for inventory settlement,
+ * replacing the old unconditional reverseInventoryForTransaction call.
+ * Dispatches on the sale's InventoryDeductionJob status (there is none for
+ * a transaction that predates this feature, which deducted synchronously
+ * at sale time exactly like reverseInventoryForTransaction still expects):
+ *
+ *   - no job row, or job status 'completed': the deduction already
+ *     happened (synchronously, pre-cutover, or already drained by the
+ *     worker) — run the existing full reversal, unchanged.
+ *   - job status 'cancelled': already settled by a previous void/refund
+ *     attempt (defensive; voidTransaction/refundTransaction's own
+ *     status === 'completed' pre-check normally prevents a second call
+ *     from ever reaching here) — nothing to do.
+ *   - job status 'pending' or 'failed': nothing was ever deducted — cancel
+ *     the job in place and release its checkout-time reservation instead
+ *     of reversing anything.
+ *   - job status 'processing': a worker currently owns the claim. Rather
+ *     than guess at a race, fail closed with a retryable error — the
+ *     window is normally sub-second (one deduction cycle), so an
+ *     immediate retry from the admin UI resolves it once the worker's own
+ *     claim settles to 'completed'.
+ */
+async function reverseOrCancelInventoryForTransaction(
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  transactionId: string,
+  items: { productVariantId: string; flavorId: string | null; quantity: number }[],
+  kind: 'void' | 'refund',
+): Promise<void> {
+  const job = await inventoryDeductionRepository.findJobByTransactionId(transactionId, tx);
+  if (!job || job.status === 'completed') {
+    await reverseInventoryForTransaction(tx, branchId, transactionId, items, kind);
+    return;
+  }
+  if (job.status === 'cancelled') return;
+  if (job.status === 'processing') {
+    throw new TransactionError(
+      'INVENTORY_DEDUCTION_IN_PROGRESS',
+      'Inventory deduction for this sale is still finalizing — please retry in a moment',
+      409,
+    );
+  }
+  // 'pending' or 'failed'.
+  const cancelled = await inventoryDeductionRepository.cancelAndReleaseReservation(tx, job.id, branchId, transactionId);
+  if (!cancelled) {
+    // Lost a race: the job's status moved (claimed by a worker, or already
+    // completed) between the read above and this call.
+    throw new TransactionError(
+      'INVENTORY_DEDUCTION_IN_PROGRESS',
+      'Inventory deduction for this sale is still finalizing — please retry in a moment',
+      409,
     );
   }
 }
@@ -1447,6 +1400,19 @@ export const transactionsService = {
     const diag = createCheckoutLatencyRecorder(config.checkoutLatencyDiagnosticsEnabled);
     if (diag.enabled && middlewareGuardsMs !== undefined) diag.mark('middlewareAndGuards', middlewareGuardsMs);
 
+    // POS-PERF-P15 — idempotent-replay fast path for a checkout retry or
+    // double-click carrying the same idempotencyKey as an attempt that
+    // already committed: skip every catalog/pricing/stock step entirely and
+    // just replay the prior result, same role findByOfflineIdentity plays
+    // in syncOfflineTransactions. Best-effort only (a true concurrent replay
+    // can still miss here before either request inserts) — the
+    // idempotency_key unique index is the real concurrency authority; see
+    // the P2002 catch below for that race path.
+    if (data.idempotencyKey) {
+      const existing = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
+      if (existing) return toTransactionResponse(existing as TransactionRow);
+    }
+
     // Task 209.3 — branch and shift are looked up by independent ids
     // (branchId vs shiftId) with no data dependency between them; running
     // them concurrently instead of back-to-back saves one round trip off
@@ -1586,7 +1552,6 @@ export const transactionsService = {
     });
 
     let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>>;
-    let postCommitEffects: Array<() => Promise<void>>;
     // Allocated once via the atomic counter (generateReceiptNumber) — unlike
     // the old COUNT-then-increment approach, this can never collide with a
     // concurrent sale, so there's no retry-on-P2002 loop here anymore.
@@ -1629,6 +1594,7 @@ export const transactionsService = {
             // and that field is itself only ever set for offline sales); a
             // live online checkout leaves this null same as before.
             deviceId: data.isOfflineTransaction ? (data.deviceId ?? null) : null,
+            idempotencyKey: data.idempotencyKey ?? null,
             items: resolvedItems.map((item, itemIndex) => ({
               id: item.id,
               productId: item.productId,
@@ -1661,21 +1627,17 @@ export const transactionsService = {
           tx,
         ));
 
-        const { effects, deductionStatus } = await deductInventoryForSale(
-          tx,
-          data.branchId,
-          txCreated.id,
-          resolvedItems.map((item) => ({ lines: item.deductionLines })),
-          diag,
+        // POS-PERF-P15 — no ledger write, audit row, or status overlay here
+        // anymore: txCreated's inventoryDeductionStatus is already 'pending'
+        // (the column's own default) and stays that way until the
+        // background worker actually deducts it. reserveStockForSale only
+        // reserves the quantity and writes the durable job row.
+        await timeStage(diag, 'stockReservation', () =>
+          reserveStockForSale(tx, data.branchId, txCreated.id, resolvedItems.map((item) => ({ lines: item.deductionLines }))),
         );
 
-        // txCreated is the original INSERT snapshot (inventoryDeductionStatus
-        // still "pending") — deductInventoryForSale's status update runs
-        // strictly after it in this same transaction, so overlay the actual
-        // persisted value here rather than returning the stale snapshot
-        // (Task 209.47E).
         const callbackReturnedAt = performance.now();
-        return { txCreated: { ...txCreated, inventoryDeductionStatus: deductionStatus }, effects, callbackReturnedAt };
+        return { txCreated, callbackReturnedAt };
       }, {
         // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
         // un-configured defaults (2s maxWait, 5s timeout) reliably trip
@@ -1687,9 +1649,18 @@ export const transactionsService = {
         timeout: config.posTransaction.timeoutMs,
       });
       created = result.txCreated;
-      postCommitEffects = result.effects;
       if (diag.enabled) diag.mark('callbackCompletionToResolution', performance.now() - result.callbackReturnedAt);
     } catch (error) {
+      // POS-PERF-P15 — race loser: two concurrent requests for the same
+      // idempotencyKey both missed the fast-path lookup above before either
+      // committed; this one lost the unique-index race on insert. The
+      // winner's row is the one true result of this checkout attempt — fetch
+      // and replay it instead of surfacing a spurious duplicate-key error
+      // (or, worse, retrying and creating a second sale).
+      if (data.idempotencyKey && isIdempotencyKeyConflict(error)) {
+        const winner = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
+        if (winner) return toTransactionResponse(winner as TransactionRow);
+      }
       // P2028 = "Transaction API error: Transaction already closed" —
       // fired when the interactive transaction exceeds maxWait/timeout
       // (e.g. transient remote-DB latency or connection-pool contention).
@@ -1752,29 +1723,17 @@ export const transactionsService = {
       });
     }
 
-    // Task 209.56E / perf follow-up — postCommitEffects (per-ingredient
-    // INVENTORY_SALE_DEDUCTED audit rows + low-stock notifications) and the
-    // TRANSACTION_CREATED audit log write are pure post-commit bookkeeping:
-    // the sale and inventory deduction already committed in the
-    // $transaction above, and neither recordAuditLog (middleware/
-    // audit-log.ts — catches and logs its own errors, never throws) nor
-    // enqueueRawNotificationJob (returns Promise.resolve() immediately,
-    // processes in the background) can ever reject or feed a value back
-    // into this response. There is nothing here for the HTTP response to
-    // safely wait on. Previously these were `await`ed (individually
-    // measured ~1.2s+ each on a cart with several distinct ingredients,
-    // since recordAuditLog is 2 sequential DB round trips per call and the
-    // effects loop runs one per distinct ingredient in the cart to
-    // preserve the audit hash chain's write order) — fired without
-    // `await` here instead, same fire-and-forget shape already used below
-    // for the shadow BOM comparison, so a multi-ingredient cart no longer
-    // pays checkout latency for audit bookkeeping that has zero bearing on
-    // whether the sale or inventory deduction succeeded.
-    void (async () => {
-      for (const effect of postCommitEffects) {
-        await effect();
-      }
-    })();
+    // Task 209.56E / perf follow-up — the TRANSACTION_CREATED audit log
+    // write is pure post-commit bookkeeping: the sale (and its inventory
+    // reservation) already committed in the $transaction above, and
+    // recordAuditLog (middleware/audit-log.ts — catches and logs its own
+    // errors, never throws) can never reject or feed a value back into this
+    // response. There is nothing here for the HTTP response to safely wait
+    // on. POS-PERF-P15 — the per-ingredient INVENTORY_SALE_DEDUCTED audit
+    // rows and low-stock notifications this comment used to also cover
+    // moved entirely into the background worker's own post-commit effects
+    // (inventory-deduction.service.ts), since the deduction itself no
+    // longer happens on this path at all.
     void recordAuditLog({
       action: 'TRANSACTION_CREATED',
       entityType: 'transaction',
@@ -2021,7 +1980,7 @@ export const transactionsService = {
           }
           throw new TransactionError('TRANSACTION_ALREADY_VOIDED', 'This transaction has already been voided', 409);
         }
-        await reverseInventoryForTransaction(
+        await reverseOrCancelInventoryForTransaction(
           tx,
           transaction.branchId,
           transaction.id,
@@ -2140,7 +2099,7 @@ export const transactionsService = {
           }
           throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
         }
-        await reverseInventoryForTransaction(
+        await reverseOrCancelInventoryForTransaction(
           tx,
           transaction.branchId,
           transaction.id,

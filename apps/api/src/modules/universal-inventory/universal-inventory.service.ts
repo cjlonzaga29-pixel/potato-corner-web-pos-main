@@ -920,7 +920,16 @@ export const universalInventoryService = {
       // Validated against the locked read before writing — the advisory lock
       // held since lockAndGetStock guarantees no concurrent writer can move
       // this row between this check and the atomic increment below, so the
-      // projected value is exact, not just an estimate.
+      // projected value is exact, not just an estimate. POS-PERF-P15: an
+      // outgoing adjustment (negative delta) must not drive quantityOnHand
+      // below what's already reserved for a pending sale's inventory
+      // deduction job — that reservation is itself the "existing
+      // availability checks and other inventory writers respect it"
+      // invariant for InventoryStock.quantityReserved. An incoming
+      // adjustment (positive delta) never needs this check.
+      if (data.quantityDelta < 0 && quantityBefore.minus(stock.quantityReserved).plus(data.quantityDelta).lessThan(0)) {
+        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take available stock below zero (some stock is reserved for pending sales)', 409);
+      }
       if (quantityBefore.plus(data.quantityDelta).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
       }
@@ -995,6 +1004,12 @@ export const universalInventoryService = {
       }
       const quantityBefore = stock.quantityOnHand;
       // Same locked-read-then-atomic-write reasoning as adjustStock above.
+      // POS-PERF-P15: waste must not consume stock already reserved for a
+      // pending sale's inventory deduction job (see the same check in
+      // adjustStock above).
+      if (quantityBefore.minus(stock.quantityReserved).minus(baseQuantity).lessThan(0)) {
+        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds available stock (some stock is reserved for pending sales)', 409);
+      }
       if (quantityBefore.minus(baseQuantity).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
       }
@@ -1112,6 +1127,12 @@ export const universalInventoryService = {
 
       const outBefore = sourceStock.quantityOnHand;
       // Same locked-read-then-atomic-write reasoning as adjustStock above.
+      // POS-PERF-P15: a transfer-out must not move stock already reserved
+      // for a pending sale's inventory deduction job at the source branch
+      // (see the same check in adjustStock above).
+      if (outBefore.minus(sourceStock.quantityReserved).minus(data.quantity).lessThan(0)) {
+        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Transfer quantity exceeds available stock at the source branch (some stock is reserved for pending sales)', 409);
+      }
       if (outBefore.minus(data.quantity).lessThan(0)) {
         throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Transfer quantity exceeds current stock at the source branch', 409);
       }

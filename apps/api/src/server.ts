@@ -7,6 +7,7 @@ import { createSocketServer } from './socket/socket.server.js';
 import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 import { scheduleEvery } from './lib/daily-scheduler.js';
+import { createInventoryDeductionWorker } from './modules/inventory-deduction/inventory-deduction.worker.js';
 import { authRepository } from './modules/auth/auth.repository.js';
 import { prisma } from './lib/prisma.js';
 import {
@@ -65,6 +66,17 @@ async function start(): Promise<void> {
 
   scheduleEvery(60 * 60 * 1000, () => authRepository.pruneRotationCache());
   console.log('Hourly refresh-token rotation cache cleanup scheduled.');
+
+  // POS-PERF-P15 — unconditional, not gated behind a feature flag: a
+  // checkout that commits with a pending InventoryDeductionJob must always
+  // have something claiming and deducting it, independent of any client
+  // action. Started once per API process; every instance polls the same
+  // durable table, so this is safe to run on multiple instances/replicas
+  // (inventory-deduction.repository.ts#claimBatch's claim-token guard is
+  // exactly what makes that safe).
+  const inventoryDeductionWorker = createInventoryDeductionWorker();
+  inventoryDeductionWorker.start();
+  console.log('Inventory deduction worker started (polling every 2s).');
 
   const httpServer = createServer(app);
   createSocketServer(httpServer);

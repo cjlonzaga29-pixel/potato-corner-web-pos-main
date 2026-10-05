@@ -174,6 +174,18 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * POS-PERF-P10 -- off by default, independent of
+   * CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED above. When true, runs one bounded,
+   * read-only SELECT 1 sequence through the shared Prisma client right after
+   * the API starts listening, to measure what a trivial database round trip
+   * costs outside of any checkout request. Never runs per-sale and never
+   * repeats -- see lib/db-round-trip-diagnostics.ts.
+   */
+  DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 /**
@@ -271,6 +283,7 @@ export const config = {
     timeoutMs: env.PRISMA_TRANSACTION_TIMEOUT_MS,
   },
   checkoutLatencyDiagnosticsEnabled: env.CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED,
+  databaseRoundTripDiagnosticsEnabled: env.DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED,
 } as const;
 
 /**

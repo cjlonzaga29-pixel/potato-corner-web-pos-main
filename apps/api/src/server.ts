@@ -8,6 +8,8 @@ import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 import { scheduleEvery } from './lib/daily-scheduler.js';
 import { authRepository } from './modules/auth/auth.repository.js';
+import { prisma } from './lib/prisma.js';
+import { extractSafeConnectionMetadata, maybeRunDatabaseRoundTripDiagnostics } from './lib/db-round-trip-diagnostics.js';
 
 // Importing `config` above already validated every required env var (it
 // fails fast with a clear field-level error if anything is missing) —
@@ -65,6 +67,18 @@ async function start(): Promise<void> {
   httpServer.listen(config.port, () => {
     console.log(`API listening on http://localhost:${config.port} [env: ${config.nodeEnv}]`);
     console.log(`checkoutLatencyDiagnosticsEnabled=${config.checkoutLatencyDiagnosticsEnabled}`);
+    console.log(`databaseRoundTripDiagnosticsEnabled=${config.databaseRoundTripDiagnosticsEnabled}`);
+
+    // Fire-and-forget: must never delay readiness or crash the already-listening
+    // API. maybeRunDatabaseRoundTripDiagnostics never throws, but .catch is kept
+    // as defense-in-depth against an unexpected synchronous/async failure.
+    void maybeRunDatabaseRoundTripDiagnostics(
+      config.databaseRoundTripDiagnosticsEnabled,
+      prisma,
+      extractSafeConnectionMetadata(config.database.url),
+    ).catch(() => {
+      console.error(`[db-round-trip-diagnostics] unexpected diagnostic failure (sanitized)`);
+    });
   });
 }
 

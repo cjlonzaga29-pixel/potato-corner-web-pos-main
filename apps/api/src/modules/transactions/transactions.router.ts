@@ -26,6 +26,7 @@ import { requireActiveEmployee } from '../../middleware/require-active-employee.
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
+import { config } from '../../config/index.js';
 
 const router: Router = Router();
 
@@ -106,12 +107,16 @@ router.post(
   // middlewareAndGuards diagnostic stage (see transactions.service.ts
   // createTransaction). Stored on res.locals (request-scoped, not a module
   // global) and only ever read, never used for any auth/validation decision,
-  // so this can't change guard behavior or ordering.
+  // so this can't change guard behavior or ordering. Gated on the same flag
+  // as the rest of the diagnostics so a disabled deployment never takes a
+  // performance.now() call on this hot path.
   (_req: Request, res: Response, next: NextFunction) => {
     // res.locals is always present on a real Express Response; guarded here
     // only because this lightweight timing shim must never be able to throw
     // and break the request.
-    (res.locals ??= {}).diagMiddlewareStartedAt = performance.now();
+    if (config.checkoutLatencyDiagnosticsEnabled) {
+      (res.locals ??= {}).diagMiddlewareStartedAt = performance.now();
+    }
     next();
   },
   authenticate,
@@ -185,7 +190,7 @@ router.post(
           deviceId: getDeviceIdHeader(req),
         },
         req.ip ?? null,
-        typeof res.locals.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
+        typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
       );
       // console.warn, not .log — this module's eslint config only allows warn/error.
       console.warn('POS checkout completed', { branchId, durationMs: Math.round(performance.now() - checkoutStartedAt) });

@@ -1447,6 +1447,24 @@ describe('transactionsService.createTransaction — POS-PERF-P2R opt-in checkout
 
     warnSpy.mockRestore();
   });
+
+  it('enabling diagnostics never changes the returned transaction payload itself', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    mutableConfig.checkoutLatencyDiagnosticsEnabled = false;
+    const disabledResult = await transactionsService.createTransaction(baseInput, null, 7.4);
+
+    mutableConfig.checkoutLatencyDiagnosticsEnabled = true;
+    const enabledResult = await transactionsService.createTransaction(baseInput, null, 7.4);
+
+    // Every mock involved (createTransaction, nextCounterValue, etc.) is
+    // deterministic, so the only thing diag.enabled should ever be able to
+    // affect is which console.warn calls fire — never the resolved value
+    // the handler returns to the router/client.
+    expect(enabledResult).toEqual(disabledResult);
+
+    warnSpy.mockRestore();
+  });
 });
 
 // Task 209.47E — createTransaction previously returned repository

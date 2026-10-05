@@ -187,7 +187,7 @@ describe('POST / — happy path', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null, expect.any(Number));
+    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null, undefined);
   });
 
   it('a staff checkout with no shift_id in the body at all still succeeds — shiftGuard resolves it server-side', async () => {
@@ -202,7 +202,7 @@ describe('POST / — happy path', () => {
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null, expect.any(Number));
+    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: SHIFT_1 }), null, undefined);
   });
 
   it('staff not clocked in at the branch is blocked by shiftGuard before reaching the service — 403 NOT_CLOCKED_IN', async () => {
@@ -233,7 +233,7 @@ describe('POST / — happy path', () => {
 
     expect(cashService.autoOpenShift).toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: AUTO_SHIFT }), null, expect.any(Number));
+    expect(transactionsService.createTransaction).toHaveBeenCalledWith(expect.objectContaining({ shiftId: AUTO_SHIFT }), null, undefined);
   });
 
   it('supervisor/super_admin are exempt from shiftGuard', async () => {

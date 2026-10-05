@@ -14,6 +14,7 @@ import {
   maybeRunDatabaseRoundTripDiagnostics,
   scheduleSettledDatabaseRoundTripDiagnostics,
 } from './lib/db-round-trip-diagnostics.js';
+import { schedulePoolerComparison } from './lib/pooler-comparison-diagnostics.js';
 
 // Importing `config` above already validated every required env var (it
 // fails fast with a clear field-level error if anything is missing) —
@@ -72,13 +73,22 @@ async function start(): Promise<void> {
     console.log(`API listening on http://localhost:${config.port} [env: ${config.nodeEnv}]`);
     console.log(`checkoutLatencyDiagnosticsEnabled=${config.checkoutLatencyDiagnosticsEnabled}`);
     console.log(`databaseRoundTripDiagnosticsEnabled=${config.databaseRoundTripDiagnosticsEnabled}`);
+    console.log(`poolerComparisonEnabled=${config.poolerComparisonEnabled}`);
+
+    // POS-PERF-P13: the round-trip diagnostics' startup/settled probes and
+    // the pooler comparison both run bounded sequences against dedicated
+    // connections around the same ~60s post-listen window. Suppressing the
+    // former whenever the comparison is enabled keeps the two from
+    // competing for pool capacity at the same time -- it does not disable
+    // the comparison's own, separate diagnostics.
+    const roundTripDiagnosticsEnabled = config.databaseRoundTripDiagnosticsEnabled && !config.poolerComparisonEnabled;
 
     // Fire-and-forget: must never delay readiness or crash the already-listening
     // API. maybeRunDatabaseRoundTripDiagnostics never throws, but .catch is kept
     // as defense-in-depth against an unexpected synchronous/async failure.
     const connectionMetadata = extractSafeConnectionMetadata(config.database.url);
     const startupProbeOutcome = maybeRunDatabaseRoundTripDiagnostics(
-      config.databaseRoundTripDiagnosticsEnabled,
+      roundTripDiagnosticsEnabled,
       prisma,
       connectionMetadata,
     ).catch((): undefined => {
@@ -91,11 +101,16 @@ async function start(): Promise<void> {
     // compared. Skipped entirely (inside scheduleSettledDatabaseRoundTripDiagnostics)
     // if the startup run left a query outstanding past its timeout.
     scheduleSettledDatabaseRoundTripDiagnostics(
-      config.databaseRoundTripDiagnosticsEnabled,
+      roundTripDiagnosticsEnabled,
       prisma,
       connectionMetadata,
       startupProbeOutcome,
     );
+
+    // POS-PERF-P13: one bounded transaction-vs-session pooler comparison,
+    // ~60s after listening, through two dedicated diagnostic clients. Never
+    // touches `prisma` (the shared client) or DATABASE_URL itself.
+    schedulePoolerComparison(config.poolerComparisonEnabled, config.database.url, config.poolerComparisonSessionUrl);
   });
 }
 

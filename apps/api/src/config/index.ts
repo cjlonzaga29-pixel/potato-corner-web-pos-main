@@ -186,6 +186,26 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * POS-PERF-P13 -- off by default. When true, runs one bounded, read-only
+   * comparison of trivial-query latency between the existing transaction
+   * pooler (DATABASE_URL) and the session pooler (DATABASE_URL_SESSION_COMPARISON)
+   * from two dedicated 1-connection diagnostic clients, roughly 60s after
+   * startup. Never touches the shared Prisma client or DATABASE_URL. If this
+   * is true but DATABASE_URL_SESSION_COMPARISON is unset, the comparison is
+   * skipped (logged, not a boot failure) -- see lib/pooler-comparison-diagnostics.ts.
+   */
+  POOLER_COMPARISON_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * POS-PERF-P13 -- optional, diagnostic-only. The officially supported
+   * Supabase session-pooler connection string, used solely by the dedicated
+   * comparison client above. Never read by the application's runtime
+   * queries and never used as a Prisma datasource in schema.prisma.
+   */
+  DATABASE_URL_SESSION_COMPARISON: z.string().optional(),
 });
 
 /**
@@ -284,6 +304,8 @@ export const config = {
   },
   checkoutLatencyDiagnosticsEnabled: env.CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED,
   databaseRoundTripDiagnosticsEnabled: env.DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED,
+  poolerComparisonEnabled: env.POOLER_COMPARISON_ENABLED,
+  poolerComparisonSessionUrl: env.DATABASE_URL_SESSION_COMPARISON,
 } as const;
 
 /**

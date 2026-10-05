@@ -64,6 +64,7 @@ async function start(): Promise<void> {
 
   httpServer.listen(config.port, () => {
     console.log(`API listening on http://localhost:${config.port} [env: ${config.nodeEnv}]`);
+    console.log(`checkoutLatencyDiagnosticsEnabled=${config.checkoutLatencyDiagnosticsEnabled}`);
   });
 }
 

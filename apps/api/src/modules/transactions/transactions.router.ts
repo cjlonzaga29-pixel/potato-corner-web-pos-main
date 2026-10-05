@@ -102,6 +102,18 @@ interface CreateTransactionBody {
 // shift; supervisor/super_admin are exempt, per shift-guard.ts).
 router.post(
   '/',
+  // POS-PERF-P2R — records the request's entry time for the opt-in
+  // middlewareAndGuards diagnostic stage (see transactions.service.ts
+  // createTransaction). Stored on res.locals (request-scoped, not a module
+  // global) and only ever read, never used for any auth/validation decision,
+  // so this can't change guard behavior or ordering.
+  (_req: Request, res: Response, next: NextFunction) => {
+    // res.locals is always present on a real Express Response; guarded here
+    // only because this lightweight timing shim must never be able to throw
+    // and break the request.
+    (res.locals ??= {}).diagMiddlewareStartedAt = performance.now();
+    next();
+  },
   authenticate,
   allRoles,
   requireActiveEmployee,
@@ -173,6 +185,7 @@ router.post(
           deviceId: getDeviceIdHeader(req),
         },
         req.ip ?? null,
+        typeof res.locals.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
       );
       // console.warn, not .log — this module's eslint config only allows warn/error.
       console.warn('POS checkout completed', { branchId, durationMs: Math.round(performance.now() - checkoutStartedAt) });

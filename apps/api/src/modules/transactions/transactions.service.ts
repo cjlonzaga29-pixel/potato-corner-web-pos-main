@@ -54,6 +54,7 @@ import { attachCostToDeductionLines } from '../../lib/cogs.js';
 import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
 import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
+import { createCheckoutLatencyRecorder, timeStage, type CheckoutLatencyRecorder } from '../../lib/checkout-latency-diagnostics.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -909,6 +910,7 @@ async function deductInventoryForSale(
   branchId: string,
   transactionId: string,
   items: { lines: BomDeductionLine[] }[],
+  diag: CheckoutLatencyRecorder = createCheckoutLatencyRecorder(false),
 ): Promise<{ effects: Array<() => Promise<void>>; deductionStatus: InventoryDeductionStatus }> {
   const totals = new Map<string, { quantity: number; baseUnitId: string }>();
   for (const item of items) {
@@ -940,18 +942,22 @@ async function deductInventoryForSale(
   // universal-inventory.repository.ts's lockAndGetStock) so a sale
   // deduction and a manual stock operation against the same branch+item
   // always contend on the same advisory lock.
-  for (const inventoryItemId of inventoryItemIds) {
-    const lockId = inventoryStockLockId(branchId, inventoryItemId);
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
-  }
+  await timeStage(diag, 'advisoryLocks', async () => {
+    for (const inventoryItemId of inventoryItemIds) {
+      const lockId = inventoryStockLockId(branchId, inventoryItemId);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+    }
+  });
 
   // One batched read for every InventoryStock row instead of one
   // findUnique per ingredient — safe to treat as a single snapshot because
   // every row's advisory lock is already held above, so nothing else can
   // change them out from under this pass.
-  const stockRows = await tx.inventoryStock.findMany({
-    where: { branchId, inventoryItemId: { in: inventoryItemIds } },
-  });
+  const stockRows = await timeStage(diag, 'stockRead', () =>
+    tx.inventoryStock.findMany({
+      where: { branchId, inventoryItemId: { in: inventoryItemIds } },
+    }),
+  );
   const stockByItemId = new Map(stockRows.map((row) => [row.inventoryItemId, row]));
 
   // Validate every row before writing any of them — a shortfall anywhere in
@@ -978,6 +984,7 @@ async function deductInventoryForSale(
   const effects: Array<() => Promise<void>> = [];
   const movementInputs: Parameters<typeof universalInventoryRepository.createStockMovements>[0] = [];
 
+  const stockUpdateStartedAt = diag.enabled ? performance.now() : 0;
   for (const [inventoryItemId, { quantity, baseUnitId }] of sortedEntries) {
     const stock = stockByItemId.get(inventoryItemId);
     if (!stock) continue; // unreachable — every row was validated above
@@ -1049,10 +1056,12 @@ async function deductInventoryForSale(
     }
   }
 
+  if (diag.enabled) diag.mark('stockUpdates', performance.now() - stockUpdateStartedAt);
+
   // One batched insert for every SALE movement row instead of one `create`
   // per ingredient.
   if (movementInputs.length > 0) {
-    await universalInventoryRepository.createStockMovements(movementInputs, tx);
+    await timeStage(diag, 'ledgerWrites', () => universalInventoryRepository.createStockMovements(movementInputs, tx));
   }
 
   // Read back the row this same write just persisted (rather than assuming
@@ -1060,7 +1069,9 @@ async function deductInventoryForSale(
   // state — see transactions.service.ts createTransaction, which discarded
   // this update and kept returning the pre-deduction "pending" INSERT
   // snapshot instead (Task 209.47E).
-  const updated = await inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx);
+  const updated = await timeStage(diag, 'deductionStatusWrite', () =>
+    inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx),
+  );
 
   return { effects, deductionStatus: updated.inventoryDeductionStatus };
 }
@@ -1425,7 +1436,16 @@ export const transactionsService = {
     };
   },
 
-  async createTransaction(data: CreateTransactionData, ipAddress: string | null) {
+  /**
+   * middlewareGuardsMs (POS-PERF-P2R) — elapsed time the router measured for
+   * its own middleware chain (authenticate/authorize/requireActiveEmployee/
+   * requirePasswordChange/branchGuard/shiftGuard/validate) before this
+   * handler was invoked at all. Passed in rather than measured here because
+   * createTransaction has no visibility into when the request actually
+   * entered Express — purely additive to the diagnostics snapshot below,
+   * never read for any control-flow decision.
+   */
+  async createTransaction(data: CreateTransactionData, ipAddress: string | null, middlewareGuardsMs?: number) {
     // Perf follow-up — coarse, additive stage timing only, at boundaries
     // that already exist as isolated `await` expressions (a variable set
     // immediately before and read immediately after an unchanged await).
@@ -1435,15 +1455,24 @@ export const transactionsService = {
     // data is captured, only durations.
     const handlerStartedAt = performance.now();
     let discountCalcMs = 0;
+    // POS-PERF-P2R — opt-in, finer-grained stage breakdown on top of the
+    // always-on timing above. Disabled by default (config.
+    // checkoutLatencyDiagnosticsEnabled); see lib/checkout-latency-diagnostics.ts.
+    // Threaded explicitly as a parameter (never a module-level global), so
+    // two concurrent checkouts never share or race on each other's stages.
+    const diag = createCheckoutLatencyRecorder(config.checkoutLatencyDiagnosticsEnabled);
+    if (diag.enabled && middlewareGuardsMs !== undefined) diag.mark('middlewareAndGuards', middlewareGuardsMs);
 
     // Task 209.3 — branch and shift are looked up by independent ids
     // (branchId vs shiftId) with no data dependency between them; running
     // them concurrently instead of back-to-back saves one round trip off
     // every checkout's critical path without changing either validation.
-    const [branch, shift] = await Promise.all([
-      transactionsRepository.findBranch(data.branchId),
-      cashRepository.findShiftById(data.shiftId),
-    ]);
+    const [branch, shift] = await timeStage(diag, 'branchShiftLookup', () =>
+      Promise.all([
+        transactionsRepository.findBranch(data.branchId),
+        cashRepository.findShiftById(data.shiftId),
+      ]),
+    );
     if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
 
     if (!shift || shift.branchId !== data.branchId) {
@@ -1559,9 +1588,11 @@ export const transactionsService = {
     // Cost is captured at checkout time (current InventoryStock/InventoryItem
     // unit cost) so later COGS reads don't have to re-estimate from
     // possibly-since-changed cost — see lib/cogs.ts.
-    const costedItems = await attachCostToDeductionLines(
-      data.branchId,
-      resolvedItems.flatMap((item) => item.deductionLines),
+    const costedItems = await timeStage(diag, 'costLookup', () =>
+      attachCostToDeductionLines(
+        data.branchId,
+        resolvedItems.flatMap((item) => item.deductionLines),
+      ),
     );
     let costedLineCursor = 0;
     const costedDeductionLinesByItem = resolvedItems.map((item) => {
@@ -1575,11 +1606,13 @@ export const transactionsService = {
     // Allocated once via the atomic counter (generateReceiptNumber) — unlike
     // the old COUNT-then-increment approach, this can never collide with a
     // concurrent sale, so there's no retry-on-P2002 loop here anymore.
-    const receiptNumber = await generateReceiptNumber(branch.code);
+    const receiptNumber = await timeStage(diag, 'receiptAllocation', () => generateReceiptNumber(branch.code));
     const dbTransactionStartedAt = performance.now();
+    const transactionInvokedAt = performance.now();
     try {
       const result = await prisma.$transaction(async (tx) => {
-        const txCreated = await transactionsRepository.createTransaction(
+        if (diag.enabled) diag.mark('transactionInvocationToCallbackEntry', performance.now() - transactionInvokedAt);
+        const txCreated = await timeStage(diag, 'saleInsert', () => transactionsRepository.createTransaction(
           {
             branchId: data.branchId,
             shiftId: data.shiftId,
@@ -1642,13 +1675,14 @@ export const transactionsService = {
             })),
           },
           tx,
-        );
+        ));
 
         const { effects, deductionStatus } = await deductInventoryForSale(
           tx,
           data.branchId,
           txCreated.id,
           resolvedItems.map((item) => ({ lines: item.deductionLines })),
+          diag,
         );
 
         // txCreated is the original INSERT snapshot (inventoryDeductionStatus
@@ -1656,7 +1690,8 @@ export const transactionsService = {
         // strictly after it in this same transaction, so overlay the actual
         // persisted value here rather than returning the stale snapshot
         // (Task 209.47E).
-        return { txCreated: { ...txCreated, inventoryDeductionStatus: deductionStatus }, effects };
+        const callbackReturnedAt = performance.now();
+        return { txCreated: { ...txCreated, inventoryDeductionStatus: deductionStatus }, effects, callbackReturnedAt };
       }, {
         // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
         // un-configured defaults (2s maxWait, 5s timeout) reliably trip
@@ -1669,6 +1704,7 @@ export const transactionsService = {
       });
       created = result.txCreated;
       postCommitEffects = result.effects;
+      if (diag.enabled) diag.mark('callbackCompletionToResolution', performance.now() - result.callbackReturnedAt);
     } catch (error) {
       // P2028 = "Transaction API error: Transaction already closed" —
       // fired when the interactive transaction exceeds maxWait/timeout
@@ -1714,6 +1750,23 @@ export const transactionsService = {
       responseSerializeMs: Math.round(responseSerializeMs),
       requestToResponseReadyMs: Math.round(performance.now() - handlerStartedAt),
     });
+
+    // POS-PERF-P2R — opt-in finer-grained breakdown, gated on diag.enabled so
+    // it is a complete no-op (not even this console.warn call) unless
+    // CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED=true. Same no-sensitive-data rule
+    // as the stage timing log above: correlation id, branchId, cart-line /
+    // distinct-ingredient counts, and durations only.
+    if (diag.enabled) {
+      const distinctIngredientCount = new Set(resolvedItems.flatMap((item) => item.deductionLines.map((line) => line.inventoryItemId))).size;
+      console.warn('POS checkout latency diagnostics', {
+        correlationId: diag.correlationId,
+        transactionId: created.id,
+        branchId: data.branchId,
+        cartLineCount: resolvedItems.length,
+        distinctIngredientCount,
+        stages: diag.snapshot(),
+      });
+    }
 
     // Task 209.56E / perf follow-up — postCommitEffects (per-ingredient
     // INVENTORY_SALE_DEDUCTED audit rows + low-stock notifications) and the

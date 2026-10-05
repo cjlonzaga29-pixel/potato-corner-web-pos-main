@@ -159,6 +159,21 @@ const envSchema = z.object({
   SHADOW_BOM_DEDUCTION_BRANCH_IDS: shadowBomDeductionBranchIdsSchema,
   PRISMA_TRANSACTION_MAX_WAIT_MS: posTransactionMaxWaitMsSchema,
   PRISMA_TRANSACTION_TIMEOUT_MS: posTransactionTimeoutMsSchema,
+  /**
+   * POS-PERF-P2R -- off by default. When true, createTransaction records a
+   * finer-grained, server-generated-correlation-ID breakdown of its own
+   * critical path (branch/shift lookup, cost lookup, receipt allocation,
+   * sale insert, advisory locks, stock read/update, ledger writes, etc.) and
+   * emits it as a single structured console.warn alongside the existing
+   * always-on "POS checkout stage timing" log. Never logs cart contents,
+   * payment data, or SQL -- durations, a correlation id, and item/ingredient
+   * counts only. Disabled, this adds a single boolean check per stage with
+   * no extra Date/performance.now() calls.
+   */
+  CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 /**
@@ -255,6 +270,7 @@ export const config = {
     maxWaitMs: env.PRISMA_TRANSACTION_MAX_WAIT_MS,
     timeoutMs: env.PRISMA_TRANSACTION_TIMEOUT_MS,
   },
+  checkoutLatencyDiagnosticsEnabled: env.CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED,
 } as const;
 
 /**

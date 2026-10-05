@@ -126,6 +126,7 @@ vi.mock('../../config/index.js', () => {
     shadowBomDeductionEnabled: boolean;
     shadowBomDeductionBranchIds: string[];
     posTransaction: { maxWaitMs: number; timeoutMs: number };
+    checkoutLatencyDiagnosticsEnabled: boolean;
   } = {
     shadowBomDeductionEnabled: false,
     shadowBomDeductionBranchIds: [],
@@ -133,6 +134,10 @@ vi.mock('../../config/index.js', () => {
     // posTransactionTimeoutMsSchema) so the "threads the configured timeout
     // through" test below stays in sync with production behavior.
     posTransaction: { maxWaitMs: 10_000, timeoutMs: 30_000 },
+    // POS-PERF-P2R — mirrors CHECKOUT_LATENCY_DIAGNOSTICS_ENABLED's real
+    // default (off) so every pre-existing test behaves exactly as before;
+    // the dedicated describe block below flips it per-test.
+    checkoutLatencyDiagnosticsEnabled: false,
   };
   return {
     config,
@@ -225,7 +230,11 @@ const { config } = await import('../../config/index.js');
 // at runtime for the mocked module (a plain object), but tsc still checks
 // assignments against the real declaration. This mutable view lets tests
 // flip the mocked flag/branch list per-case.
-const mutableConfig = config as { shadowBomDeductionEnabled: boolean; shadowBomDeductionBranchIds: string[] };
+const mutableConfig = config as {
+  shadowBomDeductionEnabled: boolean;
+  shadowBomDeductionBranchIds: string[];
+  checkoutLatencyDiagnosticsEnabled: boolean;
+};
 const { shadowBomDeductionService, computeBomDeduction } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { settingsService } = await import('../settings/settings.service.js');
@@ -376,6 +385,7 @@ beforeEach(() => {
   inventoryStockLevels = {};
   mutableConfig.shadowBomDeductionEnabled = false;
   mutableConfig.shadowBomDeductionBranchIds = [];
+  mutableConfig.checkoutLatencyDiagnosticsEnabled = false;
   vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
   vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
   // Task 209.41 — a CASH refund requires a currently active processing
@@ -1348,6 +1358,94 @@ describe('transactionsService.createTransaction — side effects', () => {
     expect(notifyBranch).toHaveBeenCalledWith('branch-1', 'transaction:completed', result);
     expect(notifySuperAdmin).toHaveBeenCalledWith('transaction:completed', result);
     expect(transactionResponseSchema.safeParse(result).success).toBe(true);
+  });
+});
+
+describe('transactionsService.createTransaction — POS-PERF-P2R opt-in checkout latency diagnostics', () => {
+  it('disabled by default: emits no diagnostics log and the response is unaffected', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await transactionsService.createTransaction(baseInput, null);
+
+    expect(result.id).toBeTruthy();
+    const diagCalls = warnSpy.mock.calls.filter((call) => call[0] === 'POS checkout latency diagnostics');
+    expect(diagCalls).toHaveLength(0);
+    // The always-on coarse stage-timing log is unaffected either way.
+    expect(warnSpy.mock.calls.some((call) => call[0] === 'POS checkout stage timing')).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('enabled: emits exactly one diagnostics log with a correlation id, counts, and a stage breakdown — never cart/payment contents', async () => {
+    mutableConfig.checkoutLatencyDiagnosticsEnabled = true;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await transactionsService.createTransaction(baseInput, null);
+    expect(result.id).toBeTruthy();
+
+    const diagCalls = warnSpy.mock.calls.filter((call) => call[0] === 'POS checkout latency diagnostics');
+    expect(diagCalls).toHaveLength(1);
+    const payload = diagCalls[0]?.[1] as Record<string, unknown>;
+
+    expect(typeof payload.correlationId).toBe('string');
+    expect(payload.correlationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(payload.branchId).toBe('branch-1');
+    expect(payload.cartLineCount).toBe(1);
+    expect(typeof payload.distinctIngredientCount).toBe('number');
+
+    // No cart contents, prices, payment data, or SQL — only the fields
+    // asserted above plus a numeric stage map.
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toMatch(/cashTendered|paymentMethod|gcash|productId|productVariantId|SELECT |INSERT /i);
+
+    const stages = payload.stages as Record<string, number>;
+    expect(stages).toBeTypeOf('object');
+    for (const [stage, durationMs] of Object.entries(stages)) {
+      expect(typeof stage).toBe('string');
+      expect(durationMs).toBeGreaterThanOrEqual(0);
+    }
+    // The stages this phase instruments beyond the pre-existing coarse log.
+    expect(Object.keys(stages)).toEqual(
+      expect.arrayContaining(['branchShiftLookup', 'costLookup', 'receiptAllocation', 'saleInsert', 'advisoryLocks', 'stockRead', 'stockUpdates']),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('enabled: two concurrent checkouts each get their own correlation id, never sharing or overwriting the other\'s stage map', async () => {
+    mutableConfig.checkoutLatencyDiagnosticsEnabled = true;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await Promise.all([transactionsService.createTransaction(baseInput, null), transactionsService.createTransaction(baseInput, null)]);
+
+    const diagCalls = warnSpy.mock.calls.filter((call) => call[0] === 'POS checkout latency diagnostics');
+    expect(diagCalls).toHaveLength(2);
+    const ids = diagCalls.map((call) => (call[1] as Record<string, unknown>).correlationId);
+    expect(new Set(ids).size).toBe(2);
+
+    warnSpy.mockRestore();
+  });
+
+  it('disabled: passing a middlewareGuardsMs value is accepted but never surfaces anywhere (no-op)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await transactionsService.createTransaction(baseInput, null, 7.4);
+
+    expect(result.id).toBeTruthy();
+    expect(warnSpy.mock.calls.some((call) => call[0] === 'POS checkout latency diagnostics')).toBe(false);
+    warnSpy.mockRestore();
+  });
+
+  it('enabled: a middlewareGuardsMs value from the router is folded into the stage breakdown as middlewareAndGuards', async () => {
+    mutableConfig.checkoutLatencyDiagnosticsEnabled = true;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await transactionsService.createTransaction(baseInput, null, 7.4);
+
+    const diagCalls = warnSpy.mock.calls.filter((call) => call[0] === 'POS checkout latency diagnostics');
+    const stages = (diagCalls[0]?.[1] as Record<string, unknown>).stages as Record<string, number>;
+    expect(stages.middlewareAndGuards).toBe(7);
+
+    warnSpy.mockRestore();
   });
 });
 

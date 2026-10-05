@@ -56,7 +56,7 @@ export function extractSafeConnectionMetadata(databaseUrl: string): SafeConnecti
  */
 async function raceProbe(prisma: PrismaClient, timeoutMs: number): Promise<number> {
   const startedAt = performance.now();
-  let timeoutHandle: ReturnType<typeof setTimeout>;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error('probe timed out waiting for a response')), timeoutMs);
   });

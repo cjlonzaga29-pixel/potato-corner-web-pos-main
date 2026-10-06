@@ -9,6 +9,8 @@ import type {
   UpdateDiscountPolicyInput,
   WorkHoursPolicyResponse,
   UpdateWorkHoursPolicyInput,
+  WriteGateResponse,
+  UpdateWriteGateInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
@@ -91,6 +93,44 @@ export function useUpdateWorkHoursPolicy() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'work-hours'] });
       toast.success('Work hours settings updated');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * POS-PERF-P16/P17 — current operational write-gate state plus this Render
+ * instance's own in-flight gated-request count, used to confirm a drain
+ * before a deploy swap. Polled every 5s instead of relying only on a
+ * post-mutation refetch: activeGatedRequests changes from in-flight POS
+ * traffic, not from anything this page itself writes.
+ */
+export function useWriteGate() {
+  const { accessToken, isLoading } = useAuth();
+
+  return useQuery({
+    queryKey: ['settings', 'write-gate'],
+    queryFn: async () => {
+      const response = await apiClient<WriteGateResponse>('/api/settings/write-gate');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load write-gate state'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading,
+    refetchInterval: 5000,
+  });
+}
+
+export function useUpdateWriteGate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateWriteGateInput) => {
+      const response = await apiClient<WriteGateResponse>('/api/settings/write-gate', { method: 'PUT', body: JSON.stringify(input) });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to update write-gate state'));
+      return response.data;
+    },
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'write-gate'] });
+      toast.success(data.enabled ? 'Write gate closed' : 'Write gate reopened');
     },
     onError: (error: Error) => toast.error(error.message),
   });

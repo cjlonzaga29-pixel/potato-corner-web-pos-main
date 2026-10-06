@@ -3,12 +3,22 @@ import { render, screen, cleanup, fireEvent, within } from '@testing-library/rea
 import type { TransactionResponse } from '@potato-corner/shared';
 import { ViewTransactionDetailDialog } from './view-transaction-detail-dialog';
 
-const { mockUseAuthStore, mockUseVoidTransaction, mockUseRefundTransaction, mockVoidMutate, mockRefundMutate } = vi.hoisted(() => ({
+const {
+  mockUseAuthStore,
+  mockUseVoidTransaction,
+  mockUseRefundTransaction,
+  mockUseRetryInventoryDeduction,
+  mockVoidMutate,
+  mockRefundMutate,
+  mockRetryMutate,
+} = vi.hoisted(() => ({
   mockUseAuthStore: vi.fn(),
   mockUseVoidTransaction: vi.fn(),
   mockUseRefundTransaction: vi.fn(),
+  mockUseRetryInventoryDeduction: vi.fn(),
   mockVoidMutate: vi.fn(),
   mockRefundMutate: vi.fn(),
+  mockRetryMutate: vi.fn(),
 }));
 
 vi.mock('@/stores/auth.store', () => ({
@@ -18,6 +28,7 @@ vi.mock('@/stores/auth.store', () => ({
 vi.mock('@/hooks/queries/use-transactions', () => ({
   useVoidTransaction: mockUseVoidTransaction,
   useRefundTransaction: mockUseRefundTransaction,
+  useRetryInventoryDeduction: mockUseRetryInventoryDeduction,
 }));
 
 function transaction(overrides: Partial<TransactionResponse> = {}): TransactionResponse {
@@ -71,14 +82,17 @@ function setup({
   role = 'branch',
   voidOverrides = {},
   refundOverrides = {},
+  retryOverrides = {},
 }: {
   role?: string | undefined;
   voidOverrides?: Partial<{ mutate: typeof mockVoidMutate; isPending: boolean }>;
   refundOverrides?: Partial<{ mutate: typeof mockRefundMutate; isPending: boolean }>;
+  retryOverrides?: Partial<{ mutate: typeof mockRetryMutate; isPending: boolean }>;
 } = {}) {
   setRole(role);
   mockUseVoidTransaction.mockReturnValue({ mutate: mockVoidMutate, isPending: false, ...voidOverrides });
   mockUseRefundTransaction.mockReturnValue({ mutate: mockRefundMutate, isPending: false, ...refundOverrides });
+  mockUseRetryInventoryDeduction.mockReturnValue({ mutate: mockRetryMutate, isPending: false, ...retryOverrides });
 }
 
 afterEach(() => {
@@ -242,5 +256,84 @@ describe('ViewTransactionDetailDialog — Void Transaction (unchanged)', () => {
     fireEvent.click(within(voidDialog).getByRole('button', { name: 'Void Transaction' }));
 
     expect(mockVoidMutate).toHaveBeenCalledWith({ void_reason: 'Wrong item entered' }, expect.objectContaining({ onSuccess: expect.any(Function) }));
+  });
+});
+
+describe('ViewTransactionDetailDialog — Retry Inventory Deduction (POS-PERF-P15R2)', () => {
+  it('shows a Retry button for a failed deduction when the role is admin/supervisor', () => {
+    setup({ role: 'super_admin' });
+    render(
+      <ViewTransactionDetailDialog
+        transaction={transaction({ inventory_deduction_status: 'failed' })}
+        onClose={NOOP}
+        branchName="Main"
+        cashierName="Jane Doe"
+        attendanceRecords={[]}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('does not show Retry for a branch role, even on a failed deduction (matches the backend adminOrSupervisor guard)', () => {
+    setup({ role: 'branch' });
+    render(
+      <ViewTransactionDetailDialog
+        transaction={transaction({ inventory_deduction_status: 'failed' })}
+        onClose={NOOP}
+        branchName="Main"
+        cashierName="Jane Doe"
+        attendanceRecords={[]}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('does not show Retry when the deduction is not failed', () => {
+    setup({ role: 'supervisor' });
+    render(
+      <ViewTransactionDetailDialog
+        transaction={transaction({ inventory_deduction_status: 'completed' })}
+        onClose={NOOP}
+        branchName="Main"
+        cashierName="Jane Doe"
+        attendanceRecords={[]}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('calls the retry mutation when clicked', () => {
+    setup({ role: 'supervisor' });
+    render(
+      <ViewTransactionDetailDialog
+        transaction={transaction({ inventory_deduction_status: 'failed' })}
+        onClose={NOOP}
+        branchName="Main"
+        cashierName="Jane Doe"
+        attendanceRecords={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(mockRetryMutate).toHaveBeenCalledWith();
+  });
+
+  it('disables the Retry button while the mutation is pending', () => {
+    setup({ role: 'supervisor', retryOverrides: { isPending: true } });
+    render(
+      <ViewTransactionDetailDialog
+        transaction={transaction({ inventory_deduction_status: 'failed' })}
+        onClose={NOOP}
+        branchName="Main"
+        cashierName="Jane Doe"
+        attendanceRecords={[]}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
   });
 });

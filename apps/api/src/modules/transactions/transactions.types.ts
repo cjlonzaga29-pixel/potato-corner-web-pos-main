@@ -45,6 +45,13 @@ export interface CreateTransactionData {
   offlineProvisionalNumber?: string;
   /** Task 209.47 — X-Device-ID request header, already sent on every request by apps/web/lib/api-client.ts. Persisted only when isOfflineTransaction is true. */
   deviceId?: string | null;
+  /**
+   * POS-PERF-P15 — client-generated UUID, one per checkout attempt, stable
+   * across that attempt's retries/double-clicks. Optional: a client that
+   * omits it gets no idempotency protection (same behavior as before this
+   * field existed), it is never required for checkout to succeed.
+   */
+  idempotencyKey?: string | null;
 }
 
 export interface UploadPaymentProofData {

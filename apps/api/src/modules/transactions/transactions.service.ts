@@ -5,10 +5,8 @@ import {
   DISCOUNT_TYPE,
   SOCKET_EVENTS,
   MOVEMENT_TYPE,
-  INVENTORY_DEDUCTION_STATUS,
   PAYMENT_METHOD,
   type ImageProofType,
-  type InventoryDeductionStatus,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
 import { transactionsRepository, type SelectedOptionSnapshot } from './transactions.repository.js';
@@ -44,7 +42,7 @@ import { recordAuditLog } from '../../middleware/audit-log.js';
 import { encryptField, hashField, decryptField } from '../../lib/encryption.js';
 import { hashToLockId, inventoryStockLockId, branchShiftLockId } from '../../lib/pg-lock.js';
 import { sha256Hex } from '../../lib/hash.js';
-import { enqueueRawNotificationJob, enqueueNotification } from '../../queues/notification.queue.js';
+import { enqueueNotification } from '../../queues/notification.queue.js';
 import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
 import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
@@ -54,7 +52,9 @@ import { attachCostToDeductionLines } from '../../lib/cogs.js';
 import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
 import { shadowBomDeductionService } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
-import { createCheckoutLatencyRecorder, timeStage, type CheckoutLatencyRecorder } from '../../lib/checkout-latency-diagnostics.js';
+import { createCheckoutLatencyRecorder, timeStage } from '../../lib/checkout-latency-diagnostics.js';
+import { computeDeductionTotals, sortedDeductionTotalEntries } from '../../lib/deduction-totals.js';
+import { inventoryDeductionRepository } from '../inventory-deduction/inventory-deduction.repository.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -785,6 +785,16 @@ export interface DiscountRates {
   employee: number;
 }
 
+/** POS-PERF-P15R3 — see transactionsService.resolveCheckoutAttempt's doc comment. */
+export type CheckoutAttemptResolution =
+  | { status: 'committed'; transaction: ReturnType<typeof toTransactionResponse>; branchId: string }
+  | { status: 'failed'; branchId: string }
+  // POS-PERF-P15R5 — permanent terminal state, only ever reached via the
+  // explicit abandon POST, never written by this (read-only) GET check.
+  | { status: 'abandoned'; branchId: string }
+  | { status: 'in_progress'; branchId: string }
+  | { status: 'not_found'; branchId: null };
+
 /** Same 20%/20%/20% values STATUTORY_DISCOUNT_RATE/EMPLOYEE_DISCOUNT_RATE hardcoded before Discount Settings existed — used only if a caller (e.g. a stale test) omits discountRates. */
 const DEFAULT_DISCOUNT_RATES: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
 
@@ -882,182 +892,332 @@ function isOfflineSyncUniqueConflict(error: unknown): boolean {
 }
 
 /**
- * Runs inside the same DB transaction as the sale itself (Phase 8's deduction
- * moved from a fire-and-forget queue job to here) so a stock shortfall rolls
- * back the whole sale instead of leaving a completed transaction with no
- * matching deduction. Side effects that aren't part of the atomic write
- * (audit log, notifications, socket broadcasts) are returned as deferred
- * callbacks and only run after the transaction commits.
+ * POS-PERF-P15 — narrowly recognizes the transactions_idempotency_key_key
+ * unique-constraint violation (P2002), same narrow-match reasoning as
+ * isOfflineSyncUniqueConflict above: only *this specific* constraint means
+ * "a concurrent request for the same idempotency key already won" — any
+ * other P2002 must keep surfacing as a real error.
  */
-async function deductInventoryForSale(
+function isIdempotencyKeyConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  if (typeof target === 'string') return target.includes('transactions_idempotency_key_key');
+  if (Array.isArray(target)) return target.includes('idempotency_key') || target.includes('idempotencyKey');
+  return false;
+}
+
+/**
+ * POS-PERF-P15 — guards the idempotent-replay path against two distinct
+ * failure modes the bare `findByIdempotencyKey` lookup cannot catch on its
+ * own, since a unique index only guarantees the *key* is unique, never that
+ * the caller replaying it is the same authorized party with the same cart:
+ *
+ *   1. Cross-tenant replay: the stored row belongs to a different branch,
+ *      shift, or cashier than the request presenting the key. The key is
+ *      client-generated (a UUID the client is trusted to keep unique per
+ *      attempt, not per security boundary) — without this check, a second
+ *      session that happened to submit the same key would silently receive
+ *      another cashier's completed sale back as if it were its own.
+ *   2. Payload-mismatch replay: same authorized scope, but a different cart
+ *      (a client bug reusing a key across what the cashier intends as two
+ *      separate sales). Replaying the old result would look like success
+ *      while silently discarding — never actually charging or deducting
+ *      stock for — the second, different cart.
+ *
+ * Returns true only when scope and cart composition both match, i.e. this
+ * really is the same checkout attempt being retried.
+ */
+function idempotencyReplayMatches(existing: TransactionRow, data: CreateTransactionData): boolean {
+  if (existing.branchId !== data.branchId || existing.shiftId !== data.shiftId || existing.cashierId !== data.cashierId) {
+    return false;
+  }
+  if (existing.paymentMethod !== data.paymentMethod) return false;
+  const normalize = (items: { productVariantId: string; flavorId: string | null; quantity: number }[]) =>
+    items
+      .map((item) => `${item.productVariantId}:${item.flavorId ?? ''}:${item.quantity}`)
+      .sort()
+      .join('|');
+  const existingSignature = normalize((existing.items ?? []).map((item) => ({
+    productVariantId: item.productVariantId,
+    flavorId: item.flavorId,
+    quantity: item.quantity,
+  })));
+  const requestedSignature = normalize(
+    data.items.map((item) => ({ productVariantId: item.productVariantId, flavorId: item.flavorId ?? null, quantity: item.quantity })),
+  );
+  return existingSignature === requestedSignature;
+}
+
+/**
+ * POS-PERF-P15R3 — how long a claimed checkout attempt's lease stays live
+ * before it is even eligible for reclaim by anyone. Must comfortably exceed
+ * the slowest realistic checkout write: the pos checkout $transaction's own
+ * configured ceiling (maxWaitMs to acquire the slot, plus timeoutMs to run
+ * once acquired — see config/index.ts assertPosTransactionTimingSane) plus
+ * generous headroom for the pre-transaction work (catalog/discount/cost
+ * lookups) that runs before the claim is ever at risk. A lease that expired
+ * too early would let a second request reclaim a key whose original holder
+ * is, in fact, still legitimately running — not unsafe (the original
+ * holder's own commit re-checks ownership and loses, see
+ * claimCheckoutAttempt's doc comment on CheckoutAttempt in schema.prisma),
+ * but it would make an in-flight sale vanish and have to be resubmitted
+ * under a trivial reclaim rather than being allowed to just finish.
+ */
+const CHECKOUT_ATTEMPT_LEASE_MS = config.posTransaction.maxWaitMs + config.posTransaction.timeoutMs + 20_000;
+
+/**
+ * POS-PERF-P15R3 — bounded, in-process wait used only to let a genuinely
+ * concurrent retry/double-click under the *same* idempotency key (which
+ * loses the claim race below) converge on the one sale the winner is about
+ * to create, instead of bouncing off a 409 the instant two requests overlap
+ * by a few milliseconds. This is NOT the old bug reintroduced: timing out
+ * here only ever produces the true statement "still in progress", never a
+ * false "safe to mint a new key" — see claimCheckoutAttempt's caller for
+ * what happens on each outcome. Polls a local DB row, not a client-side
+ * HTTP round trip, so this can stay short relative to the old client-side
+ * poll ladder while still safely covering ordinary checkout latency.
+ */
+const CHECKOUT_ATTEMPT_SETTLE_WAIT_MS = 8_000;
+const CHECKOUT_ATTEMPT_SETTLE_POLL_INTERVAL_MS = 150;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function awaitCheckoutAttemptSettlement(idempotencyKey: string, maxWaitMs: number): Promise<'committed' | 'failed' | 'abandoned' | 'in_progress'> {
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    const attempt = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey }, select: { status: true } });
+    if (!attempt || attempt.status !== 'in_progress') return attempt?.status ?? 'failed';
+    if (Date.now() >= deadline) return 'in_progress';
+    await sleep(CHECKOUT_ATTEMPT_SETTLE_POLL_INTERVAL_MS);
+  }
+}
+
+type ClaimCheckoutAttemptResult =
+  | { claimed: true; ownerToken: string }
+  | { claimed: false; status: 'committed'; transactionId: string | null }
+  | { claimed: false; status: 'in_progress' }
+  // POS-PERF-P15R5 — distinguished from 'in_progress' so the caller can
+  // reject outright (never safe to retry under this key again) instead of
+  // telling the client to wait on an attempt that, in fact, will never
+  // resolve to anything reclaimable.
+  | { claimed: false; status: 'abandoned' };
+
+/**
+ * POS-PERF-P15R3 — the fencing claim a checkout attempt must win before any
+ * validation/stock/insert work begins. This is a single atomic
+ * `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE`: Postgres evaluates the
+ * WHERE clause and performs the update in one statement, so two concurrent
+ * claims for the same key can never both believe they won. A row already
+ * 'committed' is never touched by the DO UPDATE (its WHERE never matches),
+ * so RETURNING comes back empty and the caller is told to go replay the
+ * existing sale. A row 'in_progress' with a live lease is likewise left
+ * alone — the caller is told the attempt is still live and must not start a
+ * replacement. Only a 'failed' row, or an 'in_progress' row whose lease has
+ * passed, is eligible to be reclaimed (fresh owner_token, fresh lease).
+ *
+ * This replaces the old client-side "poll for ~17s, assume not-found is
+ * safe" recovery protocol: minting a replacement idempotency key is no
+ * longer a client-side guess from elapsed time, it is this server-enforced
+ * compare-and-swap.
+ */
+async function claimCheckoutAttempt(idempotencyKey: string, branchId: string, cashierId: string): Promise<ClaimCheckoutAttemptResult> {
+  const ownerToken = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + CHECKOUT_ATTEMPT_LEASE_MS);
+  const claimed = await prisma.$queryRaw<{ owner_token: string }[]>`
+    INSERT INTO "checkout_attempts" ("idempotency_key", "branch_id", "cashier_id", "status", "owner_token", "lease_expires_at", "created_at", "updated_at")
+    VALUES (${idempotencyKey}, ${branchId}, ${cashierId}, 'in_progress', ${ownerToken}, ${leaseExpiresAt}, now(), now())
+    ON CONFLICT ("idempotency_key") DO UPDATE SET
+      "owner_token" = EXCLUDED."owner_token",
+      "status" = 'in_progress',
+      "lease_expires_at" = EXCLUDED."lease_expires_at",
+      "updated_at" = now()
+    WHERE "checkout_attempts"."status" = 'failed'
+       OR ("checkout_attempts"."status" = 'in_progress' AND "checkout_attempts"."lease_expires_at" < now())
+    RETURNING "owner_token"
+  `;
+  if (claimed.length > 0) return { claimed: true, ownerToken };
+
+  const existing = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+  if (!existing) {
+    // Unreachable in normal operation: the INSERT above guarantees a row
+    // exists after this statement unless something else deleted it in the
+    // same instant. Surface as a retryable conflict rather than silently
+    // treating "no row" as "safe to proceed" (which could race whatever
+    // deleted it).
+    throw new TransactionError('CHECKOUT_ATTEMPT_CONTENTION', 'Could not resolve the checkout attempt. Please try again.', 409);
+  }
+  if (existing.status === 'committed') return { claimed: false, status: 'committed', transactionId: existing.transactionId };
+  // POS-PERF-P15R5 — 'abandoned' is permanent and reported distinctly from
+  // 'in_progress': there is no lease to wait out, so the caller must reject
+  // this key for good rather than telling the client to keep polling it.
+  if (existing.status === 'abandoned') return { claimed: false, status: 'abandoned' };
+  return { claimed: false, status: 'in_progress' };
+}
+
+/**
+ * POS-PERF-P15R5 — the explicit, client-initiated "give up on this key for
+ * good" action. This is the ONLY place that writes the permanent 'abandoned'
+ * terminal state, and it is reached only via an authenticated POST with its
+ * own branch authorization check (transactions.router.ts) — never as a
+ * side effect of the read-only GET /by-idempotency-key/:key recovery check.
+ *
+ * Same atomic INSERT ... ON CONFLICT ... WHERE compare-and-swap shape as
+ * claimCheckoutAttempt, except the terminal row it writes is 'abandoned'
+ * instead of a fresh 'in_progress' lease. Because claimCheckoutAttempt's own
+ * WHERE clause never matches 'abandoned', once this succeeds the key can
+ * never be reclaimed again by anyone — not a merely-delayed original
+ * request, not an already-issued same-key retry racing this exact call,
+ * regardless of how much time passes or what any lease_expires_at column
+ * says. That is the durable fencing a temporary in_progress lease cannot
+ * provide on its own: a lease can always eventually expire out from under
+ * a client that has already moved on to a replacement key.
+ *
+ * Returns the authoritative post-attempt state so the caller knows whether
+ * it is actually safe to mint a replacement key:
+ *   - 'abandoned'  — this call (or an earlier one) won; the old key is now
+ *                    permanently dead. Safe to mint a replacement.
+ *   - 'committed'  — a sale already exists under this key (raced ahead of
+ *                    this call, or always existed); show it, do not abandon.
+ *   - 'in_progress'— a genuinely live attempt (fresh/un-expired lease) is
+ *                    racing this exact call and won; this key is still
+ *                    someone else's to finish. NOT safe to mint a
+ *                    replacement — the caller must keep waiting.
+ */
+async function abandonCheckoutAttempt(
+  idempotencyKey: string,
+  branchId: string,
+  cashierId: string,
+): Promise<{ status: 'abandoned' } | { status: 'committed'; transaction: ReturnType<typeof toTransactionResponse> } | { status: 'in_progress' }> {
+  const transaction = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
+  if (transaction) {
+    return { status: 'committed', transaction: toTransactionResponse(transaction as TransactionRow) };
+  }
+
+  const ownerToken = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + CHECKOUT_ATTEMPT_LEASE_MS);
+  const abandoned = await prisma.$queryRaw<{ idempotency_key: string }[]>`
+    INSERT INTO "checkout_attempts" ("idempotency_key", "branch_id", "cashier_id", "status", "owner_token", "lease_expires_at", "created_at", "updated_at")
+    VALUES (${idempotencyKey}, ${branchId}, ${cashierId}, 'abandoned', ${ownerToken}, ${leaseExpiresAt}, now(), now())
+    ON CONFLICT ("idempotency_key") DO UPDATE SET
+      "status" = 'abandoned',
+      "updated_at" = now()
+    WHERE "checkout_attempts"."status" = 'failed'
+       OR ("checkout_attempts"."status" = 'in_progress' AND "checkout_attempts"."lease_expires_at" < now())
+    RETURNING "idempotency_key"
+  `;
+  if (abandoned.length > 0) return { status: 'abandoned' };
+
+  const existing = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+  if (!existing) {
+    // Lost a race to a concurrent abandon call that got here first, or
+    // (unreachable in normal operation) something else deleted the row this
+    // INSERT just wrote — either way, re-read is authoritative.
+    const recheck = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+    if (recheck?.status === 'abandoned') return { status: 'abandoned' };
+    return { status: 'in_progress' };
+  }
+  if (existing.status === 'abandoned') return { status: 'abandoned' };
+  if (existing.status === 'committed') {
+    const winner = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
+    if (winner) return { status: 'committed', transaction: toTransactionResponse(winner as TransactionRow) };
+    return { status: 'in_progress' };
+  }
+  // 'in_progress' with a still-live lease — a genuinely concurrent holder
+  // (an already-issued retry under this same key, or the real original
+  // request) won the race for this key. Not safe to abandon or remint.
+  return { status: 'in_progress' };
+}
+
+/**
+ * POS-PERF-P15R3 — best-effort release of a claimed attempt once its holder
+ * has proven, before any commit, that nothing will be inserted under this
+ * key (every TransactionError thrown inside createTransaction is thrown
+ * either before the sale's $transaction starts, or from a path that
+ * guarantees that transaction rolled back — see the P2028 branch below).
+ * Fenced on ownerToken exactly like the commit-time update in
+ * createTransaction's $transaction callback: if this holder's lease was
+ * already reclaimed by someone else, this update simply matches zero rows
+ * and does nothing, which is correct — the row isn't this holder's to
+ * change anymore. Swallows its own errors: a failure to mark 'failed' only
+ * means the row waits out its lease before anyone can reclaim it, never a
+ * correctness problem.
+ */
+async function failCheckoutAttempt(idempotencyKey: string, ownerToken: string): Promise<void> {
+  try {
+    await prisma.$executeRaw`
+      UPDATE "checkout_attempts"
+      SET "status" = 'failed', "updated_at" = now()
+      WHERE "idempotency_key" = ${idempotencyKey} AND "owner_token" = ${ownerToken} AND "status" = 'in_progress'
+    `;
+  } catch (error) {
+    console.error('Failed to mark checkout attempt as failed (non-fatal — it will just wait out its lease)', {
+      idempotencyKey,
+      errorCategory: error instanceof Error ? error.name : 'UnknownError',
+    });
+  }
+}
+
+/**
+ * POS-PERF-P15 — replaces the old synchronous deductInventoryForSale on the
+ * checkout path. Runs inside the same DB transaction as the sale itself, but
+ * no longer performs the real inventory deduction (ledger write, audit row,
+ * low-stock notification) here at all — it only reserves the quantity this
+ * sale will need (InventoryStock.quantityReserved) and writes a durable
+ * InventoryDeductionJob row, so a background worker can claim and perform
+ * the actual deduction independently of this request ever completing from
+ * the cashier's point of view (see modules/inventory-deduction/).
+ *
+ * Each reservation is a single atomic conditional UPDATE —
+ * `quantity_on_hand - quantity_reserved >= needed` in the WHERE clause —
+ * rather than the old advisory-lock-then-read-then-validate-then-write
+ * sequence: Postgres's own row-level write lock on the UPDATE statement
+ * already serializes two concurrent reservations against the same row, so
+ * no separate pg_advisory_xact_lock call is needed for this check-and-
+ * increment (unlike the worker's own real deduction, which still takes that
+ * lock before its read+write — see inventory-deduction.service.ts for why
+ * that path still needs it). A shortfall anywhere in the cart throws before
+ * any job row is created, rolling back every reservation already applied in
+ * this same $transaction along with the rest of the sale.
+ */
+async function reserveStockForSale(
   tx: Prisma.TransactionClient,
   branchId: string,
   transactionId: string,
   items: { lines: BomDeductionLine[] }[],
-  diag: CheckoutLatencyRecorder = createCheckoutLatencyRecorder(false),
-): Promise<{ effects: Array<() => Promise<void>>; deductionStatus: InventoryDeductionStatus }> {
-  const totals = new Map<string, { quantity: number; baseUnitId: string }>();
-  for (const item of items) {
-    for (const line of item.lines) {
-      const existing = totals.get(line.inventoryItemId);
-      totals.set(line.inventoryItemId, { quantity: (existing?.quantity ?? 0) + line.quantity, baseUnitId: line.baseUnitId });
-    }
-  }
+): Promise<void> {
+  const totals = computeDeductionTotals(items);
+  // Deterministic order (sorted by inventoryItemId) — two sales reserving an
+  // overlapping ingredient set always take their row locks in the same
+  // order, so they serialize instead of risking a Postgres deadlock.
+  const sortedEntries = sortedDeductionTotalEntries(totals);
 
-  // Deterministic order (sorted by inventoryItemId) for every pass below,
-  // locks included — two transactions deducting an overlapping ingredient
-  // set must always request their advisory locks in the same order, or
-  // Postgres can deadlock them against each other instead of one simply
-  // waiting for the other.
-  const sortedEntries = [...totals.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const inventoryItemIds = sortedEntries.map(([id]) => id);
-
-  const itemNames = new Map(
-    (await tx.inventoryItem.findMany({ where: { id: { in: inventoryItemIds } }, select: { id: true, name: true } })).map((i) => [
-      i.id,
-      i.name,
-    ]),
-  );
-
-  // One pg_advisory_xact_lock call per ingredient (same primitive as
-  // before), now taken up front in sorted order before any read — every
-  // concurrent sale touching an overlapping ingredient set serializes on
-  // this same lock order instead of racing. Branch-scoped key (matches
-  // universal-inventory.repository.ts's lockAndGetStock) so a sale
-  // deduction and a manual stock operation against the same branch+item
-  // always contend on the same advisory lock.
-  await timeStage(diag, 'advisoryLocks', async () => {
-    for (const inventoryItemId of inventoryItemIds) {
-      const lockId = inventoryStockLockId(branchId, inventoryItemId);
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
-    }
-  });
-
-  // One batched read for every InventoryStock row instead of one
-  // findUnique per ingredient — safe to treat as a single snapshot because
-  // every row's advisory lock is already held above, so nothing else can
-  // change them out from under this pass.
-  const stockRows = await timeStage(diag, 'stockRead', () =>
-    tx.inventoryStock.findMany({
-      where: { branchId, inventoryItemId: { in: inventoryItemIds } },
-    }),
-  );
-  const stockByItemId = new Map(stockRows.map((row) => [row.inventoryItemId, row]));
-
-  // Validate every row before writing any of them — a shortfall anywhere in
-  // the cart must still roll back the whole sale, never leave a partial
-  // deduction behind.
   for (const [inventoryItemId, { quantity }] of sortedEntries) {
-    const stock = stockByItemId.get(inventoryItemId);
-    const currentStock = stock?.quantityOnHand.toNumber() ?? 0;
-    if (!stock || currentStock < quantity) {
-      const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
+    const decimalQuantity = new Prisma.Decimal(quantity);
+    const affected = await tx.$executeRaw`
+      UPDATE "inventory_stocks"
+      SET "quantity_reserved" = "quantity_reserved" + ${decimalQuantity}, "version" = "version" + 1, "updated_at" = now()
+      WHERE "branch_id" = ${branchId} AND "inventory_item_id" = ${inventoryItemId}
+        AND "quantity_on_hand" - "quantity_reserved" >= ${decimalQuantity}
+    `;
+    if (affected === 0) {
+      // Shortfall path only — the common case never pays for this read.
+      const [stock, item] = await Promise.all([
+        tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } }),
+        tx.inventoryItem.findUnique({ where: { id: inventoryItemId }, select: { name: true } }),
+      ]);
+      const itemName = item?.name ?? inventoryItemId;
+      const available = stock ? stock.quantityOnHand.toNumber() - stock.quantityReserved.toNumber() : 0;
       throw new TransactionError(
         'INSUFFICIENT_STOCK',
-        `Insufficient stock for ${itemName}: need ${quantity}, have ${currentStock}`,
+        `Insufficient stock for ${itemName}: need ${quantity}, have ${available} available`,
         409,
       );
     }
   }
 
-  // Prisma has no single-call bulk update for rows that each decrement by a
-  // different quantity, so this pass still costs one `update` per
-  // ingredient — the locks taken above already make each of these safe
-  // against a concurrent writer, so the round trips saved were entirely in
-  // the read and ledger-insert passes around it.
-  const effects: Array<() => Promise<void>> = [];
-  const movementInputs: Parameters<typeof universalInventoryRepository.createStockMovements>[0] = [];
-
-  const stockUpdateStartedAt = diag.enabled ? performance.now() : 0;
-  for (const [inventoryItemId, { quantity, baseUnitId }] of sortedEntries) {
-    const stock = stockByItemId.get(inventoryItemId);
-    if (!stock) continue; // unreachable — every row was validated above
-    const itemName = itemNames.get(inventoryItemId) ?? inventoryItemId;
-
-    const updated = await tx.inventoryStock.update({
-      where: { branchId_inventoryItemId: { branchId, inventoryItemId } },
-      data: { quantityOnHand: { decrement: quantity }, version: { increment: 1 } },
-    });
-
-    // Carrying cost snapshot at the exact moment of deduction — `stock` here
-    // is the same InventoryStock row read (and advisory-locked) above, so
-    // this can never race a concurrent receiving the way a cost lookup after
-    // releasing the lock could. Same stock.unitCost-only convention as
-    // WASTE/TRANSFER_OUT (universal-inventory.service.ts) — no InventoryItem
-    // fallback here; that fallback is cogs.ts's separate concern for
-    // TransactionItem.deductionSnapshot, which this must not duplicate or
-    // diverge from. Null (never fabricated as 0) when cost was never
-    // initialized for this item.
-    const unitCost = stock.unitCost;
-    const totalCost = unitCost ? unitCost.mul(quantity) : null;
-
-    movementInputs.push({
-      branchId,
-      inventoryItemId,
-      movementType: 'SALE',
-      quantityChange: new Prisma.Decimal(quantity).negated(),
-      quantityBefore: stock.quantityOnHand,
-      quantityAfter: updated.quantityOnHand,
-      unitId: baseUnitId,
-      referenceType: 'transaction',
-      referenceId: transactionId,
-      unitCost: unitCost ?? undefined,
-      totalCost: totalCost ?? undefined,
-    });
-
-    effects.push(() =>
-      recordAuditLog({
-        action: 'INVENTORY_SALE_DEDUCTED',
-        entityType: 'inventory_stock',
-        entityId: updated.id,
-        actorId: null,
-        actorRole: 'system',
-        branchId,
-        afterState: {
-          inventory_item_id: inventoryItemId,
-          quantity_change: -quantity,
-          quantity_after: updated.quantityOnHand.toNumber(),
-          reference_id: transactionId,
-        },
-      }),
-    );
-
-    const stockAfter = updated.quantityOnHand.toNumber();
-    const lowThreshold = updated.lowStockThreshold?.toNumber() ?? null;
-    const criticalThreshold = updated.criticalThreshold?.toNumber() ?? null;
-    if (lowThreshold !== null && stockAfter <= lowThreshold) {
-      effects.push(() =>
-        enqueueRawNotificationJob('low_stock_alert', {
-          branchId,
-          inventoryItemId,
-          ingredientName: itemName,
-          currentStock: stockAfter,
-          lowStockThreshold: lowThreshold,
-          criticalThreshold: criticalThreshold ?? lowThreshold,
-          severity: criticalThreshold !== null && stockAfter <= criticalThreshold ? 'critical' : 'low',
-        }),
-      );
-    }
-  }
-
-  if (diag.enabled) diag.mark('stockUpdates', performance.now() - stockUpdateStartedAt);
-
-  // One batched insert for every SALE movement row instead of one `create`
-  // per ingredient.
-  if (movementInputs.length > 0) {
-    await timeStage(diag, 'ledgerWrites', () => universalInventoryRepository.createStockMovements(movementInputs, tx));
-  }
-
-  // Read back the row this same write just persisted (rather than assuming
-  // COMPLETED) so the caller's response can never drift from the committed
-  // state — see transactions.service.ts createTransaction, which discarded
-  // this update and kept returning the pre-deduction "pending" INSERT
-  // snapshot instead (Task 209.47E).
-  const updated = await timeStage(diag, 'deductionStatusWrite', () =>
-    inventoryRepository.updateTransactionDeductionStatus(transactionId, INVENTORY_DEDUCTION_STATUS.COMPLETED, tx),
-  );
-
-  return { effects, deductionStatus: updated.inventoryDeductionStatus };
+  await tx.inventoryDeductionJob.create({ data: { transactionId, branchId } });
 }
 
 /**
@@ -1205,6 +1365,62 @@ async function reverseInventoryForTransaction(
         totalCost: reversalTotalCost ?? undefined,
       },
       tx,
+    );
+  }
+}
+
+/**
+ * POS-PERF-P15 — void/refund entry point for inventory settlement,
+ * replacing the old unconditional reverseInventoryForTransaction call.
+ * Dispatches on the sale's InventoryDeductionJob status (there is none for
+ * a transaction that predates this feature, which deducted synchronously
+ * at sale time exactly like reverseInventoryForTransaction still expects):
+ *
+ *   - no job row, or job status 'completed': the deduction already
+ *     happened (synchronously, pre-cutover, or already drained by the
+ *     worker) — run the existing full reversal, unchanged.
+ *   - job status 'cancelled': already settled by a previous void/refund
+ *     attempt (defensive; voidTransaction/refundTransaction's own
+ *     status === 'completed' pre-check normally prevents a second call
+ *     from ever reaching here) — nothing to do.
+ *   - job status 'pending' or 'failed': nothing was ever deducted — cancel
+ *     the job in place and release its checkout-time reservation instead
+ *     of reversing anything.
+ *   - job status 'processing': a worker currently owns the claim. Rather
+ *     than guess at a race, fail closed with a retryable error — the
+ *     window is normally sub-second (one deduction cycle), so an
+ *     immediate retry from the admin UI resolves it once the worker's own
+ *     claim settles to 'completed'.
+ */
+async function reverseOrCancelInventoryForTransaction(
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  transactionId: string,
+  items: { productVariantId: string; flavorId: string | null; quantity: number }[],
+  kind: 'void' | 'refund',
+): Promise<void> {
+  const job = await inventoryDeductionRepository.findJobByTransactionId(transactionId, tx);
+  if (!job || job.status === 'completed') {
+    await reverseInventoryForTransaction(tx, branchId, transactionId, items, kind);
+    return;
+  }
+  if (job.status === 'cancelled') return;
+  if (job.status === 'processing') {
+    throw new TransactionError(
+      'INVENTORY_DEDUCTION_IN_PROGRESS',
+      'Inventory deduction for this sale is still finalizing — please retry in a moment',
+      409,
+    );
+  }
+  // 'pending' or 'failed'.
+  const cancelled = await inventoryDeductionRepository.cancelAndReleaseReservation(tx, job.id, branchId, transactionId);
+  if (!cancelled) {
+    // Lost a race: the job's status moved (claimed by a worker, or already
+    // completed) between the read above and this call.
+    throw new TransactionError(
+      'INVENTORY_DEDUCTION_IN_PROGRESS',
+      'Inventory deduction for this sale is still finalizing — please retry in a moment',
+      409,
     );
   }
 }
@@ -1439,6 +1655,17 @@ export const transactionsService = {
     // data is captured, only durations.
     const handlerStartedAt = performance.now();
     let discountCalcMs = 0;
+    // POS-PERF-P15R3 — declared here (not with `const` at their original
+    // point of use) so they stay in scope for the response-building/
+    // notification code after the validation+insert try/catch below, which
+    // now needs a catch clause of its own to mark a rejected checkout
+    // attempt 'failed' (see claimCheckoutAttempt above).
+    let isPwdOrSeniorDiscount = false;
+    let hasDiscountProof = false;
+    let catalogResolveMs = 0;
+    let resolvedItems: ResolvedItem[] = [];
+    let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>>;
+    let dbTransactionStartedAt = 0;
     // POS-PERF-P2R — opt-in, finer-grained stage breakdown on top of the
     // always-on timing above. Disabled by default (config.
     // checkoutLatencyDiagnosticsEnabled); see lib/checkout-latency-diagnostics.ts.
@@ -1447,36 +1674,124 @@ export const transactionsService = {
     const diag = createCheckoutLatencyRecorder(config.checkoutLatencyDiagnosticsEnabled);
     if (diag.enabled && middlewareGuardsMs !== undefined) diag.mark('middlewareAndGuards', middlewareGuardsMs);
 
-    // Task 209.3 — branch and shift are looked up by independent ids
-    // (branchId vs shiftId) with no data dependency between them; running
-    // them concurrently instead of back-to-back saves one round trip off
-    // every checkout's critical path without changing either validation.
-    const [branch, shift] = await timeStage(diag, 'branchShiftLookup', () =>
-      Promise.all([
-        transactionsRepository.findBranch(data.branchId),
-        cashRepository.findShiftById(data.shiftId),
-      ]),
-    );
-    if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
-
-    if (!shift || shift.branchId !== data.branchId) {
-      throw new TransactionError('INVALID_SHIFT', 'shift_id does not belong to branch_id', 422);
+    // POS-PERF-P15 — idempotent-replay fast path for a checkout retry or
+    // double-click carrying the same idempotencyKey as an attempt that
+    // already committed: skip every catalog/pricing/stock step entirely and
+    // just replay the prior result, same role findByOfflineIdentity plays
+    // in syncOfflineTransactions. Best-effort only (a true concurrent replay
+    // can still miss here before either request inserts) — the
+    // idempotency_key unique index is the real concurrency authority; see
+    // the P2002 catch below for that race path.
+    if (data.idempotencyKey) {
+      const existing = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
+      if (existing) {
+        if (!idempotencyReplayMatches(existing as TransactionRow, data)) {
+          throw new TransactionError(
+            'IDEMPOTENCY_KEY_REUSE',
+            'This idempotency key was already used for a different sale',
+            409,
+          );
+        }
+        return toTransactionResponse(existing as TransactionRow);
+      }
     }
-    if (shift.status !== 'active') {
-      throw new TransactionError('SHIFT_CLOSED', 'Cannot record a transaction on a shift that is not open', 409);
+
+    // POS-PERF-P15R3 — claim the fencing row for this key before any
+    // validation/stock/insert work begins. See CheckoutAttempt in
+    // schema.prisma and claimCheckoutAttempt's doc comment for the full
+    // protocol. Everything from here through the sale's own $transaction is
+    // wrapped so a definite pre-commit rejection (any TransactionError) marks
+    // this attempt 'failed' — safe to reclaim immediately, no lease wait —
+    // while an unexpected/unclassified error leaves it 'in_progress' and
+    // subject only to the lease.
+    let attemptOwnerToken: string | null = null;
+    if (data.idempotencyKey) {
+      let claim = await claimCheckoutAttempt(data.idempotencyKey, data.branchId, data.cashierId);
+      if (!claim.claimed && claim.status === 'in_progress') {
+        // Didn't win outright — most likely a genuinely concurrent retry or
+        // double-click for this exact key. Give the current holder a short
+        // bounded window to settle before concluding anything, then retry
+        // the claim once: if it settled 'failed', this request can win it
+        // fresh; if it settled 'committed', the branch below replays it.
+        const settled = await awaitCheckoutAttemptSettlement(data.idempotencyKey, CHECKOUT_ATTEMPT_SETTLE_WAIT_MS);
+        if (settled !== 'in_progress') {
+          claim = await claimCheckoutAttempt(data.idempotencyKey, data.branchId, data.cashierId);
+        }
+      }
+      if (!claim.claimed) {
+        if (claim.status === 'committed') {
+          // The attempt committed between the findByIdempotencyKey miss
+          // above and this claim — re-fetch and replay rather than treating
+          // "didn't claim" as a license to proceed.
+          const winner = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
+          if (winner) {
+            if (!idempotencyReplayMatches(winner as TransactionRow, data)) {
+              throw new TransactionError('IDEMPOTENCY_KEY_REUSE', 'This idempotency key was already used for a different sale', 409);
+            }
+            return toTransactionResponse(winner as TransactionRow);
+          }
+          throw new TransactionError('CHECKOUT_ATTEMPT_CONTENTION', 'Could not resolve the checkout attempt. Please try again.', 409);
+        }
+        // POS-PERF-P15R5 — the client explicitly abandoned this key (POST
+        // /by-idempotency-key/:key/abandon) before this request reached the
+        // server: whoever is calling createTransaction under it now — a
+        // merely-delayed original request, or an already-issued same-key
+        // retry racing the abandon decision — loses outright. Unlike
+        // 'in_progress', there is no lease to wait out: this key is
+        // permanently dead and must never be retried, only replaced.
+        if (claim.status === 'abandoned') {
+          throw new TransactionError(
+            'CHECKOUT_ATTEMPT_ABANDONED',
+            'This checkout attempt key was abandoned and can never be used again. Retry with a new idempotency key.',
+            409,
+          );
+        }
+        // in_progress with a live lease — another request (a genuine
+        // concurrent retry, a double-click, or the original request still
+        // actually running) currently owns this key. This is a definitive,
+        // server-verified fact, not a client guess from elapsed time: the
+        // caller must keep this same key and wait/recheck, never mint a
+        // replacement.
+        throw new TransactionError(
+          'CHECKOUT_ATTEMPT_IN_PROGRESS',
+          'A previous checkout attempt under this key is still being processed. Keep waiting on it instead of starting a new one.',
+          409,
+        );
+      }
+      attemptOwnerToken = claim.ownerToken;
     }
 
-    // Presence of cash_tendered (for cash) is already guaranteed by
-    // createTransactionSchema's superRefine — only the business-logic checks
-    // below belong here.
+    try {
+      // Task 209.3 — branch and shift are looked up by independent ids
+      // (branchId vs shiftId) with no data dependency between them; running
+      // them concurrently instead of back-to-back saves one round trip off
+      // every checkout's critical path without changing either validation.
+      const [branch, shift] = await timeStage(diag, 'branchShiftLookup', () =>
+        Promise.all([
+          transactionsRepository.findBranch(data.branchId),
+          cashRepository.findShiftById(data.shiftId),
+        ]),
+      );
+      if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
 
-    // Belt: createTransactionSchema's superRefine already rejects a missing
-    // key/type client-side; this is the server-side gate that actually makes
-    // "mandatory" hold regardless of what the client sends.
-    if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && (!data.paymentProofKey || !data.paymentProofType)) {
-      throw new TransactionError(
-        'PAYMENT_PROOF_REQUIRED',
-        'A payment proof photo must be captured before a GCash, Maya, or Other sale can be recorded',
+      if (!shift || shift.branchId !== data.branchId) {
+        throw new TransactionError('INVALID_SHIFT', 'shift_id does not belong to branch_id', 422);
+      }
+      if (shift.status !== 'active') {
+        throw new TransactionError('SHIFT_CLOSED', 'Cannot record a transaction on a shift that is not open', 409);
+      }
+
+      // Presence of cash_tendered (for cash) is already guaranteed by
+      // createTransactionSchema's superRefine — only the business-logic checks
+      // below belong here.
+
+      // Belt: createTransactionSchema's superRefine already rejects a missing
+      // key/type client-side; this is the server-side gate that actually makes
+      // "mandatory" hold regardless of what the client sends.
+      if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && (!data.paymentProofKey || !data.paymentProofType)) {
+        throw new TransactionError(
+          'PAYMENT_PROOF_REQUIRED',
+          'A payment proof photo must be captured before a GCash, Maya, or Other sale can be recorded',
         422,
       );
     }
@@ -1506,8 +1821,8 @@ export const transactionsService = {
     // discount_proof_key is accepted and linked when present but never
     // enforced here the way PAYMENT_PROOF_REQUIRED is above. A future
     // settings-driven policy would gate on the same discountType check.
-    const isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
-    const hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
+    isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
+    hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
 
     // Task 209.xx — server-authoritative discount rate. The client only ever
     // sends the discount TYPE (createTransactionSchema has no percentage
@@ -1535,8 +1850,8 @@ export const transactionsService = {
     }
 
     const catalogResolveStartedAt = performance.now();
-    const resolvedItems = await resolveCartItems(data.branchId, data.items);
-    const catalogResolveMs = performance.now() - catalogResolveStartedAt;
+    resolvedItems = await resolveCartItems(data.branchId, data.items);
+    catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
     const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = computeAmounts(
       subtotal,
@@ -1585,13 +1900,11 @@ export const transactionsService = {
       return lines;
     });
 
-    let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>>;
-    let postCommitEffects: Array<() => Promise<void>>;
     // Allocated once via the atomic counter (generateReceiptNumber) — unlike
     // the old COUNT-then-increment approach, this can never collide with a
     // concurrent sale, so there's no retry-on-P2002 loop here anymore.
     const receiptNumber = await timeStage(diag, 'receiptAllocation', () => generateReceiptNumber(branch.code));
-    const dbTransactionStartedAt = performance.now();
+    dbTransactionStartedAt = performance.now();
     const transactionInvokedAt = performance.now();
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -1629,6 +1942,7 @@ export const transactionsService = {
             // and that field is itself only ever set for offline sales); a
             // live online checkout leaves this null same as before.
             deviceId: data.isOfflineTransaction ? (data.deviceId ?? null) : null,
+            idempotencyKey: data.idempotencyKey ?? null,
             items: resolvedItems.map((item, itemIndex) => ({
               id: item.id,
               productId: item.productId,
@@ -1661,21 +1975,42 @@ export const transactionsService = {
           tx,
         ));
 
-        const { effects, deductionStatus } = await deductInventoryForSale(
-          tx,
-          data.branchId,
-          txCreated.id,
-          resolvedItems.map((item) => ({ lines: item.deductionLines })),
-          diag,
+        // POS-PERF-P15 — no ledger write, audit row, or status overlay here
+        // anymore: txCreated's inventoryDeductionStatus is already 'pending'
+        // (the column's own default) and stays that way until the
+        // background worker actually deducts it. reserveStockForSale only
+        // reserves the quantity and writes the durable job row.
+        await timeStage(diag, 'stockReservation', () =>
+          reserveStockForSale(tx, data.branchId, txCreated.id, resolvedItems.map((item) => ({ lines: item.deductionLines }))),
         );
 
-        // txCreated is the original INSERT snapshot (inventoryDeductionStatus
-        // still "pending") — deductInventoryForSale's status update runs
-        // strictly after it in this same transaction, so overlay the actual
-        // persisted value here rather than returning the stale snapshot
-        // (Task 209.47E).
+        // POS-PERF-P15R3 — flip the fencing row to 'committed' atomically
+        // with the sale insert/reservation above: same $transaction, so
+        // there is never a window where the Transaction row exists but the
+        // attempt still reads 'in_progress', or vice versa. Fenced on
+        // ownerToken: if this holder's lease was reclaimed by someone else
+        // while this transaction was running (affected === 0), THIS
+        // transaction must roll back instead of committing a sale whose
+        // attempt record no longer belongs to it — throwing inside a Prisma
+        // interactive transaction callback rolls back everything in it,
+        // including the insert and the reservation above.
+        if (data.idempotencyKey && attemptOwnerToken) {
+          const affected = await tx.$executeRaw`
+            UPDATE "checkout_attempts"
+            SET "status" = 'committed', "transaction_id" = ${txCreated.id}, "updated_at" = now()
+            WHERE "idempotency_key" = ${data.idempotencyKey} AND "owner_token" = ${attemptOwnerToken} AND "status" = 'in_progress'
+          `;
+          if (affected === 0) {
+            throw new TransactionError(
+              'CHECKOUT_ATTEMPT_LOST_LEASE',
+              'This checkout attempt was reclaimed by another process before it could commit and has been rolled back. Please retry under the same key.',
+              409,
+            );
+          }
+        }
+
         const callbackReturnedAt = performance.now();
-        return { txCreated: { ...txCreated, inventoryDeductionStatus: deductionStatus }, effects, callbackReturnedAt };
+        return { txCreated, callbackReturnedAt };
       }, {
         // Explicit, POS-checkout-scoped limits (config/index.ts) — Prisma's
         // un-configured defaults (2s maxWait, 5s timeout) reliably trip
@@ -1687,9 +2022,27 @@ export const transactionsService = {
         timeout: config.posTransaction.timeoutMs,
       });
       created = result.txCreated;
-      postCommitEffects = result.effects;
       if (diag.enabled) diag.mark('callbackCompletionToResolution', performance.now() - result.callbackReturnedAt);
     } catch (error) {
+      // POS-PERF-P15 — race loser: two concurrent requests for the same
+      // idempotencyKey both missed the fast-path lookup above before either
+      // committed; this one lost the unique-index race on insert. The
+      // winner's row is the one true result of this checkout attempt — fetch
+      // and replay it instead of surfacing a spurious duplicate-key error
+      // (or, worse, retrying and creating a second sale).
+      if (data.idempotencyKey && isIdempotencyKeyConflict(error)) {
+        const winner = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
+        if (winner) {
+          if (!idempotencyReplayMatches(winner as TransactionRow, data)) {
+            throw new TransactionError(
+              'IDEMPOTENCY_KEY_REUSE',
+              'This idempotency key was already used for a different sale',
+              409,
+            );
+          }
+          return toTransactionResponse(winner as TransactionRow);
+        }
+      }
       // P2028 = "Transaction API error: Transaction already closed" —
       // fired when the interactive transaction exceeds maxWait/timeout
       // (e.g. transient remote-DB latency or connection-pool contention).
@@ -1710,6 +2063,22 @@ export const transactionsService = {
           'The sale could not be completed in time and was not charged. Please try again.',
           503,
         );
+      }
+      throw error;
+    }
+    } catch (error) {
+      // POS-PERF-P15R3 — every TransactionError thrown anywhere above this
+      // point is either a pre-commit validation rejection, or (CHECKOUT_
+      // TIMEOUT/CHECKOUT_ATTEMPT_LOST_LEASE) a path that guarantees the
+      // sale's $transaction rolled back — so every one of them is safe to
+      // mark 'failed': immediately reclaimable, no lease wait needed. An
+      // error that is NOT a TransactionError (an unclassified bug, an
+      // unexpected Prisma error) proves nothing either way — the attempt is
+      // deliberately left 'in_progress' so only the lease (and the
+      // commit-time ownerToken fence) governs when/whether it can be
+      // reclaimed, never a blind "this must have failed" assumption.
+      if (data.idempotencyKey && attemptOwnerToken && error instanceof TransactionError) {
+        await failCheckoutAttempt(data.idempotencyKey, attemptOwnerToken);
       }
       throw error;
     }
@@ -1752,29 +2121,17 @@ export const transactionsService = {
       });
     }
 
-    // Task 209.56E / perf follow-up — postCommitEffects (per-ingredient
-    // INVENTORY_SALE_DEDUCTED audit rows + low-stock notifications) and the
-    // TRANSACTION_CREATED audit log write are pure post-commit bookkeeping:
-    // the sale and inventory deduction already committed in the
-    // $transaction above, and neither recordAuditLog (middleware/
-    // audit-log.ts — catches and logs its own errors, never throws) nor
-    // enqueueRawNotificationJob (returns Promise.resolve() immediately,
-    // processes in the background) can ever reject or feed a value back
-    // into this response. There is nothing here for the HTTP response to
-    // safely wait on. Previously these were `await`ed (individually
-    // measured ~1.2s+ each on a cart with several distinct ingredients,
-    // since recordAuditLog is 2 sequential DB round trips per call and the
-    // effects loop runs one per distinct ingredient in the cart to
-    // preserve the audit hash chain's write order) — fired without
-    // `await` here instead, same fire-and-forget shape already used below
-    // for the shadow BOM comparison, so a multi-ingredient cart no longer
-    // pays checkout latency for audit bookkeeping that has zero bearing on
-    // whether the sale or inventory deduction succeeded.
-    void (async () => {
-      for (const effect of postCommitEffects) {
-        await effect();
-      }
-    })();
+    // Task 209.56E / perf follow-up — the TRANSACTION_CREATED audit log
+    // write is pure post-commit bookkeeping: the sale (and its inventory
+    // reservation) already committed in the $transaction above, and
+    // recordAuditLog (middleware/audit-log.ts — catches and logs its own
+    // errors, never throws) can never reject or feed a value back into this
+    // response. There is nothing here for the HTTP response to safely wait
+    // on. POS-PERF-P15 — the per-ingredient INVENTORY_SALE_DEDUCTED audit
+    // rows and low-stock notifications this comment used to also cover
+    // moved entirely into the background worker's own post-commit effects
+    // (inventory-deduction.service.ts), since the deduction itself no
+    // longer happens on this path at all.
     void recordAuditLog({
       action: 'TRANSACTION_CREATED',
       entityType: 'transaction',
@@ -1986,6 +2343,86 @@ export const transactionsService = {
     return toTransactionResponse(transaction as TransactionRow);
   },
 
+  /**
+   * POS-PERF-P15R3 — lets a client resolve an *uncertain* checkout attempt
+   * (the charge request timed out, the connection dropped, or the tab
+   * reloaded/closed before a response arrived) against the database itself,
+   * instead of assuming "I never got a response" means "nothing was
+   * charged". A dropped response proves nothing about the server-side
+   * outcome — the original request may still be mid-flight and commit a
+   * moment later.
+   *
+   * POS-PERF-P15R5 — this is now a PURE READ. It used to additionally fence
+   * a never-claimed key (via claimCheckoutAttempt's own atomic
+   * INSERT ... ON CONFLICT) the instant recovery observed no row at all, so
+   * a GET request had a real, durable write side effect. That write has
+   * been moved to its own explicit, authenticated action — see
+   * abandonCheckoutAttempt below and POST /by-idempotency-key/:key/abandon
+   * — because a GET must never be the thing that durably changes state: a
+   * prefetch, a browser retry, a proxy replaying an idempotent-looking GET,
+   * or simply checking status out of curiosity could silently fence a key
+   * the original request was never actually abandoned under.
+   *
+   * This reports one of four genuinely distinct, server-verified states:
+   *   - 'committed': the sale exists; show it.
+   *   - 'failed': the original attempt was definitively rejected pre-commit
+   *     (or confirmed rolled back by the original request itself) — safe
+   *     to mint a replacement key *now*, no waiting and no explicit abandon
+   *     call required (see failCheckoutAttempt's doc comment for why this
+   *     case needs no fencing: there is nothing left in flight to race).
+   *   - 'abandoned': a client already explicitly abandoned this key via the
+   *     POST action — permanently dead, safe to mint a replacement (or, if
+   *     this IS the client that called abandon, confirms it took effect).
+   *   - 'in_progress': the attempt is still live (fresh lease), or nothing
+   *     is known about it at all yet (no CheckoutAttempt row exists — the
+   *     key may simply never have been sent, or the request that will
+   *     claim it may be delayed anywhere before claimCheckoutAttempt's own
+   *     INSERT). Both are reported as 'in_progress' rather than 'not_found'
+   *     with no fencing performed: the caller MUST NOT treat either as safe
+   *     to remint on its own — it must call the abandon action first (which
+   *     performs the actual atomic fencing) and act on *that* call's
+   *     result, never on this read-only check's absence-of-a-row.
+   * Branch authorization for the 'failed'/'abandoned'/'in_progress' cases
+   * (where no Transaction row exists yet to check) is enforced by the
+   * caller against the attempt's own branchId — see the by-idempotency-key
+   * route.
+   */
+  async resolveCheckoutAttempt(idempotencyKey: string, branchId: string, cashierId: string): Promise<CheckoutAttemptResolution> {
+    // branchId/cashierId are accepted (not used below — this is now a pure
+    // read keyed only on idempotencyKey) only so this keeps the exact same
+    // call signature abandonCheckoutAttempt uses — both are reached from
+    // the same router call sites (GET vs. POST .../abandon), and this
+    // read-only contract must never silently drift from its write
+    // counterpart's signature.
+    void branchId;
+    void cashierId;
+    const transaction = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
+    if (transaction) {
+      return { status: 'committed', transaction: toTransactionResponse(transaction as TransactionRow), branchId: transaction.branchId };
+    }
+
+    const attempt = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+    if (!attempt) {
+      // Genuinely ambiguous, and deliberately left that way by this
+      // read-only check: either this key was never sent, or the request
+      // that will claim it is merely delayed anywhere before
+      // claimCheckoutAttempt's own INSERT. Reported as 'not_found' purely
+      // as a factual "no row currently exists" — NOT as a policy signal
+      // that it is safe to remint. The caller must treat this exactly like
+      // 'in_progress' (keep the key, do not remint) unless and until it
+      // calls abandonCheckoutAttempt and gets back 'abandoned'.
+      return { status: 'not_found', branchId: null };
+    }
+    if (attempt.status === 'failed') return { status: 'failed', branchId: attempt.branchId };
+    if (attempt.status === 'abandoned') return { status: 'abandoned', branchId: attempt.branchId };
+    // 'in_progress' (including the practically-unreachable case of a
+    // 'committed' attempt row whose Transaction the lookup above somehow
+    // missed) — never treated as safe to remint.
+    return { status: 'in_progress', branchId: attempt.branchId };
+  },
+
+  abandonCheckoutAttempt,
+
   async listTransactions(filters: TransactionListFilters) {
     const { transactions, total } = await transactionsRepository.listTransactions(filters);
     return {
@@ -1994,6 +2431,55 @@ export const transactionsService = {
       page: filters.page,
       limit: filters.limit,
     };
+  },
+
+  /**
+   * POS-PERF-P15R — actionable recovery for a sale whose background
+   * inventory deduction exhausted its retries (job status 'failed',
+   * surfaced as the critical badge in view-transaction-detail-dialog.tsx).
+   * The sale itself is already valid and paid for; this requeues only the
+   * stuck deduction job so the worker claims and retries it fresh on its
+   * next poll cycle, without touching the Transaction's own status (never
+   * voids or refunds anything) — see inventory-deduction.repository.ts
+   * requeueFailedJob's doc comment for why voiding was the wrong fallback.
+   */
+  async retryInventoryDeduction(transactionId: string, actor: ActorContext, ipAddress: string | null) {
+    const transaction = (await transactionsRepository.findTransactionById(transactionId)) as TransactionRow | null;
+    if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
+
+    const job = await inventoryDeductionRepository.findJobByTransactionId(transactionId);
+    if (!job) {
+      throw new TransactionError('INVENTORY_DEDUCTION_JOB_NOT_FOUND', 'This sale has no background inventory deduction job to retry', 404);
+    }
+    if (job.status !== 'failed') {
+      throw new TransactionError(
+        'INVENTORY_DEDUCTION_NOT_FAILED',
+        `This sale's inventory deduction is '${job.status}', not 'failed' — nothing to retry`,
+        409,
+      );
+    }
+
+    const requeued = await inventoryDeductionRepository.requeueFailedJob(job.id, transactionId);
+    if (!requeued) {
+      throw new TransactionError(
+        'INVENTORY_DEDUCTION_IN_PROGRESS',
+        'This job changed status just now (likely already claimed) — refresh and check its current status',
+        409,
+      );
+    }
+
+    void recordAuditLog({
+      action: 'INVENTORY_DEDUCTION_RETRY_REQUESTED',
+      entityType: 'inventory_deduction_job',
+      entityId: job.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId: transaction.branchId,
+      afterState: { transaction_id: transactionId, previous_status: 'failed', new_status: 'pending' },
+      ipAddress,
+    });
+
+    return { transaction_id: transactionId, job_id: job.id, status: 'pending' as const };
   },
 
   async voidTransaction(id: string, voidReason: string, actor: ActorContext, ipAddress: string | null) {
@@ -2021,7 +2507,7 @@ export const transactionsService = {
           }
           throw new TransactionError('TRANSACTION_ALREADY_VOIDED', 'This transaction has already been voided', 409);
         }
-        await reverseInventoryForTransaction(
+        await reverseOrCancelInventoryForTransaction(
           tx,
           transaction.branchId,
           transaction.id,
@@ -2140,7 +2626,7 @@ export const transactionsService = {
           }
           throw new TransactionError('TRANSACTION_ALREADY_REFUNDED', 'This transaction has already been refunded', 409);
         }
-        await reverseInventoryForTransaction(
+        await reverseOrCancelInventoryForTransaction(
           tx,
           transaction.branchId,
           transaction.id,

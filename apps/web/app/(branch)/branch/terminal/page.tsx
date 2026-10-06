@@ -39,12 +39,21 @@ import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useClockInLocation } from '@/hooks/use-clock-in-location';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
-import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof } from '@/hooks/queries/use-transactions';
+import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof, TransactionApiError } from '@/hooks/queries/use-transactions';
 import { useDiscountPolicy } from '@/hooks/queries/use-settings';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
+import { SaleStatusModal, type SaleSnapshot, type SalePopupPhase } from '@/components/pos/sale-status-modal';
+import {
+  resolveAndFenceCheckoutAttempt,
+  savePendingCheckoutAttempt,
+  clearPendingCheckoutAttempt,
+  readPendingCheckoutAttempt,
+  transactionToSaleSnapshot,
+  isDefiniteNoCommitErrorCode,
+} from '@/lib/checkout-recovery';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 
 // Task 140 — the same allowed-roles set ViewTransactionDetailDialog itself
@@ -459,10 +468,121 @@ export default function TerminalPage() {
   const [discountProofKey, setDiscountProofKey] = useState<string | null>(null);
   const [discountProofType, setDiscountProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
   const [discountProofPreviewUrl, setDiscountProofPreviewUrl] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<TransactionResponse | null>(null);
+  // POS-PERF-P15 — salePhase null means the sale popup is closed; non-null
+  // (with saleSnapshot always populated alongside it) drives ReceiptModal
+  // through 'saving' -> 'success' | 'error'. saleTransaction is only ever
+  // populated once phase is 'success' — see receipt-modal.tsx's doc
+  // comment for why the snapshot and the server-confirmed transaction are
+  // deliberately never merged into one object.
+  const [salePhase, setSalePhase] = useState<SalePopupPhase | null>(null);
+  const [saleSnapshot, setSaleSnapshot] = useState<SaleSnapshot | null>(null);
+  const [saleTransaction, setSaleTransaction] = useState<TransactionResponse | null>(null);
+  const [saleErrorMessage, setSaleErrorMessage] = useState<string | null>(null);
+  // "View Receipt" on the success confirmation opens the full ReceiptModal
+  // on top of it — kept as its own flag rather than folded into salePhase
+  // so closing the receipt view returns to the compact confirmation instead
+  // of closing everything.
+  const [isReceiptViewOpen, setIsReceiptViewOpen] = useState(false);
+  // One idempotency key per checkout *attempt* — generated on the first
+  // Charge click and reused verbatim by Retry, so a retry after a dropped
+  // response replays the same sale instead of risking a duplicate. Reset to
+  // null on a confirmed-success, a definite server rejection (one that
+  // proves nothing was persisted — see handleCharge's catch block), or a
+  // resolve-check that comes back 'not-found'. Left set on anything
+  // inconclusive (network failure, unreadable response) so the
+  // resolve-before-remint gate in handleCharge — or, across a reload, the
+  // mount-time recovery effect — settles the prior attempt's fate first.
+  const idempotencyKeyRef = useRef<string | null>(null);
+  // Fingerprint of the exact cart/payment fields the current idempotencyKey
+  // was minted for. Edit Cart deliberately does not clear idempotencyKeyRef
+  // (clearing it would risk a duplicate sale if the original request
+  // actually succeeded server-side and the cashier only saw a dropped
+  // response) — but if the cashier then genuinely *changes* the cart before
+  // charging again, resubmitting under the old key would hit the backend's
+  // idempotency-reuse guard (transactions.service.ts
+  // isIdempotencyReplayMatches) and charge would fail forever for that
+  // cart. Comparing against this fingerprint at charge time is what lets a
+  // charge-after-edit mint a fresh key instead, while an unmodified
+  // Retry/re-Charge still reuses the same one.
+  const lastChargeFingerprintRef = useRef<string | null>(null);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [isVoidRefundOpen, setIsVoidRefundOpen] = useState(false);
+  // POS-PERF-P15R2 — true while a dropped-response checkout attempt (this
+  // tab's own error, or one recovered after a reload/browser-close) is
+  // being resolved against the server before any new checkout under a
+  // different cart is allowed to start. See checkout-recovery.ts.
+  const [isResolvingPriorAttempt, setIsResolvingPriorAttempt] = useState(false);
+  // Set only when resolution came back 'unknown' (every status check
+  // network-failed) — the prior attempt's fate is still genuinely unknown,
+  // so cart edits stay blocked and this banner stays up until the cashier
+  // retries the check (same-cart Retry is unaffected; it's safe regardless).
+  const [unresolvedAttemptNotice, setUnresolvedAttemptNotice] = useState(false);
+
+  // POS-PERF-P15R2 — reload/browser-close recovery. A checkout attempt's
+  // idempotency key is persisted (lib/checkout-recovery.ts) the instant the
+  // charge request is sent, *before* it's known whether the request will
+  // succeed, time out, or the tab will close mid-flight. On the next mount
+  // of this page, any attempt left pending for this branch is resolved
+  // against the server exactly like an in-session dropped response is
+  // (same bounded poll) — this tab's own cart/payment state is gone after a
+  // reload, but the server's record of what actually happened is not.
+  useEffect(() => {
+    if (!branchId) return;
+    const pending = readPendingCheckoutAttempt(branchId);
+    if (!pending) return;
+
+    let cancelled = false;
+    setIsResolvingPriorAttempt(true);
+    void resolveAndFenceCheckoutAttempt(pending.idempotencyKey, branchId).then((outcome) => {
+      if (cancelled) return;
+      setIsResolvingPriorAttempt(false);
+      if (outcome.status === 'found') {
+        clearPendingCheckoutAttempt(branchId);
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleTransaction(outcome.transaction);
+        setSalePhase('success');
+      } else if (outcome.status === 'not-found') {
+        clearPendingCheckoutAttempt(branchId);
+      } else {
+        setUnresolvedAttemptNotice(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately branchId-only: this recovers at most once per mount per
+    // branch, not every time unrelated state changes.
+  }, [branchId]);
+
+  function handleRecheckPendingAttempt() {
+    if (!branchId) return;
+    const pending = readPendingCheckoutAttempt(branchId);
+    if (!pending) {
+      setUnresolvedAttemptNotice(false);
+      return;
+    }
+    setIsResolvingPriorAttempt(true);
+    void resolveAndFenceCheckoutAttempt(pending.idempotencyKey, branchId).then((outcome) => {
+      setIsResolvingPriorAttempt(false);
+      if (outcome.status === 'found') {
+        clearPendingCheckoutAttempt(branchId);
+        setUnresolvedAttemptNotice(false);
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleTransaction(outcome.transaction);
+        setSalePhase('success');
+      } else if (outcome.status === 'not-found') {
+        clearPendingCheckoutAttempt(branchId);
+        setUnresolvedAttemptNotice(false);
+      }
+      // 'unknown' — leave the banner up, nothing changed.
+    });
+  }
 
   // GCash/Maya/Other proof capture requires a live connection (see
   // createTransactionSchema's offline-must-be-cash rule) — there's no
@@ -1031,7 +1151,7 @@ export default function TerminalPage() {
     // isChargingRef is the real synchronous guard (see comment at its
     // declaration) — createTransaction.isPending alone does not reliably
     // block a second click event queued before React re-renders.
-    if (!branchId || createTransaction.isPending || isChargingRef.current) return;
+    if (!branchId || createTransaction.isPending || isChargingRef.current || isResolvingPriorAttempt) return;
     isChargingRef.current = true;
     setChargeError(null);
     const chargeClickedAt = performance.now();
@@ -1088,15 +1208,118 @@ export default function TerminalPage() {
       return;
     }
 
+    // POS-PERF-P15 — one idempotency key per checkout attempt, generated on
+    // the first click and reused verbatim by Retry/unmodified re-Charge
+    // (idempotencyKeyRef is only ever cleared on a confirmed success/New
+    // Sale below) — a retried request that actually succeeded server-side
+    // replays that same sale instead of creating a duplicate. A fresh key
+    // is minted instead whenever the cart/payment fields actually changed
+    // since the last attempt (see lastChargeFingerprintRef's doc comment) —
+    // otherwise a charge-after-Edit-Cart with a genuinely different cart
+    // would keep colliding with the backend's reuse guard forever.
+    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '');
+    const previousKey = idempotencyKeyRef.current;
+    const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
+
+    // The submitted-order snapshot, built entirely from client state already
+    // on screen — no server round trip has happened yet. Computed before the
+    // resolve-gate below (not just before the request) so a 'saving' popup
+    // can show immediately even while that gate is still polling — otherwise
+    // a changed-cart charge after a dropped response would look like
+    // nothing happened for however long resolution takes.
+    const snapshot: SaleSnapshot = {
+      items: cartLines.map((line) => ({
+        id: `${line.item.product_variant_id}-${line.index}`,
+        productName: line.productName,
+        variantName: line.variantName,
+        flavorName: line.flavorName,
+        quantity: line.quantity,
+        lineTotal: line.lineTotal,
+        optionSelections: line.optionSelections.map((option) => ({
+          option_id: option.option_id,
+          option_name: option.option_name,
+          price_adjustment: option.price_adjustment,
+        })),
+      })),
+      subtotal,
+      discountAmount,
+      discountType: discountType === 'none' ? null : discountType,
+      vatAmount,
+      totalAmount,
+      paymentMethod,
+      cashTendered: paymentMethod === 'cash' ? tenderedNumber : null,
+      changeGiven: paymentMethod === 'cash' ? change : null,
+    };
+    setSaleSnapshot(snapshot);
+    setSaleErrorMessage(null);
+    setSalePhase('saving');
+    setIsCheckoutOpen(false);
+
+    // POS-PERF-P15R2 — a changed cart after a *prior* attempt (one that
+    // this click's fingerprint no longer matches) must not just assume that
+    // prior attempt is done and safely mint a new key: the earlier dropped
+    // response proved nothing, and the earlier request can still be
+    // mid-flight server-side. Resolve it first — found means it already
+    // committed, so the right move is to show that confirmation, not charge
+    // the edited cart a second time; not-found means it's actually safe to
+    // proceed; unknown means stay blocked rather than guess.
+    if (previousKey !== null && !isUnmodifiedRetry) {
+      setIsResolvingPriorAttempt(true);
+      const outcome = await resolveAndFenceCheckoutAttempt(previousKey, branchId);
+      setIsResolvingPriorAttempt(false);
+
+      if (outcome.status === 'found') {
+        clearPendingCheckoutAttempt(branchId);
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        clearCart();
+        resetPaymentFields();
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleTransaction(outcome.transaction);
+        setSalePhase('success');
+        isChargingRef.current = false;
+        return;
+      }
+      if (outcome.status === 'unknown' || outcome.status === 'in-progress') {
+        setUnresolvedAttemptNotice(true);
+        setSaleErrorMessage(
+          outcome.status === 'in-progress'
+            ? 'The previous checkout attempt is still being processed on the server. Wait for it to finish before charging a different cart.'
+            : 'Could not confirm whether the previous checkout attempt went through. Check your connection, then try again before charging a different cart.',
+        );
+        setSalePhase('error');
+        isChargingRef.current = false;
+        return;
+      }
+      // 'not-found' — confirmed nothing committed under the old key; safe
+      // to proceed and mint a fresh one below.
+      clearPendingCheckoutAttempt(branchId);
+      setUnresolvedAttemptNotice(false);
+    }
+
+    const idempotencyKey = isUnmodifiedRetry ? (previousKey as string) : crypto.randomUUID();
+    idempotencyKeyRef.current = idempotencyKey;
+    lastChargeFingerprintRef.current = chargeFingerprint;
+    const payloadWithIdempotency: CreateTransactionInput = { ...payload, idempotency_key: idempotencyKey };
+    // Persisted *before* the request is sent — a reload/browser-close any
+    // time after this line is now recoverable (see the mount effect above).
+    // Overwrites the record from an unmodified retry with the same key,
+    // which is a no-op; overwrites a stale one from a cart edit that just
+    // resolved 'not-found' above, which is exactly what should happen.
+    savePendingCheckoutAttempt(branchId, idempotencyKey);
+
     try {
       const requestStartedAt = performance.now();
-      const transaction = await createTransaction.mutateAsync(payload);
+      const transaction = await createTransaction.mutateAsync(payloadWithIdempotency);
       const networkMs = performance.now() - requestStartedAt;
       const closeStartedAt = performance.now();
       clearCart();
       resetPaymentFields();
-      setIsCheckoutOpen(false);
-      setReceipt(transaction);
+      idempotencyKeyRef.current = null;
+      lastChargeFingerprintRef.current = null;
+      clearPendingCheckoutAttempt(branchId);
+      setSaleTransaction(transaction);
+      setSalePhase('success');
       // No cart contents/payment data — branch id and durations only, same
       // convention as the backend's "POS checkout stage timing" log.
       console.warn('[checkout] charge timing', {
@@ -1106,10 +1329,69 @@ export default function TerminalPage() {
         responseToCheckoutCloseMs: Math.round(performance.now() - closeStartedAt),
       });
     } catch (error) {
-      setChargeError(error instanceof Error ? error.message : 'Failed to record transaction');
+      // Cart is deliberately left untouched either way — Retry resubmits
+      // the exact same sale under the same key, and Edit Cart (onEditCart
+      // below) returns to the checkout review dialog with every submitted
+      // item exactly as entered.
+      //
+      // POS-PERF-P15R3 — idempotencyKeyRef/the persisted pending record are
+      // only cleared here when the server gave a response on the audited
+      // allowlist of codes that PROVE nothing was inserted (see
+      // isDefiniteNoCommitErrorCode's doc comment in checkout-recovery.ts).
+      // This is deliberately an allowlist, not "every code except
+      // NETWORK_ERROR/UNREADABLE_RESPONSE" — that blocklist was the bug: a
+      // generic 500 from an unrelated bug, a post-commit exception, or a
+      // proxy/gateway error relayed with some other JSON body all used to
+      // get waved through as "definitely didn't persist" even though none
+      // of them prove that. Anything not on the allowlist (including a
+      // thrown non-API error, CHECKOUT_ATTEMPT_IN_PROGRESS/_LOST_LEASE, or
+      // any future/unrecognized code) proves nothing, so the key/pending
+      // record stay live for the resolve-before-remint gate above (or the
+      // mount-time recovery effect, if the tab reloads first).
+      const isDefiniteRejection = error instanceof TransactionApiError && isDefiniteNoCommitErrorCode(error.code);
+      if (isDefiniteRejection) {
+        idempotencyKeyRef.current = null;
+        lastChargeFingerprintRef.current = null;
+        clearPendingCheckoutAttempt(branchId);
+      }
+      setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
+      setSalePhase('error');
     } finally {
       isChargingRef.current = false;
     }
+  }
+
+  // POS-PERF-P15 — resubmits the exact same cart under the exact same
+  // idempotencyKeyRef (handleCharge only generates a fresh one when the ref
+  // is null, which it isn't after a failed attempt): if the original
+  // request actually persisted server-side and only the response was lost,
+  // the server replays that same sale instead of creating a duplicate.
+  function handleRetryCharge() {
+    void handleCharge();
+  }
+
+  // Error phase only: dismiss the popup and return to the checkout review
+  // dialog. Cart and payment fields were never touched on failure, so the
+  // cashier lands back exactly where they left off.
+  function handleEditCartFromSaleError() {
+    setSalePhase(null);
+    setSaleSnapshot(null);
+    setSaleErrorMessage(null);
+    setIsCheckoutOpen(true);
+  }
+
+  function handleViewReceipt() {
+    setIsReceiptViewOpen(true);
+  }
+
+  // Success phase only: opens a new empty cart immediately — never waits on
+  // the server's background inventory deduction, which runs independently
+  // on the server (the inventory-deduction worker — see server.ts).
+  function handleNewSale() {
+    setSalePhase(null);
+    setSaleSnapshot(null);
+    setSaleTransaction(null);
+    setIsReceiptViewOpen(false);
   }
 
   // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
@@ -1351,6 +1633,22 @@ export default function TerminalPage() {
       {!isOnline && (
         <div className="bg-warning px-4 py-1 text-center text-xs font-medium text-warning-foreground">
           Offline — sales will be queued and synced automatically once you reconnect.
+        </div>
+      )}
+
+      {/* POS-PERF-P15R2 — a prior checkout attempt's fate could not be confirmed against the server (every status check network-failed), so charging a different cart stays blocked until this resolves. A same-cart Retry from the error popup is unaffected — that path never needed this check. */}
+      {unresolvedAttemptNotice && (
+        <div className="flex items-center justify-between gap-3 bg-destructive px-4 py-1.5 text-xs font-medium text-destructive-foreground">
+          <span>Could not confirm whether a previous checkout attempt went through. Charging a different cart is blocked until this is resolved.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 shrink-0 bg-background px-2 text-xs text-foreground"
+            disabled={isResolvingPriorAttempt}
+            onClick={handleRecheckPendingAttempt}
+          >
+            {isResolvingPriorAttempt ? <LoadingSpinner size="sm" /> : 'Check again'}
+          </Button>
         </div>
       )}
 
@@ -1673,7 +1971,18 @@ export default function TerminalPage() {
 
       {checkoutWorkspaceElement}
 
-      <ReceiptModal transaction={receipt} onClose={() => setReceipt(null)} />
+      {salePhase && saleSnapshot && (
+        <SaleStatusModal
+          phase={salePhase}
+          snapshot={saleSnapshot}
+          errorMessage={saleErrorMessage}
+          onRetry={handleRetryCharge}
+          onEditCart={handleEditCartFromSaleError}
+          onViewReceipt={handleViewReceipt}
+          onNewSale={handleNewSale}
+        />
+      )}
+      {isReceiptViewOpen && <ReceiptModal transaction={saleTransaction} onClose={handleNewSale} />}
 
       {canManageVoidRefund && (
         <VoidRefundSaleDialog branchId={branchId} open={isVoidRefundOpen} onOpenChange={setIsVoidRefundOpen} />

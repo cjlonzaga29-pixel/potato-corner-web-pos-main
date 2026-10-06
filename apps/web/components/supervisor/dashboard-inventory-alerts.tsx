@@ -49,7 +49,9 @@ export function DashboardInventoryAlerts({ alerts, isLoading }: DashboardInvento
                 className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
               >
                 <span className="min-w-0 truncate font-medium">{alert.name}</span>
-                <span className="shrink-0 tabular-nums text-muted-foreground">{alert.quantity_on_hand}</span>
+                <span className="shrink-0 tabular-nums text-muted-foreground" title={`${alert.quantity_on_hand} on hand, ${alert.quantity_reserved} reserved`}>
+                  {alert.quantity_available} avail.
+                </span>
                 <StatusBadge status={alert.severity} type="inventory" />
               </div>
             ))}

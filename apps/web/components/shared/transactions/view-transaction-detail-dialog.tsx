@@ -21,13 +21,19 @@ import { Textarea } from '@/components/ui/textarea';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { useAuthStore } from '@/stores/auth.store';
-import { useVoidTransaction, useRefundTransaction } from '@/hooks/queries/use-transactions';
+import { useVoidTransaction, useRefundTransaction, useRetryInventoryDeduction } from '@/hooks/queries/use-transactions';
 import { formatCurrency } from '@/lib/utils';
 
 const MIN_VOID_REASON_LENGTH = 10;
 const VOID_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH] as const;
 const MIN_REFUND_REASON_LENGTH = 10;
 const REFUND_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH] as const;
+// POS-PERF-P15R2 — must mirror transactions.router.ts's adminOrSupervisor
+// guard on the retry-inventory-deduction route exactly: a branch account can
+// void/refund its own branch's sales but is not authorized to force-requeue
+// a worker job, so it does not get this button even though it sees the rest
+// of this dialog.
+const RETRY_DEDUCTION_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR] as const;
 
 interface ViewTransactionDetailDialogProps {
   transaction: TransactionResponse | null;
@@ -71,6 +77,8 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
   const role = useAuthStore((state) => state.user?.role);
   const canVoid = role !== undefined && (VOID_ALLOWED_ROLES as readonly string[]).includes(role);
   const canRefund = role !== undefined && (REFUND_ALLOWED_ROLES as readonly string[]).includes(role);
+  const canRetryDeduction = role !== undefined && (RETRY_DEDUCTION_ALLOWED_ROLES as readonly string[]).includes(role);
+  const retryDeduction = useRetryInventoryDeduction(transaction?.id ?? '');
 
   const [isVoidConfirmOpen, setIsVoidConfirmOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
@@ -148,12 +156,31 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
                 <StatusBadge status={transaction.status} type="transaction" />
               </span>
               <span className="text-muted-foreground">Inventory Deduction</span>
-              <span>
+              <span className="flex items-center gap-2">
                 <Badge variant={transaction.inventory_deduction_status === 'failed' ? 'critical' : 'outline'}>
                   {transaction.inventory_deduction_status}
                 </Badge>
+                {transaction.inventory_deduction_status === 'failed' && canRetryDeduction && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    disabled={retryDeduction.isPending}
+                    onClick={() => retryDeduction.mutate()}
+                    aria-label="Retry"
+                  >
+                    {retryDeduction.isPending ? <LoadingSpinner size="sm" /> : 'Retry'}
+                  </Button>
+                )}
               </span>
             </div>
+            {transaction.inventory_deduction_status === 'failed' && (
+              <p className="text-xs text-muted-foreground">
+                The sale itself is final and paid for — only its background inventory deduction failed after exhausting
+                retries. Retrying requeues that job without touching the sale; it will show &quot;pending&quot; again
+                and settle to &quot;completed&quot; within a few seconds once the worker picks it up.
+              </p>
+            )}
 
             <div className="space-y-1 border-t pt-2">
               <p className="font-medium">Items Sold</p>

@@ -3,6 +3,7 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  '@embedded-postgres/windows-x64': true
   '@prisma/client': true
   '@prisma/engines': true
   '@sentry/cli': true
@@ -15,6 +16,7 @@ allowBuilds:
   unrs-resolver: true
 
 onlyBuiltDependencies:
+  - "@embedded-postgres/windows-x64"
   - "@prisma/client"
   - "@prisma/engines"
   - prisma

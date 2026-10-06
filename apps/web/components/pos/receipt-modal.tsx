@@ -47,8 +47,12 @@ interface ReceiptModalProps {
 }
 
 /**
- * Shown after a successful charge. print styles live in globals.css under
- * @media print, scoped to #receipt-print-area.
+ * Read-only viewer for an already-completed transaction — used both as the
+ * POS Terminal's original "sale completed" popup (via SaleStatusModal on
+ * the success phase, see sale-status-modal.tsx) and standalone wherever an
+ * admin/supervisor views a historical receipt (receipts/sales pages,
+ * reports drilldown). print styles live in globals.css under @media print,
+ * scoped to #receipt-print-area.
  *
  * Task 196 (visual redesign) — clear success state (icon + "Sale
  * completed"), receipt number/total/payment method/timestamp summary up

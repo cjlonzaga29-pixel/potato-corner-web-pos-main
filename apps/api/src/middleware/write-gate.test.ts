@@ -86,6 +86,17 @@ describe('writeGate — which paths/methods it protects', () => {
     expect(settingsRepository.findSystemSetting).not.toHaveBeenCalled();
   });
 
+  it('POS-PERF-P15 — the read-only checkout-recovery GET stays available during maintenance (it is a GET)', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({ value: { enabled: true, reason: 'x' } } as never);
+    const req = mockReq({ method: 'GET', path: '/api/transactions/by-idempotency-key/some-key' });
+    const res = mockRes();
+
+    const next = await runGate(req, res);
+
+    expect(next).toBe(true);
+    expect(settingsRepository.findSystemSetting).not.toHaveBeenCalled();
+  });
+
   it('ignores a path this gate does not own (e.g. /api/employees) even while the gate is closed', async () => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({ value: { enabled: true, reason: 'x' } } as never);
     const req = mockReq({ method: 'POST', path: '/api/employees' });
@@ -112,6 +123,11 @@ describe('writeGate — which paths/methods it protects', () => {
     ['POST /api/branches/:id/inventory/transfer', 'POST', '/api/branches/branch-1/inventory/transfer'],
     ['POST /api/branches/:id/inventory-stock/:itemId/receive', 'POST', '/api/branches/branch-1/inventory-stock/item-1/receive'],
     ['POST /api/branches/:id/inventory-stock/:itemId/adjust', 'POST', '/api/branches/branch-1/inventory-stock/item-1/adjust'],
+    // POS-PERF-P15 recovery routes — both are nested under /api/transactions,
+    // so no extra pattern was needed to pick them up: the gate's blanket
+    // transactions prefix already covers every route this module adds.
+    ['POST /api/transactions/:id/retry-inventory-deduction', 'POST', '/api/transactions/tx-1/retry-inventory-deduction'],
+    ['POST /api/transactions/by-idempotency-key/:key/abandon', 'POST', '/api/transactions/by-idempotency-key/some-key/abandon'],
   ])('blocks %s with 503 while the gate is closed', async (_label, method, path) => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({ value: { enabled: true, reason: 'deploy swap' } } as never);
     const req = mockReq({ method, path });

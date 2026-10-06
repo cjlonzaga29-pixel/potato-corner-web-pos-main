@@ -155,6 +155,7 @@ export type CartItem = z.infer<typeof schemas.cartItemSchema>;
 export type CreateTransactionInput = z.infer<typeof schemas.createTransactionSchema>;
 export type VoidTransactionRequest = z.infer<typeof schemas.voidTransactionRequestSchema>;
 export type RefundTransactionRequest = z.infer<typeof schemas.refundTransactionRequestSchema>;
+export type RetryInventoryDeductionResponse = z.infer<typeof schemas.retryInventoryDeductionResponseSchema>;
 export type TransactionListQuery = z.infer<typeof schemas.transactionListQuerySchema>;
 export type TransactionItemResponse = z.infer<typeof schemas.transactionItemResponseSchema>;
 export type TransactionResponse = z.infer<typeof schemas.transactionResponseSchema>;

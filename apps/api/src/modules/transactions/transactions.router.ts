@@ -95,6 +95,7 @@ interface CreateTransactionBody {
   discount_proof_type?: ImageProofType;
   is_offline_transaction: boolean;
   offline_provisional_number?: string;
+  idempotency_key?: string;
 }
 
 // authenticate -> authorize -> requirePasswordChange -> branchGuard -> shiftGuard -> validate -> handler.
@@ -188,6 +189,7 @@ router.post(
           isOfflineTransaction: body.is_offline_transaction,
           offlineProvisionalNumber: body.offline_provisional_number,
           deviceId: getDeviceIdHeader(req),
+          idempotencyKey: body.idempotency_key ?? null,
         },
         req.ip ?? null,
         typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
@@ -538,6 +540,152 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
   }
 });
 
+// POS-PERF-P15R3 — lets the terminal UI resolve a checkout attempt whose
+// HTTP response was lost (timeout, dropped connection, reload/browser-close
+// mid-request) against the database itself, instead of treating "I never
+// got a response" as proof the sale never happened. Must be declared before
+// the generic '/:transactionId' GET below — Express matches routes in
+// registration order, and 'by-idempotency-key' would otherwise be consumed
+// as a (nonexistent) transactionId. allRoles, same as the plain
+// GET /:transactionId right below: a cashier/branch account needs to resolve
+// its own uncertain attempt just as much as an admin reviewing one later.
+//
+// POS-PERF-P15R5 — this handler is now PURELY READ-ONLY: it used to also
+// durably fence a never-claimed key as a side effect of this GET (see the
+// removed call to claimCheckoutAttempt in the old resolveCheckoutAttempt),
+// which meant a plain status check could itself change server state. That
+// write — permanently abandoning a key so a replacement is actually safe to
+// mint — now only ever happens via the explicit POST
+// /by-idempotency-key/:key/abandon below, which requires its own branch
+// authorization exactly like this GET does, but is a deliberate action a
+// client takes, never a side effect of checking status.
+//
+// Response shapes (replacing the old plain transaction-or-404):
+//   200 { status: 'committed', transaction }  — sale exists, safe to show it
+//   200 { status: 'failed' }                  — original attempt confirmed
+//                                                its own pre-commit rollback;
+//                                                safe to mint a replacement
+//                                                key now, no abandon call
+//                                                needed
+//   200 { status: 'abandoned' }               — a client already durably
+//                                                abandoned this key via the
+//                                                POST action; permanently
+//                                                dead, safe to mint a
+//                                                replacement
+//   200 { status: 'in_progress' }             — original attempt is still
+//                                                live; caller MUST keep the
+//                                                same key and recheck
+//   404 { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }  — no CheckoutAttempt row
+//                                                exists yet (purely factual
+//                                                — NOT a signal that it is
+//                                                safe to remint; the claiming
+//                                                request may simply be
+//                                                delayed. The caller MUST
+//                                                call the abandon action and
+//                                                act on ITS result, never on
+//                                                this absence alone)
+// branchId authorization is enforced against whichever record actually
+// carries it (the Transaction for 'committed', the CheckoutAttempt
+// otherwise) — hasBranchAccess still gates which branch's attempt/sale a
+// caller is allowed to see or learn is in progress, exactly as before.
+//
+// ?branch_id= stays required even though this handler no longer writes:
+// callers always already know their own branch, and keeping the same
+// required param as the abandon POST below means one query-string
+// convention for both halves of this recovery flow.
+router.get(
+  '/by-idempotency-key/:key',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const branchId = typeof req.query.branch_id === 'string' ? req.query.branch_id : null;
+      if (!branchId) {
+        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'branch_id query parameter is required' }, meta: null });
+        return;
+      }
+      if (!(await hasBranchAccess(req.user, branchId))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      const resolution = await transactionsService.resolveCheckoutAttempt(req.params.key as string, branchId, req.user.user_id);
+      if (resolution.status === 'not_found') {
+        res.status(404).json({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
+        return;
+      }
+      if (!(await hasBranchAccess(req.user, resolution.branchId))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      if (resolution.status === 'committed') {
+        res.status(200).json({ data: { status: 'committed', transaction: resolution.transaction }, error: null, meta: null });
+        return;
+      }
+      res.status(200).json({ data: { status: resolution.status }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+interface AbandonCheckoutAttemptBody {
+  branch_id: string;
+}
+
+// POS-PERF-P15R5 — the explicit, authenticated write the GET above used to
+// perform as a read side effect. A client that has decided to give up on an
+// idempotency key (the GET above came back 'not_found' or it has simply
+// decided not to wait any longer) calls this BEFORE minting and submitting
+// a replacement key, so the old key is durably, permanently fenced first.
+// Requires its own branch authorization (hasBranchAccess), exactly like the
+// GET above and every other branch-scoped mutation in this API — body
+// branch_id, not query, since this is a POST.
+//
+// Response shapes:
+//   200 { status: 'abandoned' }    — this key is now permanently dead
+//                                     (fenced by this call or an earlier
+//                                     one); safe to mint a replacement
+//   200 { status: 'committed', transaction } — a sale already exists under
+//                                     this key; show it, do not abandon
+//   200 { status: 'in_progress' }  — a genuinely live attempt (an
+//                                     already-issued same-key retry, or the
+//                                     real original request) won the race
+//                                     for this key; NOT safe to mint a
+//                                     replacement — keep waiting
+router.post(
+  '/by-idempotency-key/:key/abandon',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as AbandonCheckoutAttemptBody;
+      const branchId = typeof body.branch_id === 'string' ? body.branch_id : null;
+      if (!branchId) {
+        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'branch_id is required' }, meta: null });
+        return;
+      }
+      if (!(await hasBranchAccess(req.user, branchId))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      const result = await transactionsService.abandonCheckoutAttempt(req.params.key as string, branchId, req.user.user_id);
+      if (result.status === 'committed') {
+        res.status(200).json({ data: { status: 'committed', transaction: result.transaction }, error: null, meta: null });
+        return;
+      }
+      res.status(200).json({ data: { status: result.status }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
 router.get('/:transactionId', authenticate, allRoles, requireActiveEmployee, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
@@ -590,6 +738,36 @@ router.get('/:transactionId/discount-proof', authenticate, allRoles, requireActi
     handleModuleError(error, res, next);
   }
 });
+
+// POS-PERF-P15R — admin-actionable recovery for a sale whose background
+// inventory deduction exhausted its retries ('failed'): requeue the job
+// without touching the sale itself. adminOrSupervisor only, same as the
+// other inventory-correcting actions in this file — a cashier/branch
+// account cannot force a reprocessing attempt.
+router.post(
+  '/:transactionId/retry-inventory-deduction',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const transaction = await transactionsService.getTransactionById(req.params.transactionId as string);
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      const result = await transactionsService.retryInventoryDeduction(
+        req.params.transactionId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
 
 router.post(
   '/:transactionId/void',

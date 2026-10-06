@@ -62,6 +62,7 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   useDiscountProof: () => ({ data: undefined, isLoading: false, isError: false }),
   useVoidTransaction: () => ({ mutate: vi.fn(), isPending: false }),
   useRefundTransaction: () => ({ mutate: vi.fn(), isPending: false }),
+  useRetryInventoryDeduction: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/hooks/use-auth', () => ({

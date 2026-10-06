@@ -188,6 +188,17 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
     mockUseUploadDiscountProof(accessTokenOverride, refreshOverrideToken);
     return { mutateAsync: mockUploadDiscountProofMutateAsync };
   },
+  // POS-PERF-P15R2 — a real class (not a mock fn): handleCharge's catch
+  // block does `error instanceof TransactionApiError`, which only works
+  // against the actual constructor.
+  TransactionApiError: class TransactionApiError extends Error {
+    code?: string;
+    constructor(message: string, code?: string) {
+      super(message);
+      this.name = 'TransactionApiError';
+      this.code = code;
+    }
+  },
 }));
 
 // Task 209.xx — Discount Settings. Defaults to the same 20%/20%/20%/enabled
@@ -217,6 +228,39 @@ vi.mock('@/lib/offline/cache', () => ({
 
 vi.mock('@/lib/offline/sync-queue', () => ({
   enqueueOfflineTransaction: vi.fn(),
+}));
+
+// POS-PERF-P15R2 — mocked at the module boundary (not via a real fetch/
+// localStorage) so tests can drive resolveAndFenceCheckoutAttempt's outcomes
+// ('found' / 'not-found' / 'in-progress' / 'unknown') directly, exactly like
+// every other query/mutation hook in this file is mocked rather than hitting
+// a real api-client/fetch stack. POS-PERF-P15R5 — the component now calls
+// resolveAndFenceCheckoutAttempt (which internally handles the GET-then-
+// abandon-POST protocol), not the bare read-only resolveCheckoutAttempt, so
+// that is the one mocked here.
+const { mockResolveAndFenceCheckoutAttempt, mockReadPendingCheckoutAttempt, mockSavePendingCheckoutAttempt, mockClearPendingCheckoutAttempt } = vi.hoisted(() => ({
+  mockResolveAndFenceCheckoutAttempt: vi.fn(),
+  mockReadPendingCheckoutAttempt: vi.fn(() => null as { idempotencyKey: string; savedAt: number } | null),
+  mockSavePendingCheckoutAttempt: vi.fn(),
+  mockClearPendingCheckoutAttempt: vi.fn(),
+}));
+
+vi.mock('@/lib/checkout-recovery', () => ({
+  resolveAndFenceCheckoutAttempt: mockResolveAndFenceCheckoutAttempt,
+  readPendingCheckoutAttempt: mockReadPendingCheckoutAttempt,
+  savePendingCheckoutAttempt: mockSavePendingCheckoutAttempt,
+  clearPendingCheckoutAttempt: mockClearPendingCheckoutAttempt,
+  transactionToSaleSnapshot: (transaction: { subtotal: number; discount_amount: number; discount_type: string | null; vat_amount: number; total_amount: number; payment_method: string; cash_tendered: number | null; change_given: number | null; items?: unknown[] }) => ({
+    items: [],
+    subtotal: transaction.subtotal,
+    discountAmount: transaction.discount_amount,
+    discountType: transaction.discount_type,
+    vatAmount: transaction.vat_amount,
+    totalAmount: transaction.total_amount,
+    paymentMethod: transaction.payment_method,
+    cashTendered: transaction.cash_tendered,
+    changeGiven: transaction.change_given,
+  }),
 }));
 
 vi.mock('@/components/pos/receipt-modal', () => ({ ReceiptModal: () => null }));
@@ -292,6 +336,11 @@ function catalogWith(variants: PosCatalogProduct['variants'][number][]): { produ
 beforeEach(() => {
   mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
   mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
+  localStorage.clear();
+  mockResolveAndFenceCheckoutAttempt.mockReset();
+  mockReadPendingCheckoutAttempt.mockReset().mockReturnValue(null);
+  mockSavePendingCheckoutAttempt.mockReset();
+  mockClearPendingCheckoutAttempt.mockReset();
 });
 
 // Task 209.25 (checkout workspace architecture) — payment method, discount,
@@ -1980,6 +2029,141 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
 
     expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
     resolveMutate({ id: 'txn-1', receipt_number: 'BR-001' });
+  });
+});
+
+// POS-PERF-P15R2 — a dropped checkout response proves nothing about the
+// server-side outcome. These cover: (1) a changed cart after an uncertain
+// attempt resolves the old attempt before charging under a new key, with
+// all three resolveCheckoutAttempt outcomes; (2) reload/browser-close
+// recovery via the mount-time pending-attempt check.
+describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () => {
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    mockCreateTransactionMutateAsync.mockClear();
+    mockClearCart.mockClear();
+    mockCreateTransactionIsPending.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    mockCreateTransactionIsPending.mockReturnValue(false);
+    cleanup();
+  });
+
+  async function chargeThenEditCartWithDifferentCashTendered() {
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Cart' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Cart' }));
+    // A genuinely different cart/payment — same quantity but different cash
+    // tendered — is what makes the next Charge click mint a new idempotency
+    // key instead of replaying the old one, which is what should trigger
+    // resolution of the old attempt first.
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '200' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  }
+
+  it('resolves the prior uncertain attempt before charging a changed cart, and proceeds once it resolves not-found', async () => {
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server. Please check your connection before trying again.'));
+    mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-2', receipt_number: 'BR-002' });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+
+    await chargeThenEditCartWithDifferentCashTendered();
+
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(2));
+    // The two calls must carry different idempotency keys — proof a fresh
+    // one was actually minted for the edited cart, not a stale replay.
+    const firstKey = (mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).idempotency_key;
+    const secondKey = (mockCreateTransactionMutateAsync.mock.calls[1]?.[0] as CreateTransactionInput).idempotency_key;
+    expect(firstKey).toBeTruthy();
+    expect(secondKey).toBeTruthy();
+    expect(secondKey).not.toBe(firstKey);
+  });
+
+  it('shows the already-committed sale instead of double-charging when resolution finds the prior attempt succeeded', async () => {
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server. Please check your connection before trying again.'));
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({
+      status: 'found',
+      transaction: {
+        id: 'txn-1',
+        receipt_number: 'BR-001',
+        subtotal: 100,
+        discount_amount: 0,
+        discount_type: null,
+        vat_amount: 10.71,
+        total_amount: 100,
+        payment_method: 'cash',
+        cash_tendered: 100,
+        change_given: 0,
+        items: [],
+      },
+    });
+
+    await chargeThenEditCartWithDifferentCashTendered();
+
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(1));
+    // Never sends the edited cart as a second charge — the resolved
+    // transaction IS the outcome.
+    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByText('Sale completed')).toBeInTheDocument());
+  });
+
+  it('blocks charging the changed cart and surfaces a clear message when resolution is inconclusive', async () => {
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server. Please check your connection before trying again.'));
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'unknown' });
+
+    await chargeThenEditCartWithDifferentCashTendered();
+
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(1));
+    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByText(/Could not confirm whether the previous checkout attempt went through/)).toBeInTheDocument());
+  });
+
+  it('recovers an attempt left pending across a reload: mount resolves it and shows the confirmed sale', async () => {
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-from-before-reload', savedAt: Date.now() });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({
+      status: 'found',
+      transaction: {
+        id: 'txn-9',
+        receipt_number: 'BR-009',
+        subtotal: 50,
+        discount_amount: 0,
+        discount_type: null,
+        vat_amount: 5.36,
+        total_amount: 50,
+        payment_method: 'cash',
+        cash_tendered: 50,
+        change_given: 0,
+        items: [],
+      },
+    });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-from-before-reload', 'branch-1'));
+    await waitFor(() => expect(screen.getByText('Sale completed')).toBeInTheDocument());
+    expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled();
+  });
+
+  it('clears the pending record on mount when the recovered attempt resolves not-found', async () => {
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now() });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-never-committed', 'branch-1'));
+    await waitFor(() => expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled());
+    expect(screen.queryByText('Sale completed')).not.toBeInTheDocument();
   });
 });
 

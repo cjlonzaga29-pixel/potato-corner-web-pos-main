@@ -11,6 +11,7 @@ import type {
   PaymentProofResponse,
   PaymentProofUploadResponse,
   RefundTransactionRequest,
+  RetryInventoryDeductionResponse,
   TransactionListQuery,
   TransactionListResponse,
   TransactionResponse,
@@ -23,9 +24,34 @@ interface ApiErrorShape {
   error: { code: string; message?: string } | string | null;
 }
 
+/**
+ * POS-PERF-P15R2 — carries error.code onto the thrown Error so callers that
+ * need to tell "the server definitively rejected this request" (any clean
+ * JSON error response — INSUFFICIENT_STOCK, VALIDATION_ERROR, etc., all of
+ * which prove no sale was created) apart from "the network/fetch itself
+ * failed" (apiClient's own NETWORK_ERROR, which proves nothing either way —
+ * the request may still be mid-flight server-side) can do so without
+ * re-parsing error.message. See checkout-recovery.ts and handleCharge's use
+ * of this on createTransaction specifically.
+ */
+export class TransactionApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string | undefined,
+  ) {
+    super(message);
+    this.name = 'TransactionApiError';
+  }
+}
+
 function errorMessage(response: ApiErrorShape, fallback: string): string {
   if (!response.error) return fallback;
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
+}
+
+function errorCode(response: ApiErrorShape): string | undefined {
+  if (!response.error) return undefined;
+  return typeof response.error === 'string' ? undefined : response.error.code;
 }
 
 export type TransactionFilters = Partial<TransactionListQuery>;
@@ -107,7 +133,7 @@ export function useCreateTransaction(accessTokenOverride?: string, refreshOverri
         accessTokenOverride,
         refreshOverrideToken,
       );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to record transaction'));
+      if (!response.data) throw new TransactionApiError(errorMessage(response, 'Failed to record transaction'), errorCode(response));
       return response.data;
     },
     onSuccess: (transaction) => {
@@ -312,6 +338,42 @@ export function useRefundTransaction(transactionId: string) {
       toast.success('Transaction refunded');
     },
     onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * POS-PERF-P15R2 — wires the existing admin-only retry-inventory-deduction
+ * endpoint (transactions.router.ts) into the UI. Success always means the
+ * job was requeued to 'pending'; failure is a 404 (no job to retry) or a 409
+ * (job is not 'failed' — already pending/processing/completed/cancelled, or
+ * it was claimed by the worker in the instant between this click and the
+ * server read). Both 409 variants come back with an actionable message from
+ * transactionsService.retryInventoryDeduction itself, so this surfaces
+ * error.message verbatim rather than a generic failure string — and still
+ * refetches the transaction so the badge reflects whatever actually
+ * happened server-side, not this client's stale assumption.
+ */
+export function useRetryInventoryDeduction(transactionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient<RetryInventoryDeductionResponse>(
+        `/api/transactions/${transactionId}/retry-inventory-deduction`,
+        { method: 'POST' },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to retry inventory deduction'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['transaction', transactionId] });
+      void queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      toast.success('Inventory deduction requeued — it will be retried shortly');
+    },
+    onError: (error: Error) => {
+      toast.error(error.message);
+      void queryClient.invalidateQueries({ queryKey: ['transaction', transactionId] });
+      void queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    },
   });
 }
 

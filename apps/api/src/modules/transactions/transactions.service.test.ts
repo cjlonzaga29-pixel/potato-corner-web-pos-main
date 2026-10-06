@@ -19,6 +19,11 @@ vi.mock('./transactions.repository.js', () => ({
     createTransaction: vi.fn(),
     findTransactionById: vi.fn(),
     findByOfflineIdentity: vi.fn().mockResolvedValue(null),
+    // POS-PERF-P15 — idempotent-replay fast path/race-loser lookup for
+    // online checkout retries. Null by default (no prior attempt exists)
+    // so every pre-existing fixture takes the normal create path; the
+    // dedicated describe block below overrides this per-test.
+    findByIdempotencyKey: vi.fn().mockResolvedValue(null),
     listTransactions: vi.fn(),
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
@@ -60,8 +65,24 @@ vi.mock('../../lib/prisma.js', () => {
     // below (it needs to see the per-test findVariantsForSale fixture).
     productComponent: { findMany: vi.fn() },
     inventoryStock: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
-    inventoryItem: { findMany: vi.fn().mockResolvedValue([]) },
+    inventoryItem: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn() },
+    // POS-PERF-P15 — reserveStockForSale's durable work row, created inside
+    // the same $transaction as the sale. findUnique defaults to null (no
+    // job exists) so every pre-existing void/refund fixture — written
+    // before this feature existed — keeps taking the legacy
+    // reverseInventoryForTransaction path through reverseOrCancelInventoryForTransaction
+    // unchanged; the dedicated describe block further down overrides this
+    // per-test to exercise the new pending/processing/failed dispatch.
+    inventoryDeductionJob: { create: vi.fn(), findUnique: vi.fn().mockResolvedValue(null), updateMany: vi.fn() },
+    // POS-PERF-P15R3 — checkout-attempt fencing row. findUnique defaults to
+    // null (no stale row) and $queryRaw's claimCheckoutAttempt INSERT ...
+    // RETURNING defaults to "claimed on the first try", matching this
+    // suite's pre-existing assumption that nothing ever blocks the claim —
+    // the dedicated describe block further down overrides both per-test to
+    // exercise contention/replay/failure-marking.
+    checkoutAttempt: { findUnique: vi.fn().mockResolvedValue(null) },
     $executeRaw: vi.fn().mockResolvedValue(undefined),
+    $queryRaw: vi.fn().mockResolvedValue([{ owner_token: 'mock-owner-token' }]),
     $transaction: vi.fn((callback: (tx: unknown) => unknown, _options?: unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
@@ -450,6 +471,34 @@ beforeEach(() => {
       criticalThreshold: null,
     }));
   }) as never);
+  // POS-PERF-P15 — reserveStockForSale's atomic conditional-UPDATE
+  // reservation check: real SQL is `quantity_on_hand - quantity_reserved >=
+  // needed`, simulated here against the same inventoryStockLevels map the
+  // old deductInventoryForSale fixtures already used (tests assume zero
+  // pre-existing reservation unless they set one explicitly via
+  // inventoryStock.findUnique below). Every other $executeRaw call in this
+  // module (advisory locks in reverseInventoryForTransaction/refundTransaction)
+  // doesn't care about its return value, so they fall through to the
+  // default `undefined`.
+  vi.mocked(prisma.$executeRaw).mockImplementation(((strings: readonly string[], ...values: unknown[]) => {
+    const sql = Array.isArray(strings) ? strings.join(' ') : '';
+    if (sql.includes('quantity_reserved') && sql.includes('>=')) {
+      const inventoryItemId = values[2] as string;
+      const quantity = Number(values[0]);
+      const available = inventoryStockLevels[inventoryItemId] ?? 1_000_000;
+      return Promise.resolve(quantity <= available ? 1 : 0);
+    }
+    return Promise.resolve(undefined);
+  }) as never);
+  // Shortfall error-message path only (reserveStockForSale fetches these
+  // only when the reservation above returned 0 rows affected).
+  vi.mocked(prisma.inventoryStock.findUnique).mockImplementation((async (args: unknown) => {
+    const call = args as { where?: { branchId_inventoryItemId?: { inventoryItemId?: string } } };
+    const id = call?.where?.branchId_inventoryItemId?.inventoryItemId ?? '';
+    return { quantityOnHand: new Prisma.Decimal(inventoryStockLevels[id] ?? 1_000_000), quantityReserved: new Prisma.Decimal(0) };
+  }) as never);
+  vi.mocked(prisma.inventoryItem.findUnique).mockResolvedValue({ name: 'Test Ingredient' } as never);
+  vi.mocked(prisma.inventoryDeductionJob.create).mockResolvedValue({ id: 'job-1' } as never);
   vi.mocked(nextCounterValue).mockResolvedValue(1);
   vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow() as never);
   vi.mocked(transactionsRepository.countActiveHoldOrdersForShift).mockResolvedValue(0);
@@ -1609,8 +1658,12 @@ describe('transactionsService.createTransaction — POS-PERF-P2R opt-in checkout
       expect(durationMs).toBeGreaterThanOrEqual(0);
     }
     // The stages this phase instruments beyond the pre-existing coarse log.
+    // POS-PERF-P15 — advisoryLocks/stockRead/stockUpdates (the old
+    // synchronous deduction's stages) no longer exist on this path at all;
+    // reserveStockForSale's single atomic conditional UPDATE per ingredient
+    // is now the one stage this phase times (stockReservation).
     expect(Object.keys(stages)).toEqual(
-      expect.arrayContaining(['branchShiftLookup', 'costLookup', 'receiptAllocation', 'saleInsert', 'advisoryLocks', 'stockRead', 'stockUpdates']),
+      expect.arrayContaining(['branchShiftLookup', 'costLookup', 'receiptAllocation', 'saleInsert', 'stockReservation']),
     );
 
     warnSpy.mockRestore();
@@ -1672,44 +1725,37 @@ describe('transactionsService.createTransaction — POS-PERF-P2R opt-in checkout
   });
 });
 
-// Task 209.47E — createTransaction previously returned repository
-// createTransaction's original INSERT snapshot verbatim, which still carried
-// inventoryDeductionStatus "pending" even though deductInventoryForSale had
-// already updated it to "completed" inside the very same DB transaction, one
-// call later. These lock in that the response now reflects the write that
-// actually happened, not the pre-deduction snapshot.
-describe('transactionsService.createTransaction — inventory deduction status response (Task 209.47E)', () => {
-  it('returns "completed" after a successful sale, not the pending pre-deduction snapshot', async () => {
-    // Matches real Prisma create() behavior: the row is still "pending" at
-    // the moment of insert, before deductInventoryForSale runs.
+// POS-PERF-P15 — superseded Task 209.47E's overlay-the-final-status
+// behavior: deductInventoryForSale doesn't run inline anymore at all, so
+// there is no later-in-the-transaction status write for createTransaction
+// to overlay onto the response. The response now reflects exactly the
+// repository's own INSERT snapshot (inventoryDeductionStatus defaults to
+// "pending" and stays that way until the background worker — see
+// inventory-deduction.service.ts — actually deducts it).
+describe('transactionsService.createTransaction — inventory deduction status response', () => {
+  it('returns "pending" after a successful sale — the background worker, not this request, completes the deduction', async () => {
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ inventoryDeductionStatus: 'pending' }) as never);
 
     const result = await transactionsService.createTransaction(baseInput, null);
 
-    expect(result.inventory_deduction_status).toBe('completed');
+    expect(result.inventory_deduction_status).toBe('pending');
   });
 
-  it('response inventory_deduction_status matches the value the in-transaction status update actually persisted', async () => {
-    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ inventoryDeductionStatus: 'pending' }) as never);
-    vi.mocked(prisma.transaction.update).mockResolvedValue({ inventoryDeductionStatus: 'completed' } as never);
-
-    const result = await transactionsService.createTransaction(baseInput, null);
-
-    expect(prisma.transaction.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { inventoryDeductionStatus: 'completed' } }),
-    );
-    expect(result.inventory_deduction_status).toBe('completed');
-  });
-
-  it('does not perform a second inventory deduction status write when building the response', async () => {
+  it('never writes to prisma.transaction.update during checkout', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
-    // One status write per sale — overlaying the final status onto the
-    // response must not trigger an extra deduction pass or extra write.
-    expect(prisma.transaction.update).toHaveBeenCalledTimes(1);
+    expect(prisma.transaction.update).not.toHaveBeenCalled();
   });
 
-  it('preserves the transaction id and receipt number while overlaying the final deduction status', async () => {
+  it('creates exactly one durable InventoryDeductionJob row, scoped to the new transaction and its branch', async () => {
+    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ id: 'txn-209-47e' }) as never);
+
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(prisma.inventoryDeductionJob.create).toHaveBeenCalledWith({ data: { transactionId: 'txn-209-47e', branchId: 'branch-1' } });
+  });
+
+  it('preserves the transaction id and receipt number from the repository INSERT verbatim', async () => {
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(
       transactionRow({ id: 'txn-209-47e', transactionNumber: 'MNL001-20260714-000077', inventoryDeductionStatus: 'pending' }) as never,
     );
@@ -1718,7 +1764,103 @@ describe('transactionsService.createTransaction — inventory deduction status r
 
     expect(result.id).toBe('txn-209-47e');
     expect(result.receipt_number).toBe('MNL001-20260714-000077');
-    expect(result.inventory_deduction_status).toBe('completed');
+    expect(result.inventory_deduction_status).toBe('pending');
+  });
+});
+
+// POS-PERF-P15 — stable idempotency key for checkout retries/double-clicks.
+describe('transactionsService.createTransaction — idempotency key', () => {
+  const idempotentReplayItems = [
+    {
+      id: 'item-1',
+      productId: 'product-1',
+      productVariantId: 'variant-1',
+      flavorId: null,
+      productNameSnapshot: 'Regular',
+      variantNameSnapshot: 'Solo',
+      flavorNameSnapshot: null,
+      unitPriceSnapshot: decimal(100),
+      quantity: 1,
+      lineTotal: decimal(100),
+      recipeVersion: 1,
+    },
+  ];
+
+  it('replays the prior result on the fast path, without resolving the cart or touching the database at all', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-prior', items: idempotentReplayItems }) as never,
+    );
+
+    const result = await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1' }, null);
+
+    expect(result.id).toBe('txn-prior');
+    expect(transactionsRepository.findBranch).not.toHaveBeenCalled();
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+    expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects the replay (never returns the stored row) when the stored sale belongs to a different branch/shift/cashier than the request presenting the key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-other-cashier', cashierId: 'user-9', items: idempotentReplayItems }) as never,
+    );
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1b' }, null)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REUSE',
+    });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects the replay when the stored sale has a different cart than the request presenting the key (key reused for a different sale)', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-different-cart', items: [{ productVariantId: 'variant-9', flavorId: null, quantity: 3 }] }) as never,
+    );
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1c' }, null)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REUSE',
+    });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('threads the idempotency key through to the repository create call', async () => {
+    await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-2' }, null);
+
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'key-2' }),
+      expect.anything(),
+    );
+  });
+
+  it('never looks up or requires an idempotency key when the client omits one (fails open, same as before this feature existed)', async () => {
+    await transactionsService.createTransaction(baseInput, null);
+
+    expect(transactionsRepository.findByIdempotencyKey).not.toHaveBeenCalled();
+  });
+
+  it('replays the race winner\'s result when a concurrent request for the same key already committed first (P2002 on the unique index)', async () => {
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: '5.0.0',
+      meta: { target: ['idempotency_key'] },
+    });
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2002);
+    vi.mocked(transactionsRepository.findByIdempotencyKey)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(transactionRow({ id: 'txn-winner', items: idempotentReplayItems }) as never);
+
+    const result = await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-3' }, null);
+
+    expect(result.id).toBe('txn-winner');
+  });
+
+  it('still surfaces an unrelated P2002 (not the idempotency key constraint) as a real error', async () => {
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: '5.0.0',
+      meta: { target: ['transaction_number'] },
+    });
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2002);
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-4' }, null)).rejects.toBe(p2002);
   });
 });
 
@@ -2012,6 +2154,212 @@ describe('transactionsService.getTransactionById', () => {
   });
 });
 
+// POS-PERF-P15R3 — a plain, side-effect-free read the terminal UI checks to
+// resolve a checkout attempt whose HTTP response was lost (timeout, dropped
+// connection, reload/browser-close mid-request). Unlike every other lookup
+// in this file it must never throw on a miss — it reports one of
+// 'committed' / 'failed' / 'abandoned' / 'in_progress' / 'not_found', never
+// an exception, since every one of those is an ordinary outcome the caller
+// branches on.
+//
+// POS-PERF-P15R5 — this is now a PURE READ: it must never call
+// claimCheckoutAttempt (no prisma.$queryRaw call, ever) regardless of what
+// it finds, because the durable fencing write moved to its own explicit
+// abandonCheckoutAttempt action below. Every test in this block asserts
+// prisma.$queryRaw was never touched, which is the actual regression this
+// revision closes — a GET must never have that write side effect again.
+describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3/R5)', () => {
+  it('returns committed with the mapped transaction when a sale carries this idempotency key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-1' }) as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-1', 'branch-1', 'cashier-1');
+
+    expect(result).toMatchObject({ status: 'committed', branchId: expect.any(String) });
+    if (result.status === 'committed') expect(result.transaction.id).toBe('txn-1');
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P15R5 — a never-claimed key is now reported as a bare,
+  // unfenced 'not_found' fact: no claim attempt, no write of any kind. The
+  // caller (checkout-recovery.ts resolveAndFenceCheckoutAttempt) is
+  // responsible for calling abandonCheckoutAttempt and treating ITS result
+  // as the safe-to-remint signal, never this read alone.
+  it('returns not_found (with no fencing write at all) when no sale exists and no attempt row was ever claimed for this key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce(null);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-missing', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'not_found', branchId: null });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('returns failed (safe to remint immediately, no abandon call needed) when the attempt row was definitively marked failed', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'failed', branchId: 'branch-9' } as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-failed', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'failed', branchId: 'branch-9' });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P15R5 — 'abandoned' is a distinct, permanent terminal state
+  // only ever written by the explicit abandon action; this read-only check
+  // must surface it as its own status, not fold it into 'failed'.
+  it('returns abandoned (also safe to remint, no further abandon call needed) when the key was already durably fenced by a prior call', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'abandoned', branchId: 'branch-9' } as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-abandoned', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'abandoned', branchId: 'branch-9' });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('returns in_progress (never safe to remint) when the attempt row is still live', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-9' } as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-live', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'in_progress', branchId: 'branch-9' });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+// POS-PERF-P15R5 — the explicit, authenticated write that replaces the old
+// GET-as-a-side-effect fencing. Only this function (and claimCheckoutAttempt,
+// from the real checkout path) ever calls prisma.$queryRaw for this table.
+describe('transactionsService.abandonCheckoutAttempt (POS-PERF-P15R5)', () => {
+  it('returns committed with the mapped transaction instead of abandoning when a sale already exists under this key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-1' }) as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-1', 'branch-1', 'cashier-1');
+
+    expect(result).toMatchObject({ status: 'committed' });
+    if (result.status === 'committed') expect(result.transaction.id).toBe('txn-1');
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('returns abandoned when the atomic fencing UPDATE/INSERT wins (never-claimed key, or an eligible failed/expired-lease row)', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ idempotency_key: 'key-missing' }]);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-missing', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'abandoned' });
+  });
+
+  // POS-PERF-P15R5 — this is the "already-issued retry races the abandon
+  // decision" scenario from the real-Postgres suite, exercised here at the
+  // unit level: a live (unexpired-lease) in_progress row means a genuinely
+  // concurrent holder won the race for this key, so abandoning must fail
+  // and report that real state rather than silently decide 'abandoned'.
+  it('returns in_progress (never abandoned) when a live attempt wins the race for this key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]); // UPDATE's WHERE did not match — live lease
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-1' } as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-live', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'in_progress' });
+  });
+
+  it('is idempotent: returns abandoned (not an error) when the key was already abandoned by an earlier call', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'abandoned', branchId: 'branch-1' } as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-already-abandoned', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'abandoned' });
+  });
+
+  it('returns committed when the key committed in the gap between the UPDATE losing and this call\'s own re-read', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null).mockResolvedValueOnce(transactionRow({ id: 'txn-2' }) as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'committed', branchId: 'branch-1' } as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-raced-commit', 'branch-1', 'cashier-1');
+
+    expect(result).toMatchObject({ status: 'committed' });
+    if (result.status === 'committed') expect(result.transaction.id).toBe('txn-2');
+  });
+});
+
+// POS-PERF-P15R3 — the durable fencing claim every checkout attempt must
+// win before any validation/insert work begins. Replaces the old "poll for
+// ~17s then assume not-found is safe" client-side protocol with a
+// server-enforced compare-and-swap: see claimCheckoutAttempt's doc comment.
+describe('transactionsService.createTransaction — checkout attempt fencing (POS-PERF-P15R3)', () => {
+  it('rejects with CHECKOUT_ATTEMPT_IN_PROGRESS when another attempt still owns a live lease after the settle-wait window, without touching the database', async () => {
+    vi.useFakeTimers();
+    try {
+      // Every claim/reclaim attempt loses, and every status check keeps
+      // seeing a live 'in_progress' row — simulates a genuinely still-
+      // running original attempt that outlasts the bounded settle-wait.
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([]);
+      vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValue({ status: 'in_progress', branchId: 'branch-1' } as never);
+
+      const pending = transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-contended' }, null);
+      const assertion = expect(pending).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_IN_PROGRESS' });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('marks the attempt failed when createTransaction throws a pre-commit validation error, so it is immediately reclaimable', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ owner_token: 'owner-abc' }]);
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValueOnce(null);
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-fails-validation' }, null)).rejects.toMatchObject({
+      code: 'INVALID_SHIFT',
+    });
+
+    const failedCalls = vi.mocked(prisma.$executeRaw).mock.calls.filter((call) => {
+      const strings = call[0] as unknown as readonly string[];
+      return Array.isArray(strings) && strings.join(' ').includes("SET \"status\" = 'failed'");
+    });
+    expect(failedCalls.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT mark the attempt failed when createTransaction throws an unclassified (non-TransactionError) error', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ owner_token: 'owner-def' }]);
+    const boom = new Error('unexpected database hiccup');
+    vi.mocked(transactionsRepository.findBranch).mockRejectedValueOnce(boom);
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-unexpected-error' }, null)).rejects.toBe(boom);
+
+    const failedCalls = vi.mocked(prisma.$executeRaw).mock.calls.filter((call) => {
+      const strings = call[0] as unknown as readonly string[];
+      return Array.isArray(strings) && strings.join(' ').includes("SET \"status\" = 'failed'");
+    });
+    expect(failedCalls).toHaveLength(0);
+  });
+
+  // POS-PERF-P15R5 — a key a client explicitly abandoned (POST
+  // /by-idempotency-key/:key/abandon) must reject outright, never wait on a
+  // lease that does not apply to this permanent terminal state. Covers both
+  // the "merely-delayed original request" and "already-issued same-key
+  // retry" scenarios the real-Postgres suite exercises against actual
+  // Postgres: both are just createTransaction calls that lose the claim to
+  // an 'abandoned' row from this unit's point of view.
+  it('rejects with CHECKOUT_ATTEMPT_ABANDONED (never CHECKOUT_ATTEMPT_IN_PROGRESS, no settle-wait) when the key was already explicitly abandoned', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]); // claim's INSERT...ON CONFLICT WHERE does not match 'abandoned'
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'abandoned', branchId: 'branch-1' } as never);
+
+    await expect(
+      transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-abandoned' }, null),
+    ).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_ABANDONED' });
+
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+});
+
 // FAST FIX — Reports (Daily Sales/Sold Product Transactions/Discount
 // Compliance) was falling back to the raw cashier_id UUID whenever the
 // client-side employees list (branch/page-scoped) didn't have a match, e.g.
@@ -2091,6 +2439,156 @@ describe('transactionsService.voidTransaction', () => {
       reason: result.void_reason,
     });
     expect(notifySuperAdmin).toHaveBeenCalledWith('void:requested', expectedPayload);
+  });
+});
+
+// POS-PERF-P15 — voidTransaction/refundTransaction now dispatch on the
+// sale's InventoryDeductionJob status (reverseOrCancelInventoryForTransaction)
+// instead of unconditionally reversing a synchronous deduction that may not
+// have happened yet. Exercised through voidTransaction; refundTransaction
+// shares the exact same dispatcher function.
+describe('transactionsService.voidTransaction — inventory deduction job dispatch', () => {
+  it('cancels a still-pending job and releases its reservation, without touching InventoryStock at all', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'pending' } as never);
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      { deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] },
+    ] as never);
+
+    await transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(prisma.inventoryDeductionJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: { in: ['pending', 'failed'] } },
+      data: { status: 'cancelled', claimToken: null, lockedAt: null },
+    });
+    const releaseCall = vi
+      .mocked(prisma.$executeRaw)
+      .mock.calls.find((call) => Array.isArray(call[0]) && call[0].join(' ').includes('quantity_reserved'));
+    expect(releaseCall).toBeDefined();
+    expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovement).not.toHaveBeenCalled();
+  });
+
+  it('cancels an exhausted (failed) job and releases its reservation the same way as pending', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'failed' } as never);
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([] as never);
+
+    await expect(
+      transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null),
+    ).resolves.toMatchObject({ status: 'voided' });
+    expect(prisma.inventoryDeductionJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'job-1', status: { in: ['pending', 'failed'] } } }),
+    );
+  });
+
+  it('fails closed with a retryable error while a worker is actively processing the deduction (no reversal, no cancel)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'processing' } as never);
+
+    await expect(
+      transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_IN_PROGRESS', statusCode: 409 });
+    expect(prisma.inventoryDeductionJob.updateMany).not.toHaveBeenCalled();
+    expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the cancel guard loses a race (job moved on between the read and the cancel attempt)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'pending' } as never);
+    // Guard affects 0 rows: a worker claimed it between the read above and this call.
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+
+    await expect(
+      transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_IN_PROGRESS', statusCode: 409 });
+  });
+
+  it('runs the full legacy reversal when the job has already completed, same as a pre-cutover transaction with no job row at all', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ shift: { id: 'shift-1', status: 'active', branchId: 'branch-1' } }) as never,
+    );
+    vi.mocked(transactionsRepository.voidTransaction).mockResolvedValue(transactionRow({ status: 'voided' }) as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'completed' } as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      {
+        productVariantId: 'variant-1',
+        flavorId: null,
+        quantity: 1,
+        deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }],
+      },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findUnique).mockResolvedValueOnce({ quantityOnHand: new Prisma.Decimal(8), quantityReserved: new Prisma.Decimal(0) } as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({ id: 'stock-1', quantityOnHand: new Prisma.Decimal(10) } as never);
+
+    await transactionsService.voidTransaction('txn-1', 'customer changed mind', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
+      where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: 'item-flour' } },
+      data: { quantityOnHand: { increment: 2 }, version: { increment: 1 } },
+    });
+  });
+});
+
+describe('transactionsService.retryInventoryDeduction — admin-actionable failed-job recovery (POS-PERF-P15R)', () => {
+  it('requeues a failed job back to pending without touching the Transaction status to void/refund', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'failed' } as never);
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+
+    const result = await transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null);
+
+    expect(result).toEqual({ transaction_id: 'txn-1', job_id: 'job-1', status: 'pending' });
+    expect(prisma.inventoryDeductionJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'failed' },
+      data: { status: 'pending', attempts: 0, lastError: null, nextAttemptAt: null, claimToken: null, lockedAt: null },
+    });
+    expect(prisma.transaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'txn-1' }, data: expect.objectContaining({ inventoryDeductionStatus: 'pending' }) }),
+    );
+  });
+
+  it('rejects with 404 when the transaction has no inventory deduction job at all', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce(null as never);
+
+    await expect(
+      transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_JOB_NOT_FOUND', statusCode: 404 });
+  });
+
+  it("rejects with 409 when the job isn't actually failed (e.g. still pending, processing, or already completed)", async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'completed' } as never);
+
+    await expect(
+      transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_NOT_FAILED', statusCode: 409 });
+    expect(prisma.inventoryDeductionJob.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 409 when the requeue guard loses a race (job left failed between the read and the requeue attempt)', async () => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(transactionRow() as never);
+    vi.mocked(prisma.inventoryDeductionJob.findUnique).mockResolvedValueOnce({ id: 'job-1', status: 'failed' } as never);
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+
+    await expect(
+      transactionsService.retryInventoryDeduction('txn-1', { id: 'admin-1', role: 'super_admin' }, null),
+    ).rejects.toMatchObject({ code: 'INVENTORY_DEDUCTION_IN_PROGRESS', statusCode: 409 });
   });
 });
 
@@ -2517,9 +3015,11 @@ describe('transactionsService.syncOfflineTransactions', () => {
 
   // Task 209.47E — the first offline sync for an identity goes through the
   // exact same createTransaction path as an online sale, so it must carry
-  // the same fix: the persisted post-deduction status, not the pending
-  // pre-deduction insert snapshot.
-  it('returns "completed" inventory_deduction_status on the first offline sync for an identity', async () => {
+  // POS-PERF-P15 — an offline sync replays through the exact same
+  // createTransaction path as a live sale (see the module comment above),
+  // so it gets the exact same "pending" result: the background worker, not
+  // this request, completes the deduction.
+  it('returns "pending" inventory_deduction_status on the first offline sync for an identity', async () => {
     const first = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0101' });
     vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ inventoryDeductionStatus: 'pending' }) as never);
 
@@ -2528,7 +3028,7 @@ describe('transactionsService.syncOfflineTransactions', () => {
       null,
     );
 
-    expect(result.results[0]?.transaction).toMatchObject({ inventory_deduction_status: 'completed' });
+    expect(result.results[0]?.transaction).toMatchObject({ inventory_deduction_status: 'pending' });
   });
 
   it('marks a failed item without stopping the rest of the batch from syncing', async () => {
@@ -3360,62 +3860,34 @@ describe('transactionsService.createTransaction — Phase C readiness engine gat
 // InventoryStock/InventoryStockMovement loops never execute — these tests are
 // the only unit-level coverage of that actual read-lock-decrement-ledger path.
 describe('transactionsService.createTransaction — branch inventory cutover ledger (InventoryStockMovement)', () => {
-  it('decrements InventoryStock and records a SALE movement for each recipe deduction line', async () => {
+  // POS-PERF-P15 — the real deduction (InventoryStock decrement + SALE
+  // movement) no longer happens inline during checkout at all; it moved to
+  // the background worker (see inventory-deduction.repository.test.ts
+  // #applyDeduction for the equivalent coverage this test used to provide).
+  // Checkout's own job now is reserving the quantity atomically and
+  // writing the durable work row — this locks in that reservation call.
+  it('reserves (never decrements) InventoryStock for each recipe deduction line, and writes a durable InventoryDeductionJob', async () => {
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([
       { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
     ] as never);
     inventoryStockLevels['item-flour'] = 10;
-    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
-      id: 'stock-1',
-      quantityOnHand: decimal(8),
-      lowStockThreshold: null,
-      criticalThreshold: null,
-    } as never);
 
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
-      where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: 'item-flour' } },
-      data: { quantityOnHand: { decrement: 2 }, version: { increment: 1 } },
-    });
-    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledWith(
-      [
-        expect.objectContaining({
-          branchId: 'branch-1',
-          inventoryItemId: 'item-flour',
-          movementType: 'SALE',
-          unitId: 'unit-g',
-          referenceType: 'transaction',
-          referenceId: 'txn-1',
-        }),
-      ],
-      expect.anything(),
-    );
+    expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
+    expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
+    const reservationCall = vi
+      .mocked(prisma.$executeRaw)
+      .mock.calls.find((call) => Array.isArray(call[0]) && call[0].join(' ').includes('quantity_reserved'));
+    expect(reservationCall).toBeDefined();
+    // values interpolated in reserveStockForSale's template, in order:
+    // [quantity, branchId, inventoryItemId, quantity].
+    expect(reservationCall?.[2]).toBe('branch-1');
+    expect(reservationCall?.[3]).toBe('item-flour');
+    expect(prisma.inventoryDeductionJob.create).toHaveBeenCalledWith({ data: { transactionId: 'txn-1', branchId: 'branch-1' } });
   });
 
-  // Task 209.30 — sale deduction must take the same branch-scoped advisory
-  // lock as the manual inventory path (universal-inventory.repository.ts's
-  // lockAndGetStock), not the bare item-only key it used before.
-  it('takes the advisory lock on the canonical branch-scoped key (matches the manual inventory path)', async () => {
-    vi.mocked(computeBomDeduction).mockResolvedValueOnce([
-      { inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' },
-    ] as never);
-    inventoryStockLevels['item-flour'] = 10;
-    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({
-      id: 'stock-1',
-      quantityOnHand: decimal(8),
-      lowStockThreshold: null,
-      criticalThreshold: null,
-    } as never);
-
-    await transactionsService.createTransaction(baseInput, null);
-
-    const expectedLockId = inventoryStockLockId('branch-1', 'item-flour');
-    const lockCalls = vi.mocked(prisma.$executeRaw).mock.calls.map((call) => call[1]);
-    expect(lockCalls).toContain(expectedLockId);
-  });
-
-  it('rejects with INSUFFICIENT_STOCK and records no movement when InventoryStock cannot cover the sale', async () => {
+  it('rejects with INSUFFICIENT_STOCK and writes no reservation or job when InventoryStock cannot cover the sale', async () => {
     vi.mocked(computeBomDeduction).mockResolvedValueOnce([
       { inventoryItemId: 'item-flour', quantity: 5, baseUnitId: 'unit-g' },
     ] as never);
@@ -3680,42 +4152,34 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
     expect(config.posTransaction.timeoutMs).toBeGreaterThan(5_000);
   });
 
-  // Test B
-  it('deducts the exact configured quantity from every InventoryStock row for a three-component BOM', async () => {
+  // Test B — POS-PERF-P15: checkout reserves every BOM component
+  // atomically instead of decrementing InventoryStock inline (that now
+  // happens in the background worker — see
+  // inventory-deduction.repository.test.ts#applyDeduction).
+  it('reserves the exact configured quantity for every InventoryStock row in a three-component BOM, and never decrements inline', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(prisma.inventoryStock.update).toHaveBeenCalledTimes(bomLines.length);
+    expect(prisma.inventoryStock.update).not.toHaveBeenCalled();
+    const reservationCalls = vi
+      .mocked(prisma.$executeRaw)
+      .mock.calls.filter((call) => Array.isArray(call[0]) && call[0].join(' ').includes('quantity_reserved'));
+    expect(reservationCalls).toHaveLength(bomLines.length);
     for (const line of bomLines) {
-      expect(prisma.inventoryStock.update).toHaveBeenCalledWith({
-        where: { branchId_inventoryItemId: { branchId: 'branch-1', inventoryItemId: line.inventoryItemId } },
-        data: { quantityOnHand: { decrement: line.quantity }, version: { increment: 1 } },
-      });
+      const match = reservationCalls.find((call) => call[3] === line.inventoryItemId);
+      expect(match).toBeDefined();
+      expect(match?.[2]).toBe('branch-1');
+      expect((match?.[1] as Prisma.Decimal).toNumber()).toBe(line.quantity);
     }
   });
 
-  // Test C — one batched createMany call instead of one `create` per
-  // component, but still exactly one InventoryStockMovement row per BOM
-  // component in that call's payload.
-  it('creates exactly one InventoryStockMovement row per BOM component, in a single batched call', async () => {
+  // Test C — checkout writes no ledger movement at all anymore; that's
+  // entirely the background worker's responsibility once it claims the
+  // durable InventoryDeductionJob this request creates instead.
+  it('creates no InventoryStockMovement rows during checkout — only the durable InventoryDeductionJob', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledTimes(1);
-    const [movementInputs] = vi.mocked(universalInventoryRepository.createStockMovements).mock.calls[0] as never as [
-      Record<string, unknown>[],
-      unknown,
-    ];
-    expect(movementInputs).toHaveLength(bomLines.length);
-    for (const line of bomLines) {
-      expect(movementInputs).toContainEqual(
-        expect.objectContaining({
-          branchId: 'branch-1',
-          inventoryItemId: line.inventoryItemId,
-          movementType: 'SALE',
-          unitId: line.baseUnitId,
-          referenceType: 'transaction',
-        }),
-      );
-    }
+    expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
+    expect(prisma.inventoryDeductionJob.create).toHaveBeenCalledTimes(1);
   });
 
   // Test D
@@ -3740,71 +4204,12 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
     );
   });
 
-  // SALE MOVEMENT COST SNAPSHOT FIX §2/§9 — each BOM component's SALE
-  // movement must carry its own unit_cost/total_cost, matching that
-  // component's own carrying cost (not a shared/blended value across the
-  // sale). The per-item costs deliberately differ from attachCostToDeductionLines'
-  // resolution (the `select` branch below) to prove the movement snapshot
-  // comes from deductInventoryForSale's own advisory-locked stock read
-  // (§10 concurrency), not from the earlier pre-lock cost lookup that only
-  // feeds TransactionItem.deductionSnapshot.
-  it('snapshots unit_cost/total_cost on every component SALE movement from its own locked-read carrying cost', async () => {
-    const lockedReadUnitCosts: Record<string, number> = { 'item-cup': 3, 'item-potato': 0.4, 'item-oil': 2.5 };
-    vi.mocked(prisma.inventoryStock.findMany).mockImplementation((async (args: unknown) => {
-      const call = args as { where?: { inventoryItemId?: { in?: string[] } }; select?: unknown };
-      const ids = (call?.where?.inventoryItemId?.in ?? []) as string[];
-      if (call?.select) return ids.map((id) => ({ inventoryItemId: id })); // attachCostToDeductionLines's pre-lock read — no cost here
-      return ids.map((id) => ({
-        inventoryItemId: id,
-        quantityOnHand: decimal(stockOnHand[id] ?? 0),
-        lowStockThreshold: null,
-        criticalThreshold: null,
-        unitCost: lockedReadUnitCosts[id] !== undefined ? new Prisma.Decimal(lockedReadUnitCosts[id] as number) : null,
-      }));
-    }) as never);
-
-    await transactionsService.createTransaction(baseInput, null);
-
-    const [movementInputs] = vi.mocked(universalInventoryRepository.createStockMovements).mock.calls[0] as never as [
-      Array<{ inventoryItemId: string; unitCost?: Prisma.Decimal; totalCost?: Prisma.Decimal }>,
-      unknown,
-    ];
-    for (const line of bomLines) {
-      const movement = movementInputs.find((m) => m.inventoryItemId === line.inventoryItemId);
-      const expectedUnitCost = lockedReadUnitCosts[line.inventoryItemId];
-      expect(movement?.unitCost?.toNumber()).toBe(expectedUnitCost);
-      expect(movement?.totalCost?.toNumber()).toBeCloseTo((expectedUnitCost as number) * line.quantity, 6);
-    }
-  });
-
-  // §5 — an item whose InventoryStock.unitCost was never initialized must
-  // record unit_cost/total_cost as undefined (Prisma writes this as SQL
-  // NULL), never a fabricated 0 standing in for "unknown".
-  it('leaves unit_cost/total_cost undefined on a SALE movement when the item has no carrying cost yet', async () => {
-    vi.mocked(prisma.inventoryStock.findMany).mockImplementation((async (args: unknown) => {
-      const call = args as { where?: { inventoryItemId?: { in?: string[] } }; select?: unknown };
-      const ids = (call?.where?.inventoryItemId?.in ?? []) as string[];
-      if (call?.select) return ids.map((id) => ({ inventoryItemId: id }));
-      return ids.map((id) => ({
-        inventoryItemId: id,
-        quantityOnHand: decimal(stockOnHand[id] ?? 0),
-        lowStockThreshold: null,
-        criticalThreshold: null,
-        unitCost: null,
-      }));
-    }) as never);
-
-    await transactionsService.createTransaction(baseInput, null);
-
-    const [movementInputs] = vi.mocked(universalInventoryRepository.createStockMovements).mock.calls[0] as never as [
-      Array<{ unitCost?: unknown; totalCost?: unknown }>,
-      unknown,
-    ];
-    for (const movement of movementInputs) {
-      expect(movement.unitCost).toBeUndefined();
-      expect(movement.totalCost).toBeUndefined();
-    }
-  });
+  // POS-PERF-P15 — the per-component SALE movement unit_cost/total_cost
+  // snapshot coverage that used to live here (SALE MOVEMENT COST SNAPSHOT
+  // FIX §2/§5/§9) moved to inventory-deduction.repository.test.ts
+  // #applyDeduction, since that's the only place a SALE movement is
+  // written now — this describe block's checkout path never reaches that
+  // code at all anymore.
 });
 
 // Test F — a forced P2028 ("Transaction already closed") must map to a

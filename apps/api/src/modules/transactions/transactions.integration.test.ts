@@ -22,6 +22,7 @@ const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL);
 // a query actually runs, which stays gated by describe.skipIf below.
 const { prisma } = await import('../../lib/prisma.js');
 const { transactionsService } = await import('./transactions.service.js');
+const { inventoryDeductionService } = await import('../inventory-deduction/inventory-deduction.service.js');
 
 describe.skipIf(!canRunIntegrationTests)('transactions integration', () => {
   beforeAll(async () => {
@@ -244,6 +245,12 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
 
     expect(result.status).toBe('completed');
 
+    // POS-PERF-P15 — createTransaction returns as soon as the sale is
+    // recorded; the actual InventoryStock decrement + movement row is
+    // written later by the background deduction worker. Drain it before
+    // asserting on stock, same as checkout-worker.integration.test.ts.
+    await inventoryDeductionService.runCycle(10);
+
     const [stockA, stockB] = await Promise.all([
       prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId: branchAId, inventoryItemId: potatoId } } }),
       prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId: branchB.branchId, inventoryItemId: potatoId } } }),
@@ -337,6 +344,10 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
 
+    // POS-PERF-P15 — drain the background deduction worker before the
+    // winning sale's stock decrement is actually visible (see above).
+    await inventoryDeductionService.runCycle(10);
+
     const stockE = await prisma.inventoryStock.findUniqueOrThrow({
       where: { branchId_inventoryItemId: { branchId: branchE.branchId, inventoryItemId: potatoId } },
     });
@@ -365,6 +376,10 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     expect(fulfilled).toHaveLength(2);
     expect(rejected).toHaveLength(3);
     for (const r of rejected) expect(r.reason).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+
+    // POS-PERF-P15 — drain the background deduction worker before both
+    // winning sales' stock decrements are actually visible (see above).
+    await inventoryDeductionService.runCycle(10);
 
     const stockF = await prisma.inventoryStock.findUniqueOrThrow({
       where: { branchId_inventoryItemId: { branchId: branchF.branchId, inventoryItemId: potatoId } },

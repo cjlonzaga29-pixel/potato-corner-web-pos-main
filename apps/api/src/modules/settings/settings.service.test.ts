@@ -557,3 +557,106 @@ describe('settingsService.getRegularShiftMinutes', () => {
     await expect(settingsService.getRegularShiftMinutes()).resolves.toBe(450);
   });
 });
+
+// POS-PERF-P16 — operational write gate (blocks checkout + inventory
+// mutations during a free-plan maintenance/deploy window). Same SystemSetting
+// KV pattern as work_hours_policy above.
+describe('settingsService.getWriteGate', () => {
+  it('defaults to open (enabled: false) when no operational_write_gate row exists', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+
+    const state = await settingsService.getWriteGate();
+
+    expect(state.enabled).toBe(false);
+    expect(state.reason).toBeNull();
+    expect(state.updatedAt).toBeNull();
+    expect(state.updatedBy).toBeNull();
+    expect(state.activeGatedRequests).toBe(0);
+  });
+
+  it('returns the persisted closed state once an admin has closed it', async () => {
+    const closedAt = new Date('2026-10-06T00:00:00.000Z');
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'operational_write_gate',
+      value: { enabled: true, reason: 'Render deploy swap' },
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: closedAt,
+      updatedAt: closedAt,
+    } as never);
+
+    const state = await settingsService.getWriteGate();
+
+    expect(state.enabled).toBe(true);
+    expect(state.reason).toBe('Render deploy swap');
+    expect(state.updatedBy).toBe('admin-1');
+    expect(state.updatedAt).toBe(closedAt.toISOString());
+  });
+});
+
+describe('settingsService.setWriteGate', () => {
+  it('closing the gate persists {enabled:true, reason} and records an audit log', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+
+    await settingsService.setWriteGate({ enabled: true, reason: 'Render deploy swap' }, ACTOR, null);
+
+    expect(settingsRepository.upsertSystemSetting).toHaveBeenCalledWith(
+      'operational_write_gate',
+      { enabled: true, reason: 'Render deploy swap' },
+      'admin-1',
+      expect.any(String),
+    );
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'WRITE_GATE_ENABLED',
+        entityType: 'system_setting',
+        entityId: 'operational_write_gate',
+        actorId: 'admin-1',
+        afterState: { enabled: true, reason: 'Render deploy swap' },
+      }),
+    );
+  });
+
+  it('reopening the gate persists {enabled:false, reason:null} and records an audit log, even with no reason given', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1',
+      key: 'operational_write_gate',
+      value: { enabled: true, reason: 'Render deploy swap' },
+      description: null,
+      updatedBy: 'admin-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+
+    await settingsService.setWriteGate({ enabled: false }, ACTOR, null);
+
+    expect(settingsRepository.upsertSystemSetting).toHaveBeenCalledWith(
+      'operational_write_gate',
+      { enabled: false, reason: null },
+      'admin-1',
+      expect.any(String),
+    );
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'WRITE_GATE_DISABLED' }));
+  });
+
+  it('rejects closing the gate with no reason — even if a caller bypassed the router-level schema check', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+
+    await expect(settingsService.setWriteGate({ enabled: true }, ACTOR, null)).rejects.toMatchObject({
+      code: 'REASON_REQUIRED',
+    });
+    expect(settingsRepository.upsertSystemSetting).not.toHaveBeenCalled();
+  });
+
+  it('updateWriteGateSchema rejects enabled:true with no reason, and enabled:true with an empty-string reason', async () => {
+    const { updateWriteGateSchema } = await import('@potato-corner/shared');
+
+    expect(updateWriteGateSchema.safeParse({ enabled: true }).success).toBe(false);
+    expect(updateWriteGateSchema.safeParse({ enabled: true, reason: '' }).success).toBe(false);
+    expect(updateWriteGateSchema.safeParse({ enabled: true, reason: 'ok' }).success).toBe(true);
+    expect(updateWriteGateSchema.safeParse({ enabled: false }).success).toBe(true);
+  });
+});

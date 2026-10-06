@@ -7,12 +7,14 @@ import {
   type DiscountPolicy,
   type DiscountPolicyResponse,
   type WorkHoursPolicyResponse,
+  type WriteGateResponse,
   type UpdateNotificationPreferencesInput,
   type UpdatePaymentMethodConfigInput,
   type UpdateReceiptConfigInput,
   type UpdateSecurityPolicyInput,
   type UpdateDiscountPolicyInput,
   type UpdateWorkHoursPolicyInput,
+  type UpdateWriteGateInput,
   CONFIGURABLE_DISCOUNT_TYPES,
 } from '@potato-corner/shared';
 import type {
@@ -29,9 +31,13 @@ import {
   DISCOUNT_POLICY_KEY,
   DEFAULT_WORK_HOURS_POLICY,
   WORK_HOURS_POLICY_KEY,
+  DEFAULT_WRITE_GATE_STATE,
+  WRITE_GATE_KEY,
+  type WriteGateStateValue,
   SettingsError,
 } from './settings.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { getActiveGatedRequestCount } from '../../middleware/write-gate.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { assertBranchAccess as sharedAssertBranchAccess } from '../../lib/branch-access.js';
 
@@ -340,5 +346,56 @@ export const settingsService = {
   async getRegularShiftMinutes(): Promise<number> {
     const policy = await settingsService.getWorkHoursPolicy();
     return Math.round(policy.regularHours * 60);
+  },
+
+  /** POS-PERF-P16 — current operational write-gate state, plus this process's own in-flight gated-request count (see middleware/write-gate.ts). */
+  async getWriteGate(): Promise<WriteGateResponse> {
+    const setting = await settingsRepository.findSystemSetting(WRITE_GATE_KEY);
+    const state = (setting?.value as unknown as WriteGateStateValue | undefined) ?? DEFAULT_WRITE_GATE_STATE;
+    return {
+      enabled: state.enabled,
+      reason: state.reason,
+      updatedAt: setting?.updatedAt.toISOString() ?? null,
+      updatedBy: setting?.updatedBy ?? null,
+      activeGatedRequests: getActiveGatedRequestCount(),
+    };
+  },
+
+  /**
+   * POS-PERF-P16 — opens or closes the write gate. Enabling requires a
+   * reason (enforced by updateWriteGateSchema at the router layer, and
+   * re-checked here since this is the actual write path); disabling does
+   * not. Audit-logged either way — this is the one lever that blocks every
+   * cashier's checkout and every branch's inventory writes at once, so who
+   * flipped it and why must be in the tamper-evident audit chain, not just
+   * this row's own updatedBy/updatedAt columns.
+   */
+  async setWriteGate(data: UpdateWriteGateInput, updatedBy: ActorContext, ipAddress: string | null): Promise<WriteGateResponse> {
+    if (data.enabled && !data.reason) {
+      throw new SettingsError('REASON_REQUIRED', 'A reason is required when closing the write gate', 422);
+    }
+
+    const before = await settingsService.getWriteGate();
+    const value: WriteGateStateValue = { enabled: data.enabled, reason: data.enabled ? (data.reason as string) : null };
+
+    await settingsRepository.upsertSystemSetting(
+      WRITE_GATE_KEY,
+      value as unknown as Prisma.InputJsonValue,
+      updatedBy.user_id,
+      'Operational write gate — blocks checkout and inventory-mutating writes during a maintenance window (POS-PERF-P16)',
+    );
+
+    await recordAuditLog({
+      action: data.enabled ? 'WRITE_GATE_ENABLED' : 'WRITE_GATE_DISABLED',
+      entityType: 'system_setting',
+      entityId: WRITE_GATE_KEY,
+      actorId: updatedBy.user_id,
+      actorRole: updatedBy.role,
+      beforeState: before,
+      afterState: value,
+      ipAddress,
+    });
+
+    return settingsService.getWriteGate();
   },
 };

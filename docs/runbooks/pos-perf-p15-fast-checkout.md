@@ -755,6 +755,33 @@ from the live services, not from git history on this machine alone:**
      response the old API used to return. The new ~2s async worker lag
      before `inventory_deduction_status` flips to `completed` causes no
      UI regression for this specific, actually-deployed frontend.
+   - **This was verified by actually running the live P13 frontend against
+     the new response shape, not inferred from the optional `idempotency_key`
+     field alone.** A disposable worktree was checked out at the exact
+     commit currently live in production (`ec0e0976c02979f48aa3e48438b0df8099108239`),
+     its `packages/shared` was rebuilt against this repo's current (HEAD)
+     type/schema definitions, and:
+     - `tsc --noEmit` on `apps/web` reported **zero** type errors in any
+       checkout-path file (`terminal/page.tsx`, `receipt-modal.tsx`,
+       `use-transactions.ts`, `view-transaction-detail-dialog.tsx`) — no
+       field the P13 frontend reads was renamed, removed, or narrowed. (The
+       only errors anywhere in the old `apps/web` tree were two unrelated
+       pre-existing test fixtures for a low-stock-alert type that tightened
+       unrelated optional fields to required — not on the checkout path, and
+       not shipped in any built bundle.)
+     - P13's own existing test suite for the terminal page, run unmodified
+       against those rebuilt types, **passed all 105 tests** — including
+       the charge-success assertions that exercise cart-clear/checkout-close
+       ("New Sale") behavior.
+     - A new, targeted render test exercised `ReceiptModal` (P13's actual
+       component, unmodified) against a transaction object shaped exactly
+       like `toTransactionResponse`'s real P15 output for a sale whose
+       background deduction has **not** completed
+       (`inventory_deduction_status: 'pending'`): the receipt number and
+       total rendered correctly and the "New Sale" control closed the
+       receipt as expected — confirming the pending status causes no
+       render error and no missed UI update, empirically, not just by
+       reading `use-transactions.ts`'s invalidation list.
    - **Conclusion: the new API is forward-compatible with the currently-live
      frontend for the full duration of any rollout window.** This removes
      a false urgency (no "ship both together or a tab breaks" pressure) —
@@ -770,11 +797,49 @@ from the live services, not from git history on this machine alone:**
 
 4. **Correcting "a single push enforces ordering":** verified against
    `.github/workflows/deploy-production.yml`, not assumed.
-   - Migration-before-API-deploy **is** enforced: `prisma migrate deploy`
-     against `PRODUCTION_DATABASE_URL_DIRECT` and the
+   - Migration-before-API-deploy **is** enforced *inside the workflow*:
+     `prisma migrate deploy` against `PRODUCTION_DATABASE_URL_DIRECT` and the
      `curl … RENDER_DEPLOY_HOOK_PRODUCTION` step are sequential steps in the
-     same job, in that order. A push cannot reach the deploy hook without
-     the migration step having already succeeded.
+     same job, in that order. A push cannot reach the *workflow's own*
+     deploy-hook step without the migration step having already succeeded.
+   - **This does NOT mean migration-before-deploy is enforced for the API
+     service as a whole — Render's `autoDeploy` is a second, independent
+     deploy trigger the workflow has no control over.** Re-verified directly
+     (`render services -o json --confirm` for `srv-d9cok48js32c73dss310`):
+     `autoDeploy: "yes"`, `autoDeployTrigger: "commit"` on `branch: "main"`.
+     Per Render's own documentation (`render.com/docs/deploys`), "On Commit"
+     auto-deploy "triggers a deploy as soon as you push or merge a change to
+     your linked branch" — it watches the GitHub branch directly via
+     Render's own GitHub App integration and does not wait for, or know
+     about, any GitHub Actions run on that same push. (Render's docs note an
+     alternative trigger, "After CI Checks Pass", which *does* wait for
+     GitHub-reported check results — this service is not configured that
+     way; it is on "On Commit".) Concretely, the moment this release's push
+     lands on GitHub, **two independent things start deploying the API
+     service**: Render's own auto-deploy (immediate) and this workflow's CI
+     → migration → `curl` sequence (only after the full CI gate passes,
+     commonly several minutes later). Auto-deploy's build+swap routinely
+     finishes **before** the workflow even reaches its migration step,
+     which means the new application code — expecting `quantityReserved`,
+     `idempotency_key`, and `inventory_deduction_jobs` to exist — can go
+     live and start serving checkout traffic against the *old*, pre-migration
+     schema. This is strictly worse than the old/new-code write-semantics
+     hazard described above in "The actual rolling-deploy hazard": that
+     hazard is about two versions of *code* disagreeing on write semantics;
+     this is new code running with its required schema not there at all,
+     which fails hard (every checkout 500s) rather than silently overselling.
+     **Corrective step, required before any push for this release (added to
+     the Executable release sequence below):** disable Render `autoDeploy`
+     for this service (dashboard → Settings → Build & Deploy → Auto-Deploy →
+     **Off**, or `render services update srv-d9cok48js32c73dss310
+     --auto-deploy=false --confirm`) before pushing to `main`, so the
+     workflow's own post-migration `curl … RENDER_DEPLOY_HOOK_PRODUCTION`
+     step becomes the *only* thing that deploys the API service. Deploy
+     hooks are a separate, always-available mechanism — Render's docs list
+     them as a manual-trigger method distinct from auto-deploy, so turning
+     auto-deploy off does not disable the hook the workflow already curls.
+     Re-enabling auto-deploy afterward (if desired for ordinary, non-schema
+     -changing pushes) is the owner's call, not required by this task.
    - **Frontend-vs-API ordering is not enforced, by anything.** The
      workflow has no step for `apps/web` at all — Vercel's own GitHub
      integration deploys it independently, on its own schedule, with zero
@@ -820,14 +885,27 @@ re-asserted from the earlier revision):
   none found), and building one is out of scope for this release-prep task.
 
 **Conclusion: no verified mechanism on the current plan can pause incoming
-checkout traffic while keeping the in-process worker alive to drain
-in-flight reservations.** The only verified lever that does that
-(Maintenance Mode) requires a paid Web Service plan. Confirming whether
-suspend is a usable substitute would require actually suspending the live
-production service to observe its behavior — outside what this task
-authorizes (no production writes/suspend actions). This report states that
-limitation plainly rather than treating an unverified suspend/recreate
-behavior as confirmed, and it does not change billing on its own authority.
+checkout traffic.** The only verified lever that does that (Maintenance
+Mode) requires a paid Web Service plan. Confirming whether suspend is a
+usable substitute would require actually suspending the live production
+service to observe its behavior — outside what this task authorizes (no
+production writes/suspend actions). This report states that limitation
+plainly rather than treating an unverified suspend/recreate behavior as
+confirmed, and it does not change billing on its own authority.
+
+**This is the first P15 rollout — not a rollback — so the requirement is a
+plain traffic pause, nothing more.** No P15 job/reservation rows exist on
+the currently-live (pre-P15) application; there is nothing to drain. The
+"keep the in-process worker alive while traffic is paused" property that
+Maintenance Mode happens to also provide (process stays up, only HTTP is
+blocked) is what the *rollback* procedure above depends on, to drain
+already-created jobs before swapping code back. For this rollout, a lever
+that paused traffic by stopping the instance outright (if one existed and
+were verified safe) would be just as sufficient as Maintenance Mode,
+because there is no in-flight worker state this release needs preserved
+while paused — do not treat "must keep the worker running" as a blocking
+requirement for *this* release; it is not one. It only becomes relevant the
+first time this feature is ever rolled back.
 
 ### Executable release sequence
 
@@ -836,6 +914,21 @@ intended commit range with `git log origin/main..main`, and confirm no one
 else is mid-push — the moment this push lands, GitHub Actions, Render, and
 Vercel all begin reacting to it independently, per the ordering facts in
 (4) above.
+
+**Mandatory for this release specifically — disable Render auto-deploy
+before pushing:** re-confirm `render services -o json --confirm` still
+shows `autoDeployTrigger: "commit"` for `srv-d9cok48js32c73dss310`, then
+turn it off (dashboard → the service → Settings → Build & Deploy →
+Auto-Deploy → **Off**, or `render services update
+srv-d9cok48js32c73dss310 --auto-deploy=false --confirm`). Per (4) above,
+leaving it on means Render deploys the new code the instant the push
+reaches GitHub — independent of, and almost always faster than, this
+workflow's own CI-gate-then-migrate-then-deploy-hook sequence — which can
+put the new application code live against the *pre-migration* schema. The
+workflow's `curl … RENDER_DEPLOY_HOOK_PRODUCTION` step (confirmed above to
+run only after the production migration succeeds) is unaffected by this
+change and remains the way the API actually gets deployed for this
+release.
 
 #### Branch A — owner approves a temporary paid-plan upgrade for this release window (unlocks Maintenance Mode)
 

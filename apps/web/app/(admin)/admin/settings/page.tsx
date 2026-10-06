@@ -6,8 +6,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
 import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
 import { WorkHoursSettingsSection } from '@/components/settings/work-hours-settings-section';
+import { WriteGateSettingsSection } from '@/components/settings/write-gate-settings-section';
 
-const TABS = ['notifications', 'discounts', 'work-hours'] as const;
+const TABS = ['notifications', 'discounts', 'work-hours', 'write-gate'] as const;
 type TabValue = (typeof TABS)[number];
 const DEFAULT_TAB: TabValue = 'notifications';
 
@@ -41,6 +42,7 @@ function SettingsPageContent() {
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="discounts">Discount Settings</TabsTrigger>
           <TabsTrigger value="work-hours">Work Hours</TabsTrigger>
+          <TabsTrigger value="write-gate">Write Gate</TabsTrigger>
         </TabsList>
 
         <TabsContent value="notifications">
@@ -53,6 +55,10 @@ function SettingsPageContent() {
 
         <TabsContent value="work-hours">
           <WorkHoursSettingsSection />
+        </TabsContent>
+
+        <TabsContent value="write-gate">
+          <WriteGateSettingsSection />
         </TabsContent>
       </Tabs>
     </div>

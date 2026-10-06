@@ -813,11 +813,11 @@ describe('GET /:transactionId — branch protection (inline pattern, same as GET
   });
 });
 
-describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF-P15R3)', () => {
+describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF-P15R3/R4)', () => {
   it('returns 200 with the committed transaction when the sale exists', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
     const token = generateStaffToken(BRANCH_1);
-    const req = mockReq({ ...authHeader(token), params: { key: 'idem-1' } });
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-1' }, query: { branch_id: BRANCH_1 } });
     const res = mockRes();
     vi.mocked(transactionsService.resolveCheckoutAttempt).mockResolvedValue({
       status: 'committed',
@@ -836,7 +836,7 @@ describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF
   it('returns 200 with status failed (safe to remint) when the attempt was definitively rejected pre-commit', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
     const token = generateStaffToken(BRANCH_1);
-    const req = mockReq({ ...authHeader(token), params: { key: 'idem-2' } });
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-2' }, query: { branch_id: BRANCH_1 } });
     const res = mockRes();
     vi.mocked(transactionsService.resolveCheckoutAttempt).mockResolvedValue({ status: 'failed', branchId: BRANCH_1 } as never);
 
@@ -849,7 +849,7 @@ describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF
   it('returns 200 with status in_progress (never safe to remint) when the attempt is still live', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
     const token = generateStaffToken(BRANCH_1);
-    const req = mockReq({ ...authHeader(token), params: { key: 'idem-3' } });
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-3' }, query: { branch_id: BRANCH_1 } });
     const res = mockRes();
     vi.mocked(transactionsService.resolveCheckoutAttempt).mockResolvedValue({ status: 'in_progress', branchId: BRANCH_1 } as never);
 
@@ -862,7 +862,7 @@ describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF
   it('returns 404 IDEMPOTENCY_KEY_NOT_FOUND when the key was never claimed at all', async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
     const token = generateStaffToken(BRANCH_1);
-    const req = mockReq({ ...authHeader(token), params: { key: 'idem-missing' } });
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-missing' }, query: { branch_id: BRANCH_1 } });
     const res = mockRes();
     vi.mocked(transactionsService.resolveCheckoutAttempt).mockResolvedValue({ status: 'not_found', branchId: null } as never);
 
@@ -870,25 +870,46 @@ describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' } }));
+    expect(transactionsService.resolveCheckoutAttempt).toHaveBeenCalledWith('idem-missing', BRANCH_1, expect.any(String));
   });
 
-  it("blocks a supervisor from learning about another branch's in-progress attempt — 403 BRANCH_ACCESS_DENIED, no status leaked", async () => {
+  // POS-PERF-P15R4 — resolveCheckoutAttempt now durably fences a
+  // never-claimed key (see its doc comment), which requires a branch_id to
+  // write under — the same NOT NULL column a real checkout claim would
+  // populate. Rejected outright, before the service is ever called, if the
+  // caller omits it.
+  it('returns 400 VALIDATION_ERROR when branch_id is omitted, without calling the service', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-no-branch' }, query: {} });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'VALIDATION_ERROR' }) }));
+    expect(transactionsService.resolveCheckoutAttempt).not.toHaveBeenCalled();
+  });
+
+  it("blocks a supervisor from probing another branch's attempts via branch_id — 403 BRANCH_ACCESS_DENIED, service never called", async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
     const token = generateSupervisorToken([BRANCH_1]);
-    const req = mockReq({ ...authHeader(token), params: { key: 'idem-other-branch' } });
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-other-branch' }, query: { branch_id: BRANCH_2 } });
     const res = mockRes();
-    vi.mocked(transactionsService.resolveCheckoutAttempt).mockResolvedValue({ status: 'in_progress', branchId: BRANCH_2 } as never);
 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+    expect(transactionsService.resolveCheckoutAttempt).not.toHaveBeenCalled();
   });
 
   it("blocks a supervisor from fetching another branch's committed sale via this endpoint too — 403, same guard as the plain GET", async () => {
     const handlers = getRouteHandlers(transactionsRouter, 'get', '/by-idempotency-key/:key');
     const token = generateSupervisorToken([BRANCH_1]);
-    const req = mockReq({ ...authHeader(token), params: { key: 'idem-other-branch-sale' } });
+    // branch_id itself is the supervisor's own (legitimate) branch — the key
+    // just happens to resolve to a different branch's sale (mismatch/probe).
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-other-branch-sale' }, query: { branch_id: BRANCH_1 } });
     const res = mockRes();
     vi.mocked(transactionsService.resolveCheckoutAttempt).mockResolvedValue({
       status: 'committed',

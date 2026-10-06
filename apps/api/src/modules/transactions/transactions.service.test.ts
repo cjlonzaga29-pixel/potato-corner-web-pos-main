@@ -2164,37 +2164,63 @@ describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3)', () => {
   it('returns committed with the mapped transaction when a sale carries this idempotency key', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-1' }) as never);
 
-    const result = await transactionsService.resolveCheckoutAttempt('key-1');
+    const result = await transactionsService.resolveCheckoutAttempt('key-1', 'branch-1', 'cashier-1');
 
     expect(result).toMatchObject({ status: 'committed', branchId: expect.any(String) });
     if (result.status === 'committed') expect(result.transaction.id).toBe('txn-1');
   });
 
-  it('returns not_found when no sale exists and no attempt row was ever claimed for this key', async () => {
+  // POS-PERF-P15R4 — a never-claimed key must still be durably fenced
+  // against a merely-delayed original request, via the same atomic claim
+  // claimCheckoutAttempt itself uses. The suite's own module-level $queryRaw
+  // default (line 85, success) exercises that path here.
+  it('returns not_found when no sale exists and no attempt row was ever claimed for this key, after atomically fencing it', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
     vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce(null);
 
-    const result = await transactionsService.resolveCheckoutAttempt('key-missing');
+    const result = await transactionsService.resolveCheckoutAttempt('key-missing', 'branch-1', 'cashier-1');
 
     expect(result).toEqual({ status: 'not_found', branchId: null });
   });
 
-  it('returns failed (safe to remint) when the attempt row was definitively marked failed', async () => {
+  // POS-PERF-P15R4 — unlike the never-claimed case above, an attempt that
+  // already reached 'failed' is confirmed rolled-back by the original
+  // request itself, not an absence inference — this must stay an immediate,
+  // unfenced read (no claim attempt), so the existing "same key, retry right
+  // away" contract is preserved exactly.
+  it('returns failed (safe to remint) when the attempt row was definitively marked failed, without attempting to claim it', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
     vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'failed', branchId: 'branch-9' } as never);
 
-    const result = await transactionsService.resolveCheckoutAttempt('key-failed');
+    const result = await transactionsService.resolveCheckoutAttempt('key-failed', 'branch-1', 'cashier-1');
 
     expect(result).toEqual({ status: 'failed', branchId: 'branch-9' });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('returns in_progress (never safe to remint) when the attempt row is still live', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
     vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-9' } as never);
 
-    const result = await transactionsService.resolveCheckoutAttempt('key-live');
+    const result = await transactionsService.resolveCheckoutAttempt('key-live', 'branch-1', 'cashier-1');
 
     expect(result).toEqual({ status: 'in_progress', branchId: 'branch-9' });
+  });
+
+  // POS-PERF-P15R4 — the race this whole fix targets: nothing existed a
+  // moment ago (findUnique returned null), but the REAL original request
+  // wins the atomic claim in the gap before this call's own claim attempt.
+  // Must report that real state, never a stale 'not_found'.
+  it('returns in_progress when a real request claims the key between the initial read and this call\'s own fencing attempt', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique)
+      .mockResolvedValueOnce(null) // resolveCheckoutAttempt's own initial read
+      .mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-9' } as never); // claimCheckoutAttempt's post-conflict re-read
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]); // claim loses — someone else already holds it live
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-contested', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'in_progress', branchId: 'branch-1' });
   });
 });
 

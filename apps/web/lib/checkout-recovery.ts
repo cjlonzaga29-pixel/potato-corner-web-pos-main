@@ -102,8 +102,18 @@ export function isDefiniteNoCommitErrorCode(code: string | undefined): boolean {
   return code !== undefined && DEFINITE_NO_COMMIT_CODES.has(code);
 }
 
-export async function resolveCheckoutAttempt(idempotencyKey: string): Promise<ResolveCheckoutOutcome> {
-  const response = await apiClient<ByIdempotencyKeyResponseData>(`/api/transactions/by-idempotency-key/${idempotencyKey}`);
+/**
+ * POS-PERF-P15R4 — branchId is required (not optional context): the server
+ * now durably fences a key that comes back with nothing found yet (see
+ * transactions.service.ts resolveCheckoutAttempt's doc comment), and that
+ * fencing row needs an owning branch exactly like a real checkout claim
+ * would. Every caller already knows its own branch — this is always
+ * checked from within that branch's own terminal session.
+ */
+export async function resolveCheckoutAttempt(idempotencyKey: string, branchId: string): Promise<ResolveCheckoutOutcome> {
+  const response = await apiClient<ByIdempotencyKeyResponseData>(
+    `/api/transactions/by-idempotency-key/${idempotencyKey}?branch_id=${encodeURIComponent(branchId)}`,
+  );
 
   if (response.data) {
     if (response.data.status === 'committed' && response.data.transaction) {

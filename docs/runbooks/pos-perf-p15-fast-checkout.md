@@ -122,29 +122,67 @@ process keeps running underneath, untouched — which matters for the
 *rollback* procedure below, where the in-process background worker needs
 to keep draining jobs while HTTP traffic is blocked.
 
-### Executable no-mixed-version rollout (Render API + Vercel web)
+### POS-PERF-P15R4 — the actual automated release path, and what it does NOT do
 
-Run this for every deploy of this feature (initial rollout, a fix, or a
-later revision that touches checkout/inventory write semantics) — not
-just the first one, since the same hazard applies to any two versions
-with different stock-write semantics, not specifically "old vs. P15."
+Everything in this section was verified directly against this repo's own
+`.github/workflows/deploy-production.yml`, not assumed. **A push to `main`
+already fully automates production releases**, with no human step in the
+middle:
+
+1. Full CI gate (type-check/lint/test/build) runs first.
+2. The migration is applied directly against production from the runner
+   itself — `pnpm exec prisma migrate deploy` with
+   `DATABASE_URL`/`DIRECT_URL` set to the `PRODUCTION_DATABASE_URL_DIRECT`
+   secret. **This already does not use a Render Shell session** — the
+   previous revision of this runbook's step 3 (`Apply the migration from a
+   Render Shell session`) did not match the real pipeline and is corrected
+   here; delete that assumption, it was never exercised and Shell
+   availability on the live plan has not been verified (see below).
+3. `curl -fsS -X POST "$RENDER_DEPLOY_HOOK_PRODUCTION"` fires Render's
+   deploy hook — Render's own health-checked instance swap, asynchronous,
+   with no maintenance-mode toggle anywhere in the workflow.
+4. The workflow `sleep 45`s and then runs a Playwright smoke suite against
+   the live site — it does not confirm the swap finished before that sleep
+   elapses, and it does not pause incoming traffic at any point.
+5. Vercel auto-deploys `apps/web` independently, triggered directly by its
+   own GitHub integration on the same push — not by this workflow at all.
+
+**This means the "Executable no-mixed-version rollout" procedure below has
+never actually been wired into a real deploy of this feature.** It
+describes a hand-operated Maintenance Mode sequence; the pipeline that
+actually ships code on every push to `main` does none of that gating. For
+any future push that changes checkout/inventory write semantics (this
+P15R4 fix does not — it only touches the checkout-attempt recovery path,
+see "Why POS-PERF-P15R4 needs none of the above" below), a human **must**
+run the steps below manually, in the gap between the migration step and
+the deploy-hook step, by holding the push/merge to `main` until ready to
+babysit it — the workflow itself will not pause for you.
+
+**Plan tier could not be verified from this environment.** Render's own
+docs restrict Maintenance Mode to paid Web Services, and this repository
+has no `RENDER_API_KEY`/dashboard credential configured anywhere a script
+or assistant here can read — confirm the live plan at **Render dashboard →
+the API service → Settings → Plan** before relying on any step below, and
+re-confirm it any time the plan may have changed. Do not assume paid or
+free; check it.
+
+#### If the plan is confirmed paid (Maintenance Mode available)
 
 1. **Render dashboard → the API service → Settings → Maintenance Mode →
-   Enable.** This is the pause: every request (including
-   `POST /api/transactions`) now gets a static response instead of
-   reaching the app. The currently-running instance (old code) keeps its
-   process alive underneath — it just isn't receiving anything.
+   Enable.** Every request (including `POST /api/transactions` and
+   `GET /api/transactions/by-idempotency-key/:key`) now gets a static
+   response instead of reaching the app. The currently-running instance
+   (old code) keeps its process alive underneath — it just isn't
+   receiving anything.
 2. Confirm the pause took effect: hit the live checkout URL from a
    browser/curl and confirm you get the maintenance page, not the app.
-3. Apply the migration from a Render Shell session on the API service
-   (`cd apps/api && npx prisma migrate deploy`) — safe regardless of
-   maintenance mode, since it's a schema-only change against the same
-   additive migration described above.
-4. Trigger the deploy: Render dashboard → the API service → Manual Deploy
-   → Deploy latest commit (or push to the branch Render auto-deploys,
-   with auto-deploy otherwise disabled so this step is the only trigger).
-   Wait for the build to finish and the new instance to report healthy in
-   the Render dashboard.
+3. Let (or trigger) the migration step run — it goes straight to
+   `PRODUCTION_DATABASE_URL_DIRECT`, not through Render at all, so
+   Maintenance Mode has no effect on it either way.
+4. Trigger the deploy (the workflow's deploy-hook step, or Render
+   dashboard → Manual Deploy → Deploy latest commit). Wait for the build
+   to finish and the new instance to report healthy in the Render
+   dashboard — don't trust the workflow's blind `sleep 45` for this.
 5. Check the new instance's logs for `Inventory deduction worker started
    (polling every 2s).` and `API listening`. Because traffic is still
    paused, this is purely a code-is-live check — nothing has processed a
@@ -153,12 +191,66 @@ with different stock-write semantics, not specifically "old vs. P15."
    now resumes, 100% on the new instance — there was no point in time
    where old and new code both had live traffic, because there was no
    live traffic to either during the swap.
-7. Vercel (web): no special procedure. Deploy it whenever convenient
-   (before, during, or after the API window above) — each Vercel
-   deployment is independent/atomic, and this feature's hazard is
-   entirely in the API's stock-write semantics, which the web app has no
-   part in. The only web-side dependency is `NEXT_PUBLIC_API_URL` pointing
-   at the right API host, which doesn't change for this release.
+7. Vercel (web): no special procedure for the write-semantics hazard — each
+   Vercel deployment is independent/atomic, and that hazard is entirely in
+   the API's stock-write semantics, which the web app has no part in.
+   **However**, see "Cached old frontend compatibility" below — a stale
+   frontend bundle still open in a browser tab is a separate, real
+   compatibility concern this P15R4 change introduces.
+
+#### If the plan is confirmed free (no Maintenance Mode)
+
+Render's free Web Service tier has no Maintenance Mode toggle. Do **not**
+substitute an unverified capability for it:
+- **Do not assume Render Shell is available** — it was never actually
+  used for anything in the real pipeline (migrations go straight to the
+  DB from GitHub Actions, see above), so its absence doesn't block
+  migrations at all. Its availability on the live plan is simply unknown
+  from here; don't plan around it either way without checking the
+  dashboard first.
+- **Do not assume one replica prevents overlap** — a free-tier service is
+  single-instance by construction, but Render's deploy is still a
+  health-checked swap: the old instance keeps serving until the new one
+  passes its health check, same mixed-traffic window as any other
+  instance count.
+- The one concretely-available, already-verified-in-this-repo lever that
+  works on any plan tier is the direct database connection the workflow
+  already uses for migrations (`PRODUCTION_DATABASE_URL_DIRECT`) — because
+  it's a plain Postgres credential, not a Render platform feature. It
+  cannot pause HTTP traffic, but it is exactly what the rollback section's
+  "retry failed jobs while traffic is blocked" step below depends on, and
+  it is NOT gated by whatever the live plan turns out to be.
+- For an actual traffic-pause lever on the free tier, the only Render
+  control worth evaluating is suspending the service via the dashboard
+  (stops the instance outright rather than serving a maintenance page).
+  Whether a suspended service still accepts/queues the deploy-hook trigger
+  correctly has **not** been verified here — confirm this on a low-stakes
+  deploy (a docs-only change, say) before ever depending on it for a
+  write-semantics-changing release. Until that's confirmed, treat any
+  future checkout/inventory write-semantics change on a free-tier plan as
+  **blocked on a human first validating a real traffic-pause mechanism**,
+  not as something this runbook can currently promise is safe.
+
+#### Cached old frontend compatibility (introduced by this P15R4 change)
+
+This revision makes `branch_id` a **required** query parameter on
+`GET /api/transactions/by-idempotency-key/:key` (see "Why POS-PERF-P15R4
+needs none of the above" for why the recovery endpoint needed to start
+writing a fencing row, which requires a branch to write it under). A
+browser tab still running the *previous* frontend bundle — already loaded,
+sitting open, not yet reloaded — will keep calling the old URL shape
+without `branch_id` and get a `400 VALIDATION_ERROR` instead of the old
+`200`/`404`. This is intentional fail-closed behavior (an ambiguous
+recovery check must never be treated as safe), and it is **not** a
+money-losing bug: checkout itself (`POST /api/transactions`) is unchanged
+by this fix and keeps working from a stale tab exactly as before — only
+the reload/browser-close *recovery* check degrades, surfacing as "Could
+not confirm whether the previous checkout attempt went through" until
+that tab is reloaded onto the new bundle. Deploy `apps/web` (Vercel) in
+the same push as this API change (the existing push-to-`main` pipeline
+already does both together) so the window where any tab is running a
+mismatched old frontend against the new API is as short as a normal
+Vercel rollout, not an extended one.
 
 ## Monitoring / verifying health
 
@@ -195,22 +287,50 @@ indefinitely — nothing releases it automatically — so checking only
 holding stock hostage. Both executable steps below close that gap.
 
 1. **Stop new reservations without stopping the drain**: Render dashboard
-   → the API service → Settings → Maintenance Mode → **Enable**. This
-   blocks every new `POST /api/transactions` (so no *new* reservations can
-   be created) while leaving the running instance's process — and
-   therefore its in-process background worker — alive and still polling,
-   so it keeps draining whatever is already queued. (This is the same
-   lever used for the rollout above, used here for the opposite purpose:
-   pausing new writes while keeping the drain worker running, rather than
-   pausing everything for a code swap.)
+   → the API service → Settings → Maintenance Mode → **Enable** (paid plan
+   — see the plan-tier caveat above; on a free plan, see its fallback
+   section instead). This blocks every new `POST /api/transactions` (so no
+   *new* reservations can be created) while leaving the running instance's
+   process — and therefore its in-process background worker — alive and
+   still polling, so it keeps draining whatever is already queued. (This
+   is the same lever used for the rollout above, used here for the
+   opposite purpose: pausing new writes while keeping the drain worker
+   running, rather than pausing everything for a code swap.)
 2. Drain every **non-terminal** job, not just `pending`/`processing`:
    - Let the worker run until
      `SELECT count(*) FROM inventory_deduction_jobs WHERE status IN ('pending','processing')` = `0`.
+     The worker itself needs no HTTP access — it runs in-process and talks
+     to Postgres directly, so Maintenance Mode (an HTTP-layer block) does
+     not pause it.
    - Then handle every row with `status = 'failed'` explicitly — these do
-     **not** self-resolve. For each one, either use the admin
-     retry-inventory-deduction action (the worker, still on new code, can
-     correctly reprocess it) or void the sale (releases the reservation
-     without deducting). Repeat until
+     **not** self-resolve. **Maintenance Mode blocks this step's obvious
+     path too**: the admin retry-inventory-deduction action and the void
+     action are both ordinary authenticated `POST` requests to the same
+     API the maintenance page is now intercepting for everyone, admin
+     included — there is no bypass allowlist on Render's Maintenance Mode.
+     Use the direct database connection instead (the same
+     `PRODUCTION_DATABASE_URL_DIRECT` credential `deploy-production.yml`
+     already uses for migrations — a plain Postgres connection, unaffected
+     by Maintenance Mode or by whatever the live Render plan turns out to
+     be) and reproduce exactly what the retry action does server-side
+     (`inventory-deduction.repository.ts#requeueFailedJob` — a single
+     two-statement transaction, nothing more):
+     ```sql
+     BEGIN;
+     UPDATE inventory_deduction_jobs
+       SET status = 'pending', attempts = 0, last_error = NULL, next_attempt_at = NULL, claim_token = NULL, locked_at = NULL
+       WHERE id = '<job id>' AND status = 'failed';
+     UPDATE transactions SET inventory_deduction_status = 'pending' WHERE id = '<that job''s transaction_id>';
+     COMMIT;
+     ```
+     The in-process worker (still running, still polling, unaffected by
+     Maintenance Mode) picks the now-`pending` job back up on its next
+     cycle — no HTTP request required. **Never void a sale automatically
+     just to clear the queue**: only void a specific `failed` job's sale
+     after confirming, from the transaction and its items, that it was
+     never actually fulfilled/paid-for-and-handed-over — a fulfilled sale
+     that merely failed its *inventory* deduction is a stock-accounting
+     problem, not a reason to erase a valid sale. Repeat until
      `SELECT count(*) FROM inventory_deduction_jobs WHERE status = 'failed'` = `0`
      as well. Do not proceed to step 3 while either count is nonzero.
 3. **Positively reconcile reservations — job-count zero alone does not
@@ -308,3 +428,45 @@ rows for any in-flight attempts if desired (optional — they're harmless
 leftovers, not referenced by old code), or just leave the table in place
 per the "retain the additive schema" preference above. No reservation
 reconciliation applies here since this table never holds inventory.
+
+## POS-PERF-P15R4 — recovery fencing fix, and its one real compatibility cost
+
+Closes a gap in R3's own recovery check: `resolveCheckoutAttempt` used to
+report `not_found` straight from a bare "no `CheckoutAttempt` row exists"
+read. That proves nothing if the original request is simply delayed
+somewhere before `claimCheckoutAttempt`'s own `INSERT` (slow auth/
+rate-limit middleware, a queued connection, a GC pause before the handler
+body even runs) — a client that trusted that `not_found` could mint and
+commit a replacement key for an edited cart, and the merely-delayed
+original request could then land and commit a second, genuinely duplicate
+sale under its own key. Fixed by having a never-claimed key get atomically
+fenced (via the same `claimCheckoutAttempt` INSERT ... ON CONFLICT, not a
+plain SELECT) the moment recovery checks it — see
+`transactions.service.ts` `resolveCheckoutAttempt`'s doc comment. An
+attempt already resolved to `'failed'` is untouched by this change (that
+status is written by the original request's own confirmed rollback, not
+an absence inference, so the existing "same key, retry immediately" path
+stays exactly as fast as before).
+
+**This also needs none of the Deploying/Rollback ceremony above** for the
+same reason P15R3 didn't — it is a decision-logic change inside a table
+old code never looks at, not a stock-write-semantics change.
+
+**The one real cost: `GET /api/transactions/by-idempotency-key/:key` now
+requires a `branch_id` query parameter** (the fencing write needs a branch
+to write under, same NOT NULL column a real checkout claim would
+populate). See "Cached old frontend compatibility" above in the Deploying
+section — ship `apps/web` in the same push as this API change so the
+mismatch window for an already-open stale tab is as short as a normal
+Vercel rollout.
+
+### Rollback
+
+Pure code revert. No data migration needed — `checkout_attempts` rows this
+revision's sentinel claims leave behind are harmless orphans (same as any
+other abandoned attempt; they simply wait out their lease). Reverting
+`apps/web` independently of the API is safe in either order: old frontend
+code without `branch_id` against new API code gets a `400` on the recovery
+check only (see compatibility note above); new frontend code with
+`branch_id` against old API code gets that query param silently ignored
+(old API never reads it) and the old, R3-level recovery behavior.

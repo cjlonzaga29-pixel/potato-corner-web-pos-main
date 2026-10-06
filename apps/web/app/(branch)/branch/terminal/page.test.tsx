@@ -2147,7 +2147,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
 
     render(<TerminalPage />);
 
-    await waitFor(() => expect(mockResolveCheckoutAttempt).toHaveBeenCalledWith('key-from-before-reload'));
+    await waitFor(() => expect(mockResolveCheckoutAttempt).toHaveBeenCalledWith('key-from-before-reload', 'branch-1'));
     await waitFor(() => expect(screen.getByText('Sale completed')).toBeInTheDocument());
     expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled();
   });
@@ -2158,7 +2158,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
 
     render(<TerminalPage />);
 
-    await waitFor(() => expect(mockResolveCheckoutAttempt).toHaveBeenCalledWith('key-never-committed'));
+    await waitFor(() => expect(mockResolveCheckoutAttempt).toHaveBeenCalledWith('key-never-committed', 'branch-1'));
     await waitFor(() => expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled());
     expect(screen.queryByText('Sale completed')).not.toBeInTheDocument();
   });

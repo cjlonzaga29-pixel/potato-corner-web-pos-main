@@ -563,6 +563,16 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
 // carries it (the Transaction for 'committed', the CheckoutAttempt
 // otherwise) — hasBranchAccess still gates which branch's attempt/sale a
 // caller is allowed to see or learn is in progress, exactly as before.
+//
+// POS-PERF-P15R4 — ?branch_id= is now required: resolveCheckoutAttempt
+// must be able to durably fence a key that was never claimed at all (see
+// its doc comment for why a bare "no row" read is unsafe), and the
+// checkout_attempts row that fencing writes has a NOT NULL branch_id/
+// cashier_id exactly like a real claimCheckoutAttempt call would. The
+// caller always already knows its own branch (this is the same
+// branch-scoped terminal session that would otherwise have submitted the
+// checkout itself) — checked against hasBranchAccess BEFORE it's trusted
+// for a write, same as every other branch-scoped mutation in this API.
 router.get(
   '/by-idempotency-key/:key',
   authenticate,
@@ -572,7 +582,16 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const resolution = await transactionsService.resolveCheckoutAttempt(req.params.key as string);
+      const branchId = typeof req.query.branch_id === 'string' ? req.query.branch_id : null;
+      if (!branchId) {
+        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'branch_id query parameter is required' }, meta: null });
+        return;
+      }
+      if (!(await hasBranchAccess(req.user, branchId))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      const resolution = await transactionsService.resolveCheckoutAttempt(req.params.key as string, branchId, req.user.user_id);
       if (resolution.status === 'not_found') {
         res.status(404).json({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
         return;

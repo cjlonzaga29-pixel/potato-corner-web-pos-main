@@ -466,7 +466,7 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
         data: { idempotencyKey, branchId, cashierId: userId, status: 'in_progress', ownerToken, leaseExpiresAt: new Date(Date.now() + 60_000) },
       });
 
-      const whileRunning = await transactionsService.resolveCheckoutAttempt(idempotencyKey);
+      const whileRunning = await transactionsService.resolveCheckoutAttempt(idempotencyKey, branchId, userId);
       expect(whileRunning).toMatchObject({ status: 'in_progress', branchId });
 
       // Now let the "original request" actually finish: run a real
@@ -479,7 +479,7 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
       await prisma.checkoutAttempt.delete({ where: { idempotencyKey } });
       const sale = await isolated.checkout(idempotencyKey);
 
-      const afterCommit = await transactionsService.resolveCheckoutAttempt(idempotencyKey);
+      const afterCommit = await transactionsService.resolveCheckoutAttempt(idempotencyKey, branchId, userId);
       expect(afterCommit.status).toBe('committed');
       if (afterCommit.status === 'committed') expect(afterCommit.transaction.id).toBe(sale.id);
     });
@@ -504,14 +504,144 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
         ),
       ).rejects.toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
 
-      const resolved = await transactionsService.resolveCheckoutAttempt(idempotencyKey);
+      const resolved = await transactionsService.resolveCheckoutAttempt(idempotencyKey, branchId, userId);
       expect(resolved).toMatchObject({ status: 'failed', branchId });
 
       // Same key, now with valid payment — must succeed immediately, no
       // lease wait, because 'failed' is reclaimable right away.
       const sale = await isolated.checkout(idempotencyKey);
-      expect(await transactionsService.resolveCheckoutAttempt(idempotencyKey)).toMatchObject({ status: 'committed' });
+      expect(await transactionsService.resolveCheckoutAttempt(idempotencyKey, branchId, userId)).toMatchObject({ status: 'committed' });
       expect(sale.id).toBeTruthy();
+    });
+  });
+
+  describe('checkout attempt recovery durability and lease takeover (POS-PERF-P15R4)', () => {
+    // POS-PERF-P15R4 — a dropped/reloaded client has no memory of whether
+    // its own request ever reached the server at all. A bare "no
+    // CheckoutAttempt row" read used to be reported straight through as
+    // 'not_found' (safe to mint a replacement key): that proves nothing if
+    // the original request is simply delayed somewhere before
+    // claimCheckoutAttempt's own INSERT (slow auth/rate-limit middleware,
+    // a queued connection, a GC pause before the handler body even runs).
+    // This reproduces exactly that ordering against real Postgres and
+    // proves the fix (resolveCheckoutAttempt now fences a never-claimed
+    // key the same way claimCheckoutAttempt itself would) closes it: the
+    // delayed original request, arriving after recovery already reported
+    // not_found and a replacement sale already committed, must be rejected
+    // outright rather than quietly producing a second, duplicate sale.
+    it(
+      'resolving a never-claimed key durably fences it, so a merely-delayed original request cannot still commit after a replacement key already committed',
+      async () => {
+        const isolated = await seedIsolatedVariant(1000);
+        const originalKey = randomUUID();
+
+        const recovery = await transactionsService.resolveCheckoutAttempt(originalKey, branchId, userId);
+        expect(recovery).toEqual({ status: 'not_found', branchId: null });
+
+        // Client trusts not_found and mints+commits a replacement key for
+        // the (possibly edited) cart.
+        const replacementKey = randomUUID();
+        const replacementSale = await isolated.checkout(replacementKey);
+        expect(replacementSale.id).toBeTruthy();
+
+        // The merely-delayed original request now actually reaches the
+        // server and tries to proceed under its OLD key. The recovery
+        // check above already fenced it — this must be rejected, never
+        // silently produce a second committed sale under the old key.
+        await expect(isolated.checkout(originalKey)).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_IN_PROGRESS' });
+
+        expect(await prisma.transaction.count({ where: { idempotencyKey: { in: [originalKey, replacementKey] } } })).toBe(1);
+        const sentinel = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey: originalKey } });
+        // Still the orphaned recovery sentinel, in_progress — never flipped
+        // to committed by the delayed original request.
+        expect(sentinel?.status).toBe('in_progress');
+        expect(sentinel?.transactionId).toBeNull();
+      },
+      15_000,
+    );
+
+    // POS-PERF-P15R4 — a 'failed' attempt is confirmed pre-commit-rolled-
+    // back by the original request itself (not an absence inference), so
+    // it stays immediately reclaimable with no settle-wait — but "abandon
+    // the failed attempt and reclaim the key" must still be safe when an
+    // already-issued retry under the same key is racing a second one, the
+    // same way a fresh key's first-ever claim already is.
+    it('abandoning a failed attempt never lets two concurrently-issued reclaims of the same key both commit a sale', async () => {
+      const isolated = await seedIsolatedVariant(1000);
+      const idempotencyKey = randomUUID();
+
+      await expect(
+        transactionsService.createTransaction(
+          {
+            branchId,
+            shiftId,
+            cashierId: userId,
+            items: [{ productId, productVariantId: isolated.variantId, quantity: 1 }],
+            paymentMethod: 'cash',
+            cashTendered: 1, // less than the 100 total — INSUFFICIENT_CASH_TENDERED, thrown before any $transaction
+            isOfflineTransaction: false,
+            idempotencyKey,
+          },
+          null,
+        ),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
+
+      expect(await transactionsService.resolveCheckoutAttempt(idempotencyKey, branchId, userId)).toMatchObject({ status: 'failed' });
+
+      const results = await Promise.allSettled([isolated.checkout(idempotencyKey), isolated.checkout(idempotencyKey)]);
+      const fulfilled = results.filter((r) => r.status === 'fulfilled') as PromiseFulfilledResult<{ id: string }>[];
+      expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+      // Never two distinct sales under the one reclaimed key.
+      expect(new Set(fulfilled.map((r) => r.value.id)).size).toBe(1);
+      expect(await prisma.transaction.count({ where: { idempotencyKey } })).toBe(1);
+    });
+
+    // POS-PERF-P15R4 — exercises the exact commit-time owner_token fence
+    // (transactions.service.ts createTransaction's $transaction callback)
+    // against real Postgres: once a lease-expired attempt is reclaimed and
+    // commits under a fresh owner_token, the original holder — alive the
+    // whole time, just slow — must never be able to overwrite that row's
+    // ownership or payload identity by finalizing under its old token.
+    it("lease takeover: once a reclaim commits, the original lease-expired holder's own commit can never overwrite its ownership or payload", async () => {
+      const isolated = await seedIsolatedVariant(1000);
+      const idempotencyKey = randomUUID();
+      const originalOwnerToken = randomUUID();
+
+      // The "original" holder claimed the key but took so long its lease
+      // already expired — reclaimable from the server's point of view,
+      // even though it is, unbeknownst to anyone, still alive and about to
+      // try to finalize.
+      await prisma.checkoutAttempt.create({
+        data: {
+          idempotencyKey,
+          branchId,
+          cashierId: userId,
+          status: 'in_progress',
+          ownerToken: originalOwnerToken,
+          leaseExpiresAt: new Date(Date.now() - 1_000),
+        },
+      });
+
+      // A second, independent request reclaims the expired lease and
+      // commits a real sale under a fresh owner_token.
+      const reclaimedSale = await isolated.checkout(idempotencyKey);
+      expect(reclaimedSale.id).toBeTruthy();
+
+      // The original holder, unaware it was ever reclaimed, now tries to
+      // finalize under its OLD owner_token — the exact fencing update
+      // createTransaction's own $transaction callback runs at commit time.
+      const impersonatedTransactionId = randomUUID();
+      const affected = await prisma.$executeRaw`
+        UPDATE "checkout_attempts"
+        SET "status" = 'committed', "transaction_id" = ${impersonatedTransactionId}, "updated_at" = now()
+        WHERE "idempotency_key" = ${idempotencyKey} AND "owner_token" = ${originalOwnerToken} AND "status" = 'in_progress'
+      `;
+      expect(affected).toBe(0);
+
+      const attempt = await prisma.checkoutAttempt.findUniqueOrThrow({ where: { idempotencyKey } });
+      expect(attempt.transactionId).toBe(reclaimedSale.id);
+      expect(attempt.ownerToken).not.toBe(originalOwnerToken);
+      expect(await prisma.transaction.count({ where: { idempotencyKey } })).toBe(1);
     });
   });
 

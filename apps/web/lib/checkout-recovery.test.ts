@@ -25,17 +25,17 @@ describe('resolveCheckoutAttempt', () => {
   it('returns "found" on a single lookup when the server reports the attempt committed', async () => {
     mockApiClient.mockResolvedValueOnce({ data: { status: 'committed', transaction: { id: 'txn-1' } }, error: null, meta: null });
 
-    const result = await resolveCheckoutAttempt('key-1');
+    const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
     expect(result).toEqual({ status: 'found', transaction: { id: 'txn-1' } });
     expect(mockApiClient).toHaveBeenCalledTimes(1);
-    expect(mockApiClient).toHaveBeenCalledWith('/api/transactions/by-idempotency-key/key-1');
+    expect(mockApiClient).toHaveBeenCalledWith('/api/transactions/by-idempotency-key/key-1?branch_id=branch-1');
   });
 
   it('returns "unknown" on an inconclusive response (network error) — a single check, no polling', async () => {
     mockApiClient.mockResolvedValueOnce({ data: null, error: { code: 'NETWORK_ERROR' }, meta: null });
 
-    const result = await resolveCheckoutAttempt('key-1');
+    const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
     expect(result).toEqual({ status: 'unknown' });
     expect(mockApiClient).toHaveBeenCalledTimes(1);
@@ -44,7 +44,7 @@ describe('resolveCheckoutAttempt', () => {
   it('returns "not-found" when the server confirms the key was never claimed (404)', async () => {
     mockApiClient.mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
 
-    const result = await resolveCheckoutAttempt('key-1');
+    const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
     expect(result).toEqual({ status: 'not-found' });
     expect(mockApiClient).toHaveBeenCalledTimes(1);
@@ -53,7 +53,7 @@ describe('resolveCheckoutAttempt', () => {
   it('returns "not-found" when the server reports the attempt definitively failed pre-commit', async () => {
     mockApiClient.mockResolvedValueOnce({ data: { status: 'failed' }, error: null, meta: null });
 
-    const result = await resolveCheckoutAttempt('key-1');
+    const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
     expect(result).toEqual({ status: 'not-found' });
   });
@@ -61,7 +61,7 @@ describe('resolveCheckoutAttempt', () => {
   it('returns "in-progress" when the server reports the attempt is still live — never treated as safe to remint', async () => {
     mockApiClient.mockResolvedValueOnce({ data: { status: 'in_progress' }, error: null, meta: null });
 
-    const result = await resolveCheckoutAttempt('key-1');
+    const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
     expect(result).toEqual({ status: 'in-progress' });
     expect(mockApiClient).toHaveBeenCalledTimes(1);

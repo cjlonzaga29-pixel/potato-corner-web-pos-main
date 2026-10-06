@@ -550,29 +550,49 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
 // GET /:transactionId right below: a cashier/branch account needs to resolve
 // its own uncertain attempt just as much as an admin reviewing one later.
 //
+// POS-PERF-P15R5 — this handler is now PURELY READ-ONLY: it used to also
+// durably fence a never-claimed key as a side effect of this GET (see the
+// removed call to claimCheckoutAttempt in the old resolveCheckoutAttempt),
+// which meant a plain status check could itself change server state. That
+// write — permanently abandoning a key so a replacement is actually safe to
+// mint — now only ever happens via the explicit POST
+// /by-idempotency-key/:key/abandon below, which requires its own branch
+// authorization exactly like this GET does, but is a deliberate action a
+// client takes, never a side effect of checking status.
+//
 // Response shapes (replacing the old plain transaction-or-404):
 //   200 { status: 'committed', transaction }  — sale exists, safe to show it
-//   200 { status: 'failed' }                  — confirmed no sale; safe to
-//                                                mint a replacement key now
+//   200 { status: 'failed' }                  — original attempt confirmed
+//                                                its own pre-commit rollback;
+//                                                safe to mint a replacement
+//                                                key now, no abandon call
+//                                                needed
+//   200 { status: 'abandoned' }               — a client already durably
+//                                                abandoned this key via the
+//                                                POST action; permanently
+//                                                dead, safe to mint a
+//                                                replacement
 //   200 { status: 'in_progress' }             — original attempt is still
-//                                                live or its fate is simply
-//                                                unknown; caller MUST keep
-//                                                the same key and recheck
-//   404 { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }  — key was never claimed at all
+//                                                live; caller MUST keep the
+//                                                same key and recheck
+//   404 { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }  — no CheckoutAttempt row
+//                                                exists yet (purely factual
+//                                                — NOT a signal that it is
+//                                                safe to remint; the claiming
+//                                                request may simply be
+//                                                delayed. The caller MUST
+//                                                call the abandon action and
+//                                                act on ITS result, never on
+//                                                this absence alone)
 // branchId authorization is enforced against whichever record actually
 // carries it (the Transaction for 'committed', the CheckoutAttempt
 // otherwise) — hasBranchAccess still gates which branch's attempt/sale a
 // caller is allowed to see or learn is in progress, exactly as before.
 //
-// POS-PERF-P15R4 — ?branch_id= is now required: resolveCheckoutAttempt
-// must be able to durably fence a key that was never claimed at all (see
-// its doc comment for why a bare "no row" read is unsafe), and the
-// checkout_attempts row that fencing writes has a NOT NULL branch_id/
-// cashier_id exactly like a real claimCheckoutAttempt call would. The
-// caller always already knows its own branch (this is the same
-// branch-scoped terminal session that would otherwise have submitted the
-// checkout itself) — checked against hasBranchAccess BEFORE it's trusted
-// for a write, same as every other branch-scoped mutation in this API.
+// ?branch_id= stays required even though this handler no longer writes:
+// callers always already know their own branch, and keeping the same
+// required param as the abandon POST below means one query-string
+// convention for both halves of this recovery flow.
 router.get(
   '/by-idempotency-key/:key',
   authenticate,
@@ -605,6 +625,61 @@ router.get(
         return;
       }
       res.status(200).json({ data: { status: resolution.status }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+interface AbandonCheckoutAttemptBody {
+  branch_id: string;
+}
+
+// POS-PERF-P15R5 — the explicit, authenticated write the GET above used to
+// perform as a read side effect. A client that has decided to give up on an
+// idempotency key (the GET above came back 'not_found' or it has simply
+// decided not to wait any longer) calls this BEFORE minting and submitting
+// a replacement key, so the old key is durably, permanently fenced first.
+// Requires its own branch authorization (hasBranchAccess), exactly like the
+// GET above and every other branch-scoped mutation in this API — body
+// branch_id, not query, since this is a POST.
+//
+// Response shapes:
+//   200 { status: 'abandoned' }    — this key is now permanently dead
+//                                     (fenced by this call or an earlier
+//                                     one); safe to mint a replacement
+//   200 { status: 'committed', transaction } — a sale already exists under
+//                                     this key; show it, do not abandon
+//   200 { status: 'in_progress' }  — a genuinely live attempt (an
+//                                     already-issued same-key retry, or the
+//                                     real original request) won the race
+//                                     for this key; NOT safe to mint a
+//                                     replacement — keep waiting
+router.post(
+  '/by-idempotency-key/:key/abandon',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as AbandonCheckoutAttemptBody;
+      const branchId = typeof body.branch_id === 'string' ? body.branch_id : null;
+      if (!branchId) {
+        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'branch_id is required' }, meta: null });
+        return;
+      }
+      if (!(await hasBranchAccess(req.user, branchId))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      const result = await transactionsService.abandonCheckoutAttempt(req.params.key as string, branchId, req.user.user_id);
+      if (result.status === 'committed') {
+        res.status(200).json({ data: { status: 'committed', transaction: result.transaction }, error: null, meta: null });
+        return;
+      }
+      res.status(200).json({ data: { status: result.status }, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

@@ -16,6 +16,7 @@ vi.mock('./transactions.service.js', () => ({
     listTransactions: vi.fn(),
     getTransactionById: vi.fn(),
     resolveCheckoutAttempt: vi.fn(),
+    abandonCheckoutAttempt: vi.fn(),
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
     markReceiptPrinted: vi.fn(),
@@ -920,6 +921,79 @@ describe('GET /by-idempotency-key/:key — checkout attempt resolution (POS-PERF
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
+  });
+});
+
+describe('POST /by-idempotency-key/:key/abandon — explicit durable fencing (POS-PERF-P15R5)', () => {
+  it('returns 200 with status abandoned when the service durably fences the key', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/by-idempotency-key/:key/abandon');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-1' }, body: { branch_id: BRANCH_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.abandonCheckoutAttempt).mockResolvedValue({ status: 'abandoned' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'abandoned' } }));
+    expect(transactionsService.abandonCheckoutAttempt).toHaveBeenCalledWith('idem-1', BRANCH_1, expect.any(String));
+  });
+
+  it('returns 200 with the committed transaction instead of abandoning when a sale already exists under this key', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/by-idempotency-key/:key/abandon');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-2' }, body: { branch_id: BRANCH_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.abandonCheckoutAttempt).mockResolvedValue({
+      status: 'committed',
+      transaction: { id: TXN_1, branch_id: BRANCH_1 },
+    } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: 'committed', transaction: { id: TXN_1, branch_id: BRANCH_1 } } }),
+    );
+  });
+
+  it('returns 200 with status in_progress (NOT abandoned) when a genuinely live attempt wins the race for this key', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/by-idempotency-key/:key/abandon');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-3' }, body: { branch_id: BRANCH_1 } });
+    const res = mockRes();
+    vi.mocked(transactionsService.abandonCheckoutAttempt).mockResolvedValue({ status: 'in_progress' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'in_progress' } }));
+  });
+
+  it('returns 400 VALIDATION_ERROR when branch_id is omitted from the body, without calling the service', async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/by-idempotency-key/:key/abandon');
+    const token = generateStaffToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-no-branch' }, body: {} });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'VALIDATION_ERROR' }) }));
+    expect(transactionsService.abandonCheckoutAttempt).not.toHaveBeenCalled();
+  });
+
+  it("blocks a supervisor from abandoning a key under another branch's branch_id — 403 BRANCH_ACCESS_DENIED, service never called", async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/by-idempotency-key/:key/abandon');
+    const token = generateSupervisorToken([BRANCH_1]);
+    const req = mockReq({ ...authHeader(token), params: { key: 'idem-other-branch' }, body: { branch_id: BRANCH_2 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
+    expect(transactionsService.abandonCheckoutAttempt).not.toHaveBeenCalled();
   });
 });
 

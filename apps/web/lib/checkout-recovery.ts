@@ -18,29 +18,56 @@ import type { SaleSnapshot } from '@/components/pos/sale-status-modal';
  * The server now tracks every checkout attempt's fate durably (see
  * apps/api .../transactions.service.ts claimCheckoutAttempt and
  * CheckoutAttempt in schema.prisma) and the by-idempotency-key endpoint
- * reports one of three genuinely distinct, authoritative states instead of
- * a bare "found or not":
+ * reports one of several genuinely distinct, authoritative states instead
+ * of a bare "found or not":
  *   - 'committed' — the sale exists; show it.
  *   - 'failed'    — the original attempt was definitively rejected before
  *                   any commit (or confirmed rolled back); safe to mint a
  *                   replacement key immediately, no waiting required.
- *   - 'in_progress' — the attempt is still live, or its fate simply isn't
- *                   known yet; the caller MUST keep this same key and
- *                   recheck later. Never treated as safe to remint.
- * A single check is now a meaningful, authoritative answer — there is
- * nothing left for client-side polling to accomplish, so none remains.
+ *   - 'abandoned' — a client already durably abandoned this key via the
+ *                   POST action below; permanently dead, safe to remint.
+ *   - 'in_progress' — the attempt is still live; the caller MUST keep this
+ *                   same key and recheck later. Never treated as safe to
+ *                   remint.
+ *
+ * POS-PERF-P15R5 — GET /by-idempotency-key is now purely read-only, so a
+ * 404 (no CheckoutAttempt row exists at all — the key may simply never
+ * have been sent, or the claiming request may be delayed anywhere before
+ * it writes its own row) is reported here as 'ambiguous', NOT as
+ * "not-found"/"safe". It is deliberately a different outcome from 'failed'/
+ * 'abandoned': those two are authoritative and safe to remint on immediately,
+ * while 'ambiguous' requires calling abandonCheckoutAttempt (below) and
+ * acting on THAT call's result — the only place the actual durable fencing
+ * write happens now.
  */
 
 export type ResolveCheckoutOutcome =
   | { status: 'found'; transaction: TransactionResponse }
+  /** Authoritatively safe to mint a replacement key right now — no abandon call needed. */
   | { status: 'not-found' }
+  /** No row exists yet — genuinely ambiguous. Caller MUST call abandonCheckoutAttempt and act on its result before reminting; never on this status alone. */
+  | { status: 'ambiguous' }
   /** Still unresolved server-side — keep the same idempotency key and recheck; never mint a replacement. */
   | { status: 'in-progress' }
   /** The check itself couldn't get a conclusive answer (network error, etc.) — the original attempt's fate is still unknown, not "safe". */
   | { status: 'unknown' };
 
+/** Result of the explicit abandon action — see abandonCheckoutAttempt below. */
+export type AbandonCheckoutOutcome =
+  | { status: 'found'; transaction: TransactionResponse }
+  /** This key is now permanently, durably fenced — safe to mint a replacement. */
+  | { status: 'abandoned' }
+  /** A genuinely live attempt won the race for this key — NOT safe to mint a replacement; keep waiting on the old key. */
+  | { status: 'in-progress' }
+  | { status: 'unknown' };
+
 interface ByIdempotencyKeyResponseData {
-  status: 'committed' | 'failed' | 'in_progress';
+  status: 'committed' | 'failed' | 'abandoned' | 'in_progress';
+  transaction?: TransactionResponse;
+}
+
+interface AbandonCheckoutAttemptResponseData {
+  status: 'committed' | 'abandoned' | 'in_progress';
   transaction?: TransactionResponse;
 }
 
@@ -119,15 +146,71 @@ export async function resolveCheckoutAttempt(idempotencyKey: string, branchId: s
     if (response.data.status === 'committed' && response.data.transaction) {
       return { status: 'found', transaction: response.data.transaction };
     }
-    if (response.data.status === 'failed') return { status: 'not-found' };
+    // 'failed'/'abandoned' are both authoritative and immediately safe to
+    // remint on — 'failed' is the original request's own confirmed
+    // rollback, 'abandoned' is a prior durable fencing write (by this
+    // client or another) that can never be reclaimed again.
+    if (response.data.status === 'failed' || response.data.status === 'abandoned') return { status: 'not-found' };
     return { status: 'in-progress' };
   }
 
   const code = typeof response.error === 'string' ? response.error : response.error?.code;
-  if (code === 'IDEMPOTENCY_KEY_NOT_FOUND') return { status: 'not-found' };
+  // POS-PERF-P15R5 — this GET no longer writes anything, so a 404 here is
+  // purely "no row exists yet", not "safe to remint". See this module's
+  // doc comment and abandonCheckoutAttempt below for the actual fencing
+  // action the caller must take before treating this as safe.
+  if (code === 'IDEMPOTENCY_KEY_NOT_FOUND') return { status: 'ambiguous' };
   // Network error, auth hiccup, an error reaching this otherwise-safe read
   // endpoint, etc. — this check made no progress at all, so it must not be
   // conflated with a confirmed "not found".
+  return { status: 'unknown' };
+}
+
+/**
+ * POS-PERF-P15R5 — the explicit, durable fencing action a client must call
+ * before minting a replacement key after resolveCheckoutAttempt comes back
+ * 'ambiguous' (no CheckoutAttempt row exists yet). This is a real,
+ * authenticated POST with a genuine server-side write — see
+ * transactions.service.ts abandonCheckoutAttempt and the POST
+ * /by-idempotency-key/:key/abandon route — unlike the read-only GET above.
+ * Only act on 'abandoned' as license to mint a replacement; 'found' means a
+ * sale already exists (show it instead), and 'in-progress'/'unknown' mean a
+ * genuinely live attempt won the race for this key or the call made no
+ * progress — in both cases the caller must keep the old key and not remint.
+ */
+export async function abandonCheckoutAttempt(idempotencyKey: string, branchId: string): Promise<AbandonCheckoutOutcome> {
+  const response = await apiClient<AbandonCheckoutAttemptResponseData>(`/api/transactions/by-idempotency-key/${idempotencyKey}/abandon`, {
+    method: 'POST',
+    body: JSON.stringify({ branch_id: branchId }),
+  });
+
+  if (response.data) {
+    if (response.data.status === 'committed' && response.data.transaction) {
+      return { status: 'found', transaction: response.data.transaction };
+    }
+    if (response.data.status === 'abandoned') return { status: 'abandoned' };
+    return { status: 'in-progress' };
+  }
+  return { status: 'unknown' };
+}
+
+/**
+ * POS-PERF-P15R5 — every call site that used to treat a bare
+ * resolveCheckoutAttempt 'not-found' as license to remint must now also
+ * handle 'ambiguous' by calling the actual fencing action (abandonCheckoutAttempt)
+ * and acting on ITS result instead. This wraps that two-step protocol into
+ * the same ResolveCheckoutOutcome shape every existing caller already
+ * switches on, so 'ambiguous' never leaks out to a caller that doesn't know
+ * about it: only a genuine 'abandoned' response becomes 'not-found' here.
+ */
+export async function resolveAndFenceCheckoutAttempt(idempotencyKey: string, branchId: string): Promise<ResolveCheckoutOutcome> {
+  const outcome = await resolveCheckoutAttempt(idempotencyKey, branchId);
+  if (outcome.status !== 'ambiguous') return outcome;
+
+  const abandoned = await abandonCheckoutAttempt(idempotencyKey, branchId);
+  if (abandoned.status === 'found') return { status: 'found', transaction: abandoned.transaction };
+  if (abandoned.status === 'abandoned') return { status: 'not-found' };
+  if (abandoned.status === 'in-progress') return { status: 'in-progress' };
   return { status: 'unknown' };
 }
 

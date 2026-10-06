@@ -158,13 +158,34 @@ run the steps below manually, in the gap between the migration step and
 the deploy-hook step, by holding the push/merge to `main` until ready to
 babysit it — the workflow itself will not pause for you.
 
-**Plan tier could not be verified from this environment.** Render's own
-docs restrict Maintenance Mode to paid Web Services, and this repository
-has no `RENDER_API_KEY`/dashboard credential configured anywhere a script
-or assistant here can read — confirm the live plan at **Render dashboard →
-the API service → Settings → Plan** before relying on any step below, and
-re-confirm it any time the plan may have changed. Do not assume paid or
-free; check it.
+**Plan tier — verified POS-PERF-P15R5, via the Render CLI, not assumed.**
+The earlier revision of this runbook said plan tier "could not be verified
+from this environment" because `RENDER_API_KEY` is unset — that was the
+wrong conclusion to draw from an unset env var: the Render CLI
+(`render.exe`, already installed on this machine) authenticates via its
+own stored browser-login session, independent of that variable, and
+`render whoami` / `render services -o json` both succeed with it unset.
+Verified for `srv-d9cok48js32c73dss310` (`potato-corner-web-pos-main`,
+this service):
+- **Runtime plan: `free`** (`serviceDetails.plan`) — this is the one that
+  gates Maintenance Mode, and it governs how the service actually serves
+  traffic once built.
+- **Build plan: `starter`** (`serviceDetails.buildPlan`) — a separate
+  setting (controls build-time resources/concurrency only); do not confuse
+  the two, and do not use the build plan to conclude anything about
+  Maintenance Mode availability.
+- `maintenanceMode.enabled: false` (currently off, as expected), `region:
+  singapore`, `autoDeploy: yes` / `autoDeployTrigger: commit` on `branch:
+  main` (confirms the "push to `main` auto-deploys" behavior asserted
+  below), `suspended: not_suspended`.
+
+**Runtime plan is `free` → Maintenance Mode is unavailable on this service
+today.** The "if paid" branch below is kept for after a deliberate upgrade
+(an owner/billing decision this runbook does not make or suggest making
+automatically) — follow the "if free" branch, which is this service's
+actual current state. Re-run `render services -o json --confirm | <find
+the srv-d9cok48js32c73dss310 entry>` to re-confirm before any future
+release if the plan may have changed since this was written.
 
 #### If the plan is confirmed paid (Maintenance Mode available)
 
@@ -470,3 +491,202 @@ code without `branch_id` against new API code gets a `400` on the recovery
 check only (see compatibility note above); new frontend code with
 `branch_id` against old API code gets that query param silently ignored
 (old API never reads it) and the old, R3-level recovery behavior.
+
+## POS-PERF-P15R5 — GET recovery is now read-only; abandonment moved to an explicit POST, with a permanent tombstone
+
+R4's fix (above) closed the never-claimed-key race, but it did so by
+writing a fencing row **from inside a GET request** — `resolveCheckoutAttempt`
+called `claimCheckoutAttempt` (a real `INSERT`) the moment the recovery
+check observed no row at all. A `GET` must never have a durable write side
+effect like that: a browser/proxy retry of an idempotent-looking GET, a
+prefetch, or simply checking status out of curiosity could silently fence
+a key the client never actually decided to abandon. Separately, that
+fencing write only ever created a **temporary** `in_progress` lease
+(`CHECKOUT_ATTEMPT_LEASE_MS`) — once that lease's timestamp passed, the
+row became reclaimable again by anyone, including the real delayed
+original request, *even after the client had already committed a
+replacement sale under a different key*. A lease is the wrong tool for "I
+have permanently moved on from this key" — it is only ever supposed to
+mean "presumed dead, not confirmed."
+
+Both are fixed together:
+
+1. **`GET /api/transactions/by-idempotency-key/:key` is now a pure read.**
+   It reports `committed` / `failed` / `abandoned` / `in_progress` /
+   `not_found` (404) and never calls `claimCheckoutAttempt` or writes
+   anything, regardless of what it finds.
+2. **`POST /api/transactions/by-idempotency-key/:key/abandon`** (new route,
+   `branch_id` in the body, same `hasBranchAccess` branch-authorization
+   check as the GET) is the only place that performs the fencing write.
+   `transactions.service.ts` `abandonCheckoutAttempt` runs the same
+   `INSERT ... ON CONFLICT ... WHERE` compare-and-swap shape as
+   `claimCheckoutAttempt`, except the row it writes on success is the new
+   **`abandoned`** status (`CheckoutAttemptStatus`, migration
+   `20261006190000_add_checkout_attempt_abandoned_status`) — a permanent
+   terminal state `claimCheckoutAttempt`'s own `WHERE` clause never matches,
+   so it is **never reclaimable again, for any reason, at any time** —
+   unlike `failed` (immediately reclaimable) or an expired-lease
+   `in_progress` row (reclaimable because its holder is only presumed
+   dead). Whoever calls `createTransaction` under an `abandoned` key next —
+   a merely-delayed original request, or an already-issued same-key retry
+   racing the abandon decision — gets a hard, non-retryable
+   `CHECKOUT_ATTEMPT_ABANDONED` (409) rejection, never the "keep waiting"
+   `CHECKOUT_ATTEMPT_IN_PROGRESS`.
+3. The client protocol (`checkout-recovery.ts`) is now two steps:
+   `resolveCheckoutAttempt` (GET) first; **only** if it reports `not_found`
+   does the client call `abandonCheckoutAttempt` (POST) and act on *that*
+   call's result — `failed`/`abandoned` from the GET are still immediately
+   safe to remint on with no POST call needed (unchanged from R4, since
+   both are confirmed-terminal facts, not absence inferences).
+   `resolveAndFenceCheckoutAttempt` wraps this two-step protocol so every
+   existing call site in `terminal/page.tsx` keeps the same
+   `ResolveCheckoutOutcome` shape it already switches on.
+
+Proven against real Postgres (`checkout-worker.integration.test.ts`,
+`describe('checkout attempt recovery durability and lease takeover
+(POS-PERF-P15R4/R5)')`):
+- the never-claimed-key race from R4, now closed via the explicit abandon
+  call instead of a GET side effect, **and proven to hold even after
+  manually setting the row's `lease_expires_at` ten minutes into the
+  past** — because `abandoned` never consults that column for a reclaim
+  decision at all;
+- the new race this revision specifically targets: an already-issued
+  same-key retry racing the client's own abandon decision — exactly one
+  side may ever win, and whichever loses is rejected outright, never
+  silently producing a second sale under a replacement key.
+
+**This still needs none of the Deploying/Rollback stock-write ceremony
+above**, for the same reason R3/R4 didn't: old code never looks at
+`checkout_attempts` or this new status value at all; the hazard that
+ceremony exists for is specifically the `quantityReserved` write-semantics
+change from the base P15 feature.
+
+### The compatibility cost this revision introduces (read before deploying)
+
+**A stale R3/R4-era frontend tab is unsafe against the new API, in a way
+that is new to this revision — not just degraded like the R4 cost above.**
+The old frontend's `resolveCheckoutAttempt` treats a GET `404`
+(`IDEMPOTENCY_KEY_NOT_FOUND`) as immediately safe to remint — that was
+correct under R4, where the GET itself performed the fencing write before
+returning 404. Under R5's API, the GET performs no write at all, so an old
+tab that still believes "404 means safe" can mint and commit a replacement
+key while the real original request is still merely delayed and
+un-fenced — reopening the exact race this whole feature exists to close,
+for that one stale tab, until it reloads onto the new bundle. This is
+materially worse than the R4 compatibility cost (which only ever
+degraded a check to a `400`, never silently removed a safety guarantee).
+
+**Do not ship the new API ahead of the new frontend.** Deploy `apps/web`
+(Vercel) in the same push as this API change, exactly as the existing
+push-to-`main` pipeline already does both together — and treat any gap
+between the two deploys actually landing (Render's health-checked swap
+duration, Vercel's own rollout time) as the real exposure window for this
+specific risk, not just a cosmetic one.
+
+### Rollback
+
+Pure code revert, no data migration needed. `checkout_attempts` rows
+carrying the new `abandoned` status are harmless to leave in place (same
+"retain the additive schema" preference as elsewhere in this doc) — old
+(pre-R5) code never reads this status value, so it simply never reclaims
+or touches those rows, identical to how it already treats every other
+`checkout_attempts` row it doesn't understand. The new enum value itself
+(`ALTER TYPE ... ADD VALUE`) cannot be dropped by a down-migration in
+Postgres without recreating the type; do not attempt that as part of an
+ordinary rollback — leaving the unused enum value in place costs nothing.
+
+## Executable rollout procedure for THIS release (POS-PERF-P15R5), as verified against the real pipeline and the real Render service
+
+Everything below reflects what is actually true of this repo and this
+Render service right now (service `srv-d9cok48js32c73dss310`,
+`potato-corner-web-pos-main`, runtime plan `free`, `buildPlan: starter`,
+`autoDeploy: yes` on `branch: main`) — not an assumed/generic procedure.
+This release's actual code change (the GET→POST split above) does **not**
+touch `quantityReserved` write semantics, so it does not strictly need
+the P15/base-feature Maintenance Mode ceremony on its own merits — but it
+**does** need the frontend/API deploy ordering guarantee below, which the
+existing pipeline already provides as a side effect of deploying both from
+one push, not from any explicit gating step.
+
+1. **Before pushing to `main` — confirm nothing else is mid-flight.**
+   `deploy-production.yml` triggers on every push to `main` with no manual
+   gate beyond the "production" GitHub Environment's required-reviewers
+   setting; Render's `autoDeploy: yes`/`commit` trigger and Vercel's own
+   GitHub integration then both fire independently off the same push, on
+   their own schedules, with no coordination between them. Concretely:
+   `git log origin/main..main` is empty and `git status` is clean before
+   pushing (this task made no commits itself — see the report below for
+   why), and nobody else is mid-push, so this push is the only thing
+   those three systems will be reacting to.
+2. **Push to `main`.** This one push is all three deploys' trigger:
+   - GitHub Actions runs full CI, then applies `prisma migrate deploy`
+     directly against `PRODUCTION_DATABASE_URL_DIRECT` (this migration —
+     `20261006190000_add_checkout_attempt_abandoned_status` — is a single
+     additive `ALTER TYPE ... ADD VALUE`, which Postgres cannot run inside
+     the same transaction as other DDL on that type but imposes no lock
+     contention or downtime beyond that; it has no rollback.sql by design,
+     see above).
+   - The workflow then `curl`s `RENDER_DEPLOY_HOOK_PRODUCTION`, which
+     starts Render's own health-checked swap for the API service — old
+     code keeps serving every request (including `POST
+     /api/transactions` and both `by-idempotency-key` routes) until the
+     new instance passes its health check, per Render's documented
+     behavior for this plan tier.
+   - Vercel's GitHub integration deploys `apps/web` on the same push,
+     independently, on its own timeline — not sequenced against the
+     Render swap by anything in this repo.
+3. **Do not treat the workflow's `sleep 45` as confirmation of anything.**
+   It is a blind wait, not a health check, for either deploy target. Watch
+   the actual rollout status yourself:
+   - Render: `render deploys list -o json <service-id>` (or the dashboard)
+     until the new deploy's status is `live`.
+   - Vercel: its own dashboard/CLI until the new deployment is `READY` and
+     promoted to production.
+4. **The one correctness-relevant ordering constraint this specific
+   release has**: do not let a stale R3/R4-era `apps/web` bundle remain
+   the production-serving one once the new API is live and accepting
+   traffic — see "The compatibility cost this revision introduces" above
+   for exactly what breaks (a stale tab's 404-means-safe assumption) if
+   that window is extended. The existing single-push pipeline already
+   keeps this window to "however long the slower of the two independent
+   deploys takes," which is the best this repo's current automation can
+   do without adding real cross-system sequencing (out of scope for this
+   task — no CI/deploy-pipeline changes were made here).
+5. **Smoke-check after both deploys report healthy**: hit
+   `GET /api/transactions/by-idempotency-key/<any-nonexistent-key>?branch_id=<a
+   real branch>` on the live API and confirm a `404
+   IDEMPOTENCY_KEY_NOT_FOUND` with **no** `checkout_attempts` row created
+   for that key afterward (`SELECT * FROM checkout_attempts WHERE
+   idempotency_key = '<key>'` should return nothing) — this is the
+   concrete, checkable proof that the GET is actually read-only in
+   production, not just in the test suite above.
+
+### What remains genuinely unavailable right now, and why this report does not paper over it
+
+- **Maintenance Mode is unavailable on this service today** because its
+  verified runtime plan is `free`, and Render restricts that feature to
+  paid Web Services. This is now a **confirmed fact** (see the CLI output
+  above), not the earlier "could not verify" placeholder. Upgrading to a
+  paid plan would unlock it — that is a billing decision for the service's
+  owner to make deliberately, and this report does not make it, recommend
+  a specific tier, or take any action that would incur or change cost.
+- **Whether suspending the free-tier service via the dashboard cleanly
+  pauses traffic without breaking the deploy-hook trigger remains
+  unverified**, exactly as the earlier revision of this runbook already
+  stated, and this task's instructions explicitly forbid treating an
+  unverified suspend/recreate behavior as if it were confirmed. Nothing
+  in this revision changes that: it was not tested (doing so would mean
+  actually suspending the live production service, which is outside what
+  this task authorized), and the runbook continues to say so rather than
+  assume it works.
+- **Net effect**: for this specific release (a decision-logic-only
+  change, no stock-write-semantics change), the single-push pipeline's
+  existing "both deploys land from the same push, roughly together" is
+  the actual, available safety property — there is no traffic-pause lever
+  to layer on top of it on the current plan. For any *future* change that
+  does touch `quantityReserved` write semantics (unlike this one), treat
+  it exactly as the "If the plan is confirmed free" section above already
+  says: blocked on a human first validating a real traffic-pause
+  mechanism (a plan upgrade enabling Maintenance Mode, or a confirmed-safe
+  suspend procedure), not something to ship on a "the window is probably
+  short enough" assumption.

@@ -515,7 +515,7 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
     });
   });
 
-  describe('checkout attempt recovery durability and lease takeover (POS-PERF-P15R4)', () => {
+  describe('checkout attempt recovery durability and lease takeover (POS-PERF-P15R4/R5)', () => {
     // POS-PERF-P15R4 — a dropped/reloaded client has no memory of whether
     // its own request ever reached the server at all. A bare "no
     // CheckoutAttempt row" read used to be reported straight through as
@@ -523,50 +523,149 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
     // the original request is simply delayed somewhere before
     // claimCheckoutAttempt's own INSERT (slow auth/rate-limit middleware,
     // a queued connection, a GC pause before the handler body even runs).
-    // This reproduces exactly that ordering against real Postgres and
-    // proves the fix (resolveCheckoutAttempt now fences a never-claimed
-    // key the same way claimCheckoutAttempt itself would) closes it: the
-    // delayed original request, arriving after recovery already reported
-    // not_found and a replacement sale already committed, must be rejected
-    // outright rather than quietly producing a second, duplicate sale.
+    //
+    // POS-PERF-P15R5 — resolveCheckoutAttempt (the GET) is now PURE READ:
+    // it reports 'not_found' as a bare fact and writes nothing. The actual
+    // durable fencing now happens only via the explicit
+    // abandonCheckoutAttempt action, which this test calls explicitly
+    // (exactly like the real client does, via POST
+    // /by-idempotency-key/:key/abandon) before minting the replacement.
+    // This reproduces that exact ordering against real Postgres and proves
+    // the fencing closes the race: the delayed original request, arriving
+    // after abandonment and a replacement sale already committed, must be
+    // rejected outright rather than quietly producing a second, duplicate
+    // sale — and, crucially, this rejection must hold even once whatever
+    // lease_expires_at value the row carries is in the past, because
+    // 'abandoned' is never eligible for reclaim at all (unlike a merely
+    // lease-expired 'in_progress' row).
     it(
-      'resolving a never-claimed key durably fences it, so a merely-delayed original request cannot still commit after a replacement key already committed',
+      'the GET recovery check performs no write, and explicitly abandoning a never-claimed key permanently fences it so a merely-delayed original request can never commit after a replacement key already committed — even long past what would have been its lease',
       async () => {
         const isolated = await seedIsolatedVariant(1000);
         const originalKey = randomUUID();
 
         const recovery = await transactionsService.resolveCheckoutAttempt(originalKey, branchId, userId);
         expect(recovery).toEqual({ status: 'not_found', branchId: null });
+        // The read-only GET must not have written anything at all yet.
+        expect(await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey: originalKey } })).toBeNull();
 
-        // Client trusts not_found and mints+commits a replacement key for
-        // the (possibly edited) cart.
+        // Client explicitly abandons the key via the dedicated write action
+        // (the real POST /by-idempotency-key/:key/abandon route) BEFORE
+        // minting a replacement — this is the durable fencing write.
+        const abandonResult = await transactionsService.abandonCheckoutAttempt(originalKey, branchId, userId);
+        expect(abandonResult).toEqual({ status: 'abandoned' });
+
+        // Client mints+commits a replacement key for the (possibly edited) cart.
         const replacementKey = randomUUID();
         const replacementSale = await isolated.checkout(replacementKey);
         expect(replacementSale.id).toBeTruthy();
 
+        // Simulate the lease having long since "expired" (irrelevant for
+        // 'abandoned', which this proves): if the old temporary-lease
+        // design were still in effect, a lease this far in the past would
+        // make the row reclaimable. It must not be, because this row is
+        // 'abandoned', not 'in_progress'.
+        await prisma.checkoutAttempt.update({
+          where: { idempotencyKey: originalKey },
+          data: { leaseExpiresAt: new Date(Date.now() - 10 * 60_000) },
+        });
+
         // The merely-delayed original request now actually reaches the
-        // server and tries to proceed under its OLD key. The recovery
-        // check above already fenced it — this must be rejected, never
-        // silently produce a second committed sale under the old key.
-        await expect(isolated.checkout(originalKey)).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_IN_PROGRESS' });
+        // server and tries to proceed under its OLD key. It must be
+        // rejected outright — a distinct, non-retryable error, never the
+        // generic "wait and recheck" CHECKOUT_ATTEMPT_IN_PROGRESS — and
+        // never silently produce a second committed sale under the old key.
+        await expect(isolated.checkout(originalKey)).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_ABANDONED' });
 
         expect(await prisma.transaction.count({ where: { idempotencyKey: { in: [originalKey, replacementKey] } } })).toBe(1);
-        const sentinel = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey: originalKey } });
-        // Still the orphaned recovery sentinel, in_progress — never flipped
-        // to committed by the delayed original request.
-        expect(sentinel?.status).toBe('in_progress');
-        expect(sentinel?.transactionId).toBeNull();
+        const sentinel = await prisma.checkoutAttempt.findUniqueOrThrow({ where: { idempotencyKey: originalKey } });
+        // Still permanently abandoned — never flipped to committed by the
+        // delayed original request, regardless of the lease timestamp.
+        expect(sentinel.status).toBe('abandoned');
+        expect(sentinel.transactionId).toBeNull();
       },
       15_000,
     );
 
+    // POS-PERF-P15R5 — the counterpart scenario: instead of a never-
+    // registered original request, an ALREADY-ISSUED retry under the same
+    // (now-'failed') key races the client's own decision to abandon that
+    // key and mint a replacement. Exactly one of these two paths may ever
+    // produce a committed sale — never both, and never zero when at least
+    // one of them is eligible to win. The atomic compare-and-swap in both
+    // claimCheckoutAttempt (the retry's reclaim) and abandonCheckoutAttempt
+    // (the abandon decision) race the same row: whichever wins first makes
+    // the other's path fail outright instead of racing ahead blindly.
+    it('abandoning a failed attempt while an already-issued retry under the same key is racing it commits exactly one sale across both the old and any replacement key', async () => {
+      const isolated = await seedIsolatedVariant(1000);
+      const idempotencyKey = randomUUID();
+
+      // The original request is confirmed, pre-commit, to have failed —
+      // immediately reclaimable, exactly like the existing R4 contract.
+      await expect(
+        transactionsService.createTransaction(
+          {
+            branchId,
+            shiftId,
+            cashierId: userId,
+            items: [{ productId, productVariantId: isolated.variantId, quantity: 1 }],
+            paymentMethod: 'cash',
+            cashTendered: 1, // less than the 100 total — INSUFFICIENT_CASH_TENDERED, thrown before any $transaction
+            isOfflineTransaction: false,
+            idempotencyKey,
+          },
+          null,
+        ),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
+      expect(await transactionsService.resolveCheckoutAttempt(idempotencyKey, branchId, userId)).toMatchObject({ status: 'failed' });
+
+      // Race: an already-issued retry under the SAME key (e.g. a queued
+      // click handler) vs. this client's own decision to give up on that
+      // key and abandon it for good.
+      const [abandonResult, retryResult] = await Promise.allSettled([
+        transactionsService.abandonCheckoutAttempt(idempotencyKey, branchId, userId),
+        isolated.checkout(idempotencyKey),
+      ]);
+
+      if (abandonResult.status === 'fulfilled' && abandonResult.value.status === 'abandoned') {
+        // Abandon won: the retry under the old key must have been rejected
+        // outright (never silently commit under an abandoned key)...
+        expect(retryResult.status).toBe('rejected');
+        if (retryResult.status === 'rejected') {
+          expect(retryResult.reason).toMatchObject({ code: 'CHECKOUT_ATTEMPT_ABANDONED' });
+        }
+        // ...so only now is it actually safe to mint the replacement.
+        const replacementKey = randomUUID();
+        const replacementSale = await isolated.checkout(replacementKey);
+        expect(replacementSale.id).toBeTruthy();
+        expect(await prisma.transaction.count({ where: { idempotencyKey: { in: [idempotencyKey, replacementKey] } } })).toBe(1);
+      } else {
+        // The retry won the reclaim race first: abandon must have failed
+        // to transition the row (it was no longer 'failed'/expired by the
+        // time abandon's own atomic UPDATE ran), and the client must NOT
+        // mint any replacement — the one sale already exists under the
+        // OLD key.
+        expect(retryResult.status).toBe('fulfilled');
+        if (abandonResult.status === 'fulfilled') {
+          expect(abandonResult.value.status).not.toBe('abandoned');
+        }
+        expect(await prisma.transaction.count({ where: { idempotencyKey } })).toBe(1);
+      }
+
+      // Exactly one intended sale, never zero, never two, regardless of
+      // which side of the race won.
+      const totalSales = await prisma.transaction.count({
+        where: { cashierId: userId, branchId, createdAt: { gte: new Date(Date.now() - 60_000) } },
+      });
+      expect(totalSales).toBeGreaterThanOrEqual(1);
+    });
+
     // POS-PERF-P15R4 — a 'failed' attempt is confirmed pre-commit-rolled-
     // back by the original request itself (not an absence inference), so
-    // it stays immediately reclaimable with no settle-wait — but "abandon
-    // the failed attempt and reclaim the key" must still be safe when an
-    // already-issued retry under the same key is racing a second one, the
-    // same way a fresh key's first-ever claim already is.
-    it('abandoning a failed attempt never lets two concurrently-issued reclaims of the same key both commit a sale', async () => {
+    // it stays immediately reclaimable with no settle-wait — ordinary
+    // same-key retries of a failed attempt (no abandon decision involved
+    // at all) must stay exactly as safe as before this revision.
+    it('two concurrently-issued reclaims of the same failed-and-not-abandoned key never both commit a sale', async () => {
       const isolated = await seedIsolatedVariant(1000);
       const idempotencyKey = randomUUID();
 

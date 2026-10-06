@@ -1,0 +1,28 @@
+-- POS-PERF-P15R5: adds a permanent, non-reclaimable terminal state to
+-- checkout_attempts.status, used ONLY by the new explicit POST
+-- /by-idempotency-key/:key/abandon action (transactions.service.ts
+-- abandonCheckoutAttempt).
+--
+-- 'failed' already means "the original request itself confirmed its own
+-- pre-commit rollback" and stays immediately reclaimable with no wait --
+-- that contract is unchanged. 'in_progress' past its lease is reclaimable
+-- because the original holder is merely PRESUMED dead, not confirmed gone.
+--
+-- Neither of those states is strong enough for the case this migration
+-- fixes: a client that has positively decided to give up on a key (GET
+-- recovery came back ambiguous/failed and the client is about to mint a
+-- replacement) needs that old key fenced FOREVER, not just for the
+-- duration of a lease. A lease-based fence is not sufficient here --
+-- claimCheckoutAttempt's own WHERE clause would eventually let a
+-- merely-delayed original request (or an already-issued same-key retry
+-- racing the abandon decision) reclaim it once the lease timestamp was in
+-- the past, after the client has already committed a replacement sale.
+-- 'abandoned' is deliberately excluded from claimCheckoutAttempt's
+-- reclaim WHERE clause entirely (see the updated query), so it is never
+-- reclaimable regardless of lease_expires_at's value -- the column is
+-- left populated on an abandoned row purely for audit/debugging, it is
+-- never read for a reclaim decision once status = 'abandoned'.
+--
+-- Purely additive: a new enum value, no column/table changes.
+
+ALTER TYPE "CheckoutAttemptStatus" ADD VALUE 'abandoned';

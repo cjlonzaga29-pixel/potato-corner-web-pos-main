@@ -5,6 +5,8 @@ vi.mock('@/lib/api-client', () => ({ apiClient: mockApiClient }));
 
 import {
   resolveCheckoutAttempt,
+  abandonCheckoutAttempt,
+  resolveAndFenceCheckoutAttempt,
   savePendingCheckoutAttempt,
   readPendingCheckoutAttempt,
   clearPendingCheckoutAttempt,
@@ -41,17 +43,30 @@ describe('resolveCheckoutAttempt', () => {
     expect(mockApiClient).toHaveBeenCalledTimes(1);
   });
 
-  it('returns "not-found" when the server confirms the key was never claimed (404)', async () => {
+  // POS-PERF-P15R5 — this GET is now purely read-only: a 404 here is no
+  // longer reported as "not-found" (which this module's other callers treat
+  // as license to remint) because the server no longer fences the key as a
+  // side effect of this check. It is 'ambiguous' instead — the caller MUST
+  // call abandonCheckoutAttempt and act on ITS result before reminting.
+  it('returns "ambiguous" (NOT "not-found") when no CheckoutAttempt row exists yet (404) — no fencing happened on this GET', async () => {
     mockApiClient.mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
 
     const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
-    expect(result).toEqual({ status: 'not-found' });
+    expect(result).toEqual({ status: 'ambiguous' });
     expect(mockApiClient).toHaveBeenCalledTimes(1);
   });
 
-  it('returns "not-found" when the server reports the attempt definitively failed pre-commit', async () => {
+  it('returns "not-found" when the server reports the attempt definitively failed pre-commit — safe to remint immediately, no abandon call needed', async () => {
     mockApiClient.mockResolvedValueOnce({ data: { status: 'failed' }, error: null, meta: null });
+
+    const result = await resolveCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'not-found' });
+  });
+
+  it('returns "not-found" when the server reports the key was already durably abandoned by a prior call', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'abandoned' }, error: null, meta: null });
 
     const result = await resolveCheckoutAttempt('key-1', 'branch-1');
 
@@ -65,6 +80,90 @@ describe('resolveCheckoutAttempt', () => {
 
     expect(result).toEqual({ status: 'in-progress' });
     expect(mockApiClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('abandonCheckoutAttempt', () => {
+  it('POSTs to the abandon endpoint with the branch id in the body, not the query string', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'abandoned' }, error: null, meta: null });
+
+    const result = await abandonCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'abandoned' });
+    expect(mockApiClient).toHaveBeenCalledWith('/api/transactions/by-idempotency-key/key-1/abandon', {
+      method: 'POST',
+      body: JSON.stringify({ branch_id: 'branch-1' }),
+    });
+  });
+
+  it('returns "found" when the server reports a sale already committed under this key instead of abandoning it', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'committed', transaction: { id: 'txn-1' } }, error: null, meta: null });
+
+    const result = await abandonCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'found', transaction: { id: 'txn-1' } });
+  });
+
+  it('returns "in-progress" (NOT "abandoned") when a genuinely live attempt wins the race for this key', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'in_progress' }, error: null, meta: null });
+
+    const result = await abandonCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'in-progress' });
+  });
+
+  it('returns "unknown" on a network error — never conflated with "abandoned"', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: null, error: { code: 'NETWORK_ERROR' }, meta: null });
+
+    const result = await abandonCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'unknown' });
+  });
+});
+
+describe('resolveAndFenceCheckoutAttempt', () => {
+  it('passes through a non-ambiguous resolveCheckoutAttempt outcome without ever calling the abandon endpoint', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'failed' }, error: null, meta: null });
+
+    const result = await resolveAndFenceCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'not-found' });
+    expect(mockApiClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('on "ambiguous", calls the abandon endpoint and reports "not-found" only once that call confirms "abandoned"', async () => {
+    mockApiClient
+      .mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null })
+      .mockResolvedValueOnce({ data: { status: 'abandoned' }, error: null, meta: null });
+
+    const result = await resolveAndFenceCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'not-found' });
+    expect(mockApiClient).toHaveBeenCalledTimes(2);
+    expect(mockApiClient).toHaveBeenNthCalledWith(2, '/api/transactions/by-idempotency-key/key-1/abandon', {
+      method: 'POST',
+      body: JSON.stringify({ branch_id: 'branch-1' }),
+    });
+  });
+
+  it('on "ambiguous", reports "in-progress" (never "not-found") when the abandon call finds a genuinely live attempt instead', async () => {
+    mockApiClient
+      .mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null })
+      .mockResolvedValueOnce({ data: { status: 'in_progress' }, error: null, meta: null });
+
+    const result = await resolveAndFenceCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'in-progress' });
+  });
+
+  it('on "ambiguous", reports "found" when the abandon call discovers a sale already committed under this key', async () => {
+    mockApiClient
+      .mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null })
+      .mockResolvedValueOnce({ data: { status: 'committed', transaction: { id: 'txn-1' } }, error: null, meta: null });
+
+    const result = await resolveAndFenceCheckoutAttempt('key-1', 'branch-1');
+
+    expect(result).toEqual({ status: 'found', transaction: { id: 'txn-1' } });
   });
 });
 

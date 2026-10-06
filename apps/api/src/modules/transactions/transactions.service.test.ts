@@ -2158,9 +2158,17 @@ describe('transactionsService.getTransactionById', () => {
 // resolve a checkout attempt whose HTTP response was lost (timeout, dropped
 // connection, reload/browser-close mid-request). Unlike every other lookup
 // in this file it must never throw on a miss — it reports one of
-// 'committed' / 'failed' / 'in_progress' / 'not_found', never an exception,
-// since every one of those is an ordinary outcome the caller branches on.
-describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3)', () => {
+// 'committed' / 'failed' / 'abandoned' / 'in_progress' / 'not_found', never
+// an exception, since every one of those is an ordinary outcome the caller
+// branches on.
+//
+// POS-PERF-P15R5 — this is now a PURE READ: it must never call
+// claimCheckoutAttempt (no prisma.$queryRaw call, ever) regardless of what
+// it finds, because the durable fencing write moved to its own explicit
+// abandonCheckoutAttempt action below. Every test in this block asserts
+// prisma.$queryRaw was never touched, which is the actual regression this
+// revision closes — a GET must never have that write side effect again.
+describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3/R5)', () => {
   it('returns committed with the mapped transaction when a sale carries this idempotency key', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-1' }) as never);
 
@@ -2168,33 +2176,44 @@ describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3)', () => {
 
     expect(result).toMatchObject({ status: 'committed', branchId: expect.any(String) });
     if (result.status === 'committed') expect(result.transaction.id).toBe('txn-1');
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
-  // POS-PERF-P15R4 — a never-claimed key must still be durably fenced
-  // against a merely-delayed original request, via the same atomic claim
-  // claimCheckoutAttempt itself uses. The suite's own module-level $queryRaw
-  // default (line 85, success) exercises that path here.
-  it('returns not_found when no sale exists and no attempt row was ever claimed for this key, after atomically fencing it', async () => {
+  // POS-PERF-P15R5 — a never-claimed key is now reported as a bare,
+  // unfenced 'not_found' fact: no claim attempt, no write of any kind. The
+  // caller (checkout-recovery.ts resolveAndFenceCheckoutAttempt) is
+  // responsible for calling abandonCheckoutAttempt and treating ITS result
+  // as the safe-to-remint signal, never this read alone.
+  it('returns not_found (with no fencing write at all) when no sale exists and no attempt row was ever claimed for this key', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
     vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce(null);
 
     const result = await transactionsService.resolveCheckoutAttempt('key-missing', 'branch-1', 'cashier-1');
 
     expect(result).toEqual({ status: 'not_found', branchId: null });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
-  // POS-PERF-P15R4 — unlike the never-claimed case above, an attempt that
-  // already reached 'failed' is confirmed rolled-back by the original
-  // request itself, not an absence inference — this must stay an immediate,
-  // unfenced read (no claim attempt), so the existing "same key, retry right
-  // away" contract is preserved exactly.
-  it('returns failed (safe to remint) when the attempt row was definitively marked failed, without attempting to claim it', async () => {
+  it('returns failed (safe to remint immediately, no abandon call needed) when the attempt row was definitively marked failed', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
     vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'failed', branchId: 'branch-9' } as never);
 
     const result = await transactionsService.resolveCheckoutAttempt('key-failed', 'branch-1', 'cashier-1');
 
     expect(result).toEqual({ status: 'failed', branchId: 'branch-9' });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P15R5 — 'abandoned' is a distinct, permanent terminal state
+  // only ever written by the explicit abandon action; this read-only check
+  // must surface it as its own status, not fold it into 'failed'.
+  it('returns abandoned (also safe to remint, no further abandon call needed) when the key was already durably fenced by a prior call', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'abandoned', branchId: 'branch-9' } as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-abandoned', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'abandoned', branchId: 'branch-9' });
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
@@ -2205,22 +2224,67 @@ describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3)', () => {
     const result = await transactionsService.resolveCheckoutAttempt('key-live', 'branch-1', 'cashier-1');
 
     expect(result).toEqual({ status: 'in_progress', branchId: 'branch-9' });
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+// POS-PERF-P15R5 — the explicit, authenticated write that replaces the old
+// GET-as-a-side-effect fencing. Only this function (and claimCheckoutAttempt,
+// from the real checkout path) ever calls prisma.$queryRaw for this table.
+describe('transactionsService.abandonCheckoutAttempt (POS-PERF-P15R5)', () => {
+  it('returns committed with the mapped transaction instead of abandoning when a sale already exists under this key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-1' }) as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-1', 'branch-1', 'cashier-1');
+
+    expect(result).toMatchObject({ status: 'committed' });
+    if (result.status === 'committed') expect(result.transaction.id).toBe('txn-1');
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
-  // POS-PERF-P15R4 — the race this whole fix targets: nothing existed a
-  // moment ago (findUnique returned null), but the REAL original request
-  // wins the atomic claim in the gap before this call's own claim attempt.
-  // Must report that real state, never a stale 'not_found'.
-  it('returns in_progress when a real request claims the key between the initial read and this call\'s own fencing attempt', async () => {
+  it('returns abandoned when the atomic fencing UPDATE/INSERT wins (never-claimed key, or an eligible failed/expired-lease row)', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
-    vi.mocked(prisma.checkoutAttempt.findUnique)
-      .mockResolvedValueOnce(null) // resolveCheckoutAttempt's own initial read
-      .mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-9' } as never); // claimCheckoutAttempt's post-conflict re-read
-    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]); // claim loses — someone else already holds it live
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ idempotency_key: 'key-missing' }]);
 
-    const result = await transactionsService.resolveCheckoutAttempt('key-contested', 'branch-1', 'cashier-1');
+    const result = await transactionsService.abandonCheckoutAttempt('key-missing', 'branch-1', 'cashier-1');
 
-    expect(result).toEqual({ status: 'in_progress', branchId: 'branch-1' });
+    expect(result).toEqual({ status: 'abandoned' });
+  });
+
+  // POS-PERF-P15R5 — this is the "already-issued retry races the abandon
+  // decision" scenario from the real-Postgres suite, exercised here at the
+  // unit level: a live (unexpired-lease) in_progress row means a genuinely
+  // concurrent holder won the race for this key, so abandoning must fail
+  // and report that real state rather than silently decide 'abandoned'.
+  it('returns in_progress (never abandoned) when a live attempt wins the race for this key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]); // UPDATE's WHERE did not match — live lease
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-1' } as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-live', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'in_progress' });
+  });
+
+  it('is idempotent: returns abandoned (not an error) when the key was already abandoned by an earlier call', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'abandoned', branchId: 'branch-1' } as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-already-abandoned', 'branch-1', 'cashier-1');
+
+    expect(result).toEqual({ status: 'abandoned' });
+  });
+
+  it('returns committed when the key committed in the gap between the UPDATE losing and this call\'s own re-read', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null).mockResolvedValueOnce(transactionRow({ id: 'txn-2' }) as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'committed', branchId: 'branch-1' } as never);
+
+    const result = await transactionsService.abandonCheckoutAttempt('key-raced-commit', 'branch-1', 'cashier-1');
+
+    expect(result).toMatchObject({ status: 'committed' });
+    if (result.status === 'committed') expect(result.transaction.id).toBe('txn-2');
   });
 });
 
@@ -2275,6 +2339,24 @@ describe('transactionsService.createTransaction — checkout attempt fencing (PO
       return Array.isArray(strings) && strings.join(' ').includes("SET \"status\" = 'failed'");
     });
     expect(failedCalls).toHaveLength(0);
+  });
+
+  // POS-PERF-P15R5 — a key a client explicitly abandoned (POST
+  // /by-idempotency-key/:key/abandon) must reject outright, never wait on a
+  // lease that does not apply to this permanent terminal state. Covers both
+  // the "merely-delayed original request" and "already-issued same-key
+  // retry" scenarios the real-Postgres suite exercises against actual
+  // Postgres: both are just createTransaction calls that lose the claim to
+  // an 'abandoned' row from this unit's point of view.
+  it('rejects with CHECKOUT_ATTEMPT_ABANDONED (never CHECKOUT_ATTEMPT_IN_PROGRESS, no settle-wait) when the key was already explicitly abandoned', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]); // claim's INSERT...ON CONFLICT WHERE does not match 'abandoned'
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'abandoned', branchId: 'branch-1' } as never);
+
+    await expect(
+      transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-abandoned' }, null),
+    ).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_ABANDONED' });
+
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 });
 

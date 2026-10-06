@@ -789,6 +789,9 @@ export interface DiscountRates {
 export type CheckoutAttemptResolution =
   | { status: 'committed'; transaction: ReturnType<typeof toTransactionResponse>; branchId: string }
   | { status: 'failed'; branchId: string }
+  // POS-PERF-P15R5 — permanent terminal state, only ever reached via the
+  // explicit abandon POST, never written by this (read-only) GET check.
+  | { status: 'abandoned'; branchId: string }
   | { status: 'in_progress'; branchId: string }
   | { status: 'not_found'; branchId: null };
 
@@ -981,7 +984,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function awaitCheckoutAttemptSettlement(idempotencyKey: string, maxWaitMs: number): Promise<'committed' | 'failed' | 'in_progress'> {
+async function awaitCheckoutAttemptSettlement(idempotencyKey: string, maxWaitMs: number): Promise<'committed' | 'failed' | 'abandoned' | 'in_progress'> {
   const deadline = Date.now() + maxWaitMs;
   for (;;) {
     const attempt = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey }, select: { status: true } });
@@ -994,7 +997,12 @@ async function awaitCheckoutAttemptSettlement(idempotencyKey: string, maxWaitMs:
 type ClaimCheckoutAttemptResult =
   | { claimed: true; ownerToken: string }
   | { claimed: false; status: 'committed'; transactionId: string | null }
-  | { claimed: false; status: 'in_progress' };
+  | { claimed: false; status: 'in_progress' }
+  // POS-PERF-P15R5 — distinguished from 'in_progress' so the caller can
+  // reject outright (never safe to retry under this key again) instead of
+  // telling the client to wait on an attempt that, in fact, will never
+  // resolve to anything reclaimable.
+  | { claimed: false; status: 'abandoned' };
 
 /**
  * POS-PERF-P15R3 — the fencing claim a checkout attempt must win before any
@@ -1041,7 +1049,85 @@ async function claimCheckoutAttempt(idempotencyKey: string, branchId: string, ca
     throw new TransactionError('CHECKOUT_ATTEMPT_CONTENTION', 'Could not resolve the checkout attempt. Please try again.', 409);
   }
   if (existing.status === 'committed') return { claimed: false, status: 'committed', transactionId: existing.transactionId };
+  // POS-PERF-P15R5 — 'abandoned' is permanent and reported distinctly from
+  // 'in_progress': there is no lease to wait out, so the caller must reject
+  // this key for good rather than telling the client to keep polling it.
+  if (existing.status === 'abandoned') return { claimed: false, status: 'abandoned' };
   return { claimed: false, status: 'in_progress' };
+}
+
+/**
+ * POS-PERF-P15R5 — the explicit, client-initiated "give up on this key for
+ * good" action. This is the ONLY place that writes the permanent 'abandoned'
+ * terminal state, and it is reached only via an authenticated POST with its
+ * own branch authorization check (transactions.router.ts) — never as a
+ * side effect of the read-only GET /by-idempotency-key/:key recovery check.
+ *
+ * Same atomic INSERT ... ON CONFLICT ... WHERE compare-and-swap shape as
+ * claimCheckoutAttempt, except the terminal row it writes is 'abandoned'
+ * instead of a fresh 'in_progress' lease. Because claimCheckoutAttempt's own
+ * WHERE clause never matches 'abandoned', once this succeeds the key can
+ * never be reclaimed again by anyone — not a merely-delayed original
+ * request, not an already-issued same-key retry racing this exact call,
+ * regardless of how much time passes or what any lease_expires_at column
+ * says. That is the durable fencing a temporary in_progress lease cannot
+ * provide on its own: a lease can always eventually expire out from under
+ * a client that has already moved on to a replacement key.
+ *
+ * Returns the authoritative post-attempt state so the caller knows whether
+ * it is actually safe to mint a replacement key:
+ *   - 'abandoned'  — this call (or an earlier one) won; the old key is now
+ *                    permanently dead. Safe to mint a replacement.
+ *   - 'committed'  — a sale already exists under this key (raced ahead of
+ *                    this call, or always existed); show it, do not abandon.
+ *   - 'in_progress'— a genuinely live attempt (fresh/un-expired lease) is
+ *                    racing this exact call and won; this key is still
+ *                    someone else's to finish. NOT safe to mint a
+ *                    replacement — the caller must keep waiting.
+ */
+async function abandonCheckoutAttempt(
+  idempotencyKey: string,
+  branchId: string,
+  cashierId: string,
+): Promise<{ status: 'abandoned' } | { status: 'committed'; transaction: ReturnType<typeof toTransactionResponse> } | { status: 'in_progress' }> {
+  const transaction = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
+  if (transaction) {
+    return { status: 'committed', transaction: toTransactionResponse(transaction as TransactionRow) };
+  }
+
+  const ownerToken = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + CHECKOUT_ATTEMPT_LEASE_MS);
+  const abandoned = await prisma.$queryRaw<{ idempotency_key: string }[]>`
+    INSERT INTO "checkout_attempts" ("idempotency_key", "branch_id", "cashier_id", "status", "owner_token", "lease_expires_at", "created_at", "updated_at")
+    VALUES (${idempotencyKey}, ${branchId}, ${cashierId}, 'abandoned', ${ownerToken}, ${leaseExpiresAt}, now(), now())
+    ON CONFLICT ("idempotency_key") DO UPDATE SET
+      "status" = 'abandoned',
+      "updated_at" = now()
+    WHERE "checkout_attempts"."status" = 'failed'
+       OR ("checkout_attempts"."status" = 'in_progress' AND "checkout_attempts"."lease_expires_at" < now())
+    RETURNING "idempotency_key"
+  `;
+  if (abandoned.length > 0) return { status: 'abandoned' };
+
+  const existing = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+  if (!existing) {
+    // Lost a race to a concurrent abandon call that got here first, or
+    // (unreachable in normal operation) something else deleted the row this
+    // INSERT just wrote — either way, re-read is authoritative.
+    const recheck = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+    if (recheck?.status === 'abandoned') return { status: 'abandoned' };
+    return { status: 'in_progress' };
+  }
+  if (existing.status === 'abandoned') return { status: 'abandoned' };
+  if (existing.status === 'committed') {
+    const winner = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
+    if (winner) return { status: 'committed', transaction: toTransactionResponse(winner as TransactionRow) };
+    return { status: 'in_progress' };
+  }
+  // 'in_progress' with a still-live lease — a genuinely concurrent holder
+  // (an already-issued retry under this same key, or the real original
+  // request) won the race for this key. Not safe to abandon or remint.
+  return { status: 'in_progress' };
 }
 
 /**
@@ -1645,6 +1731,20 @@ export const transactionsService = {
             return toTransactionResponse(winner as TransactionRow);
           }
           throw new TransactionError('CHECKOUT_ATTEMPT_CONTENTION', 'Could not resolve the checkout attempt. Please try again.', 409);
+        }
+        // POS-PERF-P15R5 — the client explicitly abandoned this key (POST
+        // /by-idempotency-key/:key/abandon) before this request reached the
+        // server: whoever is calling createTransaction under it now — a
+        // merely-delayed original request, or an already-issued same-key
+        // retry racing the abandon decision — loses outright. Unlike
+        // 'in_progress', there is no lease to wait out: this key is
+        // permanently dead and must never be retried, only replaced.
+        if (claim.status === 'abandoned') {
+          throw new TransactionError(
+            'CHECKOUT_ATTEMPT_ABANDONED',
+            'This checkout attempt key was abandoned and can never be used again. Retry with a new idempotency key.',
+            409,
+          );
         }
         // in_progress with a live lease — another request (a genuine
         // concurrent retry, a double-click, or the original request still
@@ -2252,102 +2352,76 @@ export const transactionsService = {
    * outcome — the original request may still be mid-flight and commit a
    * moment later.
    *
-   * Unlike the old version of this method (which only ever checked the
-   * Transaction table and left the caller to guess "not found yet" vs
-   * "never will be found" from how long it had been polling), this reads
-   * the durable CheckoutAttempt fencing row too, so "not committed" now
-   * comes in two genuinely different, server-verified flavors:
+   * POS-PERF-P15R5 — this is now a PURE READ. It used to additionally fence
+   * a never-claimed key (via claimCheckoutAttempt's own atomic
+   * INSERT ... ON CONFLICT) the instant recovery observed no row at all, so
+   * a GET request had a real, durable write side effect. That write has
+   * been moved to its own explicit, authenticated action — see
+   * abandonCheckoutAttempt below and POST /by-idempotency-key/:key/abandon
+   * — because a GET must never be the thing that durably changes state: a
+   * prefetch, a browser retry, a proxy replaying an idempotent-looking GET,
+   * or simply checking status out of curiosity could silently fence a key
+   * the original request was never actually abandoned under.
+   *
+   * This reports one of four genuinely distinct, server-verified states:
+   *   - 'committed': the sale exists; show it.
    *   - 'failed': the original attempt was definitively rejected pre-commit
-   *     (or confirmed rolled back) — safe to mint a replacement key *now*,
-   *     no waiting required.
-   *   - 'in_progress': the original attempt is still live (or its fate is
-   *     simply unknown because it crashed without ever reaching a
-   *     terminal state) — the caller MUST keep using the same key and
-   *     recheck later; minting a replacement here is exactly the bug this
-   *     revision removes.
-   *   - 'not_found': this key was never claimed at all (e.g. the client
-   *     generated it but the request never reached the server) — safe to
-   *     mint a replacement.
-   * Branch authorization for the 'failed'/'in_progress' cases (where no
-   * Transaction row exists yet to check) is enforced by the caller against
-   * the attempt's own branchId — see the by-idempotency-key route.
-   *
-   * POS-PERF-P15R4 — a bare "no CheckoutAttempt row exists" does not prove
-   * the original request never will create one: that request can be
-   * sitting anywhere between the client and claimCheckoutAttempt's own
-   * INSERT (slow auth/rate-limit middleware, a queued connection, a GC
-   * pause before the handler body even starts running) with no row written
-   * yet. Reporting 'not_found' from a plain SELECT risked exactly the race
-   * this whole fencing table exists to prevent: the client mints and
-   * commits a replacement key for an edited cart, and the merely-delayed
-   * original request then arrives, finds nothing under its own key either,
-   * and commits a second, genuinely duplicate sale.
-   *
-   * The fix applies ONLY to the true-absence case (no CheckoutAttempt row
-   * at all): a row that already exists and reads 'failed' is NOT subject
-   * to this gap — 'failed' is written by the original request itself,
-   * confirming its own $transaction never committed (see the doc comment
-   * on the 'failed' branch below and on failCheckoutAttempt), so there is
-   * nothing left in flight to race against and the existing immediate-
-   * reclaim contract (same key, retry right away, no wait) is preserved
-   * unchanged. Only when NO row exists yet does this reuse
-   * claimCheckoutAttempt's own atomic INSERT ... ON CONFLICT in place of a
-   * bare SELECT: this claims the key on recovery's behalf before
-   * answering. The answer given to the client ('not_found', safe to mint a
-   * *replacement* key) does not change, but the original key itself is now
-   * durably fenced — if the real original request lands after this check,
-   * it finds a live, unexpired lease it cannot reclaim and is rejected
-   * outright (CHECKOUT_ATTEMPT_IN_PROGRESS) instead of being allowed to
-   * commit under a key the client has already moved on from. If the real
-   * request had already registered between the SELECT above and this
-   * claim, the claim simply loses that race and this reports its real
-   * state instead of a stale 'not_found'. branchId/cashierId are required
-   * so the sentinel claim (and any brand-new CheckoutAttempt row it
-   * writes) carries the same ownership a real claim would — both NOT NULL
-   * columns on checkout_attempts, and values a client calling its own
-   * recovery endpoint always already knows (its own branch, its own
-   * session).
+   *     (or confirmed rolled back by the original request itself) — safe
+   *     to mint a replacement key *now*, no waiting and no explicit abandon
+   *     call required (see failCheckoutAttempt's doc comment for why this
+   *     case needs no fencing: there is nothing left in flight to race).
+   *   - 'abandoned': a client already explicitly abandoned this key via the
+   *     POST action — permanently dead, safe to mint a replacement (or, if
+   *     this IS the client that called abandon, confirms it took effect).
+   *   - 'in_progress': the attempt is still live (fresh lease), or nothing
+   *     is known about it at all yet (no CheckoutAttempt row exists — the
+   *     key may simply never have been sent, or the request that will
+   *     claim it may be delayed anywhere before claimCheckoutAttempt's own
+   *     INSERT). Both are reported as 'in_progress' rather than 'not_found'
+   *     with no fencing performed: the caller MUST NOT treat either as safe
+   *     to remint on its own — it must call the abandon action first (which
+   *     performs the actual atomic fencing) and act on *that* call's
+   *     result, never on this read-only check's absence-of-a-row.
+   * Branch authorization for the 'failed'/'abandoned'/'in_progress' cases
+   * (where no Transaction row exists yet to check) is enforced by the
+   * caller against the attempt's own branchId — see the by-idempotency-key
+   * route.
    */
   async resolveCheckoutAttempt(idempotencyKey: string, branchId: string, cashierId: string): Promise<CheckoutAttemptResolution> {
+    // branchId/cashierId are accepted (not used below — this is now a pure
+    // read keyed only on idempotencyKey) only so this keeps the exact same
+    // call signature abandonCheckoutAttempt uses — both are reached from
+    // the same router call sites (GET vs. POST .../abandon), and this
+    // read-only contract must never silently drift from its write
+    // counterpart's signature.
+    void branchId;
+    void cashierId;
     const transaction = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
     if (transaction) {
       return { status: 'committed', transaction: toTransactionResponse(transaction as TransactionRow), branchId: transaction.branchId };
     }
 
     const attempt = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
-    if (attempt) {
-      if (attempt.status === 'failed') return { status: 'failed', branchId: attempt.branchId };
-      // 'in_progress' (including the practically-unreachable case of a
-      // 'committed' attempt row whose Transaction the lookup above somehow
-      // missed) — never treated as safe to remint.
-      return { status: 'in_progress', branchId: attempt.branchId };
-    }
-
-    // Nothing exists under this key at all yet — the genuinely ambiguous
-    // case: either this key was never sent, or the request that will
-    // claim it is merely delayed somewhere before claimCheckoutAttempt's
-    // own INSERT. Fence it atomically rather than trusting this SELECT.
-    const claim = await claimCheckoutAttempt(idempotencyKey, branchId, cashierId);
-    if (claim.claimed) {
-      // This call itself was the first to touch the key — safe to tell the
-      // client to remint. The sentinel row left behind is never finished
-      // by anyone; it simply waits out its own lease and becomes
-      // reclaimable like any other abandoned attempt.
+    if (!attempt) {
+      // Genuinely ambiguous, and deliberately left that way by this
+      // read-only check: either this key was never sent, or the request
+      // that will claim it is merely delayed anywhere before
+      // claimCheckoutAttempt's own INSERT. Reported as 'not_found' purely
+      // as a factual "no row currently exists" — NOT as a policy signal
+      // that it is safe to remint. The caller must treat this exactly like
+      // 'in_progress' (keep the key, do not remint) unless and until it
+      // calls abandonCheckoutAttempt and gets back 'abandoned'.
       return { status: 'not_found', branchId: null };
     }
-    if (claim.status === 'committed') {
-      const winner = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
-      if (winner) {
-        return { status: 'committed', transaction: toTransactionResponse(winner as TransactionRow), branchId: winner.branchId };
-      }
-      // Committed an instant ago but not yet visible to this read — treat
-      // as still live rather than falling through to a stale 'not_found'.
-      return { status: 'in_progress', branchId };
-    }
-    // The real original request won the claim in the gap between the
-    // SELECT above and this call's own claim attempt.
-    return { status: 'in_progress', branchId };
+    if (attempt.status === 'failed') return { status: 'failed', branchId: attempt.branchId };
+    if (attempt.status === 'abandoned') return { status: 'abandoned', branchId: attempt.branchId };
+    // 'in_progress' (including the practically-unreachable case of a
+    // 'committed' attempt row whose Transaction the lookup above somehow
+    // missed) — never treated as safe to remint.
+    return { status: 'in_progress', branchId: attempt.branchId };
   },
+
+  abandonCheckoutAttempt,
 
   async listTransactions(filters: TransactionListFilters) {
     const { transactions, total } = await transactionsRepository.listTransactions(filters);

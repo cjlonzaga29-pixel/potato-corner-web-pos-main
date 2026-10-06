@@ -1789,6 +1789,13 @@ enum CheckoutAttemptStatus {
   in_progress
   committed
   failed
+  /// POS-PERF-P15R5 — permanent, non-reclaimable terminal state written only
+  /// by the explicit POST /by-idempotency-key/:key/abandon action. Unlike
+  /// 'failed' (reclaimable immediately) or an expired-lease 'in_progress'
+  /// row (reclaimable because the holder is only presumed dead), this state
+  /// is never eligible for reclaim at all — see claimCheckoutAttempt's WHERE
+  /// clause, which does not match this status regardless of lease_expires_at.
+  abandoned
 }
 
 model Shift {

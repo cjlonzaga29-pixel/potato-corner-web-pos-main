@@ -47,7 +47,7 @@ import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { SaleStatusModal, type SaleSnapshot, type SalePopupPhase } from '@/components/pos/sale-status-modal';
 import {
-  resolveCheckoutAttempt,
+  resolveAndFenceCheckoutAttempt,
   savePendingCheckoutAttempt,
   clearPendingCheckoutAttempt,
   readPendingCheckoutAttempt,
@@ -534,7 +534,7 @@ export default function TerminalPage() {
 
     let cancelled = false;
     setIsResolvingPriorAttempt(true);
-    void resolveCheckoutAttempt(pending.idempotencyKey, branchId).then((outcome) => {
+    void resolveAndFenceCheckoutAttempt(pending.idempotencyKey, branchId).then((outcome) => {
       if (cancelled) return;
       setIsResolvingPriorAttempt(false);
       if (outcome.status === 'found') {
@@ -566,7 +566,7 @@ export default function TerminalPage() {
       return;
     }
     setIsResolvingPriorAttempt(true);
-    void resolveCheckoutAttempt(pending.idempotencyKey, branchId).then((outcome) => {
+    void resolveAndFenceCheckoutAttempt(pending.idempotencyKey, branchId).then((outcome) => {
       setIsResolvingPriorAttempt(false);
       if (outcome.status === 'found') {
         clearPendingCheckoutAttempt(branchId);
@@ -1265,7 +1265,7 @@ export default function TerminalPage() {
     // proceed; unknown means stay blocked rather than guess.
     if (previousKey !== null && !isUnmodifiedRetry) {
       setIsResolvingPriorAttempt(true);
-      const outcome = await resolveCheckoutAttempt(previousKey, branchId);
+      const outcome = await resolveAndFenceCheckoutAttempt(previousKey, branchId);
       setIsResolvingPriorAttempt(false);
 
       if (outcome.status === 'found') {

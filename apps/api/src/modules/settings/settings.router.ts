@@ -6,6 +6,7 @@ import {
   updatePaymentMethodConfigSchema,
   updateDiscountPolicySchema,
   updateWorkHoursPolicySchema,
+  updateWriteGateSchema,
 } from '@potato-corner/shared';
 import { settingsService } from './settings.service.js';
 import { SettingsError } from './settings.types.js';
@@ -155,6 +156,41 @@ router.put(
       if (!requireUser(req, res)) return;
       const policy = await settingsService.updateWorkHoursPolicy(req.body, req.user, req.ip ?? null);
       res.status(200).json({ data: policy, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+/**
+ * POS-PERF-P16 — operational write gate. adminOnly on both verbs: GET is
+ * deliberately not allRoles/adminOrSupervisor like most read endpoints
+ * above, because `activeGatedRequests` and `reason` are operational/
+ * incident-response detail, not something every role needs to poll, and
+ * because only a Super Admin should be have a reason to check whether this
+ * is currently closed. PUT is the only place that can flip it — no public
+ * or unauthenticated route exists anywhere that writes this key.
+ */
+router.get('/write-gate', authenticate, adminOnly, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const state = await settingsService.getWriteGate();
+    res.status(200).json({ data: state, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+router.put(
+  '/write-gate',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updateWriteGateSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const state = await settingsService.setWriteGate(req.body, req.user, req.ip ?? null);
+      res.status(200).json({ data: state, error: null, meta: null });
     } catch (error) {
       handleSettingsError(error, res, next);
     }

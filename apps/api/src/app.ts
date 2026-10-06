@@ -7,6 +7,7 @@ import * as Sentry from '@sentry/node';
 import { config } from './config/index.js';
 import { apiLimiter } from './middleware/rate-limiter.js';
 import { csrfGuard } from './middleware/csrf-guard.js';
+import { writeGate } from './middleware/write-gate.js';
 
 import { authRouter } from './modules/auth/auth.router.js';
 import { branchesRouter } from './modules/branches/branches.router.js';
@@ -61,6 +62,13 @@ app.use(apiLimiter);
 // Double-submit cookie CSRF check for state-changing requests — see
 // middleware/csrf-guard.ts for the exemption rationale.
 app.use(csrfGuard);
+
+// POS-PERF-P16 — server-enforced maintenance/write gate. Runs before every
+// router below, so checkout and inventory-mutating routes are blocked
+// (503) the instant the gate is closed, with no per-router wiring to keep
+// in sync — see middleware/write-gate.ts for exactly which paths/methods
+// are in scope and the narrowly-authorized bypass.
+app.use(writeGate);
 
 app.use('/api/auth', authRouter);
 app.use('/api/branches', branchesRouter);

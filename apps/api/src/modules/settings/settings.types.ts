@@ -76,6 +76,17 @@ export const DEFAULT_WORK_HOURS_POLICY: WorkHoursPolicy = {
   regularHours: 8,
 };
 
+/** Key of the single SystemSetting row that stores the operational write-gate state (POS-PERF-P16). */
+export const WRITE_GATE_KEY = 'operational_write_gate';
+
+export interface WriteGateStateValue {
+  enabled: boolean;
+  reason: string | null;
+}
+
+/** Fallback used when no `operational_write_gate` SystemSetting row exists yet — gate open, same as every pre-P16 deployment's actual behavior. */
+export const DEFAULT_WRITE_GATE_STATE: WriteGateStateValue = { enabled: false, reason: null };
+
 /** Mirrors auth.types.ts's AuthError / employees.types.ts's EmployeeError — this module's own domain error → HTTP status mapping. */
 export class SettingsError extends Error {
   constructor(

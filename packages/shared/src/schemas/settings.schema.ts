@@ -123,3 +123,33 @@ export const workHoursPolicyResponseSchema = workHoursPolicySchema.extend({
   updatedAt: z.iso.datetime().nullable(),
   updatedBy: z.string().nullable(),
 });
+
+/**
+ * POS-PERF-P16 — operational write gate. Stored as
+ * SystemSetting(key='operational_write_gate').value, same KV pattern as the
+ * other policies above. When `enabled`, the server rejects checkout and
+ * every inventory-mutating write with a 503 (see middleware/write-gate.ts)
+ * so a free-tier Render deploy swap or rollback never lets two incompatible
+ * application versions write stock/sales data at the same time. `reason` is
+ * required when enabling (surfaced in the 503 body and the audit log) —
+ * optional when disabling, since reopening traffic needs no justification
+ * beyond "maintenance is over".
+ */
+export const updateWriteGateSchema = z
+  .object({
+    enabled: z.boolean(),
+    reason: z.string().min(1).max(500).optional(),
+  })
+  .refine((data) => !data.enabled || Boolean(data.reason), {
+    message: 'A reason is required when closing the write gate',
+    path: ['reason'],
+  });
+
+export const writeGateResponseSchema = z.object({
+  enabled: z.boolean(),
+  reason: z.string().nullable(),
+  updatedAt: z.iso.datetime().nullable(),
+  updatedBy: z.string().nullable(),
+  /** This process's own count of requests currently inside a gated route — see middleware/write-gate.ts. Per-instance, not cluster-wide; used to verify an HTTP drain before a deploy swap/rollback. */
+  activeGatedRequests: z.number().int().min(0),
+});

@@ -16,6 +16,8 @@ vi.mock('./settings.service.js', () => ({
     updateDiscountPolicy: vi.fn(),
     getWorkHoursPolicy: vi.fn(),
     updateWorkHoursPolicy: vi.fn(),
+    getWriteGate: vi.fn(),
+    setWriteGate: vi.fn(),
   },
 }));
 
@@ -280,4 +282,132 @@ describe('PUT /work-hours — only Super Admin may write', () => {
       expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
     },
   );
+});
+
+// POS-PERF-P16 — GET/PUT /api/settings/write-gate authorization. Same
+// no-supertest technique as work-hours above: adminOnly on both verbs
+// (narrower than discount-policy's adminOrSupervisor), since this lever
+// blocks checkout/inventory writes for every branch at once.
+describe('GET /write-gate — only Super Admin may read', () => {
+  it.each([
+    ['supervisor', () => generateSupervisorToken([BRANCH_1])],
+    ['staff', () => generateStaffToken(BRANCH_1)],
+    ['branch account', () => generateBranchToken(BRANCH_1)],
+  ])('%s cannot GET the write gate state — 403, service never reached', async (_label, makeToken) => {
+    const handlers = getRouteHandlers(settingsRouter, 'get', '/write-gate');
+    const req = mockReq(authHeader(makeToken()));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(settingsService.getWriteGate).not.toHaveBeenCalled();
+  });
+
+  it('an unauthenticated request (no Bearer token) gets 401, never reaches the service', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'get', '/write-gate');
+    const req = mockReq();
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(settingsService.getWriteGate).not.toHaveBeenCalled();
+  });
+
+  it('a super admin can GET the write gate state — 200', async () => {
+    vi.mocked(settingsService.getWriteGate).mockResolvedValue({
+      enabled: false,
+      reason: null,
+      updatedAt: null,
+      updatedBy: null,
+      activeGatedRequests: 0,
+    } as never);
+    const handlers = getRouteHandlers(settingsRouter, 'get', '/write-gate');
+    const req = mockReq(authHeader(generateSuperAdminToken()));
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(settingsService.getWriteGate).toHaveBeenCalled();
+  });
+});
+
+describe('PUT /write-gate — only Super Admin may write, no public/unauthenticated path exists', () => {
+  it.each([
+    ['supervisor', () => generateSupervisorToken([BRANCH_1])],
+    ['staff', () => generateStaffToken(BRANCH_1)],
+    ['branch account', () => generateBranchToken(BRANCH_1)],
+  ])('%s cannot toggle the write gate — 403, service never reached', async (_label, makeToken) => {
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/write-gate');
+    const req = mockReq({ ...authHeader(makeToken()), body: { enabled: true, reason: 'release' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(settingsService.setWriteGate).not.toHaveBeenCalled();
+  });
+
+  it('an unauthenticated request (no Bearer token) gets 401, never reaches the service', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/write-gate');
+    const req = mockReq({ body: { enabled: true, reason: 'release' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(settingsService.setWriteGate).not.toHaveBeenCalled();
+  });
+
+  it('a super admin can close the gate with a reason — 200', async () => {
+    vi.mocked(settingsService.setWriteGate).mockResolvedValue({
+      enabled: true,
+      reason: 'release swap',
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'admin-1',
+      activeGatedRequests: 0,
+    } as never);
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/write-gate');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), body: { enabled: true, reason: 'release swap' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(settingsService.setWriteGate).toHaveBeenCalled();
+  });
+
+  it('closing the gate without a reason is rejected by validate() before reaching the service — 422', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/write-gate');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), body: { enabled: true } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(settingsService.setWriteGate).not.toHaveBeenCalled();
+  });
+
+  it('a super admin can reopen the gate with no reason — 200', async () => {
+    vi.mocked(settingsService.setWriteGate).mockResolvedValue({
+      enabled: false,
+      reason: null,
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'admin-1',
+      activeGatedRequests: 0,
+    } as never);
+    const handlers = getRouteHandlers(settingsRouter, 'put', '/write-gate');
+    const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), body: { enabled: false } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(settingsService.setWriteGate).toHaveBeenCalled();
+  });
 });

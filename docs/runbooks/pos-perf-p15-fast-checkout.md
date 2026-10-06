@@ -595,7 +595,20 @@ or touches those rows, identical to how it already treats every other
 Postgres without recreating the type; do not attempt that as part of an
 ordinary rollback — leaving the unused enum value in place costs nothing.
 
-## Executable rollout procedure for THIS release (POS-PERF-P15R5), as verified against the real pipeline and the real Render service
+## Executable rollout procedure for THIS release (POS-PERF-P15R5) — SUPERSEDED, see POS-PERF-P15R6 below
+
+**This section's premise is wrong and must not be followed as written.** It
+assumed R3/R4 were already live in production and only this R5 diff was
+being shipped on top of them. Verified directly against the live Render API
+deploy history and the live Vercel deployment metadata (see POS-PERF-P15R6
+below): **nothing in the P15 feature set — base P15 through R5 — has ever
+been deployed.** Production (both API and web) is still on
+`ec0e0976c02979f48aa3e48438b0df8099108239` (P13). This section's claim that
+"this release does not strictly need the base-feature Maintenance Mode
+ceremony" is therefore false for the actual next release: shipping any of
+R3/R4/R5 means shipping all of base P15 (`quantityReserved`) with it, for
+the first time, in one push. Read POS-PERF-P15R6 instead of acting on the
+steps immediately below.
 
 Everything below reflects what is actually true of this repo and this
 Render service right now (service `srv-d9cok48js32c73dss310`,
@@ -690,3 +703,190 @@ one push, not from any explicit gating step.
   mechanism (a plan upgrade enabling Maintenance Mode, or a confirmed-safe
   suspend procedure), not something to ship on a "the window is probably
   short enough" assumption.
+
+  **This "net effect" conclusion was itself built on a false premise — see
+  POS-PERF-P15R6 immediately below, which corrects it with directly
+  verified production state.**
+
+## POS-PERF-P15R6 — correcting the production-version assumption, and the actual executable release sequence
+
+Every revision above (R3 through R5) reasoned about "a stale R3/R4-era
+frontend tab" as if R3/R4 were already serving production traffic. **That
+was never true, and this section corrects it with facts pulled directly
+from the live services, not from git history on this machine alone:**
+
+- `git log origin/main..main` on this repo shows **7 unpushed commits**:
+  every one of base P15, R, R2, R3, R4, and R5
+  (`30a1231`…`67185c9`, this repo's current `HEAD`). `origin/main` itself is
+  still at `ec0e0976c02979f48aa3e48438b0df8099108239` ("P13").
+- **Render** (`render deploys list srv-d9cok48js32c73dss310 -o json
+  --confirm`): the live (`status: "live"`) deploy, and the two before it,
+  all carry `commit.id = ec0e0976c02979f48aa3e48438b0df8099108239`. The
+  production API has never run any P15 code.
+- **Vercel**: the current production deployment aliased to
+  `potatorenovare.com`/`www.potatorenovare.com` (`dpl_31eBzGQiDnPuwTdioVJU8oWFdSwZ`,
+  queried via the authenticated Vercel REST API, `GET
+  /v13/deployments/{id}`) has `gitSource.sha =
+  ec0e0976c02979f48aa3e48438b0df8099108239` — the identical commit. The
+  production frontend has never run any P15 code either.
+
+**Consequences:**
+
+1. **There is no R3/R4/R5 tab to be stale, anywhere.** Every passage above
+   discussing "a stale R3/R4-era frontend tab" (R4's `branch_id`-required
+   cost, R5's "404-means-safe is now unsafe" cost) describes a hazard
+   between two states that have never both existed in production. It is
+   not a live compatibility blocker for this release and must not be
+   treated as one. Do not spend release-gating effort on it.
+
+2. **The real compatibility question is P13 (currently live, both sides)
+   vs. the full P15 stack being shipped for the first time**, and it has
+   been checked directly, not assumed:
+   - `POST /api/transactions`'s `idempotency_key` body field is optional
+     (`transactions.router.ts`); the live P13 frontend never sends it and
+     never calls either new `by-idempotency-key` route (that code doesn't
+     exist in its bundle) — it only hits request/response shapes that are
+     an unchanged superset (`toTransactionResponse`), so it keeps working,
+     unmodified, against the new API.
+   - The live P13 frontend's checkout-success handler
+     (`apps/web/hooks/queries/use-transactions.ts`) invalidates only the
+     `transactions`, `current-shift`, and `shift` query keys — never an
+     inventory/stock key — so it never assumed the synchronous-deduction
+     response the old API used to return. The new ~2s async worker lag
+     before `inventory_deduction_status` flips to `completed` causes no
+     UI regression for this specific, actually-deployed frontend.
+   - **Conclusion: the new API is forward-compatible with the currently-live
+     frontend for the full duration of any rollout window.** This removes
+     a false urgency (no "ship both together or a tab breaks" pressure) —
+     but does **not** remove the real hazard in (3).
+
+3. **This push is the first production rollout of base P15's
+   `quantityReserved` write-semantics change — in full**, not a small
+   decision-logic diff on top of an already-shipped foundation as R4/R5
+   assumed. "The actual rolling-deploy hazard this schema change does NOT
+   cover" and every Maintenance-Mode-ceremony requirement in "Deploying"
+   and "Rollback" above apply to this release without exception. Treat the
+   whole P15 stack as shipping together, not R5 alone.
+
+4. **Correcting "a single push enforces ordering":** verified against
+   `.github/workflows/deploy-production.yml`, not assumed.
+   - Migration-before-API-deploy **is** enforced: `prisma migrate deploy`
+     against `PRODUCTION_DATABASE_URL_DIRECT` and the
+     `curl … RENDER_DEPLOY_HOOK_PRODUCTION` step are sequential steps in the
+     same job, in that order. A push cannot reach the deploy hook without
+     the migration step having already succeeded.
+   - **Frontend-vs-API ordering is not enforced, by anything.** The
+     workflow has no step for `apps/web` at all — Vercel's own GitHub
+     integration deploys it independently, on its own schedule, with zero
+     coordination with the Render swap. That the current production
+     Render and Vercel deployments happen to carry the identical commit SHA
+     today is an *observed* fact from this specific push history, not a
+     guarantee the pipeline provides for the next one. Do not rely on "it
+     usually lands together" — watch both deploys explicitly (step 5 below).
+
+### Traffic-pause mechanism: re-verified, still none available on the free plan
+
+Re-confirmed read-only against the live service and official docs (not
+re-asserted from the earlier revision):
+
+- `render services -o json --confirm` for `srv-d9cok48js32c73dss310`:
+  `serviceDetails.plan: "free"`, `maintenanceMode.enabled: false`,
+  `suspended: "not_suspended"`, `autoDeploy: "yes"` /
+  `autoDeployTrigger: "commit"` on `branch: "main"` — unchanged from the
+  last verification.
+- Render CLI v2.28.0 (`render services update --help`): a `--maintenance-mode`
+  flag exists, but Render's own changelog
+  ("Enable maintenance mode to temporarily disable incoming service
+  traffic") states it is available "for any **paid** web service" and that
+  "while in maintenance mode, a web service is not reachable from the
+  public internet (but it remains up and running)" — paid-only, confirmed
+  from Render's own docs, not inferred.
+- **No `suspend` subcommand exists anywhere in the Render CLI**
+  (`render --help`, `render services --help`) — suspend/resume is only a
+  Render-dashboard bulk action or the REST API (`POST
+  /v1/services/{id}/suspend` / `/resume`), per Render's changelog and API
+  reference.
+- Render's official docs (`render.com/docs/free`) only describe suspension
+  in the context of *automatic* suspension after exhausting free instance
+  hours — where the documented way back is "mov[ing] it to any paid compute
+  plan," a different mechanism from a deliberate manual suspend. **No
+  official Render documentation found describes whether a manually
+  suspended free Web Service keeps its process (and in-process background
+  worker) running, whether it still serves traffic, or whether the deploy
+  hook still fires while suspended.** This is a confirmed gap in Render's
+  public documentation, not an assumption being made here to fill it.
+- No application-level maintenance/read-only toggle exists in this codebase
+  today (checked `apps/api/src` for any existing checkout-disable flag —
+  none found), and building one is out of scope for this release-prep task.
+
+**Conclusion: no verified mechanism on the current plan can pause incoming
+checkout traffic while keeping the in-process worker alive to drain
+in-flight reservations.** The only verified lever that does that
+(Maintenance Mode) requires a paid Web Service plan. Confirming whether
+suspend is a usable substitute would require actually suspending the live
+production service to observe its behavior — outside what this task
+authorizes (no production writes/suspend actions). This report states that
+limitation plainly rather than treating an unverified suspend/recreate
+behavior as confirmed, and it does not change billing on its own authority.
+
+### Executable release sequence
+
+**Pre-flight (either branch):** confirm `git status` is clean, confirm the
+intended commit range with `git log origin/main..main`, and confirm no one
+else is mid-push — the moment this push lands, GitHub Actions, Render, and
+Vercel all begin reacting to it independently, per the ordering facts in
+(4) above.
+
+#### Branch A — owner approves a temporary paid-plan upgrade for this release window (unlocks Maintenance Mode)
+
+*Billing decision — not made or executed by this report. Requires someone
+with Render billing access.*
+
+1. Upgrade `srv-d9cok48js32c73dss310` to any paid Web Service plan.
+2. Render dashboard → the service → Settings → Maintenance Mode → **Enable**.
+   Confirm from a browser/curl that the live checkout URL now returns the
+   maintenance page, not the app.
+3. Push to `main`. CI gate runs, then the production migration
+   (`prisma migrate deploy` against `PRODUCTION_DATABASE_URL_DIRECT`), then
+   the workflow's `curl … RENDER_DEPLOY_HOOK_PRODUCTION` — all three
+   sequential, per (4).
+4. **Do not trust the workflow's blind `sleep 45`.** Poll
+   `render deploys list srv-d9cok48js32c73dss310 -o json --confirm` until
+   the new deploy's `status` is `"live"`. Separately watch Vercel
+   (`vercel ls potato-corner-pos --prod`, or the dashboard) until the new
+   production deployment is `Ready`/promoted — these are two independent
+   things to confirm, per (4).
+5. Check the new Render instance's logs for `Inventory deduction worker
+   started (polling every 2s).` and the API's listening line. Traffic is
+   still paused, so this only proves the new code is live, not that it has
+   processed a real request yet.
+6. Render dashboard → Settings → Maintenance Mode → **Disable.** Traffic
+   resumes 100% on the new API, and the new frontend is already confirmed
+   live from step 4 — no window existed where old/new API code or old/new
+   frontend code both saw live traffic.
+7. Smoke-check a real checkout end-to-end: confirm
+   `inventory_deduction_status` transitions `pending → completed` within a
+   few seconds, and run the existing R5 read-only-GET check (`GET
+   /api/transactions/by-idempotency-key/<nonexistent key>?branch_id=<real
+   branch>` returns `404` with no `checkout_attempts` row created).
+8. Owner's call, not required by this task: downgrade the plan back
+   afterward if the paid tier was only wanted for this release window.
+
+#### Branch B — owner does not want to touch billing right now
+
+1. **Do not push.** There is no verified, available way on the current
+   plan to stop new checkout writes while keeping the worker alive to
+   drain in-flight ones, which base P15's own "Deploying"/"Rollback"
+   sections above require for this release (per (3), this is no longer
+   optional — it's the first rollout of the whole stack).
+2. The only paths that could unblock this without a plan change are
+   themselves not currently available: (a) Render Shell access, unverified
+   on this plan and never exercised by the real pipeline either way, or
+   (b) a confirmed-safe suspend/resume behavior, which would first need to
+   be validated on a disposable low-stakes deploy — a separate, deliberate
+   action this task does not authorize taking against the live service.
+3. Until Branch A is approved or one of (2)'s paths is independently
+   validated, this release stays blocked on exactly the condition the
+   "If the plan is confirmed free" section above already states — this
+   section just confirms that condition now definitely applies to the next
+   push, rather than leaving it as a hypothetical "future change."

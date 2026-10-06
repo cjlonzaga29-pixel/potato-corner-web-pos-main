@@ -540,7 +540,7 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
   }
 });
 
-// POS-PERF-P15R2 — lets the terminal UI resolve a checkout attempt whose
+// POS-PERF-P15R3 — lets the terminal UI resolve a checkout attempt whose
 // HTTP response was lost (timeout, dropped connection, reload/browser-close
 // mid-request) against the database itself, instead of treating "I never
 // got a response" as proof the sale never happened. Must be declared before
@@ -548,8 +548,21 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
 // registration order, and 'by-idempotency-key' would otherwise be consumed
 // as a (nonexistent) transactionId. allRoles, same as the plain
 // GET /:transactionId right below: a cashier/branch account needs to resolve
-// its own uncertain attempt just as much as an admin reviewing one later;
-// hasBranchAccess still gates which branch's sale it's allowed to see.
+// its own uncertain attempt just as much as an admin reviewing one later.
+//
+// Response shapes (replacing the old plain transaction-or-404):
+//   200 { status: 'committed', transaction }  — sale exists, safe to show it
+//   200 { status: 'failed' }                  — confirmed no sale; safe to
+//                                                mint a replacement key now
+//   200 { status: 'in_progress' }             — original attempt is still
+//                                                live or its fate is simply
+//                                                unknown; caller MUST keep
+//                                                the same key and recheck
+//   404 { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }  — key was never claimed at all
+// branchId authorization is enforced against whichever record actually
+// carries it (the Transaction for 'committed', the CheckoutAttempt
+// otherwise) — hasBranchAccess still gates which branch's attempt/sale a
+// caller is allowed to see or learn is in progress, exactly as before.
 router.get(
   '/by-idempotency-key/:key',
   authenticate,
@@ -559,16 +572,20 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const transaction = await transactionsService.getTransactionByIdempotencyKey(req.params.key as string);
-      if (!transaction) {
+      const resolution = await transactionsService.resolveCheckoutAttempt(req.params.key as string);
+      if (resolution.status === 'not_found') {
         res.status(404).json({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
         return;
       }
-      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
+      if (!(await hasBranchAccess(req.user, resolution.branchId))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }
-      res.status(200).json({ data: transaction, error: null, meta: null });
+      if (resolution.status === 'committed') {
+        res.status(200).json({ data: { status: 'committed', transaction: resolution.transaction }, error: null, meta: null });
+        return;
+      }
+      res.status(200).json({ data: { status: resolution.status }, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

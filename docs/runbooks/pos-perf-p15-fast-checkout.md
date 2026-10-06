@@ -98,30 +98,67 @@ change (what "available to sell" means), not merely a new column old code
 happens to ignore safely. The old code path is actively unsafe to run
 concurrently with the new one against shared stock rows.
 
-**Required deployment procedure** (prevents old writers from ever sharing
-traffic with new writers against the same stock rows):
+### Why "scale to a single replica" is not actually sufficient
 
-- Do **not** use a gradual/canary rolling update for this specific release
-  — any strategy where old and new containers both receive live checkout
-  traffic for more than an instant is unsafe for this change, regardless
-  of how briefly they overlap.
-- Prefer a deploy strategy with **no mixed-version serving window**:
-  scale to a single replica (or use the platform's "recreate" rather than
-  "rolling" strategy) for this deploy, so the old replica stops receiving
-  traffic before the new one starts. On a platform that cannot guarantee
-  this (e.g. a load balancer that drains old instances only after new ones
-  pass a health check, with both briefly live), pause new checkout
-  submissions at the gateway/load balancer for the swap window instead —
-  a few seconds of "checkout temporarily unavailable" is strictly safer
-  than a stock discrepancy or an oversold item.
-- Schedule the deploy outside active shift hours where possible — the
-  hazard only materializes if a checkout actually lands on an old
-  instance while a new instance holds a live reservation on the same
-  item, which is far less likely (though not impossible — a shift can
-  still be open) with no shifts active.
-- After the deploy, confirm every replica is on the new version (e.g. via
-  the "Inventory deduction worker started" log line on each instance)
-  before considering the rollout complete.
+A previous revision of this runbook said to "scale to a single replica
+(or use the platform's recreate strategy)" and treated that as the fix.
+It is not: **replica count is orthogonal to the hazard.** Render's default
+deploy for a Web Service — at any instance count, including one — is a
+*health-checked swap*: it starts the new instance, waits for it to pass
+its health check, and only *then* stops the old one. With one replica
+that still means the old instance keeps accepting live checkout traffic
+for the entire time the new instance is building and starting (commonly
+tens of seconds). Vercel's deploys are irrelevant here — they are
+atomic/immutable per-deployment and the frontend holds no inventory
+write semantics at all, so the hazard is 100% on the Render API side
+regardless of replica count or how the web app is deployed.
+
+The only thing that actually closes the window is making sure **no
+checkout request reaches the service at all** — old or new — while the
+swap happens. Render Web Services have a built-in way to do exactly that
+without any code change: **Maintenance Mode**. Turning it on serves a
+static page to every incoming request while the underlying service
+process keeps running underneath, untouched — which matters for the
+*rollback* procedure below, where the in-process background worker needs
+to keep draining jobs while HTTP traffic is blocked.
+
+### Executable no-mixed-version rollout (Render API + Vercel web)
+
+Run this for every deploy of this feature (initial rollout, a fix, or a
+later revision that touches checkout/inventory write semantics) — not
+just the first one, since the same hazard applies to any two versions
+with different stock-write semantics, not specifically "old vs. P15."
+
+1. **Render dashboard → the API service → Settings → Maintenance Mode →
+   Enable.** This is the pause: every request (including
+   `POST /api/transactions`) now gets a static response instead of
+   reaching the app. The currently-running instance (old code) keeps its
+   process alive underneath — it just isn't receiving anything.
+2. Confirm the pause took effect: hit the live checkout URL from a
+   browser/curl and confirm you get the maintenance page, not the app.
+3. Apply the migration from a Render Shell session on the API service
+   (`cd apps/api && npx prisma migrate deploy`) — safe regardless of
+   maintenance mode, since it's a schema-only change against the same
+   additive migration described above.
+4. Trigger the deploy: Render dashboard → the API service → Manual Deploy
+   → Deploy latest commit (or push to the branch Render auto-deploys,
+   with auto-deploy otherwise disabled so this step is the only trigger).
+   Wait for the build to finish and the new instance to report healthy in
+   the Render dashboard.
+5. Check the new instance's logs for `Inventory deduction worker started
+   (polling every 2s).` and `API listening`. Because traffic is still
+   paused, this is purely a code-is-live check — nothing has processed a
+   real checkout on the new version yet.
+6. **Render dashboard → Settings → Maintenance Mode → Disable.** Traffic
+   now resumes, 100% on the new instance — there was no point in time
+   where old and new code both had live traffic, because there was no
+   live traffic to either during the swap.
+7. Vercel (web): no special procedure. Deploy it whenever convenient
+   (before, during, or after the API window above) — each Vercel
+   deployment is independent/atomic, and this feature's hazard is
+   entirely in the API's stock-write semantics, which the web app has no
+   part in. The only web-side dependency is `NEXT_PUBLIC_API_URL` pointing
+   at the right API host, which doesn't change for this release.
 
 ## Monitoring / verifying health
 
@@ -145,36 +182,83 @@ resolved recreates the exact oversell hazard described above in "The
 actual rolling-deploy hazard" (old code ignoring `quantityReserved` while
 new-code reservations are still outstanding), except now permanently —
 there is no newer worker left anywhere to ever finish them. The correct
-order drains everything *while new code (and its worker) is still live*,
-confirms the ledger is clean, and only then swaps application code.
+order stops new reservations from being created, drains every existing
+one to a terminal state *while new code (and its worker) is still live*,
+positively reconciles that nothing is left outstanding, and only then
+swaps application code.
 
-1. **While still running the new application code**, drain every
-   `pending`/`processing` `InventoryDeductionJob` row to a terminal state:
-   let the worker continue running (do not stop it yet), or for rows stuck
-   `failed`, void the affected sale (releases the reservation) or use the
-   admin retry-inventory-deduction action to force a fresh attempt. Confirm
-   with `SELECT count(*) FROM inventory_deduction_jobs WHERE status IN ('pending','processing')` = `0`
-   before proceeding. Do not stop the worker or deploy old code while this
-   count is nonzero.
-2. Once drained, **prefer rolling back application code only, and retain
-   the additive schema** (`quantity_reserved`, `idempotency_key`, the
-   `inventory_deduction_jobs` table). Old code never reads or writes any
+A previous revision of this section also treated
+`pending`/`processing` count reaching `0` as sufficient to proceed. It is
+not: a `failed` job (exhausted retries) still holds its reservation
+indefinitely — nothing releases it automatically — so checking only
+`pending`/`processing` can read `0` while `failed` jobs are quietly still
+holding stock hostage. Both executable steps below close that gap.
+
+1. **Stop new reservations without stopping the drain**: Render dashboard
+   → the API service → Settings → Maintenance Mode → **Enable**. This
+   blocks every new `POST /api/transactions` (so no *new* reservations can
+   be created) while leaving the running instance's process — and
+   therefore its in-process background worker — alive and still polling,
+   so it keeps draining whatever is already queued. (This is the same
+   lever used for the rollout above, used here for the opposite purpose:
+   pausing new writes while keeping the drain worker running, rather than
+   pausing everything for a code swap.)
+2. Drain every **non-terminal** job, not just `pending`/`processing`:
+   - Let the worker run until
+     `SELECT count(*) FROM inventory_deduction_jobs WHERE status IN ('pending','processing')` = `0`.
+   - Then handle every row with `status = 'failed'` explicitly — these do
+     **not** self-resolve. For each one, either use the admin
+     retry-inventory-deduction action (the worker, still on new code, can
+     correctly reprocess it) or void the sale (releases the reservation
+     without deducting). Repeat until
+     `SELECT count(*) FROM inventory_deduction_jobs WHERE status = 'failed'` = `0`
+     as well. Do not proceed to step 3 while either count is nonzero.
+3. **Positively reconcile reservations — job-count zero alone does not
+   prove this.** After step 2, every job for this branch should be
+   `completed` or `cancelled`, which means no `InventoryStock` row should
+   still show a nonzero reservation on this branch's items. Verify it
+   directly rather than inferring it from the job counts:
+   ```sql
+   SELECT s.branch_id, s.inventory_item_id, s.quantity_reserved
+   FROM inventory_stocks s
+   WHERE s.quantity_reserved > 0;
+   ```
+   Any row returned here is an orphaned reservation — stock a job claimed
+   but that didn't get released the normal way (e.g. a job row deleted
+   out of band, or a race landing exactly during this drain). Do **not**
+   proceed until this query returns zero rows; investigate and manually
+   correct (a compensating `quantity_reserved` decrement after confirming
+   the matching sale's true state) any that appear.
+4. Once both step 2's job counts and step 3's reservation query are
+   clean, **prefer rolling back application code only, and retain the
+   additive schema** (`quantity_reserved`, `idempotency_key`, the
+   `inventory_deduction_jobs` table, and POS-PERF-P15R3's
+   `checkout_attempts` table below). Old code never reads or writes any
    of these, so leaving them in place costs nothing and keeps the door
    open for a forward-fix without a second migration. This is sufficient
    for the overwhelming majority of rollback scenarios (a bug in the new
    application code, not in the schema itself).
-3. Deploy the previous application code version, using the same
-   no-mixed-version deployment procedure described above in "The actual
-   rolling-deploy hazard" — old code is just as unsafe to run concurrently
-   with new code on the way down as on the way up.
-4. Only run the destructive schema rollback
+5. Deploy the previous application code version: Render dashboard →
+   Manual Deploy → select the prior successful deploy → Redeploy. Traffic
+   is still paused (Maintenance Mode still on from step 1), so there is no
+   window where old and new code both see live traffic on the way down,
+   same reasoning as the rollout procedure above.
+6. Confirm the old version is live and healthy (its own startup logs —
+   it will **not** log `Inventory deduction worker started`, since that
+   worker doesn't exist in old code; absence of that line here is
+   expected, not a problem).
+7. Render dashboard → Settings → Maintenance Mode → **Disable.** Old code
+   resumes serving checkout traffic — now guaranteed to never encounter a
+   reservation it doesn't understand, because step 3 already confirmed
+   none exist.
+8. Only run the destructive schema rollback
    (`apps/api/prisma/migrations/20261005150000_add_fast_checkout_background_deduction/rollback.sql`,
    manual — not run by `prisma migrate`) if the feature is being fully
    decommissioned, not for an ordinary code revert. If you do run it,
-   re-confirm step 1's drain count is still `0` immediately before —
-   dropping `quantity_reserved` out from under a row some straggler
-   request is still reserving against is a data-loss risk the column's
-   own presence otherwise prevents.
+   re-run step 3's reconciliation query immediately before — dropping
+   `quantity_reserved` out from under a row some straggler request is
+   still reserving against is a data-loss risk the column's own presence
+   otherwise prevents.
 
 ## Known residual risks (see delivery report for full list)
 
@@ -183,3 +267,44 @@ confirms the ledger is clean, and only then swaps application code.
 - `void`/`refund` against a `processing` job returns a 409 rather than
   blocking/retrying — the admin UI should surface this as "try again in a
   few seconds," not a hard failure.
+
+## POS-PERF-P15R3 — checkout attempt fencing, and why it needs none of the above
+
+Migration `20261006040000_add_checkout_attempt_fencing` adds one new table,
+`checkout_attempts`, replacing the client-side "poll for ~17s, then assume
+not-found means safe to mint a replacement idempotency key" recovery
+protocol with a server-enforced compare-and-swap (claim → commit/fail,
+with an owner-token-fenced lease) — see `transactions.service.ts`
+`claimCheckoutAttempt`'s doc comment and the schema's doc comment on the
+`CheckoutAttempt` model for the full protocol. `GET
+/api/transactions/by-idempotency-key/:key` now reports `committed` /
+`failed` / `in_progress` instead of a bare found-or-404, and the terminal
+UI (`checkout-recovery.ts`) never mints a replacement key while an attempt
+is `in_progress` — only ever after the server confirms `failed` or
+`not_found`.
+
+**This table needs none of the Deploying/Rollback ceremony above.** Unlike
+`quantityReserved`, old (pre-P15R3) code doesn't have a *different,
+conflicting* understanding of what a checkout attempt is — it simply
+never looks at `checkout_attempts` at all. It only ever calls the
+pre-existing `findByIdempotencyKey` fast path, which still works
+unchanged: if a new-code instance already committed a sale under some
+key, old code presented with that same key still finds and replays it
+correctly. There is no interleaving where old code's ignorance of this
+table causes a wrong *decision* (unlike `quantityReserved`, where old
+code's ignorance directly causes overselling). A normal rolling/canary
+deploy of this specific change alone would be safe.
+
+In practice, deploy it under the same Maintenance Mode window as any
+other change to this feature anyway (simplest to reason about, and the
+window costs seconds) — but know that the strict requirement above is
+specifically about the stock-reservation write semantics from P15, not
+about this table.
+
+### Rollback
+
+Pure code revert, no data migration needed: drop the `checkout_attempts`
+rows for any in-flight attempts if desired (optional — they're harmless
+leftovers, not referenced by old code), or just leave the table in place
+per the "retain the additive schema" preference above. No reservation
+reconciliation applies here since this table never holds inventory.

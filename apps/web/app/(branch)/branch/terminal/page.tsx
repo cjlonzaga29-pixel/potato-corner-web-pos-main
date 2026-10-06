@@ -52,6 +52,7 @@ import {
   clearPendingCheckoutAttempt,
   readPendingCheckoutAttempt,
   transactionToSaleSnapshot,
+  isDefiniteNoCommitErrorCode,
 } from '@/lib/checkout-recovery';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 
@@ -1279,10 +1280,12 @@ export default function TerminalPage() {
         isChargingRef.current = false;
         return;
       }
-      if (outcome.status === 'unknown') {
+      if (outcome.status === 'unknown' || outcome.status === 'in-progress') {
         setUnresolvedAttemptNotice(true);
         setSaleErrorMessage(
-          'Could not confirm whether the previous checkout attempt went through. Check your connection, then try again before charging a different cart.',
+          outcome.status === 'in-progress'
+            ? 'The previous checkout attempt is still being processed on the server. Wait for it to finish before charging a different cart.'
+            : 'Could not confirm whether the previous checkout attempt went through. Check your connection, then try again before charging a different cart.',
         );
         setSalePhase('error');
         isChargingRef.current = false;
@@ -1331,20 +1334,22 @@ export default function TerminalPage() {
       // below) returns to the checkout review dialog with every submitted
       // item exactly as entered.
       //
-      // POS-PERF-P15R2 — idempotencyKeyRef/the persisted pending record are
-      // only cleared here when the server actually gave a conclusive
-      // answer. A TransactionApiError with any code other than the two
-      // apiClient uses for "the response itself is unusable" (NETWORK_ERROR
-      // for a failed fetch, UNREADABLE_RESPONSE for a non-JSON/unparseable
-      // body) is a clean rejection the server processed and definitely did
-      // not persist (insufficient stock, validation, closed shift, …) — safe
-      // to treat as resolved immediately. Anything else (network failure, a
-      // thrown non-API error, an unreadable response) proves nothing, so the
-      // key/pending record stay live for the resolve-before-remint gate
-      // above (or the mount-time recovery effect, if the tab reloads first).
-      const isInconclusive =
-        !(error instanceof TransactionApiError) || error.code === 'NETWORK_ERROR' || error.code === 'UNREADABLE_RESPONSE' || error.code === undefined;
-      if (!isInconclusive) {
+      // POS-PERF-P15R3 — idempotencyKeyRef/the persisted pending record are
+      // only cleared here when the server gave a response on the audited
+      // allowlist of codes that PROVE nothing was inserted (see
+      // isDefiniteNoCommitErrorCode's doc comment in checkout-recovery.ts).
+      // This is deliberately an allowlist, not "every code except
+      // NETWORK_ERROR/UNREADABLE_RESPONSE" — that blocklist was the bug: a
+      // generic 500 from an unrelated bug, a post-commit exception, or a
+      // proxy/gateway error relayed with some other JSON body all used to
+      // get waved through as "definitely didn't persist" even though none
+      // of them prove that. Anything not on the allowlist (including a
+      // thrown non-API error, CHECKOUT_ATTEMPT_IN_PROGRESS/_LOST_LEASE, or
+      // any future/unrecognized code) proves nothing, so the key/pending
+      // record stay live for the resolve-before-remint gate above (or the
+      // mount-time recovery effect, if the tab reloads first).
+      const isDefiniteRejection = error instanceof TransactionApiError && isDefiniteNoCommitErrorCode(error.code);
+      if (isDefiniteRejection) {
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
         clearPendingCheckoutAttempt(branchId);

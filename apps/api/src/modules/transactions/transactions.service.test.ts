@@ -74,7 +74,15 @@ vi.mock('../../lib/prisma.js', () => {
     // unchanged; the dedicated describe block further down overrides this
     // per-test to exercise the new pending/processing/failed dispatch.
     inventoryDeductionJob: { create: vi.fn(), findUnique: vi.fn().mockResolvedValue(null), updateMany: vi.fn() },
+    // POS-PERF-P15R3 — checkout-attempt fencing row. findUnique defaults to
+    // null (no stale row) and $queryRaw's claimCheckoutAttempt INSERT ...
+    // RETURNING defaults to "claimed on the first try", matching this
+    // suite's pre-existing assumption that nothing ever blocks the claim —
+    // the dedicated describe block further down overrides both per-test to
+    // exercise contention/replay/failure-marking.
+    checkoutAttempt: { findUnique: vi.fn().mockResolvedValue(null) },
     $executeRaw: vi.fn().mockResolvedValue(undefined),
+    $queryRaw: vi.fn().mockResolvedValue([{ owner_token: 'mock-owner-token' }]),
     $transaction: vi.fn((callback: (tx: unknown) => unknown, _options?: unknown) => callback(prismaMock)),
   };
   return { prisma: prismaMock };
@@ -2146,27 +2154,101 @@ describe('transactionsService.getTransactionById', () => {
   });
 });
 
-// POS-PERF-P15R2 — a plain, side-effect-free read the terminal UI polls to
+// POS-PERF-P15R3 — a plain, side-effect-free read the terminal UI checks to
 // resolve a checkout attempt whose HTTP response was lost (timeout, dropped
 // connection, reload/browser-close mid-request). Unlike every other lookup
-// in this file it must return null rather than throw on a miss: "no sale
-// with this key yet" is an ordinary, expected outcome the caller polls
-// against, not an error.
-describe('transactionsService.getTransactionByIdempotencyKey (POS-PERF-P15R2)', () => {
-  it('returns the mapped transaction when a sale carries this idempotency key', async () => {
-    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValue(transactionRow({ id: 'txn-1' }) as never);
+// in this file it must never throw on a miss — it reports one of
+// 'committed' / 'failed' / 'in_progress' / 'not_found', never an exception,
+// since every one of those is an ordinary outcome the caller branches on.
+describe('transactionsService.resolveCheckoutAttempt (POS-PERF-P15R3)', () => {
+  it('returns committed with the mapped transaction when a sale carries this idempotency key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(transactionRow({ id: 'txn-1' }) as never);
 
-    const result = await transactionsService.getTransactionByIdempotencyKey('key-1');
+    const result = await transactionsService.resolveCheckoutAttempt('key-1');
 
-    expect(result?.id).toBe('txn-1');
+    expect(result).toMatchObject({ status: 'committed', branchId: expect.any(String) });
+    if (result.status === 'committed') expect(result.transaction.id).toBe('txn-1');
   });
 
-  it('returns null (never throws) when no sale carries this key yet', async () => {
-    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValue(null);
+  it('returns not_found when no sale exists and no attempt row was ever claimed for this key', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce(null);
 
-    const result = await transactionsService.getTransactionByIdempotencyKey('key-missing');
+    const result = await transactionsService.resolveCheckoutAttempt('key-missing');
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: 'not_found', branchId: null });
+  });
+
+  it('returns failed (safe to remint) when the attempt row was definitively marked failed', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'failed', branchId: 'branch-9' } as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-failed');
+
+    expect(result).toEqual({ status: 'failed', branchId: 'branch-9' });
+  });
+
+  it('returns in_progress (never safe to remint) when the attempt row is still live', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(null);
+    vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValueOnce({ status: 'in_progress', branchId: 'branch-9' } as never);
+
+    const result = await transactionsService.resolveCheckoutAttempt('key-live');
+
+    expect(result).toEqual({ status: 'in_progress', branchId: 'branch-9' });
+  });
+});
+
+// POS-PERF-P15R3 — the durable fencing claim every checkout attempt must
+// win before any validation/insert work begins. Replaces the old "poll for
+// ~17s then assume not-found is safe" client-side protocol with a
+// server-enforced compare-and-swap: see claimCheckoutAttempt's doc comment.
+describe('transactionsService.createTransaction — checkout attempt fencing (POS-PERF-P15R3)', () => {
+  it('rejects with CHECKOUT_ATTEMPT_IN_PROGRESS when another attempt still owns a live lease after the settle-wait window, without touching the database', async () => {
+    vi.useFakeTimers();
+    try {
+      // Every claim/reclaim attempt loses, and every status check keeps
+      // seeing a live 'in_progress' row — simulates a genuinely still-
+      // running original attempt that outlasts the bounded settle-wait.
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([]);
+      vi.mocked(prisma.checkoutAttempt.findUnique).mockResolvedValue({ status: 'in_progress', branchId: 'branch-1' } as never);
+
+      const pending = transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-contended' }, null);
+      const assertion = expect(pending).rejects.toMatchObject({ code: 'CHECKOUT_ATTEMPT_IN_PROGRESS' });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('marks the attempt failed when createTransaction throws a pre-commit validation error, so it is immediately reclaimable', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ owner_token: 'owner-abc' }]);
+    vi.mocked(transactionsRepository.findBranch).mockResolvedValueOnce(null);
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-fails-validation' }, null)).rejects.toMatchObject({
+      code: 'INVALID_SHIFT',
+    });
+
+    const failedCalls = vi.mocked(prisma.$executeRaw).mock.calls.filter((call) => {
+      const strings = call[0] as unknown as readonly string[];
+      return Array.isArray(strings) && strings.join(' ').includes("SET \"status\" = 'failed'");
+    });
+    expect(failedCalls.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT mark the attempt failed when createTransaction throws an unclassified (non-TransactionError) error', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ owner_token: 'owner-def' }]);
+    const boom = new Error('unexpected database hiccup');
+    vi.mocked(transactionsRepository.findBranch).mockRejectedValueOnce(boom);
+
+    await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-unexpected-error' }, null)).rejects.toBe(boom);
+
+    const failedCalls = vi.mocked(prisma.$executeRaw).mock.calls.filter((call) => {
+      const strings = call[0] as unknown as readonly string[];
+      return Array.isArray(strings) && strings.join(' ').includes("SET \"status\" = 'failed'");
+    });
+    expect(failedCalls).toHaveLength(0);
   });
 });
 

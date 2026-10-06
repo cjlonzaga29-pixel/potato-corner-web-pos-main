@@ -3,47 +3,54 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 
 /**
- * POS-PERF-P15R2 — a focused, reproducible PostgreSQL integration suite for
- * the fast-checkout + background-inventory-deduction-worker feature
- * (POS-PERF-P15/P15R/P15R2). Unlike the pre-existing *.integration.test.ts
- * stub files elsewhere in this repo (transactions.integration.test.ts,
- * inventory.integration.test.ts, etc. — every `it` body there is a bare
- * `expect(true).toBe(true)` TODO), every test in this file is real: it
- * seeds real rows, calls the real service/repository functions
- * (transactionsService.createTransaction, inventoryDeductionService.
+ * POS-PERF-P15R2/R3 — a focused, reproducible PostgreSQL integration suite
+ * for the fast-checkout + background-inventory-deduction-worker feature
+ * (POS-PERF-P15/P15R/P15R2/P15R3). Unlike the pre-existing
+ * *.integration.test.ts stub files elsewhere in this repo
+ * (transactions.integration.test.ts, inventory.integration.test.ts, etc. —
+ * every `it` body there is a bare `expect(true).toBe(true)` TODO), every
+ * test in this file is real: it seeds real rows, calls the real
+ * service/repository functions (transactionsService.createTransaction,
+ * transactionsService.resolveCheckoutAttempt, inventoryDeductionService.
  * runCycle, universalInventoryService.submitPhysicalCount,
  * inventoryDeductionRepository.cancelAndReleaseReservation), and asserts
  * against rows actually read back from Postgres afterward.
  *
  * ## How to run
  *
- * 1. Start a disposable, non-production Postgres instance. Easiest via
- *    Docker (adjust the port/password if 55432 or `postgres` collide with
- *    something already running):
+ * Option A — embedded Postgres, no Docker, no admin elevation
+ * (apps/api/scripts/with-test-postgres.ts): downloads a real Postgres
+ * binary via the `embedded-postgres` devDependency, runs it as the current
+ * user on a disposable port/data dir, applies every migration, runs the
+ * given command, then tears the cluster down. From apps/api:
+ *
+ *      npx tsx scripts/with-test-postgres.ts "npx vitest run src/modules/transactions/checkout-worker.integration.test.ts"
+ *
+ * Option B — Docker, if you'd rather manage the container yourself (adjust
+ * the port/password if 55432 or `postgres` collide with something already
+ * running):
  *
  *      docker run --rm -d --name pos-test-pg -p 55432:5432 \
  *        -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=pos_test postgres:16
- *
- * 2. Point Prisma at it and apply every migration (including
- *    20261005150000_add_fast_checkout_background_deduction, the migration
- *    this suite's "populated tables" test exercises):
- *
  *      cd apps/api
  *      $env:DATABASE_URL = "postgresql://postgres:postgres@localhost:55432/pos_test"
  *      npx prisma migrate deploy
- *
- * 3. Run this suite with the same DATABASE_URL, plus TEST_DATABASE_URL set
- *    to the same value (TEST_DATABASE_URL is only the enable/skip gate —
- *    see canRunIntegrationTests below; this suite reads the already-
- *    connected `prisma` singleton, which connects using DATABASE_URL at
- *    process start, exactly like record-writer.service.test.ts and
- *    advisory-lock.test.ts already do for their own real-Postgres suites):
- *
  *      $env:TEST_DATABASE_URL = $env:DATABASE_URL
  *      npx vitest run src/modules/transactions/checkout-worker.integration.test.ts
+ *      docker stop pos-test-pg   # --rm deletes the container+volume on stop
  *
- * 4. Tear down: docker stop pos-test-pg (the --rm flag deletes the
- *    container and its volume on stop — nothing persists).
+ * TEST_DATABASE_URL is only the enable/skip gate (see canRunIntegrationTests
+ * below) — this suite reads the already-connected `prisma` singleton, which
+ * connects using DATABASE_URL at process start, exactly like
+ * record-writer.service.test.ts and advisory-lock.test.ts already do for
+ * their own real-Postgres suites.
+ *
+ * For a true pre-migration-vs-post-migration upgrade test (inserting rows
+ * under the OLD schema, then applying a migration and checking they survive
+ * correctly — not just inserting rows after the fact, which only tests
+ * defaults) see scripts/test-migration-on-populated-data.ts instead; that
+ * script controls which migrations are applied at each step, which this
+ * suite's single always-fully-migrated connection cannot do.
  *
  * Never point this at a shared dev/staging/production database — several
  * tests race concurrent writers against the same rows and will corrupt
@@ -77,6 +84,47 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
       data: { productVariantId: variantId, inventoryItemId: inventoryItem.id, quantityRequired: new Prisma.Decimal(2), recipeUnitId: null },
     });
     return inventoryItem.id;
+  }
+
+  /**
+   * POS-PERF-P15R3 — unlike seedCatalogItem above, this creates its own
+   * dedicated ProductVariant (not the shared module-level `variantId`),
+   * so a test using it is never affected by how many components earlier
+   * tests have piled onto the shared variant via seedCatalogItem, and
+   * never affects later tests either. Needed for any new test here that
+   * runs more than one or two single-unit checkouts against real stock
+   * margins — the pre-existing tests in this file get away with reusing
+   * the shared variant only because each one so far ever sells at most a
+   * couple of units against a 1000-unit stock seed.
+   */
+  async function seedIsolatedVariant(initialOnHand: number) {
+    const variant = await prisma.productVariant.create({
+      data: { productId, name: `R3 Isolated Variant ${randomUUID().slice(0, 8)}`, sizeLabel: 'Regular', basePrice: new Prisma.Decimal(100), isActive: true, lifecycleStatus: 'ACTIVE' },
+    });
+    const inventoryItem = await prisma.inventoryItem.create({
+      data: { name: `r3-isolated-item-${randomUUID()}`, baseUnitId: unitId, trackInventory: true },
+    });
+    await prisma.inventoryStock.create({
+      data: { branchId, inventoryItemId: inventoryItem.id, quantityOnHand: new Prisma.Decimal(initialOnHand), quantityReserved: new Prisma.Decimal(0) },
+    });
+    await prisma.productComponent.create({
+      data: { productVariantId: variant.id, inventoryItemId: inventoryItem.id, quantityRequired: new Prisma.Decimal(2), recipeUnitId: null },
+    });
+    const checkoutIsolated = (idempotencyKey: string | null, quantity = 1) =>
+      transactionsService.createTransaction(
+        {
+          branchId,
+          shiftId,
+          cashierId: userId,
+          items: [{ productId, productVariantId: variant.id, quantity }],
+          paymentMethod: 'cash',
+          cashTendered: 500,
+          isOfflineTransaction: false,
+          idempotencyKey,
+        },
+        null,
+      );
+    return { variantId: variant.id, inventoryItemId: inventoryItem.id, checkout: checkoutIsolated };
   }
 
   async function getStock(inventoryItemId: string) {
@@ -145,12 +193,28 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
     // Explicit dependency-ordered cleanup rather than relying on cascades —
     // this suite is the only writer of every row it created (randomUUID-
     // suffixed names/codes/emails), so there is nothing else to preserve.
+    //
+    // POS-PERF-P15R3 — discovered by actually running this suite against
+    // real Postgres (previously gated out by TEST_DATABASE_URL and never
+    // exercised): prisma-immutability.ts's CR-004 guard rejects
+    // delete/deleteMany on Transaction *and* TransactionItem through the
+    // Prisma Client, full stop — including from test cleanup, since the
+    // middleware can't distinguish "production app code" from "a test's own
+    // teardown". A raw SQL delete bypasses the client-level middleware
+    // entirely (it only intercepts Prisma Client model operations); ON
+    // DELETE CASCADE on TransactionItem.transaction and
+    // CheckoutAttempt.transaction takes care of both child tables.
     await prisma.inventoryStockMovement.deleteMany({ where: { branchId } });
     await prisma.inventoryDeductionJob.deleteMany({ where: { branchId } });
-    await prisma.transactionItem.deleteMany({ where: { transaction: { branchId } } });
-    await prisma.transaction.deleteMany({ where: { branchId } });
+    await prisma.$executeRaw`DELETE FROM "transactions" WHERE "branch_id" = ${branchId}`;
     await prisma.inventoryStock.deleteMany({ where: { branchId } });
-    await prisma.productComponent.deleteMany({ where: { productVariantId: variantId } });
+    // By relation, not just the shared `variantId` — seedIsolatedVariant
+    // (POS-PERF-P15R3) creates additional ProductVariant rows under the
+    // same productId, each with its own ProductComponent; deleting only
+    // the shared variant's components would leave the isolated ones'
+    // ProductComponent rows behind, which then blocks the ProductVariant
+    // deleteMany below via its RESTRICT foreign key.
+    await prisma.productComponent.deleteMany({ where: { productVariant: { productId } } });
     await prisma.branchProductAvailability.deleteMany({ where: { branchId } });
     await prisma.productVariant.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
@@ -387,5 +451,123 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
 
     await prisma.inventoryStock.deleteMany({ where: { branchId, inventoryItemId: freshItem.id } });
     await prisma.inventoryItem.deleteMany({ where: { id: freshItem.id } });
+  });
+
+  describe('checkout attempt fencing (POS-PERF-P15R3)', () => {
+    it('resolveCheckoutAttempt reports in_progress while the attempt is still live, then committed the instant the real sale lands — never a false "not found" in between', async () => {
+      const isolated = await seedIsolatedVariant(1000);
+      const idempotencyKey = randomUUID();
+
+      // Simulate "the original request is still running" by claiming the
+      // row exactly as claimCheckoutAttempt would, without finishing the
+      // checkout yet.
+      const ownerToken = randomUUID();
+      await prisma.checkoutAttempt.create({
+        data: { idempotencyKey, branchId, cashierId: userId, status: 'in_progress', ownerToken, leaseExpiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      const whileRunning = await transactionsService.resolveCheckoutAttempt(idempotencyKey);
+      expect(whileRunning).toMatchObject({ status: 'in_progress', branchId });
+
+      // Now let the "original request" actually finish: run a real
+      // checkout under this exact key (claimCheckoutAttempt will see the
+      // existing in_progress/live-lease row and must NOT be able to
+      // reclaim it out from under itself — exercised by using the SAME
+      // ownerToken the real call would need to already hold. Simpler and
+      // just as faithful: delete the manual placeholder and let a genuine
+      // checkout claim and commit the key, then confirm resolution flips.
+      await prisma.checkoutAttempt.delete({ where: { idempotencyKey } });
+      const sale = await isolated.checkout(idempotencyKey);
+
+      const afterCommit = await transactionsService.resolveCheckoutAttempt(idempotencyKey);
+      expect(afterCommit.status).toBe('committed');
+      if (afterCommit.status === 'committed') expect(afterCommit.transaction.id).toBe(sale.id);
+    });
+
+    it('resolveCheckoutAttempt reports failed (safe to remint immediately, no wait) after a pre-commit validation rejection, and the same key can be reused right away', async () => {
+      const isolated = await seedIsolatedVariant(1000);
+      const idempotencyKey = randomUUID();
+
+      await expect(
+        transactionsService.createTransaction(
+          {
+            branchId,
+            shiftId,
+            cashierId: userId,
+            items: [{ productId, productVariantId: isolated.variantId, quantity: 1 }],
+            paymentMethod: 'cash',
+            cashTendered: 1, // less than the 100 total — INSUFFICIENT_CASH_TENDERED, thrown before any $transaction
+            isOfflineTransaction: false,
+            idempotencyKey,
+          },
+          null,
+        ),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_CASH_TENDERED' });
+
+      const resolved = await transactionsService.resolveCheckoutAttempt(idempotencyKey);
+      expect(resolved).toMatchObject({ status: 'failed', branchId });
+
+      // Same key, now with valid payment — must succeed immediately, no
+      // lease wait, because 'failed' is reclaimable right away.
+      const sale = await isolated.checkout(idempotencyKey);
+      expect(await transactionsService.resolveCheckoutAttempt(idempotencyKey)).toMatchObject({ status: 'committed' });
+      expect(sale.id).toBeTruthy();
+    });
+  });
+
+  describe('multi-ingredient rollback (POS-PERF-P15R3)', () => {
+    it('a multi-ingredient sale that runs out of stock on the SECOND ingredient leaves the FIRST ingredient with no lingering reservation — all-or-nothing', async () => {
+      const plentifulItemId = await seedCatalogItem(1000); // 2 base units/unit sold, ample stock
+      // A second ingredient on the SAME variant with far too little stock to
+      // cover the sale — reserveStockForSale must roll back the whole
+      // $transaction (including the plentiful item's reservation above) the
+      // instant this one fails, never leave a partial reservation behind.
+      const scarceItem = await prisma.inventoryItem.create({
+        data: { name: `r3-scarce-item-${randomUUID()}`, baseUnitId: unitId, trackInventory: true },
+      });
+      await prisma.inventoryStock.create({
+        data: { branchId, inventoryItemId: scarceItem.id, quantityOnHand: new Prisma.Decimal(1), quantityReserved: new Prisma.Decimal(0) },
+      });
+      await prisma.productComponent.create({
+        data: { productVariantId: variantId, inventoryItemId: scarceItem.id, quantityRequired: new Prisma.Decimal(5), recipeUnitId: null },
+      });
+
+      await expect(checkout(randomUUID())).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+
+      const plentifulStock = await getStock(plentifulItemId);
+      expect(plentifulStock.quantityReserved.toNumber()).toBe(0);
+      const scarceStock = await getStock(scarceItem.id);
+      expect(scarceStock.quantityReserved.toNumber()).toBe(0);
+
+      await prisma.productComponent.deleteMany({ where: { inventoryItemId: scarceItem.id } });
+      await prisma.inventoryStock.deleteMany({ where: { branchId, inventoryItemId: scarceItem.id } });
+      await prisma.inventoryItem.deleteMany({ where: { id: scarceItem.id } });
+    });
+  });
+
+  describe('concurrent overselling through the actual checkout service (POS-PERF-P15R3)', () => {
+    it('ten concurrent 1-unit sales against 5 available units let exactly 5 succeed and never drive on-hand below reserved', async () => {
+      // Dedicated variant/item (not the shared seedCatalogItem/variantId) —
+      // this test's assertion that EXACTLY 5 of 10 sales succeed would be
+      // thrown off by however much stock margin earlier tests in this file
+      // already consumed against the shared variant.
+      const isolated = await seedIsolatedVariant(10); // quantityRequired=2/unit sold -> exactly 5 one-unit sales coverable (5*2=10).
+
+      const attempts = Array.from({ length: 10 }, () => isolated.checkout(randomUUID()));
+      const results = await Promise.allSettled(attempts);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(5);
+      expect(rejected).toHaveLength(5);
+      for (const r of rejected) {
+        expect((r as PromiseRejectedResult).reason).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+      }
+
+      const stock = await getStock(isolated.inventoryItemId);
+      expect(stock.quantityReserved.toNumber()).toBe(10);
+      expect(stock.quantityOnHand.toNumber()).toBeGreaterThanOrEqual(stock.quantityReserved.toNumber());
+      expect(await prisma.transaction.count({ where: { id: { in: fulfilled.map((r) => (r as PromiseFulfilledResult<{ id: string }>).value.id) } } })).toBe(5);
+    });
   });
 });

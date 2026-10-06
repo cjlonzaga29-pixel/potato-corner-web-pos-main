@@ -22,8 +22,8 @@ afterEach(() => {
 });
 
 describe('resolveCheckoutAttempt', () => {
-  it('returns "found" immediately on the first successful lookup', async () => {
-    mockApiClient.mockResolvedValueOnce({ data: { id: 'txn-1' }, error: null, meta: null });
+  it('returns "found" on a single lookup when the server reports the attempt committed', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'committed', transaction: { id: 'txn-1' } }, error: null, meta: null });
 
     const result = await resolveCheckoutAttempt('key-1');
 
@@ -32,7 +32,7 @@ describe('resolveCheckoutAttempt', () => {
     expect(mockApiClient).toHaveBeenCalledWith('/api/transactions/by-idempotency-key/key-1');
   });
 
-  it('returns "unknown" on the first inconclusive response (network error) without polling further', async () => {
+  it('returns "unknown" on an inconclusive response (network error) — a single check, no polling', async () => {
     mockApiClient.mockResolvedValueOnce({ data: null, error: { code: 'NETWORK_ERROR' }, meta: null });
 
     const result = await resolveCheckoutAttempt('key-1');
@@ -41,29 +41,30 @@ describe('resolveCheckoutAttempt', () => {
     expect(mockApiClient).toHaveBeenCalledTimes(1);
   });
 
-  it('polls on a clean "not found" and returns "not-found" only after exhausting the bounded window', async () => {
-    mockApiClient.mockResolvedValue({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
+  it('returns "not-found" when the server confirms the key was never claimed (404)', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null });
 
-    const resultPromise = resolveCheckoutAttempt('key-1');
-    await vi.runAllTimersAsync();
-    const result = await resultPromise;
+    const result = await resolveCheckoutAttempt('key-1');
 
     expect(result).toEqual({ status: 'not-found' });
-    // Initial check + one retry per POLL_DELAYS_MS entry.
-    expect(mockApiClient.mock.calls.length).toBeGreaterThan(1);
+    expect(mockApiClient).toHaveBeenCalledTimes(1);
   });
 
-  it('stops polling and returns "found" as soon as a later attempt succeeds', async () => {
-    mockApiClient
-      .mockResolvedValueOnce({ data: null, error: { code: 'IDEMPOTENCY_KEY_NOT_FOUND' }, meta: null })
-      .mockResolvedValueOnce({ data: { id: 'txn-2' }, error: null, meta: null });
+  it('returns "not-found" when the server reports the attempt definitively failed pre-commit', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'failed' }, error: null, meta: null });
 
-    const resultPromise = resolveCheckoutAttempt('key-1');
-    await vi.runAllTimersAsync();
-    const result = await resultPromise;
+    const result = await resolveCheckoutAttempt('key-1');
 
-    expect(result).toEqual({ status: 'found', transaction: { id: 'txn-2' } });
-    expect(mockApiClient).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ status: 'not-found' });
+  });
+
+  it('returns "in-progress" when the server reports the attempt is still live — never treated as safe to remint', async () => {
+    mockApiClient.mockResolvedValueOnce({ data: { status: 'in_progress' }, error: null, meta: null });
+
+    const result = await resolveCheckoutAttempt('key-1');
+
+    expect(result).toEqual({ status: 'in-progress' });
+    expect(mockApiClient).toHaveBeenCalledTimes(1);
   });
 });
 

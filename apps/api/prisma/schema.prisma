@@ -1645,6 +1645,7 @@ model Transaction {
   paymentProofVerifiedBy User?             @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
   items                  TransactionItem[]
   deductionJob           InventoryDeductionJob?
+  checkoutAttempt        CheckoutAttempt?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1742,6 +1743,52 @@ model InventoryDeductionJob {
   @@index([status, nextAttemptAt])
   @@index([branchId])
   @@map("inventory_deduction_jobs")
+}
+
+/// POS-PERF-P15R3 — durable fencing record for a checkout attempt, keyed by
+/// the same client-generated idempotencyKey as Transaction.idempotencyKey.
+/// Exists to replace the old "poll for ~17s, then assume not-found means
+/// safe to mint a replacement key" protocol, which proved nothing about a
+/// request that was simply still running past the poll window. Claiming a
+/// key here (see transactions.service.ts claimCheckoutAttempt) is a
+/// Postgres-level compare-and-swap: a key already 'committed' can never be
+/// reclaimed; a key 'in_progress' with a live lease can never be reclaimed
+/// either, so a second request for the same key gets a definitive
+/// CHECKOUT_ATTEMPT_IN_PROGRESS rejection instead of racing ahead. Only a
+/// 'failed' row (the original attempt was definitively rejected pre-commit)
+/// or an 'in_progress' row whose leaseExpiresAt has passed (the original
+/// holder is presumed dead) can be reclaimed -- and even then, the original
+/// holder's own commit step re-checks ownerToken before finalizing (see
+/// createTransaction's $transaction callback), so if it turns out the
+/// "dead" holder was actually still alive and finishes later, ITS commit is
+/// the one that gets rolled back, never a silent duplicate sale.
+model CheckoutAttempt {
+  idempotencyKey String                @id @map("idempotency_key")
+  branchId       String                @map("branch_id")
+  cashierId      String                @map("cashier_id")
+  status         CheckoutAttemptStatus @default(in_progress)
+  // Set only once status transitions to 'committed', atomically with that
+  // transition (same $transaction as the Transaction insert) -- never
+  // written any other time.
+  transactionId  String?               @unique @map("transaction_id")
+  // Rotated on every successful claim/reclaim -- the compare-and-swap token
+  // every state transition (fail, commit, reclaim) must present to prove it
+  // still owns this attempt. Mirrors InventoryDeductionJob.claimToken.
+  ownerToken     String                @map("owner_token")
+  leaseExpiresAt DateTime              @map("lease_expires_at")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @updatedAt @map("updated_at")
+
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([branchId])
+  @@map("checkout_attempts")
+}
+
+enum CheckoutAttemptStatus {
+  in_progress
+  committed
+  failed
 }
 
 model Shift {

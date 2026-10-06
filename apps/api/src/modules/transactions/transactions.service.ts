@@ -785,6 +785,13 @@ export interface DiscountRates {
   employee: number;
 }
 
+/** POS-PERF-P15R3 — see transactionsService.resolveCheckoutAttempt's doc comment. */
+export type CheckoutAttemptResolution =
+  | { status: 'committed'; transaction: ReturnType<typeof toTransactionResponse>; branchId: string }
+  | { status: 'failed'; branchId: string }
+  | { status: 'in_progress'; branchId: string }
+  | { status: 'not_found'; branchId: null };
+
 /** Same 20%/20%/20% values STATUTORY_DISCOUNT_RATE/EMPLOYEE_DISCOUNT_RATE hardcoded before Discount Settings existed — used only if a caller (e.g. a stale test) omits discountRates. */
 const DEFAULT_DISCOUNT_RATES: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
 
@@ -936,6 +943,134 @@ function idempotencyReplayMatches(existing: TransactionRow, data: CreateTransact
     data.items.map((item) => ({ productVariantId: item.productVariantId, flavorId: item.flavorId ?? null, quantity: item.quantity })),
   );
   return existingSignature === requestedSignature;
+}
+
+/**
+ * POS-PERF-P15R3 — how long a claimed checkout attempt's lease stays live
+ * before it is even eligible for reclaim by anyone. Must comfortably exceed
+ * the slowest realistic checkout write: the pos checkout $transaction's own
+ * configured ceiling (maxWaitMs to acquire the slot, plus timeoutMs to run
+ * once acquired — see config/index.ts assertPosTransactionTimingSane) plus
+ * generous headroom for the pre-transaction work (catalog/discount/cost
+ * lookups) that runs before the claim is ever at risk. A lease that expired
+ * too early would let a second request reclaim a key whose original holder
+ * is, in fact, still legitimately running — not unsafe (the original
+ * holder's own commit re-checks ownership and loses, see
+ * claimCheckoutAttempt's doc comment on CheckoutAttempt in schema.prisma),
+ * but it would make an in-flight sale vanish and have to be resubmitted
+ * under a trivial reclaim rather than being allowed to just finish.
+ */
+const CHECKOUT_ATTEMPT_LEASE_MS = config.posTransaction.maxWaitMs + config.posTransaction.timeoutMs + 20_000;
+
+/**
+ * POS-PERF-P15R3 — bounded, in-process wait used only to let a genuinely
+ * concurrent retry/double-click under the *same* idempotency key (which
+ * loses the claim race below) converge on the one sale the winner is about
+ * to create, instead of bouncing off a 409 the instant two requests overlap
+ * by a few milliseconds. This is NOT the old bug reintroduced: timing out
+ * here only ever produces the true statement "still in progress", never a
+ * false "safe to mint a new key" — see claimCheckoutAttempt's caller for
+ * what happens on each outcome. Polls a local DB row, not a client-side
+ * HTTP round trip, so this can stay short relative to the old client-side
+ * poll ladder while still safely covering ordinary checkout latency.
+ */
+const CHECKOUT_ATTEMPT_SETTLE_WAIT_MS = 8_000;
+const CHECKOUT_ATTEMPT_SETTLE_POLL_INTERVAL_MS = 150;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function awaitCheckoutAttemptSettlement(idempotencyKey: string, maxWaitMs: number): Promise<'committed' | 'failed' | 'in_progress'> {
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    const attempt = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey }, select: { status: true } });
+    if (!attempt || attempt.status !== 'in_progress') return attempt?.status ?? 'failed';
+    if (Date.now() >= deadline) return 'in_progress';
+    await sleep(CHECKOUT_ATTEMPT_SETTLE_POLL_INTERVAL_MS);
+  }
+}
+
+type ClaimCheckoutAttemptResult =
+  | { claimed: true; ownerToken: string }
+  | { claimed: false; status: 'committed'; transactionId: string | null }
+  | { claimed: false; status: 'in_progress' };
+
+/**
+ * POS-PERF-P15R3 — the fencing claim a checkout attempt must win before any
+ * validation/stock/insert work begins. This is a single atomic
+ * `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE`: Postgres evaluates the
+ * WHERE clause and performs the update in one statement, so two concurrent
+ * claims for the same key can never both believe they won. A row already
+ * 'committed' is never touched by the DO UPDATE (its WHERE never matches),
+ * so RETURNING comes back empty and the caller is told to go replay the
+ * existing sale. A row 'in_progress' with a live lease is likewise left
+ * alone — the caller is told the attempt is still live and must not start a
+ * replacement. Only a 'failed' row, or an 'in_progress' row whose lease has
+ * passed, is eligible to be reclaimed (fresh owner_token, fresh lease).
+ *
+ * This replaces the old client-side "poll for ~17s, assume not-found is
+ * safe" recovery protocol: minting a replacement idempotency key is no
+ * longer a client-side guess from elapsed time, it is this server-enforced
+ * compare-and-swap.
+ */
+async function claimCheckoutAttempt(idempotencyKey: string, branchId: string, cashierId: string): Promise<ClaimCheckoutAttemptResult> {
+  const ownerToken = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + CHECKOUT_ATTEMPT_LEASE_MS);
+  const claimed = await prisma.$queryRaw<{ owner_token: string }[]>`
+    INSERT INTO "checkout_attempts" ("idempotency_key", "branch_id", "cashier_id", "status", "owner_token", "lease_expires_at", "created_at", "updated_at")
+    VALUES (${idempotencyKey}, ${branchId}, ${cashierId}, 'in_progress', ${ownerToken}, ${leaseExpiresAt}, now(), now())
+    ON CONFLICT ("idempotency_key") DO UPDATE SET
+      "owner_token" = EXCLUDED."owner_token",
+      "status" = 'in_progress',
+      "lease_expires_at" = EXCLUDED."lease_expires_at",
+      "updated_at" = now()
+    WHERE "checkout_attempts"."status" = 'failed'
+       OR ("checkout_attempts"."status" = 'in_progress' AND "checkout_attempts"."lease_expires_at" < now())
+    RETURNING "owner_token"
+  `;
+  if (claimed.length > 0) return { claimed: true, ownerToken };
+
+  const existing = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+  if (!existing) {
+    // Unreachable in normal operation: the INSERT above guarantees a row
+    // exists after this statement unless something else deleted it in the
+    // same instant. Surface as a retryable conflict rather than silently
+    // treating "no row" as "safe to proceed" (which could race whatever
+    // deleted it).
+    throw new TransactionError('CHECKOUT_ATTEMPT_CONTENTION', 'Could not resolve the checkout attempt. Please try again.', 409);
+  }
+  if (existing.status === 'committed') return { claimed: false, status: 'committed', transactionId: existing.transactionId };
+  return { claimed: false, status: 'in_progress' };
+}
+
+/**
+ * POS-PERF-P15R3 — best-effort release of a claimed attempt once its holder
+ * has proven, before any commit, that nothing will be inserted under this
+ * key (every TransactionError thrown inside createTransaction is thrown
+ * either before the sale's $transaction starts, or from a path that
+ * guarantees that transaction rolled back — see the P2028 branch below).
+ * Fenced on ownerToken exactly like the commit-time update in
+ * createTransaction's $transaction callback: if this holder's lease was
+ * already reclaimed by someone else, this update simply matches zero rows
+ * and does nothing, which is correct — the row isn't this holder's to
+ * change anymore. Swallows its own errors: a failure to mark 'failed' only
+ * means the row waits out its lease before anyone can reclaim it, never a
+ * correctness problem.
+ */
+async function failCheckoutAttempt(idempotencyKey: string, ownerToken: string): Promise<void> {
+  try {
+    await prisma.$executeRaw`
+      UPDATE "checkout_attempts"
+      SET "status" = 'failed', "updated_at" = now()
+      WHERE "idempotency_key" = ${idempotencyKey} AND "owner_token" = ${ownerToken} AND "status" = 'in_progress'
+    `;
+  } catch (error) {
+    console.error('Failed to mark checkout attempt as failed (non-fatal — it will just wait out its lease)', {
+      idempotencyKey,
+      errorCategory: error instanceof Error ? error.name : 'UnknownError',
+    });
+  }
 }
 
 /**
@@ -1434,6 +1569,17 @@ export const transactionsService = {
     // data is captured, only durations.
     const handlerStartedAt = performance.now();
     let discountCalcMs = 0;
+    // POS-PERF-P15R3 — declared here (not with `const` at their original
+    // point of use) so they stay in scope for the response-building/
+    // notification code after the validation+insert try/catch below, which
+    // now needs a catch clause of its own to mark a rejected checkout
+    // attempt 'failed' (see claimCheckoutAttempt above).
+    let isPwdOrSeniorDiscount = false;
+    let hasDiscountProof = false;
+    let catalogResolveMs = 0;
+    let resolvedItems: ResolvedItem[] = [];
+    let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>>;
+    let dbTransactionStartedAt = 0;
     // POS-PERF-P2R — opt-in, finer-grained stage breakdown on top of the
     // always-on timing above. Disabled by default (config.
     // checkoutLatencyDiagnosticsEnabled); see lib/checkout-latency-diagnostics.ts.
@@ -1464,36 +1610,88 @@ export const transactionsService = {
       }
     }
 
-    // Task 209.3 — branch and shift are looked up by independent ids
-    // (branchId vs shiftId) with no data dependency between them; running
-    // them concurrently instead of back-to-back saves one round trip off
-    // every checkout's critical path without changing either validation.
-    const [branch, shift] = await timeStage(diag, 'branchShiftLookup', () =>
-      Promise.all([
-        transactionsRepository.findBranch(data.branchId),
-        cashRepository.findShiftById(data.shiftId),
-      ]),
-    );
-    if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
-
-    if (!shift || shift.branchId !== data.branchId) {
-      throw new TransactionError('INVALID_SHIFT', 'shift_id does not belong to branch_id', 422);
+    // POS-PERF-P15R3 — claim the fencing row for this key before any
+    // validation/stock/insert work begins. See CheckoutAttempt in
+    // schema.prisma and claimCheckoutAttempt's doc comment for the full
+    // protocol. Everything from here through the sale's own $transaction is
+    // wrapped so a definite pre-commit rejection (any TransactionError) marks
+    // this attempt 'failed' — safe to reclaim immediately, no lease wait —
+    // while an unexpected/unclassified error leaves it 'in_progress' and
+    // subject only to the lease.
+    let attemptOwnerToken: string | null = null;
+    if (data.idempotencyKey) {
+      let claim = await claimCheckoutAttempt(data.idempotencyKey, data.branchId, data.cashierId);
+      if (!claim.claimed && claim.status === 'in_progress') {
+        // Didn't win outright — most likely a genuinely concurrent retry or
+        // double-click for this exact key. Give the current holder a short
+        // bounded window to settle before concluding anything, then retry
+        // the claim once: if it settled 'failed', this request can win it
+        // fresh; if it settled 'committed', the branch below replays it.
+        const settled = await awaitCheckoutAttemptSettlement(data.idempotencyKey, CHECKOUT_ATTEMPT_SETTLE_WAIT_MS);
+        if (settled !== 'in_progress') {
+          claim = await claimCheckoutAttempt(data.idempotencyKey, data.branchId, data.cashierId);
+        }
+      }
+      if (!claim.claimed) {
+        if (claim.status === 'committed') {
+          // The attempt committed between the findByIdempotencyKey miss
+          // above and this claim — re-fetch and replay rather than treating
+          // "didn't claim" as a license to proceed.
+          const winner = await transactionsRepository.findByIdempotencyKey(data.idempotencyKey);
+          if (winner) {
+            if (!idempotencyReplayMatches(winner as TransactionRow, data)) {
+              throw new TransactionError('IDEMPOTENCY_KEY_REUSE', 'This idempotency key was already used for a different sale', 409);
+            }
+            return toTransactionResponse(winner as TransactionRow);
+          }
+          throw new TransactionError('CHECKOUT_ATTEMPT_CONTENTION', 'Could not resolve the checkout attempt. Please try again.', 409);
+        }
+        // in_progress with a live lease — another request (a genuine
+        // concurrent retry, a double-click, or the original request still
+        // actually running) currently owns this key. This is a definitive,
+        // server-verified fact, not a client guess from elapsed time: the
+        // caller must keep this same key and wait/recheck, never mint a
+        // replacement.
+        throw new TransactionError(
+          'CHECKOUT_ATTEMPT_IN_PROGRESS',
+          'A previous checkout attempt under this key is still being processed. Keep waiting on it instead of starting a new one.',
+          409,
+        );
+      }
+      attemptOwnerToken = claim.ownerToken;
     }
-    if (shift.status !== 'active') {
-      throw new TransactionError('SHIFT_CLOSED', 'Cannot record a transaction on a shift that is not open', 409);
-    }
 
-    // Presence of cash_tendered (for cash) is already guaranteed by
-    // createTransactionSchema's superRefine — only the business-logic checks
-    // below belong here.
+    try {
+      // Task 209.3 — branch and shift are looked up by independent ids
+      // (branchId vs shiftId) with no data dependency between them; running
+      // them concurrently instead of back-to-back saves one round trip off
+      // every checkout's critical path without changing either validation.
+      const [branch, shift] = await timeStage(diag, 'branchShiftLookup', () =>
+        Promise.all([
+          transactionsRepository.findBranch(data.branchId),
+          cashRepository.findShiftById(data.shiftId),
+        ]),
+      );
+      if (!branch) throw new TransactionError('INVALID_SHIFT', 'branch_id does not reference a known branch', 422);
 
-    // Belt: createTransactionSchema's superRefine already rejects a missing
-    // key/type client-side; this is the server-side gate that actually makes
-    // "mandatory" hold regardless of what the client sends.
-    if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && (!data.paymentProofKey || !data.paymentProofType)) {
-      throw new TransactionError(
-        'PAYMENT_PROOF_REQUIRED',
-        'A payment proof photo must be captured before a GCash, Maya, or Other sale can be recorded',
+      if (!shift || shift.branchId !== data.branchId) {
+        throw new TransactionError('INVALID_SHIFT', 'shift_id does not belong to branch_id', 422);
+      }
+      if (shift.status !== 'active') {
+        throw new TransactionError('SHIFT_CLOSED', 'Cannot record a transaction on a shift that is not open', 409);
+      }
+
+      // Presence of cash_tendered (for cash) is already guaranteed by
+      // createTransactionSchema's superRefine — only the business-logic checks
+      // below belong here.
+
+      // Belt: createTransactionSchema's superRefine already rejects a missing
+      // key/type client-side; this is the server-side gate that actually makes
+      // "mandatory" hold regardless of what the client sends.
+      if (PROOF_REQUIRED_METHODS.includes(data.paymentMethod) && (!data.paymentProofKey || !data.paymentProofType)) {
+        throw new TransactionError(
+          'PAYMENT_PROOF_REQUIRED',
+          'A payment proof photo must be captured before a GCash, Maya, or Other sale can be recorded',
         422,
       );
     }
@@ -1523,8 +1721,8 @@ export const transactionsService = {
     // discount_proof_key is accepted and linked when present but never
     // enforced here the way PAYMENT_PROOF_REQUIRED is above. A future
     // settings-driven policy would gate on the same discountType check.
-    const isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
-    const hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
+    isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
+    hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
 
     // Task 209.xx — server-authoritative discount rate. The client only ever
     // sends the discount TYPE (createTransactionSchema has no percentage
@@ -1552,8 +1750,8 @@ export const transactionsService = {
     }
 
     const catalogResolveStartedAt = performance.now();
-    const resolvedItems = await resolveCartItems(data.branchId, data.items);
-    const catalogResolveMs = performance.now() - catalogResolveStartedAt;
+    resolvedItems = await resolveCartItems(data.branchId, data.items);
+    catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
     const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = computeAmounts(
       subtotal,
@@ -1602,12 +1800,11 @@ export const transactionsService = {
       return lines;
     });
 
-    let created: Awaited<ReturnType<typeof transactionsRepository.createTransaction>>;
     // Allocated once via the atomic counter (generateReceiptNumber) — unlike
     // the old COUNT-then-increment approach, this can never collide with a
     // concurrent sale, so there's no retry-on-P2002 loop here anymore.
     const receiptNumber = await timeStage(diag, 'receiptAllocation', () => generateReceiptNumber(branch.code));
-    const dbTransactionStartedAt = performance.now();
+    dbTransactionStartedAt = performance.now();
     const transactionInvokedAt = performance.now();
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -1687,6 +1884,31 @@ export const transactionsService = {
           reserveStockForSale(tx, data.branchId, txCreated.id, resolvedItems.map((item) => ({ lines: item.deductionLines }))),
         );
 
+        // POS-PERF-P15R3 — flip the fencing row to 'committed' atomically
+        // with the sale insert/reservation above: same $transaction, so
+        // there is never a window where the Transaction row exists but the
+        // attempt still reads 'in_progress', or vice versa. Fenced on
+        // ownerToken: if this holder's lease was reclaimed by someone else
+        // while this transaction was running (affected === 0), THIS
+        // transaction must roll back instead of committing a sale whose
+        // attempt record no longer belongs to it — throwing inside a Prisma
+        // interactive transaction callback rolls back everything in it,
+        // including the insert and the reservation above.
+        if (data.idempotencyKey && attemptOwnerToken) {
+          const affected = await tx.$executeRaw`
+            UPDATE "checkout_attempts"
+            SET "status" = 'committed', "transaction_id" = ${txCreated.id}, "updated_at" = now()
+            WHERE "idempotency_key" = ${data.idempotencyKey} AND "owner_token" = ${attemptOwnerToken} AND "status" = 'in_progress'
+          `;
+          if (affected === 0) {
+            throw new TransactionError(
+              'CHECKOUT_ATTEMPT_LOST_LEASE',
+              'This checkout attempt was reclaimed by another process before it could commit and has been rolled back. Please retry under the same key.',
+              409,
+            );
+          }
+        }
+
         const callbackReturnedAt = performance.now();
         return { txCreated, callbackReturnedAt };
       }, {
@@ -1741,6 +1963,22 @@ export const transactionsService = {
           'The sale could not be completed in time and was not charged. Please try again.',
           503,
         );
+      }
+      throw error;
+    }
+    } catch (error) {
+      // POS-PERF-P15R3 — every TransactionError thrown anywhere above this
+      // point is either a pre-commit validation rejection, or (CHECKOUT_
+      // TIMEOUT/CHECKOUT_ATTEMPT_LOST_LEASE) a path that guarantees the
+      // sale's $transaction rolled back — so every one of them is safe to
+      // mark 'failed': immediately reclaimable, no lease wait needed. An
+      // error that is NOT a TransactionError (an unclassified bug, an
+      // unexpected Prisma error) proves nothing either way — the attempt is
+      // deliberately left 'in_progress' so only the lease (and the
+      // commit-time ownerToken fence) governs when/whether it can be
+      // reclaimed, never a blind "this must have failed" assumption.
+      if (data.idempotencyKey && attemptOwnerToken && error instanceof TransactionError) {
+        await failCheckoutAttempt(data.idempotencyKey, attemptOwnerToken);
       }
       throw error;
     }
@@ -2006,21 +2244,46 @@ export const transactionsService = {
   },
 
   /**
-   * POS-PERF-P15R2 — lets a client resolve an *uncertain* checkout attempt
+   * POS-PERF-P15R3 — lets a client resolve an *uncertain* checkout attempt
    * (the charge request timed out, the connection dropped, or the tab
    * reloaded/closed before a response arrived) against the database itself,
    * instead of assuming "I never got a response" means "nothing was
    * charged". A dropped response proves nothing about the server-side
    * outcome — the original request may still be mid-flight and commit a
-   * moment later. This is a plain read with no side effects, safe to poll:
-   * null means "no committed sale carries this key *yet*", not a permanent
-   * guarantee one never will, which is why the terminal UI only treats a
-   * null result as conclusive after polling it across a bounded window
-   * (see the terminal page's resolveCheckoutAttempt).
+   * moment later.
+   *
+   * Unlike the old version of this method (which only ever checked the
+   * Transaction table and left the caller to guess "not found yet" vs
+   * "never will be found" from how long it had been polling), this reads
+   * the durable CheckoutAttempt fencing row too, so "not committed" now
+   * comes in two genuinely different, server-verified flavors:
+   *   - 'failed': the original attempt was definitively rejected pre-commit
+   *     (or confirmed rolled back) — safe to mint a replacement key *now*,
+   *     no waiting required.
+   *   - 'in_progress': the original attempt is still live (or its fate is
+   *     simply unknown because it crashed without ever reaching a
+   *     terminal state) — the caller MUST keep using the same key and
+   *     recheck later; minting a replacement here is exactly the bug this
+   *     revision removes.
+   *   - 'not_found': this key was never claimed at all (e.g. the client
+   *     generated it but the request never reached the server) — safe to
+   *     mint a replacement.
+   * Branch authorization for the 'failed'/'in_progress' cases (where no
+   * Transaction row exists yet to check) is enforced by the caller against
+   * the attempt's own branchId — see the by-idempotency-key route.
    */
-  async getTransactionByIdempotencyKey(idempotencyKey: string) {
+  async resolveCheckoutAttempt(idempotencyKey: string): Promise<CheckoutAttemptResolution> {
     const transaction = await transactionsRepository.findByIdempotencyKey(idempotencyKey);
-    return transaction ? toTransactionResponse(transaction as TransactionRow) : null;
+    if (transaction) {
+      return { status: 'committed', transaction: toTransactionResponse(transaction as TransactionRow), branchId: transaction.branchId };
+    }
+    const attempt = await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey } });
+    if (!attempt) return { status: 'not_found', branchId: null };
+    if (attempt.status === 'failed') return { status: 'failed', branchId: attempt.branchId };
+    // 'in_progress' (including the practically-unreachable case of a
+    // 'committed' attempt row whose Transaction the lookup above somehow
+    // missed) — never treated as safe to remint.
+    return { status: 'in_progress', branchId: attempt.branchId };
   },
 
   async listTransactions(filters: TransactionListFilters) {

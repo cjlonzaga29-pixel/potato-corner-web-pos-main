@@ -87,6 +87,25 @@ export interface WriteGateStateValue {
 /** Fallback used when no `operational_write_gate` SystemSetting row exists yet — gate open, same as every pre-P16 deployment's actual behavior. */
 export const DEFAULT_WRITE_GATE_STATE: WriteGateStateValue = { enabled: false, reason: null };
 
+/** Fail-closed fallback for a `operational_write_gate` row that exists but whose JSON value does not match WriteGateStateValue (corrupt write, manual DB edit, future incompatible format). Malformed state must never be silently read as open. */
+export const MALFORMED_WRITE_GATE_STATE: WriteGateStateValue = {
+  enabled: true,
+  reason: 'Write-gate state is malformed in the database; failing closed until repaired.',
+};
+
+/** Narrows an unknown SystemSetting.value to WriteGateStateValue — used to fail closed instead of silently treating a corrupt/incompatible stored shape as open. */
+export function isValidWriteGateState(value: unknown): value is WriteGateStateValue {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.enabled === 'boolean' && (candidate.reason === null || typeof candidate.reason === 'string');
+}
+
+/** Resolves a SystemSetting row's raw value for the write gate: absent row -> open default; well-formed value -> itself; malformed value -> fail-closed. */
+export function resolveWriteGateState(rawValue: unknown): WriteGateStateValue {
+  if (rawValue === undefined) return DEFAULT_WRITE_GATE_STATE;
+  return isValidWriteGateState(rawValue) ? rawValue : MALFORMED_WRITE_GATE_STATE;
+}
+
 /** Mirrors auth.types.ts's AuthError / employees.types.ts's EmployeeError — this module's own domain error → HTTP status mapping. */
 export class SettingsError extends Error {
   constructor(

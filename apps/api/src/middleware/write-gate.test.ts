@@ -158,6 +158,17 @@ describe('writeGate — open/default state', () => {
 
     expect(next).toBe(true);
   });
+
+  it('fails closed on a malformed stored value (row exists, shape does not match WriteGateStateValue) instead of silently permitting the write', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({ value: { closed: true } } as never);
+    const req = mockReq();
+    const res = mockRes();
+
+    const next = await runGate(req, res);
+
+    expect(next).toBe(false);
+    expect(res.status).toHaveBeenCalledWith(503);
+  });
 });
 
 describe('writeGate — narrowly authorized maintenance bypass', () => {
@@ -255,6 +266,45 @@ describe('writeGate — in-flight request counter (verified-drain signal)', () =
     (res as unknown as EventEmitter).emit('finish');
     (res as unknown as EventEmitter).emit('close');
 
+    expect(getActiveGatedRequestCount()).toBe(0);
+  });
+
+  it('a request whose DB read is still in flight when an operator closes the gate stays counted through the read, the handler, and the response — a drain poll mid-flight must never see 0', async () => {
+    let resolveRead!: (value: { value: { enabled: boolean; reason: string | null } }) => void;
+    vi.mocked(settingsRepository.findSystemSetting).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        }) as never,
+    );
+    const req = mockReq();
+    const res = mockRes();
+    let nextCalled = false;
+
+    const pending = writeGate(req, res, (() => {
+      nextCalled = true;
+    }) as NextFunction);
+
+    // Request is in-flight, still awaiting its DB read. A drain poll (GET
+    // /api/settings/write-gate) right now must see 1, not 0 — the request
+    // has not reached a handler yet, let alone finished.
+    expect(getActiveGatedRequestCount()).toBe(1);
+    expect(nextCalled).toBe(false);
+
+    // The DB read finally resolves with the state as it was the instant the
+    // query ran — "open" — even though an operator may have closed the gate
+    // (written enabled:true) at any point while this read was in flight.
+    // That race is not this middleware's to resolve (every write after the
+    // read observes the new state); its only obligation is to keep counting
+    // this request until its response actually finishes.
+    resolveRead({ value: { enabled: false, reason: null } });
+    await pending;
+
+    expect(nextCalled).toBe(true);
+    // Handler is still running (no 'finish' emitted yet) — must remain counted.
+    expect(getActiveGatedRequestCount()).toBe(1);
+
+    (res as unknown as EventEmitter).emit('finish');
     expect(getActiveGatedRequestCount()).toBe(0);
   });
 

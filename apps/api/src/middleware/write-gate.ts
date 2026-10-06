@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { ROLES } from '@potato-corner/shared';
 import { AccessTokenError, verifyAccessToken } from '../lib/verify-access-token.js';
 import { settingsRepository } from '../modules/settings/settings.repository.js';
-import { DEFAULT_WRITE_GATE_STATE, WRITE_GATE_KEY, type WriteGateStateValue } from '../modules/settings/settings.types.js';
+import { WRITE_GATE_KEY, resolveWriteGateState } from '../modules/settings/settings.types.js';
 import { recordAuditLog } from './audit-log.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -97,7 +97,7 @@ export async function writeGate(req: Request, res: Response, next: NextFunction)
 
   try {
     const setting = await settingsRepository.findSystemSetting(WRITE_GATE_KEY);
-    const state = (setting?.value as unknown as WriteGateStateValue | undefined) ?? DEFAULT_WRITE_GATE_STATE;
+    const state = resolveWriteGateState(setting?.value);
 
     if (!state.enabled) {
       next();

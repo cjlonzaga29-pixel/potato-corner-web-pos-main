@@ -31,8 +31,8 @@ import {
   DISCOUNT_POLICY_KEY,
   DEFAULT_WORK_HOURS_POLICY,
   WORK_HOURS_POLICY_KEY,
-  DEFAULT_WRITE_GATE_STATE,
   WRITE_GATE_KEY,
+  resolveWriteGateState,
   type WriteGateStateValue,
   SettingsError,
 } from './settings.types.js';
@@ -351,7 +351,7 @@ export const settingsService = {
   /** POS-PERF-P16 — current operational write-gate state, plus this process's own in-flight gated-request count (see middleware/write-gate.ts). */
   async getWriteGate(): Promise<WriteGateResponse> {
     const setting = await settingsRepository.findSystemSetting(WRITE_GATE_KEY);
-    const state = (setting?.value as unknown as WriteGateStateValue | undefined) ?? DEFAULT_WRITE_GATE_STATE;
+    const state = resolveWriteGateState(setting?.value);
     return {
       enabled: state.enabled,
       reason: state.reason,

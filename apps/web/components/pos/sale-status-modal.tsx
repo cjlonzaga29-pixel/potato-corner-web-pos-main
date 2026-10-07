@@ -61,7 +61,15 @@ interface SaleStatusModalProps {
   onEditCart: () => void;
   /** Success phase only: opens the full receipt (ReceiptModal) on top of this confirmation. */
   onViewReceipt: () => void;
-  /** Success phase only: clears the cart and opens an empty one immediately — never waits on background inventory deduction, which runs independently on the server. */
+  /**
+   * POS-PERF-P19 — available on EVERY phase, not just 'success'. On
+   * 'saving' this detaches the still-in-flight order (see
+   * lib/detached-sales.ts) rather than waiting for it: its eventual
+   * success/failure keeps updating independently in the Pending Sales
+   * panel, and this modal closes immediately so the cashier can open a
+   * fresh cart right away. On 'success'/'error' it behaves as before
+   * (clears/retains the cart as appropriate).
+   */
   onNewSale: () => void;
 }
 
@@ -74,6 +82,13 @@ interface SaleStatusModalProps {
  * Edit Cart, cart retained). No close (X) on any phase — there is always an
  * explicit action, never an incidental dismiss that could leave the cashier
  * unsure whether the sale happened.
+ *
+ * POS-PERF-P19 — 'saving' no longer blocks the cashier for the full
+ * round-trip: New Sale is enabled on every phase, including 'saving'. On
+ * 'saving' it detaches this order (lib/detached-sales.ts) rather than
+ * cancelling or waiting on it — the parent terminal page routes the
+ * eventual success/failure to that detached record instead of this modal,
+ * which is already closed by then.
  */
 export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEditCart, onViewReceipt, onNewSale }: SaleStatusModalProps) {
   return (
@@ -97,7 +112,9 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
                   <Loader2 className="h-7 w-7 animate-spin" aria-hidden="true" />
                 </div>
                 <DialogTitle className="text-center">Saving sale…</DialogTitle>
-                <DialogDescription className="text-center">Hang on — recording the sale now.</DialogDescription>
+                <DialogDescription className="text-center">
+                  Saving — pending confirmation. You can start the next sale now; this one keeps saving in the background.
+                </DialogDescription>
               </>
             )}
             {phase === 'error' && (
@@ -122,6 +139,7 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
             <div className="flex items-center gap-2 pt-1">
               <span className="text-xl font-bold tabular-nums text-foreground">{formatPeso(snapshot.totalAmount)}</span>
               <Badge variant={phase === 'success' ? 'active' : 'outline'}>{PAYMENT_METHOD_LABEL[snapshot.paymentMethod]}</Badge>
+              {phase === 'saving' && <Badge variant="outline">Pending confirmation</Badge>}
             </div>
           </div>
         </DialogHeader>
@@ -163,10 +181,19 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
 
         <DialogFooter className="flex-row gap-2 sm:justify-normal">
           {phase === 'saving' && (
-            <Button className="touch-target flex-1" disabled>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-              Saving…
-            </Button>
+            <>
+              <Button className="touch-target flex-1" disabled>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Saving…
+              </Button>
+              {/* POS-PERF-P19 — enabled immediately, unlike the disabled
+                  "Saving…" indicator beside it. Clicking this does not wait
+                  on or cancel the in-flight request — see onNewSale's doc
+                  comment on SaleStatusModalProps. */}
+              <Button variant="outline" className="touch-target flex-1" onClick={onNewSale}>
+                New Sale
+              </Button>
+            </>
           )}
           {phase === 'error' && (
             <>

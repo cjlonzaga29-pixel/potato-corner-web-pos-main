@@ -54,6 +54,16 @@ import {
   transactionToSaleSnapshot,
   isDefiniteNoCommitErrorCode,
 } from '@/lib/checkout-recovery';
+import {
+  readDetachedSales,
+  upsertDetachedSale,
+  removeDetachedSale,
+  canDetachAnotherSale,
+  countUnresolvedDetachedSales,
+  MAX_DETACHED_SALES,
+  type DetachedSale,
+} from '@/lib/detached-sales';
+import { PendingSalesPanel } from '@/components/pos/pending-sales-panel';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 
 // Task 140 — the same allowed-roles set ViewTransactionDetailDialog itself
@@ -505,7 +515,24 @@ export default function TerminalPage() {
   // charge-after-edit mint a fresh key instead, while an unmodified
   // Retry/re-Charge still reuses the same one.
   const lastChargeFingerprintRef = useRef<string | null>(null);
+  // POS-PERF-P19 — the exact payload (with idempotency_key) last sent for
+  // the frontmost attempt, held only so New-Sale-during-saving can hand it
+  // off into a DetachedSale record for Retry-from-panel to resubmit
+  // verbatim. Cleared alongside idempotencyKeyRef on every path that clears
+  // that ref, so it's never stale when read by handleNewSale.
+  const lastChargePayloadRef = useRef<CreateTransactionInput | null>(null);
+  // POS-PERF-P19 — reactive counterpart to chargeTokenRef (declared below,
+  // alongside its full doc comment), used for UI gating (chargeDisabledReason,
+  // Clock Out's disabled state, CheckoutWorkspace's isChargePending) instead
+  // of the shared createTransaction.isPending, which reflects whichever
+  // concurrent attempt on that one mutation instance last changed state —
+  // not specifically "does the CURRENT/live cart have a charge in flight".
+  const [isChargeInFlight, setIsChargeInFlight] = useState(false);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
+  // POS-PERF-P19 — bounded-backlog message when the cashier tries to detach
+  // a 6th concurrent unresolved sale (MAX_DETACHED_SALES). Transient,
+  // dismissed by the cashier the same way unresolvedAttemptNotice is.
+  const [detachBlockedNotice, setDetachBlockedNotice] = useState<string | null>(null);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [isVoidRefundOpen, setIsVoidRefundOpen] = useState(false);
   // POS-PERF-P15R2 — true while a dropped-response checkout attempt (this
@@ -518,6 +545,73 @@ export default function TerminalPage() {
   // so cart edits stay blocked and this banner stays up until the cashier
   // retries the check (same-cart Retry is unaffected; it's safe regardless).
   const [unresolvedAttemptNotice, setUnresolvedAttemptNotice] = useState(false);
+
+  // POS-PERF-P19 — orders the cashier detached from via New Sale while the
+  // original request was still saving (see lib/detached-sales.ts and
+  // sale-status-modal.tsx's 'saving'-phase New Sale button). Each entry's
+  // own eventual success/failure is routed here (handleCharge's try/catch
+  // below checks detachedKeysRef) instead of to the singleton sale* state
+  // above, which by then belongs to whatever cart the cashier moved on to.
+  const [detachedSales, setDetachedSales] = useState<DetachedSale[]>([]);
+  const [isPendingSalesPanelOpen, setIsPendingSalesPanelOpen] = useState(false);
+  // "View Receipt" from the Pending Sales panel — see
+  // handleViewDetachedSaleReceipt's doc comment for why this is deliberately
+  // separate from saleTransaction/isReceiptViewOpen.
+  const [panelReceiptTransaction, setPanelReceiptTransaction] = useState<TransactionResponse | null>(null);
+  const [detachedSalesBusyKeys, setDetachedSalesBusyKeys] = useState<Set<string>>(new Set());
+  // Idempotency keys for orders currently detached — checked, not awaited,
+  // so handleCharge's in-flight request (started before detaching ever
+  // happened) can tell at resolution time whether to update the singleton
+  // sale* state (still-attached, common case) or this branch's own
+  // detachedSales record (detached). A ref because this must be read inside
+  // a promise continuation that already closed over the idempotency key
+  // long before any detach could happen — state alone would be stale there.
+  const detachedKeysRef = useRef<Set<string>>(new Set());
+
+  function updateDetachedSale(key: string, patch: Partial<DetachedSale>) {
+    if (!branchId) return;
+    const current = readDetachedSales(branchId).find((e) => e.idempotencyKey === key);
+    if (!current) return;
+    const next = { ...current, ...patch };
+    upsertDetachedSale(branchId, next);
+    setDetachedSales((prev) => prev.map((e) => (e.idempotencyKey === key ? next : e)));
+  }
+
+  // Loads this branch's detached sales once on mount, then resolves every
+  // one still marked 'saving' against the server exactly like the singleton
+  // reload-recovery effect below does for the frontmost attempt — a
+  // detached order can just as easily have been mid-flight at the moment of
+  // a reload/browser-close as the frontmost one can.
+  useEffect(() => {
+    if (!branchId) return;
+    const stored = readDetachedSales(branchId);
+    setDetachedSales(stored);
+
+    let cancelled = false;
+    const stillSaving = stored.filter((e) => e.status === 'saving');
+    void Promise.all(
+      stillSaving.map(async (entry) => {
+        const outcome = await resolveAndFenceCheckoutAttempt(entry.idempotencyKey, branchId);
+        if (cancelled) return;
+        if (outcome.status === 'found') {
+          updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction: outcome.transaction });
+        } else if (outcome.status === 'not-found') {
+          updateDetachedSale(entry.idempotencyKey, {
+            status: 'error',
+            errorMessage: 'Not confirmed before this device reloaded — it may not have gone through. Safe to retry.',
+            safeToRetryDirectly: true,
+          });
+        }
+        // 'in-progress'/'unknown' — leave as 'saving'; the cashier can tap
+        // "Check status" in the Pending Sales panel to recheck.
+      }),
+    );
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately branchId-only, same reasoning as the singleton recovery effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId]);
 
   // POS-PERF-P15R2 — reload/browser-close recovery. A checkout attempt's
   // idempotency key is persisted (lib/checkout-recovery.ts) the instant the
@@ -619,7 +713,25 @@ export default function TerminalPage() {
   // completed transactions logged 14ms apart). A ref mutates in place
   // immediately, with no dependency on React's render/commit cycle, so it
   // closes this window.
-  const isChargingRef = useRef(false);
+  //
+  // POS-PERF-P19 — this used to be a plain boolean (isChargingRef), reset
+  // in handleCharge's own `finally` once ITS mutateAsync settled. That's
+  // wrong now that New Sale can detach a 'saving' attempt and let the
+  // cashier start charging a second cart while the first's request is
+  // still in flight on the SAME shared createTransaction mutation instance:
+  // a boolean can't tell "my own attempt finished" apart from "a different,
+  // still-detached attempt finished" — whichever happens to settle last
+  // would stomp the guard for whichever charge is actually live. A token
+  // (unique per handleCharge invocation) lets every release site (early
+  // returns and the `try`/`catch`/`finally` below) check "do I still own
+  // the gate?" before clearing it — see releaseChargeToken.
+  const chargeTokenRef = useRef<string | null>(null);
+  function releaseChargeToken(token: string) {
+    if (chargeTokenRef.current === token) {
+      chargeTokenRef.current = null;
+      setIsChargeInFlight(false);
+    }
+  }
   useEffect(() => {
     return () => {
       if (paymentProofPreviewUrlRef.current) URL.revokeObjectURL(paymentProofPreviewUrlRef.current);
@@ -645,7 +757,7 @@ export default function TerminalPage() {
   }
 
   async function handleClockOut() {
-    if (!operatorId || !branchId || createTransaction.isPending) return;
+    if (!operatorId || !branchId || isChargeInFlight) return;
     setIsClockingOut(true);
     let coords: GpsCoords | null = null;
     try {
@@ -1050,7 +1162,7 @@ export default function TerminalPage() {
   // the API auto-manages the shift server-side). Checked in the order a
   // cashier would naturally fix them.
   const chargeDisabledReason: string | null = (() => {
-    if (createTransaction.isPending) return 'Checkout is already processing.';
+    if (isChargeInFlight) return 'Checkout is already processing.';
     if (!isClockedIn) return 'Clock in before completing a sale.';
     if (cartLines.length === 0) return 'Add items to the cart to start a sale.';
     if ((discountType === 'pwd' || discountType === 'senior_citizen') && discountIdReference.trim().length === 0) {
@@ -1147,12 +1259,15 @@ export default function TerminalPage() {
   }
 
   async function handleCharge() {
-    // Belt-and-suspenders alongside the button's disabled={..isPending} below.
-    // isChargingRef is the real synchronous guard (see comment at its
-    // declaration) — createTransaction.isPending alone does not reliably
-    // block a second click event queued before React re-renders.
-    if (!branchId || createTransaction.isPending || isChargingRef.current || isResolvingPriorAttempt) return;
-    isChargingRef.current = true;
+    // Belt-and-suspenders alongside the button's disabled={..isChargeInFlight} below.
+    // chargeTokenRef is the real synchronous guard (see comment at its
+    // declaration) — isChargeInFlight/createTransaction.isPending alone
+    // don't reliably block a second click event queued before React
+    // re-renders.
+    if (!branchId || chargeTokenRef.current !== null || isResolvingPriorAttempt) return;
+    const chargeToken = crypto.randomUUID();
+    chargeTokenRef.current = chargeToken;
+    setIsChargeInFlight(true);
     setChargeError(null);
     const chargeClickedAt = performance.now();
 
@@ -1203,7 +1318,7 @@ export default function TerminalPage() {
         setIsCheckoutOpen(false);
         setQueuedNotice(provisionalId);
       } finally {
-        isChargingRef.current = false;
+        releaseChargeToken(chargeToken);
       }
       return;
     }
@@ -1277,7 +1392,7 @@ export default function TerminalPage() {
         setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
         setSaleTransaction(outcome.transaction);
         setSalePhase('success');
-        isChargingRef.current = false;
+        releaseChargeToken(chargeToken);
         return;
       }
       if (outcome.status === 'unknown' || outcome.status === 'in-progress') {
@@ -1288,7 +1403,7 @@ export default function TerminalPage() {
             : 'Could not confirm whether the previous checkout attempt went through. Check your connection, then try again before charging a different cart.',
         );
         setSalePhase('error');
-        isChargingRef.current = false;
+        releaseChargeToken(chargeToken);
         return;
       }
       // 'not-found' — confirmed nothing committed under the old key; safe
@@ -1307,16 +1422,33 @@ export default function TerminalPage() {
     // which is a no-op; overwrites a stale one from a cart edit that just
     // resolved 'not-found' above, which is exactly what should happen.
     savePendingCheckoutAttempt(branchId, idempotencyKey);
+    lastChargePayloadRef.current = payloadWithIdempotency;
 
     try {
       const requestStartedAt = performance.now();
       const transaction = await createTransaction.mutateAsync(payloadWithIdempotency);
       const networkMs = performance.now() - requestStartedAt;
       const closeStartedAt = performance.now();
+
+      // POS-PERF-P19 — this attempt was detached (New Sale clicked while it
+      // was still 'saving') at some point between the request going out and
+      // this resolving. The cashier has moved on to a different cart/modal
+      // by now, so this success must update that DetachedSale record, not
+      // the singleton sale* state — doing the latter would reopen a stale
+      // "Sale completed" popup over whatever the cashier is doing now and
+      // violate "a late response must never clear or overwrite the next
+      // customer's cart or modal".
+      if (detachedKeysRef.current.has(idempotencyKey)) {
+        detachedKeysRef.current.delete(idempotencyKey);
+        updateDetachedSale(idempotencyKey, { status: 'success', transaction });
+        return;
+      }
+
       clearCart();
       resetPaymentFields();
       idempotencyKeyRef.current = null;
       lastChargeFingerprintRef.current = null;
+      lastChargePayloadRef.current = null;
       clearPendingCheckoutAttempt(branchId);
       setSaleTransaction(transaction);
       setSalePhase('success');
@@ -1329,6 +1461,20 @@ export default function TerminalPage() {
         responseToCheckoutCloseMs: Math.round(performance.now() - closeStartedAt),
       });
     } catch (error) {
+      // POS-PERF-P19 — same reasoning as the success branch above: a
+      // detached attempt's failure belongs in its own DetachedSale record,
+      // never in the singleton error popup, which may already be showing a
+      // completely different (later) cart's own saving/error/success state.
+      if (detachedKeysRef.current.has(idempotencyKey)) {
+        detachedKeysRef.current.delete(idempotencyKey);
+        const isDefiniteRejection = error instanceof TransactionApiError && isDefiniteNoCommitErrorCode(error.code);
+        updateDetachedSale(idempotencyKey, {
+          status: 'error',
+          errorMessage: error instanceof Error ? error.message : 'Failed to record transaction',
+          safeToRetryDirectly: isDefiniteRejection,
+        });
+        return;
+      }
       // Cart is deliberately left untouched either way — Retry resubmits
       // the exact same sale under the same key, and Edit Cart (onEditCart
       // below) returns to the checkout review dialog with every submitted
@@ -1357,7 +1503,7 @@ export default function TerminalPage() {
       setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
       setSalePhase('error');
     } finally {
-      isChargingRef.current = false;
+      releaseChargeToken(chargeToken);
     }
   }
 
@@ -1384,15 +1530,178 @@ export default function TerminalPage() {
     setIsReceiptViewOpen(true);
   }
 
-  // Success phase only: opens a new empty cart immediately — never waits on
-  // the server's background inventory deduction, which runs independently
-  // on the server (the inventory-deduction worker — see server.ts).
+  // Success phase: opens a new empty cart immediately — never waits on the
+  // server's background inventory deduction, which runs independently on
+  // the server (the inventory-deduction worker — see server.ts). The cart
+  // was already cleared the moment this sale was charged, so there's
+  // nothing left to clear here.
+  //
+  // POS-PERF-P19 — Saving phase: this is the actual fix for the
+  // cashier-blocking regression. Rather than waiting out the round trip,
+  // this detaches the still-in-flight request into a DetachedSale (see
+  // lib/detached-sales.ts) — its own success/failure updates that record
+  // independently (handleCharge above routes it there via
+  // detachedKeysRef), never this popup or whatever cart/popup replaces it.
+  // The live cart/payment fields were already cleared back at the top of
+  // handleCharge, so — same as the success case — there's nothing left to
+  // clear; this only needs to close the popup and hand the attempt off.
   function handleNewSale() {
+    if (salePhase === 'saving' && idempotencyKeyRef.current && saleSnapshot && lastChargePayloadRef.current && branchId) {
+      if (!canDetachAnotherSale(branchId)) {
+        setDetachBlockedNotice(
+          `${MAX_DETACHED_SALES} sales are already pending confirmation. Resolve one in Pending Sales (above) before starting another.`,
+        );
+        return;
+      }
+      const key = idempotencyKeyRef.current;
+      const entry: DetachedSale = {
+        idempotencyKey: key,
+        snapshot: saleSnapshot,
+        payload: lastChargePayloadRef.current,
+        status: 'saving',
+        transaction: null,
+        errorMessage: null,
+        safeToRetryDirectly: false,
+        createdAt: Date.now(),
+      };
+      detachedKeysRef.current.add(key);
+      upsertDetachedSale(branchId, entry);
+      setDetachedSales((prev) => [...prev, entry]);
+      // This attempt is no longer the frontmost/singleton one — it's fully
+      // owned by the detachedSales record from here on.
+      clearPendingCheckoutAttempt(branchId);
+      idempotencyKeyRef.current = null;
+      lastChargeFingerprintRef.current = null;
+      lastChargePayloadRef.current = null;
+      // Free the Charge gate for the fresh cart this is about to open — the
+      // detached attempt's own eventual settlement (handleCharge's
+      // try/catch, routed via detachedKeysRef) no longer owns this token,
+      // so its later `finally`/releaseChargeToken call will correctly find
+      // chargeTokenRef.current already pointing at (or cleared by) whatever
+      // comes next and do nothing.
+      chargeTokenRef.current = null;
+      setIsChargeInFlight(false);
+      // The cart/payment fields for THIS (now-detached) order were
+      // deliberately left live until now — handleCharge only clears them on
+      // its own confirmed success, so an untouched 'saving' popup still
+      // shows "Edit Cart"-equivalent state if the cashier just waits. Now
+      // that the order is detached and independently tracked, this is the
+      // one moment to hand the cashier a genuinely fresh cart — never again
+      // for this order, since its eventual success/failure must not touch
+      // whatever cart replaces this one (see handleCharge's detachedKeysRef
+      // checks).
+      clearCart();
+      resetPaymentFields();
+    }
     setSalePhase(null);
     setSaleSnapshot(null);
     setSaleTransaction(null);
     setIsReceiptViewOpen(false);
   }
+
+  function setDetachedSaleBusy(key: string, busy: boolean) {
+    setDetachedSalesBusyKeys((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  /** Pending Sales panel — "Check status" on a still-'saving' entry. Never resubmits; purely a status recheck. */
+  async function handleRecheckDetachedSale(entry: DetachedSale) {
+    if (!branchId) return;
+    setDetachedSaleBusy(entry.idempotencyKey, true);
+    try {
+      const outcome = await resolveAndFenceCheckoutAttempt(entry.idempotencyKey, branchId);
+      if (outcome.status === 'found') {
+        updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction: outcome.transaction });
+      } else if (outcome.status === 'not-found') {
+        updateDetachedSale(entry.idempotencyKey, {
+          status: 'error',
+          errorMessage: 'Confirmed not charged. Safe to retry.',
+          safeToRetryDirectly: true,
+        });
+      }
+      // 'in-progress'/'unknown' — stays 'saving'; nothing to update.
+    } finally {
+      setDetachedSaleBusy(entry.idempotencyKey, false);
+    }
+  }
+
+  /**
+   * Pending Sales panel — Retry on a failed detached entry. Same
+   * resolve-before-remint protocol handleCharge itself uses, just scoped to
+   * this one entry: a prior error proves nothing about whether the request
+   * actually committed, so this always confirms first rather than trusting
+   * safeToRetryDirectly alone to skip the check — that flag only changes
+   * the message shown, never whether this call happens.
+   */
+  async function handleRetryDetachedSale(entry: DetachedSale) {
+    if (!branchId) return;
+    setDetachedSaleBusy(entry.idempotencyKey, true);
+    try {
+      const outcome = await resolveAndFenceCheckoutAttempt(entry.idempotencyKey, branchId);
+      if (outcome.status === 'found') {
+        updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction: outcome.transaction });
+        return;
+      }
+      if (outcome.status === 'in-progress' || outcome.status === 'unknown') {
+        updateDetachedSale(entry.idempotencyKey, {
+          errorMessage:
+            outcome.status === 'in-progress'
+              ? 'Still being processed on the server — wait, then retry.'
+              : 'Could not confirm whether this went through. Check your connection, then retry.',
+        });
+        return;
+      }
+      // 'not-found' — confirmed nothing committed; safe to resubmit under
+      // the exact same key and payload.
+      detachedKeysRef.current.add(entry.idempotencyKey);
+      updateDetachedSale(entry.idempotencyKey, { status: 'saving', errorMessage: null });
+      try {
+        const transaction = await createTransaction.mutateAsync(entry.payload);
+        detachedKeysRef.current.delete(entry.idempotencyKey);
+        updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction });
+      } catch (error) {
+        detachedKeysRef.current.delete(entry.idempotencyKey);
+        const isDefiniteRejection = error instanceof TransactionApiError && isDefiniteNoCommitErrorCode(error.code);
+        updateDetachedSale(entry.idempotencyKey, {
+          status: 'error',
+          errorMessage: error instanceof Error ? error.message : 'Failed to record transaction',
+          safeToRetryDirectly: isDefiniteRejection,
+        });
+      }
+    } finally {
+      setDetachedSaleBusy(entry.idempotencyKey, false);
+    }
+  }
+
+  /**
+   * Pending Sales panel — Dismiss. Only offered on 'error' (confirmed
+   * resolvable — Retry already requires a server resolve first, so an
+   * error entry reaching Dismiss has either been confirmed not-committed or
+   * the cashier is explicitly choosing to stop tracking it) and 'success'
+   * (already confirmed) entries; never on 'saving'.
+   */
+  function handleDismissDetachedSale(entry: DetachedSale) {
+    if (!branchId) return;
+    detachedKeysRef.current.delete(entry.idempotencyKey);
+    removeDetachedSale(branchId, entry.idempotencyKey);
+    setDetachedSales((prev) => prev.filter((e) => e.idempotencyKey !== entry.idempotencyKey));
+  }
+
+  // Deliberately its own state (not saleTransaction/isReceiptViewOpen,
+  // which belong to the live salePhase popup) — the live popup can be
+  // showing an entirely different, currently-saving cart's state at the
+  // same moment the cashier opens an old detached sale's receipt from the
+  // panel, and closing one must never touch the other.
+  function handleViewDetachedSaleReceipt(entry: DetachedSale) {
+    if (!entry.transaction) return;
+    setPanelReceiptTransaction(entry.transaction);
+  }
+
+  const unresolvedDetachedSalesCount = countUnresolvedDetachedSales(detachedSales);
 
   // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
   // `branchId`) is briefly null on every reload while useAuth's silent
@@ -1623,7 +1932,7 @@ export default function TerminalPage() {
       chargeError={chargeError}
       chargeDisabledReason={chargeDisabledReason}
       canCharge={canCharge}
-      isChargePending={createTransaction.isPending}
+      isChargePending={isChargeInFlight}
       onCharge={() => void handleCharge()}
     />
   );
@@ -1652,6 +1961,21 @@ export default function TerminalPage() {
         </div>
       )}
 
+      {/* POS-PERF-P19 — bounded-backlog message when the cashier tries to detach past MAX_DETACHED_SALES concurrent unresolved sales. Dismissible; never silently drops the attempt — the popup it came from stays open on 'saving' instead. */}
+      {detachBlockedNotice && (
+        <div className="flex items-center justify-between gap-3 bg-warning px-4 py-1.5 text-xs font-medium text-warning-foreground">
+          <span>{detachBlockedNotice}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 shrink-0 bg-background px-2 text-xs text-foreground"
+            onClick={() => setDetachBlockedNotice(null)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
       {/* Cashier attendance strip — Clock In happens above (the whole selling UI is hidden until then); this is Clock Out only. */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card px-3 py-2">
         <div className="flex items-center gap-2 text-sm">
@@ -1663,16 +1987,30 @@ export default function TerminalPage() {
             </span>
           )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="touch-target gap-1.5"
-          onClick={() => void handleClockOut()}
-          disabled={isClockingOut || clockOut.isPending || createTransaction.isPending}
-        >
-          {isClockingOut || clockOut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
-          Clock Out
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* POS-PERF-P19 — always shown once at least one detached sale exists (even all-resolved ones, until the cashier dismisses them), so "where did my earlier order go" always has an answer. Destructive styling only while something actually needs attention (an error entry). */}
+          {detachedSales.length > 0 && (
+            <Button
+              variant={unresolvedDetachedSalesCount > 0 ? 'outline' : 'ghost'}
+              size="sm"
+              className={`touch-target gap-1.5 ${unresolvedDetachedSalesCount > 0 ? 'border-warning text-warning-foreground' : ''}`}
+              onClick={() => setIsPendingSalesPanelOpen(true)}
+            >
+              Pending Sales
+              <Badge variant={unresolvedDetachedSalesCount > 0 ? 'warning' : 'outline'}>{detachedSales.length}</Badge>
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="touch-target gap-1.5"
+            onClick={() => void handleClockOut()}
+            disabled={isClockingOut || clockOut.isPending || isChargeInFlight}
+          >
+            {isClockingOut || clockOut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+            Clock Out
+          </Button>
+        </div>
       </div>
 
       {/* Task 209.20 — `lg:min-h-0` on this row (and the two panels below) is
@@ -1983,6 +2321,18 @@ export default function TerminalPage() {
         />
       )}
       {isReceiptViewOpen && <ReceiptModal transaction={saleTransaction} onClose={handleNewSale} />}
+
+      <PendingSalesPanel
+        open={isPendingSalesPanelOpen}
+        onOpenChange={setIsPendingSalesPanelOpen}
+        entries={detachedSales}
+        busyKeys={detachedSalesBusyKeys}
+        onRetry={(entry) => void handleRetryDetachedSale(entry)}
+        onRecheck={(entry) => void handleRecheckDetachedSale(entry)}
+        onDismiss={handleDismissDetachedSale}
+        onViewReceipt={handleViewDetachedSaleReceipt}
+      />
+      {panelReceiptTransaction && <ReceiptModal transaction={panelReceiptTransaction} onClose={() => setPanelReceiptTransaction(null)} />}
 
       {canManageVoidRefund && (
         <VoidRefundSaleDialog branchId={branchId} open={isVoidRefundOpen} onOpenChange={setIsVoidRefundOpen} />

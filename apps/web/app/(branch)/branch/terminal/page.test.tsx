@@ -59,11 +59,12 @@ const {
   mockUploadDiscountProofMutateAsync: vi
     .fn()
     .mockResolvedValue({ discount_proof_key: 'branch-1/shift-1/user-1-456.webp', discount_proof_type: 'gallery_upload' }),
-  // Task 209.3 — defaults to false (matching every existing test's
-  // assumption that the mutation is never mid-flight), overridable per test
-  // via mockCreateTransactionIsPending.mockReturnValue(true) to exercise the
-  // Charge button's disabled/"Processing…" state without needing a real
-  // useMutation instance.
+  // Task 209.3 — defaults to false. POS-PERF-P19: no longer what drives the
+  // Charge button's disabled/"Processing…" state (see chargeTokenRef/
+  // isChargeInFlight in page.tsx — the shared mutation's own isPending
+  // can't distinguish "this cart's own charge" from "a different, detached
+  // attempt" once concurrent charges are possible); kept only so the mocked
+  // useCreateTransaction hook shape still matches the real one.
   mockCreateTransactionIsPending: vi.fn(() => false),
   mockClearCart: vi.fn(),
 }));
@@ -1991,18 +1992,20 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
     await waitFor(() => expect(mockClearCart).toHaveBeenCalledTimes(1));
   });
 
-  it('disables Charge and shows "Processing…" while the mutation is pending, so a second click cannot submit again', () => {
-    mockCreateTransactionIsPending.mockReturnValue(true);
-    render(<TerminalPage />);
-    openCheckout();
-
-    const chargeButton = screen.getByRole('button', { name: /Processing/ });
-    expect(chargeButton).toBeDisabled();
-
-    fireEvent.click(chargeButton);
-    fireEvent.click(chargeButton);
-    expect(mockCreateTransactionMutateAsync).not.toHaveBeenCalled();
-  });
+  // POS-PERF-P19 — the Charge button's "Processing…"/disabled rendering
+  // given isChargePending={true} is covered directly at the component level
+  // (checkout-workspace.test.tsx), which is the only way to isolate that
+  // prop-binding now: CheckoutWorkspace itself closes the instant a charge
+  // starts (setIsCheckoutOpen(false), unchanged since before this task), so
+  // there is no reachable integration state where it's both open and
+  // showing "Processing…" to click through here. Double-submit prevention
+  // itself (the actual behavior this used to also exercise, which relied on
+  // mockCreateTransactionIsPending directly rather than the real
+  // chargeTokenRef/isChargeInFlight guard introduced by this task) is
+  // covered for real by the rapid-double-click test immediately below, and
+  // by the "New Sale is enabled immediately…" test further down (which
+  // charges a second, independent cart while the first is still pending on
+  // the same shared mutation instance and confirms it isn't blocked).
 
   // Task 209.55A — regression test for a real double-submit reproduced via
   // rapid double-click/double-tap: useMutation()'s `isPending` is a snapshot
@@ -2164,6 +2167,113 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-never-committed', 'branch-1'));
     await waitFor(() => expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled());
     expect(screen.queryByText('Sale completed')).not.toBeInTheDocument();
+  });
+});
+
+// POS-PERF-P19 — "New Sale" is clickable during 'saving', not just after a
+// response arrives. These cover: detaching doesn't block the next cart, a
+// late response for a detached order never clobbers whatever replaced it,
+// the Pending Sales panel surfaces the detached order's outcome, and the
+// bounded backlog (MAX_DETACHED_SALES) actually blocks a 6th concurrent
+// detach instead of silently accepting it.
+describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)', () => {
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    mockCreateTransactionMutateAsync.mockClear();
+    mockClearCart.mockClear();
+    mockCreateTransactionIsPending.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    mockCreateTransactionIsPending.mockReturnValue(false);
+    cleanup();
+  });
+
+  function chargeCurrentCart() {
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  }
+
+  it('New Sale is enabled immediately during "saving" and detaching frees the cart for a second, independent charge while the first is still in flight', async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    mockCreateTransactionMutateAsync.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-2', receipt_number: 'BR-002' });
+
+    render(<TerminalPage />);
+    chargeCurrentCart();
+
+    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    // The cart was already handed off — New Sale works even though the
+    // first request hasn't resolved (and won't, until resolveFirst below).
+    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    expect(mockClearCart).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Saving sale…')).not.toBeInTheDocument();
+
+    // A second, fully independent charge must not be blocked by the first
+    // attempt's own still-pending request on the shared mutation hook.
+    chargeCurrentCart();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('Sale completed')).toBeInTheDocument());
+
+    // The first (detached) request finally resolves — it must not reopen a
+    // popup or touch the second cart's now-showing success confirmation.
+    await act(async () => {
+      resolveFirst({ id: 'txn-1', receipt_number: 'BR-001' });
+    });
+    expect(screen.getByText('Sale completed')).toBeInTheDocument();
+  });
+
+  it('a detached order that fails stays actionable in the Pending Sales panel instead of silently disappearing', async () => {
+    let rejectFirst: (error: unknown) => void = () => {};
+    mockCreateTransactionMutateAsync.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectFirst = reject;
+      }),
+    );
+
+    render(<TerminalPage />);
+    chargeCurrentCart();
+    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+
+    await act(async () => {
+      rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Pending Sales/ }));
+    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText('Could not reach the server. Please check your connection before trying again.')).toBeInTheDocument();
+  });
+
+  it('bounded backlog: blocks detaching past MAX_DETACHED_SALES concurrent unresolved sales instead of silently accepting an unlimited queue', async () => {
+    // Every attempt here stays pending forever — only backlog count matters.
+    mockCreateTransactionMutateAsync.mockReturnValue(new Promise(() => {}));
+
+    render(<TerminalPage />);
+    for (let i = 0; i < 5; i++) {
+      chargeCurrentCart();
+      await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    }
+
+    // A 6th detach attempt is blocked with an explicit message — the 5th
+    // order's own popup stays up (New Sale was refused, not silently eaten).
+    chargeCurrentCart();
+    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    expect(screen.getByText(/already pending confirmation/)).toBeInTheDocument();
+    // Still showing the 6th order's own saving popup — New Sale did not detach it.
+    expect(screen.getByText('Saving sale…')).toBeInTheDocument();
   });
 });
 

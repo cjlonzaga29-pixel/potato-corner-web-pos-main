@@ -130,6 +130,82 @@ async function measureDelayedResponsePopup(page) {
   await page.getByRole('button', { name: 'New Sale' }).click();
 }
 
+/**
+ * POS-PERF-P19 — the scenario from the bug report: with the first charge's
+ * API response delayed 15s, clicking New Sale during "Saving sale…" must
+ * open a second cart immediately (not wait for the first response), and a
+ * second sale submitted on that cart must succeed independently. Measures
+ * click→popup and click→New-Sale-usable separately from server
+ * confirmation, per the task's validation ask.
+ */
+async function measureNewSaleDuringSaving(page) {
+  await addDemoItemToCart(page);
+  await openCheckoutAndFillCash(page);
+
+  const DELAY_MS = 15000;
+  await page.route('**/api/transactions', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await new Promise((r) => setTimeout(r, DELAY_MS));
+    await route.continue();
+  });
+
+  const chargeButton = page.getByRole('button', { name: /^Charge/ });
+  const tClick = nowMs();
+  await chargeButton.click();
+
+  await page.getByText('Saving sale…').waitFor({ state: 'visible' });
+  const tPopup = nowMs();
+
+  const newSaleButton = page.getByRole('button', { name: 'New Sale' });
+  await newSaleButton.waitFor({ state: 'visible' });
+  await newSaleButton.click();
+  const tNextCartAvailable = nowMs();
+
+  console.log(
+    `[new-sale-during-saving] click→popup: ${tPopup - tClick}ms, click→next-cart-available: ${tNextCartAvailable - tClick}ms (first response deliberately held for ${DELAY_MS}ms)`,
+  );
+  results.newSaleDuringSaving = {
+    clickToPopupMs: tPopup - tClick,
+    clickToNextCartAvailableMs: tNextCartAvailable - tClick,
+  };
+
+  // The popup for the FIRST order must be gone — New Sale closed it instead
+  // of waiting for the delayed response.
+  const firstPopupGone = !(await page.getByText('Saving sale…').isVisible().catch(() => false));
+  console.log(`[new-sale-during-saving] first order's popup closed immediately: ${firstPopupGone}`);
+
+  // Build and submit a second, independent cart while the first request is
+  // still held.
+  const secondResponsePromise = page.waitForResponse(
+    (res) => res.request().method() === 'POST' && res.url().includes('/api/transactions') && res.status() === 201,
+  );
+  await addDemoItemToCart(page);
+  await openCheckoutAndFillCash(page);
+  await page.getByRole('button', { name: /^Charge/ }).click();
+  await page.getByText('Sale completed').waitFor({ state: 'visible', timeout: 15000 });
+  const secondBody = await secondResponsePromise.then((r) => r.json()).catch(() => null);
+  console.log(`[new-sale-during-saving] second (independent) cart confirmed while the first was still pending — id: ${secondBody?.data?.id ?? 'unknown'}`);
+  await page.getByRole('button', { name: 'New Sale' }).click();
+
+  // Open the Pending Sales panel and confirm the first (detached) order is
+  // tracked there, still saving.
+  const pendingSalesButton = page.getByRole('button', { name: /Pending Sales/ });
+  await pendingSalesButton.waitFor({ state: 'visible' });
+  await pendingSalesButton.click();
+  await page.getByText('Saving').waitFor({ state: 'visible', timeout: 5000 });
+  console.log('[new-sale-during-saving] detached first order visible in Pending Sales panel, still saving');
+
+  // Now let the first response actually land (DELAY_MS already elapsed by
+  // this point in real time) and confirm the panel updates to Confirmed
+  // without disturbing the page the cashier is now on.
+  await page.getByText('Confirmed').waitFor({ state: 'visible', timeout: DELAY_MS });
+  console.log('[new-sale-during-saving] detached first order resolved to Confirmed in the panel, independently of the second sale');
+
+  await page.unroute('**/api/transactions');
+  await page.keyboard.press('Escape');
+  void firstTransactionId;
+}
+
 async function measureFailureAndRecovery(page) {
   await addDemoItemToCart(page);
   await openCheckoutAndFillCash(page);
@@ -182,6 +258,9 @@ async function main() {
 
   console.log('\n=== Delayed API response (popup must still paint and stay visible) ===');
   await measureDelayedResponsePopup(page);
+
+  console.log('\n=== New Sale during saving (POS-PERF-P19 — 15s delayed response) ===');
+  await measureNewSaleDuringSaving(page);
 
   console.log('\n=== Failure + recovery (dropped connection, then Retry) ===');
   await measureFailureAndRecovery(page);

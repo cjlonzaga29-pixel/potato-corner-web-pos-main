@@ -47,6 +47,33 @@ describe('SaleStatusModal', () => {
     expect(screen.queryByText(/Receipt No\./)).not.toBeInTheDocument();
   });
 
+  // POS-PERF-P19 — the fix for the cashier-blocking regression: New Sale
+  // must be clickable immediately during 'saving', not just once the
+  // server responds. It must also be clearly labeled pending, never implying
+  // completion.
+  it('saving phase: New Sale is enabled immediately and wired to its handler, and the order is clearly labeled pending', () => {
+    const onNewSale = vi.fn();
+    render(
+      <SaleStatusModal
+        phase="saving"
+        snapshot={snapshot()}
+        errorMessage={null}
+        onRetry={vi.fn()}
+        onEditCart={vi.fn()}
+        onViewReceipt={vi.fn()}
+        onNewSale={onNewSale}
+      />,
+    );
+
+    expect(screen.getByText(/Pending confirmation/)).toBeInTheDocument();
+    expect(screen.queryByText('Sale completed')).not.toBeInTheDocument();
+
+    const newSaleButton = screen.getByRole('button', { name: 'New Sale' });
+    expect(newSaleButton).not.toBeDisabled();
+    fireEvent.click(newSaleButton);
+    expect(onNewSale).toHaveBeenCalledTimes(1);
+  });
+
   it('error phase: shows the error message and wires Retry/Edit Cart to their handlers, never clearing the submitted order', () => {
     const onRetry = vi.fn();
     const onEditCart = vi.fn();

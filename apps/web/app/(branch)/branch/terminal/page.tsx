@@ -61,7 +61,6 @@ import {
   upsertDetachedSale,
   removeDetachedSale,
   canDetachAnotherSale,
-  countUnresolvedDetachedSales,
   pruneConfirmedDetachedSales,
   MAX_DETACHED_SALES,
   type DetachedSale,
@@ -73,8 +72,7 @@ import {
   STILL_PROCESSING,
   NOT_SAVED_SAFE_TO_RETRY,
 } from '@/lib/cashier-error-messages';
-import { PendingSalesPanel } from '@/components/pos/pending-sales-panel';
-import { OrderStatusStrip } from '@/components/pos/order-status-strip';
+import { OrderTabContent } from '@/components/pos/order-tabs-content';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 import { toast } from 'sonner';
 
@@ -156,7 +154,7 @@ function round2(amount: number): number {
 // reasoning). 8s between sweeps is frequent enough that "automatic" feels
 // true without hammering the server; 3 minutes of polling per entry is far
 // longer than any genuine request should still be in flight, after which
-// the cashier can still resolve it manually via the Pending Sales panel.
+// the cashier can still resolve it manually via the Pending tab.
 const AUTO_POLL_INTERVAL_MS = 8000;
 const AUTO_POLL_MAX_AGE_MS = 3 * 60 * 1000;
 
@@ -591,8 +589,15 @@ export default function TerminalPage() {
   // the live list without that restart.
   const detachedSalesRef = useRef<DetachedSale[]>(detachedSales);
   detachedSalesRef.current = detachedSales;
-  const [isPendingSalesPanelOpen, setIsPendingSalesPanelOpen] = useState(false);
-  // "View Receipt" from the Pending Sales panel — see
+  // POS-PERF-P23 — permanent top-level tabs (Products | Pending | Done |
+  // Needs Action) replacing the old "Orders" Dialog (isPendingSalesPanelOpen).
+  // Only ever changes by direct cashier click (TabsTrigger) or the explicit
+  // "Open" action on a needs-attention toast — never by a background status
+  // update, so an automatic recheck/poll can never steal the cashier away
+  // from whatever they're doing. The cart panel is a sibling of the tab
+  // content, not inside it, so switching tabs never touches the cart.
+  const [activeMainTab, setActiveMainTab] = useState<'products' | 'pending' | 'done' | 'needs-action'>('products');
+  // "View Receipt" from the order tabs — see
   // handleViewDetachedSaleReceipt's doc comment for why this is deliberately
   // separate from saleTransaction/isReceiptViewOpen.
   const [panelReceiptTransaction, setPanelReceiptTransaction] = useState<TransactionResponse | null>(null);
@@ -645,8 +650,8 @@ export default function TerminalPage() {
   function notifyDetachedSaleNeedsAttention(orderRef: number, errorCode: string | null, detail: string) {
     const display = describeCashierFailure(errorCode, detail);
     toast.warning(`Order ${formatOrderRef(orderRef)} — ${display.title}`, {
-      description: `${display.detail} Open Orders → Needs Action to resolve.`,
-      action: { label: 'Open', onClick: () => setIsPendingSalesPanelOpen(true) },
+      description: `${display.detail} Open the Needs Action tab to resolve.`,
+      action: { label: 'Open', onClick: () => setActiveMainTab('needs-action') },
     });
   }
 
@@ -685,7 +690,7 @@ export default function TerminalPage() {
           });
         }
         // 'in-progress'/'unknown' — leave as 'saving'; the cashier can tap
-        // "Check status" in the Orders panel to recheck.
+        // "Check status" in the Pending tab to recheck.
       }),
     );
     return () => {
@@ -697,9 +702,9 @@ export default function TerminalPage() {
 
   // POS-PERF-P21 — automatic status updates for detached orders, so the
   // cashier is never required to tap "Check status" to find out a saving
-  // order resolved (that manual action still exists in the Pending Sales
-  // panel as a fallback — see PendingSalesPanel's onRecheck — this is just
-  // no longer the ONLY way to learn about it).
+  // order resolved (that manual action still exists in the Pending tab as
+  // a fallback — see handleRecheckDetachedSale — this is just no longer
+  // the ONLY way to learn about it).
   //
   // Deliberately uses the plain, read-only resolveCheckoutAttempt — NOT
   // resolveAndFenceCheckoutAttempt. The fencing version's 'ambiguous' branch
@@ -1809,7 +1814,7 @@ export default function TerminalPage() {
     });
   }
 
-  /** Pending Sales panel — "Check status" on a still-'saving' entry. Never resubmits; purely a status recheck. */
+  /** Pending tab — "Check status" on a still-'saving' entry. Never resubmits; purely a status recheck. */
   async function handleRecheckDetachedSale(entry: DetachedSale) {
     if (!branchId) return;
     setDetachedSaleBusy(entry.idempotencyKey, true);
@@ -1832,7 +1837,7 @@ export default function TerminalPage() {
   }
 
   /**
-   * Pending Sales panel — Retry on a failed detached entry. Same
+   * Needs Action tab — Retry on a failed detached entry. Same
    * resolve-before-remint protocol handleCharge itself uses, just scoped to
    * this one entry: a prior error proves nothing about whether the request
    * actually committed, so this always confirms first rather than trusting
@@ -1882,7 +1887,7 @@ export default function TerminalPage() {
   }
 
   /**
-   * Pending Sales panel — Dismiss. Offered on 'error' and 'success' entries;
+   * Needs Action / Done tabs — Dismiss. Offered on 'error' and 'success' entries;
    * never on 'saving'. A 'success' entry is already server-confirmed, so
    * dismiss just stops tracking it — the transaction itself is untouched.
    *
@@ -1940,8 +1945,22 @@ export default function TerminalPage() {
     setPanelReceiptTransaction(entry.transaction);
   }
 
-  const unresolvedDetachedSalesCount = countUnresolvedDetachedSales(detachedSales);
-  const savingDetachedSalesCount = detachedSales.filter((e) => e.status === 'saving').length;
+  // POS-PERF-P23 — the three order tabs' own filtered+sorted lists (newest
+  // first, same ordering the old Orders Dialog used). Memoized so an
+  // unrelated render (e.g. a Cash Tendered keystroke) doesn't re-filter and
+  // re-sort the full detachedSales array every time.
+  const pendingOrderEntries = useMemo(
+    () => detachedSales.filter((e) => e.status === 'saving').sort((a, b) => b.createdAt - a.createdAt),
+    [detachedSales],
+  );
+  const doneOrderEntries = useMemo(
+    () => detachedSales.filter((e) => e.status === 'success').sort((a, b) => b.createdAt - a.createdAt),
+    [detachedSales],
+  );
+  const needsActionOrderEntries = useMemo(
+    () => detachedSales.filter((e) => e.status === 'error').sort((a, b) => b.createdAt - a.createdAt),
+    [detachedSales],
+  );
 
   // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
   // `branchId`) is briefly null on every reload while useAuth's silent
@@ -2228,13 +2247,6 @@ export default function TerminalPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* POS-PERF-P21 — persistent order-status strip: always shown once at least one detached sale exists (even all-resolved ones, until the cashier clears them), so "where did my earlier order go" always has an answer without opening anything. Saving/needs-attention counts update automatically (see the auto-poll effect above) — opening Pending Sales is optional, for order detail/recovery actions only. */}
-          <OrderStatusStrip
-            savingCount={savingDetachedSalesCount}
-            needsAttentionCount={unresolvedDetachedSalesCount - savingDetachedSalesCount}
-            totalCount={detachedSales.length}
-            onOpenDetails={() => setIsPendingSalesPanelOpen(true)}
-          />
           <Button
             variant="outline"
             size="sm"
@@ -2246,6 +2258,32 @@ export default function TerminalPage() {
             Clock Out
           </Button>
         </div>
+      </div>
+
+      {/* POS-PERF-P23 — permanent top-level tabs. Products opens the
+          catalog; the other three are the old "Orders" Dialog's sections,
+          now inline instead of a popup. Counts come straight from
+          detachedSales and update on their own (the auto-poll effect above,
+          background toasts) without ever switching this tab or stealing
+          focus — only an explicit cashier click (or the needs-attention
+          toast's own "Open" action) changes activeMainTab. The cart panel
+          below is a sibling of this Tabs block, not inside it, so it never
+          unmounts or resets when the tab changes. */}
+      <div className="border-b bg-card px-3 py-2">
+        <Tabs value={activeMainTab} onValueChange={(value) => setActiveMainTab(value as typeof activeMainTab)}>
+          <TabsList aria-label="POS sections" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
+            <TabsTrigger value="products" className="h-full">Products</TabsTrigger>
+            <TabsTrigger value="pending" className="h-full">
+              Pending{pendingOrderEntries.length > 0 ? ` (${pendingOrderEntries.length})` : ''}
+            </TabsTrigger>
+            <TabsTrigger value="done" className="h-full">
+              Done{doneOrderEntries.length > 0 ? ` (${doneOrderEntries.length})` : ''}
+            </TabsTrigger>
+            <TabsTrigger value="needs-action" className="h-full">
+              Needs Action{needsActionOrderEntries.length > 0 ? ` (${needsActionOrderEntries.length})` : ''}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
       </div>
 
       {/* Task 209.20 — `lg:min-h-0` on this row (and the two panels below) is
@@ -2268,6 +2306,8 @@ export default function TerminalPage() {
           cart panel doesn't, so the two always sum to the full row width
           regardless of how the cart-width token is tuned. */}
       <div className="relative flex flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden lg:border-r">
+        {activeMainTab === 'products' && (
+        <>
         <div className="space-y-2 border-b bg-card p-3">
           <h1 className="sr-only">POS Terminal — product catalog</h1>
           <SearchInput
@@ -2335,6 +2375,22 @@ export default function TerminalPage() {
             </div>
           )}
         </div>
+        </>
+        )}
+
+        {activeMainTab !== 'products' && (
+          <div className="lg:flex-1 lg:overflow-y-auto">
+            <OrderTabContent
+              status={activeMainTab}
+              entries={activeMainTab === 'pending' ? pendingOrderEntries : activeMainTab === 'done' ? doneOrderEntries : needsActionOrderEntries}
+              busyKeys={detachedSalesBusyKeys}
+              onRetry={(entry) => void handleRetryDetachedSale(entry)}
+              onRecheck={(entry) => void handleRecheckDetachedSale(entry)}
+              onDismiss={handleDismissDetachedSale}
+              onViewReceipt={handleViewDetachedSaleReceipt}
+            />
+          </div>
+        )}
 
         {flavorPrompt && (
           <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
@@ -2558,16 +2614,6 @@ export default function TerminalPage() {
       )}
       {isReceiptViewOpen && <ReceiptModal transaction={saleTransaction} onClose={handleNewSale} />}
 
-      <PendingSalesPanel
-        open={isPendingSalesPanelOpen}
-        onOpenChange={setIsPendingSalesPanelOpen}
-        entries={detachedSales}
-        busyKeys={detachedSalesBusyKeys}
-        onRetry={(entry) => void handleRetryDetachedSale(entry)}
-        onRecheck={(entry) => void handleRecheckDetachedSale(entry)}
-        onDismiss={handleDismissDetachedSale}
-        onViewReceipt={handleViewDetachedSaleReceipt}
-      />
       {panelReceiptTransaction && <ReceiptModal transaction={panelReceiptTransaction} onClose={() => setPanelReceiptTransaction(null)} />}
 
       {canManageVoidRefund && (

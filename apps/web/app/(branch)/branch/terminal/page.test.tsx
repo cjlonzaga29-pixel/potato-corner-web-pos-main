@@ -2182,7 +2182,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
 // POS-PERF-P19 — "New Sale" is clickable during 'saving', not just after a
 // response arrives. These cover: detaching doesn't block the next cart, a
 // late response for a detached order never clobbers whatever replaced it,
-// the Pending Sales panel surfaces the detached order's outcome, and the
+// the Needs Action tab surfaces the detached order's outcome, and the
 // bounded backlog (MAX_DETACHED_SALES) actually blocks a 6th concurrent
 // detach instead of silently accepting it.
 describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)', () => {
@@ -2242,7 +2242,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     expect(screen.getByText('Sale completed')).toBeInTheDocument();
   });
 
-  it('a detached order that fails stays actionable in the Pending Sales panel instead of silently disappearing', async () => {
+  it('a detached order that fails stays actionable in the Needs Action tab instead of silently disappearing', async () => {
     let rejectFirst: (error: unknown) => void = () => {};
     mockCreateTransactionMutateAsync.mockReturnValueOnce(
       new Promise((_resolve, reject) => {
@@ -2259,7 +2259,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /Orders/ }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Needs Action/ }));
     expect(await screen.findByText('Needs attention')).toBeInTheDocument();
     expect(screen.getByText('Could not reach the server. Please check your connection before trying again.')).toBeInTheDocument();
   });
@@ -2328,7 +2328,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /Orders/ }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Needs Action/ }));
     expect(await screen.findByText('Needs attention')).toBeInTheDocument();
 
     // First Dismiss: server says still in-progress — must not be discarded.
@@ -2352,7 +2352,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
   // reads that record back and resolves it against the server exactly like
   // the singleton pending attempt is (POS-PERF-P15R2 describe block above) —
   // instead of just trusting whatever the local 'saving' status says.
-  it('recovers a detached sale left "saving" across a reload: mount resolves it against the server and updates Pending Sales', async () => {
+  it('recovers a detached sale left "saving" across a reload: mount resolves it against the server and updates the Needs Action tab', async () => {
     const snapshot: SaleSnapshot = {
       orderRef: 1,
       items: [{ id: 'line-1', productName: 'Cheese', variantName: 'Regular', flavorName: null, quantity: 1, lineTotal: 50, optionSelections: [] }],
@@ -2385,7 +2385,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
 
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-detached-before-reload', 'branch-1'));
-    fireEvent.click(await screen.findByRole('button', { name: /Orders/ }));
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Needs Action/ }));
     expect(await screen.findByText('Needs attention')).toBeInTheDocument();
     expect(screen.getByText(/Not confirmed before this device reloaded/)).toBeInTheDocument();
 

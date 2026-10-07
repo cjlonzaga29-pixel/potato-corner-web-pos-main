@@ -68,7 +68,7 @@ export const stockAvailabilityService = {
     const results = new Map<string, VariantStockResult>();
     let cursor = 0;
     for (const [productVariantId, subs] of subRequestsByVariant) {
-      const subResults = subs.map(() => evaluateLines(bomLinesByRequest[cursor++]!, stockByItem));
+      const subResults = subs.map(() => evaluateLines(bomLinesByRequest[cursor++] ?? [], stockByItem));
       results.set(productVariantId, { ...aggregateVariantStock(subResults), productVariantId });
     }
     return results;

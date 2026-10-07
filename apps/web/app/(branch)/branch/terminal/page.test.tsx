@@ -28,10 +28,14 @@ const {
   mockUploadDiscountProofMutateAsync,
   mockCreateTransactionIsPending,
   mockClearCart,
+  mockCheckCartAvailabilityMutateAsync,
 } = vi.hoisted(() => ({
   mockAddItem: vi.fn(),
   mockReplaceItem: vi.fn(),
   mockUseCatalog: vi.fn(),
+  // POS-PERF-P24 — defaults to "always has capacity" so tests unrelated to
+  // the cart-wide stock pre-check never need to stub this explicitly.
+  mockCheckCartAvailabilityMutateAsync: vi.fn().mockResolvedValue({ ok: true, shortfalls: [] }),
   mockCreateTransactionMutateAsync: vi.fn().mockResolvedValue({}),
   mockUseMyActiveShift: vi.fn(() => ({ shift: { id: 'shift-1' } as { id: string } | null, isLoading: false })),
   mockUseIsClockedIn: vi.fn(() => ({
@@ -155,6 +159,7 @@ vi.mock('@/hooks/use-offline', () => ({
 vi.mock('@/hooks/queries/use-products', () => ({
   useCatalog: mockUseCatalog,
   useCatalogRealtimeSync: () => undefined,
+  useCheckCartAvailability: () => ({ mutateAsync: mockCheckCartAvailabilityMutateAsync }),
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
@@ -332,6 +337,8 @@ function slotVariant(overrides: Partial<PosCatalogProduct['variants'][number]> =
       },
     ],
     option_groups: [],
+    stock_status: 'in_stock',
+    max_sellable_units: null,
     ...overrides,
   };
 }
@@ -438,7 +445,58 @@ describe('TerminalPage — live POS readiness', () => {
     expect(mockAddItem).not.toHaveBeenCalled();
   });
 
-  it('shows no readiness message and allows add-to-cart when live_ready is true', () => {
+  // POS-PERF-P24 — a confirmed out_of_stock blocks the tap outright, even
+  // though the variant itself is fully config/BOM-ready (live_ready: true).
+  it('blocks add-to-cart for a confirmed out_of_stock variant, even when live_ready is true', () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [], stock_status: 'out_of_stock', max_sellable_units: 0 }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(mockAddItem).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P24 — low_stock alone never blocks an otherwise-fulfillable add.
+  it('never blocks add-to-cart for a low_stock (not out_of_stock) variant', async () => {
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([
+        slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [], stock_status: 'low_stock', max_sellable_units: 2 }),
+      ]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
+  });
+
+  // POS-PERF-P24 — the cart-wide pre-check runs at the add itself (no
+  // flavor/options dialog in play here) and blocks when the server reports
+  // a shortfall, without ever calling addItem.
+  it('blocks add-to-cart when the cart-wide availability check reports a shortfall', async () => {
+    mockCheckCartAvailabilityMutateAsync.mockResolvedValueOnce({
+      ok: false,
+      shortfalls: [{ inventory_item_id: 'item-1', item_name: 'Cheese Powder', available: 1, required: 5 }],
+    });
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [] })]),
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    await waitFor(() => expect(mockCheckCartAvailabilityMutateAsync).toHaveBeenCalled());
+    expect(mockAddItem).not.toHaveBeenCalled();
+  });
+
+  it('shows no readiness message and allows add-to-cart when live_ready is true', async () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [] })]),
       isLoading: false,
@@ -448,7 +506,9 @@ describe('TerminalPage — live POS readiness', () => {
     expect(screen.queryByText('Inventory setup incomplete.')).not.toBeInTheDocument();
     expect(screen.queryByText('Flavor inventory mapping incomplete.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+    await waitFor(() =>
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }),
+    );
   });
 });
 
@@ -540,7 +600,7 @@ describe('TerminalPage — flavor slot selection', () => {
     expect(screen.getByRole('button', { name: 'Add to Cart' })).toBeDisabled();
   });
 
-  it('enables Add to Cart once every slot is selected and submits slot_index/snack_product_variant_id/flavor_id mappings', () => {
+  it('enables Add to Cart once every slot is selected and submits slot_index/snack_product_variant_id/flavor_id mappings', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant()]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -553,6 +613,7 @@ describe('TerminalPage — flavor slot selection', () => {
     const addButton = screen.getByRole('button', { name: 'Add to Cart' });
     expect(addButton).not.toBeDisabled();
     fireEvent.click(addButton);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -604,17 +665,19 @@ describe('TerminalPage — flavor slot selection', () => {
     expect(screen.getByRole('button', { name: 'Add to Cart' })).toBeDisabled();
   });
 
-  it('shows zero flavor selectors for a zero-flavor variant and allows normal add', () => {
+  it('shows zero flavor selectors for a zero-flavor variant and allows normal add', async () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]),
       isLoading: false,
     });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+    await waitFor(() =>
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }),
+    );
   });
 
-  it('preserves the existing single-flavor flow for a variant with no slots', () => {
+  it('preserves the existing single-flavor flow for a variant with no slots', async () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([slotVariant({ flavor_slots: [] })]),
       isLoading: false,
@@ -623,6 +686,7 @@ describe('TerminalPage — flavor slot selection', () => {
     fireEvent.click(screen.getByText('Mega Mix Fries'));
     expect(screen.getByText('Cheese')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Cheese'));
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -689,6 +753,8 @@ function optionVariant(overrides: Partial<PosCatalogProduct['variants'][number]>
     flavors: [],
     flavor_slots: [],
     option_groups: [optionGroup()],
+    stock_status: 'in_stock',
+    max_sellable_units: null,
     ...overrides,
   };
 }
@@ -705,11 +771,13 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
 
   afterEach(() => cleanup());
 
-  it('adds normally with no dialog when the variant has no option groups', () => {
+  it('adds normally with no dialog when the variant has no option groups', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+    await waitFor(() =>
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }),
+    );
   });
 
   it('opens the Add-ons dialog instead of adding to the cart when the variant has option groups assigned', () => {
@@ -750,14 +818,14 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     expect(screen.getByRole('checkbox', { name: /Large/ })).toBeInTheDocument();
   });
 
-  it('selecting the required Flavor/Size option adds the product to the cart at quantity 1', () => {
+  it('selecting the required Flavor/Size option adds the product to the cart at quantity 1', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
     fireEvent.click(screen.getByText('Small'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -766,7 +834,7 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     });
   });
 
-  it('selecting another Flavor/Size option replaces the previous selection — never both at once', () => {
+  it('selecting another Flavor/Size option replaces the previous selection — never both at once', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -774,7 +842,7 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     fireEvent.click(screen.getByText('Large (+₱20.00)'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -783,7 +851,7 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     });
   });
 
-  it('an optional (non-required) Flavor/Size group leaves Add enabled with no selection', () => {
+  it('an optional (non-required) Flavor/Size group leaves Add enabled with no selection', async () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([optionVariant({ option_groups: [optionGroup({ min_selections: 0, required: false })] })]),
       isLoading: false,
@@ -794,7 +862,9 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+    await waitFor(() =>
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }),
+    );
   });
 
   it('does not show a No Add-ons choice for a required group', () => {
@@ -924,7 +994,7 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
     expect(screen.queryByRole('button', { name: 'Add' })).not.toBeInTheDocument();
   });
 
-  it('Save with no changes replaces the one cart line via replaceItem, never addItem', () => {
+  it('Save with no changes replaces the one cart line via replaceItem, never addItem', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     mockCartItems.mockReturnValue([
       {
@@ -940,8 +1010,8 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
+    await waitFor(() => expect(mockReplaceItem).toHaveBeenCalledTimes(1));
     expect(mockAddItem).not.toHaveBeenCalled();
-    expect(mockReplaceItem).toHaveBeenCalledTimes(1);
     expect(mockReplaceItem).toHaveBeenCalledWith(0, [
       {
         product_id: 'product-1',
@@ -957,7 +1027,7 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
   // Task 182 — quantity is never touched by this dialog; changing the
   // required Flavor/Size selection during Edit must replace the option
   // while leaving the cart line's existing quantity exactly as it was.
-  it('editing the Flavor/Size selection preserves the existing cart line quantity', () => {
+  it('editing the Flavor/Size selection preserves the existing cart line quantity', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     mockCartItems.mockReturnValue([
       {
@@ -974,7 +1044,7 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
     fireEvent.click(screen.getByText('Large (+₱20.00)'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(mockReplaceItem).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockReplaceItem).toHaveBeenCalledTimes(1));
     expect(mockReplaceItem).toHaveBeenCalledWith(0, [
       {
         product_id: 'product-1',
@@ -1069,7 +1139,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     expect(screen.queryByText(/Assigned \d+ \/ \d+/)).not.toBeInTheDocument();
   });
 
-  it('Add is enabled with zero add-ons selected — the product can be sold with No Add-ons', () => {
+  it('Add is enabled with zero add-ons selected — the product can be sold with No Add-ons', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -1077,18 +1147,18 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
     expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
   });
 
-  it('one selected add-on is added once on the product line', () => {
+  it('one selected add-on is added once on the product line', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
     fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -1099,7 +1169,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     });
   });
 
-  it('multiple add-ons can be selected together on one product line — never split into separate lines', () => {
+  it('multiple add-ons can be selected together on one product line — never split into separate lines', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -1108,7 +1178,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('Sour Cream'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -1121,7 +1191,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     });
   });
 
-  it('selecting No Add-ons after choosing options clears the selection', () => {
+  it('selecting No Add-ons after choosing options clears the selection', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -1129,10 +1199,12 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('No Add-ons'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+    await waitFor(() =>
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }),
+    );
   });
 
-  it('selecting an add-on after No Add-ons results in only that add-on being applied', () => {
+  it('selecting an add-on after No Add-ons results in only that add-on being applied', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -1140,6 +1212,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -1170,7 +1243,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     expect(screen.getByText('Cash tendered is ₱20.00 short.')).toBeInTheDocument();
   });
 
-  it('Edit preloads every selected add-on for the group', () => {
+  it('Edit preloads every selected add-on for the group', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     mockCartItems.mockReturnValue([
       {
@@ -1190,6 +1263,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
+    await waitFor(() => expect(mockReplaceItem).toHaveBeenCalled());
     expect(mockReplaceItem).toHaveBeenCalledWith(0, [
       {
         product_id: 'product-1',
@@ -1202,7 +1276,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     ]);
   });
 
-  it('Edit can clear all add-ons via No Add-ons', () => {
+  it('Edit can clear all add-ons via No Add-ons', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     mockCartItems.mockReturnValue([
       {
@@ -1219,7 +1293,9 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('No Add-ons'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(mockReplaceItem).toHaveBeenCalledWith(0, [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    await waitFor(() =>
+      expect(mockReplaceItem).toHaveBeenCalledWith(0, [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]),
+    );
   });
 
   it('a required, SINGLE-selection Add-ons-named group is still treated as optional (No Add-ons shown, Add enabled with zero selections)', () => {
@@ -1236,7 +1312,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
   });
 
-  it('a variant with both a required Size group and an Add-ons group keeps Size as a required checkbox selection while the Add-ons group stays a simplified multi-select', () => {
+  it('a variant with both a required Size group and an Add-ons group keeps Size as a required checkbox selection while the Add-ons group stays a simplified multi-select', async () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([optionVariant({ option_groups: [optionGroup(), addOnsGroup()] })]),
       isLoading: false,
@@ -1254,6 +1330,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -1296,7 +1373,7 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
 
   afterEach(() => cleanup());
 
-  it('a genuine multi-slot (MULTIPLE, required) group retains the per-choice quantity allocator instead of checkbox rows', () => {
+  it('a genuine multi-slot (MULTIPLE, required) group retains the per-choice quantity allocator instead of checkbox rows', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [multiSlotGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -1314,7 +1391,7 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(2));
     expect(mockAddItem).toHaveBeenCalledWith({
       product_id: 'product-1',
       product_variant_id: 'variant-1',
@@ -1354,7 +1431,7 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
   // splitAddOnLines's internal per-group length check, silently returning no
   // lines at all — the item never reaches the cart despite a fully valid,
   // Add-enabled selection.
-  it('two required MULTIPLE groups with different targets still add the item to the cart', () => {
+  it('two required MULTIPLE groups with different targets still add the item to the cart', async () => {
     const flavorGroup = multiSlotGroup({
       id: 'flavor-group',
       name: 'Flavor',
@@ -1389,7 +1466,7 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(mockAddItem).toHaveBeenCalled();
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
   });
 });
 
@@ -2182,7 +2259,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
 // POS-PERF-P19 — "New Sale" is clickable during 'saving', not just after a
 // response arrives. These cover: detaching doesn't block the next cart, a
 // late response for a detached order never clobbers whatever replaced it,
-// the Needs Action tab surfaces the detached order's outcome, and the
+// the Pending tab surfaces the detached order's outcome, and the
 // bounded backlog (MAX_DETACHED_SALES) actually blocks a 6th concurrent
 // detach instead of silently accepting it.
 describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)', () => {
@@ -2242,7 +2319,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     expect(screen.getByText('Sale completed')).toBeInTheDocument();
   });
 
-  it('a detached order that fails stays actionable in the Needs Action tab instead of silently disappearing', async () => {
+  it('a detached order that fails stays actionable in the Pending tab instead of silently disappearing', async () => {
     let rejectFirst: (error: unknown) => void = () => {};
     mockCreateTransactionMutateAsync.mockReturnValueOnce(
       new Promise((_resolve, reject) => {
@@ -2259,8 +2336,8 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
 
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Needs Action/ }));
-    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Pending/ }));
+    expect(await screen.findByText('Order problem')).toBeInTheDocument();
     expect(screen.getByText('Could not reach the server. Please check your connection before trying again.')).toBeInTheDocument();
   });
 
@@ -2328,20 +2405,20 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
 
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Needs Action/ }));
-    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Pending/ }));
+    expect(await screen.findByText('Order problem')).toBeInTheDocument();
 
     // First Dismiss: server says still in-progress — must not be discarded.
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(1));
-    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText('Order problem')).toBeInTheDocument();
     expect(screen.getByText(/Still being processed on the server/)).toBeInTheDocument();
 
     // Second Dismiss: server now confirms nothing committed — safe to discard.
     mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText('Needs attention')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Order problem')).not.toBeInTheDocument());
   });
 
   // POS-PERF-P19R — a detached sale is only durable because it is persisted
@@ -2352,7 +2429,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
   // reads that record back and resolves it against the server exactly like
   // the singleton pending attempt is (POS-PERF-P15R2 describe block above) —
   // instead of just trusting whatever the local 'saving' status says.
-  it('recovers a detached sale left "saving" across a reload: mount resolves it against the server and updates the Needs Action tab', async () => {
+  it('recovers a detached sale left "saving" across a reload: mount resolves it against the server and updates the Pending tab', async () => {
     const snapshot: SaleSnapshot = {
       orderRef: 1,
       items: [{ id: 'line-1', productName: 'Cheese', variantName: 'Regular', flavorName: null, quantity: 1, lineTotal: 50, optionSelections: [] }],
@@ -2385,8 +2462,8 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
 
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-detached-before-reload', 'branch-1'));
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Needs Action/ }));
-    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: /Pending/ }));
+    expect(await screen.findByText('Order problem')).toBeInTheDocument();
     expect(screen.getByText(/Not confirmed before this device reloaded/)).toBeInTheDocument();
 
     localStorage.removeItem('pos:detached-sales:branch-1');

@@ -16,6 +16,8 @@ import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
+import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
+import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -545,6 +547,14 @@ function notReadyLegacyReadiness() {
     completion_percentage: 0,
     blocking_issues: [] as ReturnType<typeof toReadinessIssueResponse>[],
     readiness_warnings: [] as ReturnType<typeof toReadinessIssueResponse>[],
+  };
+}
+
+/** POS-PERF-P24 — stock_status defaults to 'unknown' whenever the stock-availability batch has no entry for this variant (NOT_READY, or no BOM components), never a confirmed 'out_of_stock'. */
+function toStockStatusFields(stock: VariantStockResult | undefined) {
+  return {
+    stock_status: stock?.status ?? 'unknown',
+    max_sellable_units: stock?.maxSellableUnits ?? null,
   };
 }
 
@@ -1488,6 +1498,13 @@ export const productsService = {
     const readinessResults = await productReadinessService.evaluateProductVariantReadinessBatch({ branchId, productVariantIds: variantIds });
     const readinessByVariantId = new Map(readinessResults.map((result) => [result.productVariantId, result]));
 
+    // POS-PERF-P24 — quantity-based stock status, only meaningful for a
+    // variant that's already config/BOM-ready (sellable); a NOT_READY
+    // variant keeps its existing readiness messaging and gets 'unknown'
+    // rather than a stock figure that would be misleading without a recipe.
+    const sellableVariantIds = readinessResults.filter((r) => r.sellable).map((r) => r.productVariantId);
+    const stockByVariantId = await stockAvailabilityService.evaluateCatalogStock(branchId, sellableVariantIds);
+
     // Task 209.7 — one batched Storage call for every image-bearing product
     // on this branch's catalog, instead of an N+1 signed-URL mint per product.
     const imagePaths = products.map((product) => product.imagePath).filter((path): path is string => Boolean(path));
@@ -1504,6 +1521,7 @@ export const productsService = {
           const readiness = readinessByVariantId.get(variant.id);
           return readiness ? toLegacyReadiness(readiness) : notReadyLegacyReadiness();
         })(),
+        ...toStockStatusFields(stockByVariantId.get(variant.id)),
         flavors: variant.variantFlavors
           .filter((vf) => !disabledFlavors.has(vf.flavorId))
           .map((vf) => ({
@@ -1587,6 +1605,19 @@ export const productsService = {
     const categories = [...new Set(catalogProducts.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort();
 
     return { categories, products: catalogProducts };
+  },
+
+  /**
+   * POS-PERF-P24 — cart-wide stock pre-check fired at discrete cashier
+   * checkpoints (Add-ons/Mix & Max confirm, cart quantity increase), never
+   * per keystroke or per product-card render. Read-only; the atomic
+   * reservation at checkout (transactions.service.ts) remains the final guard.
+   */
+  async checkCartAvailability(
+    branchId: string,
+    lines: { productVariantId: string; flavorId?: string | null; selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[]; quantity: number }[],
+  ) {
+    return stockAvailabilityService.evaluateCartAvailability(branchId, lines);
   },
 
   async deleteProduct(productId: string, actor: ActorContext, ipAddress: string | null) {

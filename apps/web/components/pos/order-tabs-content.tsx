@@ -12,10 +12,10 @@ function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
-export type OrdersTabStatus = 'pending' | 'done' | 'needs-action';
+export type OrdersTabStatus = 'pending' | 'done';
 
 interface OrderTabContentProps {
-  /** Which of the three order tabs is rendering — only used to pick the empty-state copy and the "Done"/"Needs Action" footnotes; filtering itself is the caller's job (page.tsx), since the caller is also the one computing the tab's own count badge from the exact same filtered list. */
+  /** Which of the two order tabs is rendering — only used to pick the empty-state copy and the "Done" footnote; filtering itself is the caller's job (page.tsx), since the caller is also the one computing the tab's own count badge from the exact same filtered list. POS-PERF-P24 — the former standalone "Needs Action" tab was removed; a failed/uncertain order ('error' status) now stays in Pending (never hidden or discarded) with its own red "Order problem" label below, included in Pending's count and the existing backlog limit. */
   status: OrdersTabStatus;
   entries: DetachedSale[];
   /** True while a resolve/retry/recheck call for this specific entry is in flight — disables that entry's actions only, never the whole tab. */
@@ -27,14 +27,18 @@ interface OrderTabContentProps {
 }
 
 /**
- * POS-PERF-P23 — inline tab content for one of the three order tabs
- * (Pending/Done/Needs Action), replacing the old "Orders" Dialog
- * (pending-sales-panel.tsx) whose own internal Tabs duplicated what the
- * terminal page's top-level tabs now do directly. Rendering/behavior per
- * entry (status icon, badge, failure detail, Retry/Recheck/Dismiss/View
- * Receipt actions) is otherwise unchanged from that panel.
+ * POS-PERF-P23/P24 — inline tab content for one of the two order tabs
+ * (Pending/Done), replacing the old "Orders" Dialog (pending-sales-panel.tsx)
+ * whose own internal Tabs duplicated what the terminal page's top-level tabs
+ * now do directly. Rendering/behavior per entry (status icon, badge, failure
+ * detail, Retry/Recheck/Dismiss/View Receipt actions) is otherwise unchanged
+ * from that panel. POS-PERF-P24 removed the separate "Needs Action" tab — a
+ * failed/uncertain order ('error' status) is filtered into `entries` by the
+ * caller alongside still-saving ones, so it stays persistently visible here
+ * (never hidden or discarded) with its own red "Order problem" label.
  */
 export function OrderTabContent({ status, entries, busyKeys, onRetry, onRecheck, onDismiss, onViewReceipt }: OrderTabContentProps) {
+  const hasErrorEntries = entries.some((e) => e.status === 'error');
   return (
     <div className="space-y-3 p-3">
       {status === 'done' && (
@@ -45,7 +49,7 @@ export function OrderTabContent({ status, entries, busyKeys, onRetry, onRecheck,
       ) : (
         <>
           <EntryList entries={entries} busyKeys={busyKeys} onRetry={onRetry} onRecheck={onRecheck} onDismiss={onDismiss} onViewReceipt={onViewReceipt} />
-          {status === 'needs-action' && (
+          {status === 'pending' && hasErrorEntries && (
             <p className="text-xs text-muted-foreground">
               If Retry keeps failing for an order, ask a supervisor to check that order&apos;s reference number before starting it again as a new sale.
             </p>
@@ -62,19 +66,15 @@ function emptyTitle(status: OrdersTabStatus): string {
       return 'Nothing pending';
     case 'done':
       return 'Nothing here yet';
-    case 'needs-action':
-      return 'Nothing needs action';
   }
 }
 
 function emptyDescription(status: OrdersTabStatus): string {
   switch (status) {
     case 'pending':
-      return 'No orders are currently saving.';
+      return 'No orders are currently saving or need attention.';
     case 'done':
       return 'Confirmed orders appear here until you hide them.';
-    case 'needs-action':
-      return 'Every order has been confirmed or resolved.';
   }
 }
 
@@ -103,8 +103,13 @@ function EntryList({ entries, busyKeys, onRetry, onRecheck, onDismiss, onViewRec
                 {/* POS-PERF-P21 — the same terminal-local reference shown on the sale popup (sale-status-modal.tsx) — never the receipt number. */}
                 <span className="text-sm font-semibold">{formatOrderRef(entry.snapshot.orderRef)}</span>
               </div>
+              {/* POS-PERF-P24 — "Order problem" (not "Needs attention") since
+                  this now lives inside the Pending tab (the standalone
+                  "Needs Action" tab was removed) and must read as a distinct,
+                  persistently-visible problem state rather than a generic
+                  saving/confirmed status. */}
               <Badge variant={entry.status === 'success' ? 'active' : entry.status === 'error' ? 'destructive' : 'outline'}>
-                {entry.status === 'saving' ? 'Saving' : entry.status === 'error' ? 'Needs attention' : 'Confirmed'}
+                {entry.status === 'saving' ? 'Saving' : entry.status === 'error' ? 'Order problem' : 'Confirmed'}
               </Badge>
             </div>
 

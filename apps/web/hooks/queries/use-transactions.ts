@@ -151,6 +151,10 @@ export function useCreateTransaction(accessTokenOverride?: string, refreshOverri
         transaction.shift_id
           ? queryClient.invalidateQueries({ queryKey: ['shift', transaction.shift_id] })
           : Promise.resolve(),
+        // POS-PERF-P24 — a completed sale just deducted inventory, which can
+        // flip a product-card's stock badge (in_stock -> low_stock/out_of_stock);
+        // one bounded catalog refetch, not a per-product request.
+        queryClient.invalidateQueries({ queryKey: ['catalog'] }),
       ]).then(() => {
         console.warn('[checkout] post-sale background refresh timing', {
           postSaleRefreshMs: Math.round(performance.now() - refreshStartedAt),

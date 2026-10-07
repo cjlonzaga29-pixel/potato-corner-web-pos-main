@@ -94,6 +94,17 @@ vi.mock('../product-readiness/product-readiness.service.js', () => ({
   },
 }));
 
+// POS-PERF-P24 — getPosCatalog's stock_status/max_sellable_units fields are
+// delegated to stockAvailabilityService; mocked here (rather than mocking
+// its computeBomDeduction/prisma.inventoryStock dependencies) for the same
+// reason productReadinessService is mocked above — stock-availability.service.test.ts
+// already covers that engine's own logic in full.
+vi.mock('../stock-availability/stock-availability.service.js', () => ({
+  stockAvailabilityService: {
+    evaluateCatalogStock: vi.fn(),
+  },
+}));
+
 function readyResult(branchId: string, productVariantId: string): ProductVariantReadinessResult {
   return {
     branchId,
@@ -188,6 +199,7 @@ const { productsService, __resetSignedUrlCacheForTests } = await import('./produ
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
+const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
 const { prisma } = await import('../../lib/prisma.js');
 
 // Task 209.x — the signed-URL reuse cache (products.service.ts) is
@@ -205,6 +217,10 @@ beforeEach(() => {
 vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockImplementation(async ({ branchId, productVariantIds }) =>
   productVariantIds.map((id) => readyResult(branchId, id)),
 );
+
+// Default: no stock-availability data (stock_status resolves to 'unknown') —
+// tests that care about stock_status set up their own mock explicitly.
+vi.mocked(stockAvailabilityService.evaluateCatalogStock).mockResolvedValue(new Map());
 
 /** Task 191 — default: approveVariant's ProductComponent BOM gate passes. */
 function componentReadyResult(productVariantId: string) {
@@ -2275,6 +2291,78 @@ describe('productsService.getPosCatalog — live POS readiness (Phase B, delegat
 
     expect(result.products[0]?.variants).toHaveLength(1);
     expect(result.products[0]?.variants[0]?.live_ready).toBe(false);
+  });
+});
+
+describe('productsService.getPosCatalog — stock_status (POS-PERF-P24, delegated to stockAvailabilityService)', () => {
+  function readinessVariant(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'variant-1',
+      name: 'Regular',
+      sizeLabel: 'Regular',
+      basePrice: { toNumber: () => 100 },
+      vatableCapAmount: null,
+      variantFlavors: [],
+      optionGroupAssignments: [],
+      flavorSlots: [],
+      ...overrides,
+    };
+  }
+
+  function readinessProduct(variant: Record<string, unknown>) {
+    return { id: 'product-1', name: 'Mega Mix', category: 'Snacks', variants: [variant] };
+  }
+
+  beforeEach(() => {
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+  });
+
+  it('is only requested for sellable (live_ready) variants, never for a NOT_READY one', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(readinessVariant({ id: 'variant-1' })),
+    ] as never);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([
+      notReadyResult('branch-1', 'variant-1', [
+        { code: 'RECIPE_MISSING', severity: 'blocking', entityType: 'product_variant', entityId: 'variant-1', message: 'No recipe.', recommendedAction: 'Add one.' },
+      ]),
+    ]);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(stockAvailabilityService.evaluateCatalogStock).toHaveBeenCalledWith('branch-1', []);
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.stock_status).toBe('unknown');
+    expect(variant?.max_sellable_units).toBeNull();
+  });
+
+  it('surfaces in_stock / low_stock / out_of_stock from stockAvailabilityService onto the catalog variant', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(readinessVariant({ id: 'variant-1' })),
+    ] as never);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([readyResult('branch-1', 'variant-1')]);
+    vi.mocked(stockAvailabilityService.evaluateCatalogStock).mockResolvedValue(
+      new Map([['variant-1', { productVariantId: 'variant-1', status: 'low_stock', maxSellableUnits: 3 }]]),
+    );
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.stock_status).toBe('low_stock');
+    expect(variant?.max_sellable_units).toBe(3);
+  });
+
+  it('never equates a stock-availability gap with a confirmed out_of_stock — defaults to unknown', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(readinessVariant({ id: 'variant-1' })),
+    ] as never);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([readyResult('branch-1', 'variant-1')]);
+    vi.mocked(stockAvailabilityService.evaluateCatalogStock).mockResolvedValue(new Map());
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    const variant = result.products[0]?.variants[0];
+    expect(variant?.stock_status).toBe('unknown');
+    expect(variant?.max_sellable_units).toBeNull();
   });
 });
 

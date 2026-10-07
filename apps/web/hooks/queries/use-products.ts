@@ -6,6 +6,8 @@ import {
   SOCKET_EVENTS,
   type BranchProductAvailabilityRow,
   type BulkBranchProductAvailabilityResponse,
+  type CartAvailabilityCheckInput,
+  type CartAvailabilityResult,
   type ChangeProductStatusInput,
   type CreateProductInput,
   type CreateVariantInput,
@@ -111,6 +113,25 @@ export function useCatalogRealtimeSync(branchId: string | null | undefined): voi
     [SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, SOCKET_EVENTS.INVENTORY_LOW_STOCK],
     [['catalog', branchId]],
   );
+}
+
+/**
+ * POS-PERF-P24 — cart-wide stock pre-check, called at discrete cashier
+ * checkpoints (Add-ons/Mix & Max confirm, cart quantity +) — never on every
+ * keystroke or product-card render. A mutation (not a query) since it's an
+ * on-demand check tied to a user action, not cached/subscribed data.
+ */
+export function useCheckCartAvailability() {
+  return useMutation({
+    mutationFn: async (input: CartAvailabilityCheckInput) => {
+      const response = await apiClient<CartAvailabilityResult>('/api/products/catalog/availability-check', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to check stock availability'));
+      return response.data;
+    },
+  });
 }
 
 export function useCreateProduct() {

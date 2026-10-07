@@ -23,6 +23,8 @@ function variant(overrides: Partial<PosCatalogProduct['variants'][number]> = {})
     flavors: [],
     flavor_slots: [],
     option_groups: [],
+    stock_status: 'in_stock',
+    max_sellable_units: null,
     ...overrides,
   };
 }
@@ -195,5 +197,42 @@ describe('ProductCard', () => {
 
     fireEvent.keyDown(screen.getByText('Regular Fries'), { key: 'Enter' });
     expect(onTap).toHaveBeenCalled();
+  });
+
+  describe('stock badges (POS-PERF-P24)', () => {
+    it('shows a Low Stock badge and keeps the card clickable', () => {
+      const onTap = vi.fn();
+      const lowStock = variant({ stock_status: 'low_stock', max_sellable_units: 3 });
+      render(<Harness onTap={onTap} product={{ ...product, variants: [lowStock] }} />);
+
+      expect(screen.getByText('Low Stock')).toBeInTheDocument();
+      const card = screen.getByRole('button', { name: /Regular Fries/ });
+      expect(card).toHaveAttribute('aria-disabled', 'false');
+
+      fireEvent.click(screen.getByText('Regular Fries'));
+      expect(onTap).toHaveBeenCalled();
+    });
+
+    it('shows an Out of Stock badge and blocks the card even when live_ready is true', () => {
+      const onTap = vi.fn();
+      const outOfStock = variant({ stock_status: 'out_of_stock', max_sellable_units: 0 });
+      render(<Harness onTap={onTap} product={{ ...product, variants: [outOfStock] }} />);
+
+      expect(screen.getByText('Out of Stock')).toBeInTheDocument();
+      const card = screen.getByRole('button', { name: /Regular Fries/ });
+      expect(card).toHaveAttribute('aria-disabled', 'true');
+      expect(card).toHaveAttribute('tabindex', '-1');
+    });
+
+    it('shows no stock badge when stock_status is unknown', () => {
+      const onTap = vi.fn();
+      const unknown = variant({ stock_status: 'unknown', max_sellable_units: null });
+      render(<Harness onTap={onTap} product={{ ...product, variants: [unknown] }} />);
+
+      expect(screen.queryByText('Low Stock')).not.toBeInTheDocument();
+      expect(screen.queryByText('Out of Stock')).not.toBeInTheDocument();
+      const card = screen.getByRole('button', { name: /Regular Fries/ });
+      expect(card).toHaveAttribute('aria-disabled', 'false');
+    });
   });
 });

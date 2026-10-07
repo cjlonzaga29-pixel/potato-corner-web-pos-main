@@ -31,6 +31,8 @@ function variant(overrides: Partial<PosCatalogProduct['variants'][number]> = {})
     flavors: [],
     flavor_slots: [],
     option_groups: [],
+    stock_status: 'in_stock',
+    max_sellable_units: null,
     ...overrides,
   };
 }

@@ -76,10 +76,13 @@ describe('OrderTabContent', () => {
     expect(screen.getByText(/not that food is prepared or inventory has finished updating/i)).toBeInTheDocument();
   });
 
-  it('labels the clear action "Dismiss" and shows "Needs attention" on the Needs Action tab', () => {
+  // POS-PERF-P24 — the separate "Needs Action" tab was removed; a failed
+  // order now stays persistently visible inside Pending with a red "Order
+  // problem" label instead of a separate tab's "Needs attention" badge.
+  it('labels the clear action "Dismiss" and shows "Order problem" for a failed entry on the Pending tab', () => {
     render(
       <OrderTabContent
-        status="needs-action"
+        status="pending"
         entries={[entry({ status: 'error', errorMessage: 'Failed' })]}
         busyKeys={new Set()}
         onRetry={vi.fn()}
@@ -90,14 +93,14 @@ describe('OrderTabContent', () => {
     );
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
-    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText('Order problem')).toBeInTheDocument();
     expect(screen.getByText(/ask a supervisor/i)).toBeInTheDocument();
   });
 
   it('maps INSUFFICIENT_STOCK to "Not enough stock" and shows the server\'s detail verbatim', () => {
     render(
       <OrderTabContent
-        status="needs-action"
+        status="pending"
         entries={[entry({ status: 'error', errorCode: 'INSUFFICIENT_STOCK', errorMessage: 'Insufficient stock for Fries: need 5, have 2 available' })]}
         busyKeys={new Set()}
         onRetry={vi.fn()}
@@ -108,6 +111,22 @@ describe('OrderTabContent', () => {
     );
     expect(screen.getByText('Not enough stock')).toBeInTheDocument();
     expect(screen.getByText('Insufficient stock for Fries: need 5, have 2 available')).toBeInTheDocument();
+  });
+
+  it('includes a failed entry in Pending counts alongside still-saving ones, and never discards it', () => {
+    render(
+      <OrderTabContent
+        status="pending"
+        entries={[entry({ status: 'saving' }), entry({ idempotencyKey: 'key-2', status: 'error', errorMessage: 'Failed' })]}
+        busyKeys={new Set()}
+        onRetry={vi.fn()}
+        onRecheck={vi.fn()}
+        onDismiss={vi.fn()}
+        onViewReceipt={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Check status' })).toBeInTheDocument();
+    expect(screen.getByText('Order problem')).toBeInTheDocument();
   });
 
   it('offers "Check status" (not Retry/Dismiss) for a still-saving pending entry', () => {
@@ -129,7 +148,7 @@ describe('OrderTabContent', () => {
   it('disables actions for a busy entry', () => {
     render(
       <OrderTabContent
-        status="needs-action"
+        status="pending"
         entries={[entry({ status: 'error', errorMessage: 'Failed' })]}
         busyKeys={new Set(['key-1'])}
         onRetry={vi.fn()}

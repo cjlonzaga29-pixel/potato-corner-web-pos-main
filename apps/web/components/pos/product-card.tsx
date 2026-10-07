@@ -50,8 +50,16 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
   const [erroredImageUrl, setErroredImageUrl] = useState<string | null>(null);
   const showImage = product.has_image && Boolean(product.image_url) && product.image_url !== erroredImageUrl;
 
-  const isAvailable = variant.live_ready;
-  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${message ? `, ${message}` : ''}`;
+  // POS-PERF-P24 — stock_status is a separate dimension from live_ready
+  // (config/BOM readiness): a variant can be fully configured and still be
+  // out_of_stock, or vice versa. A confirmed out_of_stock blocks the tile the
+  // same way a readiness failure does; low_stock never blocks — it's purely
+  // informational (the badge below). 'unknown' (not reliably calculable, or
+  // stale) is never treated as unavailable.
+  const stockOut = variant.stock_status === 'out_of_stock';
+  const isAvailable = variant.live_ready && !stockOut;
+  const stockBadgeLabel = variant.stock_status === 'out_of_stock' ? 'Out of Stock' : variant.stock_status === 'low_stock' ? 'Low Stock' : null;
+  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${stockBadgeLabel ? `, ${stockBadgeLabel}` : ''}${message ? `, ${message}` : ''}`;
 
   return (
     <Card
@@ -95,10 +103,19 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
             <Utensils className="h-1/2 w-1/2" />
           </div>
         )}
-        {!isAvailable && (
+        {!variant.live_ready && (
           <div className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-background/90 shadow-sm" aria-hidden="true">
             <AlertTriangle className="h-3 w-3 text-destructive" />
           </div>
+        )}
+        {stockBadgeLabel && (
+          <span
+            className={`absolute left-1 top-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide shadow-sm ${
+              stockBadgeLabel === 'Out of Stock' ? 'bg-destructive text-destructive-foreground' : 'bg-warning text-warning-foreground'
+            }`}
+          >
+            {stockBadgeLabel}
+          </span>
         )}
       </div>
 

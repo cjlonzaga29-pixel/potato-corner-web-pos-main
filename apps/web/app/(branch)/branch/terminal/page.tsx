@@ -18,7 +18,7 @@ import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
 import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
-import type { PosCartSelectedOption } from '@/stores/cart.store';
+import type { PosCartItem, PosCartSelectedOption } from '@/stores/cart.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -33,7 +33,7 @@ import { LocationAccessRecovery } from '@/components/shared/feedback/location-ac
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
-import { useCatalog, useCatalogRealtimeSync } from '@/hooks/queries/use-products';
+import { useCatalog, useCatalogRealtimeSync, useCheckCartAvailability } from '@/hooks/queries/use-products';
 import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useClockInLocation } from '@/hooks/use-clock-in-location';
@@ -381,6 +381,7 @@ export default function TerminalPage() {
     refetch: refetchCatalog,
   } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
+  const checkCartAvailability = useCheckCartAvailability();
   // Informational only below (payment-proof storage path fallback) — never
   // gates the Charge button. The API resolves and auto-opens the cashier's
   // own active shift server-side via shiftGuard, so checkout is never
@@ -589,14 +590,17 @@ export default function TerminalPage() {
   // the live list without that restart.
   const detachedSalesRef = useRef<DetachedSale[]>(detachedSales);
   detachedSalesRef.current = detachedSales;
-  // POS-PERF-P23 — permanent top-level tabs (Products | Pending | Done |
-  // Needs Action) replacing the old "Orders" Dialog (isPendingSalesPanelOpen).
-  // Only ever changes by direct cashier click (TabsTrigger) or the explicit
-  // "Open" action on a needs-attention toast — never by a background status
-  // update, so an automatic recheck/poll can never steal the cashier away
-  // from whatever they're doing. The cart panel is a sibling of the tab
-  // content, not inside it, so switching tabs never touches the cart.
-  const [activeMainTab, setActiveMainTab] = useState<'products' | 'pending' | 'done' | 'needs-action'>('products');
+  // POS-PERF-P23 — permanent top-level tabs (Products | Pending | Done)
+  // replacing the old "Orders" Dialog (isPendingSalesPanelOpen). Only ever
+  // changes by direct cashier click (TabsTrigger) or the explicit "Open"
+  // action on a needs-attention toast — never by a background status update,
+  // so an automatic recheck/poll can never steal the cashier away from
+  // whatever they're doing. The cart panel is a sibling of the tab content,
+  // not inside it, so switching tabs never touches the cart.
+  // POS-PERF-P24 — the former separate "Needs Action" tab was removed;
+  // failed/uncertain orders ('error' status) now stay persistently visible
+  // inside Pending (see pendingOrderEntries below) instead of a fourth tab.
+  const [activeMainTab, setActiveMainTab] = useState<'products' | 'pending' | 'done'>('products');
   // "View Receipt" from the order tabs — see
   // handleViewDetachedSaleReceipt's doc comment for why this is deliberately
   // separate from saleTransaction/isReceiptViewOpen.
@@ -650,8 +654,8 @@ export default function TerminalPage() {
   function notifyDetachedSaleNeedsAttention(orderRef: number, errorCode: string | null, detail: string) {
     const display = describeCashierFailure(errorCode, detail);
     toast.warning(`Order ${formatOrderRef(orderRef)} — ${display.title}`, {
-      description: `${display.detail} Open the Needs Action tab to resolve.`,
-      action: { label: 'Open', onClick: () => setActiveMainTab('needs-action') },
+      description: `${display.detail} Open the Pending tab to resolve.`,
+      action: { label: 'Open', onClick: () => setActiveMainTab('pending') },
     });
   }
 
@@ -1008,14 +1012,65 @@ export default function TerminalPage() {
     [],
   );
 
+  // POS-PERF-P24 — cart-wide stock pre-check, called only at discrete
+  // cashier checkpoints (a flavor/slot/add-ons confirm, a cart quantity
+  // increase) — never on every keystroke or product-card render. Sums
+  // required ingredient quantity across the current cart plus the candidate
+  // addition server-side, so ingredients shared across different cart lines
+  // are never double-counted as independently available. A network/API
+  // failure never blocks the sale on an uncertain pre-check — the atomic
+  // reservation at checkout (transactions.service.ts) remains the final
+  // guard regardless of what this pre-check concludes.
+  const cartHasCapacityFor = useCallback(
+    async (candidateItems: PosCartItem[], excludeIndex?: number): Promise<boolean> => {
+      if (!branchId) return true;
+      const baseline = excludeIndex === undefined ? items : items.filter((_, i) => i !== excludeIndex);
+      const lines = [...baseline, ...candidateItems].map((item) => ({
+        product_variant_id: item.product_variant_id,
+        flavor_id: item.flavor_id ?? undefined,
+        selected_flavors: item.selected_flavors,
+        quantity: item.quantity,
+      }));
+      try {
+        const result = await checkCartAvailability.mutateAsync({ branch_id: branchId, lines });
+        if (!result.ok) {
+          const names = [...new Set(result.shortfalls.map((s) => s.item_name))].join(', ');
+          toast.error("Can't add — not enough stock", {
+            description: `Running low on ${names}. Try a smaller quantity, or ask a supervisor to restock.`,
+          });
+          return false;
+        }
+        return true;
+      } catch {
+        return true;
+      }
+    },
+    [branchId, items, checkCartAvailability],
+  );
+
   // Task 194A — useCallback'd so ProductCard (React.memo) can treat onTap as
   // a stable prop: every dependency here (maybeOpenAddOnsPrompt, addItem,
   // the setState setters) is itself stable, so this never changes identity
   // across renders, including ones triggered by unrelated state like
   // Cash Tendered or an in-progress cart edit.
+  //
+  // POS-PERF-P24 — a confirmed out_of_stock (the card-level stock_status
+  // already in the catalog response, zero extra latency) blocks the tap
+  // outright with an alert before any network call; low_stock never blocks.
+  // A product with no flavor/slot/add-ons choices to make adds immediately
+  // on tap, so cartHasCapacityFor's one bounded check runs right here as the
+  // add itself — not per render, not per card, just once per actual add.
+  // A product that opens a dialog instead defers that same check to the
+  // dialog's own confirm handler, once the configuration is known.
   const handleProductTap = useCallback(
     (product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) => {
       if (!variant.live_ready) return;
+      if (variant.stock_status === 'out_of_stock') {
+        toast.error("Can't add — out of stock", {
+          description: `${product.name} (${variant.name}) is out of stock right now. Try again shortly or ask a supervisor to restock.`,
+        });
+        return;
+      }
       if (variant.flavor_slots.length > 0) {
         setSlotPrompt({ product, variant, selections: {} });
         return;
@@ -1025,9 +1080,12 @@ export default function TerminalPage() {
         return;
       }
       if (maybeOpenAddOnsPrompt(product, variant, {})) return;
-      addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
+      void (async () => {
+        if (!(await cartHasCapacityFor([{ product_id: product.id, product_variant_id: variant.id, quantity: 1 }]))) return;
+        addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
+      })();
     },
-    [maybeOpenAddOnsPrompt, addItem],
+    [maybeOpenAddOnsPrompt, addItem, cartHasCapacityFor],
   );
 
   function handleAddOnsAssignmentChange(groupId: string, choiceKey: string, quantity: number) {
@@ -1080,7 +1138,7 @@ export default function TerminalPage() {
   // line with the freshly-split line(s) instead of appending new lines; the
   // store's replaceItem then folds in any resulting duplicate against
   // another existing line using the same identity rules addItem uses.
-  function handleAddOnsConfirm() {
+  async function handleAddOnsConfirm() {
     if (!addOnsPrompt) return;
     const { product, variant, flavorId, selectedFlavors, quantity, assignments, selectedOptionIds, editingIndex } = addOnsPrompt;
     const groups = dialogGroupsFor(variant);
@@ -1153,6 +1211,11 @@ export default function TerminalPage() {
         quantity: line.quantity,
       };
     });
+    // POS-PERF-P24 — configuration (flavor/options/Mix & Max) is fully known
+    // at this point, so the cart-wide check runs here rather than at tap
+    // time. Edit mode excludes the line being replaced from the baseline so
+    // its own existing requirement isn't double-counted against itself.
+    if (!(await cartHasCapacityFor(newItems, editingIndex))) return;
     if (editingIndex !== undefined) {
       replaceItem(editingIndex, newItems);
     } else {
@@ -1217,17 +1280,17 @@ export default function TerminalPage() {
     [items, variantIndex],
   );
 
-  function handleFlavorPick(flavorId: string) {
+  async function handleFlavorPick(flavorId: string) {
     if (!flavorPrompt) return;
     const { product, variant } = flavorPrompt;
+    if (maybeOpenAddOnsPrompt(product, variant, { flavorId })) {
+      setFlavorPrompt(null);
+      return;
+    }
+    const candidate: PosCartItem = { product_id: product.id, product_variant_id: variant.id, flavor_id: flavorId, quantity: 1 };
+    if (!(await cartHasCapacityFor([candidate]))) return;
     setFlavorPrompt(null);
-    if (maybeOpenAddOnsPrompt(product, variant, { flavorId })) return;
-    addItem({
-      product_id: product.id,
-      product_variant_id: variant.id,
-      flavor_id: flavorId,
-      quantity: 1,
-    });
+    addItem(candidate);
   }
 
   function handleSlotSnackPick(slotIndex: number, snackProductVariantId: string) {
@@ -1245,7 +1308,7 @@ export default function TerminalPage() {
     });
   }
 
-  function handleSlotAddToCart() {
+  async function handleSlotAddToCart() {
     if (!slotPrompt) return;
     const selectedFlavors = slotPrompt.variant.flavor_slots.map((slot) => ({
       slot_index: slot.slot_index,
@@ -1254,15 +1317,34 @@ export default function TerminalPage() {
     }));
     if (selectedFlavors.some((s) => !s.snack_product_variant_id || !s.flavor_id)) return;
     const { product, variant } = slotPrompt;
+    if (maybeOpenAddOnsPrompt(product, variant, { selectedFlavors })) {
+      setSlotPrompt(null);
+      return;
+    }
+    const candidate: PosCartItem = { product_id: product.id, product_variant_id: variant.id, selected_flavors: selectedFlavors, quantity: 1 };
+    if (!(await cartHasCapacityFor([candidate]))) return;
     setSlotPrompt(null);
-    if (maybeOpenAddOnsPrompt(product, variant, { selectedFlavors })) return;
-    addItem({
-      product_id: product.id,
-      product_variant_id: variant.id,
-      selected_flavors: selectedFlavors,
-      quantity: 1,
-    });
+    addItem(candidate);
   }
+
+  // POS-PERF-P24 — a quantity decrease/removal never needs a stock check (it
+  // only frees up capacity); only an increase is validated, and only against
+  // the cart as it would be after the change — excludeIndex keeps this one
+  // line's own existing quantity from being double-counted against itself.
+  const handleQuantityChange = useCallback(
+    (index: number, quantity: number) => {
+      const current = items[index];
+      if (!current || quantity <= current.quantity) {
+        updateItemQuantity(index, quantity);
+        return;
+      }
+      void (async () => {
+        if (!(await cartHasCapacityFor([{ ...current, quantity }], index))) return;
+        updateItemQuantity(index, quantity);
+      })();
+    },
+    [items, updateItemQuantity, cartHasCapacityFor],
+  );
 
   // Memoized so it only recomputes when the cart or catalog actually change —
   // without this, every keystroke in an unrelated field (cash tendered,
@@ -1837,7 +1919,7 @@ export default function TerminalPage() {
   }
 
   /**
-   * Needs Action tab — Retry on a failed detached entry. Same
+   * Pending tab — Retry on a failed detached entry. Same
    * resolve-before-remint protocol handleCharge itself uses, just scoped to
    * this one entry: a prior error proves nothing about whether the request
    * actually committed, so this always confirms first rather than trusting
@@ -1887,7 +1969,7 @@ export default function TerminalPage() {
   }
 
   /**
-   * Needs Action / Done tabs — Dismiss. Offered on 'error' and 'success' entries;
+   * Pending / Done tabs — Dismiss. Offered on 'error' and 'success' entries;
    * never on 'saving'. A 'success' entry is already server-confirmed, so
    * dismiss just stops tracking it — the transaction itself is untouched.
    *
@@ -1945,20 +2027,22 @@ export default function TerminalPage() {
     setPanelReceiptTransaction(entry.transaction);
   }
 
-  // POS-PERF-P23 — the three order tabs' own filtered+sorted lists (newest
-  // first, same ordering the old Orders Dialog used). Memoized so an
-  // unrelated render (e.g. a Cash Tendered keystroke) doesn't re-filter and
-  // re-sort the full detachedSales array every time.
+  // POS-PERF-P23 — the order tabs' own filtered+sorted lists (newest first,
+  // same ordering the old Orders Dialog used). Memoized so an unrelated
+  // render (e.g. a Cash Tendered keystroke) doesn't re-filter and re-sort the
+  // full detachedSales array every time.
+  // POS-PERF-P24 — the former separate "Needs Action" tab is gone; a failed
+  // or still-uncertain order ('error' status) now stays persistently visible
+  // inside Pending alongside still-saving ones (never hidden or discarded),
+  // and is included in Pending's own count badge and the existing
+  // MAX_DETACHED_SALES backlog limit (countUnresolvedDetachedSales already
+  // counts 'error' entries as unresolved — see detached-sales.ts).
   const pendingOrderEntries = useMemo(
-    () => detachedSales.filter((e) => e.status === 'saving').sort((a, b) => b.createdAt - a.createdAt),
+    () => detachedSales.filter((e) => e.status === 'saving' || e.status === 'error').sort((a, b) => b.createdAt - a.createdAt),
     [detachedSales],
   );
   const doneOrderEntries = useMemo(
     () => detachedSales.filter((e) => e.status === 'success').sort((a, b) => b.createdAt - a.createdAt),
-    [detachedSales],
-  );
-  const needsActionOrderEntries = useMemo(
-    () => detachedSales.filter((e) => e.status === 'error').sort((a, b) => b.createdAt - a.createdAt),
     [detachedSales],
   );
 
@@ -2114,7 +2198,7 @@ export default function TerminalPage() {
             showDivider={i > 0}
             onEdit={handleEditLine}
             onRemove={removeItem}
-            onQuantityChange={updateItemQuantity}
+            onQuantityChange={handleQuantityChange}
           />
         ))}
       </div>
@@ -2161,7 +2245,7 @@ export default function TerminalPage() {
       cartLines={cartLines}
       onEditLine={handleEditLine}
       onRemoveLine={removeItem}
-      onQuantityChange={updateItemQuantity}
+      onQuantityChange={handleQuantityChange}
       subtotal={subtotal}
       vatAmount={vatAmount}
       discountAmount={discountAmount}
@@ -2279,9 +2363,6 @@ export default function TerminalPage() {
             <TabsTrigger value="done" className="h-full">
               Done{doneOrderEntries.length > 0 ? ` (${doneOrderEntries.length})` : ''}
             </TabsTrigger>
-            <TabsTrigger value="needs-action" className="h-full">
-              Needs Action{needsActionOrderEntries.length > 0 ? ` (${needsActionOrderEntries.length})` : ''}
-            </TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
@@ -2382,7 +2463,7 @@ export default function TerminalPage() {
           <div className="lg:flex-1 lg:overflow-y-auto">
             <OrderTabContent
               status={activeMainTab}
-              entries={activeMainTab === 'pending' ? pendingOrderEntries : activeMainTab === 'done' ? doneOrderEntries : needsActionOrderEntries}
+              entries={activeMainTab === 'pending' ? pendingOrderEntries : doneOrderEntries}
               busyKeys={detachedSalesBusyKeys}
               onRetry={(entry) => void handleRetryDetachedSale(entry)}
               onRecheck={(entry) => void handleRecheckDetachedSale(entry)}

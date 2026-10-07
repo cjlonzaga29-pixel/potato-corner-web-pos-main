@@ -14,6 +14,7 @@ import {
   updateVariantOptionGroupSchema,
   publishProductSchema,
   unpublishProductSchema,
+  cartAvailabilityCheckSchema,
   PRODUCT_STATUS,
   type ProductStatus,
 } from '@potato-corner/shared';
@@ -122,6 +123,40 @@ router.get('/catalog', authenticate, allRoles, requireActiveEmployee, requirePas
     handleModuleError(error, res, next);
   }
 });
+
+// POS-PERF-P24 — cart-wide stock pre-check, fired at discrete cashier
+// checkpoints (Add-ons/Mix & Max confirm, cart quantity +), never per
+// keystroke. Two segments, so Express never confuses this with /:productId.
+router.post(
+  '/catalog/availability-check',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  branchGuard,
+  validate(cartAvailabilityCheckSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await productsService.checkCartAvailability(
+        req.body.branch_id,
+        req.body.lines.map((line: { product_variant_id: string; flavor_id?: string | null; selected_flavors?: { slot_index: number; snack_product_variant_id: string; flavor_id: string }[]; quantity: number }) => ({
+          productVariantId: line.product_variant_id,
+          flavorId: line.flavor_id ?? null,
+          selectedFlavors: line.selected_flavors?.map((sf) => ({ slotIndex: sf.slot_index, snackProductVariantId: sf.snack_product_variant_id, flavorId: sf.flavor_id })),
+          quantity: line.quantity,
+        })),
+      );
+      res.status(200).json({
+        data: { ok: result.ok, shortfalls: result.shortfalls.map((s) => ({ inventory_item_id: s.inventoryItemId, item_name: s.itemName, available: s.available, required: s.required })) },
+        error: null,
+        meta: null,
+      });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
 
 router.get('/:productId', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {

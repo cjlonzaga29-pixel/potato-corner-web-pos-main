@@ -53,6 +53,9 @@ export type ProductListResponse = z.infer<typeof schemas.productListResponseSche
 export type PosCatalogResponse = z.infer<typeof schemas.posCatalogResponseSchema>;
 export type PosCatalogProduct = z.infer<typeof schemas.posCatalogProductSchema>;
 export type PosCatalogVariant = z.infer<typeof schemas.posCatalogVariantSchema>;
+export type CartAvailabilityCheckInput = z.infer<typeof schemas.cartAvailabilityCheckSchema>;
+export type CartAvailabilityLine = z.infer<typeof schemas.cartAvailabilityLineSchema>;
+export type CartAvailabilityResult = z.infer<typeof schemas.cartAvailabilityResultSchema>;
 
 // Task 209.6 — Product Image Management (Admin Only)
 export type ProductImageResponse = z.infer<typeof schemas.productImageResponseSchema>;

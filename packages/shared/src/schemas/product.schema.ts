@@ -327,6 +327,17 @@ export const posCatalogReadinessIssueSchema = z.object({
   flavor_name: z.string().nullable(),
 });
 
+// POS-PERF-P24 — quantity-based stock badge, independent of live_ready
+// (config/BOM readiness). 'unknown' means not reliably calculable (no BOM
+// components, or the variant isn't live_ready in the first place) — a card
+// must never render 'unknown' as if it were a confirmed 'out_of_stock'.
+// Computed from the variant's BASE recipe only (flavor_id IS NULL) since no
+// flavor/option is known yet at the product-card level; a more precise,
+// configuration-aware check runs via the cart-availability-check endpoint
+// once a flavor/slot/option selection is known.
+export const POS_STOCK_STATUSES = ['in_stock', 'low_stock', 'out_of_stock', 'unknown'] as const;
+export type PosStockStatus = (typeof POS_STOCK_STATUSES)[number];
+
 export const posCatalogVariantSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -344,6 +355,10 @@ export const posCatalogVariantSchema = z.object({
   flavors: z.array(posCatalogFlavorSchema),
   flavor_slots: z.array(posCatalogFlavorSlotSchema),
   option_groups: z.array(posCatalogOptionGroupSchema),
+  stock_status: z.enum(POS_STOCK_STATUSES),
+  // Only populated (non-null) when status is 'in_stock' or 'low_stock' and the
+  // figure is reliably calculable — never shown to the cashier otherwise.
+  max_sellable_units: z.number().int().nullable(),
 });
 
 export const posCatalogProductSchema = z.object({
@@ -362,6 +377,48 @@ export const posCatalogProductSchema = z.object({
 export const posCatalogResponseSchema = z.object({
   categories: z.array(z.string()),
   products: z.array(posCatalogProductSchema),
+});
+
+// POS-PERF-P24 — cart-wide stock pre-check, fired at discrete cashier
+// checkpoints (Add-ons/Mix & Max confirm, cart quantity +, not per keystroke
+// or per product-card render). Mirrors the real checkout deduction's
+// composition closely enough for a pre-check: the parent variant's own BOM
+// (scoped by flavor_id, same override rule as the live deduction) plus, for
+// Mix & Max, each selected slot's snack variant BOM (scoped by that slot's
+// own flavor_id) — summed across every line in the request, including the
+// candidate item being added. Product Option deductions (a separate mapping,
+// not ProductComponent-driven) are intentionally out of scope here; the
+// server-side atomic reservation at checkout remains the final guard.
+export const cartAvailabilityLineSchema = z.object({
+  product_variant_id: z.uuid(),
+  flavor_id: z.uuid().nullable().optional(),
+  selected_flavors: z
+    .array(
+      z.object({
+        slot_index: z.number().int(),
+        snack_product_variant_id: z.uuid(),
+        flavor_id: z.uuid(),
+      }),
+    )
+    .optional(),
+  quantity: z.number().int().positive(),
+});
+
+export const cartAvailabilityCheckSchema = z.object({
+  branch_id: z.uuid(),
+  lines: z.array(cartAvailabilityLineSchema).min(1),
+});
+
+export const cartAvailabilityShortfallSchema = z.object({
+  inventory_item_id: z.uuid(),
+  item_name: z.string(),
+  available: z.number(),
+  required: z.number(),
+});
+
+export const cartAvailabilityResultSchema = z.object({
+  ok: z.boolean(),
+  shortfalls: z.array(cartAvailabilityShortfallSchema),
 });
 
 // ---------------------------------------------------------------------------

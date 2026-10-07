@@ -2259,7 +2259,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /Pending Sales/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Orders/ }));
     expect(await screen.findByText('Needs attention')).toBeInTheDocument();
     expect(screen.getByText('Could not reach the server. Please check your connection before trying again.')).toBeInTheDocument();
   });
@@ -2328,7 +2328,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /Pending Sales/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Orders/ }));
     expect(await screen.findByText('Needs attention')).toBeInTheDocument();
 
     // First Dismiss: server says still in-progress — must not be discarded.
@@ -2385,7 +2385,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
 
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-detached-before-reload', 'branch-1'));
-    fireEvent.click(await screen.findByRole('button', { name: /Pending Sales/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Orders/ }));
     expect(await screen.findByText('Needs attention')).toBeInTheDocument();
     expect(screen.getByText(/Not confirmed before this device reloaded/)).toBeInTheDocument();
 

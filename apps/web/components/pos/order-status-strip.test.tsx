@@ -17,7 +17,7 @@ describe('OrderStatusStrip', () => {
     render(<OrderStatusStrip savingCount={2} needsAttentionCount={0} totalCount={2} onOpenDetails={onOpenDetails} />);
 
     expect(screen.getByText(/2 saving/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Pending Sales/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Orders/ }));
     expect(onOpenDetails).toHaveBeenCalledTimes(1);
   });
 

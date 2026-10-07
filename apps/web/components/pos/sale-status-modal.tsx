@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogD
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { formatOrderRef } from '@/lib/order-reference';
+import { describeCashierFailure } from '@/lib/cashier-error-messages';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -63,6 +64,8 @@ interface SaleStatusModalProps {
   snapshot: SaleSnapshot;
   /** Populated only when phase is 'error'. */
   errorMessage: string | null;
+  /** POS-PERF-P22 — the code behind errorMessage (a real TransactionApiError code, or one of cashier-error-messages.ts's synthetic codes), fed to describeCashierFailure for a consistent cashier-friendly title. Populated only when phase is 'error'; null falls back to a generic title. */
+  errorCode?: string | null;
   /** Resubmits the exact same cart under the same idempotency key — never creates a second sale even if the original request actually succeeded server-side. */
   onRetry: () => void;
   /** Error phase only: dismiss back to the cart/checkout review, retaining every submitted item exactly as entered. */
@@ -98,7 +101,8 @@ interface SaleStatusModalProps {
  * eventual success/failure to that detached record instead of this modal,
  * which is already closed by then.
  */
-export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEditCart, onViewReceipt, onNewSale }: SaleStatusModalProps) {
+export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRetry, onEditCart, onViewReceipt, onNewSale }: SaleStatusModalProps) {
+  const errorDisplay = phase === 'error' ? describeCashierFailure(errorCode, errorMessage ?? 'Something went wrong. Your cart is still here — retry or edit it below.') : null;
   return (
     <Dialog
       open
@@ -130,10 +134,8 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/15 text-destructive">
                   <AlertTriangle className="h-7 w-7" aria-hidden="true" />
                 </div>
-                <DialogTitle className="text-center">Couldn&apos;t save sale</DialogTitle>
-                <DialogDescription className="text-center">
-                  {errorMessage ?? 'Something went wrong. Your cart is still here — retry or edit it below.'}
-                </DialogDescription>
+                <DialogTitle className="text-center">{errorDisplay?.title}</DialogTitle>
+                <DialogDescription className="text-center">{errorDisplay?.detail}</DialogDescription>
               </>
             )}
             {phase === 'success' && (

@@ -67,6 +67,12 @@ import {
   type DetachedSale,
 } from '@/lib/detached-sales';
 import { nextOrderRef, formatOrderRef } from '@/lib/order-reference';
+import {
+  describeCashierFailure,
+  CONNECTION_UNCERTAIN,
+  STILL_PROCESSING,
+  NOT_SAVED_SAFE_TO_RETRY,
+} from '@/lib/cashier-error-messages';
 import { PendingSalesPanel } from '@/components/pos/pending-sales-panel';
 import { OrderStatusStrip } from '@/components/pos/order-status-strip';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
@@ -503,6 +509,8 @@ export default function TerminalPage() {
   const [saleSnapshot, setSaleSnapshot] = useState<SaleSnapshot | null>(null);
   const [saleTransaction, setSaleTransaction] = useState<TransactionResponse | null>(null);
   const [saleErrorMessage, setSaleErrorMessage] = useState<string | null>(null);
+  /** POS-PERF-P22 — the code behind saleErrorMessage, fed to cashier-error-messages.ts for a consistent cashier-friendly title; see DetachedSale.errorCode's doc comment for the same contract applied to detached entries. */
+  const [saleErrorCode, setSaleErrorCode] = useState<string | null>(null);
   // "View Receipt" on the success confirmation opens the full ReceiptModal
   // on top of it — kept as its own flag rather than folded into salePhase
   // so closing the receipt view returns to the compact confirmation instead
@@ -621,13 +629,23 @@ export default function TerminalPage() {
   // deduction finished — that runs independently on the server.
   function notifyDetachedSaleConfirmed(orderRef: number, transaction: TransactionResponse) {
     toast.success(`Order ${formatOrderRef(orderRef)} saved`, {
-      description: 'Inventory deduction runs separately in the background.',
+      description: 'Saved — not a food-prep or inventory status. Inventory deduction runs separately in the background.',
       action: { label: 'View Receipt', onClick: () => setPanelReceiptTransaction(transaction) },
     });
   }
-  function notifyDetachedSaleNeedsAttention(orderRef: number) {
-    toast.warning(`Order ${formatOrderRef(orderRef)} needs attention`, {
-      description: 'Open Pending Sales to retry or review it.',
+  /**
+   * POS-PERF-P22 — errorCode/detail come straight from wherever this entry's
+   * failure was determined (a real TransactionApiError code, or one of
+   * cashier-error-messages.ts's synthetic codes for a resolve/recheck
+   * outcome) — see describeCashierFailure's doc comment. The order
+   * reference and the actionable next step are always included so this
+   * toast alone is never the only place the failure is explained, and a
+   * stock failure never relies on this toast staying visible.
+   */
+  function notifyDetachedSaleNeedsAttention(orderRef: number, errorCode: string | null, detail: string) {
+    const display = describeCashierFailure(errorCode, detail);
+    toast.warning(`Order ${formatOrderRef(orderRef)} — ${display.title}`, {
+      description: `${display.detail} Open Orders → Needs Action to resolve.`,
       action: { label: 'Open', onClick: () => setIsPendingSalesPanelOpen(true) },
     });
   }
@@ -662,11 +680,12 @@ export default function TerminalPage() {
           updateDetachedSale(entry.idempotencyKey, {
             status: 'error',
             errorMessage: 'Not confirmed before this device reloaded — it may not have gone through. Safe to retry.',
+            errorCode: NOT_SAVED_SAFE_TO_RETRY,
             safeToRetryDirectly: true,
           });
         }
         // 'in-progress'/'unknown' — leave as 'saving'; the cashier can tap
-        // "Check status" in the Pending Sales panel to recheck.
+        // "Check status" in the Orders panel to recheck.
       }),
     );
     return () => {
@@ -726,12 +745,14 @@ export default function TerminalPage() {
           updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction: outcome.transaction });
           notifyDetachedSaleConfirmed(entry.snapshot.orderRef, outcome.transaction);
         } else if (outcome.status === 'not-found') {
+          const errorMessage = 'Not confirmed — it may not have gone through. Safe to retry.';
           updateDetachedSale(entry.idempotencyKey, {
             status: 'error',
-            errorMessage: 'Not confirmed — it may not have gone through. Safe to retry.',
+            errorMessage,
+            errorCode: NOT_SAVED_SAFE_TO_RETRY,
             safeToRetryDirectly: true,
           });
-          notifyDetachedSaleNeedsAttention(entry.snapshot.orderRef);
+          notifyDetachedSaleNeedsAttention(entry.snapshot.orderRef, NOT_SAVED_SAFE_TO_RETRY, errorMessage);
         }
         // 'in-progress'/'ambiguous'/'unknown' — keep waiting; never fence.
       }
@@ -1517,6 +1538,7 @@ export default function TerminalPage() {
     };
     setSaleSnapshot(snapshot);
     setSaleErrorMessage(null);
+    setSaleErrorCode(null);
     setSalePhase('saving');
     setIsCheckoutOpen(false);
 
@@ -1557,6 +1579,7 @@ export default function TerminalPage() {
             ? 'The previous checkout attempt is still being processed on the server. Wait for it to finish before charging a different cart.'
             : 'Could not confirm whether the previous checkout attempt went through. Check your connection, then try again before charging a different cart.',
         );
+        setSaleErrorCode(outcome.status === 'in-progress' ? STILL_PROCESSING : CONNECTION_UNCERTAIN);
         setSalePhase('error');
         releaseChargeToken(chargeToken);
         return;
@@ -1626,13 +1649,16 @@ export default function TerminalPage() {
       if (detachedKeysRef.current.has(idempotencyKey)) {
         detachedKeysRef.current.delete(idempotencyKey);
         const isDefiniteRejection = error instanceof TransactionApiError && isDefiniteNoCommitErrorCode(error.code);
+        const errorCode = error instanceof TransactionApiError ? error.code ?? null : null;
+        const errorMessage = error instanceof Error ? error.message : 'Failed to record transaction';
         const priorEntry = readDetachedSales(branchId).find((e) => e.idempotencyKey === idempotencyKey);
         updateDetachedSale(idempotencyKey, {
           status: 'error',
-          errorMessage: error instanceof Error ? error.message : 'Failed to record transaction',
+          errorMessage,
+          errorCode,
           safeToRetryDirectly: isDefiniteRejection,
         });
-        if (priorEntry) notifyDetachedSaleNeedsAttention(priorEntry.snapshot.orderRef);
+        if (priorEntry) notifyDetachedSaleNeedsAttention(priorEntry.snapshot.orderRef, errorCode, errorMessage);
         return;
       }
       // Cart is deliberately left untouched either way — Retry resubmits
@@ -1662,6 +1688,7 @@ export default function TerminalPage() {
         clearPendingCheckoutAttempt(branchId);
       }
       setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
+      setSaleErrorCode(error instanceof TransactionApiError ? error.code ?? null : null);
       setSalePhase('error');
     } finally {
       releaseChargeToken(chargeToken);
@@ -1684,6 +1711,7 @@ export default function TerminalPage() {
     setSalePhase(null);
     setSaleSnapshot(null);
     setSaleErrorMessage(null);
+    setSaleErrorCode(null);
     setIsCheckoutOpen(true);
   }
 
@@ -1710,7 +1738,7 @@ export default function TerminalPage() {
     if (salePhase === 'saving' && idempotencyKeyRef.current && saleSnapshot && lastChargePayloadRef.current && branchId) {
       if (!canDetachAnotherSale(branchId)) {
         setDetachBlockedNotice(
-          `${MAX_DETACHED_SALES} sales are already pending confirmation. Resolve one in Pending Sales (above) before starting another.`,
+          `${MAX_DETACHED_SALES} sales are already pending confirmation. Resolve one in Orders (above) before starting another.`,
         );
         return;
       }
@@ -1793,6 +1821,7 @@ export default function TerminalPage() {
         updateDetachedSale(entry.idempotencyKey, {
           status: 'error',
           errorMessage: 'Confirmed not charged. Safe to retry.',
+          errorCode: NOT_SAVED_SAFE_TO_RETRY,
           safeToRetryDirectly: true,
         });
       }
@@ -1825,13 +1854,14 @@ export default function TerminalPage() {
             outcome.status === 'in-progress'
               ? 'Still being processed on the server — wait, then retry.'
               : 'Could not confirm whether this went through. Check your connection, then retry.',
+          errorCode: outcome.status === 'in-progress' ? STILL_PROCESSING : CONNECTION_UNCERTAIN,
         });
         return;
       }
       // 'not-found' — confirmed nothing committed; safe to resubmit under
       // the exact same key and payload.
       detachedKeysRef.current.add(entry.idempotencyKey);
-      updateDetachedSale(entry.idempotencyKey, { status: 'saving', errorMessage: null });
+      updateDetachedSale(entry.idempotencyKey, { status: 'saving', errorMessage: null, errorCode: null });
       try {
         const transaction = await createTransaction.mutateAsync(entry.payload);
         detachedKeysRef.current.delete(entry.idempotencyKey);
@@ -1842,6 +1872,7 @@ export default function TerminalPage() {
         updateDetachedSale(entry.idempotencyKey, {
           status: 'error',
           errorMessage: error instanceof Error ? error.message : 'Failed to record transaction',
+          errorCode: error instanceof TransactionApiError ? error.code ?? null : null,
           safeToRetryDirectly: isDefiniteRejection,
         });
       }
@@ -1892,6 +1923,7 @@ export default function TerminalPage() {
           outcome.status === 'in-progress'
             ? 'Still being processed on the server — cannot dismiss yet. Wait, then try again.'
             : 'Could not confirm whether this went through — cannot dismiss yet. Check your connection, then try again.',
+        errorCode: outcome.status === 'in-progress' ? STILL_PROCESSING : CONNECTION_UNCERTAIN,
       });
     } finally {
       setDetachedSaleBusy(entry.idempotencyKey, false);
@@ -2517,6 +2549,7 @@ export default function TerminalPage() {
           phase={salePhase}
           snapshot={saleSnapshot}
           errorMessage={saleErrorMessage}
+          errorCode={saleErrorCode}
           onRetry={handleRetryCharge}
           onEditCart={handleEditCartFromSaleError}
           onViewReceipt={handleViewReceipt}

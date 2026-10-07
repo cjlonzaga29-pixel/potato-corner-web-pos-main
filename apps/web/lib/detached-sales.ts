@@ -28,6 +28,16 @@ export interface DetachedSale {
   status: 'saving' | 'success' | 'error';
   transaction: TransactionResponse | null;
   errorMessage: string | null;
+  /**
+   * POS-PERF-P22 — the real TransactionApiError code when this entry's
+   * failure came straight from the server's own error response, or one of
+   * cashier-error-messages.ts's synthetic codes when it came from a later
+   * resolve/recheck outcome instead. Optional/nullable for backward
+   * compatibility with an entry written before this field existed; the
+   * cashier-friendly mapper already falls back to a generic title when this
+   * is absent. Never set for 'saving'/'success' entries.
+   */
+  errorCode?: string | null;
   /** True once a check has confirmed the server definitely never committed anything under this key (see checkout-recovery.ts isDefiniteNoCommitErrorCode / resolveAndFenceCheckoutAttempt) — Retry-from-panel can resubmit immediately; otherwise it must resolve first. */
   safeToRetryDirectly: boolean;
   createdAt: number;

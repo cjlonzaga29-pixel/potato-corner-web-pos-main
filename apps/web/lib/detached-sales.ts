@@ -98,3 +98,27 @@ export function countUnresolvedDetachedSales(entries: DetachedSale[]): number {
 export function canDetachAnotherSale(branchId: string): boolean {
   return countUnresolvedDetachedSales(readDetachedSales(branchId)) < MAX_DETACHED_SALES;
 }
+
+/**
+ * POS-PERF-P21 — "do not silently accept unlimited orders" applies to
+ * confirmed ('success') records too, just with a much larger bound than
+ * MAX_DETACHED_SALES: those don't occupy a backlog slot (countUnresolved-
+ * DetachedSales already excludes them) and the cashier has no reason to
+ * manually clear every one, so left unbounded this list would grow for the
+ * entire length of a shift. Only 'success' entries are ever pruned here —
+ * 'saving'/'error' entries are never discarded by this function regardless
+ * of count; they stay until resolved, same as before.
+ */
+export const MAX_RETAINED_CONFIRMED_SALES = 20;
+
+/** Keeps the most recent MAX_RETAINED_CONFIRMED_SALES 'success' entries (by createdAt) and drops older ones; every non-'success' entry passes through untouched. */
+export function pruneConfirmedDetachedSales(entries: DetachedSale[]): DetachedSale[] {
+  const confirmedKeysToKeep = new Set(
+    entries
+      .filter((e) => e.status === 'success')
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, MAX_RETAINED_CONFIRMED_SALES)
+      .map((e) => e.idempotencyKey),
+  );
+  return entries.filter((e) => e.status !== 'success' || confirmedKeysToKeep.has(e.idempotencyKey));
+}

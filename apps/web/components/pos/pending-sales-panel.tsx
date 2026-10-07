@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import type { DetachedSale } from '@/lib/detached-sales';
+import { formatOrderRef } from '@/lib/order-reference';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -56,7 +57,8 @@ export function PendingSalesPanel({ open, onOpenChange, entries, busyKeys, onRet
                       {entry.status === 'saving' && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />}
                       {entry.status === 'error' && <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" />}
                       {entry.status === 'success' && <CheckCircle2 className="h-4 w-4 text-success" aria-hidden="true" />}
-                      <span className="text-sm font-medium tabular-nums">{formatPeso(entry.snapshot.totalAmount)}</span>
+                      {/* POS-PERF-P21 — the same terminal-local reference shown on the sale popup (sale-status-modal.tsx) — never the receipt number. */}
+                      <span className="text-sm font-semibold">{formatOrderRef(entry.snapshot.orderRef)}</span>
                     </div>
                     <Badge variant={entry.status === 'success' ? 'active' : entry.status === 'error' ? 'destructive' : 'outline'}>
                       {entry.status === 'saving' ? 'Saving' : entry.status === 'error' ? 'Needs attention' : 'Confirmed'}
@@ -64,7 +66,7 @@ export function PendingSalesPanel({ open, onOpenChange, entries, busyKeys, onRet
                   </div>
 
                   <p className="text-xs text-muted-foreground">
-                    {entry.snapshot.items.length} item{entry.snapshot.items.length === 1 ? '' : 's'} ·{' '}
+                    {entry.snapshot.items.length} item{entry.snapshot.items.length === 1 ? '' : 's'} · {formatPeso(entry.snapshot.totalAmount)} ·{' '}
                     {new Date(entry.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
                   </p>
 
@@ -91,8 +93,9 @@ export function PendingSalesPanel({ open, onOpenChange, entries, busyKeys, onRet
                         <Button size="sm" variant="outline" className="flex-1" onClick={() => onViewReceipt(entry)}>
                           View Receipt
                         </Button>
+                        {/* POS-PERF-P21 — "Clear from list" only for confirmed entries: unlike the 'error' Dismiss above, this never resolves anything against the server first — the sale is already confirmed, so clearing it just stops tracking it locally (see handleDismissDetachedSale's early-return for status === 'success'). */}
                         <Button size="sm" variant="ghost" className="flex-1" onClick={() => onDismiss(entry)}>
-                          Dismiss
+                          Clear from list
                         </Button>
                       </>
                     )}

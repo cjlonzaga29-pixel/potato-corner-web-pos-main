@@ -5,6 +5,7 @@ import type { TransactionResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { formatOrderRef } from '@/lib/order-reference';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -36,6 +37,13 @@ export interface SaleSnapshotItem {
 }
 
 export interface SaleSnapshot {
+  /**
+   * POS-PERF-P21 — terminal-local reference (lib/order-reference.ts),
+   * displayed as e.g. "#01". Deliberately never the BIR receipt number
+   * (transaction_number) — that is only ever allocated server-side once the
+   * sale persists, and is shown separately once View Receipt is opened.
+   */
+  orderRef: number;
   items: SaleSnapshotItem[];
   subtotal: number;
   discountAmount: number;
@@ -113,7 +121,7 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
                 </div>
                 <DialogTitle className="text-center">Saving sale…</DialogTitle>
                 <DialogDescription className="text-center">
-                  Saving — pending confirmation. You can start the next sale now; this one keeps saving in the background.
+                  Saving order. You can start the next customer. This one keeps saving in the background.
                 </DialogDescription>
               </>
             )}
@@ -141,6 +149,11 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
               <Badge variant={phase === 'success' ? 'active' : 'outline'}>{PAYMENT_METHOD_LABEL[snapshot.paymentMethod]}</Badge>
               {phase === 'saving' && <Badge variant="outline">Pending confirmation</Badge>}
             </div>
+            {/* POS-PERF-P21 — terminal-local reference only (see SaleSnapshot.orderRef's doc comment); explicitly NOT the receipt number, which only ever appears inside the full receipt (View Receipt / ReceiptModal). */}
+            <p className="text-xs text-muted-foreground">
+              Order {formatOrderRef(snapshot.orderRef)} · {snapshot.items.length} item{snapshot.items.length === 1 ? '' : 's'}
+              <span className="italic"> (terminal reference, not the receipt number)</span>
+            </p>
           </div>
         </DialogHeader>
 
@@ -182,16 +195,18 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
         <DialogFooter className="flex-row gap-2 sm:justify-normal">
           {phase === 'saving' && (
             <>
-              <Button className="touch-target flex-1" disabled>
+              <Button variant="outline" className="touch-target flex-1" disabled>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
                 Saving…
               </Button>
-              {/* POS-PERF-P19 — enabled immediately, unlike the disabled
-                  "Saving…" indicator beside it. Clicking this does not wait
-                  on or cancel the in-flight request — see onNewSale's doc
-                  comment on SaleStatusModalProps. */}
-              <Button variant="outline" className="touch-target flex-1" onClick={onNewSale}>
-                New Sale
+              {/* POS-PERF-P21 — "Next Customer" (formerly "New Sale") is the
+                  primary action during 'saving'/'success': enabled
+                  immediately, unlike the disabled "Saving…" indicator beside
+                  it. Clicking this does not wait on or cancel the in-flight
+                  request — see onNewSale's doc comment on
+                  SaleStatusModalProps. */}
+              <Button className="touch-target flex-1" onClick={onNewSale}>
+                Next Customer
               </Button>
             </>
           )}
@@ -211,7 +226,7 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, onRetry, onEdit
                 View Receipt
               </Button>
               <Button className="touch-target flex-1" onClick={onNewSale}>
-                New Sale
+                Next Customer
               </Button>
             </>
           )}

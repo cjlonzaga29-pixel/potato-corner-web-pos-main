@@ -219,9 +219,15 @@ function pendingAttemptStorageKey(branchId: string): string {
   return `pos:pending-checkout:${branchId}`;
 }
 
-export function savePendingCheckoutAttempt(branchId: string, idempotencyKey: string): void {
+/**
+ * POS-PERF-P21 — orderRef (lib/order-reference.ts) is optional only for
+ * backward compatibility with a record written before this field existed
+ * (e.g. already in localStorage when this build is deployed); every write
+ * going forward always includes it.
+ */
+export function savePendingCheckoutAttempt(branchId: string, idempotencyKey: string, orderRef: number): void {
   try {
-    localStorage.setItem(pendingAttemptStorageKey(branchId), JSON.stringify({ idempotencyKey, savedAt: Date.now() }));
+    localStorage.setItem(pendingAttemptStorageKey(branchId), JSON.stringify({ idempotencyKey, savedAt: Date.now(), orderRef }));
   } catch {
     // localStorage unavailable (private mode, quota) — reload-recovery is
     // best-effort; the in-session fingerprint guard still covers same-tab edits.
@@ -236,21 +242,30 @@ export function clearPendingCheckoutAttempt(branchId: string): void {
   }
 }
 
-export function readPendingCheckoutAttempt(branchId: string): { idempotencyKey: string; savedAt: number } | null {
+export function readPendingCheckoutAttempt(branchId: string): { idempotencyKey: string; savedAt: number; orderRef: number | null } | null {
   try {
     const raw = localStorage.getItem(pendingAttemptStorageKey(branchId));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { idempotencyKey?: unknown; savedAt?: unknown };
+    const parsed = JSON.parse(raw) as { idempotencyKey?: unknown; savedAt?: unknown; orderRef?: unknown };
     if (typeof parsed.idempotencyKey !== 'string' || typeof parsed.savedAt !== 'number') return null;
-    return { idempotencyKey: parsed.idempotencyKey, savedAt: parsed.savedAt };
+    return { idempotencyKey: parsed.idempotencyKey, savedAt: parsed.savedAt, orderRef: typeof parsed.orderRef === 'number' ? parsed.orderRef : null };
   } catch {
     return null;
   }
 }
 
-/** Rebuilds the sale-confirmation snapshot from the resolved server record, for the reload/browser-close recovery path where the client's own cart state (and so the original SaleSnapshot) no longer exists. */
-export function transactionToSaleSnapshot(transaction: TransactionResponse): SaleSnapshot {
+/**
+ * Rebuilds the sale-confirmation snapshot from the resolved server record,
+ * for the reload/browser-close recovery path where the client's own cart
+ * state (and so the original SaleSnapshot) no longer exists. orderRef is the
+ * terminal-local reference (lib/order-reference.ts) this attempt was shown
+ * under before the reload — callers that no longer know it (a pre-existing
+ * pending record from before this field existed) must mint a fresh one
+ * rather than pass a fake value.
+ */
+export function transactionToSaleSnapshot(transaction: TransactionResponse, orderRef: number): SaleSnapshot {
   return {
+    orderRef,
     items: (transaction.items ?? []).map((item) => ({
       id: item.id,
       productName: item.product_name,

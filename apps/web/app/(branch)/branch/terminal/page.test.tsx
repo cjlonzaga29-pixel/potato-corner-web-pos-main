@@ -240,19 +240,26 @@ vi.mock('@/lib/offline/sync-queue', () => ({
 // resolveAndFenceCheckoutAttempt (which internally handles the GET-then-
 // abandon-POST protocol), not the bare read-only resolveCheckoutAttempt, so
 // that is the one mocked here.
-const { mockResolveAndFenceCheckoutAttempt, mockReadPendingCheckoutAttempt, mockSavePendingCheckoutAttempt, mockClearPendingCheckoutAttempt } = vi.hoisted(() => ({
+const { mockResolveAndFenceCheckoutAttempt, mockResolveCheckoutAttempt, mockReadPendingCheckoutAttempt, mockSavePendingCheckoutAttempt, mockClearPendingCheckoutAttempt } = vi.hoisted(() => ({
   mockResolveAndFenceCheckoutAttempt: vi.fn(),
-  mockReadPendingCheckoutAttempt: vi.fn(() => null as { idempotencyKey: string; savedAt: number } | null),
+  // POS-PERF-P21 — the read-only check the auto-poll effect uses; defaults
+  // to 'unknown' (no actionable update) so a test that never configures it
+  // sees no behavior change from before this effect existed.
+  mockResolveCheckoutAttempt: vi.fn(() => Promise.resolve({ status: 'unknown' as const })),
+  mockReadPendingCheckoutAttempt: vi.fn(() => null as { idempotencyKey: string; savedAt: number; orderRef: number | null } | null),
   mockSavePendingCheckoutAttempt: vi.fn(),
   mockClearPendingCheckoutAttempt: vi.fn(),
 }));
 
 vi.mock('@/lib/checkout-recovery', () => ({
   resolveAndFenceCheckoutAttempt: mockResolveAndFenceCheckoutAttempt,
+  resolveCheckoutAttempt: mockResolveCheckoutAttempt,
   readPendingCheckoutAttempt: mockReadPendingCheckoutAttempt,
   savePendingCheckoutAttempt: mockSavePendingCheckoutAttempt,
   clearPendingCheckoutAttempt: mockClearPendingCheckoutAttempt,
-  transactionToSaleSnapshot: (transaction: { subtotal: number; discount_amount: number; discount_type: string | null; vat_amount: number; total_amount: number; payment_method: string; cash_tendered: number | null; change_given: number | null; items?: unknown[] }) => ({
+  isDefiniteNoCommitErrorCode: () => false,
+  transactionToSaleSnapshot: (transaction: { subtotal: number; discount_amount: number; discount_type: string | null; vat_amount: number; total_amount: number; payment_method: string; cash_tendered: number | null; change_given: number | null; items?: unknown[] }, orderRef: number) => ({
+    orderRef,
     items: [],
     subtotal: transaction.subtotal,
     discountAmount: transaction.discount_amount,
@@ -340,6 +347,7 @@ beforeEach(() => {
   mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
   localStorage.clear();
   mockResolveAndFenceCheckoutAttempt.mockReset();
+  mockResolveCheckoutAttempt.mockReset().mockResolvedValue({ status: 'unknown' });
   mockReadPendingCheckoutAttempt.mockReset().mockReturnValue(null);
   mockSavePendingCheckoutAttempt.mockReset();
   mockClearPendingCheckoutAttempt.mockReset();
@@ -2134,7 +2142,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
   });
 
   it('recovers an attempt left pending across a reload: mount resolves it and shows the confirmed sale', async () => {
-    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-from-before-reload', savedAt: Date.now() });
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-from-before-reload', savedAt: Date.now(), orderRef: 1 });
     mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({
       status: 'found',
       transaction: {
@@ -2160,7 +2168,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
   });
 
   it('clears the pending record on mount when the recovered attempt resolves not-found', async () => {
-    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now() });
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now(), orderRef: 1 });
     mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
 
     render(<TerminalPage />);
@@ -2216,7 +2224,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
     // The cart was already handed off — New Sale works even though the
     // first request hasn't resolved (and won't, until resolveFirst below).
-    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     expect(mockClearCart).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Saving sale…')).not.toBeInTheDocument();
 
@@ -2245,7 +2253,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
     chargeCurrentCart();
     await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
 
     await act(async () => {
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
@@ -2264,14 +2272,14 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     for (let i = 0; i < 5; i++) {
       chargeCurrentCart();
       await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
-      fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     }
 
     // A 6th detach attempt is blocked with an explicit message — the 5th
     // order's own popup stays up (New Sale was refused, not silently eaten).
     chargeCurrentCart();
     await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     expect(screen.getByText(/already pending confirmation/)).toBeInTheDocument();
     // Still showing the 6th order's own saving popup — New Sale did not detach it.
     expect(screen.getByText('Saving sale…')).toBeInTheDocument();
@@ -2290,7 +2298,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     chargeCurrentCart();
     await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
 
     expect(screen.getByText(/storage is full or unavailable/)).toBeInTheDocument();
     // Still the same order's popup — New Sale was refused, cart never cleared.
@@ -2315,7 +2323,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
     chargeCurrentCart();
     await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     await act(async () => {
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
     });
@@ -2346,6 +2354,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
   // instead of just trusting whatever the local 'saving' status says.
   it('recovers a detached sale left "saving" across a reload: mount resolves it against the server and updates Pending Sales', async () => {
     const snapshot: SaleSnapshot = {
+      orderRef: 1,
       items: [{ id: 'line-1', productName: 'Cheese', variantName: 'Regular', flavorName: null, quantity: 1, lineTotal: 50, optionSelections: [] }],
       subtotal: 50,
       discountAmount: 0,

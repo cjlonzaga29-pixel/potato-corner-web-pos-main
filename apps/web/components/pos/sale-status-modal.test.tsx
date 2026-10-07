@@ -4,6 +4,7 @@ import { SaleStatusModal, type SaleSnapshot } from './sale-status-modal';
 
 function snapshot(overrides: Partial<SaleSnapshot> = {}): SaleSnapshot {
   return {
+    orderRef: 1,
     items: [
       { id: 'line-1', productName: 'Classic Cheese', variantName: 'Large', flavorName: 'Regular', quantity: 2, lineTotal: 120, optionSelections: [] },
     ],
@@ -47,11 +48,12 @@ describe('SaleStatusModal', () => {
     expect(screen.queryByText(/Receipt No\./)).not.toBeInTheDocument();
   });
 
-  // POS-PERF-P19 — the fix for the cashier-blocking regression: New Sale
-  // must be clickable immediately during 'saving', not just once the
-  // server responds. It must also be clearly labeled pending, never implying
-  // completion.
-  it('saving phase: New Sale is enabled immediately and wired to its handler, and the order is clearly labeled pending', () => {
+  // POS-PERF-P19/P21 — the fix for the cashier-blocking regression: "Next
+  // Customer" (formerly "New Sale") must be clickable immediately during
+  // 'saving', not just once the server responds. It must also be clearly
+  // labeled pending, never implying completion, and show the terminal-local
+  // order reference (never the receipt number).
+  it('saving phase: Next Customer is enabled immediately and wired to its handler, and the order is clearly labeled pending', () => {
     const onNewSale = vi.fn();
     render(
       <SaleStatusModal
@@ -67,10 +69,11 @@ describe('SaleStatusModal', () => {
 
     expect(screen.getByText(/Pending confirmation/)).toBeInTheDocument();
     expect(screen.queryByText('Sale completed')).not.toBeInTheDocument();
+    expect(screen.getByText(/Order #01/)).toBeInTheDocument();
 
-    const newSaleButton = screen.getByRole('button', { name: 'New Sale' });
-    expect(newSaleButton).not.toBeDisabled();
-    fireEvent.click(newSaleButton);
+    const nextCustomerButton = screen.getByRole('button', { name: 'Next Customer' });
+    expect(nextCustomerButton).not.toBeDisabled();
+    fireEvent.click(nextCustomerButton);
     expect(onNewSale).toHaveBeenCalledTimes(1);
   });
 
@@ -135,7 +138,7 @@ describe('SaleStatusModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View Receipt' }));
     expect(onViewReceipt).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     expect(onNewSale).toHaveBeenCalledTimes(1);
   });
 

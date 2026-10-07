@@ -169,11 +169,11 @@ describe('resolveAndFenceCheckoutAttempt', () => {
 
 describe('pending checkout attempt persistence', () => {
   it('round-trips a saved attempt through read, scoped per branch', () => {
-    savePendingCheckoutAttempt('branch-a', 'key-a');
-    savePendingCheckoutAttempt('branch-b', 'key-b');
+    savePendingCheckoutAttempt('branch-a', 'key-a', 1);
+    savePendingCheckoutAttempt('branch-b', 'key-b', 2);
 
-    expect(readPendingCheckoutAttempt('branch-a')?.idempotencyKey).toBe('key-a');
-    expect(readPendingCheckoutAttempt('branch-b')?.idempotencyKey).toBe('key-b');
+    expect(readPendingCheckoutAttempt('branch-a')).toEqual({ idempotencyKey: 'key-a', savedAt: expect.any(Number), orderRef: 1 });
+    expect(readPendingCheckoutAttempt('branch-b')).toEqual({ idempotencyKey: 'key-b', savedAt: expect.any(Number), orderRef: 2 });
   });
 
   it('returns null when nothing is pending for that branch', () => {
@@ -181,8 +181,8 @@ describe('pending checkout attempt persistence', () => {
   });
 
   it('clears only the named branch\'s record', () => {
-    savePendingCheckoutAttempt('branch-a', 'key-a');
-    savePendingCheckoutAttempt('branch-b', 'key-b');
+    savePendingCheckoutAttempt('branch-a', 'key-a', 1);
+    savePendingCheckoutAttempt('branch-b', 'key-b', 2);
 
     clearPendingCheckoutAttempt('branch-a');
 
@@ -193,6 +193,13 @@ describe('pending checkout attempt persistence', () => {
   it('returns null (never throws) on corrupted storage content', () => {
     localStorage.setItem('pos:pending-checkout:branch-a', 'not json');
     expect(readPendingCheckoutAttempt('branch-a')).toBeNull();
+  });
+
+  // POS-PERF-P21 — a record written before orderRef existed has none; the
+  // reader must report that as null rather than throwing or inventing one.
+  it('reports orderRef: null for a pre-existing record saved without it', () => {
+    localStorage.setItem('pos:pending-checkout:branch-a', JSON.stringify({ idempotencyKey: 'key-a', savedAt: 123 }));
+    expect(readPendingCheckoutAttempt('branch-a')).toEqual({ idempotencyKey: 'key-a', savedAt: 123, orderRef: null });
   });
 });
 
@@ -219,9 +226,10 @@ describe('transactionToSaleSnapshot', () => {
         },
       ],
       // Fields irrelevant to the snapshot mapping, present only to satisfy the type.
-    } as never);
+    } as never, 7);
 
     expect(snapshot).toEqual({
+      orderRef: 7,
       items: [
         {
           id: 'item-1',

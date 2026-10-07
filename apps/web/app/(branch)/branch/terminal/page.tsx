@@ -48,6 +48,7 @@ import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { SaleStatusModal, type SaleSnapshot, type SalePopupPhase } from '@/components/pos/sale-status-modal';
 import {
   resolveAndFenceCheckoutAttempt,
+  resolveCheckoutAttempt,
   savePendingCheckoutAttempt,
   clearPendingCheckoutAttempt,
   readPendingCheckoutAttempt,
@@ -56,15 +57,20 @@ import {
 } from '@/lib/checkout-recovery';
 import {
   readDetachedSales,
+  writeDetachedSales,
   upsertDetachedSale,
   removeDetachedSale,
   canDetachAnotherSale,
   countUnresolvedDetachedSales,
+  pruneConfirmedDetachedSales,
   MAX_DETACHED_SALES,
   type DetachedSale,
 } from '@/lib/detached-sales';
+import { nextOrderRef, formatOrderRef } from '@/lib/order-reference';
 import { PendingSalesPanel } from '@/components/pos/pending-sales-panel';
+import { OrderStatusStrip } from '@/components/pos/order-status-strip';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
+import { toast } from 'sonner';
 
 // Task 140 — the same allowed-roles set ViewTransactionDetailDialog itself
 // gates Void/Refund actions on (view-transaction-detail-dialog.tsx); kept
@@ -138,6 +144,15 @@ function productGridClasses(densityMode: DensityMode): string {
 function round2(amount: number): number {
   return Math.round(amount * 100) / 100;
 }
+
+// POS-PERF-P21 — bounded background polling for detached orders recovered
+// after a reload (see the auto-poll useEffect below for the full
+// reasoning). 8s between sweeps is frequent enough that "automatic" feels
+// true without hammering the server; 3 minutes of polling per entry is far
+// longer than any genuine request should still be in flight, after which
+// the cashier can still resolve it manually via the Pending Sales panel.
+const AUTO_POLL_INTERVAL_MS = 8000;
+const AUTO_POLL_MAX_AGE_MS = 3 * 60 * 1000;
 
 // Cashier-facing label for a Product Option Group — pos_button_label is the
 // admin-configured override; falls back to the internal name when unset or
@@ -503,6 +518,14 @@ export default function TerminalPage() {
   // resolve-before-remint gate in handleCharge — or, across a reload, the
   // mount-time recovery effect — settles the prior attempt's fate first.
   const idempotencyKeyRef = useRef<string | null>(null);
+  // POS-PERF-P21 — the terminal-local reference (lib/order-reference.ts)
+  // this attempt is shown under, e.g. "#01". Minted once per checkout
+  // attempt alongside idempotencyKeyRef (same first-click-mints,
+  // retry-reuses, confirmed-outcome-clears lifecycle — every reset site for
+  // idempotencyKeyRef below also resets this one) and never regenerated for
+  // a resubmit of the exact same cart, so an unmodified Retry keeps showing
+  // the same order number the cashier already saw.
+  const orderRefRef = useRef<number | null>(null);
   // Fingerprint of the exact cart/payment fields the current idempotencyKey
   // was minted for. Edit Cart deliberately does not clear idempotencyKeyRef
   // (clearing it would risk a duplicate sale if the original request
@@ -553,6 +576,13 @@ export default function TerminalPage() {
   // below checks detachedKeysRef) instead of to the singleton sale* state
   // above, which by then belongs to whatever cart the cashier moved on to.
   const [detachedSales, setDetachedSales] = useState<DetachedSale[]>([]);
+  // POS-PERF-P21 — read by the auto-poll effect's recursive timer, which
+  // intentionally does NOT depend on `detachedSales` (depending on it would
+  // restart the poll loop — and its 8s cadence — on every single status
+  // change). The ref is kept current every render so each tick still reads
+  // the live list without that restart.
+  const detachedSalesRef = useRef<DetachedSale[]>(detachedSales);
+  detachedSalesRef.current = detachedSales;
   const [isPendingSalesPanelOpen, setIsPendingSalesPanelOpen] = useState(false);
   // "View Receipt" from the Pending Sales panel — see
   // handleViewDetachedSaleReceipt's doc comment for why this is deliberately
@@ -573,8 +603,33 @@ export default function TerminalPage() {
     const current = readDetachedSales(branchId).find((e) => e.idempotencyKey === key);
     if (!current) return;
     const next = { ...current, ...patch };
-    upsertDetachedSale(branchId, next);
-    setDetachedSales((prev) => prev.map((e) => (e.idempotencyKey === key ? next : e)));
+    const { entries } = upsertDetachedSale(branchId, next);
+    // POS-PERF-P21 — caps how many confirmed records this branch retains
+    // (see pruneConfirmedDetachedSales' doc comment); 'saving'/'error'
+    // entries are never affected. Written back so pruning is durable, not
+    // just reflected in this render's state.
+    const pruned = pruneConfirmedDetachedSales(entries);
+    writeDetachedSales(branchId, pruned);
+    setDetachedSales(pruned);
+  }
+
+  // POS-PERF-P21 — non-blocking background notifications for a detached
+  // order's outcome (it already left the cashier's screen via Next
+  // Customer, so this must never steal focus, open a modal, or touch
+  // whatever cart/popup replaced it — see sonner's Toaster, mounted app-wide
+  // in shared/providers.tsx). "Sale saved" never implies inventory
+  // deduction finished — that runs independently on the server.
+  function notifyDetachedSaleConfirmed(orderRef: number, transaction: TransactionResponse) {
+    toast.success(`Order ${formatOrderRef(orderRef)} saved`, {
+      description: 'Inventory deduction runs separately in the background.',
+      action: { label: 'View Receipt', onClick: () => setPanelReceiptTransaction(transaction) },
+    });
+  }
+  function notifyDetachedSaleNeedsAttention(orderRef: number) {
+    toast.warning(`Order ${formatOrderRef(orderRef)} needs attention`, {
+      description: 'Open Pending Sales to retry or review it.',
+      action: { label: 'Open', onClick: () => setIsPendingSalesPanelOpen(true) },
+    });
   }
 
   /** Durable, confirmed removal — only ever called once a server resolve (or an already-'success' record) has proven this key's fate; see handleDismissDetachedSale. */
@@ -621,6 +676,80 @@ export default function TerminalPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId]);
 
+  // POS-PERF-P21 — automatic status updates for detached orders, so the
+  // cashier is never required to tap "Check status" to find out a saving
+  // order resolved (that manual action still exists in the Pending Sales
+  // panel as a fallback — see PendingSalesPanel's onRecheck — this is just
+  // no longer the ONLY way to learn about it).
+  //
+  // Deliberately uses the plain, read-only resolveCheckoutAttempt — NOT
+  // resolveAndFenceCheckoutAttempt. The fencing version's 'ambiguous' branch
+  // actively calls abandonCheckoutAttempt (a real server write that
+  // permanently fences the key), which is exactly correct for an explicit,
+  // cashier-initiated recheck/retry/dismiss but wrong for a background
+  // sweep: 'ambiguous' simply means "no CheckoutAttempt row yet", which is
+  // the expected, routine state for a request that is still genuinely
+  // in flight server-side moments after being sent. An automatic poll must
+  // never cancel/fence an attempt the cashier never asked it to touch — see
+  // this task's "inspect resolveAndFenceCheckoutAttempt before reusing it
+  // for polling" requirement.
+  //
+  // Only entries NOT already tracked by a live local promise
+  // (detachedKeysRef) are polled — an entry whose original handleCharge
+  // call is still running in this same session already updates itself the
+  // moment that promise settles (see handleCharge's try/catch), so polling
+  // it too would be redundant server load for no benefit. That leaves this
+  // sweep covering exactly the cases that actually need it: orders
+  // recovered from storage after a reload, where no local promise exists
+  // anymore to report back.
+  //
+  // Single recursive timer (never a `setInterval` that could overlap a
+  // still-running tick) so calls are never issued concurrently; bounded by
+  // AUTO_POLL_MAX_AGE_MS per entry so a permanently-stuck order doesn't get
+  // polled forever; paused entirely while offline; cleaned up on unmount or
+  // whenever branchId/isOnline change.
+  useEffect(() => {
+    if (!branchId || !isOnline) return;
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    async function tick() {
+      if (cancelled || !branchId) return;
+      const candidates = detachedSalesRef.current.filter(
+        (e) => e.status === 'saving' && !detachedKeysRef.current.has(e.idempotencyKey) && Date.now() - e.createdAt < AUTO_POLL_MAX_AGE_MS,
+      );
+      for (const entry of candidates) {
+        if (cancelled) return;
+        const outcome = await resolveCheckoutAttempt(entry.idempotencyKey, branchId);
+        if (cancelled) return;
+        if (outcome.status === 'found') {
+          updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction: outcome.transaction });
+          notifyDetachedSaleConfirmed(entry.snapshot.orderRef, outcome.transaction);
+        } else if (outcome.status === 'not-found') {
+          updateDetachedSale(entry.idempotencyKey, {
+            status: 'error',
+            errorMessage: 'Not confirmed — it may not have gone through. Safe to retry.',
+            safeToRetryDirectly: true,
+          });
+          notifyDetachedSaleNeedsAttention(entry.snapshot.orderRef);
+        }
+        // 'in-progress'/'ambiguous'/'unknown' — keep waiting; never fence.
+      }
+      if (!cancelled) timeoutId = setTimeout(() => void tick(), AUTO_POLL_INTERVAL_MS);
+    }
+
+    timeoutId = setTimeout(() => void tick(), AUTO_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+    // Deliberately branchId/isOnline-only — see detachedSalesRef's doc
+    // comment above for why depending on updateDetachedSale (recreated every
+    // render) or detachedSales itself would restart this timer's 8s cadence
+    // on every status change instead of running on a stable interval.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId, isOnline]);
+
   // POS-PERF-P15R2 — reload/browser-close recovery. A checkout attempt's
   // idempotency key is persisted (lib/checkout-recovery.ts) the instant the
   // charge request is sent, *before* it's known whether the request will
@@ -643,7 +772,9 @@ export default function TerminalPage() {
         clearPendingCheckoutAttempt(branchId);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
-        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        // POS-PERF-P21 — a pre-existing pending record saved before orderRef
+        // existed has none; mint a fresh one rather than show a fake "#01".
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, pending.orderRef ?? nextOrderRef(branchId)));
         setSaleTransaction(outcome.transaction);
         setSalePhase('success');
       } else if (outcome.status === 'not-found') {
@@ -675,7 +806,7 @@ export default function TerminalPage() {
         setUnresolvedAttemptNotice(false);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
-        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, pending.orderRef ?? nextOrderRef(branchId)));
         setSaleTransaction(outcome.transaction);
         setSalePhase('success');
       } else if (outcome.status === 'not-found') {
@@ -1343,6 +1474,16 @@ export default function TerminalPage() {
     const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '');
     const previousKey = idempotencyKeyRef.current;
     const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
+    // POS-PERF-P21 — same first-click-mints/retry-reuses lifecycle as
+    // idempotencyKeyRef: an unmodified Retry keeps the same terminal-local
+    // reference the cashier already saw. previousOrderRef is kept around
+    // separately (not overwritten yet) because, below, a changed cart's
+    // prior attempt might resolve 'found' — in which case THIS order
+    // (the one that just succeeded) must show its own original reference,
+    // not the one optimistically minted here for the new attempt.
+    const previousOrderRef = orderRefRef.current;
+    const orderRef = isUnmodifiedRetry ? (previousOrderRef as number) : nextOrderRef(branchId);
+    orderRefRef.current = orderRef;
 
     // The submitted-order snapshot, built entirely from client state already
     // on screen — no server round trip has happened yet. Computed before the
@@ -1351,6 +1492,7 @@ export default function TerminalPage() {
     // a changed-cart charge after a dropped response would look like
     // nothing happened for however long resolution takes.
     const snapshot: SaleSnapshot = {
+      orderRef,
       items: cartLines.map((line) => ({
         id: `${line.item.product_variant_id}-${line.index}`,
         productName: line.productName,
@@ -1395,15 +1537,20 @@ export default function TerminalPage() {
         clearPendingCheckoutAttempt(branchId);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
+        orderRefRef.current = null;
         clearCart();
         resetPaymentFields();
-        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction));
+        setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, previousOrderRef ?? nextOrderRef(branchId)));
         setSaleTransaction(outcome.transaction);
         setSalePhase('success');
         releaseChargeToken(chargeToken);
         return;
       }
       if (outcome.status === 'unknown' || outcome.status === 'in-progress') {
+        // The old attempt is still unresolved and still owns idempotencyKeyRef
+        // (untouched above) — the orderRef minted above for the not-yet-
+        // started new attempt must not linger as if it were live.
+        orderRefRef.current = previousOrderRef;
         setUnresolvedAttemptNotice(true);
         setSaleErrorMessage(
           outcome.status === 'in-progress'
@@ -1429,7 +1576,7 @@ export default function TerminalPage() {
     // Overwrites the record from an unmodified retry with the same key,
     // which is a no-op; overwrites a stale one from a cart edit that just
     // resolved 'not-found' above, which is exactly what should happen.
-    savePendingCheckoutAttempt(branchId, idempotencyKey);
+    savePendingCheckoutAttempt(branchId, idempotencyKey, orderRef);
     lastChargePayloadRef.current = payloadWithIdempotency;
 
     try {
@@ -1448,7 +1595,9 @@ export default function TerminalPage() {
       // customer's cart or modal".
       if (detachedKeysRef.current.has(idempotencyKey)) {
         detachedKeysRef.current.delete(idempotencyKey);
+        const priorEntry = readDetachedSales(branchId).find((e) => e.idempotencyKey === idempotencyKey);
         updateDetachedSale(idempotencyKey, { status: 'success', transaction });
+        if (priorEntry) notifyDetachedSaleConfirmed(priorEntry.snapshot.orderRef, transaction);
         return;
       }
 
@@ -1457,6 +1606,7 @@ export default function TerminalPage() {
       idempotencyKeyRef.current = null;
       lastChargeFingerprintRef.current = null;
       lastChargePayloadRef.current = null;
+      orderRefRef.current = null;
       clearPendingCheckoutAttempt(branchId);
       setSaleTransaction(transaction);
       setSalePhase('success');
@@ -1476,11 +1626,13 @@ export default function TerminalPage() {
       if (detachedKeysRef.current.has(idempotencyKey)) {
         detachedKeysRef.current.delete(idempotencyKey);
         const isDefiniteRejection = error instanceof TransactionApiError && isDefiniteNoCommitErrorCode(error.code);
+        const priorEntry = readDetachedSales(branchId).find((e) => e.idempotencyKey === idempotencyKey);
         updateDetachedSale(idempotencyKey, {
           status: 'error',
           errorMessage: error instanceof Error ? error.message : 'Failed to record transaction',
           safeToRetryDirectly: isDefiniteRejection,
         });
+        if (priorEntry) notifyDetachedSaleNeedsAttention(priorEntry.snapshot.orderRef);
         return;
       }
       // Cart is deliberately left untouched either way — Retry resubmits
@@ -1506,6 +1658,7 @@ export default function TerminalPage() {
       if (isDefiniteRejection) {
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
+        orderRefRef.current = null;
         clearPendingCheckoutAttempt(branchId);
       }
       setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
@@ -1590,6 +1743,9 @@ export default function TerminalPage() {
       idempotencyKeyRef.current = null;
       lastChargeFingerprintRef.current = null;
       lastChargePayloadRef.current = null;
+      // The detached order's reference now lives entirely in entry.snapshot
+      // — a fresh cart gets its own orderRef minted on its own first Charge.
+      orderRefRef.current = null;
       // Free the Charge gate for the fresh cart this is about to open — the
       // detached attempt's own eventual settlement (handleCharge's
       // try/catch, routed via detachedKeysRef) no longer owns this token,
@@ -1753,6 +1909,7 @@ export default function TerminalPage() {
   }
 
   const unresolvedDetachedSalesCount = countUnresolvedDetachedSales(detachedSales);
+  const savingDetachedSalesCount = detachedSales.filter((e) => e.status === 'saving').length;
 
   // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
   // `branchId`) is briefly null on every reload while useAuth's silent
@@ -2039,18 +2196,13 @@ export default function TerminalPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* POS-PERF-P19 — always shown once at least one detached sale exists (even all-resolved ones, until the cashier dismisses them), so "where did my earlier order go" always has an answer. Destructive styling only while something actually needs attention (an error entry). */}
-          {detachedSales.length > 0 && (
-            <Button
-              variant={unresolvedDetachedSalesCount > 0 ? 'outline' : 'ghost'}
-              size="sm"
-              className={`touch-target gap-1.5 ${unresolvedDetachedSalesCount > 0 ? 'border-warning text-warning-foreground' : ''}`}
-              onClick={() => setIsPendingSalesPanelOpen(true)}
-            >
-              Pending Sales
-              <Badge variant={unresolvedDetachedSalesCount > 0 ? 'warning' : 'outline'}>{detachedSales.length}</Badge>
-            </Button>
-          )}
+          {/* POS-PERF-P21 — persistent order-status strip: always shown once at least one detached sale exists (even all-resolved ones, until the cashier clears them), so "where did my earlier order go" always has an answer without opening anything. Saving/needs-attention counts update automatically (see the auto-poll effect above) — opening Pending Sales is optional, for order detail/recovery actions only. */}
+          <OrderStatusStrip
+            savingCount={savingDetachedSalesCount}
+            needsAttentionCount={unresolvedDetachedSalesCount - savingDetachedSalesCount}
+            totalCount={detachedSales.length}
+            onOpenDetails={() => setIsPendingSalesPanelOpen(true)}
+          />
           <Button
             variant="outline"
             size="sm"

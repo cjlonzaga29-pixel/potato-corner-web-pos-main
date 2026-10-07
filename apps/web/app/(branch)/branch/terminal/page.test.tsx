@@ -3,6 +3,7 @@ import * as React from 'react';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import TerminalPage from './page';
 import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
+import type { SaleSnapshot } from '@/components/pos/sale-status-modal';
 import { useAuthStore } from '@/stores/auth.store';
 import { useTerminalOperatorStore } from '@/stores/terminal-operator.store';
 
@@ -2333,6 +2334,53 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText('Needs attention')).not.toBeInTheDocument());
+  });
+
+  // POS-PERF-P19R — a detached sale is only durable because it is persisted
+  // to localStorage under this branch's own key (lib/detached-sales.ts
+  // storageKey) *before* the cart is cleared (see the storage-unavailable
+  // test above). This confirms the other half of that contract: on the next
+  // mount (reload/browser-close), the mount effect in page.tsx actually
+  // reads that record back and resolves it against the server exactly like
+  // the singleton pending attempt is (POS-PERF-P15R2 describe block above) —
+  // instead of just trusting whatever the local 'saving' status says.
+  it('recovers a detached sale left "saving" across a reload: mount resolves it against the server and updates Pending Sales', async () => {
+    const snapshot: SaleSnapshot = {
+      items: [{ id: 'line-1', productName: 'Cheese', variantName: 'Regular', flavorName: null, quantity: 1, lineTotal: 50, optionSelections: [] }],
+      subtotal: 50,
+      discountAmount: 0,
+      discountType: null,
+      vatAmount: 5.36,
+      totalAmount: 50,
+      paymentMethod: 'cash',
+      cashTendered: 50,
+      changeGiven: 0,
+    };
+    localStorage.setItem(
+      'pos:detached-sales:branch-1',
+      JSON.stringify([
+        {
+          idempotencyKey: 'key-detached-before-reload',
+          snapshot,
+          payload: { branch_id: 'branch-1', items: [], payment_method: 'cash', idempotency_key: 'key-detached-before-reload' },
+          status: 'saving',
+          transaction: null,
+          errorMessage: null,
+          safeToRetryDirectly: false,
+          createdAt: Date.now(),
+        },
+      ]),
+    );
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledWith('key-detached-before-reload', 'branch-1'));
+    fireEvent.click(await screen.findByRole('button', { name: /Pending Sales/ }));
+    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText(/Not confirmed before this device reloaded/)).toBeInTheDocument();
+
+    localStorage.removeItem('pos:detached-sales:branch-1');
   });
 });
 

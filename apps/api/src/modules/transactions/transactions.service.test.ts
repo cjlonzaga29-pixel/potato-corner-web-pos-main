@@ -1752,6 +1752,13 @@ describe('transactionsService.createTransaction — inventory deduction status r
 
     await transactionsService.createTransaction(baseInput, null);
 
+    // POS-PERF-P25 — baseInput's cart here resolves to zero deduction
+    // lines, so reserveStockForSale takes its early-return path (no
+    // ingredient to reserve) and still writes the job via the plain
+    // prisma.inventoryDeductionJob.create() call — unchanged from before
+    // this optimization, which only folds the job write into the last
+    // reservation's own $executeRaw statement when there IS at least one
+    // ingredient to reserve (see the sibling describe block below).
     expect(prisma.inventoryDeductionJob.create).toHaveBeenCalledWith({ data: { transactionId: 'txn-209-47e', branchId: 'branch-1' } });
   });
 
@@ -3884,7 +3891,15 @@ describe('transactionsService.createTransaction — branch inventory cutover led
     // [quantity, branchId, inventoryItemId, quantity].
     expect(reservationCall?.[2]).toBe('branch-1');
     expect(reservationCall?.[3]).toBe('item-flour');
-    expect(prisma.inventoryDeductionJob.create).toHaveBeenCalledWith({ data: { transactionId: 'txn-1', branchId: 'branch-1' } });
+    // POS-PERF-P25 — the durable InventoryDeductionJob row is now written by
+    // the same $executeRaw statement as the last (here, only) reservation,
+    // not a separate prisma.inventoryDeductionJob.create() call. call[0] is
+    // the strings array, call[1..4] are the reservation's own four values
+    // (quantity, branchId, inventoryItemId, quantity), so [5]=jobId,
+    // [6]=transactionId, [7]=branchId.
+    expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
+    expect(reservationCall?.[6]).toBe('txn-1');
+    expect(reservationCall?.[7]).toBe('branch-1');
   });
 
   it('rejects with INSUFFICIENT_STOCK and writes no reservation or job when InventoryStock cannot cover the sale', async () => {
@@ -4179,7 +4194,15 @@ describe('transactionsService.createTransaction — multi-component BOM deductio
     await transactionsService.createTransaction(baseInput, null);
 
     expect(universalInventoryRepository.createStockMovements).not.toHaveBeenCalled();
-    expect(prisma.inventoryDeductionJob.create).toHaveBeenCalledTimes(1);
+    // POS-PERF-P25 — folded into the last reservation's own $executeRaw
+    // statement (see reserveStockForSale); never a separate
+    // prisma.inventoryDeductionJob.create() call.
+    expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
+    const reservationCalls = vi
+      .mocked(prisma.$executeRaw)
+      .mock.calls.filter((call) => Array.isArray(call[0]) && call[0].join(' ').includes('quantity_reserved'));
+    const jobInsertCalls = reservationCalls.filter((call) => (call[0] as unknown as string[]).join(' ').includes('inventory_deduction_jobs'));
+    expect(jobInsertCalls).toHaveLength(1);
   });
 
   // Test D

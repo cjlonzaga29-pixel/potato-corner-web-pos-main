@@ -49,6 +49,8 @@ function baseProps() {
     cashTendered: '200',
     onCashTenderedChange: vi.fn(),
     change: 0,
+    orderNotes: '',
+    onOrderNotesChange: vi.fn(),
     paymentProofKey: null,
     paymentProofPreviewUrl: null,
     onProofSelected: vi.fn(),

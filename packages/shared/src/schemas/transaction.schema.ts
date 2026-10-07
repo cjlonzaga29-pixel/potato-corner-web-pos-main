@@ -90,6 +90,16 @@ export const createTransactionSchema = z
     // cart). Optional: a client that omits it gets no idempotency
     // protection, same as before this field existed.
     idempotency_key: z.uuid().optional(),
+    // POS-PERF-P25 — optional cashier-entered order note (e.g. "no straw").
+    // Never required, never validated beyond a length cap; empty/whitespace
+    // is normalized to undefined so a blank textarea never persists an
+    // empty-string row distinct from "no note at all".
+    notes: z
+      .string()
+      .trim()
+      .max(500)
+      .optional()
+      .transform((value) => (value && value.length > 0 ? value : undefined)),
   })
   .superRefine((data, ctx) => {
     if (data.payment_method === PAYMENT_METHOD.CASH && data.cash_tendered === undefined) {
@@ -269,6 +279,7 @@ export const transactionResponseSchema = z.object({
   discount_proof_type: z.enum(imageProofTypeValues).nullable(),
   discount_proof_uploaded_at: z.iso.datetime().nullable(),
   receipt_printed: z.boolean(),
+  notes: z.string().nullable().optional(),
   inventory_deduction_status: z.enum(['pending', 'completed', 'failed']),
   is_offline_transaction: z.boolean(),
   offline_provisional_number: z.string().nullable(),

@@ -153,6 +153,7 @@ interface TransactionRow {
   discountProofType: string | null;
   discountProofUploadedAt: Date | null;
   receiptPrinted: boolean;
+  notes: string | null;
   inventoryDeductionStatus: string;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber: string | null;
@@ -204,6 +205,7 @@ function toTransactionResponse(row: TransactionRow) {
     discount_proof_type: row.discountProofType,
     discount_proof_uploaded_at: row.discountProofUploadedAt?.toISOString() ?? null,
     receipt_printed: row.receiptPrinted,
+    notes: row.notes,
     inventory_deduction_status: row.inventoryDeductionStatus,
     is_offline_transaction: row.isOfflineTransaction,
     offline_provisional_number: row.offlineProvisionalNumber,
@@ -1181,6 +1183,26 @@ async function failCheckoutAttempt(idempotencyKey: string, ownerToken: string): 
  * any job row is created, rolling back every reservation already applied in
  * this same $transaction along with the rest of the sale.
  */
+/** Shortfall path only (reserveStockForSale below) — the common case never pays for this read. */
+async function throwInsufficientStock(
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  inventoryItemId: string,
+  quantity: number,
+): Promise<never> {
+  const [stock, item] = await Promise.all([
+    tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } }),
+    tx.inventoryItem.findUnique({ where: { id: inventoryItemId }, select: { name: true } }),
+  ]);
+  const itemName = item?.name ?? inventoryItemId;
+  const available = stock ? stock.quantityOnHand.toNumber() - stock.quantityReserved.toNumber() : 0;
+  throw new TransactionError(
+    'INSUFFICIENT_STOCK',
+    `Insufficient stock for ${itemName}: need ${quantity}, have ${available} available`,
+    409,
+  );
+}
+
 async function reserveStockForSale(
   tx: Prisma.TransactionClient,
   branchId: string,
@@ -1193,31 +1215,56 @@ async function reserveStockForSale(
   // order, so they serialize instead of risking a Postgres deadlock.
   const sortedEntries = sortedDeductionTotalEntries(totals);
 
-  for (const [inventoryItemId, { quantity }] of sortedEntries) {
-    const decimalQuantity = new Prisma.Decimal(quantity);
-    const affected = await tx.$executeRaw`
-      UPDATE "inventory_stocks"
-      SET "quantity_reserved" = "quantity_reserved" + ${decimalQuantity}, "version" = "version" + 1, "updated_at" = now()
-      WHERE "branch_id" = ${branchId} AND "inventory_item_id" = ${inventoryItemId}
-        AND "quantity_on_hand" - "quantity_reserved" >= ${decimalQuantity}
-    `;
-    if (affected === 0) {
-      // Shortfall path only — the common case never pays for this read.
-      const [stock, item] = await Promise.all([
-        tx.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId, inventoryItemId } } }),
-        tx.inventoryItem.findUnique({ where: { id: inventoryItemId }, select: { name: true } }),
-      ]);
-      const itemName = item?.name ?? inventoryItemId;
-      const available = stock ? stock.quantityOnHand.toNumber() - stock.quantityReserved.toNumber() : 0;
-      throw new TransactionError(
-        'INSUFFICIENT_STOCK',
-        `Insufficient stock for ${itemName}: need ${quantity}, have ${available} available`,
-        409,
-      );
-    }
+  if (sortedEntries.length === 0) {
+    await tx.inventoryDeductionJob.create({ data: { transactionId, branchId } });
+    return;
   }
 
-  await tx.inventoryDeductionJob.create({ data: { transactionId, branchId } });
+  for (let i = 0; i < sortedEntries.length; i++) {
+    const entry = sortedEntries[i];
+    if (!entry) continue;
+    const [inventoryItemId, { quantity }] = entry;
+    const decimalQuantity = new Prisma.Decimal(quantity);
+    const isLastEntry = i === sortedEntries.length - 1;
+
+    if (!isLastEntry) {
+      const affected = await tx.$executeRaw`
+        UPDATE "inventory_stocks"
+        SET "quantity_reserved" = "quantity_reserved" + ${decimalQuantity}, "version" = "version" + 1, "updated_at" = now()
+        WHERE "branch_id" = ${branchId} AND "inventory_item_id" = ${inventoryItemId}
+          AND "quantity_on_hand" - "quantity_reserved" >= ${decimalQuantity}
+      `;
+      if (affected === 0) await throwInsufficientStock(tx, branchId, inventoryItemId, quantity);
+      continue;
+    }
+
+    // POS-PERF-P25 — this reservation (the only one, for the common
+    // single-ingredient cart) and the durable job write below used to be
+    // two sequential round trips to the DB. A data-modifying CTE chain lets
+    // Postgres run both in one statement: the job INSERT only runs WHERE
+    // EXISTS a row from this UPDATE's own RETURNING, so a shortfall on this
+    // last ingredient still reserves nothing and writes no job — identical
+    // all-or-nothing semantics to the previous separate statements, now one
+    // network round trip instead of two. For a multi-ingredient cart this
+    // still saves exactly one round trip (the job insert) out of what was
+    // previously N+1. $executeRaw's own affected-row count (of the outer
+    // INSERT) doubles as the reservation's success signal: 1 means both the
+    // reservation and the job row landed, 0 means neither did.
+    const jobId = randomUUID();
+    const affected = await tx.$executeRaw`
+      WITH reservation AS (
+        UPDATE "inventory_stocks"
+        SET "quantity_reserved" = "quantity_reserved" + ${decimalQuantity}, "version" = "version" + 1, "updated_at" = now()
+        WHERE "branch_id" = ${branchId} AND "inventory_item_id" = ${inventoryItemId}
+          AND "quantity_on_hand" - "quantity_reserved" >= ${decimalQuantity}
+        RETURNING 1
+      )
+      INSERT INTO "inventory_deduction_jobs" ("id", "transaction_id", "branch_id", "updated_at")
+      SELECT ${jobId}, ${transactionId}, ${branchId}, now()
+      WHERE EXISTS (SELECT 1 FROM reservation)
+    `;
+    if (affected === 0) await throwInsufficientStock(tx, branchId, inventoryItemId, quantity);
+  }
 }
 
 /**
@@ -1937,6 +1984,7 @@ export const transactionsService = {
             discountProofUploadedAt: hasDiscountProof ? new Date() : null,
             isOfflineTransaction: data.isOfflineTransaction,
             offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
+            notes: data.notes ?? null,
             // Task 209.47 — only persisted for offline-synced sales (the
             // idempotency key this backs is offlineProvisionalNumber-scoped
             // and that field is itself only ever set for offline sales); a

@@ -72,6 +72,7 @@ interface CreateTransactionRow {
   discountProofUploadedAt: Date | null;
   isOfflineTransaction: boolean;
   offlineProvisionalNumber: string | null;
+  notes?: string | null;
   deviceId: string | null;
   /** POS-PERF-P15 — see transactions.repository.ts findByIdempotencyKey. Null when the client omitted it (no idempotency protection, same as before this column existed). */
   idempotencyKey?: string | null;
@@ -305,6 +306,7 @@ export const transactionsRepository = {
           discountProofUploadedAt: data.discountProofUploadedAt,
           isOfflineTransaction: data.isOfflineTransaction,
           offlineProvisionalNumber: data.offlineProvisionalNumber,
+          notes: data.notes,
           deviceId: data.deviceId,
           idempotencyKey: data.idempotencyKey ?? null,
           items: {

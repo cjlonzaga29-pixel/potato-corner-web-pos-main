@@ -298,6 +298,39 @@ describe.skipIf(!canRunIntegrationTests)('checkout + inventory-deduction worker 
     expect(movementCount).toBe(1);
   });
 
+  // POS-PERF-P25 — against a real Postgres instance: the background worker's
+  // SALE movement must carry the sale's own cashier (never null, never the
+  // worker's own identity) as both performedByUserId and responsibleUserId,
+  // and the sale's own order notes — not just in a mocked unit test.
+  it("attributes the worker-written SALE movement to the sale's own cashier and carries its order notes", async () => {
+    const inventoryItemId = await seedCatalogItem(1000);
+    const sale = await transactionsService.createTransaction(
+      {
+        branchId,
+        shiftId,
+        cashierId: userId,
+        items: [{ productId, productVariantId: variantId, quantity: 1 }],
+        paymentMethod: 'cash',
+        cashTendered: 500,
+        isOfflineTransaction: false,
+        idempotencyKey: randomUUID(),
+        notes: 'integration test order note',
+      },
+      null,
+    );
+
+    await inventoryDeductionService.runCycle(10);
+
+    const movement = await prisma.inventoryStockMovement.findFirstOrThrow({
+      where: { branchId, inventoryItemId, movementType: 'SALE', referenceId: sale.id },
+    });
+    expect(movement.performedByUserId).toBe(userId);
+    expect(movement.responsibleUserId).toBe(userId);
+    expect(movement.notes).toBe('integration test order note');
+    expect(movement.referenceType).toBe('transaction');
+    expect(movement.referenceId).toBe(sale.id);
+  });
+
   it('a stale processing claim (crashed worker) is reclaimed by the next cycle and completed exactly once', async () => {
     const inventoryItemId = await seedCatalogItem(1000);
     const sale = await checkout(randomUUID());

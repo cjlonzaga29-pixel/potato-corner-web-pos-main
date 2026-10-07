@@ -2298,12 +2298,12 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
     chargeCurrentCart();
 
-    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Saving order…')).toBeInTheDocument());
     // The cart was already handed off — New Sale works even though the
     // first request hasn't resolved (and won't, until resolveFirst below).
     fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     expect(mockClearCart).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('Saving sale…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Saving order…')).not.toBeInTheDocument();
 
     // A second, fully independent charge must not be blocked by the first
     // attempt's own still-pending request on the shared mutation hook.
@@ -2329,7 +2329,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
 
     render(<TerminalPage />);
     chargeCurrentCart();
-    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Saving order…')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
 
     await act(async () => {
@@ -2348,18 +2348,18 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     render(<TerminalPage />);
     for (let i = 0; i < 5; i++) {
       chargeCurrentCart();
-      await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Saving order…')).toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     }
 
     // A 6th detach attempt is blocked with an explicit message — the 5th
     // order's own popup stays up (New Sale was refused, not silently eaten).
     chargeCurrentCart();
-    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Saving order…')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     expect(screen.getByText(/already pending confirmation/)).toBeInTheDocument();
     // Still showing the 6th order's own saving popup — New Sale did not detach it.
-    expect(screen.getByText('Saving sale…')).toBeInTheDocument();
+    expect(screen.getByText('Saving order…')).toBeInTheDocument();
   });
 
   // POS-PERF-P19R — detaching must persist the order BEFORE the cart is
@@ -2373,13 +2373,13 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
 
     render(<TerminalPage />);
     chargeCurrentCart();
-    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Saving order…')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
 
     expect(screen.getByText(/storage is full or unavailable/)).toBeInTheDocument();
     // Still the same order's popup — New Sale was refused, cart never cleared.
-    expect(screen.getByText('Saving sale…')).toBeInTheDocument();
+    expect(screen.getByText('Saving order…')).toBeInTheDocument();
     expect(mockClearCart).not.toHaveBeenCalled();
 
     setItemSpy.mockRestore();
@@ -2399,7 +2399,7 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
 
     render(<TerminalPage />);
     chargeCurrentCart();
-    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Saving order…')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Next Customer' }));
     await act(async () => {
       rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));

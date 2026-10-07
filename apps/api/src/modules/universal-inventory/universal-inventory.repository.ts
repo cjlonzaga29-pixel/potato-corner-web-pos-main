@@ -405,6 +405,18 @@ export const universalInventoryRepository = {
     return prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true } });
   },
 
+  /**
+   * POS-PERF-P25 — batch receipt-number lookup for the Inventory Movements
+   * list's "Reference"/"Receipt" columns. InventoryStockMovement.referenceId
+   * is a loose reference (same reasoning as findUsersByIds above), scoped by
+   * the caller to only the ids whose referenceType is actually 'transaction'
+   * — one findMany per page, never per row.
+   */
+  findTransactionReceiptNumbersByIds(ids: string[]) {
+    if (ids.length === 0) return Promise.resolve([]);
+    return prisma.transaction.findMany({ where: { id: { in: ids } }, select: { id: true, transactionNumber: true } });
+  },
+
   // --- Cost correction (Receiving Simplification V2 §12-15) ---
 
   /** The one sanctioned direct-mutation path for InventoryStock.unitCost outside the RECEIVING/TRANSFER_IN weighted-average blend. Must be called after lockAndGetStock inside the same transaction. */
@@ -488,6 +500,15 @@ export const universalInventoryRepository = {
         performedByUserId: input.performedByUserId,
         unitCost: input.unitCost,
         totalCost: input.totalCost,
+        // POS-PERF-P25 — SALE is this method's only caller; applyDeduction
+        // now passes the sale's own cashierId here too (same person as
+        // performedByUserId for a SALE — there is no separate "accountable
+        // staff" distinct from the cashier the way WASTE has one), so the
+        // Inventory Movements table's "Responsible Staff" column is never
+        // blank for a sale-caused movement. This field was silently dropped
+        // by this batched mapping before — createStockMovement (the
+        // single-row path) always included it.
+        responsibleUserId: input.responsibleUserId,
       })),
     });
   },

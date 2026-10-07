@@ -271,6 +271,11 @@ export const inventoryStockMovementResponseSchema = z.object({
   proof_url: z.string().nullable(),
   performed_by_name: z.string().nullable(),
   responsible_user_name: z.string().nullable(),
+  // POS-PERF-P25 — the originating sale's own receipt/transaction number,
+  // resolved only for SALE movements (reference_type === 'transaction').
+  // Null for every other movement type and for a sale whose Transaction
+  // row can no longer be found (never invented).
+  receipt_number: z.string().nullable().optional(),
   created_at: z.iso.datetime(),
 });
 

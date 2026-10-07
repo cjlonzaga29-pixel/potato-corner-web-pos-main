@@ -1628,6 +1628,14 @@ model Transaction {
   // app-level check-then-insert, so two concurrent requests for the same
   // key can never both commit a Transaction row.
   idempotencyKey              String?                  @unique @map("idempotency_key")
+  // POS-PERF-P25 — optional cashier-entered note captured at checkout (e.g.
+  // "no straw", "customer waiting outside"). Purely additive: nullable,
+  // defaults to NULL for every pre-existing row and for any client that
+  // never sends one. Surfaced on the Inventory Movements table's "Notes"
+  // column for this sale's background-worker-written SALE movements (see
+  // inventory-deduction.repository.ts applyDeduction) and on the sale's own
+  // detail view — never required, never validated beyond a length cap.
+  notes                       String?                  @map("notes")
   syncedAt                    DateTime?                @map("synced_at")
   receiptPrinted              Boolean                  @default(false) @map("receipt_printed")
   voidedAt                    DateTime?                @map("voided_at")

@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 describe('SaleStatusModal', () => {
-  it('saving phase: shows "Saving sale…", a disabled Saving button, and no close (X) button', () => {
+  it('saving phase: shows "Saving order…", a disabled Saving button, and no close (X) button', () => {
     render(
       <SaleStatusModal
         phase="saving"
@@ -39,7 +39,7 @@ describe('SaleStatusModal', () => {
       />,
     );
 
-    expect(screen.getByText('Saving sale…')).toBeInTheDocument();
+    expect(screen.getByText('Saving order…')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Saving…/ })).toBeDisabled();
     expect(screen.queryByRole('button', { name: /^Close$/ })).not.toBeInTheDocument();
     // The submitted order is already visible — no receipt number invented

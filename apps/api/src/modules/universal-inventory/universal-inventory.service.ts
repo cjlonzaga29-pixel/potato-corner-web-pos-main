@@ -217,7 +217,7 @@ interface StockMovementRow {
  */
 function toStockMovementResponse(
   row: StockMovementRow,
-  enrichment?: { proofUrl?: string | null; performedByName?: string | null; responsibleUserName?: string | null },
+  enrichment?: { proofUrl?: string | null; performedByName?: string | null; responsibleUserName?: string | null; receiptNumber?: string | null },
 ) {
   return {
     id: row.id,
@@ -243,6 +243,7 @@ function toStockMovementResponse(
     proof_url: enrichment?.proofUrl ?? null,
     performed_by_name: enrichment?.performedByName ?? null,
     responsible_user_name: enrichment?.responsibleUserName ?? null,
+    receipt_number: enrichment?.receiptNumber ?? null,
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -826,6 +827,15 @@ export const universalInventoryService = {
     );
     const siblingProofKeyByReferenceId = await repo.findSiblingProofKeysByReferenceIds(transferReferenceIdsNeedingFallback);
 
+    // POS-PERF-P25 — batch receipt-number lookup for SALE rows (reference_id
+    // is the originating Transaction's id for those). One findMany for the
+    // whole page, not one per row.
+    const transactionReferenceIds = Array.from(
+      new Set(movements.filter((m) => m.referenceType === 'transaction' && m.referenceId).map((m) => m.referenceId as string)),
+    );
+    const transactionReceipts = await repo.findTransactionReceiptNumbersByIds(transactionReferenceIds);
+    const receiptNumberByTransactionId = new Map(transactionReceipts.map((t) => [t.id, t.transactionNumber]));
+
     const enrichedMovements = await Promise.all(
       movements.map(async (m) => {
         const proofKey =
@@ -834,6 +844,8 @@ export const universalInventoryService = {
           proofUrl: proofKey ? await getSignedInventoryProofUrl(proofKey) : null,
           performedByName: m.performedByUserId ? (nameById.get(m.performedByUserId) ?? null) : null,
           responsibleUserName: m.responsibleUserId ? (nameById.get(m.responsibleUserId) ?? null) : null,
+          receiptNumber:
+            m.referenceType === 'transaction' && m.referenceId ? (receiptNumberByTransactionId.get(m.referenceId) ?? null) : null,
         });
       }),
     );

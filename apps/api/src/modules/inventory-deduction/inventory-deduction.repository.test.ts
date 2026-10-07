@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 vi.mock('../../lib/prisma.js', () => {
   const prismaMock = {
     inventoryDeductionJob: { findMany: vi.fn(), updateMany: vi.fn() },
+    transaction: { findUnique: vi.fn().mockResolvedValue({ cashierId: 'cashier-1', notes: null }) },
     transactionItem: { findMany: vi.fn().mockResolvedValue([]) },
     inventoryItem: { findMany: vi.fn().mockResolvedValue([]) },
     inventoryStock: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
@@ -181,6 +182,58 @@ describe('inventoryDeductionRepository.applyDeduction', () => {
       expect.anything(),
     );
     expect(inventoryRepository.updateTransactionDeductionStatus).toHaveBeenCalledWith('txn-1', 'completed', expect.anything());
+  });
+
+  // POS-PERF-P25 — regression test for the "Recorded By"/"Responsible
+  // Staff"/"Notes" columns rendering blank for every sale-caused movement:
+  // the batched createStockMovements() path silently dropped
+  // performedByUserId/responsibleUserId/notes even when supplied. Proves
+  // the actual cashier (never the worker's own identity, never null) and
+  // the sale's own order note land on the SALE movement row.
+  it('attributes a SALE movement to the sale\'s own cashier (never the worker) and carries the sale\'s order notes', async () => {
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+    vi.mocked(prisma.transaction.findUnique).mockResolvedValueOnce({ cashierId: 'cashier-42', notes: 'no straw please' } as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      { deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] },
+    ] as never);
+    vi.mocked(prisma.inventoryItem.findMany).mockResolvedValueOnce([{ id: 'item-flour', name: 'Flour' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantityOnHand: decimal(10), quantityReserved: decimal(2), unitCost: decimal(3), lowStockThreshold: null, criticalThreshold: null },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({ id: 'stock-1', quantityOnHand: decimal(8), lowStockThreshold: null, criticalThreshold: null } as never);
+
+    await inventoryDeductionRepository.applyDeduction({ jobId: 'job-1', claimToken: 'tok', transactionId: 'txn-1', branchId: 'branch-1' });
+
+    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          performedByUserId: 'cashier-42',
+          responsibleUserId: 'cashier-42',
+          notes: 'no straw please',
+        }),
+      ],
+      expect.anything(),
+    );
+  });
+
+  it('leaves performedByUserId/responsibleUserId/notes undefined when the sale has no cashier row resolvable (defensive — never invents attribution)', async () => {
+    vi.mocked(prisma.inventoryDeductionJob.updateMany).mockResolvedValueOnce({ count: 1 } as never);
+    vi.mocked(prisma.transaction.findUnique).mockResolvedValueOnce(null as never);
+    vi.mocked(prisma.transactionItem.findMany).mockResolvedValueOnce([
+      { deductionSnapshot: [{ inventoryItemId: 'item-flour', quantity: 2, baseUnitId: 'unit-g' }] },
+    ] as never);
+    vi.mocked(prisma.inventoryItem.findMany).mockResolvedValueOnce([{ id: 'item-flour', name: 'Flour' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([
+      { inventoryItemId: 'item-flour', quantityOnHand: decimal(10), quantityReserved: decimal(2), unitCost: decimal(3), lowStockThreshold: null, criticalThreshold: null },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.update).mockResolvedValueOnce({ id: 'stock-1', quantityOnHand: decimal(8), lowStockThreshold: null, criticalThreshold: null } as never);
+
+    await inventoryDeductionRepository.applyDeduction({ jobId: 'job-1', claimToken: 'tok', transactionId: 'txn-1', branchId: 'branch-1' });
+
+    expect(universalInventoryRepository.createStockMovements).toHaveBeenCalledWith(
+      [expect.objectContaining({ performedByUserId: undefined, responsibleUserId: undefined, notes: undefined })],
+      expect.anything(),
+    );
   });
 
   it('leaves unitCost/totalCost undefined on a SALE movement when the item has no carrying cost yet — equivalent to the removed synchronous-deduction coverage', async () => {

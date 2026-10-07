@@ -123,7 +123,7 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
                   <Loader2 className="h-7 w-7 animate-spin" aria-hidden="true" />
                 </div>
-                <DialogTitle className="text-center">Saving sale…</DialogTitle>
+                <DialogTitle className="text-center">Saving order…</DialogTitle>
                 <DialogDescription className="text-center">
                   Saving order. You can start the next customer. This one keeps saving in the background.
                 </DialogDescription>

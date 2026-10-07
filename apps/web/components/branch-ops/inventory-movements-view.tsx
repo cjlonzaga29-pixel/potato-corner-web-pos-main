@@ -5,10 +5,12 @@ import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { History } from 'lucide-react';
 import { INVENTORY_STOCK_MOVEMENT_TYPE, type InventoryStockMovementResponse, type InventoryStockMovementType } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { formatDateTime } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
 import { useBranchInventoryStock, useInventoryStockMovements } from '@/hooks/queries/use-universal-inventory';
@@ -29,6 +31,13 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  // POS-PERF-P25 — "View Photo" opens the same payment-proof dialog the
+  // sale's own detail view uses (view-payment-proof-dialog.tsx), fetched
+  // fresh by transactionId. A SALE movement's reference_id IS the
+  // originating transaction's id, so no new backend field is needed — and
+  // no per-ingredient copy of the image is ever made (see createStockMovements:
+  // proofKey/proofType are deliberately never set on a SALE movement).
+  const [viewingProofForTransactionId, setViewingProofForTransactionId] = useState<string | null>(null);
 
   const { data, isLoading, isError, refetch } = useInventoryStockMovements(activeBranchId, {
     inventory_item_id: inventoryItemId === 'all' ? undefined : inventoryItemId,
@@ -96,18 +105,31 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
     },
     {
       id: 'reference',
-      // TRANSFER_IN/TRANSFER_OUT legs share one reference_id (see
-      // transferStock) — shown so the two branch-side rows of the same
-      // transfer can be visually matched instead of looking unrelated.
+      // A SALE movement's reference_id is the originating transaction's id
+      // — shown as its actual receipt number (with a link to the same
+      // public receipt view the printed receipt's QR code opens) rather
+      // than a bare, meaningless UUID prefix. Every other movement type
+      // (TRANSFER_IN/TRANSFER_OUT legs sharing one reference_id, etc.) keeps
+      // the existing truncated-id display.
       header: 'Reference',
-      cell: ({ row }) =>
-        row.original.reference_id ? (
-          <span className="text-xs text-muted-foreground">
-            {row.original.reference_type ?? 'ref'}: {row.original.reference_id.slice(0, 8)}
-          </span>
-        ) : (
-          '—'
-        ),
+      cell: ({ row }) => {
+        const movement = row.original;
+        if (movement.reference_type === 'transaction' && movement.receipt_number) {
+          return (
+            <a href={`/r/${movement.receipt_number}`} target="_blank" rel="noreferrer" className="text-primary underline">
+              {movement.receipt_number}
+            </a>
+          );
+        }
+        if (movement.reference_id) {
+          return (
+            <span className="text-xs text-muted-foreground">
+              {movement.reference_type ?? 'ref'}: {movement.reference_id.slice(0, 8)}
+            </span>
+          );
+        }
+        return '—';
+      },
     },
     {
       id: 'proof',
@@ -120,6 +142,30 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
         ) : (
           '—'
         ),
+    },
+    {
+      id: 'payment_proof',
+      // POS-PERF-P25 — payment-proof evidence for the sale that caused this
+      // movement. Distinct from the "Receipt" column above (that one is a
+      // purchase/receiving receipt photo — RECEIVING/WASTE only). Only
+      // meaningful for a SALE movement; every other movement type shows
+      // "—" since it was never a sale.
+      header: 'Proof of Payment',
+      cell: ({ row }) => {
+        const movement = row.original;
+        if (movement.movement_type !== 'SALE' || movement.reference_type !== 'transaction' || !movement.reference_id) return '—';
+        return (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-auto p-0 text-xs underline"
+            onClick={() => setViewingProofForTransactionId(movement.reference_id)}
+          >
+            View Photo
+          </Button>
+        );
+      },
     },
     { id: 'notes', header: 'Notes', cell: ({ row }) => row.original.notes ?? '—' },
   ];
@@ -211,6 +257,11 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
           />
         </>
       )}
+
+      <ViewPaymentProofDialog
+        transactionId={viewingProofForTransactionId}
+        onOpenChange={(open) => !open && setViewingProofForTransactionId(null)}
+      />
     </div>
   );
 }

@@ -96,6 +96,7 @@ interface CreateTransactionBody {
   is_offline_transaction: boolean;
   offline_provisional_number?: string;
   idempotency_key?: string;
+  notes?: string;
 }
 
 // authenticate -> authorize -> requirePasswordChange -> branchGuard -> shiftGuard -> validate -> handler.
@@ -190,6 +191,7 @@ router.post(
           offlineProvisionalNumber: body.offline_provisional_number,
           deviceId: getDeviceIdHeader(req),
           idempotencyKey: body.idempotency_key ?? null,
+          notes: body.notes,
         },
         req.ip ?? null,
         typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,

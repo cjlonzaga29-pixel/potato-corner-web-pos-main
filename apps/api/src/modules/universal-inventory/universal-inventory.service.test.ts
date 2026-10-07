@@ -47,6 +47,7 @@ vi.mock('./universal-inventory.repository.js', () => ({
     updateMovementProof: vi.fn(),
     findSiblingProofKeysByReferenceIds: vi.fn(),
     findUsersByIds: vi.fn(),
+    findTransactionReceiptNumbersByIds: vi.fn(),
     setStockUnitCost: vi.fn(),
     createCostCorrection: vi.fn(),
     findCostCorrectionById: vi.fn(),
@@ -213,6 +214,7 @@ beforeEach(() => {
   vi.mocked(repo.isActiveUserInBranch).mockResolvedValue(true);
   vi.mocked(repo.findUsersByIds).mockResolvedValue([]);
   vi.mocked(repo.findSiblingProofKeysByReferenceIds).mockResolvedValue(new Map());
+  vi.mocked(repo.findTransactionReceiptNumbersByIds).mockResolvedValue([]);
   // Mirrors a real Prisma round-trip: Decimal-typed columns always come back
   // as Decimal instances on read, even when the write was given a plain
   // number (as adjustStock's quantityDelta and transferStock's quantity are).
@@ -616,6 +618,46 @@ describe('universalInventoryService.getStockMovements', () => {
     await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
 
     expect(repo.findSiblingProofKeysByReferenceIds).toHaveBeenCalledWith([]);
+  });
+
+  // POS-PERF-P25 — a SALE movement's "Reference"/"Receipt" columns must show
+  // the actual receipt number, resolved via one batched lookup for the page
+  // rather than a per-row query.
+  it('resolves receipt_number for a SALE movement from its reference_id (the originating transaction id)', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'sale-1', movementType: 'SALE', referenceType: 'transaction', referenceId: 'txn-1' })],
+      total: 1,
+    } as never);
+    vi.mocked(repo.findTransactionReceiptNumbersByIds).mockResolvedValue([{ id: 'txn-1', transactionNumber: 'PC-001-20261008-000123' }] as never);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(repo.findTransactionReceiptNumbersByIds).toHaveBeenCalledWith(['txn-1']);
+    expect(result.movements[0]).toMatchObject({ receipt_number: 'PC-001-20261008-000123' });
+  });
+
+  it('leaves receipt_number null for a non-sale movement, and never looks up receipts for it', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'adjustment-1', movementType: 'ADJUSTMENT_OUT', referenceType: null, referenceId: null })],
+      total: 1,
+    } as never);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(repo.findTransactionReceiptNumbersByIds).toHaveBeenCalledWith([]);
+    expect(result.movements[0]).toMatchObject({ receipt_number: null });
+  });
+
+  it('leaves receipt_number null (never invents one) when the referenced transaction can no longer be found', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'sale-1', movementType: 'SALE', referenceType: 'transaction', referenceId: 'txn-missing' })],
+      total: 1,
+    } as never);
+    vi.mocked(repo.findTransactionReceiptNumbersByIds).mockResolvedValue([] as never);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(result.movements[0]).toMatchObject({ receipt_number: null });
   });
 });
 

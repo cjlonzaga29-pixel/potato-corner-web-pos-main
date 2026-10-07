@@ -6,6 +6,7 @@ import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -108,6 +109,9 @@ interface PaymentFooterProps {
   cashTendered: string;
   onCashTenderedChange: (value: string) => void;
   change: number;
+  /** POS-PERF-P25 — optional cashier-entered order note, saved with the sale and surfaced on the Inventory Movements table. */
+  orderNotes: string;
+  onOrderNotesChange: (value: string) => void;
   paymentProofKey: string | null;
   paymentProofPreviewUrl: string | null;
   onProofSelected: (file: File, type: ImageProofType) => Promise<void>;
@@ -190,6 +194,8 @@ export const PaymentFooter = memo(function PaymentFooter({
   cashTendered,
   onCashTenderedChange,
   change,
+  orderNotes,
+  onOrderNotesChange,
   paymentProofKey,
   paymentProofPreviewUrl,
   onProofSelected,
@@ -289,6 +295,22 @@ export const PaymentFooter = memo(function PaymentFooter({
               <p className="app-pos-helper-text text-muted-foreground">Change: {formatPeso(change)}</p>
             </div>
           )}
+
+          {/* POS-PERF-P25 — optional, any payment method. Saved with the sale
+              and surfaced on the Inventory Movements table's "Notes" column —
+              supporting context (e.g. "no straw"), not a required field and
+              never validated beyond a length cap (createTransactionSchema).
+              Rendered in the fields group (not proof) so a cash sale with no
+              discount — which has no proof step at all — still keeps this
+              field reachable, and so `needsProofStep` below stays an
+              accurate "is there a photo to capture" check. */}
+          <Textarea
+            className="app-control min-h-[60px]"
+            placeholder="Order notes (optional)"
+            value={orderNotes}
+            onChange={(e) => onOrderNotesChange(e.target.value)}
+            maxLength={500}
+          />
         </>
       )}
 

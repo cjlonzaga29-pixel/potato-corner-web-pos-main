@@ -126,10 +126,22 @@ export const inventoryDeductionRepository = {
         });
         if (guard.count === 0) return { applied: false, effects: [] };
 
-        const items = await tx.transactionItem.findMany({
-          where: { transactionId: params.transactionId },
-          select: { deductionSnapshot: true },
-        });
+        // POS-PERF-P25 — the sale's own cashierId/notes, read once here
+        // (not on the hot checkout path — this runs in the background
+        // worker) so every SALE movement this job writes can carry honest
+        // "Recorded By"/"Responsible Staff"/"Notes" attribution instead of
+        // leaving those columns blank. Independent of the deductionSnapshot
+        // read below (no data dependency), so both run concurrently.
+        const [items, sale] = await Promise.all([
+          tx.transactionItem.findMany({
+            where: { transactionId: params.transactionId },
+            select: { deductionSnapshot: true },
+          }),
+          tx.transaction.findUnique({
+            where: { id: params.transactionId },
+            select: { cashierId: true, notes: true },
+          }),
+        ]);
         const totals = totalsFromSnapshots(items);
         const sortedEntries = sortedDeductionTotalEntries(totals);
         const inventoryItemIds = sortedEntries.map(([id]) => id);
@@ -201,6 +213,17 @@ export const inventoryDeductionRepository = {
             referenceId: params.transactionId,
             unitCost: unitCost ?? undefined,
             totalCost: totalCost ?? undefined,
+            // POS-PERF-P25 — the sale's own cashier, preserved verbatim here
+            // regardless of which worker instance/cycle actually claims and
+            // runs this job: this must never read as the worker's own
+            // identity (there is none — actorId is null/'system' on the
+            // audit row above) or the admin currently viewing the table.
+            // "Responsible Staff" reuses the same cashierId for a SALE —
+            // there is no separate accountable party distinct from the
+            // cashier the way WASTE has one.
+            performedByUserId: sale?.cashierId,
+            responsibleUserId: sale?.cashierId,
+            notes: sale?.notes ?? undefined,
           });
 
           effects.push(() =>

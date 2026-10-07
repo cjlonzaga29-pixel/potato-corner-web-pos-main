@@ -481,6 +481,9 @@ export default function TerminalPage() {
   const [discountIdReference, setDiscountIdReference] = useState('');
   const [promoAmount, setPromoAmount] = useState('');
   const [cashTendered, setCashTendered] = useState('');
+  // POS-PERF-P25 — optional cashier-entered order note. Saved alongside the
+  // sale and surfaced on the Inventory Movements table's "Notes" column.
+  const [orderNotes, setOrderNotes] = useState('');
   // GCash, Maya, and Other all require the same thing: a photo of the
   // payment proof — no reference number/note collected (Task 139).
   const [paymentProofKey, setPaymentProofKey] = useState<string | null>(null);
@@ -1513,6 +1516,7 @@ export default function TerminalPage() {
     setDiscountIdReference('');
     setPromoAmount('');
     setCashTendered('');
+    setOrderNotes('');
     setPaymentProofKey(null);
     setPaymentProofType(null);
     setDiscountProofKey(null);
@@ -1570,6 +1574,7 @@ export default function TerminalPage() {
       discount_proof_type:
         discountType === 'pwd' || discountType === 'senior_citizen' ? (discountProofType ?? undefined) : undefined,
       is_offline_transaction: !isOnline,
+      notes: orderNotes.trim() || undefined,
     };
 
     if (!isOnline) {
@@ -2290,6 +2295,8 @@ export default function TerminalPage() {
       cashTendered={cashTendered}
       onCashTenderedChange={setCashTendered}
       change={change}
+      orderNotes={orderNotes}
+      onOrderNotesChange={setOrderNotes}
       paymentProofKey={paymentProofKey}
       paymentProofPreviewUrl={paymentProofPreviewUrl}
       onProofSelected={handleProofSelected}

@@ -17,6 +17,15 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useInventoryStockMovements: mockUseInventoryStockMovements,
 }));
 
+// POS-PERF-P25 — the "Proof of Payment" column's View Photo action opens
+// ViewPaymentProofDialog, which calls usePaymentProof (react-query) even
+// while closed (transactionId null just means the query stays disabled).
+// Mocked the same way the other data hooks above are, so this file never
+// needs a real QueryClientProvider wrapper.
+vi.mock('@/hooks/queries/use-transactions', () => ({
+  usePaymentProof: () => ({ data: undefined, isLoading: false, isError: false }),
+}));
+
 const BRANCH_ID = '123e4567-e89b-12d3-a456-426614174000';
 
 function movement(overrides: Record<string, unknown> = {}) {
@@ -87,6 +96,49 @@ describe('InventoryMovementsView — quantity + unit display', () => {
 
     expect(screen.getByText('-1.5')).toBeInTheDocument();
     expect(screen.getByText('8.5')).toBeInTheDocument();
+  });
+});
+
+// POS-PERF-P25 — "Proof of Payment" (View Photo) and the Reference column's
+// receipt-number display, for a SALE movement.
+describe('InventoryMovementsView — Proof of Payment and receipt reference (POS-PERF-P25)', () => {
+  function renderWithMovement(overrides: Record<string, unknown> = {}) {
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) =>
+      selector({ activeBranchId: BRANCH_ID }),
+    );
+    mockUseBranchInventoryStock.mockReturnValue({ data: { items: [] } });
+    mockUseInventoryStockMovements.mockReturnValue({
+      data: { movements: [movement(overrides)], total: 1, page: 1, limit: 25 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    return render(<InventoryMovementsView />);
+  }
+
+  it('shows the receipt number (not a bare id) and a "View Photo" action for a SALE movement', () => {
+    renderWithMovement({ receipt_number: 'PC-001-20261008-000123' });
+
+    expect(screen.getByText('PC-001-20261008-000123')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'PC-001-20261008-000123' })).toHaveAttribute('href', '/r/PC-001-20261008-000123');
+    expect(screen.getByRole('button', { name: 'View Photo' })).toBeInTheDocument();
+  });
+
+  it('shows no "View Photo" action for a non-sale movement', () => {
+    renderWithMovement({
+      movement_type: 'ADJUSTMENT_OUT',
+      reference_type: null,
+      reference_id: null,
+      receipt_number: null,
+    });
+
+    expect(screen.queryByRole('button', { name: 'View Photo' })).not.toBeInTheDocument();
+  });
+
+  it('falls back to the truncated reference id when no receipt_number was resolved', () => {
+    renderWithMovement({ receipt_number: null });
+
+    expect(screen.getByText(/transaction: txn-1/)).toBeInTheDocument();
   });
 });
 

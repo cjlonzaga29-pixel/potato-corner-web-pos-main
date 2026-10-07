@@ -52,6 +52,8 @@ export interface CreateTransactionData {
    * field existed), it is never required for checkout to succeed.
    */
   idempotencyKey?: string | null;
+  /** POS-PERF-P25 — optional cashier-entered order note, already trimmed/normalized by createTransactionSchema. */
+  notes?: string;
 }
 
 export interface UploadPaymentProofData {

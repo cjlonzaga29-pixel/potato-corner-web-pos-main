@@ -1502,8 +1502,20 @@ export const productsService = {
     // variant that's already config/BOM-ready (sellable); a NOT_READY
     // variant keeps its existing readiness messaging and gets 'unknown'
     // rather than a stock figure that would be misleading without a recipe.
-    const sellableVariantIds = readinessResults.filter((r) => r.sellable).map((r) => r.productVariantId);
-    const stockByVariantId = await stockAvailabilityService.evaluateCatalogStock(branchId, sellableVariantIds);
+    //
+    // POS-PERF-P24R — each sellable variant's flavors (minus any disabled at
+    // this branch) are passed through too, so the stock check covers every
+    // configuration a cashier could actually sell, not just the base recipe.
+    const sellableVariantIds = new Set(readinessResults.filter((r) => r.sellable).map((r) => r.productVariantId));
+    const stockRequests = products.flatMap((product) =>
+      product.variants
+        .filter((variant) => sellableVariantIds.has(variant.id))
+        .map((variant) => ({
+          productVariantId: variant.id,
+          flavorIds: variant.variantFlavors.filter((vf) => !disabledFlavors.has(vf.flavorId)).map((vf) => vf.flavorId),
+        })),
+    );
+    const stockByVariantId = await stockAvailabilityService.evaluateCatalogStock(branchId, stockRequests);
 
     // Task 209.7 — one batched Storage call for every image-bearing product
     // on this branch's catalog, instead of an N+1 signed-URL mint per product.

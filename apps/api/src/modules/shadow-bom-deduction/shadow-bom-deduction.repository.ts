@@ -16,6 +16,13 @@ export interface ActiveComponentRow {
   recipeUnitId: string | null;
 }
 
+/** Batched variant of ActiveComponentRow (POS-PERF-P24R) — carries the owning variant/flavor so a caller can regroup rows fetched for many variants at once. */
+export interface ActiveComponentRowBatch extends ActiveComponentRow {
+  productVariantId: string;
+  /** Null for a base-recipe row; non-null for a flavor-specific override row. */
+  flavorId: string | null;
+}
+
 function reportWhere(filters: ShadowBomReportFilters): Prisma.ShadowBomComparisonWhereInput {
   return {
     ...(filters.branchId !== undefined && { branchId: filters.branchId }),
@@ -101,6 +108,38 @@ export const shadowBomDeductionRepository = {
       select: { inventoryItemId: true, quantityRequired: true, recipeUnitId: true, inventoryItem: { select: { baseUnitId: true } } },
     });
     return rows.map((row) => ({
+      inventoryItemId: row.inventoryItemId,
+      quantityRequired: row.quantityRequired,
+      baseUnitId: row.inventoryItem.baseUnitId,
+      recipeUnitId: row.recipeUnitId,
+    }));
+  },
+
+  /**
+   * POS-PERF-P24R — batched counterpart to findActiveComponentsForVariant:
+   * every active component row (base AND every flavor override) for a whole
+   * set of variants in one query, so a caller evaluating many
+   * variant/flavor combinations (catalog stock badges, cart-wide checks)
+   * never issues one findMany per combination. Callers filter by flavorId
+   * themselves per (variant, flavor) request — this returns the full,
+   * unfiltered set.
+   */
+  async findActiveComponentsForVariants(productVariantIds: string[]): Promise<ActiveComponentRowBatch[]> {
+    if (productVariantIds.length === 0) return [];
+    const rows = await prisma.productComponent.findMany({
+      where: { productVariantId: { in: productVariantIds }, deletedAt: null, isActive: true, productOptionId: null },
+      select: {
+        productVariantId: true,
+        flavorId: true,
+        inventoryItemId: true,
+        quantityRequired: true,
+        recipeUnitId: true,
+        inventoryItem: { select: { baseUnitId: true } },
+      },
+    });
+    return rows.map((row) => ({
+      productVariantId: row.productVariantId,
+      flavorId: row.flavorId,
       inventoryItemId: row.inventoryItemId,
       quantityRequired: row.quantityRequired,
       baseUnitId: row.inventoryItem.baseUnitId,

@@ -2364,6 +2364,29 @@ describe('productsService.getPosCatalog — stock_status (POS-PERF-P24, delegate
     expect(variant?.stock_status).toBe('unknown');
     expect(variant?.max_sellable_units).toBeNull();
   });
+
+  it('passes the variant’s (non-disabled) flavor ids through to stockAvailabilityService, not just the variant id — out_of_stock must reflect every sellable configuration, not only the base recipe', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      readinessProduct(
+        readinessVariant({
+          id: 'variant-1',
+          variantFlavors: [
+            { flavorId: 'flavor-a', flavor: { name: 'Classic', colorHex: '#fff' }, pricePremium: { toNumber: () => 0 } },
+            { flavorId: 'flavor-b', flavor: { name: 'Spicy', colorHex: '#f00' }, pricePremium: { toNumber: () => 0 } },
+          ],
+        }),
+      ),
+    ] as never);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue(['flavor-b']);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([readyResult('branch-1', 'variant-1')]);
+    vi.mocked(stockAvailabilityService.evaluateCatalogStock).mockResolvedValue(new Map());
+
+    await productsService.getPosCatalog('branch-1');
+
+    expect(stockAvailabilityService.evaluateCatalogStock).toHaveBeenCalledWith('branch-1', [
+      { productVariantId: 'variant-1', flavorIds: ['flavor-a'] },
+    ]);
+  });
 });
 
 // Task 209.6 — Product Image Management (Admin Only). Router-level

@@ -1,7 +1,13 @@
 import { prisma } from '../../lib/prisma.js';
-import { computeBomDeduction } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
+import { computeBomDeductionBatch } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
-import type { CartAvailabilityLineInput, CartAvailabilityResult, StockStatus, VariantStockResult } from './stock-availability.types.js';
+import type {
+  CartAvailabilityLineInput,
+  CartAvailabilityResult,
+  CatalogStockRequest,
+  StockStatus,
+  VariantStockResult,
+} from './stock-availability.types.js';
 
 interface StockRow {
   inventoryItemId: string;
@@ -28,29 +34,42 @@ function availableQuantity(stock: StockRow | undefined): number {
 
 export const stockAvailabilityService = {
   /**
-   * Card-level stock badge for every requested variant, scoped to the
-   * variant's BASE recipe only (flavor_id IS NULL) — no flavor/option is
-   * known yet at the product-card level. A variant with zero BOM components
-   * (readiness already requires at least one, but this stays defensive)
+   * Card-level stock badge for every requested variant. POS-PERF-P24R — a
+   * variant with flavors is checked per-flavor (base recipe + that flavor's
+   * override), not just the base recipe in isolation: "out of stock" means
+   * no supported sellable configuration remains, so a shortfall on the base
+   * recipe must not block a variant where a specific flavor's override
+   * avoids the short ingredient entirely. A flavorless variant keeps the
+   * single base-recipe check. A variant with zero BOM components anywhere
    * resolves to 'unknown', never 'out_of_stock' — unknown and confirmed
    * out-of-stock must never be conflated.
+   *
+   * Every (variant, flavor) combination's BOM is resolved through one
+   * batched call (fixed query count) rather than one findMany + per-component
+   * unit-conversion lookup per combination — see computeBomDeductionBatch.
    */
-  async evaluateCatalogStock(branchId: string, productVariantIds: string[]): Promise<Map<string, VariantStockResult>> {
-    if (productVariantIds.length === 0) return new Map();
+  async evaluateCatalogStock(branchId: string, variants: CatalogStockRequest[]): Promise<Map<string, VariantStockResult>> {
+    if (variants.length === 0) return new Map();
 
-    const linesByVariant = await Promise.all(
-      productVariantIds.map(async (productVariantId) => ({
-        productVariantId,
-        lines: await computeBomDeduction(productVariantId, branchId, 1, null),
-      })),
-    );
+    type SubRequest = { productVariantId: string; flavorId: string | null };
+    const subRequestsByVariant = new Map<string, SubRequest[]>();
+    const flatRequests: SubRequest[] = [];
+    for (const { productVariantId, flavorIds } of variants) {
+      const subs: SubRequest[] = flavorIds.length > 0 ? flavorIds.map((flavorId) => ({ productVariantId, flavorId })) : [{ productVariantId, flavorId: null }];
+      subRequestsByVariant.set(productVariantId, subs);
+      flatRequests.push(...subs);
+    }
 
-    const allItemIds = [...new Set(linesByVariant.flatMap((v) => v.lines.map((l) => l.inventoryItemId)))];
+    const bomLinesByRequest = await computeBomDeductionBatch(flatRequests.map((r) => ({ ...r, quantitySold: 1 })));
+
+    const allItemIds = [...new Set(bomLinesByRequest.flat().map((l) => l.inventoryItemId))];
     const stockByItem = await fetchStockByItem(branchId, allItemIds);
 
     const results = new Map<string, VariantStockResult>();
-    for (const { productVariantId, lines } of linesByVariant) {
-      results.set(productVariantId, { ...evaluateLines(lines, stockByItem), productVariantId });
+    let cursor = 0;
+    for (const [productVariantId, subs] of subRequestsByVariant) {
+      const subResults = subs.map(() => evaluateLines(bomLinesByRequest[cursor++]!, stockByItem));
+      results.set(productVariantId, { ...aggregateVariantStock(subResults), productVariantId });
     }
     return results;
   },
@@ -64,6 +83,11 @@ export const stockAvailabilityService = {
    * applies for the live checkout deduction); each Mix & Max slot's snack
    * variant contributes its own BOM on top of the parent variant's.
    * Read-only — the atomic reservation at checkout remains the final guard.
+   *
+   * POS-PERF-P24R — every sub-line's BOM is resolved through one batched
+   * call (computeBomDeductionBatch) instead of one findActiveComponentsForVariant
+   * + per-component conversion lookup per sub-line, so a cart with many
+   * Mix & Max slots doesn't scale its query count with line count.
    */
   async evaluateCartAvailability(branchId: string, lines: CartAvailabilityLineInput[]): Promise<CartAvailabilityResult> {
     type SubLine = { productVariantId: string; flavorId: string | null; quantity: number };
@@ -78,8 +102,8 @@ export const stockAvailabilityService = {
     });
 
     const requiredByItem = new Map<string, number>();
-    const perSubLineResults = await Promise.all(
-      subLines.map((sub) => computeBomDeduction(sub.productVariantId, branchId, sub.quantity, sub.flavorId)),
+    const perSubLineResults = await computeBomDeductionBatch(
+      subLines.map((sub) => ({ productVariantId: sub.productVariantId, flavorId: sub.flavorId, quantitySold: sub.quantity })),
     );
     for (const bomLines of perSubLineResults) {
       for (const bomLine of bomLines) {
@@ -141,4 +165,29 @@ function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], s
 
   const status: StockStatus = maxUnits < 1 ? 'out_of_stock' : anyLow ? 'low_stock' : 'in_stock';
   return { productVariantId: '', status, maxSellableUnits: status === 'out_of_stock' ? 0 : maxUnits };
+}
+
+/**
+ * POS-PERF-P24R — a variant is only 'out_of_stock' when NONE of its
+ * sellable configurations (the base recipe alone, or each flavor's
+ * override on top of it) can sell even one unit. If any configuration can
+ * still sell, the variant stays sellable at the card level — a cashier
+ * picks the flavor in the next step, where evaluateCartAvailability's
+ * per-flavor check (and the server-side atomic reservation at checkout)
+ * remain the real guards. 'unknown' only wins over 'out_of_stock' when at
+ * least one configuration's status couldn't be determined at all (no BOM
+ * lines) and none is confirmed sellable — it must never be reported as
+ * sellable itself.
+ */
+function aggregateVariantStock(subResults: Pick<VariantStockResult, 'status' | 'maxSellableUnits'>[]): Pick<VariantStockResult, 'status' | 'maxSellableUnits'> {
+  const sellable = subResults.filter((r) => r.status === 'in_stock' || r.status === 'low_stock');
+  if (sellable.length > 0) {
+    const anyInStock = sellable.some((r) => r.status === 'in_stock');
+    const maxUnits = Math.max(...sellable.map((r) => r.maxSellableUnits ?? 0));
+    return { status: anyInStock ? 'in_stock' : 'low_stock', maxSellableUnits: maxUnits };
+  }
+  if (subResults.some((r) => r.status === 'unknown')) {
+    return { status: 'unknown', maxSellableUnits: null };
+  }
+  return { status: 'out_of_stock', maxSellableUnits: 0 };
 }

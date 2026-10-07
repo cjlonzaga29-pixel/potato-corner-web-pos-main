@@ -16,6 +16,12 @@ export interface VariantStockResult {
   maxSellableUnits: number | null;
 }
 
+/** POS-PERF-P24R — one catalog variant's flavors, so evaluateCatalogStock can check every sellable (flavor) configuration rather than just the base recipe. Empty when the variant has no flavors (base recipe is the only configuration). */
+export interface CatalogStockRequest {
+  productVariantId: string;
+  flavorIds: string[];
+}
+
 export interface CartAvailabilityLineInput {
   productVariantId: string;
   flavorId?: string | null;

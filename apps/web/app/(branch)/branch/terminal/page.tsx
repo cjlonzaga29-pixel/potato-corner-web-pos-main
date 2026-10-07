@@ -1020,10 +1020,22 @@ export default function TerminalPage() {
   // are never double-counted as independently available. A network/API
   // failure never blocks the sale on an uncertain pre-check — the atomic
   // reservation at checkout (transactions.service.ts) remains the final
-  // guard regardless of what this pre-check concludes.
+  // guard regardless of what this pre-check concludes — but the cashier must
+  // still see that the check itself was inconclusive, not silently treated
+  // as "verified available".
+  //
+  // POS-PERF-P24R — checkGenerationRef guards against a stale response: if a
+  // newer cartHasCapacityFor call started (another tap/edit) before this one's
+  // response lands, or the branch changed mid-flight, this call's result no
+  // longer describes the current cart/branch and must not be applied —
+  // the caller treats a `false` return the same as a real shortfall and
+  // aborts the add/quantity-change rather than acting on stale data.
+  const checkGenerationRef = useRef(0);
   const cartHasCapacityFor = useCallback(
     async (candidateItems: PosCartItem[], excludeIndex?: number): Promise<boolean> => {
       if (!branchId) return true;
+      const myGeneration = ++checkGenerationRef.current;
+      const requestBranchId = branchId;
       const baseline = excludeIndex === undefined ? items : items.filter((_, i) => i !== excludeIndex);
       const lines = [...baseline, ...candidateItems].map((item) => ({
         product_variant_id: item.product_variant_id,
@@ -1031,19 +1043,29 @@ export default function TerminalPage() {
         selected_flavors: item.selected_flavors,
         quantity: item.quantity,
       }));
+      let result: Awaited<ReturnType<typeof checkCartAvailability.mutateAsync>>;
       try {
-        const result = await checkCartAvailability.mutateAsync({ branch_id: branchId, lines });
-        if (!result.ok) {
-          const names = [...new Set(result.shortfalls.map((s) => s.item_name))].join(', ');
-          toast.error("Can't add — not enough stock", {
-            description: `Running low on ${names}. Try a smaller quantity, or ask a supervisor to restock.`,
-          });
-          return false;
-        }
-        return true;
+        result = await checkCartAvailability.mutateAsync({ branch_id: requestBranchId, lines });
       } catch {
+        if (checkGenerationRef.current !== myGeneration || requestBranchId !== branchId) return false;
+        toast.warning('Stock check unavailable', {
+          description: 'Could not verify ingredient stock right now — the final check still happens at checkout.',
+        });
         return true;
       }
+      if (checkGenerationRef.current !== myGeneration || requestBranchId !== branchId) {
+        // A newer check (or a branch switch) superseded this one — the cart
+        // has already moved on, so this stale result must not be applied.
+        return false;
+      }
+      if (!result.ok) {
+        const names = [...new Set(result.shortfalls.map((s) => s.item_name))].join(', ');
+        toast.error("Can't add — not enough stock", {
+          description: `Running low on ${names}. Try a smaller quantity, or ask a supervisor to restock.`,
+        });
+        return false;
+      }
+      return true;
     },
     [branchId, items, checkCartAvailability],
   );

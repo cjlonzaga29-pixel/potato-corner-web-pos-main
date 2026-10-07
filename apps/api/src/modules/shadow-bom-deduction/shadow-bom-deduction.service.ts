@@ -1,9 +1,12 @@
+import { Prisma } from '@prisma/client';
+import { prisma } from '../../lib/prisma.js';
 import { computeDeduction } from '../product-inventory/product-inventory.service.js';
-import { convertQuantity } from '../product-components/unit-conversion.util.js';
+import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import type { DeductionLine } from '../product-inventory/product-inventory.types.js';
 import { recipeReadinessService } from '../recipe-readiness/recipe-readiness.service.js';
 import type { ReadinessStatus } from '../recipe-readiness/recipe-readiness.types.js';
 import { shadowBomDeductionRepository } from './shadow-bom-deduction.repository.js';
+import type { ActiveComponentRowBatch } from './shadow-bom-deduction.repository.js';
 import type {
   BomDeductionLine,
   NormalizedLegacyLine,
@@ -104,6 +107,99 @@ export async function computeBomDeduction(
     }
   }
   return Array.from(map.values());
+}
+
+/**
+ * POS-PERF-P24R — resolves every (inventoryItem, fromUnit, toUnit) pair a
+ * batch of components needs in exactly two queries (item-specific
+ * conversions, then global ones), instead of convertQuantity's up-to-4
+ * queries *per component*. Priority mirrors convertQuantity exactly: an
+ * item-specific conversion (direct, then inverse) wins over the global
+ * table (direct, then inverse); same-unit pairs never reach here (filtered
+ * out by the caller before this function is built).
+ */
+async function buildBatchConverter(
+  needs: { inventoryItemId: string; fromUnitId: string; toUnitId: string }[],
+): Promise<(quantity: Prisma.Decimal, fromUnitId: string, toUnitId: string, inventoryItemId: string) => number> {
+  if (needs.length === 0) {
+    return (quantity) => new Prisma.Decimal(quantity).toNumber();
+  }
+  const itemIds = [...new Set(needs.map((n) => n.inventoryItemId))];
+  const unitIds = [...new Set(needs.flatMap((n) => [n.fromUnitId, n.toUnitId]))];
+  const [itemConversions, globalConversions] = await Promise.all([
+    prisma.inventoryItemUnitConversion.findMany({ where: { inventoryItemId: { in: itemIds } } }),
+    prisma.unitConversion.findMany({ where: { fromUnitId: { in: unitIds }, toUnitId: { in: unitIds } } }),
+  ]);
+  const itemMap = new Map(itemConversions.map((c) => [`${c.inventoryItemId}:${c.fromUnitId}:${c.toUnitId}`, c.factor]));
+  const globalMap = new Map(globalConversions.map((c) => [`${c.fromUnitId}:${c.toUnitId}`, c.factor]));
+
+  return (quantity, fromUnitId, toUnitId, inventoryItemId) => {
+    const amount = new Prisma.Decimal(quantity);
+    if (fromUnitId === toUnitId) return amount.toNumber();
+    const itemDirect = itemMap.get(`${inventoryItemId}:${fromUnitId}:${toUnitId}`);
+    if (itemDirect) return amount.mul(itemDirect).toNumber();
+    const itemInverse = itemMap.get(`${inventoryItemId}:${toUnitId}:${fromUnitId}`);
+    if (itemInverse) return amount.div(itemInverse).toNumber();
+    const direct = globalMap.get(`${fromUnitId}:${toUnitId}`);
+    if (direct) return amount.mul(direct).toNumber();
+    const inverse = globalMap.get(`${toUnitId}:${fromUnitId}`);
+    if (inverse) return amount.div(inverse).toNumber();
+    throw new UnitConversionError('MISSING_UNIT_CONVERSION', `No UnitConversion row between unit ${fromUnitId} and ${toUnitId}`);
+  };
+}
+
+/**
+ * POS-PERF-P24R — batched counterpart to computeBomDeduction: resolves BOM
+ * lines for many (productVariantId, flavorId, quantitySold) requests with a
+ * fixed number of queries (one for every active component across every
+ * requested variant, two for unit conversions) instead of one
+ * findActiveComponentsForVariant + up to one convertQuantity *per
+ * component* for every single request. Used by stockAvailabilityService,
+ * which evaluates many variant/flavor combinations per catalog load or
+ * cart check — never by the live checkout deduction path, which stays on
+ * computeDeduction/computeBomDeduction unchanged. Same override semantics
+ * as computeBomDeduction: a flavor-specific row for the same ingredient is
+ * summed alongside the base row (not replaced), matching this repo's
+ * existing ProductComponent data (flavor rows add ingredients, they don't
+ * carry a duplicate base-ingredient override in practice) — preserved
+ * as-is here rather than changed as part of this batching fix.
+ */
+export async function computeBomDeductionBatch(
+  requests: { productVariantId: string; flavorId: string | null | undefined; quantitySold: number }[],
+): Promise<BomDeductionLine[][]> {
+  const variantIds = [...new Set(requests.map((r) => r.productVariantId))];
+  const components: ActiveComponentRowBatch[] = await shadowBomDeductionRepository.findActiveComponentsForVariants(variantIds);
+
+  const byVariant = new Map<string, ActiveComponentRowBatch[]>();
+  for (const component of components) {
+    const list = byVariant.get(component.productVariantId);
+    if (list) list.push(component);
+    else byVariant.set(component.productVariantId, [component]);
+  }
+
+  const conversionNeeds = components
+    .map((c) => ({ inventoryItemId: c.inventoryItemId, fromUnitId: c.recipeUnitId ?? c.baseUnitId, toUnitId: c.baseUnitId }))
+    .filter((n) => n.fromUnitId !== n.toUnitId);
+  const convert = await buildBatchConverter(conversionNeeds);
+
+  return requests.map(({ productVariantId, flavorId, quantitySold }) => {
+    const rows = (byVariant.get(productVariantId) ?? []).filter(
+      (c) => c.flavorId === null || (flavorId != null && c.flavorId === flavorId),
+    );
+    const map = new Map<string, BomDeductionLine>();
+    for (const row of rows) {
+      const fromUnitId = row.recipeUnitId ?? row.baseUnitId;
+      const baseQuantity = convert(row.quantityRequired, fromUnitId, row.baseUnitId, row.inventoryItemId);
+      const quantity = baseQuantity * quantitySold;
+      const existing = map.get(row.inventoryItemId);
+      if (existing) {
+        existing.quantity += quantity;
+      } else {
+        map.set(row.inventoryItemId, { inventoryItemId: row.inventoryItemId, baseUnitId: row.baseUnitId, quantity });
+      }
+    }
+    return Array.from(map.values());
+  });
 }
 
 /**

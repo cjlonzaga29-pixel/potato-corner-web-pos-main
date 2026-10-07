@@ -143,8 +143,15 @@ async function measureNewSaleDuringSaving(page) {
   await openCheckoutAndFillCash(page);
 
   const DELAY_MS = 15000;
+  // Only the FIRST POST (order A) is held — order B, submitted below while A
+  // is still pending, must go through at normal speed and resolve on its
+  // own. A route handler with no such guard would delay every matching POST
+  // for as long as this route stays registered, including B's own request,
+  // which is not the scenario this is meant to measure.
+  let firstPostHeld = false;
   await page.route('**/api/transactions', async (route) => {
-    if (route.request().method() !== 'POST') return route.continue();
+    if (route.request().method() !== 'POST' || firstPostHeld) return route.continue();
+    firstPostHeld = true;
     await new Promise((r) => setTimeout(r, DELAY_MS));
     await route.continue();
   });
@@ -192,7 +199,10 @@ async function measureNewSaleDuringSaving(page) {
   const pendingSalesButton = page.getByRole('button', { name: /Pending Sales/ });
   await pendingSalesButton.waitFor({ state: 'visible' });
   await pendingSalesButton.click();
-  await page.getByText('Saving').waitFor({ state: 'visible', timeout: 5000 });
+  // Exact match: the panel's own description text ("...while they were
+  // still saving.") otherwise collides with getByText's default
+  // case-insensitive substring matching against the status Badge's text.
+  await page.getByText('Saving', { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
   console.log('[new-sale-during-saving] detached first order visible in Pending Sales panel, still saving');
 
   // Now let the first response actually land (DELAY_MS already elapsed by
@@ -203,7 +213,6 @@ async function measureNewSaleDuringSaving(page) {
 
   await page.unroute('**/api/transactions');
   await page.keyboard.press('Escape');
-  void firstTransactionId;
 }
 
 async function measureFailureAndRecovery(page) {

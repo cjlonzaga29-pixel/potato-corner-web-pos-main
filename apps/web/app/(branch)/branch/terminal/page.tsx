@@ -577,6 +577,14 @@ export default function TerminalPage() {
     setDetachedSales((prev) => prev.map((e) => (e.idempotencyKey === key ? next : e)));
   }
 
+  /** Durable, confirmed removal — only ever called once a server resolve (or an already-'success' record) has proven this key's fate; see handleDismissDetachedSale. */
+  function finalizeDismissDetachedSale(key: string) {
+    if (!branchId) return;
+    detachedKeysRef.current.delete(key);
+    removeDetachedSale(branchId, key);
+    setDetachedSales((prev) => prev.filter((e) => e.idempotencyKey !== key));
+  }
+
   // Loads this branch's detached sales once on mount, then resolves every
   // one still marked 'saving' against the server exactly like the singleton
   // reload-recovery effect below does for the frontmost attempt — a
@@ -1564,8 +1572,17 @@ export default function TerminalPage() {
         safeToRetryDirectly: false,
         createdAt: Date.now(),
       };
+      // Must persist BEFORE clearing the cart below — this is the only
+      // durable copy of this order once the cart is wiped. If storage is
+      // unavailable/full, abort the detach entirely: keep the cart, the
+      // 'saving' popup, and every ref exactly as they were, and surface an
+      // error instead of silently losing the order.
+      const { persisted } = upsertDetachedSale(branchId, entry);
+      if (!persisted) {
+        setDetachBlockedNotice('Could not save this order for New Sale — device storage is full or unavailable. Wait for this sale to finish, or free up storage, before starting a new one.');
+        return;
+      }
       detachedKeysRef.current.add(key);
-      upsertDetachedSale(branchId, entry);
       setDetachedSales((prev) => [...prev, entry]);
       // This attempt is no longer the frontmost/singleton one — it's fully
       // owned by the detachedSales record from here on.
@@ -1678,17 +1695,51 @@ export default function TerminalPage() {
   }
 
   /**
-   * Pending Sales panel — Dismiss. Only offered on 'error' (confirmed
-   * resolvable — Retry already requires a server resolve first, so an
-   * error entry reaching Dismiss has either been confirmed not-committed or
-   * the cashier is explicitly choosing to stop tracking it) and 'success'
-   * (already confirmed) entries; never on 'saving'.
+   * Pending Sales panel — Dismiss. Offered on 'error' and 'success' entries;
+   * never on 'saving'. A 'success' entry is already server-confirmed, so
+   * dismiss just stops tracking it — the transaction itself is untouched.
+   *
+   * An 'error' entry is NOT necessarily confirmed, though: handleCharge's
+   * catch block marks an entry 'error' straight from the original request's
+   * own failure (e.g. a dropped response/timeout), with no server resolve
+   * involved — safeToRetryDirectly is only true once a resolve has actually
+   * proven the server never committed anything under this key. Dismissing
+   * an unconfirmed entry outright would be exactly the "a timeout or 'not
+   * found' alone is not permission to forget it" case this must avoid, so
+   * an unconfirmed entry is resolved (the same resolveAndFenceCheckoutAttempt
+   * protocol Retry uses) before anything is discarded: a resolve that comes
+   * back 'found' promotes the entry to 'success' instead of losing it, and
+   * one that comes back 'in-progress'/'unknown' leaves the entry in place
+   * with an updated message rather than dismissing it. Only a confirmed
+   * 'not-found' (or an already-'success'/already-confirmed entry) ever
+   * reaches the actual removal.
    */
-  function handleDismissDetachedSale(entry: DetachedSale) {
+  async function handleDismissDetachedSale(entry: DetachedSale) {
     if (!branchId) return;
-    detachedKeysRef.current.delete(entry.idempotencyKey);
-    removeDetachedSale(branchId, entry.idempotencyKey);
-    setDetachedSales((prev) => prev.filter((e) => e.idempotencyKey !== entry.idempotencyKey));
+    if (entry.status === 'success' || entry.safeToRetryDirectly) {
+      finalizeDismissDetachedSale(entry.idempotencyKey);
+      return;
+    }
+    setDetachedSaleBusy(entry.idempotencyKey, true);
+    try {
+      const outcome = await resolveAndFenceCheckoutAttempt(entry.idempotencyKey, branchId);
+      if (outcome.status === 'found') {
+        updateDetachedSale(entry.idempotencyKey, { status: 'success', transaction: outcome.transaction });
+        return;
+      }
+      if (outcome.status === 'not-found') {
+        finalizeDismissDetachedSale(entry.idempotencyKey);
+        return;
+      }
+      updateDetachedSale(entry.idempotencyKey, {
+        errorMessage:
+          outcome.status === 'in-progress'
+            ? 'Still being processed on the server — cannot dismiss yet. Wait, then try again.'
+            : 'Could not confirm whether this went through — cannot dismiss yet. Check your connection, then try again.',
+      });
+    } finally {
+      setDetachedSaleBusy(entry.idempotencyKey, false);
+    }
   }
 
   // Deliberately its own state (not saleTransaction/isReceiptViewOpen,

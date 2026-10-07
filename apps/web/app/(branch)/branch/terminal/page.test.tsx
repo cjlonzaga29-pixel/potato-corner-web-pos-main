@@ -2275,6 +2275,65 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
     // Still showing the 6th order's own saving popup — New Sale did not detach it.
     expect(screen.getByText('Saving sale…')).toBeInTheDocument();
   });
+
+  // POS-PERF-P19R — detaching must persist the order BEFORE the cart is
+  // cleared; if that persist itself fails (storage full/unavailable), the
+  // cart/popup must be retained rather than silently dropping the order.
+  it('keeps the cart and the saving popup, and shows an error, when New Sale cannot persist the detached order (storage unavailable)', async () => {
+    mockCreateTransactionMutateAsync.mockReturnValueOnce(new Promise(() => {}));
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+
+    render(<TerminalPage />);
+    chargeCurrentCart();
+    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+
+    expect(screen.getByText(/storage is full or unavailable/)).toBeInTheDocument();
+    // Still the same order's popup — New Sale was refused, cart never cleared.
+    expect(screen.getByText('Saving sale…')).toBeInTheDocument();
+    expect(mockClearCart).not.toHaveBeenCalled();
+
+    setItemSpy.mockRestore();
+  });
+
+  // POS-PERF-P19R — Dismiss on an entry whose 'error' came straight from the
+  // original request failing (not yet server-resolved) must not discard it
+  // outright: a timeout proves nothing about whether the server committed.
+  it('Dismiss on an unresolved failed detached order resolves against the server first, and only discards it once confirmed not-found', async () => {
+    let rejectFirst: (error: unknown) => void = () => {};
+    mockCreateTransactionMutateAsync.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectFirst = reject;
+      }),
+    );
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'in-progress' });
+
+    render(<TerminalPage />);
+    chargeCurrentCart();
+    await waitFor(() => expect(screen.getByText('Saving sale…')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'New Sale' }));
+    await act(async () => {
+      rejectFirst(new Error('Could not reach the server. Please check your connection before trying again.'));
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Pending Sales/ }));
+    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+
+    // First Dismiss: server says still in-progress — must not be discarded.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText(/Still being processed on the server/)).toBeInTheDocument();
+
+    // Second Dismiss: server now confirms nothing committed — safe to discard.
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(mockResolveAndFenceCheckoutAttempt).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('Needs attention')).not.toBeInTheDocument());
+  });
 });
 
 // Task 120: a `branch` (Branch Account) session sees "Who is working?"

@@ -59,19 +59,29 @@ export function readDetachedSales(branchId: string): DetachedSale[] {
   }
 }
 
-export function writeDetachedSales(branchId: string, entries: DetachedSale[]): void {
+/**
+ * Returns whether the write actually persisted. Unlike checkout-recovery.ts's
+ * savePendingCheckoutAttempt (which is allowed to be best-effort — it only
+ * backs up an idempotency key an in-flight request already carries), a
+ * failed write here means the DetachedSale record about to replace this
+ * cart would have no durable copy anywhere once the cart is cleared. Callers
+ * that are about to clear a cart on the strength of this write MUST check
+ * this return value first.
+ */
+export function writeDetachedSales(branchId: string, entries: DetachedSale[]): boolean {
   try {
     localStorage.setItem(storageKey(branchId), JSON.stringify(entries));
+    return true;
   } catch {
-    // localStorage unavailable (private mode, quota) — best-effort, same as checkout-recovery.ts.
+    return false;
   }
 }
 
-export function upsertDetachedSale(branchId: string, entry: DetachedSale): DetachedSale[] {
+export function upsertDetachedSale(branchId: string, entry: DetachedSale): { entries: DetachedSale[]; persisted: boolean } {
   const current = readDetachedSales(branchId);
   const next = [...current.filter((e) => e.idempotencyKey !== entry.idempotencyKey), entry];
-  writeDetachedSales(branchId, next);
-  return next;
+  const persisted = writeDetachedSales(branchId, next);
+  return { entries: next, persisted };
 }
 
 export function removeDetachedSale(branchId: string, idempotencyKey: string): DetachedSale[] {

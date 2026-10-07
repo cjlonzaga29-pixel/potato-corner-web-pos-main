@@ -112,6 +112,9 @@ interface PaymentFooterProps {
   /** POS-PERF-P25 — optional cashier-entered order note, saved with the sale and surfaced on the Inventory Movements table. */
   orderNotes: string;
   onOrderNotesChange: (value: string) => void;
+  /** POS-PERF-P25R — optional GCash/Maya/Other payment reference (e.g. GCash transaction number), re-added at the owner's request. Never required to complete checkout — see terminal/page.tsx's chargeDisabledReason, which never checks this. */
+  paymentReference: string;
+  onPaymentReferenceChange: (value: string) => void;
   paymentProofKey: string | null;
   paymentProofPreviewUrl: string | null;
   onProofSelected: (file: File, type: ImageProofType) => Promise<void>;
@@ -196,6 +199,8 @@ export const PaymentFooter = memo(function PaymentFooter({
   change,
   orderNotes,
   onOrderNotesChange,
+  paymentReference,
+  onPaymentReferenceChange,
   paymentProofKey,
   paymentProofPreviewUrl,
   onProofSelected,
@@ -294,6 +299,27 @@ export const PaymentFooter = memo(function PaymentFooter({
               />
               <p className="app-pos-helper-text text-muted-foreground">Change: {formatPeso(change)}</p>
             </div>
+          )}
+
+          {/* POS-PERF-P25R — optional GCash/Maya/Other payment reference,
+              re-added at the owner's request (Task 139 had removed a
+              *required* reference number + a "manually verified" checkbox;
+              this restores only the reference capture, as optional, leaving
+              Task 139's simplification — no required typing, no checkbox —
+              intact). Saved as gcashReference on the Transaction row (the
+              same column Task 139 already left wired for pass-through), kept
+              distinct from the internal order-notes field below and from the
+              receipt/transaction_number. */}
+          {(paymentMethod === 'gcash' || paymentMethod === 'maya' || paymentMethod === 'other') && (
+            <Input
+              className="app-control"
+              placeholder={
+                paymentMethod === 'other' ? 'Payment reference or note (optional)' : 'GCash/Maya reference number (optional)'
+              }
+              value={paymentReference}
+              onChange={(e) => onPaymentReferenceChange(e.target.value)}
+              maxLength={200}
+            />
           )}
 
           {/* POS-PERF-P25 — optional, any payment method. Saved with the sale

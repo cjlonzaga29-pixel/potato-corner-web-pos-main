@@ -127,7 +127,7 @@ describe('transactionsRepository — no COUNT-based receipt sequence source', ()
 });
 
 describe('transactionsRepository.createTransaction', () => {
-  it('creates the transaction row with its line items nested in one call, including items+shift in the response', async () => {
+  it('creates the transaction row with its line items nested in one call, including items+cashier (never shift — POS-PERF-P25R) in the response', async () => {
     vi.mocked(prisma.transaction.create).mockResolvedValue({ id: 'txn-1' } as never);
 
     await transactionsRepository.createTransaction({
@@ -193,7 +193,15 @@ describe('transactionsRepository.createTransaction', () => {
           ],
         },
       }),
-      include: { items: true, shift: { select: { id: true, status: true, branchId: true } }, cashier: { select: { firstName: true, lastName: true } } },
+      // POS-PERF-P25R — `shift` deliberately dropped from createTransaction's
+      // own include: toTransactionResponse never reads it for this call path
+      // (only the plain shiftId scalar), and the caller already validated
+      // shift.status/branchId before createTransaction runs. Saves one SQL
+      // round trip per checkout — see transactions.repository.ts's
+      // transactionCreateInclude doc comment. findTransactionById/
+      // voidTransaction/refundTransaction still use the shared
+      // transactionInclude (with shift) for their own business checks.
+      include: { items: true, cashier: { select: { firstName: true, lastName: true } } },
     });
     expect(prisma.transactionItem.createMany).not.toHaveBeenCalled();
     expect(prisma.transaction.findUniqueOrThrow).not.toHaveBeenCalled();

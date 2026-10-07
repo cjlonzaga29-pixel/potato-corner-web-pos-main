@@ -151,6 +151,18 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
               <span>{formatManila(transaction.created_at)}</span>
               <span className="text-muted-foreground">Payment Method</span>
               <span>{PAYMENT_METHOD_LABEL[transaction.payment_method]}</span>
+              {/* POS-PERF-P25R — optional GCash/Maya/Other reference the
+                  cashier entered at checkout (payment_reference, the generic
+                  alias for the gcashReference column). Omitted entirely when
+                  null rather than rendering a "—" row, since most payment
+                  methods (cash, or non-cash sales where the cashier left it
+                  blank) never carry one. */}
+              {transaction.payment_reference && (
+                <>
+                  <span className="text-muted-foreground">Payment Reference</span>
+                  <span>{transaction.payment_reference}</span>
+                </>
+              )}
               <span className="text-muted-foreground">Status</span>
               <span>
                 <StatusBadge status={transaction.status} type="transaction" />

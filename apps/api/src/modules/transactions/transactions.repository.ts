@@ -15,6 +15,26 @@ const transactionInclude = {
   cashier: { select: { firstName: true, lastName: true } },
 } satisfies Prisma.TransactionInclude;
 
+/**
+ * POS-PERF-P25R — createTransaction's own include, deliberately omitting
+ * `shift`. Verified against a real Postgres (scripts/measure-sale-insert-queries.ts):
+ * Prisma issues `shift` and `cashier` each as their own separate SELECT
+ * round trip after the INSERT (never joined into one statement), and
+ * toTransactionResponse never reads `row.shift` for this call path — only
+ * the plain `shiftId` scalar column already on the Transaction row itself
+ * (the shift's status/branchId were already validated by the caller before
+ * createTransaction ever runs — see transactions.service.ts createTransaction's
+ * branchShiftLookup stage). `shift` stays on the shared `transactionInclude`
+ * above for findTransactionById/voidTransaction/refundTransaction, which
+ * genuinely do need transaction.shift.status for their own business checks.
+ * Dropping it here saves exactly one round trip off every checkout's
+ * saleInsert stage, with no change to the response shape.
+ */
+const transactionCreateInclude = {
+  items: true,
+  cashier: { select: { firstName: true, lastName: true } },
+} satisfies Prisma.TransactionInclude;
+
 const holdOrderInclude = {
   items: true,
 } satisfies Prisma.HoldOrderInclude;
@@ -333,7 +353,7 @@ export const transactionsRepository = {
             })),
           },
         },
-        include: transactionInclude,
+        include: transactionCreateInclude,
       });
     if (tx) return run(tx);
     return prisma.$transaction(run);

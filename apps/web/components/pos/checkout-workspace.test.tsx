@@ -51,6 +51,8 @@ function baseProps() {
     change: 0,
     orderNotes: '',
     onOrderNotesChange: vi.fn(),
+    paymentReference: '',
+    onPaymentReferenceChange: vi.fn(),
     paymentProofKey: null,
     paymentProofPreviewUrl: null,
     onProofSelected: vi.fn(),

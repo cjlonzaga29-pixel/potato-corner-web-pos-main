@@ -1492,7 +1492,12 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
     fireEvent.mouseDown(screen.getByRole('tab', { name }));
   }
 
-  it('shows GCash with only a Payment Proof upload — no reference number field', () => {
+  // POS-PERF-P25R — Task 139 removed a *required* reference number + a
+  // "manually verified" checkbox; the owner has since asked for an optional
+  // reference field back. These three tests now assert the restored field
+  // exists (and is never required — Charge is still gated on proof alone),
+  // while confirming the "manually verified" checkbox stays gone.
+  it('shows GCash with Payment Proof upload and an optional reference field — no manually-verified checkbox', () => {
     render(<TerminalPage />);
     openCheckout();
     selectTab('GCash');
@@ -1500,23 +1505,24 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
     expect(screen.getByText('Payment Proof')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Take photo/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Upload from gallery/i })).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText(/reference number/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/reference number/i)).toBeInTheDocument();
     expect(screen.queryByText(/manually verified/i)).not.toBeInTheDocument();
+    // Still gated on proof alone — the reference field is optional.
     expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
   });
 
-  it('shows Maya with only a Payment Proof upload — no reference number field', () => {
+  it('shows Maya with Payment Proof upload and an optional reference field — no manually-verified checkbox', () => {
     render(<TerminalPage />);
     openCheckout();
     selectTab('Maya');
 
     expect(screen.getByText('Payment Proof')).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText(/reference number/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/reference number/i)).toBeInTheDocument();
     expect(screen.queryByText(/manually verified/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
   });
 
-  it('shows Other with only a Payment Proof upload — no reference/note field, same as GCash/Maya', () => {
+  it('shows Other with Payment Proof upload and an optional reference/note field', () => {
     render(<TerminalPage />);
     openCheckout();
     selectTab('Other');
@@ -1524,7 +1530,7 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
     expect(screen.getByText('Payment Proof')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Take photo/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Upload from gallery/i })).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText(/reference or note/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/reference or note/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
   });
 
@@ -1565,6 +1571,32 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
     expect(payload).not.toHaveProperty('gcash_reference_number');
     expect(payload).not.toHaveProperty('other_reference_note');
     expect(payload).not.toHaveProperty('gcash_manually_verified');
+  });
+
+  it('sends the entered GCash reference as gcash_reference_number, and blocks Charge on a non-digit reference', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    selectTab('GCash');
+
+    fireEvent.change(screen.getByPlaceholderText(/reference number/i), { target: { value: 'not-a-number' } });
+    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(mockUploadPaymentProofMutateAsync).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByText(/10-20 digits/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText(/reference number/i), { target: { value: '1234567890123' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = firstCallArg(mockCreateTransactionMutateAsync) as CreateTransactionInput;
+    expect(payload.gcash_reference_number).toBe('1234567890123');
+    expect(payload).not.toHaveProperty('other_reference_note');
   });
 
   it('preserves cart and payment method when the proof upload fails, and allows retry without recapturing', async () => {

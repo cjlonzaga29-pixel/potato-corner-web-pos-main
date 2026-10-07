@@ -484,8 +484,13 @@ export default function TerminalPage() {
   // POS-PERF-P25 — optional cashier-entered order note. Saved alongside the
   // sale and surfaced on the Inventory Movements table's "Notes" column.
   const [orderNotes, setOrderNotes] = useState('');
+  // POS-PERF-P25R — optional GCash/Maya/Other payment reference, re-added at
+  // the owner's request. Task 139 removed a *required* reference number +
+  // "manually verified" checkbox; this restores only the reference capture,
+  // optional, so Task 139's reduced-friction checkout stays intact.
+  const [paymentReference, setPaymentReference] = useState('');
   // GCash, Maya, and Other all require the same thing: a photo of the
-  // payment proof — no reference number/note collected (Task 139).
+  // payment proof — no *required* reference number/note collected (Task 139).
   const [paymentProofKey, setPaymentProofKey] = useState<string | null>(null);
   const [paymentProofType, setPaymentProofType] = useState<'live_capture' | 'gallery_upload' | null>(null);
   // Task 209.20 — a local, revocable object URL for the just-captured file,
@@ -1445,6 +1450,19 @@ export default function TerminalPage() {
       if (tenderedNumber < totalAmount) return `Cash tendered is ${formatPeso(round2(totalAmount - tenderedNumber))} short.`;
     } else {
       if (!paymentProofKey) return 'Upload payment proof before continuing.';
+      // POS-PERF-P25R — paymentReference is optional (createTransactionSchema
+      // never requires it), but when the cashier *does* enter one for
+      // GCash/Maya it must satisfy the same 10-20-digit shape the server's
+      // gcash_reference_number validates, or checkout would 422 after proof
+      // upload and cash/discount entry are already done. "Other"'s
+      // other_reference_note is free text — no format to check.
+      if (
+        (paymentMethod === 'gcash' || paymentMethod === 'maya') &&
+        paymentReference.trim().length > 0 &&
+        !/^\d{10,20}$/.test(paymentReference.trim())
+      ) {
+        return 'Payment reference must be 10-20 digits, or left blank.';
+      }
     }
     return null;
   })();
@@ -1517,6 +1535,7 @@ export default function TerminalPage() {
     setPromoAmount('');
     setCashTendered('');
     setOrderNotes('');
+    setPaymentReference('');
     setPaymentProofKey(null);
     setPaymentProofType(null);
     setDiscountProofKey(null);
@@ -1567,6 +1586,18 @@ export default function TerminalPage() {
       discount_id_reference: discountIdReference.trim() || undefined,
       discount_amount: discountType === 'promotional' ? Number(promoAmount) : undefined,
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
+      // POS-PERF-P25R — optional payment reference, re-added at the owner's
+      // request. gcash_reference_number backs both GCash and Maya (the
+      // backend treats them identically — see transactions.service.ts
+      // createTransaction's referenceNote); other_reference_note is its
+      // free-text counterpart for "other". Keys are omitted entirely (not
+      // set to undefined) when blank/not applicable — same "no reference
+      // fields" contract Task 139 established, which terminal/page.test.tsx
+      // asserts via not.toHaveProperty.
+      ...((paymentMethod === 'gcash' || paymentMethod === 'maya') && paymentReference.trim()
+        ? { gcash_reference_number: paymentReference.trim() }
+        : {}),
+      ...(paymentMethod === 'other' && paymentReference.trim() ? { other_reference_note: paymentReference.trim() } : {}),
       payment_proof_key: paymentMethod !== 'cash' ? (paymentProofKey ?? undefined) : undefined,
       payment_proof_type: paymentMethod !== 'cash' ? (paymentProofType ?? undefined) : undefined,
       discount_proof_key:
@@ -2297,6 +2328,8 @@ export default function TerminalPage() {
       change={change}
       orderNotes={orderNotes}
       onOrderNotesChange={setOrderNotes}
+      paymentReference={paymentReference}
+      onPaymentReferenceChange={setPaymentReference}
       paymentProofKey={paymentProofKey}
       paymentProofPreviewUrl={paymentProofPreviewUrl}
       onProofSelected={handleProofSelected}

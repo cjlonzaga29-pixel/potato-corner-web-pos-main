@@ -20,9 +20,15 @@ const databaseUrl = process.env.DATABASE_URL ?? '';
 const isLocalDatabase = /(^|@)(127\.0\.0\.1|localhost)(:|\/)/.test(databaseUrl);
 
 const { prisma } = await import('../../lib/prisma.js');
+const { config } = await import('../../config/index.js');
 const { inventoryApprovalService } = await import('./inventory-approval.service.js');
 const { universalInventoryService } = await import('../universal-inventory/universal-inventory.service.js');
 const { inventoryRepository } = await import('../inventory/inventory.repository.js');
+
+/** Same readonly-config override pattern inventory.router.test.ts already uses for this exact flag. */
+function setApprovalRequired(value: boolean): void {
+  (config as { manualInventoryApprovalRequired: boolean }).manualInventoryApprovalRequired = value;
+}
 
 function actor(role: 'super_admin' | 'supervisor' | 'branch', userId: string, branchIds?: string[]): JwtPayload {
   const base = { user_id: userId, email: `${userId}@test.local`, iat: 0, exp: 9999999999 };
@@ -277,5 +283,266 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     );
     const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() - 1);
+  });
+
+  // -------------------------------------------------------------------------
+  // POS-PERF-P28R2 — permanent cancellation (the rollback-gap fix).
+  // -------------------------------------------------------------------------
+
+  it('cancelling a PENDING request changes no stock, and the cancelled request can never be approved or corrected', async () => {
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 9, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+
+    const cancelled = await inventoryApprovalService.cancel(request.id, 'duplicate submission', actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(cancelled.status).toBe('CANCELLED');
+    expect(cancelled.cancel_reason).toBe('duplicate submission');
+    expect(cancelled.cancelled_by_user_id).toBe(supervisorUserId);
+
+    const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockAfter.quantityOnHand.toString()).toBe(stockBefore.quantityOnHand.toString());
+
+    await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
+      code: 'ALREADY_PROCESSED',
+    });
+    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 1 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+      code: 'NOT_RETURNED',
+    });
+  });
+
+  it('cancelling a RETURNED request retires the whole lineage: the cancelled row cannot be corrected, and the older (pre-return) sibling cannot revive it either', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 5, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const returned = await inventoryApprovalService.returnForCorrection(request.id, 'needs a different reason code', actor('supervisor', supervisorUserId, [branchId]));
+    expect(returned.status).toBe('RETURNED');
+
+    const cancelled = await inventoryApprovalService.cancel(returned.id, 'branch confirmed this is no longer needed', actor('super_admin', adminUserId), null);
+    expect(cancelled.status).toBe('CANCELLED');
+
+    // The cancelled (formerly RETURNED) row itself can no longer be corrected...
+    await expect(inventoryApprovalService.correct(returned.id, { quantityDelta: 1 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+      code: 'NOT_RETURNED',
+    });
+    // ...and since returned.id === request.id (revision 1 was returned, not yet
+    // superseded by any correction before being cancelled), there is no older
+    // sibling revision in this lineage to separately re-check here — the
+    // single row's own permanent CANCELLED status is the only state that
+    // exists, which the assertion above already covers for this request. The
+    // multi-revision "older sibling" shape is exercised explicitly below.
+    expect(returned.id).toBe(request.id);
+  });
+
+  it('an older revision cannot revive a lineage after its newer revision is cancelled', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    await inventoryApprovalService.returnForCorrection(request.id, 'wrong amount', actor('supervisor', supervisorUserId, [branchId]));
+    const revision2 = await inventoryApprovalService.correct(request.id, { quantityDelta: 8 }, actor('branch', branchUserId, [branchId]));
+    expect(revision2.revision_number).toBe(2);
+
+    await inventoryApprovalService.cancel(revision2.id, 'cancelling the lineage entirely', actor('supervisor', supervisorUserId, [branchId]), null);
+
+    // revision 1 (the original, now-superseded RETURNED row) still exists
+    // with status RETURNED — attempting to correct IT again (rather than
+    // the now-CANCELLED revision 2) must still be rejected, because it has
+    // already been corrected once (hasExistingCorrection), independent of
+    // and in addition to revision 2's cancellation.
+    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 2 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+      code: 'ALREADY_CORRECTED',
+    });
+    await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
+      code: 'ALREADY_PROCESSED',
+    });
+  });
+
+  it('cancel versus approve on the same PENDING request has exactly one winner', async () => {
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 11, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+
+    const results = await Promise.allSettled([
+      inventoryApprovalService.cancel(request.id, 'racing cancel', actor('supervisor', supervisorUserId, [branchId]), null),
+      inventoryApprovalService.approve(request.id, actor('super_admin', adminUserId), null),
+    ]);
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof inventoryApprovalService.cancel>>> => r.status === 'fulfilled');
+    expect(fulfilled.length).toBe(1);
+
+    const final = await prisma.inventoryApprovalRequest.findUniqueOrThrow({ where: { id: request.id } });
+    const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    if (final.status === 'APPROVED') {
+      expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 11);
+    } else {
+      expect(final.status).toBe('CANCELLED');
+      expect(stockAfter.quantityOnHand.toString()).toBe(stockBefore.quantityOnHand.toString());
+    }
+  });
+
+  it('cancel versus correct on the same RETURNED request never leaves two live outcomes (no actionable revision survives a winning cancel, no orphaned cancel survives a winning correction)', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 13, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const returned = await inventoryApprovalService.returnForCorrection(request.id, 'retry', actor('supervisor', supervisorUserId, [branchId]));
+
+    const results = await Promise.allSettled([
+      inventoryApprovalService.cancel(returned.id, 'racing cancel', actor('supervisor', supervisorUserId, [branchId]), null),
+      inventoryApprovalService.correct(returned.id, { quantityDelta: 14 }, actor('branch', branchUserId, [branchId])),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    // Both can legitimately fulfill independently in isolation, but they must
+    // never BOTH leave the lineage in a state where a newer PENDING revision
+    // exists AND the row it superseded is CANCELLED through two different
+    // winning branches that didn't see each other.
+    const finalRow = await prisma.inventoryApprovalRequest.findUniqueOrThrow({ where: { id: returned.id } });
+    const siblingRevision = await prisma.inventoryApprovalRequest.findFirst({ where: { previousRequestId: returned.id } });
+
+    if (finalRow.status === 'CANCELLED') {
+      // Cancel won the lock first: correct() must have seen the fresh
+      // CANCELLED status under the lock and been rejected — no sibling
+      // revision should have been inserted.
+      expect(siblingRevision).toBeNull();
+    } else {
+      // Correct won the lock first: cancel() must have seen hasExistingCorrection
+      // under the lock and been rejected — the original row stays RETURNED
+      // (never flips to CANCELLED), and exactly one new PENDING sibling exists.
+      expect(finalRow.status).toBe('RETURNED');
+      expect(siblingRevision).not.toBeNull();
+      expect(siblingRevision?.status).toBe('PENDING');
+    }
+    expect(fulfilled.length).toBe(1);
+  });
+
+  it('repeated cancellation of an already-cancelled request is a safe no-op', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const first = await inventoryApprovalService.cancel(request.id, 'first cancel', actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(first.status).toBe('CANCELLED');
+    expect(first.cancel_reason).toBe('first cancel');
+
+    // A second cancellation attempt must not throw and must not overwrite
+    // the original cancellation's reason/actor/timestamp.
+    const second = await inventoryApprovalService.cancel(request.id, 'second cancel attempt', actor('super_admin', adminUserId), null);
+    expect(second.status).toBe('CANCELLED');
+    expect(second.cancel_reason).toBe('first cancel');
+    expect(second.cancelled_by_user_id).toBe(supervisorUserId);
+  });
+
+  it('an already-approved request can never be cancelled — its applied stock movement is left intact', async () => {
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 4, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+
+    await expect(inventoryApprovalService.cancel(request.id, 'trying to undo an approval', actor('super_admin', adminUserId), null)).rejects.toMatchObject({
+      code: 'NOT_CANCELLABLE',
+    });
+
+    const stillApproved = await prisma.inventoryApprovalRequest.findUniqueOrThrow({ where: { id: request.id } });
+    expect(stillApproved.status).toBe('APPROVED');
+    const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 4);
+  });
+
+  it('disabling then re-enabling MANUAL_INVENTORY_APPROVAL_REQUIRED cannot revive a permanently cancelled request, and blocks approve/correct while disabled', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 15, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const returned = await inventoryApprovalService.returnForCorrection(request.id, 'reconciliation in progress', actor('supervisor', supervisorUserId, [branchId]));
+
+    // Operational sequence this test proves: close the approval gate only
+    // AFTER every outstanding request is permanently cancelled (reconciled) —
+    // never leave a dormant PENDING/RETURNED row lying around the flag flip.
+    const cancelled = await inventoryApprovalService.cancel(returned.id, 'reconciled before disabling the flag', actor('super_admin', adminUserId), null);
+    expect(cancelled.status).toBe('CANCELLED');
+
+    const originalFlag = config.manualInventoryApprovalRequired;
+    setApprovalRequired(false);
+    try {
+      // While disabled: approve/correct against ANY request — cancelled or
+      // not — are blocked outright with a clear, distinct error.
+      await expect(inventoryApprovalService.approve(cancelled.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
+        code: 'APPROVAL_PROCESSING_DISABLED',
+      });
+      await expect(inventoryApprovalService.correct(cancelled.id, { quantityDelta: 1 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+        code: 'APPROVAL_PROCESSING_DISABLED',
+      });
+      // cancel() itself must keep working while disabled — it is how
+      // reconciliation is performed, and repeated cancellation is still safe.
+      const stillCancelled = await inventoryApprovalService.cancel(cancelled.id, 'confirm no-op while disabled', actor('super_admin', adminUserId), null);
+      expect(stillCancelled.status).toBe('CANCELLED');
+    } finally {
+      setApprovalRequired(originalFlag);
+    }
+
+    // Re-enabling the flag does not resurrect the cancelled request — an
+    // environment-variable flip alone never reconciles anything; the only
+    // thing that changed the request's fate was the explicit cancel() call
+    // performed above, before the flag was ever touched.
+    await expect(inventoryApprovalService.approve(cancelled.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
+      code: 'ALREADY_PROCESSED',
+    });
+    const finalRow = await prisma.inventoryApprovalRequest.findUniqueOrThrow({ where: { id: cancelled.id } });
+    expect(finalRow.status).toBe('CANCELLED');
+  });
+
+  it('reconciliation (cancel) followed by a legitimate immediate-write operation never double-applies the retired request once the gate reopens', async () => {
+    // Simulates the documented rollback sequence end-to-end: a request is
+    // submitted under the approval gate, the gate is disabled for an
+    // emergency rollback, the operator reconciles by permanently cancelling
+    // the dormant request (never just "returning" it, which is the exact gap
+    // this release closes), a branch resubmits the SAME physical event
+    // directly against immediate-write stock (simulated here as a direct
+    // waste/adjust call outside the approval service, standing in for the
+    // old immediate-write endpoint), and finally the gate reopens. The
+    // original cancelled request must never become applicable again.
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+
+    const originalFlag = config.manualInventoryApprovalRequired;
+    setApprovalRequired(false);
+    let cancelledId: string;
+    try {
+      const cancelled = await inventoryApprovalService.cancel(request.id, 'rollback reconciliation', actor('super_admin', adminUserId), null);
+      cancelledId = cancelled.id;
+    } finally {
+      setApprovalRequired(originalFlag);
+    }
+
+    // The branch resubmits the same physical count correction directly
+    // (standing in for the old immediate-write endpoint's independent
+    // write path) — this is the "legitimate immediate-write operation"
+    // the reconciled gap must not be double-applied against.
+    await universalInventoryService.adjustStock(
+      { branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction', notes: 'resubmitted directly after reconciliation' },
+      { id: branchUserId, role: 'branch' },
+      null,
+    );
+    const stockAfterResubmit = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockAfterResubmit.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 6);
+
+    // Gate reopens (flag already restored above) — the original cancelled
+    // request can still never be approved, so the resubmitted +6 is never
+    // joined by a second, duplicate +6 from the retired request.
+    await expect(inventoryApprovalService.approve(cancelledId, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
+      code: 'ALREADY_PROCESSED',
+    });
+    const stockFinal = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockFinal.quantityOnHand.toNumber()).toBe(stockAfterResubmit.quantityOnHand.toNumber());
   });
 });

@@ -185,7 +185,7 @@ here, with the kill-switch step above folded in first:
    (same verification discipline as rollout step 6) before reopening.
 6. `PUT /api/settings/write-gate {enabled:false}`.
 
-## Migration validation performed for this task
+## Migration validation performed for this task (P28)
 
 `prisma migrate deploy` was run against a disposable local Postgres
 instance already populated with pre-existing data (39 `inventory_stock_movements`
@@ -197,3 +197,194 @@ for the new, empty `inventory_approval_requests` table). The migration adds
 two new enums, one new table, and does not alter any existing table's
 columns — there is no plausible path by which it could have affected
 existing rows, and this was verified rather than assumed.
+
+---
+
+## POS-PERF-P28R2 — Permanent Cancellation and Kill-Switch Reconciliation
+
+## Why this addendum exists
+
+The rollback procedure above (Scenario A) told operators to resolve every
+outstanding `PENDING` request via `returnForCorrection` before flipping
+`MANUAL_INVENTORY_APPROVAL_REQUIRED` off. That advice had a real gap:
+**`RETURNED` is not a terminal state.** Any `RETURNED` request can still be
+corrected (`POST /:id/correct`) into a brand-new `PENDING` revision, by
+design — that is exactly how the normal "fix a mistake and resubmit" flow
+works. During a rollback, that same door stays open: a `RETURNED` request
+"resolved" during reconciliation could still be corrected and later
+approved, applying a physical event the operator believed was closed out.
+
+P28R2 adds a genuine terminal state — `CANCELLED` — and closes that gap.
+Everything below is additive to the P28 behavior above; nothing in the
+rollout/rollback sequencing already documented changes.
+
+## New status: `CANCELLED`
+
+- Reachable only from `PENDING` or `RETURNED`. **Never** from `APPROVED` —
+  an approved request's stock mutation already committed in the same
+  transaction as the status flip, and cancellation never unwinds it.
+- Terminal: once `CANCELLED`, the row can never be approved (`approve()`
+  requires `PENDING`) or corrected (`correct()` requires `RETURNED`) again.
+- Requires an authorized reviewer (`adminOrSupervisor` — same role gate as
+  approve/return; a branch account cannot cancel, including its own
+  request) with branch access and a non-empty reason.
+- Never changes stock. Preserves every prior submission/revision/reason/
+  actor/timestamp in the row and its revision chain — nothing is deleted or
+  overwritten.
+- Idempotent: cancelling an already-`CANCELLED` row is a safe no-op (same
+  convention as repeatedly polling a finished job), not an error.
+- Enforced atomically against a concurrent `approve()`/`correct()` on the
+  same row:
+  - Cancel vs. approve/return: both are now simple `UPDATE ... WHERE id = ?
+    AND status IN (...)` statements against the *same row* — Postgres
+    serializes two concurrent UPDATEs to one row for free, so whichever
+    commits first wins and the loser's `WHERE` no longer matches on its
+    retry. No new locking needed for this pair.
+  - Cancel vs. correct: `correct()` instead *inserts a new sibling row*, so
+    the row's own status alone can't catch the race. Both `cancel()` and
+    `correct()` now take the same advisory lock
+    (`inventoryApprovalRowLockId`, `apps/api/src/lib/pg-lock.ts`) on the
+    specific row id, and both re-read that row's live status *inside* the
+    lock before acting — the loser sees the winner's already-committed
+    decision and aborts. This closes the one gap the P28R advisory lock
+    didn't cover (see `inventory-approval.service.ts`'s `correct()` for
+    the comment describing this exact race).
+
+Verified by seven dedicated real-Postgres integration tests (see
+`inventory-approval.integration.test.ts`): cancelled-cannot-approve/correct,
+older-sibling-cannot-revive-after-the-newer-revision-is-cancelled, cancel-
+vs-approve race (exactly one winner, stock changes 0 or 1 times, never
+ambiguous), cancel-vs-correct race (no state where both a `CANCELLED` row
+and a live sibling `PENDING` revision exist at once), repeated cancellation
+is a no-op, an `APPROVED` row can never be cancelled, and disable/re-enable
+of the kill switch cannot revive a cancelled request.
+
+## Kill-switch safety: `approve`/`correct` now blocked while disabled
+
+Before this change, `MANUAL_INVENTORY_APPROVAL_REQUIRED=false` only
+affected *new* submissions (the six gated write endpoints fell back to
+immediate-write). It said nothing about requests already sitting in the
+queue — `approve()`/`correct()` had no awareness of the flag at all, so a
+request submitted before the flip could still be approved or corrected
+after the flag was disabled, silently reopening the exact double-apply risk
+the flag flip exists to prevent.
+
+`approve()` and `correct()` now reject with `409
+APPROVAL_PROCESSING_DISABLED` whenever the flag is off. `cancel()` and
+`returnForCorrection()` are **not** gated — they remain the only two
+actions available during a reconciliation window, which is by design: you
+need a way to drain the queue precisely while the flag is off.
+
+### Updated reconciliation procedure (replaces the "resolve every PENDING request" step in both rollback scenarios above)
+
+Wherever the rollback sections above say *"resolve every `PENDING` request
+via `returnForCorrection`"*, the corrected procedure is:
+
+1. For every `PENDING` or `RETURNED` request at the branch(es) affected:
+   call `POST /api/inventory-approvals/:id/cancel` with a Super
+   Admin/supervisor-authored reason (e.g. *"Manual approval gate disabled —
+   resubmit directly, superseding request cancelled 2026-MM-DD"*), **not**
+   `returnForCorrection`. `returnForCorrection` alone leaves the request
+   correctable — exactly the gap P28R2 closes — so it is no longer the
+   terminal step of a rollback.
+2. Confirm no actionable request remains: `GET
+   /api/inventory-approvals?status=PENDING` and `?status=RETURNED` for the
+   affected branch(es) must both return an empty list before proceeding.
+   `returnForCorrection` calls already in flight from legitimate day-to-day
+   reviewing (unrelated to this rollback) should be let through normally;
+   only requests that are being *retired* as part of this procedure get
+   cancelled.
+3. Only after step 2 is empty, flip `MANUAL_INVENTORY_APPROVAL_REQUIRED=false`
+   (or redeploy the prior commit, per Scenario B). From this point,
+   `approve()`/`correct()` reject outright for anyone who tries — a defense
+   against a request that was missed in step 1, not a replacement for doing
+   step 1 correctly.
+4. Resubmission of the same physical event happens through the now-
+   immediate-write endpoints as before. Because the retired request is
+   `CANCELLED` (terminal), it can never be approved later and double-apply
+   against the resubmission — this is what the old `RETURNED`-only
+   procedure could not guarantee.
+5. Before re-enabling the flag (`MANUAL_INVENTORY_APPROVAL_REQUIRED=true`),
+   verify the *running process* actually has the flag you expect — an
+   environment-variable change takes effect only on the next process start
+   for this config (loaded once at boot via `config/index.ts`), not via
+   `PUT /api/settings/write-gate` or any other live toggle. Confirm via
+   `GET /api/health` (or restart logs / an explicit config-echo endpoint if
+   one is added later) that the deployed process reflects the value you
+   just set, not the value from before the restart.
+
+### What this procedure does **not** claim
+
+- **An environment-variable flip alone never reconciles anything.** Flag
+  state only decides which code path *new* submissions take; it has no
+  effect on rows already in the table. Reconciliation is the explicit
+  cancel-everything-outstanding step above, performed by a human with
+  branch access and a reason — never a side effect of the flag.
+- **This release does not provide exactly-once guarantees across
+  independent manual resubmissions.** If a branch resubmits the same
+  physical stock-in/adjustment twice through the immediate-write path
+  during a rollback window (e.g. once by mistake, once as the "real"
+  resubmission), nothing in this system — before or after P28R2 —
+  deduplicates those two independent submissions against each other. There
+  is no stable operation identity (idempotency key) carried from the
+  original approval request into the immediate-write resubmission; "cancel
+  the old request" only prevents the *old* request from ever applying a
+  second time, it does not and cannot detect that a human resubmitted the
+  same thing twice by hand. If that guarantee is needed, it requires a
+  separate idempotency-key design (e.g. requiring the resubmission to
+  reference the cancelled request's id, and rejecting a second
+  resubmission against the same reference) — out of scope for this task.
+
+## Migration validation performed for this task (P28R2)
+
+Additive-only migration `20261009050000_add_inventory_approval_cancellation`
+(one new enum value `CANCELLED` on `InventoryApprovalStatus`, three new
+nullable columns — `cancelled_by_user_id`, `cancelled_at`, `cancel_reason`
+— on `inventory_approval_requests`) was validated two ways:
+
+1. `prisma migrate deploy` against a disposable embedded-Postgres instance
+   (`apps/api/scripts/with-test-postgres.ts`) with the full 78-migration
+   history applied from scratch, including the pre-existing P28 migration —
+   reported "All migrations have been successfully applied," no errors.
+2. The full `apps/api` Vitest suite (154 test files, 2,820 tests, including
+   19 real-Postgres integration tests for this module covering every
+   cancellation/race scenario above) ran green against that same migrated
+   instance. The full `apps/web` Vitest suite (133 files, 1,170 tests) and
+   both `apps/api`/`apps/web` production builds also passed.
+
+No existing column is altered or dropped; `ALTER TYPE ... ADD VALUE` and
+`ADD COLUMN` (nullable, no default backfill needed) are the only two
+statement kinds in the migration. On a code rollback, this migration is
+**never** reverted — the same "no destructive down-migration" rule as
+every other release in this directory. A `CANCELLED` row and its
+`cancelled_*` columns are inert to any pre-P28R2 code path, which only ever
+reads the three original statuses.
+
+## Rollback of P28R2 itself (code rollback, keep the schema)
+
+If P28R2's *code* needs to roll back independently of P28 (e.g. a bug in
+`cancel()` itself), the same discipline applies: redeploy the prior commit,
+do **not** drop the `CANCELLED` enum value or the three new columns. Prior
+(P28-only) code never reads or writes them, so their presence is inert. Any
+request already `CANCELLED` stays `CANCELLED` in the data — the rolled-back
+code simply has no route that can reach it (no `/cancel` endpoint), which is
+the correct outcome (a terminal state should stay terminal even if the
+feature that introduced it is rolled back).
+
+## Known limitations (stated plainly, not implied)
+
+- The original P28R test-suite regression mentioned in prior commits
+  (`fix(pos-perf-p28r): close write-gate and correction-race gaps, fix test
+  regressions`) does not have a recorded root cause available to this
+  task — that information was not captured at the time and cannot be
+  reconstructed now. The current test suite passing green is evidence the
+  present code is correct; it is not evidence of what the original failure
+  was, and this document does not claim otherwise.
+- No browser/Playwright click-through exists for the inventory-approvals
+  UI specifically (no e2e spec covers this feature). Verification for this
+  task was performed at three levels instead: real-Postgres service-layer
+  integration tests (19 scenarios), a dedicated HTTP-level script driving
+  the actual Express routes with real signed JWTs against a disposable
+  Postgres instance (proving router/role-middleware/validation wiring, not
+  just the service functions), and the full automated unit/integration/
+  frontend suites. A true interactive browser session was not performed.

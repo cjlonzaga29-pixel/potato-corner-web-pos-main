@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { correctInventoryApprovalRequestSchema, returnInventoryApprovalRequestSchema } from '@potato-corner/shared';
+import { cancelInventoryApprovalRequestSchema, correctInventoryApprovalRequestSchema, returnInventoryApprovalRequestSchema } from '@potato-corner/shared';
 import { inventoryApprovalService } from './inventory-approval.service.js';
 import { InventoryApprovalError } from './inventory-approval.types.js';
 import { UniversalInventoryError } from '../universal-inventory/universal-inventory.types.js';
@@ -54,7 +54,7 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
 
 const listQuerySchema = z.object({
   branch_id: z.uuid().optional(),
-  status: z.enum(['PENDING', 'APPROVED', 'RETURNED']).optional(),
+  status: z.enum(['PENDING', 'APPROVED', 'RETURNED', 'CANCELLED']).optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
@@ -112,6 +112,24 @@ router.post(
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof returnInventoryApprovalRequestSchema>;
       const result = await inventoryApprovalService.returnForCorrection(req.params.id as string, body.reason, req.user);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:id/cancel',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  validate(cancelInventoryApprovalRequestSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof cancelInventoryApprovalRequestSchema>;
+      const result = await inventoryApprovalService.cancel(req.params.id as string, body.reason, req.user, req.ip ?? null);
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);

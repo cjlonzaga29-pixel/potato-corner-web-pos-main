@@ -15,7 +15,7 @@ export class InventoryApprovalError extends Error {
 
 export type InventoryApprovalTarget = 'UNIVERSAL_ITEM' | 'LEGACY_INGREDIENT';
 export type InventoryApprovalOperation = 'RECEIVING' | 'ADJUSTMENT' | 'PHYSICAL_COUNT';
-export type InventoryApprovalStatus = 'PENDING' | 'APPROVED' | 'RETURNED';
+export type InventoryApprovalStatus = 'PENDING' | 'APPROVED' | 'RETURNED' | 'CANCELLED';
 
 export interface SubmitReceivingData {
   target: InventoryApprovalTarget;

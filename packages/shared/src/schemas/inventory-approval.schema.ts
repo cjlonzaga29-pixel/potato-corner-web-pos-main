@@ -10,11 +10,18 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 export const inventoryApprovalOperationSchema = z.enum(['RECEIVING', 'ADJUSTMENT', 'PHYSICAL_COUNT']);
-export const inventoryApprovalStatusSchema = z.enum(['PENDING', 'APPROVED', 'RETURNED']);
+// POS-PERF-P28R2: CANCELLED is a permanent terminal state for a request
+// retired during rollback/reconciliation — see cancelInventoryApprovalRequestSchema.
+export const inventoryApprovalStatusSchema = z.enum(['PENDING', 'APPROVED', 'RETURNED', 'CANCELLED']);
 export const inventoryApprovalTargetSchema = z.enum(['UNIVERSAL_ITEM', 'LEGACY_INGREDIENT']);
 
 export const returnInventoryApprovalRequestSchema = z.object({
   reason: z.string().min(1, 'A return reason is required').max(1000),
+});
+
+/** Permanent cancellation — a reason is mandatory, same as return-for-correction. */
+export const cancelInventoryApprovalRequestSchema = z.object({
+  reason: z.string().min(1, 'A cancellation reason is required').max(1000),
 });
 
 /** Correcting a RETURNED request resubmits the same operation-specific fields that created it, plus the revision it corrects (server re-derives revisionNumber; this is only an optimistic-concurrency guard against correcting an already-superseded revision). */
@@ -66,6 +73,11 @@ export const inventoryApprovalRequestResponseSchema = z.object({
   reviewed_at: z.iso.datetime().nullable(),
   return_reason: z.string().nullable(),
   applied_movement_id: z.string().nullable(),
+
+  cancelled_by_user_id: z.uuid().nullable(),
+  cancelled_by_name: z.string().nullable(),
+  cancelled_at: z.iso.datetime().nullable(),
+  cancel_reason: z.string().nullable(),
 });
 
 export const inventoryApprovalRequestListResponseSchema = z.object({

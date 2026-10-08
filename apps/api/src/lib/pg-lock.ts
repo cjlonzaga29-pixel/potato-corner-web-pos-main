@@ -56,3 +56,22 @@ export function branchShiftLockId(branchId: string): bigint {
 export function attendanceOpenSessionLockId(employeeId: string): bigint {
   return hashToLockId(sha256Hex(`attendance-open-session:${employeeId}`));
 }
+
+/**
+ * Canonical advisory-lock key for one inventory-approval-request row's
+ * terminal-decision race (POS-PERF-P28R/P28R2). `correct()` inserts a new
+ * sibling revision rather than updating the RETURNED row it supersedes, and
+ * `cancel()` (P28R2) marks that same row permanently CANCELLED instead —
+ * neither is a simple "UPDATE ... WHERE status = X" (which would otherwise
+ * serialize for free against a concurrent approve()/returnForCorrection() on
+ * the same row the way markApprovedIfPending/markReturnedIfPending already
+ * do). Both correct() and cancel() must take THIS SAME lock, keyed on the
+ * specific request row they act on, before re-reading that row's fresh
+ * status inside the lock — whichever acquires it first commits its terminal
+ * decision; the loser's re-read sees the winner's committed change and
+ * aborts instead of leaving two live outcomes for one row (e.g. a new
+ * PENDING revision inserted after the row was already cancelled).
+ */
+export function inventoryApprovalRowLockId(requestId: string): bigint {
+  return hashToLockId(sha256Hex(`inventory-approval-correct:${requestId}`));
+}

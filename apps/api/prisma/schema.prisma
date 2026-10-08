@@ -1403,6 +1403,15 @@ enum InventoryApprovalStatus {
   PENDING
   APPROVED
   RETURNED
+  /// POS-PERF-P28R2 -- permanent terminal state for a request retired during
+  /// rollback/reconciliation rather than reviewed normally. Only reachable
+  /// from PENDING or RETURNED (never from APPROVED -- an applied request's
+  /// stock mutation already committed and is never unwound). Once a row is
+  /// CANCELLED it can never transition again: approve()/correct() both
+  /// require a specific prior status (PENDING/RETURNED respectively) that a
+  /// CANCELLED row no longer has, so the whole lineage below it is
+  /// permanently closed to further action.
+  CANCELLED
 }
 
 /// POS-PERF-P28 -- which manual-inventory system a request targets.
@@ -1478,6 +1487,19 @@ model InventoryApprovalRequest {
   reviewedAt        DateTime?               @map("reviewed_at")
   returnReason      String?                 @map("return_reason")
   appliedMovementId String?                 @map("applied_movement_id")
+
+  // POS-PERF-P28R2 -- permanent cancellation (rollback gap fix). Kept
+  // separate from reviewedByUserId/reviewedAt/returnReason rather than
+  // reusing them: a RETURNED row already carries a reviewer/reason from the
+  // return that preceded its cancellation, and overwriting those would lose
+  // that history. cancelledByUserId is always a supervisor/admin reviewer
+  // (never the submitter -- the router role-gates this the same way as
+  // approve/return), never the same person as submittedByUserId can self-
+  // approve, but self-cancellation is not specifically denied since
+  // cancellation performs no stock mutation -- see service.ts#cancel.
+  cancelledByUserId String?   @map("cancelled_by_user_id")
+  cancelledAt       DateTime? @map("cancelled_at")
+  cancelReason      String?   @map("cancel_reason")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

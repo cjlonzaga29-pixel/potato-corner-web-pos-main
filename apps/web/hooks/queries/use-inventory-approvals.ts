@@ -21,7 +21,7 @@ function errorMessage(response: ApiErrorShape, fallback: string): string {
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
 }
 
-export type InventoryApprovalStatusFilter = 'PENDING' | 'APPROVED' | 'RETURNED';
+export type InventoryApprovalStatusFilter = 'PENDING' | 'APPROVED' | 'RETURNED' | 'CANCELLED';
 
 function queryKey(branchId: string | null | undefined, status: InventoryApprovalStatusFilter) {
   return ['inventory-approvals', branchId, status] as const;
@@ -94,6 +94,26 @@ export function useReturnInventoryApprovalRequest(branchId: string | null | unde
     onSuccess: () => {
       invalidateApprovals(queryClient, branchId);
       toast.success('Returned for correction');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** Permanent cancellation (POS-PERF-P28R2) — distinct from Return for Correction, which still leaves the request correctable into a new revision. */
+export function useCancelInventoryApprovalRequest(branchId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
+      const response = await apiClient<InventoryApprovalRequestResponse>(`/api/inventory-approvals/${id}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to cancel this request'));
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateApprovals(queryClient, branchId);
+      toast.success('Request permanently cancelled');
     },
     onError: (error: Error) => toast.error(error.message),
   });

@@ -58,6 +58,12 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
     ...(status === 'RETURNED'
       ? [{ id: 'return_reason', header: 'Return Reason', cell: ({ row }: { row: { original: InventoryApprovalRequestResponse } }) => row.original.return_reason ?? '—' }]
       : []),
+    ...(status === 'CANCELLED'
+      ? [
+          { id: 'cancel_reason', header: 'Cancel Reason', cell: ({ row }: { row: { original: InventoryApprovalRequestResponse } }) => row.original.cancel_reason ?? '—' },
+          { id: 'cancelled_by', header: 'Cancelled By', cell: ({ row }: { row: { original: InventoryApprovalRequestResponse } }) => row.original.cancelled_by_name ?? '—' },
+        ]
+      : []),
     {
       id: 'actions',
       header: '',
@@ -85,6 +91,7 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
           <TabsTrigger value="PENDING">Pending Review</TabsTrigger>
           <TabsTrigger value="APPROVED">Approved</TabsTrigger>
           <TabsTrigger value="RETURNED">Returned for Correction</TabsTrigger>
+          <TabsTrigger value="CANCELLED">Cancelled</TabsTrigger>
         </TabsList>
       </Tabs>
 

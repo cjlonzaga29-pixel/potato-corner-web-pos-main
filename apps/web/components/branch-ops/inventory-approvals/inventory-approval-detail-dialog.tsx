@@ -13,6 +13,7 @@ import { formatDateTime } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
 import {
   useApproveInventoryApprovalRequest,
+  useCancelInventoryApprovalRequest,
   useCorrectInventoryApprovalRequest,
   useInventoryApprovalDetail,
   useReturnInventoryApprovalRequest,
@@ -27,6 +28,7 @@ const OPERATION_LABELS: Record<string, string> = {
 function StatusBadge({ status }: { status: string }) {
   if (status === 'PENDING') return <Badge variant="pending">Pending Review</Badge>;
   if (status === 'APPROVED') return <Badge variant="active">Approved</Badge>;
+  if (status === 'CANCELLED') return <Badge variant="inactive">Cancelled</Badge>;
   return <Badge variant="critical">Returned for Correction</Badge>;
 }
 
@@ -60,10 +62,13 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
   const approve = useApproveInventoryApprovalRequest(branchId);
   const returnRequest = useReturnInventoryApprovalRequest(branchId);
   const correct = useCorrectInventoryApprovalRequest(branchId);
+  const cancelRequest = useCancelInventoryApprovalRequest(branchId);
 
   const [returnReason, setReturnReason] = useState('');
   const [showReturnConfirm, setShowReturnConfirm] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [correctionQuantity, setCorrectionQuantity] = useState('');
   const [correctionNotes, setCorrectionNotes] = useState('');
 
@@ -132,6 +137,7 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
                 <p key={revision.id} className="text-xs text-muted-foreground">
                   Rev {revision.revision_number}: <StatusBadge status={revision.status} />
                   {revision.status === 'RETURNED' && revision.return_reason ? ` — ${revision.return_reason}` : ''}
+                  {revision.status === 'CANCELLED' && revision.cancel_reason ? ` — ${revision.cancel_reason}` : ''}
                 </p>
               ))}
             </div>
@@ -162,6 +168,27 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
                 {correct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Resubmit for Review
               </Button>
+            </div>
+          )}
+
+          {/* Permanent cancellation (POS-PERF-P28R2) — only reachable from
+              PENDING/RETURNED, same as the server; separate from Return for
+              Correction, which still leaves the request correctable into a
+              new revision. Shown regardless of isSubmitter: unlike
+              approve/return, cancelling performs no stock mutation, so the
+              server does not deny self-cancellation. */}
+          {(data.status === 'PENDING' || data.status === 'RETURNED') && canReview && (
+            <div className="border-t pt-3">
+              <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setShowCancelConfirm(true)} disabled={cancelRequest.isPending}>
+                Cancel Request Permanently
+              </Button>
+            </div>
+          )}
+          {data.status === 'CANCELLED' && (
+            <div className="space-y-1 border-t pt-3">
+              <Field label="Cancel Reason" value={data.cancel_reason} />
+              <Field label="Cancelled By" value={data.cancelled_by_name} />
+              <Field label="Cancelled At" value={data.cancelled_at ? formatDateTime(data.cancelled_at) : null} />
             </div>
           )}
         </DialogContent>
@@ -199,6 +226,33 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
           >
             {returnRequest.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Return for Correction
+          </Button>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showCancelConfirm} onOpenChange={setShowCancelConfirm}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Cancel This Request Permanently</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This cannot be undone. The request (and any further correction attempts against it) will be permanently closed — stock is never changed either way.
+          </p>
+          <Label htmlFor="cancel-reason">Explanation (required)</Label>
+          <Textarea id="cancel-reason" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} rows={3} />
+          <Button
+            variant="destructive"
+            disabled={!cancelReason.trim() || cancelRequest.isPending}
+            onClick={async () => {
+              if (!id) return;
+              await cancelRequest.mutateAsync({ id, reason: cancelReason });
+              setCancelReason('');
+              setShowCancelConfirm(false);
+              onOpenChange(false);
+            }}
+          >
+            {cancelRequest.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Cancel Request Permanently
           </Button>
         </DialogContent>
       </Dialog>

@@ -131,6 +131,7 @@ export type PhysicalCountStockResultRow = z.infer<typeof schemas.physicalCountSt
 export type PhysicalCountStockResultResponse = z.infer<typeof schemas.physicalCountStockResultResponseSchema>;
 
 export type ReturnInventoryApprovalRequestInput = z.infer<typeof schemas.returnInventoryApprovalRequestSchema>;
+export type CancelInventoryApprovalRequestInput = z.infer<typeof schemas.cancelInventoryApprovalRequestSchema>;
 export type CorrectInventoryApprovalRequestInput = z.infer<typeof schemas.correctInventoryApprovalRequestSchema>;
 export type InventoryApprovalRequestResponse = z.infer<typeof schemas.inventoryApprovalRequestResponseSchema>;
 export type InventoryApprovalRequestListResponse = z.infer<typeof schemas.inventoryApprovalRequestListResponseSchema>;

@@ -79,7 +79,13 @@ export const inventoryApprovalRepository = {
       ...(filters.submittedByUserId ? { submittedByUserId: filters.submittedByUserId } : {}),
     };
 
-    if (filters.status === 'RETURNED') {
+    if (filters.status === 'RETURNED' || filters.status === 'CANCELLED') {
+      // Same "exclude anything something else's previousRequestId already
+      // points at" dedupe as RETURNED: by construction (see cancel()'s
+      // hasExistingCorrection re-check under its lock) a CANCELLED row can
+      // never itself have been superseded afterward, but applying the same
+      // filter defensively costs nothing and keeps this branch symmetric
+      // with RETURNED rather than relying on that invariant alone.
       const superseded = await prisma.inventoryApprovalRequest.findMany({
         where: { previousRequestId: { not: null } },
         select: { previousRequestId: true },
@@ -128,6 +134,33 @@ export const inventoryApprovalRepository = {
     const { count } = await prisma.inventoryApprovalRequest.updateMany({
       where: { id, revisionNumber, status: 'PENDING' },
       data: { status: 'RETURNED', reviewedByUserId, reviewedAt: new Date(), returnReason },
+    });
+    return count === 1;
+  },
+
+  /**
+   * Permanent cancellation (POS-PERF-P28R2). Only ever reachable from
+   * PENDING or RETURNED — never APPROVED (an applied request's stock
+   * mutation already committed and this never touches it) and never an
+   * already-CANCELLED row (repeated cancellation must be a safe no-op, not
+   * a second write). The caller (service.ts#cancel) runs this inside the
+   * same advisory-locked transaction it uses to re-check hasExistingCorrection
+   * for this row, so this conditional UPDATE's own WHERE guard is really
+   * only the second line of defense against a concurrent approve()/
+   * returnForCorrection() on this exact row — those two races are already
+   * closed "for free" by Postgres serializing two UPDATEs against the same
+   * row, exactly like markApprovedIfPending vs markReturnedIfPending today.
+   */
+  async markCancelledIfCancellable(
+    id: string,
+    revisionNumber: number,
+    cancelledByUserId: string,
+    cancelReason: string,
+    tx: Prisma.TransactionClient,
+  ): Promise<boolean> {
+    const { count } = await tx.inventoryApprovalRequest.updateMany({
+      where: { id, revisionNumber, status: { in: ['PENDING', 'RETURNED'] } },
+      data: { status: 'CANCELLED', cancelledByUserId, cancelledAt: new Date(), cancelReason },
     });
     return count === 1;
   },

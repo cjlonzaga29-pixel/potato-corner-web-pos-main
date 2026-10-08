@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { MOVEMENT_TYPE, ROLES, SOCKET_EVENTS, type JwtPayload } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
-import { hashToLockId } from '../../lib/pg-lock.js';
+import { config } from '../../config/index.js';
+import { hashToLockId, inventoryApprovalRowLockId } from '../../lib/pg-lock.js';
 import { sha256Hex } from '../../lib/hash.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { notifyBranch, notifySuperAdmin, notifyUser } from '../../lib/notify.js';
@@ -45,6 +46,36 @@ async function assertBranchAccessOrThrow(actor: JwtPayload, branchId: string): P
   }
 }
 
+/**
+ * POS-PERF-P28R2 kill-switch safety: `MANUAL_INVENTORY_APPROVAL_REQUIRED`
+ * controls whether NEW submissions go through this review queue at all
+ * (inventory.router.ts / universal-inventory.router.ts). It said nothing,
+ * before this change, about what happens to requests already sitting in the
+ * queue when that flag is flipped off — approve()/correct() had no
+ * awareness of the flag whatsoever, so a request submitted while the gate
+ * was on could still be approved or corrected after an operator disabled
+ * it, silently re-admitting the exact "two independent write paths can
+ * apply the same physical event" risk the flag flip is meant to retire (see
+ * docs/runbooks/pos-perf-p28-inventory-approval-rollout.md's rollback
+ * scenario). Blocking both actions outright while the flag is off forces
+ * reconciliation (resolve-or-cancel every PENDING/RETURNED request) to
+ * happen BEFORE disabling the flag, not as an afterthought once it is
+ * already off — exactly the sequencing the rollout runbook now documents.
+ * cancel() and returnForCorrection() are deliberately NOT gated here: they
+ * are how an operator drains the queue during that reconciliation window,
+ * and must keep working right up to (and including) the moment the flag
+ * flips.
+ */
+function assertApprovalProcessingEnabledOrThrow(): void {
+  if (!config.manualInventoryApprovalRequired) {
+    throw new InventoryApprovalError(
+      'APPROVAL_PROCESSING_DISABLED',
+      'Manual inventory approval processing is currently disabled. This request cannot be approved or corrected — cancel it instead if it is no longer needed.',
+      409,
+    );
+  }
+}
+
 async function findRequestOrThrow(id: string): Promise<RequestRow> {
   const request = await inventoryApprovalRepository.findById(id);
   if (!request) throw new InventoryApprovalError('REQUEST_NOT_FOUND', 'Approval request not found', 404);
@@ -68,7 +99,7 @@ async function toResponse(request: RequestRow) {
     branchesRepository.findById(request.branchId),
     resolveItemLabel(request.target as InventoryApprovalTarget, request.inventoryItemId, request.legacyIngredientId),
     universalInventoryRepository.findUsersByIds(
-      [request.submittedByUserId, request.reviewedByUserId].filter((id): id is string => id !== null),
+      [request.submittedByUserId, request.reviewedByUserId, request.cancelledByUserId].filter((id): id is string => id !== null),
     ),
     request.proofKey ? getSignedInventoryProofUrl(request.proofKey) : Promise.resolve(null),
   ]);
@@ -111,6 +142,11 @@ async function toResponse(request: RequestRow) {
     reviewed_at: request.reviewedAt?.toISOString() ?? null,
     return_reason: request.returnReason,
     applied_movement_id: request.appliedMovementId,
+
+    cancelled_by_user_id: request.cancelledByUserId,
+    cancelled_by_name: request.cancelledByUserId ? nameById.get(request.cancelledByUserId) ?? null : null,
+    cancelled_at: request.cancelledAt?.toISOString() ?? null,
+    cancel_reason: request.cancelReason,
   };
 }
 
@@ -237,7 +273,7 @@ export const inventoryApprovalService = {
     return Promise.all(created.map(toResponse));
   },
 
-  async listRequests(actor: JwtPayload, filters: { branchId?: string; status?: 'PENDING' | 'APPROVED' | 'RETURNED'; page: number; limit: number }) {
+  async listRequests(actor: JwtPayload, filters: { branchId?: string; status?: 'PENDING' | 'APPROVED' | 'RETURNED' | 'CANCELLED'; page: number; limit: number }) {
     const isSubmitterOnly = actor.role === ROLES.BRANCH || actor.role === ROLES.STAFF;
     let branchIds: string[] | 'all' = await getAccessibleBranchIds(actor);
     if (filters.branchId) {
@@ -277,6 +313,7 @@ export const inventoryApprovalService = {
   },
 
   async approve(id: string, actor: JwtPayload, ipAddress: string | null) {
+    assertApprovalProcessingEnabledOrThrow();
     const request = await findRequestOrThrow(id);
     await assertBranchAccessOrThrow(actor, request.branchId);
     if (request.submittedByUserId === actor.user_id) {
@@ -341,6 +378,7 @@ export const inventoryApprovalService = {
   },
 
   async correct(id: string, data: CorrectRequestData, actor: JwtPayload) {
+    assertApprovalProcessingEnabledOrThrow();
     const request = await findRequestOrThrow(id);
     await assertBranchAccessOrThrow(actor, request.branchId);
     if (request.status !== 'RETURNED') {
@@ -394,9 +432,22 @@ export const inventoryApprovalService = {
     // re-check for an existing sibling (both inside the same transaction
     // that inserts the new row) close that window: the loser sees a
     // sibling already there and aborts before inserting its own.
+    //
+    // POS-PERF-P28R2: this same lock is also where correct() races against
+    // cancel() on this exact row — cancel() takes the identical lock
+    // (inventoryApprovalRowLockId) before flipping this row to CANCELLED.
+    // The status snapshot read at the top of this function (`request`) is
+    // taken before either lock is acquired, so it is not enough on its own:
+    // re-reading the row fresh, under the lock, is what actually proves
+    // nothing cancelled it out from under this correction in the gap
+    // between that first read and here.
     await prisma.$transaction(async (tx) => {
-      const lockId = hashToLockId(sha256Hex(`inventory-approval-correct:${request.id}`));
+      const lockId = inventoryApprovalRowLockId(request.id);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+      const fresh = await inventoryApprovalRepository.findById(request.id, tx);
+      if (!fresh || fresh.status !== 'RETURNED') {
+        throw new InventoryApprovalError('NOT_RETURNED', 'Only a returned request can be corrected', 409);
+      }
       if (await inventoryApprovalRepository.hasExistingCorrection(request.id, tx)) {
         throw new InventoryApprovalError('ALREADY_CORRECTED', 'This request has already been corrected', 409);
       }
@@ -415,6 +466,80 @@ export const inventoryApprovalService = {
     notifySupervisorsPendingReview(request.branchId);
 
     return toResponse(await findRequestOrThrow(newId));
+  },
+
+  /**
+   * Permanent cancellation (POS-PERF-P28R2) — the fix for the rollback gap:
+   * "Returned for Correction" alone is not cancellation, because a RETURNED
+   * row can always be corrected into a brand-new approvable PENDING
+   * revision. cancel() instead retires the request's whole lineage from
+   * this point forward: it is only ever reachable from PENDING or RETURNED
+   * (never APPROVED — an applied request's stock mutation is never
+   * unwound), requires an authorized reviewer with branch access and a
+   * non-empty reason (role-gated at the router: adminOrSupervisor, same as
+   * approve/return), changes no stock, and is enforced atomically against a
+   * concurrent approve()/correct() on the same row via the same
+   * inventoryApprovalRowLockId lock correct() itself uses. Repeated
+   * cancellation of an already-CANCELLED row is a safe no-op (treated as
+   * ALREADY_PROCESSED, matching approve()/returnForCorrection()'s own
+   * idempotent-rejection convention) rather than an error that would make a
+   * retry unsafe.
+   */
+  async cancel(id: string, reason: string, actor: JwtPayload, ipAddress: string | null) {
+    const request = await findRequestOrThrow(id);
+    await assertBranchAccessOrThrow(actor, request.branchId);
+
+    const cancelled = await prisma.$transaction(async (tx) => {
+      // Same lock correct() takes on this row id — see the comment in
+      // correct()'s transaction above for why a plain conditional UPDATE
+      // alone (sufficient for cancel-vs-approve/cancel-vs-return, which
+      // Postgres already serializes for free on the same row) is not
+      // enough here: correct() reacts to this row's status by inserting a
+      // *new* sibling row rather than updating this one, so only a shared
+      // lock plus a fresh re-read on both sides closes the gap.
+      const lockId = inventoryApprovalRowLockId(id);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+      const fresh = await inventoryApprovalRepository.findById(id, tx);
+      if (!fresh) throw new InventoryApprovalError('REQUEST_NOT_FOUND', 'Approval request not found', 404);
+      if (fresh.status === 'CANCELLED') return false; // already cancelled — safe no-op, not an error
+      if (fresh.status !== 'PENDING' && fresh.status !== 'RETURNED') {
+        throw new InventoryApprovalError(
+          'NOT_CANCELLABLE',
+          fresh.status === 'APPROVED'
+            ? 'An already-approved request cannot be cancelled — its stock movement has already been applied'
+            : 'This request has already been reviewed',
+          409,
+        );
+      }
+      if (await inventoryApprovalRepository.hasExistingCorrection(id, tx)) {
+        throw new InventoryApprovalError(
+          'ALREADY_CORRECTED',
+          'This request has already been corrected into a newer revision — cancel that revision instead',
+          409,
+        );
+      }
+
+      const ok = await inventoryApprovalRepository.markCancelledIfCancellable(id, fresh.revisionNumber, actor.user_id, reason, tx);
+      if (!ok) throw new InventoryApprovalError('ALREADY_PROCESSED', 'This request has already been reviewed', 409);
+      return true;
+    });
+
+    if (cancelled) {
+      await recordAuditLog({
+        action: 'INVENTORY_APPROVAL_CANCELLED',
+        entityType: 'inventory_approval_request',
+        entityId: id,
+        actorId: actor.user_id,
+        actorRole: actor.role,
+        branchId: request.branchId,
+        afterState: { reason },
+        ipAddress,
+      });
+      notifyUser(request.submittedByUserId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, { requestId: id, status: 'CANCELLED', reason });
+    }
+
+    return toResponse(await findRequestOrThrow(id));
   },
 
   async attachProof(id: string, file: { buffer: Buffer; originalname: string }, actor: JwtPayload) {

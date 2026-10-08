@@ -347,6 +347,20 @@ export const inventoryApprovalService = {
       throw new InventoryApprovalError('NOT_RETURNED', 'Only a returned request can be corrected', 409);
     }
 
+    // PHYSICAL_COUNT's fresh staleness snapshot does its own read (and, via
+    // applyApprovedRequest's advisory lock at approval time, its own
+    // concurrency protection) — taken outside the lock below so the lock
+    // isn't held across it.
+    let physicalCountSnapshot: { quantityOnHand: number; stockVersion: number } | null = null;
+    if (request.operation === 'PHYSICAL_COUNT') {
+      physicalCountSnapshot = await snapshotForPhysicalCount(
+        request.target as InventoryApprovalTarget,
+        request.branchId,
+        request.inventoryItemId ?? undefined,
+        request.legacyIngredientId ?? undefined,
+      );
+    }
+
     const newId = randomUUID();
     const row: Parameters<typeof inventoryApprovalRepository.createMany>[0][0] = {
       id: newId,
@@ -368,20 +382,26 @@ export const inventoryApprovalService = {
       reasonCode: data.reasonCode ?? request.reasonCode,
       notes: data.notes ?? request.notes,
       submittedByUserId: actor.user_id,
+      quantityOnHandAtSubmission: physicalCountSnapshot?.quantityOnHand,
+      stockVersionAtSubmission: physicalCountSnapshot?.stockVersion,
     };
 
-    if (request.operation === 'PHYSICAL_COUNT') {
-      const snapshot = await snapshotForPhysicalCount(
-        request.target as InventoryApprovalTarget,
-        request.branchId,
-        request.inventoryItemId ?? undefined,
-        request.legacyIngredientId ?? undefined,
-      );
-      row.quantityOnHandAtSubmission = snapshot.quantityOnHand;
-      row.stockVersionAtSubmission = snapshot.stockVersion;
-    }
-
-    await inventoryApprovalRepository.createMany([row]);
+    // Two concurrent corrections of the same RETURNED request (double-click,
+    // retried request) would otherwise both pass the status check above and
+    // both insert a sibling PENDING revision — two independently-approvable
+    // rows pointing at the same previousRequestId, which could both get
+    // approved and apply the correction twice. The advisory lock plus a
+    // re-check for an existing sibling (both inside the same transaction
+    // that inserts the new row) close that window: the loser sees a
+    // sibling already there and aborts before inserting its own.
+    await prisma.$transaction(async (tx) => {
+      const lockId = hashToLockId(sha256Hex(`inventory-approval-correct:${request.id}`));
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+      if (await inventoryApprovalRepository.hasExistingCorrection(request.id, tx)) {
+        throw new InventoryApprovalError('ALREADY_CORRECTED', 'This request has already been corrected', 409);
+      }
+      await inventoryApprovalRepository.createMany([row], tx);
+    });
     await recordAuditLog({
       action: 'INVENTORY_APPROVAL_CORRECTED',
       entityType: 'inventory_approval_request',

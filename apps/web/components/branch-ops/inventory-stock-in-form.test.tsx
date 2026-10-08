@@ -32,7 +32,13 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useBranchInventoryStock: mockUseBranchInventoryStock,
   useInventoryItemConversions: mockUseInventoryItemConversions,
   useReceiveInventoryStock: mockUseReceiveInventoryStock,
-  useUploadMovementProof: mockUseUploadMovementProof,
+}));
+
+// POS-PERF-P28 — the form's proof-upload hook moved to the approvals module
+// (requests, not movements, now take the proof); mock it there instead of
+// leaving the stale use-universal-inventory mock unwired to the component.
+vi.mock('@/hooks/queries/use-inventory-approvals', () => ({
+  useUploadInventoryApprovalProof: mockUseUploadMovementProof,
 }));
 
 /**
@@ -143,23 +149,23 @@ describe('InventoryStockInForm — proof upload failure recovery', () => {
     render(<InventoryStockInForm basePath="/branch" />);
     selectItemAndFillForm();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Record Receiving' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
 
     await waitFor(() =>
-      expect(screen.getByText('Receiving was recorded, but the receipt photo could not be uploaded.')).toBeInTheDocument(),
+      expect(screen.getByText('Receiving was submitted for review, but the receipt photo could not be uploaded.')).toBeInTheDocument(),
     );
     expect(stockInMutateAsync).toHaveBeenCalledTimes(1);
     expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ movementId: 'movement-123' }));
+    expect(uploadProofMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ id: 'movement-123' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry Photo Upload' }));
 
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals'));
 
     // The core regression: retrying the photo must never re-create the movement.
     expect(stockInMutateAsync).toHaveBeenCalledTimes(1);
     expect(uploadProofMutateAsync).toHaveBeenCalledTimes(2);
-    expect(uploadProofMutateAsync).toHaveBeenLastCalledWith(expect.objectContaining({ movementId: 'movement-123' }));
+    expect(uploadProofMutateAsync).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'movement-123' }));
   });
 
   it('"Continue Without Photo" navigates away without creating a second movement or retrying the upload', async () => {
@@ -172,15 +178,15 @@ describe('InventoryStockInForm — proof upload failure recovery', () => {
     render(<InventoryStockInForm basePath="/branch" />);
     selectItemAndFillForm();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Record Receiving' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
 
     await waitFor(() =>
-      expect(screen.getByText('Receiving was recorded, but the receipt photo could not be uploaded.')).toBeInTheDocument(),
+      expect(screen.getByText('Receiving was submitted for review, but the receipt photo could not be uploaded.')).toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue Without Photo' }));
 
-    expect(mockPush).toHaveBeenCalledWith('/branch/inventory');
+    expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals');
     expect(stockInMutateAsync).toHaveBeenCalledTimes(1);
     expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
   });
@@ -195,12 +201,12 @@ describe('InventoryStockInForm — proof upload failure recovery', () => {
     render(<InventoryStockInForm basePath="/branch" />);
     selectItemAndFillForm();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Record Receiving' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
 
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals'));
     expect(stockInMutateAsync).toHaveBeenCalledTimes(1);
     expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('Receiving was recorded, but the receipt photo could not be uploaded.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Receiving was submitted for review, but the receipt photo could not be uploaded.')).not.toBeInTheDocument();
   });
 });
 
@@ -216,7 +222,7 @@ describe('InventoryStockInForm — P1 cost UI retirement', () => {
     expect(screen.getAllByRole('spinbutton')).toHaveLength(1);
 
     selectItemAndFillForm();
-    fireEvent.click(screen.getByRole('button', { name: 'Record Receiving' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
 
     await waitFor(() => expect(stockInMutateAsync).toHaveBeenCalledTimes(1));
     const payload = stockInMutateAsync.mock.calls[0]?.[0];

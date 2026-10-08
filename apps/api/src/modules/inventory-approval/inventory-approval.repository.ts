@@ -118,6 +118,12 @@ export const inventoryApprovalRepository = {
     return tx.inventoryApprovalRequest.update({ where: { id }, data: { appliedMovementId } });
   },
 
+  /** Whether a correction has already been filed against this (RETURNED) request — see correct()'s advisory-lock guard against two concurrent corrections both succeeding. */
+  async hasExistingCorrection(previousRequestId: string, tx: Prisma.TransactionClient): Promise<boolean> {
+    const existing = await tx.inventoryApprovalRequest.findFirst({ where: { previousRequestId }, select: { id: true } });
+    return existing !== null;
+  },
+
   async markReturnedIfPending(id: string, revisionNumber: number, reviewedByUserId: string, returnReason: string): Promise<boolean> {
     const { count } = await prisma.inventoryApprovalRequest.updateMany({
       where: { id, revisionNumber, status: 'PENDING' },

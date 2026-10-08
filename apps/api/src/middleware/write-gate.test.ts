@@ -123,6 +123,13 @@ describe('writeGate — which paths/methods it protects', () => {
     ['POST /api/branches/:id/inventory/transfer', 'POST', '/api/branches/branch-1/inventory/transfer'],
     ['POST /api/branches/:id/inventory-stock/:itemId/receive', 'POST', '/api/branches/branch-1/inventory-stock/item-1/receive'],
     ['POST /api/branches/:id/inventory-stock/:itemId/adjust', 'POST', '/api/branches/branch-1/inventory-stock/item-1/adjust'],
+    // POS-PERF-P28 — approval submit/approve/return/correct all mutate
+    // stock once approved (or will once the request itself is approved),
+    // so this surface must be paused by the same maintenance gate as every
+    // other inventory-mutating route, not just the legacy/universal ones
+    // that existed before the approval gate was introduced.
+    ['POST /api/inventory-approvals/receiving', 'POST', '/api/inventory-approvals/receiving'],
+    ['POST /api/inventory-approvals/:id/approve', 'POST', '/api/inventory-approvals/req-1/approve'],
     // POS-PERF-P15 recovery routes — both are nested under /api/transactions,
     // so no extra pattern was needed to pick them up: the gate's blanket
     // transactions prefix already covers every route this module adds.

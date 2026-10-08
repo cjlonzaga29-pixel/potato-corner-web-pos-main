@@ -19,6 +19,7 @@ const BYPASS_HEADER = 'x-maintenance-bypass';
 const GATED_PATH_PATTERNS: RegExp[] = [
   /^\/api\/transactions(\/|$)/,
   /^\/api\/inventory(\/|$)/,
+  /^\/api\/inventory-approvals(\/|$)/,
   /^\/api\/product-inventory(\/|$)/,
   /^\/api\/universal-inventory(\/|$)/,
   /^\/api\/product-components(\/|$)/,

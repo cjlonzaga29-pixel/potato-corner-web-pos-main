@@ -218,6 +218,20 @@ describe('GET /branch/:branchId', () => {
     expect(attendanceService.getByBranch).not.toHaveBeenCalled();
   });
 
+  // POS-PERF-P26 — the Branch Account's Attendance and Reports pages (the
+  // only callers of this endpoint) were removed.
+  it('branch cannot list branch attendance — 403', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'get', '/branch/:branchId');
+    const token = generateBranchToken(BRANCH_1);
+    const req = mockReq({ ...authHeader(token), params: { branchId: BRANCH_1 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(attendanceService.getByBranch).not.toHaveBeenCalled();
+  });
+
   it("blocks a supervisor from listing another branch's attendance — 403 BRANCH_ACCESS_DENIED", async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'get', '/branch/:branchId');
     const token = generateSupervisorToken([BRANCH_1]);
@@ -331,9 +345,13 @@ describe('GET /employee/:employeeId', () => {
 });
 
 describe('POST /override', () => {
-  it('branch happy path returns 201 (CR-003: branchOnly, was supervisorOnly)', async () => {
+  // POS-PERF-P26 — the Branch Account's Attendance page (the only caller of
+  // this correction action) was removed, and this authorize() chain now
+  // matches the documented permission (ATTENDANCE_CORRECT: adminOrSupervisor
+  // in config/permissions.ts, which the branchOnly chain had drifted from).
+  it('supervisor happy path returns 201', async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
-    const token = generateBranchToken(BRANCH_1);
+    const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({
       ...authHeader(token),
       body: { original_record_id: RECORD_1, correction_reason: 'Employee forgot to clock out' },
@@ -347,9 +365,25 @@ describe('POST /override', () => {
     expect(attendanceService.manualOverride).toHaveBeenCalled();
   });
 
-  it('supervisor is rejected — 403 (CR-003: branchOnly excludes supervisor)', async () => {
+  it('super_admin happy path returns 201', async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
-    const token = generateSupervisorToken([BRANCH_1]);
+    const token = generateSuperAdminToken();
+    const req = mockReq({
+      ...authHeader(token),
+      body: { original_record_id: RECORD_1, correction_reason: 'Employee forgot to clock out' },
+    });
+    const res = mockRes();
+    vi.mocked(attendanceService.manualOverride).mockResolvedValue({ id: randomUUID(), status: 'corrected' } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(attendanceService.manualOverride).toHaveBeenCalled();
+  });
+
+  it('branch is rejected — 403 (Attendance page removed for the Branch Account)', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
+    const token = generateBranchToken(BRANCH_1);
     const req = mockReq({
       ...authHeader(token),
       body: { original_record_id: RECORD_1, correction_reason: 'Employee forgot to clock out' },
@@ -377,24 +411,9 @@ describe('POST /override', () => {
     expect(attendanceService.manualOverride).not.toHaveBeenCalled();
   });
 
-  it('super_admin is rejected — branchOnly excludes super_admin too', async () => {
-    const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
-    const token = generateSuperAdminToken();
-    const req = mockReq({
-      ...authHeader(token),
-      body: { original_record_id: RECORD_1, correction_reason: 'Employee forgot to clock out' },
-    });
-    const res = mockRes();
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(attendanceService.manualOverride).not.toHaveBeenCalled();
-  });
-
   it('rejects a correction_reason under 10 characters with 422', async () => {
     const handlers = getRouteHandlers(attendanceRouter, 'post', '/override');
-    const token = generateBranchToken(BRANCH_1);
+    const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), body: { original_record_id: RECORD_1, correction_reason: 'short' } });
     const res = mockRes();
 

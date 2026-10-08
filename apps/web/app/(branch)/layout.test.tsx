@@ -18,7 +18,7 @@ vi.mock('@/stores/branch.store', () => ({ useBranchStore: mockUseBranchStore }))
 // under test.
 vi.mock('@/components/branch/branch-sidebar', () => ({
   BranchSidebar: () => <div data-testid="sidebar" />,
-  BRANCH_NAV_ITEMS: [],
+  branchNavItemsForRole: () => [],
 }));
 vi.mock('@/components/branch/branch-context-sync', () => ({
   BranchContextSync: () => null,

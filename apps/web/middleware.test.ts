@@ -103,3 +103,55 @@ describe('middleware /change-password loop guard', () => {
     expect(requireLocation(response).pathname).toBe('/branch/dashboard');
   });
 });
+
+describe('POS-PERF-P26 — Branch Account page removal', () => {
+  const removedPaths = [
+    '/branch/products',
+    '/branch/employees',
+    '/branch/attendance',
+    '/branch/reports',
+    '/branch/analytics',
+    '/branch/activity-logs',
+    '/branch/settings',
+    '/branch/notifications',
+    '/branch/receipts',
+    '/branch/profile',
+  ];
+
+  it.each(removedPaths)('redirects a branch session away from %s to its own dashboard', async (path) => {
+    const token = fakeAccessToken({ role: 'branch', must_change_password: false, exp: Math.floor(Date.now() / 1000) + 900 });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: { access_token: token }, error: null, meta: null }), { status: 200 }),
+    );
+
+    const request = makeRequest(`https://app.potatocorner.test${path}`, 'refresh_token=good-token');
+    const response = await middleware(request);
+
+    expect(requireLocation(response).pathname).toBe('/branch/dashboard');
+  });
+
+  it.each(removedPaths)('lets a staff session reach %s unchanged (no new restriction)', async (path) => {
+    const token = fakeAccessToken({ role: 'staff', must_change_password: false, exp: Math.floor(Date.now() / 1000) + 900 });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: { access_token: token }, error: null, meta: null }), { status: 200 }),
+    );
+
+    const request = makeRequest(`https://app.potatocorner.test${path}`, 'refresh_token=good-token');
+    const response = await middleware(request);
+
+    expect(response.headers.get('location')).toBeNull();
+  });
+
+  it('still lets a branch session reach /branch/terminal and /branch/dashboard (untouched)', async () => {
+    const token = fakeAccessToken({ role: 'branch', must_change_password: false, exp: Math.floor(Date.now() / 1000) + 900 });
+    fetchMock.mockImplementation(
+      async () => new Response(JSON.stringify({ data: { access_token: token }, error: null, meta: null }), { status: 200 }),
+    );
+
+    for (const path of ['/branch/terminal', '/branch/dashboard', '/branch/sales', '/branch/inventory']) {
+      const request = makeRequest(`https://app.potatocorner.test${path}`, 'refresh_token=good-token');
+      const response = await middleware(request);
+      expect(response.headers.get('location')).toBeNull();
+    }
+  });
+});

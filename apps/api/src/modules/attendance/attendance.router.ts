@@ -3,7 +3,7 @@ import { clockInSchema, clockOutSchema, manualOverrideSchema, attendanceQuerySch
 import { attendanceService } from './attendance.service.js';
 import { AttendanceError } from './attendance.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminSupervisorOrBranch, allRoles, branchOnly } from '../../middleware/authorize.js';
+import { adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
@@ -109,10 +109,12 @@ router.post(
   },
 );
 
+// POS-PERF-P26 — the Branch Account's Attendance and Reports pages (the
+// only branch-role callers of this endpoint) were removed.
 router.get(
   '/branch/:branchId',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   branchGuard,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -151,11 +153,13 @@ router.get(
 router.post(
   '/override',
   authenticate,
-  // CR-003: attendance correction is an operational (not approval) action —
-  // was supervisorOnly when supervisor was the branch-operational role,
-  // now branch-operational scope takes it over, same as
-  // recipes.router.ts's override create/update/delete.
-  branchOnly,
+  // POS-PERF-P26 — the Branch Account's Attendance page (the only caller of
+  // this correction action) was removed; this now matches the documented
+  // permission (ATTENDANCE_CORRECT: adminOrSupervisor in
+  // config/permissions.ts), which the prior branchOnly chain had drifted
+  // from (CR-003's branch-operational-scope rationale no longer applies
+  // once branch has no Attendance UI left to call it from).
+  adminOrSupervisor,
   validate(manualOverrideSchema),
   // branchGuard can't run here — the branch is only known once the original
   // record has been fetched by id, same reasoning as cash.router.ts's

@@ -84,11 +84,10 @@ beforeEach(() => {
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
 });
 
-describe('GET /api/products/:productId/image — read access mirrors product read (adminSupervisorOrBranch)', () => {
+describe('GET /api/products/:productId/image — read access mirrors product read (adminOrSupervisor)', () => {
   it.each([
     ['super_admin', () => generateSuperAdminToken()],
     ['supervisor', () => generateSupervisorToken([randomUUID()])],
-    ['branch', () => generateBranchToken(randomUUID())],
   ])('lets a %s actor through to the service', async (_label, tokenFn) => {
     vi.mocked(productsService.getProductImage).mockResolvedValue({ image_url: 'https://example.com/signed.webp' });
     const handlers = getRouteHandlers(productsRouter, 'get', '/:productId/image');
@@ -99,6 +98,20 @@ describe('GET /api/products/:productId/image — read access mirrors product rea
 
     expect(productsService.getProductImage).toHaveBeenCalledWith('prod-1');
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  // POS-PERF-P26 — the Branch Account's Products management page was
+  // removed; it now reads the catalog (GET /catalog, allRoles) instead of
+  // product identity endpoints like this one.
+  it('rejects a branch actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productsRouter, 'get', '/:productId/image');
+    const req = mockReq({ ...authHeader(generateBranchToken(randomUUID())), params: { productId: 'prod-1' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productsService.getProductImage).not.toHaveBeenCalled();
   });
 
   it('rejects an unauthenticated request with 401, never reaching the service', async () => {

@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { BranchSidebar, BRANCH_NAV_ITEMS } from '@/components/branch/branch-sidebar';
+import { BranchSidebar, branchNavItemsForRole } from '@/components/branch/branch-sidebar';
 import { BranchContextSync } from '@/components/branch/branch-context-sync';
 import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
@@ -75,6 +75,7 @@ function useBranchContextReady(): boolean {
  */
 export default function BranchLayout({ children }: { children: ReactNode }) {
   const branchContextReady = useBranchContextReady();
+  const { user } = useAuth();
   return (
     <div className="flex h-screen overflow-hidden bg-background print:hidden">
       <SocketInitializer />
@@ -82,10 +83,12 @@ export default function BranchLayout({ children }: { children: ReactNode }) {
       <BranchSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <DashboardHeader
-          navItems={BRANCH_NAV_ITEMS}
+          navItems={branchNavItemsForRole(user?.role)}
           homeHref="/branch/dashboard"
           homeLabel="Branch"
-          profileHref="/branch/profile"
+          // POS-PERF-P26 — Profile was removed for the Branch Account; the
+          // header's account menu hides its Profile link when this is null.
+          profileHref={user?.role === 'staff' ? '/branch/profile' : null}
           fallbackInitials="BR"
         />
         {/*

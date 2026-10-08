@@ -49,7 +49,8 @@ interface DashboardHeaderProps {
   navItems: ReadonlyArray<NavItem>;
   homeHref: string;
   homeLabel: string;
-  profileHref: string;
+  /** Null hides the account menu's Profile link entirely (e.g. the Branch Account, which has no Profile page). */
+  profileHref: string | null;
   fallbackInitials: string;
 }
 
@@ -121,12 +122,16 @@ export function DashboardHeader({ navItems, homeHref, homeLabel, profileHref, fa
               <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href={profileHref}>
-                <User className="mr-2 h-4 w-4" /> Profile
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
+            {profileHref && (
+              <>
+                <DropdownMenuItem asChild>
+                  <Link href={profileHref}>
+                    <User className="mr-2 h-4 w-4" /> Profile
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onClick={() => void logout()}>
               <LogOut className="mr-2 h-4 w-4" /> Log out
             </DropdownMenuItem>

@@ -15,7 +15,7 @@ import {
 import { employeesService } from './employees.service.js';
 import { EmployeeError } from './employees.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -126,10 +126,15 @@ router.get(
   },
 );
 
+// POS-PERF-P26 — Employee activity log is part of the Employees
+// management page, which was removed for the Branch Account; the
+// terminal's own staff-selection/receipts/void-refund flows never call
+// this endpoint (only GET '/' list and GET '/:employeeId' do, both left
+// as-is below).
 router.get(
   '/:employeeId/activity',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -142,10 +147,13 @@ router.get(
   },
 );
 
+// POS-PERF-P26 — Employee create/update/deactivate/reactivate/reset-
+// password/status writes below were only ever reachable from the
+// Employees management page, which was removed for the Branch Account.
 router.post(
   '/',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(createEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -162,7 +170,7 @@ router.post(
 router.patch(
   '/:employeeId',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(updateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -179,7 +187,7 @@ router.patch(
 router.post(
   '/:employeeId/deactivate',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(deactivateEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -201,7 +209,7 @@ router.post(
 router.post(
   '/:employeeId/reactivate',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -217,7 +225,7 @@ router.post(
 router.post(
   '/:employeeId/reset-password',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(resetEmployeePasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -257,7 +265,7 @@ router.patch(
 router.patch(
   '/:employeeId/status',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(setEmployeeStatusSchema),
   async (req: Request, res: Response, next: NextFunction) => {

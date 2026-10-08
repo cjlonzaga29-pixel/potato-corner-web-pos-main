@@ -4,6 +4,24 @@ import { ROLE_DASHBOARDS } from '@potato-corner/shared';
 const ROLE_PATH_OWNERSHIP: Array<{ prefix: string; roles: string[] }> = [
   { prefix: '/admin', roles: ['super_admin'] },
   { prefix: '/supervisor', roles: ['supervisor'] },
+  // POS-PERF-P26 — Products, Employees, Attendance, Reports (plus its
+  // Analytics/Activity Logs sub-pages, folded into Reports as tabs — see
+  // branch-sidebar.tsx), Branch Settings, Notifications, Receipts, and
+  // Profile were removed from the Branch Account. These entries must be
+  // checked before the generic `/branch` entry below (`find()` takes the
+  // first match) so a `branch` session gets redirected instead of falling
+  // through to the permissive catch-all. `staff` keeps exactly the access
+  // it already had — unchanged by this list.
+  { prefix: '/branch/products', roles: ['staff'] },
+  { prefix: '/branch/employees', roles: ['staff'] },
+  { prefix: '/branch/attendance', roles: ['staff'] },
+  { prefix: '/branch/reports', roles: ['staff'] },
+  { prefix: '/branch/analytics', roles: ['staff'] },
+  { prefix: '/branch/activity-logs', roles: ['staff'] },
+  { prefix: '/branch/settings', roles: ['staff'] },
+  { prefix: '/branch/notifications', roles: ['staff'] },
+  { prefix: '/branch/receipts', roles: ['staff'] },
+  { prefix: '/branch/profile', roles: ['staff'] },
   // CR-003: (pos) was folded into (branch) — both the `branch` role (full
   // branch operations) and `staff` (cashiers, narrowed by BranchSidebar's
   // own role filtering) share this one prefix now.

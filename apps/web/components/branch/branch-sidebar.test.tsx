@@ -24,8 +24,27 @@ describe('branchNavItemsForRole', () => {
     expect(hrefs).not.toContain('/branch/activity-logs');
   });
 
-  it('shows exactly one Reports item', () => {
-    expect(branchNavItemsForRole('branch').filter((i) => i.label === 'Reports')).toHaveLength(1);
+  // POS-PERF-P26 — Products, Employees, Attendance, Reports, and Branch
+  // Settings were removed entirely for the Branch Account.
+  it('does not show Products, Employees, Attendance, Reports, or Branch Settings for the branch role', () => {
+    const hrefs = branchNavItemsForRole('branch').map((i) => i.href);
+    expect(hrefs).not.toContain('/branch/products');
+    expect(hrefs).not.toContain('/branch/employees');
+    expect(hrefs).not.toContain('/branch/attendance');
+    expect(hrefs).not.toContain('/branch/reports');
+    expect(hrefs).not.toContain('/branch/settings');
+  });
+
+  it('does not show Notifications, Receipts, or Profile for the branch role — staff keeps them', () => {
+    const branchHrefs = branchNavItemsForRole('branch').map((i) => i.href);
+    expect(branchHrefs).not.toContain('/branch/notifications');
+    expect(branchHrefs).not.toContain('/branch/receipts');
+    expect(branchHrefs).not.toContain('/branch/profile');
+
+    const staffHrefs = branchNavItemsForRole('staff').map((i) => i.href);
+    expect(staffHrefs).toContain('/branch/notifications');
+    expect(staffHrefs).toContain('/branch/receipts');
+    expect(staffHrefs).toContain('/branch/profile');
   });
 
   it('does not produce any broken (undefined) hrefs', () => {
@@ -36,9 +55,9 @@ describe('branchNavItemsForRole', () => {
 });
 
 describe('branchNavGroupsForRole', () => {
-  it('groups items under the expected section headers, in order', () => {
+  it('groups items under the expected section headers, in order, dropping the now-empty Products/People/Reports sections', () => {
     const groups = branchNavGroupsForRole('branch').map((g) => g.group);
-    expect(groups).toEqual(['Overview', 'Inventory', 'Products', 'People', 'Reports', 'Settings']);
+    expect(groups).toEqual(['Overview', 'Inventory']);
   });
 
   it('places POS Terminal under Overview', () => {

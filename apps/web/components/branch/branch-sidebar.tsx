@@ -7,18 +7,13 @@ import {
   LayoutDashboard,
   ShoppingCart,
   TrendingUp,
-  Package,
   Boxes,
   PackagePlus,
   ArrowLeftRight,
   SlidersHorizontal,
   Trash2,
   Truck,
-  Users,
-  Clock,
-  BarChart3,
   Bell,
-  Settings,
   User,
   Receipt,
   ChevronsLeft,
@@ -41,7 +36,7 @@ interface BranchNavItem extends NavItem {
   /** Which roles see this item. Omitted (or `['branch']`) means branch-only; staff only ever sees the explicitly-listed subset. */
   roles?: Role[];
   /** Sidebar section header this item renders under. */
-  group: 'Overview' | 'Inventory' | 'Products' | 'People' | 'Reports' | 'Settings';
+  group: 'Overview' | 'Inventory' | 'Settings';
 }
 
 /**
@@ -72,20 +67,18 @@ export const BRANCH_NAV_ITEMS = [
   { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2, group: 'Inventory' },
   { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck, group: 'Inventory' },
 
-  { label: 'Products', href: '/branch/products', icon: Package, group: 'Products' },
-
-  { label: 'Employees', href: '/branch/employees', icon: Users, group: 'People' },
-  { label: 'Attendance', href: '/branch/attendance', icon: Clock, group: 'People' },
-
-  { label: 'Reports', href: '/branch/reports', icon: BarChart3, group: 'Reports' },
-
-  { label: 'Branch Settings', href: '/branch/settings', icon: Settings, group: 'Settings' },
-  { label: 'Notifications', href: '/branch/notifications', icon: Bell, roles: ['branch', 'staff'], group: 'Settings' },
-  { label: 'Receipts', href: '/branch/receipts', icon: Receipt, roles: ['branch', 'staff'], group: 'Settings' },
-  { label: 'Profile', href: '/branch/profile', icon: User, roles: ['branch', 'staff'], group: 'Settings' },
+  // POS-PERF-P26 — Products, Employees, Attendance, Reports, and Branch
+  // Settings were removed entirely for the Branch Account: they were
+  // `branch`-only (no `roles` field = branch-only) and `staff` never saw
+  // them, so dropping the entries removes them for every role that could
+  // ever see them. Clock In/Out stays reachable — it's STATE 1 of POS
+  // Terminal, not this removed Attendance page (see terminal/page.tsx).
+  { label: 'Notifications', href: '/branch/notifications', icon: Bell, roles: ['staff'], group: 'Settings' },
+  { label: 'Receipts', href: '/branch/receipts', icon: Receipt, roles: ['staff'], group: 'Settings' },
+  { label: 'Profile', href: '/branch/profile', icon: User, roles: ['staff'], group: 'Settings' },
 ] satisfies ReadonlyArray<BranchNavItem>;
 
-const GROUP_ORDER: BranchNavItem['group'][] = ['Overview', 'Inventory', 'Products', 'People', 'Reports', 'Settings'];
+const GROUP_ORDER: BranchNavItem['group'][] = ['Overview', 'Inventory', 'Settings'];
 
 /** Items visible to the given role — undefined `roles` (or `roles: ['branch']`) means branch-only. */
 export function branchNavItemsForRole(role: Role | undefined): BranchNavItem[] {
@@ -120,6 +113,8 @@ export function BranchSidebar() {
   }
 
   const navGroups = branchNavGroupsForRole(user?.role);
+  // Profile was removed for the Branch Account (POS-PERF-P26) — staff keeps it.
+  const hasProfileAccess = user?.role === 'staff';
 
   return (
     <>
@@ -197,21 +192,39 @@ export function BranchSidebar() {
 
       <div className="border-t border-border/60 p-3">
         <div className={cn('flex items-center gap-3 rounded-lg p-1.5 transition-colors hover:bg-accent/50', collapsed && 'justify-center')}>
-          <Link href="/branch/profile" className="flex min-w-0 flex-1 items-center gap-3">
-            <Avatar className="h-8 w-8 ring-2 ring-primary/20">
-              <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
-                {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
-              </AvatarFallback>
-            </Avatar>
-            {!collapsed && (
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">
-                  {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
-              </div>
-            )}
-          </Link>
+          {hasProfileAccess ? (
+            <Link href="/branch/profile" className="flex min-w-0 flex-1 items-center gap-3">
+              <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+                <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+                  {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
+                </AvatarFallback>
+              </Avatar>
+              {!collapsed && (
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+                </div>
+              )}
+            </Link>
+          ) : (
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+                <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+                  {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
+                </AvatarFallback>
+              </Avatar>
+              {!collapsed && (
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+                </div>
+              )}
+            </div>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -266,23 +279,39 @@ export function BranchSidebar() {
 
         <div className="shrink-0 border-t border-border/60 p-3">
           <div className="flex items-center gap-3 rounded-lg p-1.5">
-            <Link
-              href="/branch/profile"
-              onClick={() => setMobileNavOpen(false)}
-              className="flex min-w-0 flex-1 items-center gap-3"
-            >
-              <Avatar className="h-8 w-8 ring-2 ring-primary/20">
-                <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
-                  {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
-                </AvatarFallback>
-              </Avatar>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">
-                  {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+            {hasProfileAccess ? (
+              <Link
+                href="/branch/profile"
+                onClick={() => setMobileNavOpen(false)}
+                className="flex min-w-0 flex-1 items-center gap-3"
+              >
+                <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+                  <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+                    {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+                </div>
+              </Link>
+            ) : (
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+                  <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">
+                    {user ? generateInitials(user.firstName || 'B', user.lastName || 'R') : 'BR'}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {user ? `${user.firstName} ${user.lastName}`.trim() || user.email : 'Account'}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">{user ? ROLE_LABELS[user.role] : ''}</p>
+                </div>
               </div>
-            </Link>
+            )}
             <Button
               variant="ghost"
               size="icon"

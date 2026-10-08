@@ -25,7 +25,7 @@ import { flavorsService } from '../flavors/flavors.service.js';
 import { productOptionsService } from '../product-options/product-options.service.js';
 import { ProductOptionError } from '../product-options/product-options.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
@@ -88,7 +88,7 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -158,7 +158,7 @@ router.post(
   },
 );
 
-router.get('/:productId', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.getProductById(req.params.productId as string, req.user);
@@ -204,11 +204,11 @@ router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, asy
 });
 
 // Task 209.6 — Product Image Management (Admin Only). Read mirrors
-// GET /:productId (adminSupervisorOrBranch); upload/delete are write
+// GET /:productId (adminOrSupervisor); upload/delete are write
 // operations restricted to Admin, the same posture as every other
 // product-identity write route (POST/PATCH/DELETE /:productId above).
 
-router.get('/:productId/image', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:productId/image', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await productsService.getProductImage(req.params.productId as string);
@@ -274,7 +274,7 @@ router.patch(
   // branchGuard-checked below) as well as a global lifecycle change, so
   // branch needs write access here the same as the branch-availability
   // toggles below.
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(changeProductStatusSchema),
   branchGuard,
@@ -297,7 +297,7 @@ router.patch(
 router.get(
   '/:productId/branch-availability',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -316,7 +316,7 @@ router.get(
 router.patch(
   '/:productId/branch-availability/bulk',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(bulkBranchProductAvailabilitySchema),
@@ -340,7 +340,7 @@ router.patch(
 router.patch(
   '/:productId/branch-availability/:branchId',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),
@@ -363,11 +363,11 @@ router.patch(
 );
 
 // Phase D1 — Admin Readiness panel & product-level publish/unpublish. Read
-// access mirrors branch-availability (adminSupervisorOrBranch); publish/
+// access mirrors branch-availability (adminOrSupervisor); publish/
 // unpublish are branch-scoped writes, so they get branchGuard the same way
 // the branch-availability PATCH routes above do.
 
-router.get('/:productId/readiness', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:productId/readiness', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = readinessQuerySchema.safeParse(req.query);
@@ -389,7 +389,7 @@ router.get('/:productId/readiness', authenticate, adminSupervisorOrBranch, requi
 router.post(
   '/:productId/publish',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(publishProductSchema),
   branchGuard,
@@ -413,7 +413,7 @@ router.post(
 router.post(
   '/:productId/unpublish',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(unpublishProductSchema),
   branchGuard,
@@ -554,7 +554,7 @@ router.patch(
 router.get(
   '/:productId/variants/:variantId/option-groups',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

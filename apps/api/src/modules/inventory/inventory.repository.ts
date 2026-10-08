@@ -200,6 +200,11 @@ export const inventoryRepository = {
     return result._sum.quantityChange ?? new Prisma.Decimal(0);
   },
 
+  /** POS-PERF-P28 — staleness fingerprint for a pending legacy physical-count approval request: Ingredient has no version column (its balance is a replayed ledger sum, not a stored field), so "has anything moved since submission" is approximated by the ledger row count instead. Coarser than the universal target's InventoryStock.version (a count-neutral pair of movements between submission and approval wouldn't trip it) — documented as a known limitation, not fixed, since this path has no live frontend caller. */
+  countMovements(ingredientId: string, tx?: Prisma.TransactionClient): Promise<number> {
+    return (tx ?? prisma).inventoryMovement.count({ where: { ingredientId } });
+  },
+
   /** Batched version of getCurrentStock — one query instead of N for a branch inventory list. */
   async getCurrentStockMap(ingredientIds: string[]): Promise<Map<string, Prisma.Decimal>> {
     if (ingredientIds.length === 0) return new Map();

@@ -23,6 +23,8 @@ import { universalInventoryService } from './universal-inventory.service.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
 import type { InventoryStockMovementType, InventoryStockMovementCategory } from './universal-inventory.types.js';
 import { runMigrationDryRun } from '../inventory-migration/dry-run.service.js';
+import { inventoryApprovalService } from '../inventory-approval/inventory-approval.service.js';
+import { config } from '../../config/index.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -580,6 +582,27 @@ stockBranchRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof receiveInventoryStockSchema>;
+      // POS-PERF-P28 — Receiving now requires supervisor/admin approval
+      // before it touches InventoryStock; this route only creates a pending
+      // request (config.manualInventoryApprovalRequired is the single-env
+      // kill switch back to the pre-P28 immediate-write behavior below).
+      if (config.manualInventoryApprovalRequired) {
+        const result = await inventoryApprovalService.submitReceiving(
+          {
+            target: 'UNIVERSAL_ITEM',
+            branchId: req.params.branchId as string,
+            inventoryItemId: req.params.inventoryItemId as string,
+            enteredQuantity: body.quantity,
+            totalCost: body.total_cost,
+            enteredUnitId: body.entered_unit_id,
+            deliveryReference: body.delivery_reference,
+            notes: body.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: result, error: null, meta: null });
+        return;
+      }
       const result = await universalInventoryService.receiveStock(
         {
           branchId: req.params.branchId as string,
@@ -611,6 +634,21 @@ stockBranchRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof adjustInventoryStockSchema>;
+      if (config.manualInventoryApprovalRequired) {
+        const result = await inventoryApprovalService.submitAdjustment(
+          {
+            target: 'UNIVERSAL_ITEM',
+            branchId: req.params.branchId as string,
+            inventoryItemId: req.params.inventoryItemId as string,
+            quantityDelta: body.quantity_delta,
+            reasonCode: body.reason_code,
+            notes: body.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: result, error: null, meta: null });
+        return;
+      }
       const result = await universalInventoryService.adjustStock(
         {
           branchId: req.params.branchId as string,
@@ -720,6 +758,19 @@ stockBranchRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof physicalCountInventoryStockSchema>;
+      if (config.manualInventoryApprovalRequired) {
+        const requests = await inventoryApprovalService.submitPhysicalCount(
+          {
+            target: 'UNIVERSAL_ITEM',
+            branchId: req.params.branchId as string,
+            counts: body.counts.map((c) => ({ inventoryItemId: c.inventory_item_id, countedQuantity: c.counted_quantity })),
+            notes: body.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: { requests }, error: null, meta: null });
+        return;
+      }
       const result = await universalInventoryService.submitPhysicalCount(
         {
           branchId: req.params.branchId as string,

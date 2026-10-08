@@ -28,6 +28,7 @@ import { expensesRouter } from './modules/expenses/expenses.router.js';
 import { settingsRouter, branchReceiptConfigRouter } from './modules/settings/settings.router.js';
 import { productInventoryRouter } from './modules/product-inventory/product-inventory.router.js';
 import { universalInventoryRouter, inventoryStockBranchRouter } from './modules/universal-inventory/universal-inventory.router.js';
+import { inventoryApprovalRouter } from './modules/inventory-approval/inventory-approval.router.js';
 import { productComponentsRouter } from './modules/product-components/product-components.router.js';
 import { recipeReadinessRouter } from './modules/recipe-readiness/recipe-readiness.router.js';
 import { shadowBomDeductionRouter } from './modules/shadow-bom-deduction/shadow-bom-deduction.router.js';
@@ -102,6 +103,7 @@ app.use('/api/recipe-readiness', recipeReadinessRouter);
 app.use('/api/shadow-bom-deduction', shadowBomDeductionRouter);
 app.use('/api/product-categories', productCategoriesRouter);
 app.use('/api/product-options', productOptionsRouter);
+app.use('/api/inventory-approvals', inventoryApprovalRouter);
 
 // Express 5 catch-all syntax (path-to-regexp v8) — '*' alone is no longer valid.
 app.use('/{*splat}', (_req: Request, res: Response) => {

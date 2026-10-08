@@ -13,12 +13,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import {
-  useBranchInventoryStock,
-  useInventoryItemConversions,
-  useReceiveInventoryStock,
-  useUploadMovementProof,
-} from '@/hooks/queries/use-universal-inventory';
+import { useBranchInventoryStock, useInventoryItemConversions, useReceiveInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { useUploadInventoryApprovalProof } from '@/hooks/queries/use-inventory-approvals';
 import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
 
 const formSchema = z.object({
@@ -75,16 +71,16 @@ function StockInFormContent({ basePath }: { basePath: string }) {
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const { data: conversions = [] } = useInventoryItemConversions(inventoryItemId || undefined);
   const stockIn = useReceiveInventoryStock(activeBranchId, inventoryItemId);
-  const uploadProof = useUploadMovementProof(activeBranchId);
+  const uploadProof = useUploadInventoryApprovalProof(activeBranchId);
   const [proofFile, setProofFile] = useState<File | null>(null);
-  // Set only once stockIn has actually created the movement (stock already
-  // incremented server-side). Once set, the form below is replaced by a
-  // recovery banner so a failed proof upload can never be "retried" by
-  // resubmitting the whole form — that would call /receive again and double
-  // the stock. Retry re-attaches to this same movement id instead.
-  const [recordedMovement, setRecordedMovement] = useState<{ id: string } | null>(null);
-  // Distinct from recordedMovement: only true once a proof upload has actually
-  // failed. recordedMovement flips to non-null as soon as /receive succeeds,
+  // POS-PERF-P28 — stockIn now creates a Pending Review REQUEST, not a
+  // movement; stock is untouched until a supervisor approves it. Set once
+  // the request exists, so the form below is replaced by a recovery banner
+  // if the proof upload fails — resubmitting the whole form would create a
+  // second, duplicate request instead of retrying the same one.
+  const [submittedRequest, setSubmittedRequest] = useState<{ id: string } | null>(null);
+  // Distinct from submittedRequest: only true once a proof upload has actually
+  // failed. submittedRequest flips to non-null as soon as /receive succeeds,
   // before the upload outcome is known, so the recovery banner below must not
   // key off it alone — otherwise it flashes on the successful path too, while
   // router.push is still in flight.
@@ -118,47 +114,47 @@ function StockInFormContent({ basePath }: { basePath: string }) {
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
-    const movement = await stockIn.mutateAsync({
+    const request = await stockIn.mutateAsync({
       quantity: parsed.quantity,
       entered_unit_id: parsed.entered_unit_id,
       notes: parsed.notes || undefined,
     });
-    setRecordedMovement({ id: movement.id });
+    setSubmittedRequest({ id: request.id });
     if (proofFile) {
       try {
-        await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
+        await uploadProof.mutateAsync({ id: request.id, file: proofFile });
       } catch {
         setProofUploadFailed(true); // Recovery banner takes over below.
         return;
       }
     }
-    router.push(`${basePath}/inventory`);
+    router.push(`${basePath}/inventory/approvals`);
   }
 
   async function retryProofUpload() {
-    if (!recordedMovement || !proofFile) return;
+    if (!submittedRequest || !proofFile) return;
     try {
-      await uploadProof.mutateAsync({ movementId: recordedMovement.id, file: proofFile });
+      await uploadProof.mutateAsync({ id: submittedRequest.id, file: proofFile });
     } catch {
       setProofUploadFailed(true);
       return;
     }
-    router.push(`${basePath}/inventory`);
+    router.push(`${basePath}/inventory/approvals`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording stock-in.</p>;
   }
 
-  if (recordedMovement && proofUploadFailed) {
+  if (submittedRequest && proofUploadFailed) {
     return (
       <div className="mx-auto max-w-lg space-y-4">
         <div className="rounded-md border border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="font-medium">Receiving was recorded, but the receipt photo could not be uploaded.</p>
-          <p className="mt-1">Stock has already been updated — retrying below will not add it again.</p>
+          <p className="font-medium">Receiving was submitted for review, but the receipt photo could not be uploaded.</p>
+          <p className="mt-1">The request is pending — it has not changed stock yet. Retrying below will not create a duplicate.</p>
         </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory`)}>
+          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory/approvals`)}>
             Continue Without Photo
           </Button>
           <Button type="button" onClick={() => void retryProofUpload()} disabled={uploadProof.isPending || !proofFile}>
@@ -175,6 +171,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
       <div>
         <h1 className="text-2xl font-bold">Stock In</h1>
         <p className="text-sm text-muted-foreground">Record what&apos;s on the receipt — the system converts the quantity into inventory units.</p>
+        <p className="text-sm text-muted-foreground">Submitted for supervisor review — stock will not change until it&apos;s approved.</p>
       </div>
 
       <Form {...form}>
@@ -271,7 +268,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
             </Button>
             <Button type="submit" disabled={stockIn.isPending || uploadProof.isPending}>
               {(stockIn.isPending || uploadProof.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Record Receiving
+              Submit for Review
             </Button>
           </div>
         </form>

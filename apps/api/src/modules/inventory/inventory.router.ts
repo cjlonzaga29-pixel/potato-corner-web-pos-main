@@ -13,6 +13,8 @@ import {
 } from '@potato-corner/shared';
 import { inventoryService } from './inventory.service.js';
 import { IngredientError } from './inventory.types.js';
+import { inventoryApprovalService } from '../inventory-approval/inventory-approval.service.js';
+import { config } from '../../config/index.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -191,6 +193,26 @@ inventoryRouter.post(
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }
+      // POS-PERF-P28 — this legacy stock-in endpoint has no live frontend
+      // caller but is still a reachable "alternative route" performing the
+      // same manual operation the universal-inventory /receive route now
+      // gates — same approval requirement, same single-env kill switch.
+      if (config.manualInventoryApprovalRequired) {
+        const body = req.body as z.infer<typeof stockInSchema>;
+        const result = await inventoryApprovalService.submitReceiving(
+          {
+            target: 'LEGACY_INGREDIENT',
+            branchId: existing.branch_id,
+            legacyIngredientId: req.params.id as string,
+            enteredQuantity: body.quantity,
+            deliveryReference: body.supplier_reference,
+            notes: body.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: result, error: null, meta: null });
+        return;
+      }
       const movement = await inventoryService.stockIn(
         req.params.id as string,
         req.body,
@@ -223,6 +245,22 @@ inventoryRouter.post(
       }
       if (!(await hasBranchAccess(req.user, existing.branch_id))) {
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      if (config.manualInventoryApprovalRequired) {
+        const body = req.body as z.infer<typeof adjustIngredientSchema>;
+        const result = await inventoryApprovalService.submitAdjustment(
+          {
+            target: 'LEGACY_INGREDIENT',
+            branchId: existing.branch_id,
+            legacyIngredientId: req.params.id as string,
+            quantityDelta: body.quantity_delta,
+            reasonCode: body.reason_code,
+            notes: body.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: result, error: null, meta: null });
         return;
       }
       const movement = await inventoryService.adjustIngredient(
@@ -382,6 +420,20 @@ inventoryBranchRouter.post(
       const body = req.body as { branch_id: string };
       if (body.branch_id !== branchId) {
         res.status(400).json({ data: null, error: { code: 'BRANCH_ID_MISMATCH' }, meta: null });
+        return;
+      }
+      if (config.manualInventoryApprovalRequired) {
+        const parsedBody = req.body as z.infer<typeof physicalCountSubmissionSchema>;
+        const requests = await inventoryApprovalService.submitPhysicalCount(
+          {
+            target: 'LEGACY_INGREDIENT',
+            branchId,
+            counts: parsedBody.counts.map((c) => ({ legacyIngredientId: c.ingredient_id, countedQuantity: c.counted_quantity })),
+            notes: parsedBody.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: { requests }, error: null, meta: null });
         return;
       }
       const result = await inventoryService.submitPhysicalCount(

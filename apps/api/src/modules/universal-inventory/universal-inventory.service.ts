@@ -32,6 +32,7 @@ import type {
   InventoryStockMovementType,
   InventoryStockMovementCategory,
   CreateInventoryCostCorrectionData,
+  InventoryProofType,
 } from './universal-inventory.types.js';
 
 type ActorContext = { id: string; role: string };
@@ -42,14 +43,14 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
 }
 
-async function getSignedInventoryProofUrl(proofKey: string): Promise<string> {
+export async function getSignedInventoryProofUrl(proofKey: string): Promise<string> {
   const { data, error } = await supabaseAdmin.storage.from(INVENTORY_PROOF_BUCKET).createSignedUrl(proofKey, 60 * 60);
   if (error || !data) throw new UniversalInventoryError('PROOF_URL_FAILED', 'Could not generate proof photo URL', 500);
   return data.signedUrl;
 }
 
 /** Re-encodes to webp and uploads under the given key prefix — shared by movement (receiving/waste) and cost-correction proof uploads. Mirrors expensesService.uploadReceipt's compress-then-upload shape. */
-async function uploadInventoryProofImage(
+export async function uploadInventoryProofImage(
   keyPrefix: string,
   file: { buffer: Buffer; originalname: string },
   previousKey: string | null,
@@ -345,7 +346,7 @@ function toStockRowResponse(row: StockRow) {
 }
 
 /** Same low_stock_alert job the legacy path enqueues — fire-and-forget, never fails an already-committed movement. Null threshold means "no alerting configured for this item/branch", not "always alert". */
-async function notifyIfLowStock(params: {
+export async function notifyIfLowStock(params: {
   branchId: string;
   inventoryItemId: string;
   itemName: string;
@@ -367,6 +368,178 @@ async function notifyIfLowStock(params: {
   } catch (error) {
     console.error(`Failed to enqueue low-stock alert for inventory item ${params.inventoryItemId}:`, error);
   }
+}
+
+// ---------------------------------------------------------------------------
+// POS-PERF-P28 — tx-scoped apply logic extracted from receiveStock/
+// adjustStock/submitPhysicalCount's own transaction bodies (unchanged
+// otherwise), so the inventory-approval module's approve step can run the
+// exact same validated lock/write/ledger sequence inside ITS OWN transaction
+// (the approval-row status flip and the stock write must commit or roll back
+// together) instead of re-implementing it. receiveStock/adjustStock/
+// submitPhysicalCount below still call these directly, wrapped in their own
+// prisma.$transaction, for any caller that reaches them without going
+// through approval (today: none — see the module's router).
+// ---------------------------------------------------------------------------
+
+export async function applyReceivingInTx(
+  tx: Prisma.TransactionClient,
+  params: {
+    branchId: string;
+    inventoryItemId: string;
+    baseUnitId: string;
+    baseQuantity: Prisma.Decimal;
+    unitCostPerBaseUnit: Prisma.Decimal | null;
+    totalCost: Prisma.Decimal | null;
+    deliveryReference?: string;
+    notes?: string;
+    performedByUserId: string;
+    enteredQuantity: number;
+    enteredUnitId: string;
+    proofKey?: string;
+    proofType?: InventoryProofType;
+  },
+) {
+  const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
+  if (!stock) {
+    throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+  }
+  const quantityBefore = stock.quantityOnHand;
+  const newAverageCost =
+    params.unitCostPerBaseUnit !== null
+      ? blendWeightedAverageCost(quantityBefore, stock.unitCost, params.baseQuantity, params.unitCostPerBaseUnit)
+      : undefined;
+  const updated = await repo.incrementStockQuantity(params.branchId, params.inventoryItemId, params.baseQuantity, tx, newAverageCost);
+  const quantityAfter = updated.quantityOnHand;
+  return repo.createStockMovement(
+    {
+      branchId: params.branchId,
+      inventoryItemId: params.inventoryItemId,
+      movementType: 'RECEIVING',
+      quantityChange: params.baseQuantity,
+      quantityBefore,
+      quantityAfter,
+      unitId: params.baseUnitId,
+      referenceType: params.deliveryReference ? 'delivery' : undefined,
+      referenceId: params.deliveryReference,
+      notes: params.notes,
+      performedByUserId: params.performedByUserId,
+      unitCost: params.unitCostPerBaseUnit,
+      totalCost: params.totalCost,
+      enteredQuantity: params.enteredQuantity,
+      enteredUnitId: params.enteredUnitId,
+      proofKey: params.proofKey,
+      proofType: params.proofType,
+    },
+    tx,
+  );
+}
+
+export async function applyAdjustmentInTx(
+  tx: Prisma.TransactionClient,
+  params: {
+    branchId: string;
+    inventoryItemId: string;
+    baseUnitId: string;
+    quantityDelta: number;
+    reasonCode: string;
+    notes?: string;
+    performedByUserId: string;
+  },
+) {
+  const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
+  if (!stock) {
+    throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+  }
+  const quantityBefore = stock.quantityOnHand;
+  if (params.quantityDelta < 0 && quantityBefore.minus(stock.quantityReserved).plus(params.quantityDelta).lessThan(0)) {
+    throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take available stock below zero (some stock is reserved for pending sales)', 409);
+  }
+  if (quantityBefore.plus(params.quantityDelta).lessThan(0)) {
+    throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
+  }
+  const updated = await repo.incrementStockQuantity(params.branchId, params.inventoryItemId, params.quantityDelta, tx);
+  const quantityAfter = updated.quantityOnHand;
+  return repo.createStockMovement(
+    {
+      branchId: params.branchId,
+      inventoryItemId: params.inventoryItemId,
+      movementType: params.quantityDelta > 0 ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT',
+      quantityChange: params.quantityDelta,
+      quantityBefore,
+      quantityAfter,
+      unitId: params.baseUnitId,
+      notes: `Reason: ${params.reasonCode}${params.notes ? ` — ${params.notes}` : ''}`,
+      performedByUserId: params.performedByUserId,
+    },
+    tx,
+  );
+}
+
+/**
+ * Staleness guard for the approval path only (receiveStock/adjustStock's own
+ * direct callers never pass expectedStockVersion — submission didn't exist
+ * before approval, so there's nothing to compare against). When provided and
+ * it no longer matches the locked row's current version, something else
+ * moved this stock after the count was submitted — throws instead of
+ * silently overwriting a count taken before those later movements.
+ */
+export async function applyPhysicalCountLineInTx(
+  tx: Prisma.TransactionClient,
+  params: {
+    branchId: string;
+    inventoryItemId: string;
+    baseUnitId: string;
+    countedQuantity: number;
+    notes?: string;
+    performedByUserId: string;
+    expectedStockVersion?: number;
+  },
+) {
+  const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
+  if (!stock) {
+    throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', `No InventoryStock row exists for branch/item ${params.inventoryItemId}`, 404);
+  }
+  if (params.expectedStockVersion !== undefined && stock.version !== params.expectedStockVersion) {
+    throw new UniversalInventoryError(
+      'STALE_PHYSICAL_COUNT',
+      'Stock has changed since this count was submitted — a fresh recount is required before it can be approved.',
+      409,
+    );
+  }
+  const quantityBefore = stock.quantityOnHand;
+  const quantityAfter = new Prisma.Decimal(params.countedQuantity);
+  const varianceAmount = quantityAfter.minus(quantityBefore);
+
+  if (quantityAfter.lessThan(stock.quantityReserved)) {
+    throw new UniversalInventoryError(
+      'PHYSICAL_COUNT_BELOW_RESERVED',
+      `Counted quantity (${quantityAfter.toNumber()}) is below the ${stock.quantityReserved.toNumber()} units already reserved for pending sales at this branch. Those sales must complete, be voided, or their jobs retried before this count can be accepted.`,
+      409,
+    );
+  }
+
+  await repo.updateStockQuantity(params.branchId, params.inventoryItemId, quantityAfter, tx);
+
+  let movement = null;
+  if (!varianceAmount.isZero()) {
+    movement = await repo.createStockMovement(
+      {
+        branchId: params.branchId,
+        inventoryItemId: params.inventoryItemId,
+        movementType: 'PHYSICAL_COUNT',
+        quantityChange: varianceAmount,
+        quantityBefore,
+        quantityAfter,
+        unitId: params.baseUnitId,
+        notes: params.notes,
+        performedByUserId: params.performedByUserId,
+      },
+      tx,
+    );
+  }
+
+  return { previousQuantity: quantityBefore.toNumber(), variance: varianceAmount.toNumber(), movement };
 }
 
 export const universalInventoryService = {
@@ -889,37 +1062,21 @@ export const universalInventoryService = {
     const totalCost = data.totalCost !== undefined ? new Prisma.Decimal(data.totalCost) : null;
     const unitCostPerBaseUnit = totalCost !== null ? totalCost.div(baseQuantity) : null;
 
-    const movement = await prisma.$transaction(async (tx) => {
-      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
-      if (!stock) {
-        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
-      }
-      const quantityBefore = stock.quantityOnHand;
-      const newAverageCost =
-        unitCostPerBaseUnit !== null ? blendWeightedAverageCost(quantityBefore, stock.unitCost, baseQuantity, unitCostPerBaseUnit) : undefined;
-      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity, tx, newAverageCost);
-      const quantityAfter = updated.quantityOnHand;
-      return repo.createStockMovement(
-        {
-          branchId: data.branchId,
-          inventoryItemId: data.inventoryItemId,
-          movementType: 'RECEIVING',
-          quantityChange: baseQuantity,
-          quantityBefore,
-          quantityAfter,
-          unitId: item.baseUnitId,
-          referenceType: data.deliveryReference ? 'delivery' : undefined,
-          referenceId: data.deliveryReference,
-          notes: data.notes,
-          performedByUserId: data.performedByUserId ?? actor.id,
-          unitCost: unitCostPerBaseUnit,
-          totalCost,
-          enteredQuantity: data.quantity,
-          enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
-        },
-        tx,
-      );
-    });
+    const movement = await prisma.$transaction((tx) =>
+      applyReceivingInTx(tx, {
+        branchId: data.branchId,
+        inventoryItemId: data.inventoryItemId,
+        baseUnitId: item.baseUnitId,
+        baseQuantity,
+        unitCostPerBaseUnit,
+        totalCost,
+        deliveryReference: data.deliveryReference,
+        notes: data.notes,
+        performedByUserId: data.performedByUserId ?? actor.id,
+        enteredQuantity: data.quantity,
+        enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
+      }),
+    );
 
     const response = toStockMovementResponse(movement);
 
@@ -947,45 +1104,17 @@ export const universalInventoryService = {
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
 
-    const movement = await prisma.$transaction(async (tx) => {
-      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
-      if (!stock) {
-        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
-      }
-      const quantityBefore = stock.quantityOnHand;
-      // Validated against the locked read before writing — the advisory lock
-      // held since lockAndGetStock guarantees no concurrent writer can move
-      // this row between this check and the atomic increment below, so the
-      // projected value is exact, not just an estimate. POS-PERF-P15: an
-      // outgoing adjustment (negative delta) must not drive quantityOnHand
-      // below what's already reserved for a pending sale's inventory
-      // deduction job — that reservation is itself the "existing
-      // availability checks and other inventory writers respect it"
-      // invariant for InventoryStock.quantityReserved. An incoming
-      // adjustment (positive delta) never needs this check.
-      if (data.quantityDelta < 0 && quantityBefore.minus(stock.quantityReserved).plus(data.quantityDelta).lessThan(0)) {
-        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take available stock below zero (some stock is reserved for pending sales)', 409);
-      }
-      if (quantityBefore.plus(data.quantityDelta).lessThan(0)) {
-        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Adjustment would take stock below zero', 409);
-      }
-      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, data.quantityDelta, tx);
-      const quantityAfter = updated.quantityOnHand;
-      return repo.createStockMovement(
-        {
-          branchId: data.branchId,
-          inventoryItemId: data.inventoryItemId,
-          movementType: data.quantityDelta > 0 ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT',
-          quantityChange: data.quantityDelta,
-          quantityBefore,
-          quantityAfter,
-          unitId: item.baseUnitId,
-          notes: `Reason: ${data.reasonCode}${data.notes ? ` — ${data.notes}` : ''}`,
-          performedByUserId: data.performedByUserId ?? actor.id,
-        },
-        tx,
-      );
-    });
+    const movement = await prisma.$transaction((tx) =>
+      applyAdjustmentInTx(tx, {
+        branchId: data.branchId,
+        inventoryItemId: data.inventoryItemId,
+        baseUnitId: item.baseUnitId,
+        quantityDelta: data.quantityDelta,
+        reasonCode: data.reasonCode,
+        notes: data.notes,
+        performedByUserId: data.performedByUserId ?? actor.id,
+      }),
+    );
 
     const response = toStockMovementResponse(movement);
 
@@ -1308,57 +1437,16 @@ export const universalInventoryService = {
       const item = await repo.findItemById(count.inventoryItemId);
       if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', `Inventory item ${count.inventoryItemId} not found`, 404);
 
-      const variance = await prisma.$transaction(async (tx) => {
-        const stock = await repo.lockAndGetStock(data.branchId, count.inventoryItemId, tx);
-        if (!stock) {
-          throw new UniversalInventoryError(
-            'STOCK_ROW_NOT_FOUND',
-            `No InventoryStock row exists for branch/item ${count.inventoryItemId}`,
-            404,
-          );
-        }
-        const quantityBefore = stock.quantityOnHand;
-        const quantityAfter = new Prisma.Decimal(count.countedQuantity);
-        const varianceAmount = quantityAfter.minus(quantityBefore);
-
-        // POS-PERF-P15R2: a physical count is an absolute-set write, so unlike
-        // adjust/waste/transfer it can't just reject a negative delta — it must
-        // reject the *resulting* quantityOnHand landing below quantityReserved,
-        // checked against the same lockAndGetStock-held row those writers use
-        // (not an unlocked precheck a concurrent reservation/deduction could
-        // invalidate between read and write). Pending sales have already
-        // reserved this stock; a count that ignores that would let the count
-        // silently hand reserved units to someone else before those sales
-        // complete or roll back.
-        if (quantityAfter.lessThan(stock.quantityReserved)) {
-          throw new UniversalInventoryError(
-            'PHYSICAL_COUNT_BELOW_RESERVED',
-            `Counted quantity (${quantityAfter.toNumber()}) is below the ${stock.quantityReserved.toNumber()} units already reserved for pending sales at this branch. Those sales must complete, be voided, or their jobs retried before this count can be accepted.`,
-            409,
-          );
-        }
-
-        await repo.updateStockQuantity(data.branchId, count.inventoryItemId, quantityAfter, tx);
-
-        if (!varianceAmount.isZero()) {
-          await repo.createStockMovement(
-            {
-              branchId: data.branchId,
-              inventoryItemId: count.inventoryItemId,
-              movementType: 'PHYSICAL_COUNT',
-              quantityChange: varianceAmount,
-              quantityBefore,
-              quantityAfter,
-              unitId: item.baseUnitId,
-              notes: data.notes,
-              performedByUserId: data.performedByUserId ?? actor.id,
-            },
-            tx,
-          );
-        }
-
-        return { previousQuantity: quantityBefore.toNumber(), variance: varianceAmount.toNumber() };
-      });
+      const variance = await prisma.$transaction((tx) =>
+        applyPhysicalCountLineInTx(tx, {
+          branchId: data.branchId,
+          inventoryItemId: count.inventoryItemId,
+          baseUnitId: item.baseUnitId,
+          countedQuantity: count.countedQuantity,
+          notes: data.notes,
+          performedByUserId: data.performedByUserId ?? actor.id,
+        }),
+      );
 
       results.push({
         inventory_item_id: count.inventoryItemId,

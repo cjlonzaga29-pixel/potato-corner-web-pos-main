@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ArrowRightLeft, ClipboardList, History, MinusCircle, PlusCircle, TriangleAlert } from 'lucide-react';
+import { ArrowRightLeft, ClipboardCheck, ClipboardList, History, MinusCircle, PlusCircle, TriangleAlert } from 'lucide-react';
 import type { BranchInventoryStockRow } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -145,6 +145,10 @@ export function InventoryList({ basePath }: { basePath: string }) {
           <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/count`)} className="w-full sm:w-auto">
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
+          </Button>
+          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/approvals`)} className="w-full sm:w-auto">
+            <ClipboardCheck className="mr-2 h-4 w-4" />
+            Approvals
           </Button>
         </div>
       </div>

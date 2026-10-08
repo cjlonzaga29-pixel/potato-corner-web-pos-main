@@ -19,13 +19,13 @@ import type {
   InventoryCostCorrectionResponse,
   InventoryItemDetailResponse,
   InventoryItemResponse,
+  InventoryApprovalRequestResponse,
   InventoryItemUnitConversionResponse,
   InventoryStockAlertListResponse,
   InventoryStockMovementListResponse,
   InventoryStockMovementResponse,
   InventoryStockTransferResponse,
   PhysicalCountInventoryStockInput,
-  PhysicalCountStockResultResponse,
   ReceiveInventoryStockInput,
   TransferDestinationListResponse,
   TransferInventoryStockInput,
@@ -473,39 +473,41 @@ export function useInventoryStockRealtimeSync(branchId: string | null | undefine
   );
 }
 
+/** POS-PERF-P28 — receiving no longer writes InventoryStock directly: it creates a Pending Review request (see inventoryApprovalRequestResponseSchema) that a supervisor/admin must approve before stock changes. */
 export function useReceiveInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: ReceiveInventoryStockInput) => {
-      const response = await apiClient<InventoryStockMovementResponse>(
+      const response = await apiClient<InventoryApprovalRequestResponse>(
         `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/receive`,
         { method: 'POST', body: JSON.stringify(input) },
       );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to receive stock'));
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit receiving for review'));
       return response.data;
     },
     onSuccess: () => {
       invalidateInventoryStock(queryClient, branchId);
-      toast.success('Stock received');
+      toast.success('Submitted for supervisor review — stock has not changed yet');
     },
     onError: (error: Error) => toast.error(error.message),
   });
 }
 
+/** POS-PERF-P28 — adjustment no longer writes InventoryStock directly: see useReceiveInventoryStock's note above. */
 export function useAdjustInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: AdjustInventoryStockInput) => {
-      const response = await apiClient<InventoryStockMovementResponse>(
+      const response = await apiClient<InventoryApprovalRequestResponse>(
         `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/adjust`,
         { method: 'POST', body: JSON.stringify(input) },
       );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to record adjustment'));
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit adjustment for review'));
       return response.data;
     },
     onSuccess: () => {
       invalidateInventoryStock(queryClient, branchId);
-      toast.success('Adjustment recorded');
+      toast.success('Submitted for supervisor review — stock has not changed yet');
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -564,20 +566,21 @@ export function useTransferInventoryStock(branchId: string | null | undefined) {
   });
 }
 
+/** POS-PERF-P28 — a physical count now creates one Pending Review request per counted item (sharing a batch_id) instead of writing InventoryStock directly; each is independently approved/returned. */
 export function useSubmitInventoryStockCount(branchId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: PhysicalCountInventoryStockInput) => {
-      const response = await apiClient<PhysicalCountStockResultResponse>(`/api/branches/${branchId}/inventory-stock/count`, {
+      const response = await apiClient<{ requests: InventoryApprovalRequestResponse[] }>(`/api/branches/${branchId}/inventory-stock/count`, {
         method: 'POST',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit physical count'));
-      return response.data;
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit physical count for review'));
+      return response.data.requests;
     },
     onSuccess: () => {
       invalidateInventoryStock(queryClient, branchId);
-      toast.success('Physical count submitted');
+      toast.success('Submitted for supervisor review — stock has not changed yet');
     },
     onError: (error: Error) => toast.error(error.message),
   });

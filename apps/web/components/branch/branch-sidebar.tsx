@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
   Trash2,
   Truck,
+  ClipboardCheck,
   Bell,
   User,
   Receipt,
@@ -69,6 +70,10 @@ export const BRANCH_NAV_ITEMS = [
   { label: 'Stock Adjustments', href: '/branch/inventory/adjust', icon: SlidersHorizontal, group: 'Inventory' },
   { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2, group: 'Inventory' },
   { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck, group: 'Inventory' },
+  // POS-PERF-P28 — Stock In/Adjustments/Physical Count now require
+  // supervisor approval before stock changes; this is where a branch
+  // account tracks its own submissions' status.
+  { label: 'Inventory Approvals', href: '/branch/inventory/approvals', icon: ClipboardCheck, group: 'Inventory' },
 
   // POS-PERF-P26 — Products, Employees, Attendance, Reports, and Branch
   // Settings were removed entirely for the Branch Account: they were

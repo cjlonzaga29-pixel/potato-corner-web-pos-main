@@ -98,7 +98,7 @@ function classifyStatus(currentStock: number, lowThreshold: number, criticalThre
  * instead of a second, divergent notification path. Fire-and-forget: a queue outage must
  * never fail an already-committed movement.
  */
-async function notifyIfLowStock(params: {
+export async function notifyIfLowStock(params: {
   branchId: string;
   ingredientId: string;
   ingredientName: string;

@@ -1393,6 +1393,101 @@ model InventoryCostCorrection {
   @@map("inventory_cost_corrections")
 }
 
+enum InventoryApprovalOperation {
+  RECEIVING
+  ADJUSTMENT
+  PHYSICAL_COUNT
+}
+
+enum InventoryApprovalStatus {
+  PENDING
+  APPROVED
+  RETURNED
+}
+
+/// POS-PERF-P28 -- which manual-inventory system a request targets.
+/// UNIVERSAL_ITEM is the live CR-007 InventoryItem/InventoryStock system;
+/// LEGACY_INGREDIENT is the superseded Ingredient/InventoryMovement system
+/// (apps/api/src/modules/inventory/) -- no live frontend caller and no
+/// POS-deduction reader/writer remain on it, but its manual-write endpoints
+/// are still reachable directly and must not bypass the same approval gate.
+enum InventoryApprovalTarget {
+  UNIVERSAL_ITEM
+  LEGACY_INGREDIENT
+}
+
+/// POS-PERF-P28 -- durable Pending Review request for a manual Stock In /
+/// Adjustment / Physical Count write. Submitting never writes
+/// InventoryStock/Ingredient or appends a movement -- that only happens when
+/// an approve transitions this row PENDING -> APPROVED (inventory-approval
+/// service, same transaction as the movement it creates). Every field below
+/// is a loose reference (no Prisma relation), matching
+/// InventoryStockMovement.performedByUserId/referenceId's existing
+/// convention -- the referenced entity type varies by target/operation.
+///
+/// Revision history: a staff correction after RETURNED never overwrites the
+/// returned row -- it inserts a new row with revisionNumber + 1,
+/// previousRequestId pointing at the row it supersedes, and the same
+/// rootRequestId (= id of revision 1) shared across the whole chain. The
+/// returned row is never mutated again. batchId groups the N rows created by
+/// one multi-item physical-count submission (one row per counted item).
+///
+/// Staleness fingerprint (PHYSICAL_COUNT only): quantityOnHandAtSubmission/
+/// stockVersionAtSubmission snapshot InventoryStock.quantityOnHand/version
+/// (UNIVERSAL_ITEM) or the ledger row count (LEGACY_INGREDIENT, which has no
+/// version column) at submission time -- re-checked at approval so a count
+/// made before an intervening sale/adjustment/waste can never silently
+/// overwrite stock those later movements already changed (see
+/// inventory-approval.service.ts#applyPhysicalCount).
+model InventoryApprovalRequest {
+  id                String   @id @default(uuid())
+  rootRequestId     String   @map("root_request_id")
+  previousRequestId String?  @map("previous_request_id")
+  revisionNumber    Int      @default(1) @map("revision_number")
+  batchId           String?  @map("batch_id")
+
+  target             InventoryApprovalTarget
+  branchId           String                     @map("branch_id")
+  inventoryItemId    String?                    @map("inventory_item_id")
+  legacyIngredientId String?                    @map("legacy_ingredient_id")
+  operation          InventoryApprovalOperation
+
+  // RECEIVING payload
+  enteredQuantity   Decimal? @map("entered_quantity") @db.Decimal(12, 4)
+  enteredUnitId     String?  @map("entered_unit_id")
+  totalCost         Decimal? @map("total_cost") @db.Decimal(12, 4)
+  deliveryReference String?  @map("delivery_reference")
+
+  // ADJUSTMENT payload -- base-unit, signed
+  quantityDelta Decimal? @map("quantity_delta") @db.Decimal(12, 4)
+
+  // PHYSICAL_COUNT payload + staleness fingerprint
+  countedQuantity            Decimal? @map("counted_quantity") @db.Decimal(12, 4)
+  quantityOnHandAtSubmission Decimal? @map("quantity_on_hand_at_submission") @db.Decimal(12, 4)
+  stockVersionAtSubmission   Int?     @map("stock_version_at_submission")
+
+  reasonCode String?         @map("reason_code")
+  notes      String?
+  proofKey   String?         @map("proof_key")
+  proofType  ImageProofType? @map("proof_type")
+
+  status            InventoryApprovalStatus @default(PENDING)
+  submittedByUserId String                  @map("submitted_by_user_id")
+  submittedAt       DateTime                @default(now()) @map("submitted_at")
+  reviewedByUserId  String?                 @map("reviewed_by_user_id")
+  reviewedAt        DateTime?               @map("reviewed_at")
+  returnReason      String?                 @map("return_reason")
+  appliedMovementId String?                 @map("applied_movement_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId, status])
+  @@index([rootRequestId])
+  @@index([batchId])
+  @@map("inventory_approval_requests")
+}
+
 /// CR-007 §10 -- join between a ProductVariant and the InventoryItem it
 /// consumes. Supersedes ProductInventory. Neutral: no reference to Flavor,
 /// ProductFlavorSlot, or any product-option construct -- flavor-specific

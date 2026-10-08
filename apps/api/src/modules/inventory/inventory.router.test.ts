@@ -49,9 +49,19 @@ const { inventoryService } = await import('./inventory.service.js');
 const { IngredientError } = await import('./inventory.types.js');
 const { inventoryRouter, inventoryBranchRouter } = await import('./inventory.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
+const { config } = await import('../../config/index.js');
 const { generateSuperAdminToken, generateSupervisorToken, generateStaffToken, generateBranchToken } = await import(
   '../../test-utils/auth-tokens.js'
 );
+
+// POS-PERF-P28 — this file exercises the pre-approval direct-write behavior
+// (stockIn/adjustIngredient/submitPhysicalCount called straight from the
+// route) that the manual-inventory approval gate now sits in front of by
+// default. Forced off here so these pre-existing branch-protection/
+// validate-middleware assertions keep testing what they always tested; the
+// gated (default-on) behavior has its own coverage in
+// inventory-approval.router.test.ts.
+(config as { manualInventoryApprovalRequired: boolean }).manualInventoryApprovalRequired = false;
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
 

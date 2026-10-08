@@ -138,6 +138,18 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   /**
+   * POS-PERF-P28 — single-env kill switch for the manual-inventory approval
+   * gate. Defaults to required (true); flipping to 'false' in one
+   * environment's config falls the four gated routes back to their
+   * pre-P28 immediate-write behavior with no redeploy, for an emergency
+   * rollback at the pilot branch. "true"/"false" only, same reasoning as
+   * INVENTORY_PROJECTION_OUTBOX_ENABLED above.
+   */
+  MANUAL_INVENTORY_APPROVAL_REQUIRED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /**
    * CR-012.1 -- off by default. When true, a completed sale fires a
    * best-effort, non-blocking shadow BOM comparison after the legacy
    * deduction/transaction already committed; when false, zero extra
@@ -295,6 +307,7 @@ export const config = {
   sentryDsn: env.SENTRY_DSN,
   email: { resendApiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM },
   inventoryProjectionOutboxEnabled: env.INVENTORY_PROJECTION_OUTBOX_ENABLED,
+  manualInventoryApprovalRequired: env.MANUAL_INVENTORY_APPROVAL_REQUIRED,
   shadowBomDeductionEnabled: env.SHADOW_BOM_DEDUCTION_ENABLED,
   shadowBomDeductionBranchIds: env.SHADOW_BOM_DEDUCTION_BRANCH_IDS,
   /** POS checkout's createTransaction $transaction options — see posTransactionMaxWaitMsSchema above. */

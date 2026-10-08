@@ -77,7 +77,7 @@ export function InventoryCountForm({ basePath }: { basePath: string }) {
       notes: pendingValues.notes || undefined,
       counts: pendingValues.counts.map((c) => ({ inventory_item_id: c.inventory_item_id, counted_quantity: c.counted_quantity })),
     });
-    router.push(`${basePath}/inventory`);
+    router.push(`${basePath}/inventory/approvals`);
   }
 
   if (!activeBranchId) {
@@ -89,9 +89,10 @@ export function InventoryCountForm({ basePath }: { basePath: string }) {
       <div>
         <h1 className="text-2xl font-bold">Physical Count</h1>
         <p className="text-sm text-muted-foreground">
-          Enter the actual counted quantity for each item. Only rows that differ from the current recorded stock produce a
-          movement.
+          Enter the actual counted quantity for each item. Only rows that differ from the current recorded stock create a
+          request.
         </p>
+        <p className="text-sm text-muted-foreground">Submitted for supervisor review — stock will not change until approved.</p>
       </div>
 
       {isLoading ? (
@@ -139,8 +140,8 @@ export function InventoryCountForm({ basePath }: { basePath: string }) {
         open={!!pendingValues}
         onOpenChange={(o) => !o && setPendingValues(null)}
         title="Confirm Physical Count"
-        description="This posts inventory movements for every item that differs from the current recorded stock."
-        confirmLabel="Submit Count"
+        description="This submits the count for supervisor review — stock will not change until it's approved."
+        confirmLabel="Submit for Review"
         variant="danger"
         onConfirm={handleConfirm}
       />

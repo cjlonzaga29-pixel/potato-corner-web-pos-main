@@ -15,7 +15,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useAdjustInventoryStock, useBranchInventoryStock, useUploadMovementProof } from '@/hooks/queries/use-universal-inventory';
+import { useAdjustInventoryStock, useBranchInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { useUploadInventoryApprovalProof } from '@/hooks/queries/use-inventory-approvals';
 import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
 import { InventoryAdjustmentHistory } from './inventory-adjustment-history';
 
@@ -47,16 +48,16 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
   const inventoryItemId = form.watch('inventory_item_id');
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const adjust = useAdjustInventoryStock(activeBranchId, inventoryItemId);
-  const uploadProof = useUploadMovementProof(activeBranchId);
+  const uploadProof = useUploadInventoryApprovalProof(activeBranchId);
   const [proofFile, setProofFile] = useState<File | null>(null);
-  // Set only once the adjustment has actually been recorded (stock already
-  // changed server-side). Once set, the form below is replaced by a
-  // recovery banner so a failed proof upload can never be "retried" by
-  // resubmitting the whole form — that would call /adjust again and double
-  // the adjustment. Retry re-attaches to this same movement id instead.
-  const [recordedMovement, setRecordedMovement] = useState<{ id: string } | null>(null);
-  // Distinct from recordedMovement: only true once a proof upload has
-  // actually failed — recordedMovement flips to non-null as soon as /adjust
+  // POS-PERF-P28 — adjust now creates a Pending Review REQUEST, not a
+  // movement; stock is untouched until a supervisor approves it. Set once
+  // the request exists, so the form below is replaced by a recovery banner
+  // if the proof upload fails — resubmitting the whole form would create a
+  // second, duplicate request instead of retrying the same one.
+  const [submittedRequest, setSubmittedRequest] = useState<{ id: string } | null>(null);
+  // Distinct from submittedRequest: only true once a proof upload has
+  // actually failed — submittedRequest flips to non-null as soon as /adjust
   // succeeds, before the upload outcome is known, so the recovery banner
   // below must not key off it alone.
   const [proofUploadFailed, setProofUploadFailed] = useState(false);
@@ -75,47 +76,47 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
 
   async function handleConfirm() {
     if (!pendingValues) return;
-    const movement = await adjust.mutateAsync({
+    const request = await adjust.mutateAsync({
       quantity_delta: pendingValues.quantity_delta,
       reason_code: pendingValues.reason_code,
       notes: pendingValues.notes || undefined,
     });
-    setRecordedMovement({ id: movement.id });
+    setSubmittedRequest({ id: request.id });
     if (proofFile) {
       try {
-        await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
+        await uploadProof.mutateAsync({ id: request.id, file: proofFile });
       } catch {
         setProofUploadFailed(true); // Recovery banner takes over below.
         return;
       }
     }
-    router.push(`${basePath}/inventory`);
+    router.push(`${basePath}/inventory/approvals`);
   }
 
   async function retryProofUpload() {
-    if (!recordedMovement || !proofFile) return;
+    if (!submittedRequest || !proofFile) return;
     try {
-      await uploadProof.mutateAsync({ movementId: recordedMovement.id, file: proofFile });
+      await uploadProof.mutateAsync({ id: submittedRequest.id, file: proofFile });
     } catch {
       setProofUploadFailed(true);
       return;
     }
-    router.push(`${basePath}/inventory`);
+    router.push(`${basePath}/inventory/approvals`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording an adjustment.</p>;
   }
 
-  if (recordedMovement && proofUploadFailed) {
+  if (submittedRequest && proofUploadFailed) {
     return (
       <div className="mx-auto max-w-lg space-y-4">
         <div className="rounded-md border border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="font-medium">Stock adjustment was recorded, but the proof photo could not be uploaded.</p>
-          <p className="mt-1">The adjustment has already been applied — retrying below will not apply it again.</p>
+          <p className="font-medium">Stock adjustment was submitted for review, but the proof photo could not be uploaded.</p>
+          <p className="mt-1">The request is pending — it has not changed stock yet. Retrying below will not create a duplicate.</p>
         </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory`)}>
+          <Button type="button" variant="outline" onClick={() => router.push(`${basePath}/inventory/approvals`)}>
             Continue Without Photo
           </Button>
           <Button type="button" onClick={() => void retryProofUpload()} disabled={uploadProof.isPending || !proofFile}>
@@ -220,7 +221,7 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
             </Button>
             <Button type="submit" disabled={adjust.isPending || uploadProof.isPending}>
               {(adjust.isPending || uploadProof.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Record Adjustment
+              Submit for Review
             </Button>
           </div>
         </form>
@@ -229,8 +230,8 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
         open={!!pendingValues}
         onOpenChange={(o) => !o && setPendingValues(null)}
         title="Confirm Stock Adjustment"
-        description="This immediately changes the recorded stock level."
-        confirmLabel="Adjust Stock"
+        description="This submits the adjustment for supervisor review — stock will not change until it's approved."
+        confirmLabel="Submit for Review"
         variant="danger"
         onConfirm={handleConfirm}
       />

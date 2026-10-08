@@ -21,3 +21,4 @@ export * from './product-component.schema.js';
 export * from './product-catalog.schema.js';
 export * from './recipe-readiness.schema.js';
 export * from './shadow-bom-deduction.schema.js';
+export * from './inventory-approval.schema.js';

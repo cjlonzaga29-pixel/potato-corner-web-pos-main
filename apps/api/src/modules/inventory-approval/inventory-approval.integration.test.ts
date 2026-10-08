@@ -224,6 +224,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
       { target: 'UNIVERSAL_ITEM', branchId, counts: [{ inventoryItemId: itemId, countedQuantity: 999 }] },
       actor('branch', branchUserId, [branchId]),
     );
+    if (!request) throw new Error('expected one request for the single submitted count line');
     // A second, unrelated adjustment approved in between moves the stock
     // version the count's staleness fingerprint was taken against.
     const bump = await inventoryApprovalService.submitAdjustment(
@@ -358,6 +359,36 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
       code: 'ALREADY_PROCESSED',
     });
+  });
+
+  it('cancelling using the old/root request ID after a correction exists is rejected, and the live revision is unaffected', async () => {
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 7, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    await inventoryApprovalService.returnForCorrection(request.id, 'wrong amount', actor('supervisor', supervisorUserId, [branchId]));
+    const revision2 = await inventoryApprovalService.correct(request.id, { quantityDelta: 9 }, actor('branch', branchUserId, [branchId]));
+    expect(revision2.status).toBe('PENDING');
+
+    // Cancelling against the stale root/old request ID (revision 1, now
+    // RETURNED-and-superseded) must be rejected rather than silently
+    // cancelling revision 1 while leaving revision 2 live and approvable —
+    // that would let the same physical event still reach stock through the
+    // descendant while the API reports the lineage as cancelled.
+    await expect(
+      inventoryApprovalService.cancel(request.id, 'trying to cancel via the old id', actor('supervisor', supervisorUserId, [branchId]), null),
+    ).rejects.toMatchObject({ code: 'ALREADY_CORRECTED' });
+
+    const staleRow = await prisma.inventoryApprovalRequest.findUniqueOrThrow({ where: { id: request.id } });
+    expect(staleRow.status).toBe('RETURNED');
+
+    // The live revision is untouched by the rejected stale-id cancel attempt
+    // and can still be approved normally.
+    const approved = await inventoryApprovalService.approve(revision2.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+    const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 9);
   });
 
   it('cancel versus approve on the same PENDING request has exactly one winner', async () => {

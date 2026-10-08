@@ -17,6 +17,12 @@ export const TEST_USERS = {
     role: 'supervisor' as const,
     dashboardPath: '/supervisor/dashboard',
   },
+  branch: {
+    email: 'branch@potatocorner.test',
+    password: 'BranchAccount123',
+    role: 'branch' as const,
+    dashboardPath: '/branch/dashboard',
+  },
   staff: {
     email: 'staff@potatocorner.test',
     password: 'Staff123',

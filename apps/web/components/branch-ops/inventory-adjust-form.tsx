@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useBranchStore } from '@/stores/branch.store';
 import { useAdjustInventoryStock, useBranchInventoryStock, useUploadMovementProof } from '@/hooks/queries/use-universal-inventory';
 import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
+import { InventoryAdjustmentHistory } from './inventory-adjustment-history';
 
 const REASON_LABELS: Record<AdjustmentReason, string> = {
   count_correction: 'Count Correction',
@@ -240,8 +241,11 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
 /** Shared body behind both `/supervisor/inventory/adjust` and `/branch/inventory/adjust`. */
 export function InventoryAdjustForm({ basePath }: { basePath: string }) {
   return (
-    <Suspense>
-      <AdjustFormContent basePath={basePath} />
-    </Suspense>
+    <div className="space-y-10">
+      <Suspense>
+        <AdjustFormContent basePath={basePath} />
+      </Suspense>
+      <InventoryAdjustmentHistory />
+    </div>
   );
 }

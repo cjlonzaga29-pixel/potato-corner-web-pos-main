@@ -21,7 +21,16 @@ interface InventoryMovementsViewProps {
   branchId?: string | null;
 }
 
-/** Shared body behind `/supervisor/inventory/movements`, `/branch/inventory/movements`, and the Admin Inventory Movements screen — no internal navigation, so no basePath is needed. */
+/**
+ * Shared body behind `/supervisor/inventory/movements` and the Admin
+ * Inventory Movements screen — the full, unfiltered movement ledger across
+ * every movement type. No internal navigation, so no basePath is needed.
+ *
+ * POS-PERF-P27 — `/branch/inventory/movements` no longer renders this: that
+ * route now renders OrderDeductionsView, a SALE/SALE_REVERSAL-only view
+ * (see order-deductions-view.tsx). This component is unchanged otherwise,
+ * so Supervisor/Admin retain full audit visibility exactly as before.
+ */
 export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps = {}) {
   const storeActiveBranchId = useBranchStore((s) => s.activeBranchId);
   const activeBranchId = branchId !== undefined ? branchId : storeActiveBranchId;

@@ -30,6 +30,7 @@ import type {
   TransferInventoryStockData,
   PhysicalCountInventoryStockData,
   InventoryStockMovementType,
+  InventoryStockMovementCategory,
   CreateInventoryCostCorrectionData,
 } from './universal-inventory.types.js';
 
@@ -801,7 +802,15 @@ export const universalInventoryService = {
 
   async getStockMovements(
     branchId: string,
-    filters: { inventoryItemId?: string; movementType?: InventoryStockMovementType; fromDate?: Date; toDate?: Date; page: number; limit: number },
+    filters: {
+      inventoryItemId?: string;
+      movementType?: InventoryStockMovementType;
+      category?: InventoryStockMovementCategory;
+      fromDate?: Date;
+      toDate?: Date;
+      page: number;
+      limit: number;
+    },
   ) {
     const { movements, total } = await repo.findStockMovements(branchId, filters);
 

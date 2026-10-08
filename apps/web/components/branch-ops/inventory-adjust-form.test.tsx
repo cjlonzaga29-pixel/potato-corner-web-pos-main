@@ -3,15 +3,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { InventoryAdjustForm } from './inventory-adjust-form';
 
-const { mockPush, mockUseBranchStore, mockUseBranchInventoryStock, mockUseAdjustInventoryStock, mockUseUploadMovementProof } = vi.hoisted(
-  () => ({
-    mockPush: vi.fn(),
-    mockUseBranchStore: vi.fn(),
-    mockUseBranchInventoryStock: vi.fn(),
-    mockUseAdjustInventoryStock: vi.fn(),
-    mockUseUploadMovementProof: vi.fn(),
-  }),
-);
+const {
+  mockPush,
+  mockUseBranchStore,
+  mockUseBranchInventoryStock,
+  mockUseAdjustInventoryStock,
+  mockUseUploadMovementProof,
+  mockUseInventoryStockMovements,
+} = vi.hoisted(() => ({
+  mockPush: vi.fn(),
+  mockUseBranchStore: vi.fn(),
+  mockUseBranchInventoryStock: vi.fn(),
+  mockUseAdjustInventoryStock: vi.fn(),
+  mockUseUploadMovementProof: vi.fn(),
+  mockUseInventoryStockMovements: vi.fn(),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush, back: vi.fn() }),
@@ -26,6 +32,8 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useBranchInventoryStock: mockUseBranchInventoryStock,
   useAdjustInventoryStock: mockUseAdjustInventoryStock,
   useUploadMovementProof: mockUseUploadMovementProof,
+  // Backs InventoryAdjustmentHistory, rendered below the form itself.
+  useInventoryStockMovements: mockUseInventoryStockMovements,
 }));
 
 /** Same jsdom-friendly native-<select> stand-in as inventory-stock-in-form.test.tsx. */
@@ -99,6 +107,12 @@ beforeEach(() => {
   );
   mockUseBranchInventoryStock.mockReturnValue({
     data: { items: [{ inventory_item_id: ITEM_ID, name: 'Cheese Flavor Powder', base_unit_code: 'g', quantity_on_hand: 100 }] },
+  });
+  mockUseInventoryStockMovements.mockReturnValue({
+    data: { movements: [], total: 0, page: 1, limit: 10 },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
   });
 });
 

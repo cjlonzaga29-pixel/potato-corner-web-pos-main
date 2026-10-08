@@ -12,9 +12,11 @@ import type {
   CreateInventoryItemData,
   UpdateInventoryItemData,
   InventoryStockMovementType,
+  InventoryStockMovementCategory,
   InventoryProofType,
   CreateInventoryCostCorrectionData,
 } from './universal-inventory.types.js';
+import { STOCK_MOVEMENT_CATEGORY_TYPES } from './universal-inventory.types.js';
 
 const inventoryItemInclude = {
   category: { select: { id: true, name: true } },
@@ -541,12 +543,23 @@ export const universalInventoryRepository = {
 
   async findStockMovements(
     branchId: string,
-    filters: { inventoryItemId?: string; movementType?: InventoryStockMovementType; fromDate?: Date; toDate?: Date; page: number; limit: number },
+    filters: {
+      inventoryItemId?: string;
+      movementType?: InventoryStockMovementType;
+      /** Restricts to the movement types belonging to this view category — see STOCK_MOVEMENT_CATEGORY_TYPES. Ignored when movementType is also given (that's the more specific filter). */
+      category?: InventoryStockMovementCategory;
+      fromDate?: Date;
+      toDate?: Date;
+      page: number;
+      limit: number;
+    },
   ) {
     const where: Prisma.InventoryStockMovementWhereInput = {
       branchId,
       ...(filters.inventoryItemId && { inventoryItemId: filters.inventoryItemId }),
-      ...(filters.movementType && { movementType: filters.movementType }),
+      ...(filters.movementType
+        ? { movementType: filters.movementType }
+        : filters.category && { movementType: { in: STOCK_MOVEMENT_CATEGORY_TYPES[filters.category] } }),
       ...((filters.fromDate ?? filters.toDate) && {
         createdAt: {
           ...(filters.fromDate && { gte: filters.fromDate }),

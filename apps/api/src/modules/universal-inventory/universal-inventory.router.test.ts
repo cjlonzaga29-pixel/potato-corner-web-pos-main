@@ -414,6 +414,40 @@ describe('GET /:branchId/inventory-stock/movements — date filter boundary reso
       }),
     );
   });
+
+  // POS-PERF-P27 — the branch-facing Order Deductions / Stock Adjustments
+  // history screens send `category` instead of a bare movement_type, so the
+  // server restricts the result to that view's movement types.
+  it('forwards a valid category query param through to the service', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/movements');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_1 },
+      query: { category: 'order_deductions' },
+    });
+    const res = mockRes();
+    vi.mocked(universalInventoryService.getStockMovements).mockResolvedValue({ movements: [], total: 0, page: 1, limit: 25 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(universalInventoryService.getStockMovements).toHaveBeenCalledWith(BRANCH_1, expect.objectContaining({ category: 'order_deductions' }));
+  });
+
+  it('rejects an unknown category value with a 422', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'get', '/:branchId/inventory-stock/movements');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      params: { branchId: BRANCH_1 },
+      query: { category: 'not_a_real_category' },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(universalInventoryService.getStockMovements).not.toHaveBeenCalled();
+  });
 });
 
 /**

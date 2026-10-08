@@ -1,7 +1,7 @@
 'use client';
 
-import { InventoryMovementsView } from '@/components/branch-ops/inventory-movements-view';
+import { OrderDeductionsView } from '@/components/branch-ops/order-deductions-view';
 
 export default function BranchInventoryMovementsPage() {
-  return <InventoryMovementsView />;
+  return <OrderDeductionsView />;
 }

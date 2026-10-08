@@ -62,7 +62,10 @@ export const BRANCH_NAV_ITEMS = [
 
   { label: 'Inventory', href: '/branch/inventory', icon: Boxes, group: 'Inventory' },
   { label: 'Receiving', href: '/branch/inventory/stock-in', icon: PackagePlus, group: 'Inventory' },
-  { label: 'Stock Movement', href: '/branch/inventory/movements', icon: ArrowLeftRight, group: 'Inventory' },
+  // POS-PERF-P27 — renamed from "Stock Movement": this page now shows only
+  // sale-linked deductions/returns (see order-deductions-view.tsx), not the
+  // full movement ledger.
+  { label: 'Order Deductions', href: '/branch/inventory/movements', icon: ArrowLeftRight, group: 'Inventory' },
   { label: 'Stock Adjustments', href: '/branch/inventory/adjust', icon: SlidersHorizontal, group: 'Inventory' },
   { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2, group: 'Inventory' },
   { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck, group: 'Inventory' },

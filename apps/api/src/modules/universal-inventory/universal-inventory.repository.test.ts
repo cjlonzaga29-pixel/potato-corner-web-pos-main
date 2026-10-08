@@ -1,6 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Prisma } from '@prisma/client';
+
+vi.mock('../../lib/prisma.js', () => ({
+  prisma: {
+    inventoryStockMovement: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+    },
+  },
+}));
+
 import { universalInventoryRepository } from './universal-inventory.repository.js';
+import { prisma } from '../../lib/prisma.js';
 
 // SALE MOVEMENT COST SNAPSHOT FIX — createStockMovements (the batched
 // counterpart to createStockMovement, and the only path SALE deductions use)
@@ -70,5 +81,55 @@ describe('universalInventoryRepository.createStockMovements', () => {
     const [[{ data }]] = createMany.mock.calls as [[{ data: Array<{ unitCost?: unknown; totalCost?: unknown }> }]];
     expect(data[0]?.unitCost).toBeUndefined();
     expect(data[0]?.totalCost).toBeUndefined();
+  });
+});
+
+// POS-PERF-P27 — the branch-facing Order Deductions / Stock Adjustments
+// history screens pass `category` instead of a bare `movementType`; the
+// repository must translate that into a movementType `in` filter so the
+// filtering happens server-side, before pagination/totals.
+describe('universalInventoryRepository.findStockMovements', () => {
+  beforeEach(() => {
+    vi.mocked(prisma.inventoryStockMovement.findMany).mockClear();
+    vi.mocked(prisma.inventoryStockMovement.count).mockClear();
+  });
+
+  it('filters to SALE/SALE_REVERSAL when category is "order_deductions"', async () => {
+    await universalInventoryRepository.findStockMovements('branch-1', { category: 'order_deductions', page: 1, limit: 25 });
+
+    expect(vi.mocked(prisma.inventoryStockMovement.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ movementType: { in: ['SALE', 'SALE_REVERSAL'] } }) }),
+    );
+    expect(vi.mocked(prisma.inventoryStockMovement.count)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ movementType: { in: ['SALE', 'SALE_REVERSAL'] } }) }),
+    );
+  });
+
+  it('filters to ADJUSTMENT_IN/ADJUSTMENT_OUT when category is "adjustments"', async () => {
+    await universalInventoryRepository.findStockMovements('branch-1', { category: 'adjustments', page: 1, limit: 25 });
+
+    expect(vi.mocked(prisma.inventoryStockMovement.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ movementType: { in: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'] } }) }),
+    );
+  });
+
+  it('prefers an explicit movementType over category when both are given', async () => {
+    await universalInventoryRepository.findStockMovements('branch-1', {
+      category: 'order_deductions',
+      movementType: 'SALE',
+      page: 1,
+      limit: 25,
+    });
+
+    expect(vi.mocked(prisma.inventoryStockMovement.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ movementType: 'SALE' }) }),
+    );
+  });
+
+  it('omits the movementType filter entirely when neither movementType nor category is given — the full-ledger view', async () => {
+    await universalInventoryRepository.findStockMovements('branch-1', { page: 1, limit: 25 });
+
+    const [[{ where }]] = vi.mocked(prisma.inventoryStockMovement.findMany).mock.calls as [[{ where: Record<string, unknown> }]];
+    expect(where).not.toHaveProperty('movementType');
   });
 });

@@ -81,6 +81,19 @@ export type InventoryStockMovementType =
   | 'SALE'
   | 'SALE_REVERSAL';
 
+/**
+ * POS-PERF-P27 — view-level groupings over InventoryStockMovementType, used
+ * only to filter the two branch-facing history screens (Order Deductions /
+ * Stock Adjustments history) server-side. Admin/Supervisor's full ledger
+ * view never sends a category and is unaffected.
+ */
+export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments';
+
+export const STOCK_MOVEMENT_CATEGORY_TYPES: Record<InventoryStockMovementCategory, InventoryStockMovementType[]> = {
+  order_deductions: ['SALE', 'SALE_REVERSAL'],
+  adjustments: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'],
+};
+
 export type InventoryProofType = 'live_capture' | 'gallery_upload';
 
 export interface ReceiveInventoryStockData {

@@ -400,9 +400,18 @@ export function useBranchInventoryStockAlerts(branchId: string | null | undefine
   });
 }
 
+/**
+ * POS-PERF-P27 — view-level grouping sent to the server, which restricts the
+ * result to the movement types behind that branch-facing history screen
+ * (Order Deductions / Stock Adjustments history). Omitted by the Admin/
+ * Supervisor full-ledger view, which still sees every movement type.
+ */
+export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments';
+
 export interface InventoryStockMovementFilters {
   inventory_item_id?: string;
   movement_type?: InventoryStockMovementResponse['movement_type'];
+  category?: InventoryStockMovementCategory;
   from_date?: string;
   to_date?: string;
   page?: number;
@@ -413,6 +422,7 @@ function buildStockMovementsQueryString(filters: InventoryStockMovementFilters):
   const params = new URLSearchParams();
   if (filters.inventory_item_id) params.set('inventory_item_id', filters.inventory_item_id);
   if (filters.movement_type) params.set('movement_type', filters.movement_type);
+  if (filters.category) params.set('category', filters.category);
   if (filters.from_date) params.set('from_date', filters.from_date);
   if (filters.to_date) params.set('to_date', filters.to_date);
   params.set('page', String(filters.page ?? 1));
@@ -420,7 +430,11 @@ function buildStockMovementsQueryString(filters: InventoryStockMovementFilters):
   return params.toString();
 }
 
-export function useInventoryStockMovements(branchId: string | null | undefined, filters: InventoryStockMovementFilters = {}) {
+export function useInventoryStockMovements(
+  branchId: string | null | undefined,
+  filters: InventoryStockMovementFilters = {},
+  options: { refetchInterval?: number } = {},
+) {
   return useQuery({
     queryKey: ['branch-inventory-stock', branchId, 'movements', filters],
     queryFn: async () => {
@@ -433,6 +447,16 @@ export function useInventoryStockMovements(branchId: string | null | undefined, 
     enabled: Boolean(branchId),
     staleTime: 15 * 1000,
     placeholderData: keepPreviousData,
+    // Bounded, non-overlapping fallback refresh — TanStack Query schedules
+    // the next refetch only after the current one settles, so this never
+    // overlaps itself. Only the Order Deductions view passes this: SALE/
+    // SALE_REVERSAL movements are written by the async deduction worker and
+    // the void/refund reversal path, neither of which emits
+    // INVENTORY_MOVEMENT_RECORDED (that event only fires from the direct
+    // receive/adjust/waste/transfer/count service calls) or any other
+    // socket event tied to the movement itself — so there is nothing for
+    // useInventoryStockRealtimeSync to react to for this view on its own.
+    refetchInterval: options.refetchInterval,
   });
 }
 

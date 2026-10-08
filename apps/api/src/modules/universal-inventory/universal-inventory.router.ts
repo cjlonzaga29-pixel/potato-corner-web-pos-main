@@ -21,7 +21,7 @@ import {
 } from '@potato-corner/shared';
 import { universalInventoryService } from './universal-inventory.service.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
-import type { InventoryStockMovementType } from './universal-inventory.types.js';
+import type { InventoryStockMovementType, InventoryStockMovementCategory } from './universal-inventory.types.js';
 import { runMigrationDryRun } from '../inventory-migration/dry-run.service.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
@@ -477,9 +477,16 @@ const stockMovementTypeValues = [
 // and reports.schema.ts's ReportFiltersSchema. Previously z.iso.datetime()-only,
 // which rejected the bare date the Stock Movement page's date filter sends,
 // surfacing as a 422 ("Something went wrong") whenever a date range was set.
+const stockMovementCategoryValues = ['order_deductions', 'adjustments'] as const;
+
 const stockMovementsQuerySchema = z.object({
   inventory_item_id: z.uuid().optional(),
   movement_type: z.enum(stockMovementTypeValues).optional(),
+  // POS-PERF-P27 — restricts the result to the movement types behind one of
+  // the two branch-facing history screens (Order Deductions / Stock
+  // Adjustments history). Omitted by the Admin/Supervisor full-ledger view,
+  // which still sees every movement type.
+  category: z.enum(stockMovementCategoryValues).optional(),
   from_date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -549,6 +556,7 @@ stockBranchRouter.get(
       const result = await universalInventoryService.getStockMovements(req.params.branchId as string, {
         inventoryItemId: parsed.data.inventory_item_id,
         movementType: parsed.data.movement_type as InventoryStockMovementType | undefined,
+        category: parsed.data.category as InventoryStockMovementCategory | undefined,
         fromDate: parsed.data.from_date ? resolveDateRangeBoundary(parsed.data.from_date, 'start') : undefined,
         toDate: parsed.data.to_date ? resolveDateRangeBoundary(parsed.data.to_date, 'end') : undefined,
         page: parsed.data.page,

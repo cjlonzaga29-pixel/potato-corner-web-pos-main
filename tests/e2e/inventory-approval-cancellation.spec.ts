@@ -133,12 +133,7 @@ async function openRequestByQuantity(
   status: 'PENDING' | 'APPROVED' | 'RETURNED' | 'CANCELLED',
   quantityText: string,
 ): Promise<void> {
-  await page.goto(`${basePath}/inventory/approvals`, { waitUntil: 'networkidle' });
-  await page
-    .getByRole('tab', {
-      name: status === 'PENDING' ? 'Pending Review' : status === 'APPROVED' ? 'Approved' : status === 'RETURNED' ? 'Returned for Correction' : 'Cancelled',
-    })
-    .click();
+  const tabName = status === 'PENDING' ? 'Pending Review' : status === 'APPROVED' ? 'Approved' : status === 'RETURNED' ? 'Returned for Correction' : 'Cancelled';
   // Scoped to our fixture item's name too — this database is reused across
   // runs (not torn down), so a leftover row from a prior run could otherwise
   // share the same quantity text and silently win the .first() match.
@@ -147,6 +142,51 @@ async function openRequestByQuantity(
     .filter({ hasText: UNIVERSAL_ITEM_FIXTURE.itemName })
     .filter({ has: page.getByText(quantityText, { exact: true }) })
     .first();
+
+  // This test file's request density (many role switches, each a full page
+  // load) can legitimately bump into the API's real 100 req/min/user rate
+  // limit (apps/api/src/middleware/rate-limiter.ts#apiLimiter) — observed in
+  // practice, and can surface at any point in this sequence: the branch-
+  // list fetch that picks an active branch (blocking the tabs from ever
+  // rendering), or the approvals-list fetch itself (rendering a real
+  // "Something went wrong... Try again" state — shared/feedback/
+  // error-state.tsx — with a retry button wired to the query's refetch()).
+  // Retried here exactly as a real user would: reload, wait out the
+  // limiter's window, click retry if shown — never by weakening or
+  // bypassing the limiter itself.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    // Always a fresh navigation, never skipped: the queue list's realtime
+    // sync (useInventoryApprovalRealtimeSync) only invalidates on
+    // INVENTORY_MOVEMENT_RECORDED, which approve() emits — a new PENDING
+    // submission or a return/correct/cancel fires no such event, so a page
+    // already sitting on this URL would otherwise show a stale pre-action
+    // list until its 10s staleTime and some unrelated refetch trigger
+    // happened to line up (which never reliably happens in a headless
+    // browser with no focus/blur events) — an earlier "skip if already
+    // here" version of this helper hung exactly this way.
+    await page.goto(`${basePath}/inventory/approvals`, { waitUntil: 'networkidle' });
+    const tab = page.getByRole('tab', { name: tabName });
+    const tryAgain = page.getByRole('button', { name: 'Try again' });
+    const outcome = await Promise.race([
+      tab.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'tab' as const),
+      tryAgain.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'error' as const),
+    ]).catch(() => 'timeout' as const);
+    if (outcome === 'error') {
+      await page.waitForTimeout(8_000);
+      continue; // reload from the top rather than trusting this render's query client state
+    }
+    if (outcome === 'timeout') continue;
+    await tab.click();
+
+    const rowOutcome = await Promise.race([
+      row.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'row' as const),
+      tryAgain.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'error' as const),
+    ]).catch(() => 'timeout' as const);
+    if (rowOutcome === 'row') break;
+    if (rowOutcome === 'error') await page.waitForTimeout(8_000);
+    // 'timeout' with no error shown: the row may just not be rendered yet
+    // (query still in flight) — loop reloads and re-checks.
+  }
   await row.getByRole('button', { name: 'View' }).click();
 }
 
@@ -175,7 +215,7 @@ test.describe.serial('Inventory approval — real-browser lineage cancellation',
   // The default 30s per-test timeout is too tight for the tests that act as
   // both roles in sequence against two already-live pages, each step doing
   // a full page navigation under Next dev/Turbopack (not production-speed).
-  test.describe.configure({ timeout: 150_000 });
+  test.describe.configure({ timeout: 240_000 });
 
   test('branch submits an adjustment → Pending, stock unchanged until approval', async ({ request }) => {
     const before = await getItemStock(request);
@@ -329,7 +369,8 @@ test.describe.serial('Inventory approval — real-browser lineage cancellation',
     const rejection = supervisorPage.waitForResponse((res) => /\/api\/inventory-approvals\/.+\/approve$/.test(res.url()) && res.request().method() === 'POST');
     await supervisorPage.getByRole('alertdialog').getByRole('button', { name: 'Approve' }).click();
     await rejection;
-    await expect(supervisorPage.getByText(/stale|Stale/i)).toBeVisible({ timeout: NAV_TIMEOUT });
+    // Exact toast text from universal-inventory.service.ts's STALE_PHYSICAL_COUNT error.
+    await expect(supervisorPage.getByText(/fresh recount is required/i)).toBeVisible({ timeout: NAV_TIMEOUT });
 
     const afterQty = await getItemStock(request);
     expect(afterQty).toBe(beforeQty);

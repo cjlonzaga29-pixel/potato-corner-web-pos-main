@@ -340,17 +340,49 @@ via `returnForCorrection`"*, the corrected procedure is:
 Additive-only migration `20261009050000_add_inventory_approval_cancellation`
 (one new enum value `CANCELLED` on `InventoryApprovalStatus`, three new
 nullable columns — `cancelled_by_user_id`, `cancelled_at`, `cancel_reason`
-— on `inventory_approval_requests`) was validated two ways:
+— on `inventory_approval_requests`) was validated three ways. The first two
+are a **clean-install** check (every migration applied in order to an empty
+database) — this proves the migration runs end-to-end and the full suite is
+green against the resulting schema, but an empty-to-full apply can never
+exercise what happens to rows that already existed under the old schema.
+The third is the actual **populated-database upgrade test** release
+verification requires: pre-existing rows under the old schema, migrate
+*through* the boundary, then assert those specific rows survived.
 
 1. `prisma migrate deploy` against a disposable embedded-Postgres instance
    (`apps/api/scripts/with-test-postgres.ts`) with the full 78-migration
    history applied from scratch, including the pre-existing P28 migration —
    reported "All migrations have been successfully applied," no errors.
+   **Clean-install only — not an upgrade test.**
 2. The full `apps/api` Vitest suite (154 test files, 2,820 tests, including
    19 real-Postgres integration tests for this module covering every
    cancellation/race scenario above) ran green against that same migrated
    instance. The full `apps/web` Vitest suite (133 files, 1,170 tests) and
    both `apps/api`/`apps/web` production builds also passed.
+3. **POS-PERF-P28 release verification (2026-10-09)** —
+   `apps/api/scripts/test-cancellation-migration-on-populated-data.ts`
+   (same pattern as the pre-existing P15R3
+   `test-migration-on-populated-data.ts`): applied every migration up to
+   and including `20261008114838_add_inventory_approval_requests` (P28, no
+   cancellation support) against a fresh embedded Postgres instance,
+   confirmed the migration ledger lacked `20261009050000_...`, the
+   `CANCELLED` enum value did not exist, and the three cancellation columns
+   did not exist. Seeded a populated pre-migration database: a branch, an
+   `InventoryStock` row, an `InventoryStockMovement` row, and a real
+   correction chain (`rootRequestId`/`previousRequestId`/`revisionNumber`) —
+   revision 1 `RETURNED`, revision 2 `PENDING` — all under the old schema.
+   Applied `20261009050000_add_inventory_approval_cancellation`, then
+   confirmed: the ledger now contains it; the enum value and all three
+   columns now exist; the pre-existing stock row, movement row, and both
+   correction-chain revisions survived with their original statuses and
+   identities unchanged; the new `cancelled_*` columns default to `NULL` on
+   every pre-existing row; and cancelling the live `PENDING` revision
+   post-migration transitions it to `CANCELLED` cleanly without touching
+   the superseded `RETURNED` root. All checks passed
+   (`npx tsx scripts/test-cancellation-migration-on-populated-data.ts` from
+   `apps/api`, no Docker/admin elevation required). This is the check that
+   actually answers "is this migration safe against a populated database
+   with a real correction chain," which (1)/(2) above do not.
 
 No existing column is altered or dropped; `ALTER TYPE ... ADD VALUE` and
 `ADD COLUMN` (nullable, no default backfill needed) are the only two

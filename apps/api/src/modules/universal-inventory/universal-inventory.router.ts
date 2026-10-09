@@ -36,7 +36,7 @@ import { requirePasswordChange } from '../../middleware/require-password-change.
 import { validate } from '../../middleware/validate.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import { sha256Hex } from '../../lib/hash.js';
-import { checkIdempotency, recordIdempotencyResult, InventoryIdempotencyConflictError } from '../../lib/inventory-idempotency.js';
+import { checkIdempotency, recordIdempotencyResult, InventoryIdempotencyConflictError, InventoryIdempotencyInProgressError } from '../../lib/inventory-idempotency.js';
 
 const proofUpload = multer({
   storage: multer.memoryStorage(),
@@ -92,6 +92,10 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
   }
   if (error instanceof InventoryIdempotencyConflictError) {
     res.status(409).json({ data: null, error: { code: 'IDEMPOTENCY_KEY_CONFLICT', message: error.message }, meta: null });
+    return;
+  }
+  if (error instanceof InventoryIdempotencyInProgressError) {
+    res.status(409).json({ data: null, error: { code: 'IDEMPOTENCY_IN_PROGRESS', message: error.message }, meta: null });
     return;
   }
   next(error);
@@ -590,7 +594,7 @@ stockBranchRouter.get(
  * the same token/key — that's exactly what Idempotency-Key + a fresh
  * verify+upload round trip is for.
  */
-async function resolveStaffPinAndEvidence(params: {
+export async function resolveStaffPinAndEvidence(params: {
   token: string;
   evidenceKey: string;
   actorUserId: string;

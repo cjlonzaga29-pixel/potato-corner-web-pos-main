@@ -85,6 +85,9 @@ export interface CorrectRequestData {
   countedQuantity?: number;
   reasonCode?: string;
   notes?: string;
+  /** POS-PERF-P29R2 — mandatory for RECEIVING/ADJUSTMENT/WASTE corrections (resolved server-side, same as on initial submission); never applicable to PHYSICAL_COUNT. */
+  staffPin?: StaffPinResolution;
+  evidence?: ResolvedEvidence;
 }
 
 export interface ListApprovalFilters {

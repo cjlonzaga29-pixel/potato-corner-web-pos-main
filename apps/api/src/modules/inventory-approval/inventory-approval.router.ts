@@ -1,7 +1,12 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { cancelInventoryApprovalRequestSchema, correctInventoryApprovalRequestSchema, returnInventoryApprovalRequestSchema } from '@potato-corner/shared';
+import {
+  cancelInventoryApprovalRequestSchema,
+  correctInventoryApprovalRequestSchema,
+  legacyReconcileInventoryApprovalRequestSchema,
+  returnInventoryApprovalRequestSchema,
+} from '@potato-corner/shared';
 import { inventoryApprovalService } from './inventory-approval.service.js';
 import { InventoryApprovalError } from './inventory-approval.types.js';
 import { UniversalInventoryError } from '../universal-inventory/universal-inventory.types.js';
@@ -10,6 +15,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { resolveStaffPinAndEvidence } from '../universal-inventory/universal-inventory.router.js';
 
 const proofUpload = multer({
   storage: multer.memoryStorage(),
@@ -101,6 +107,25 @@ router.post('/:id/approve', authenticate, adminOrSupervisor, requirePasswordChan
   }
 });
 
+/** POS-PERF-P29R2 — explicit legacy-reconciliation path; see inventoryApprovalService.reconcileLegacy's doc comment. Same role gate as /approve, not broader. */
+router.post(
+  '/:id/legacy-reconcile',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  validate(legacyReconcileInventoryApprovalRequestSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as z.infer<typeof legacyReconcileInventoryApprovalRequestSchema>;
+      const result = await inventoryApprovalService.reconcileLegacy(req.params.id as string, body.reason, req.user, req.ip ?? null);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
 router.post(
   '/:id/return',
   authenticate,
@@ -147,6 +172,37 @@ router.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof correctInventoryApprovalRequestSchema>;
+
+      // POS-PERF-P29R2 — a correction to a RECEIVING/ADJUSTMENT/WASTE
+      // UNIVERSAL_ITEM request requires its own fresh verification_token/
+      // evidence_key, resolved the same way the original submission's was
+      // (see resolveStaffPinAndEvidence's doc comment in
+      // universal-inventory.router.ts). The detail lookup here also
+      // enforces branch access before any token/evidence consumption.
+      const detail = await inventoryApprovalService.getRequestDetail(req.params.id as string, req.user);
+      let staffPin: Awaited<ReturnType<typeof resolveStaffPinAndEvidence>>['staffPin'] | undefined;
+      let evidence: Awaited<ReturnType<typeof resolveStaffPinAndEvidence>>['evidence'] | undefined;
+      if (body.verification_token && body.evidence_key) {
+        if (detail.target !== 'UNIVERSAL_ITEM' || !detail.inventory_item_id || !(detail.operation === 'RECEIVING' || detail.operation === 'ADJUSTMENT' || detail.operation === 'WASTE')) {
+          res.status(422).json({ data: null, error: { code: 'VERIFICATION_NOT_APPLICABLE', message: 'This request does not accept a PIN verification/evidence on correction' }, meta: null });
+          return;
+        }
+        const resolved = await resolveStaffPinAndEvidence({
+          token: body.verification_token,
+          evidenceKey: body.evidence_key,
+          actorUserId: req.user.user_id,
+          branchId: detail.branch_id,
+          operation: detail.operation,
+          inventoryItemId: detail.inventory_item_id,
+          quantity: detail.operation === 'ADJUSTMENT' ? body.quantity_delta : body.entered_quantity,
+          unitId: body.entered_unit_id,
+          reasonCode: body.reason_code,
+          notes: body.notes,
+        });
+        staffPin = resolved.staffPin;
+        evidence = resolved.evidence;
+      }
+
       const result = await inventoryApprovalService.correct(
         req.params.id as string,
         {
@@ -158,6 +214,8 @@ router.post(
           countedQuantity: body.counted_quantity,
           reasonCode: body.reason_code,
           notes: body.notes,
+          staffPin,
+          evidence,
         },
         req.user,
       );

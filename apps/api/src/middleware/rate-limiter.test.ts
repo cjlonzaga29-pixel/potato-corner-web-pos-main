@@ -1,9 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
 
-const { loginLimiter, selectEmployeeLimiter, receiptLookupLimiter, apiLimiter } = await import('./rate-limiter.js');
+const { loginLimiter, selectEmployeeLimiter, receiptLookupLimiter, apiLimiter, staffPinVerifyFailureLimiter, staffPinVerifyOverallLimiter } = await import(
+  './rate-limiter.js'
+);
 
 function mockReq(overrides: Partial<Request> = {}): Request {
   return {
@@ -17,21 +20,29 @@ function mockReq(overrides: Partial<Request> = {}): Request {
   } as unknown as Request;
 }
 
+/**
+ * Extends Node's EventEmitter so skipSuccessfulRequests/skipFailedRequests
+ * (which hook response.on('finish'/'close'/'error')) work against this
+ * mock the same way they do against a real express Response.
+ */
 function mockRes() {
+  const emitter = new EventEmitter();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors the mockRes pattern in auth.router.test.ts/rbac.test.ts
-  const res: any = {};
+  const res: any = emitter;
+  res.writableEnded = false;
   res.status = vi.fn((code: number) => {
     res.statusCode = code;
     return res;
   });
   res.json = vi.fn((body: unknown) => {
     res.jsonBody = body;
+    res.writableEnded = true;
     return res;
   });
   res.setHeader = vi.fn(() => res);
   res.getHeader = vi.fn(() => undefined);
   res.removeHeader = vi.fn(() => res);
-  return res as Response & { statusCode?: number; jsonBody?: unknown };
+  return res as Response & { statusCode?: number; jsonBody?: unknown; writableEnded?: boolean };
 }
 
 type Limiter = RequestHandler;
@@ -43,6 +54,28 @@ async function hit(limiter: Limiter, req: Request): Promise<{ allowed: boolean; 
   await limiter(req, res, (() => {
     allowed = true;
   }) as NextFunction);
+  return { allowed, status: allowed ? undefined : res.statusCode };
+}
+
+/**
+ * Like hit(), but for limiters configured with skipSuccessfulRequests /
+ * skipFailedRequests — when the request is allowed through, simulates the
+ * downstream route handler finishing with `outcomeStatus` and emits
+ * 'finish' so the store's post-response decrement logic actually runs
+ * before the next request in the same test is sent.
+ */
+async function hitWithOutcome(limiter: Limiter, req: Request, outcomeStatus: 200 | 401): Promise<{ allowed: boolean; status?: number }> {
+  const res = mockRes();
+  let allowed = false;
+  await limiter(req, res, (() => {
+    allowed = true;
+  }) as NextFunction);
+  if (allowed) {
+    res.statusCode = outcomeStatus;
+    (res as unknown as EventEmitter).emit('finish');
+    // response.on('finish', async () => ...) handlers are async — flush microtasks.
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   return { allowed, status: allowed ? undefined : res.statusCode };
 }
 
@@ -178,5 +211,82 @@ describe('receiptLookupLimiter', () => {
     // apiLimiter (used by every other /api route) still has its own, separate 100/min budget for this IP.
     const apiStillAllowed = await hit(apiLimiter, mockReq({ ip }));
     expect(apiStillAllowed.allowed).toBe(true);
+  });
+});
+
+/**
+ * POS-PERF-P29R2 — staffPinVerifyFailureLimiter/staffPinVerifyOverallLimiter
+ * replace the single staffPinVerifyLimiter that previously capped ALL
+ * requests (success or failure) at 5 per 5 minutes, which blocked a branch
+ * doing more than 5 legitimate successive inventory entries in a window.
+ */
+describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
+  function pinReq(overrides: Partial<Request> & { branchId?: string; userId?: string } = {}): Request {
+    const branchId = overrides.branchId ?? randomUUID();
+    return mockReq({
+      ...overrides,
+      params: { branchId },
+      user: branchUser(overrides.userId ?? randomUUID()),
+    } as Partial<Request>);
+  }
+
+  it('does not throttle an unbounded run of successful verifications on the failure limiter (skipSuccessfulRequests)', async () => {
+    const req = pinReq();
+    for (let i = 0; i < 20; i++) {
+      const result = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 200);
+      expect(result.allowed).toBe(true);
+    }
+  });
+
+  it('blocks the 6th failed PIN attempt within 5 minutes, regardless of successes in between', async () => {
+    const req = pinReq();
+
+    // Two successful verifications first — must not consume the failure budget.
+    expect((await hitWithOutcome(staffPinVerifyFailureLimiter, req, 200)).allowed).toBe(true);
+    expect((await hitWithOutcome(staffPinVerifyFailureLimiter, req, 200)).allowed).toBe(true);
+
+    for (let i = 0; i < 5; i++) {
+      const result = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 401);
+      expect(result.allowed).toBe(true);
+    }
+    const blocked = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 401);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.status).toBe(429);
+
+    // A successful verification right after is still unaffected — the failure budget is exhausted, not the overall one.
+  });
+
+  it('is keyed per (branchId, actor) — a different actor at the same branch has an untouched failure budget', async () => {
+    const branchId = randomUUID();
+    const attacker = pinReq({ branchId, userId: randomUUID() });
+    const otherActor = pinReq({ branchId, userId: randomUUID() });
+
+    for (let i = 0; i < 5; i++) {
+      expect((await hitWithOutcome(staffPinVerifyFailureLimiter, attacker, 401)).allowed).toBe(true);
+    }
+    expect((await hitWithOutcome(staffPinVerifyFailureLimiter, attacker, 401)).allowed).toBe(false);
+
+    expect((await hitWithOutcome(staffPinVerifyFailureLimiter, otherActor, 401)).allowed).toBe(true);
+  });
+
+  it('overall limiter caps total requests (success + failure) at 30 per 5 minutes even with zero failures', async () => {
+    const req = pinReq();
+    for (let i = 0; i < 30; i++) {
+      const result = await hitWithOutcome(staffPinVerifyOverallLimiter, req, 200);
+      expect(result.allowed).toBe(true);
+    }
+    const blocked = await hitWithOutcome(staffPinVerifyOverallLimiter, req, 200);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.status).toBe(429);
+  });
+
+  it('overall limiter counts failed attempts too (does not skip anything)', async () => {
+    const req = pinReq();
+    for (let i = 0; i < 30; i++) {
+      const result = await hitWithOutcome(staffPinVerifyOverallLimiter, req, 401);
+      expect(result.allowed).toBe(true);
+    }
+    const blocked = await hitWithOutcome(staffPinVerifyOverallLimiter, req, 401);
+    expect(blocked.allowed).toBe(false);
   });
 });

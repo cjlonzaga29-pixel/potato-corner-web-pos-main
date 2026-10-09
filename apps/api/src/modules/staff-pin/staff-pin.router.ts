@@ -7,7 +7,7 @@ import { adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { validate } from '../../middleware/validate.js';
-import { staffPinVerifyLimiter } from '../../middleware/rate-limiter.js';
+import { staffPinVerifyFailureLimiter, staffPinVerifyOverallLimiter } from '../../middleware/rate-limiter.js';
 
 const router: Router = Router();
 
@@ -78,9 +78,11 @@ router.post('/:userId/pin/revoke', authenticate, adminSupervisorOrBranch, requir
 
 /**
  * Verify a PIN for a draft inventory operation and mint a short-lived
- * verification token. Rate-limited per (branch, actor) — see
- * rate-limiter.ts's staffPinVerifyLimiter doc comment for why it's keyed by
- * the submitting actor rather than by staff identity.
+ * verification token. Rate-limited per (branch, actor) by two independent
+ * budgets — see rate-limiter.ts's staffPinVerifyFailureLimiter /
+ * staffPinVerifyOverallLimiter doc comments: failed PINs alone trip the
+ * tight lockout, while legitimate successive correct verifications only
+ * count against the much looser overall cap.
  */
 router.post(
   '/branches/:branchId/verify',
@@ -88,7 +90,8 @@ router.post(
   adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
-  staffPinVerifyLimiter,
+  staffPinVerifyFailureLimiter,
+  staffPinVerifyOverallLimiter,
   validate(verifyStaffPinSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

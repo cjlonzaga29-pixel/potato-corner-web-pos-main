@@ -36,6 +36,22 @@ function actor(role: 'super_admin' | 'supervisor' | 'branch', userId: string, br
   return { ...base, role, branch_ids: branchIds ?? [] } as JwtPayload;
 }
 
+/**
+ * POS-PERF-P29R2 — stand-in for the responsible-staff resolution the real
+ * router always performs (via StaffPinVerification) before ever calling
+ * submitReceiving/submitAdjustment/submitWaste. Every pre-existing test in
+ * this file submits requests directly through the service, bypassing that
+ * resolution — which, since approve() now refuses to approve a
+ * RECEIVING/ADJUSTMENT/WASTE request with no responsible-staff attribution
+ * on file (see isLegacyUnverifiedRequest), means every such submission in
+ * this suite needs this fixture attached to still reach approve() the way
+ * a real current submission would. The dedicated "legacy unverified" tests
+ * below deliberately omit it instead.
+ */
+function staffPinFixture(): { responsibleStaffUserId: string; responsibleStaffName: string; pinVerifiedAt: Date } {
+  return { responsibleStaffUserId: randomUUID(), responsibleStaffName: 'Test Staff', pinVerifiedAt: new Date() };
+}
+
 describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres)', () => {
   let branchId: string;
   let otherBranchId: string;
@@ -118,7 +134,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('a pending stock-in does not change InventoryStock', async () => {
     const before = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitReceiving(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, enteredQuantity: 10, enteredUnitId: unitId },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, enteredQuantity: 10, enteredUnitId: unitId , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     expect(request.status).toBe('PENDING');
@@ -131,7 +147,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('approving applies the movement exactly once; a second approve attempt 409s and does not double-apply', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 7, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 7, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
 
@@ -155,7 +171,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('concurrent approval attempts on the same request apply exactly once', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 3, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 3, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
 
@@ -172,7 +188,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
   it('a branch account cannot approve (role-gated at the service, matching the router middleware posture)', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     // Branch-role self-approval: denied by the self-approval check since the
@@ -189,7 +205,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
   it('a supervisor without access to the request branch is denied', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     await expect(
@@ -198,9 +214,29 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     await inventoryApprovalService.returnForCorrection(request.id, 'cleanup', actor('super_admin', adminUserId));
   });
 
+  it('correcting a RETURNED request without a fresh PIN inherits the original responsible-staff attribution onto the new revision (preserved, not fabricated, not dropped)', async () => {
+    const originalStaffPin = staffPinFixture();
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 5, reasonCode: 'count_correction', staffPin: originalStaffPin },
+      actor('branch', branchUserId, [branchId]),
+    );
+    await inventoryApprovalService.returnForCorrection(request.id, 'wrong quantity', actor('supervisor', supervisorUserId, [branchId]));
+
+    // No staffPin passed to correct() here — the real correction UI today never re-verifies a PIN.
+    const corrected = await inventoryApprovalService.correct(request.id, { quantityDelta: 7 }, actor('branch', branchUserId, [branchId]));
+    expect(corrected.responsible_staff_user_id).toBe(originalStaffPin.responsibleStaffUserId);
+    expect(corrected.responsible_staff_name).toBe(originalStaffPin.responsibleStaffName);
+    expect(corrected.pin_verified_at).not.toBeNull();
+
+    // Inherited attribution is enough to pass approve()'s verification gate — this is not a legacy-unverified request.
+    const approved = await inventoryApprovalService.approve(corrected.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+    expect(approved.responsible_staff_user_id).toBe(originalStaffPin.responsibleStaffUserId);
+  });
+
   it('a returned request cannot be approved, but correcting it creates a fresh revision that can', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     const returned = await inventoryApprovalService.returnForCorrection(request.id, 'wrong quantity', actor('supervisor', supervisorUserId, [branchId]));
@@ -210,7 +246,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
       code: 'ALREADY_PROCESSED',
     });
 
-    const corrected = await inventoryApprovalService.correct(request.id, { quantityDelta: 4 }, actor('branch', branchUserId, [branchId]));
+    const corrected = await inventoryApprovalService.correct(request.id, { quantityDelta: 4 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]));
     expect(corrected.status).toBe('PENDING');
     expect(corrected.revision_number).toBe(2);
 
@@ -228,7 +264,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     // A second, unrelated adjustment approved in between moves the stock
     // version the count's staleness fingerprint was taken against.
     const bump = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     await inventoryApprovalService.approve(bump.id, actor('supervisor', supervisorUserId, [branchId]), null);
@@ -251,7 +287,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     const stock = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const excessiveDelta = -(stock.quantityOnHand.toNumber() - 5 + 1);
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: excessiveDelta, reasonCode: 'damaged' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: excessiveDelta, reasonCode: 'damaged' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
@@ -264,7 +300,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('legacy stock-in/adjustment requests also gate through the same approval flow and apply once approved', async () => {
     const ledgerCountBefore = await inventoryRepository.countMovements(legacyIngredientId);
     const request = await inventoryApprovalService.submitReceiving(
-      { target: 'LEGACY_INGREDIENT', branchId, legacyIngredientId, enteredQuantity: 20 },
+      { target: 'LEGACY_INGREDIENT', branchId, legacyIngredientId, enteredQuantity: 20 , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     expect(request.status).toBe('PENDING');
@@ -293,7 +329,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('cancelling a PENDING request changes no stock, and the cancelled request can never be approved or corrected', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 9, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 9, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
 
@@ -308,14 +344,14 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
       code: 'ALREADY_PROCESSED',
     });
-    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 1 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 1 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
       code: 'NOT_RETURNED',
     });
   });
 
   it('cancelling a RETURNED request retires the whole lineage: the cancelled row cannot be corrected, and the older (pre-return) sibling cannot revive it either', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 5, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 5, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     const returned = await inventoryApprovalService.returnForCorrection(request.id, 'needs a different reason code', actor('supervisor', supervisorUserId, [branchId]));
@@ -325,7 +361,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     expect(cancelled.status).toBe('CANCELLED');
 
     // The cancelled (formerly RETURNED) row itself can no longer be corrected...
-    await expect(inventoryApprovalService.correct(returned.id, { quantityDelta: 1 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+    await expect(inventoryApprovalService.correct(returned.id, { quantityDelta: 1 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
       code: 'NOT_RETURNED',
     });
     // ...and since returned.id === request.id (revision 1 was returned, not yet
@@ -339,11 +375,11 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
   it('an older revision cannot revive a lineage after its newer revision is cancelled', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     await inventoryApprovalService.returnForCorrection(request.id, 'wrong amount', actor('supervisor', supervisorUserId, [branchId]));
-    const revision2 = await inventoryApprovalService.correct(request.id, { quantityDelta: 8 }, actor('branch', branchUserId, [branchId]));
+    const revision2 = await inventoryApprovalService.correct(request.id, { quantityDelta: 8 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]));
     expect(revision2.revision_number).toBe(2);
 
     await inventoryApprovalService.cancel(revision2.id, 'cancelling the lineage entirely', actor('supervisor', supervisorUserId, [branchId]), null);
@@ -353,7 +389,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     // the now-CANCELLED revision 2) must still be rejected, because it has
     // already been corrected once (hasExistingCorrection), independent of
     // and in addition to revision 2's cancellation.
-    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 2 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 2 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
       code: 'ALREADY_CORRECTED',
     });
     await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
@@ -364,11 +400,11 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('cancelling using the old/root request ID after a correction exists is rejected, and the live revision is unaffected', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 7, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 7, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     await inventoryApprovalService.returnForCorrection(request.id, 'wrong amount', actor('supervisor', supervisorUserId, [branchId]));
-    const revision2 = await inventoryApprovalService.correct(request.id, { quantityDelta: 9 }, actor('branch', branchUserId, [branchId]));
+    const revision2 = await inventoryApprovalService.correct(request.id, { quantityDelta: 9 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]));
     expect(revision2.status).toBe('PENDING');
 
     // Cancelling against the stale root/old request ID (revision 1, now
@@ -394,7 +430,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('cancel versus approve on the same PENDING request has exactly one winner', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 11, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 11, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
 
@@ -417,14 +453,14 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
   it('cancel versus correct on the same RETURNED request never leaves two live outcomes (no actionable revision survives a winning cancel, no orphaned cancel survives a winning correction)', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 13, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 13, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     const returned = await inventoryApprovalService.returnForCorrection(request.id, 'retry', actor('supervisor', supervisorUserId, [branchId]));
 
     const results = await Promise.allSettled([
       inventoryApprovalService.cancel(returned.id, 'racing cancel', actor('supervisor', supervisorUserId, [branchId]), null),
-      inventoryApprovalService.correct(returned.id, { quantityDelta: 14 }, actor('branch', branchUserId, [branchId])),
+      inventoryApprovalService.correct(returned.id, { quantityDelta: 14 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId])),
     ]);
     const fulfilled = results.filter((r) => r.status === 'fulfilled');
     // Both can legitimately fulfill independently in isolation, but they must
@@ -452,7 +488,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
   it('repeated cancellation of an already-cancelled request is a safe no-op', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     const first = await inventoryApprovalService.cancel(request.id, 'first cancel', actor('supervisor', supervisorUserId, [branchId]), null);
@@ -470,7 +506,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   it('an already-approved request can never be cancelled — its applied stock movement is left intact', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 4, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 4, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
@@ -488,7 +524,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
   it('disabling then re-enabling MANUAL_INVENTORY_APPROVAL_REQUIRED cannot revive a permanently cancelled request, and blocks approve/correct while disabled', async () => {
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 15, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 15, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
     const returned = await inventoryApprovalService.returnForCorrection(request.id, 'reconciliation in progress', actor('supervisor', supervisorUserId, [branchId]));
@@ -507,7 +543,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
       await expect(inventoryApprovalService.approve(cancelled.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
         code: 'APPROVAL_PROCESSING_DISABLED',
       });
-      await expect(inventoryApprovalService.correct(cancelled.id, { quantityDelta: 1 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+      await expect(inventoryApprovalService.correct(cancelled.id, { quantityDelta: 1 , staffPin: staffPinFixture() }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
         code: 'APPROVAL_PROCESSING_DISABLED',
       });
       // cancel() itself must keep working while disabled — it is how
@@ -541,7 +577,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     // original cancelled request must never become applicable again.
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
-      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction' },
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 6, reasonCode: 'count_correction' , staffPin: staffPinFixture() },
       actor('branch', branchUserId, [branchId]),
     );
 
@@ -575,5 +611,76 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     });
     const stockFinal = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     expect(stockFinal.quantityOnHand.toNumber()).toBe(stockAfterResubmit.quantityOnHand.toNumber());
+  });
+
+  // -------------------------------------------------------------------------
+  // POS-PERF-P29R2 — old pending requests with no responsible-staff
+  // attribution (submitted before mandatory PIN verification/evidence
+  // existed, or via a path that never resolved it).
+  // -------------------------------------------------------------------------
+
+  it('a request with no responsible-staff attribution cannot be approved through the normal path — it must be returned for correction or explicitly reconciled', async () => {
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 10, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    expect(request.responsible_staff_user_id).toBeNull();
+    expect(request.pin_verified_at).toBeNull();
+
+    await expect(inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null)).rejects.toMatchObject({
+      code: 'LEGACY_VERIFICATION_MISSING',
+    });
+    const stockAfterBlockedApprove = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockAfterBlockedApprove.quantityOnHand.toString()).toBe(stockBefore.quantityOnHand.toString());
+
+    await inventoryApprovalService.returnForCorrection(request.id, 'missing PIN verification — recorded before the mandatory policy', actor('supervisor', supervisorUserId, [branchId]));
+  });
+
+  it('explicit legacy reconciliation applies the movement exactly once without fabricating a PIN verification, and is recorded in the audit log', async () => {
+    const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 12, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+
+    const reconciled = await inventoryApprovalService.reconcileLegacy(
+      request.id,
+      'Pre-dates mandatory PIN policy; branch manager confirmed physical count by phone',
+      actor('supervisor', supervisorUserId, [branchId]),
+      null,
+    );
+    expect(reconciled.status).toBe('APPROVED');
+    // Recorded By (submittedByUserId) is never equated with a verified Responsible Staff — these stay null.
+    expect(reconciled.responsible_staff_user_id).toBeNull();
+    expect(reconciled.responsible_staff_name).toBeNull();
+    expect(reconciled.pin_verified_at).toBeNull();
+
+    const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 12);
+
+    const auditEntry = await prisma.auditLog.findFirst({
+      where: { action: 'INVENTORY_APPROVAL_LEGACY_RECONCILED', entityId: request.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(auditEntry).not.toBeNull();
+    expect(auditEntry?.actorId).toBe(supervisorUserId);
+
+    // A second reconciliation/approval attempt is rejected — the movement is never double-applied.
+    await expect(
+      inventoryApprovalService.reconcileLegacy(request.id, 'retry', actor('super_admin', adminUserId), null),
+    ).rejects.toMatchObject({ code: 'ALREADY_PROCESSED' });
+  });
+
+  it('legacy reconciliation refuses a request that already has staff-PIN verification on file — that one goes through the normal approve() path', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 1, reasonCode: 'count_correction', staffPin: staffPinFixture() },
+      actor('branch', branchUserId, [branchId]),
+    );
+    await expect(
+      inventoryApprovalService.reconcileLegacy(request.id, 'should not be usable here', actor('supervisor', supervisorUserId, [branchId]), null),
+    ).rejects.toMatchObject({ code: 'NOT_LEGACY_UNVERIFIED' });
+
+    await inventoryApprovalService.returnForCorrection(request.id, 'cleanup', actor('supervisor', supervisorUserId, [branchId]));
   });
 });

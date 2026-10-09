@@ -125,24 +125,60 @@ export const receiptLookupLimiter = rateLimit({
 });
 
 /**
- * POS-PERF-P29 — 5 attempts per 5 minutes per (branchId, actor) combination
- * — applied to POST /api/staff-pin/branches/:branchId/verify. Keyed by the
- * authenticated actor submitting the operation, not by which staff PIN was
- * guessed, so a string of wrong guesses throttles the *guesser*'s budget
- * rather than ever being usable to enumerate which staff identity is
- * currently locked out — there is no staff-keyed lockout state anywhere,
- * only this short, per-actor cooldown window.
+ * Shared key for both staff-PIN-verify limiters below — the authenticated
+ * actor submitting the operation within a branch, not the staff identity
+ * whose PIN was guessed, so a string of wrong guesses throttles the
+ * *guesser*'s budget rather than ever being usable to enumerate which staff
+ * identity is currently locked out — there is no staff-keyed lockout state
+ * anywhere, only these two short, per-actor windows.
  */
-export const staffPinVerifyLimiter = rateLimit({
+function staffPinVerifyKey(req: Request): string {
+  const branchId = (req.params as Record<string, unknown> | undefined)?.branchId;
+  const branchKey = typeof branchId === 'string' ? branchId : 'unknown-branch';
+  return `${branchKey}:${req.user?.user_id ?? req.ip ?? 'unknown'}`;
+}
+
+/**
+ * POS-PERF-P29R2 — 5 *failed* PIN attempts per 5 minutes per (branchId,
+ * actor). `skipSuccessfulRequests: true` means a correct PIN (the verify
+ * route responds 200) never consumes this budget — only a wrong-PIN 401
+ * does (StaffPinError's statusCode, surfaced via handleModuleError, is what
+ * express-rate-limit's default `requestWasSuccessful` checks:
+ * res.statusCode < 400). This is the actual brute-force/enumeration
+ * lockout: five wrong guesses in five minutes blocks further guessing
+ * regardless of how many correct verifications happened in between, and
+ * concurrent guesses against the same key are serialized by the same
+ * counter (express-rate-limit's MemoryStore increments synchronously per
+ * event-loop tick, so a burst of parallel wrong-PIN requests still can't
+ * exceed the limit before the 6th is rejected).
+ */
+export const staffPinVerifyFailureLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   limit: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => {
-    const branchId = (req.params as Record<string, unknown> | undefined)?.branchId;
-    const branchKey = typeof branchId === 'string' ? branchId : 'unknown-branch';
-    return `${branchKey}:${req.user?.user_id ?? req.ip ?? 'unknown'}`;
-  },
+  skipSuccessfulRequests: true,
+  keyGenerator: staffPinVerifyKey,
+  handler: rateLimitHandler,
+});
+
+/**
+ * POS-PERF-P29R2 — 30 requests per 5 minutes per (branchId, actor),
+ * counting successes AND failures. This is the resource-protection cap
+ * (BCRYPT_COST_FACTOR=12 in staff-pin.service.ts makes each attempt
+ * deliberately expensive) rather than a brute-force lockout: a branch
+ * terminal doing six back-to-back legitimate receiving/adjustment entries,
+ * each gated by its own correct PIN verification, stays well under it,
+ * while a flood of requests (even all correctly-PIN'd, or a mix) that would
+ * otherwise hammer bcrypt.compare at cost factor 12 request after request
+ * still gets capped.
+ */
+export const staffPinVerifyOverallLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: staffPinVerifyKey,
   handler: rateLimitHandler,
 });
 

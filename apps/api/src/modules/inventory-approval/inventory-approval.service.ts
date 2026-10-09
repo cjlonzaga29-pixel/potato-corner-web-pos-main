@@ -84,6 +84,39 @@ async function findRequestOrThrow(id: string): Promise<RequestRow> {
   return request;
 }
 
+/**
+ * POS-PERF-P29R2 — true only for the combination that has carried a
+ * mandatory staff-PIN-verification/evidence requirement since P29:
+ * RECEIVING/ADJUSTMENT/WASTE submitted against a UNIVERSAL_ITEM (the
+ * schemas in universal-inventory.schema.ts's staffPinVerifiedOperationFields
+ * enforce this on every NEW submission through /inventory-stock/.../receive|
+ * adjust|waste). PHYSICAL_COUNT never carried this requirement. Nor does
+ * LEGACY_INGREDIENT for ANY operation — /ingredients/:id/stock-in and
+ * /adjust (inventory.router.ts) never resolved a verification_token/
+ * evidence_key at all; that system predates P29 entirely and was never
+ * upgraded (CR-001 superseded it with UNIVERSAL_ITEM), so an absent
+ * responsibleStaffUserId there is the permanent, by-design shape of every
+ * legacy-ingredient request, not a legacy gap to flag.
+ */
+function requestRequiresStaffVerification(request: Pick<RequestRow, 'target' | 'operation'>): boolean {
+  if (request.target !== 'UNIVERSAL_ITEM') return false;
+  const operation = request.operation as InventoryApprovalOperation;
+  return operation === 'RECEIVING' || operation === 'ADJUSTMENT' || operation === 'WASTE';
+}
+
+/**
+ * True for a PENDING/RETURNED UNIVERSAL_ITEM request whose operation is
+ * subject to the mandatory verification policy but which has no
+ * responsible-staff attribution recorded — i.e. it was submitted before
+ * that policy existed (or before this request's particular submission path
+ * enforced it). This is the "old pending request" case task item 4 is
+ * about: approve() must refuse these outright rather than silently
+ * treating submittedByUserId as a verified Responsible Staff.
+ */
+function isLegacyUnverifiedRequest(request: RequestRow): boolean {
+  return requestRequiresStaffVerification(request) && !request.responsibleStaffUserId;
+}
+
 async function resolveItemLabel(target: InventoryApprovalTarget, inventoryItemId: string | null, legacyIngredientId: string | null) {
   if (target === 'UNIVERSAL_ITEM' && inventoryItemId) {
     const item = await universalInventoryRepository.findItemById(inventoryItemId);
@@ -377,16 +410,15 @@ export const inventoryApprovalService = {
     if (request.status !== 'PENDING') {
       throw new InventoryApprovalError('ALREADY_PROCESSED', 'This request has already been reviewed', 409);
     }
+    if (isLegacyUnverifiedRequest(request)) {
+      throw new InventoryApprovalError(
+        'LEGACY_VERIFICATION_MISSING',
+        'This request predates mandatory staff PIN verification/evidence and has no responsible-staff attribution on file — it cannot be approved as-is. Return it for correction to collect a fresh PIN verification and proof, or use the explicit legacy-reconciliation action to approve it without one.',
+        409,
+      );
+    }
 
-    const movement = await prisma.$transaction(async (tx) => {
-      const ok = await inventoryApprovalRepository.markApprovedIfPending(id, request.revisionNumber, actor.user_id, tx);
-      if (!ok) throw new InventoryApprovalError('ALREADY_PROCESSED', 'This request has already been reviewed', 409);
-
-      const applied = await applyApprovedRequest(request, tx);
-      await inventoryApprovalRepository.setAppliedMovementId(id, applied.movementId, tx);
-      return applied;
-    });
-
+    const movement = await approveAndApply(request, actor);
     await recordAuditLog({
       action: 'INVENTORY_APPROVAL_APPROVED',
       entityType: 'inventory_approval_request',
@@ -439,6 +471,21 @@ export const inventoryApprovalService = {
     if (request.status !== 'RETURNED') {
       throw new InventoryApprovalError('NOT_RETURNED', 'Only a returned request can be corrected', 409);
     }
+    // POS-PERF-P29R2 — "does a correction need fresh PIN verification/
+    // evidence?" Decided here as: no, by default — the responsible staff
+    // member's accountability for the underlying physical event doesn't
+    // change just because the submitted quantity/reason is being fixed, so
+    // the ORIGINAL revision's responsibleStaffUserId/proof is carried
+    // forward onto the correction below rather than discarded (this is the
+    // "preserve original revision history" requirement, applied to
+    // attribution specifically, not just the rootRequestId/
+    // previousRequestId chain). A caller that DOES have a fresh
+    // verification_token/evidence_key (e.g. a future UI that re-verifies on
+    // correction) can still supply data.staffPin/data.evidence to override
+    // the inherited values — see the field fallbacks in `row` below. A
+    // request that was already legacy-unverified (no responsibleStaffUserId
+    // to begin with) stays that way after correction too, and remains
+    // subject to the same approve()-time LEGACY_VERIFICATION_MISSING gate.
 
     // PHYSICAL_COUNT's fresh staleness snapshot does its own read (and, via
     // applyApprovedRequest's advisory lock at approval time, its own
@@ -477,6 +524,11 @@ export const inventoryApprovalService = {
       submittedByUserId: actor.user_id,
       quantityOnHandAtSubmission: physicalCountSnapshot?.quantityOnHand,
       stockVersionAtSubmission: physicalCountSnapshot?.stockVersion,
+      responsibleStaffUserId: data.staffPin?.responsibleStaffUserId ?? request.responsibleStaffUserId,
+      responsibleStaffName: data.staffPin?.responsibleStaffName ?? request.responsibleStaffName,
+      pinVerifiedAt: data.staffPin?.pinVerifiedAt ?? request.pinVerifiedAt,
+      proofKey: data.evidence?.proofKey ?? request.proofKey,
+      proofType: data.evidence?.proofType ?? request.proofType,
     };
 
     // Two concurrent corrections of the same RETURNED request (double-click,
@@ -597,6 +649,58 @@ export const inventoryApprovalService = {
     return toResponse(await findRequestOrThrow(id));
   },
 
+  /**
+   * POS-PERF-P29R2 — the explicit legacy path: approves a PENDING request
+   * that predates mandatory staff-PIN-verification/evidence, which
+   * approve() refuses outright (see isLegacyUnverifiedRequest). Does NOT
+   * fabricate responsibleStaffUserId/responsibleStaffName/pinVerifiedAt —
+   * those stay null forever on this request, so the UI and any later audit
+   * continue to show plainly that no staff verification exists for it.
+   * submittedByUserId (Recorded By) is never equated with a verified
+   * Responsible Staff. The mandatory `reason` is the reviewer's written
+   * justification, preserved permanently in the audit log. Refuses to run
+   * on a request that already has verification on file (that one goes
+   * through the normal approve() path) or whose operation never required
+   * it (PHYSICAL_COUNT) — this action exists for exactly one case, not as
+   * a general-purpose approve-without-checks escape hatch.
+   */
+  async reconcileLegacy(id: string, reason: string, actor: JwtPayload, ipAddress: string | null) {
+    assertApprovalProcessingEnabledOrThrow();
+    const request = await findRequestOrThrow(id);
+    await assertBranchAccessOrThrow(actor, request.branchId);
+    if (request.submittedByUserId === actor.user_id) {
+      throw new InventoryApprovalError('SELF_APPROVAL_DENIED', 'You cannot approve a request you submitted yourself', 403);
+    }
+    if (request.status !== 'PENDING') {
+      throw new InventoryApprovalError('ALREADY_PROCESSED', 'This request has already been reviewed', 409);
+    }
+    if (!isLegacyUnverifiedRequest(request)) {
+      throw new InventoryApprovalError(
+        'NOT_LEGACY_UNVERIFIED',
+        'This request already has staff PIN verification/evidence on file (or never required it) — approve it through the normal review action instead',
+        409,
+      );
+    }
+
+    const movement = await approveAndApply(request, actor);
+    await recordAuditLog({
+      action: 'INVENTORY_APPROVAL_LEGACY_RECONCILED',
+      entityType: 'inventory_approval_request',
+      entityId: id,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId: request.branchId,
+      afterState: { movementId: movement.movementId, reason, operation: request.operation },
+      ipAddress,
+    });
+    notifyBranch(request.branchId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, { requestId: id, movementId: movement.movementId });
+    notifySuperAdmin(SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, { requestId: id, movementId: movement.movementId });
+    notifyUser(request.submittedByUserId, SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED, { requestId: id, status: 'APPROVED' });
+    if (movement.lowStock) await movement.lowStock();
+
+    return toResponse(await findRequestOrThrow(id));
+  },
+
   async attachProof(id: string, file: { buffer: Buffer; originalname: string }, actor: JwtPayload) {
     const request = await findRequestOrThrow(id);
     await assertBranchAccessOrThrow(actor, request.branchId);
@@ -608,6 +712,18 @@ export const inventoryApprovalService = {
     return toResponse(updated as RequestRow);
   },
 };
+
+/** Shared by approve() and reconcileLegacy() — the row-status flip and the stock write commit or roll back together. Callers are responsible for every pre-condition check; this never re-checks status itself beyond the atomic conditional update. */
+async function approveAndApply(request: RequestRow, actor: JwtPayload): Promise<{ movementId: string; lowStock?: () => Promise<void> }> {
+  return prisma.$transaction(async (tx) => {
+    const ok = await inventoryApprovalRepository.markApprovedIfPending(request.id, request.revisionNumber, actor.user_id, tx);
+    if (!ok) throw new InventoryApprovalError('ALREADY_PROCESSED', 'This request has already been reviewed', 409);
+
+    const applied = await applyApprovedRequest(request, tx);
+    await inventoryApprovalRepository.setAppliedMovementId(request.id, applied.movementId, tx);
+    return applied;
+  });
+}
 
 /** Best-effort nudge to the branch's reviewers that something is waiting — never blocks submission. */
 function notifySupervisorsPendingReview(branchId: string): void {

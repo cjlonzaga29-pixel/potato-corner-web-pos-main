@@ -24,7 +24,37 @@ export const cancelInventoryApprovalRequestSchema = z.object({
   reason: z.string().min(1, 'A cancellation reason is required').max(1000),
 });
 
-/** Correcting a RETURNED request resubmits the same operation-specific fields that created it, plus the revision it corrects (server re-derives revisionNumber; this is only an optimistic-concurrency guard against correcting an already-superseded revision). */
+/**
+ * POS-PERF-P29R2 — explicit reconciliation path for a PENDING request that
+ * predates the mandatory staff-PIN-verification/evidence policy (RECEIVING/
+ * ADJUSTMENT/WASTE submitted before responsible_staff_user_id/proof_key
+ * existed, or before they were required). Normal approve() refuses these
+ * outright rather than silently approving them — this is the deliberate,
+ * explicit alternative, and the mandatory reason is the reviewer's written
+ * justification for approving without a PIN verification or evidence,
+ * recorded permanently in the audit log rather than fabricated onto the
+ * request itself.
+ */
+export const legacyReconcileInventoryApprovalRequestSchema = z.object({
+  reason: z.string().min(1, 'A reconciliation justification is required').max(1000),
+});
+
+/**
+ * Correcting a RETURNED request resubmits the same operation-specific
+ * fields that created it, plus the revision it corrects (server re-derives
+ * revisionNumber; this is only an optimistic-concurrency guard against
+ * correcting an already-superseded revision).
+ *
+ * POS-PERF-P29R2 — verification_token/evidence_key are optional here at the
+ * schema level (unlike receiveInventoryStockSchema/adjustInventoryStockSchema/
+ * wasteInventoryStockSchema, where they are always mandatory) because
+ * PHYSICAL_COUNT corrections never require them; the service enforces them
+ * as mandatory for RECEIVING/ADJUSTMENT/WASTE corrections specifically
+ * (operationRequiresStaffVerification in inventory-approval.service.ts) —
+ * a correction changes the entered quantity/reason, so it is treated as a
+ * fresh operation requiring its own fresh PIN verification and proof, not
+ * one inherited from the original (now-returned) submission.
+ */
 export const correctInventoryApprovalRequestSchema = z.object({
   entered_quantity: z.number().positive().optional(),
   entered_unit_id: z.uuid().optional(),
@@ -34,6 +64,8 @@ export const correctInventoryApprovalRequestSchema = z.object({
   counted_quantity: z.number().nonnegative().optional(),
   reason_code: z.string().min(1).optional(),
   notes: z.string().optional(),
+  verification_token: z.string().min(1).optional(),
+  evidence_key: z.uuid().optional(),
 });
 
 export const inventoryApprovalRequestResponseSchema = z.object({

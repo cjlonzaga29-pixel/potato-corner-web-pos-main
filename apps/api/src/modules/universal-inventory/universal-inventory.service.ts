@@ -287,7 +287,13 @@ interface StockMovementRow {
  */
 function toStockMovementResponse(
   row: StockMovementRow,
-  enrichment?: { proofUrl?: string | null; performedByName?: string | null; responsibleUserName?: string | null; receiptNumber?: string | null },
+  enrichment?: {
+    proofUrl?: string | null;
+    performedByName?: string | null;
+    performedByRole?: string | null;
+    responsibleUserName?: string | null;
+    receiptNumber?: string | null;
+  },
 ) {
   return {
     id: row.id,
@@ -312,6 +318,7 @@ function toStockMovementResponse(
     entered_unit_code: row.enteredUnit?.code ?? null,
     proof_url: enrichment?.proofUrl ?? null,
     performed_by_name: enrichment?.performedByName ?? null,
+    performed_by_role: enrichment?.performedByRole ?? null,
     responsible_user_name: enrichment?.responsibleUserName ?? null,
     receipt_number: enrichment?.receiptNumber ?? null,
     recorded_as_supervisor_direct: row.recordedAsSupervisorDirect,
@@ -1151,6 +1158,7 @@ export const universalInventoryService = {
     );
     const users = await repo.findUsersByIds(userIds);
     const nameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+    const roleById = new Map(users.map((u) => [u.id, u.role]));
 
     // Own-proofKey-less TRANSFER legs fall back to their sibling leg's proof
     // (same referenceId, uploaded once against transferOut.id) — see
@@ -1181,6 +1189,7 @@ export const universalInventoryService = {
         return toStockMovementResponse(m, {
           proofUrl: proofKey ? await getSignedInventoryProofUrl(proofKey) : null,
           performedByName: m.performedByUserId ? (nameById.get(m.performedByUserId) ?? null) : null,
+          performedByRole: m.performedByUserId ? (roleById.get(m.performedByUserId) ?? null) : null,
           responsibleUserName: m.responsibleUserId ? (nameById.get(m.responsibleUserId) ?? null) : null,
           receiptNumber:
             m.referenceType === 'transaction' && m.referenceId ? (receiptNumberByTransactionId.get(m.referenceId) ?? null) : null,

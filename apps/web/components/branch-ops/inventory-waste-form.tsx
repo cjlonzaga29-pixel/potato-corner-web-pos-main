@@ -103,7 +103,9 @@ function WasteFormContent({ basePath }: { basePath: string }) {
         <h1 className="text-2xl font-bold">Record Waste</h1>
         <p className="text-sm text-muted-foreground">Remove spoiled, damaged, or otherwise unusable stock from the ledger.</p>
         <p className="text-sm text-muted-foreground">
-          {isDirectRecord ? 'Recorded by Supervisor — applies immediately.' : "Submitted for supervisor review — stock will not change until it's approved."}
+          {isDirectRecord
+            ? `Recorded by ${role === 'super_admin' ? 'Admin' : 'Supervisor'} — applies immediately.`
+            : "Submitted for supervisor review — stock will not change until it's approved."}
         </p>
       </div>
 
@@ -193,7 +195,7 @@ function WasteFormContent({ basePath }: { basePath: string }) {
               inventoryItemId,
               quantity: Number(form.watch('quantity') || 0),
               reasonCode: form.watch('reason_code'),
-              notes: form.watch('notes'),
+              notes: form.watch('notes') || undefined,
             }}
             verificationToken={verificationToken}
             onVerified={setVerificationToken}

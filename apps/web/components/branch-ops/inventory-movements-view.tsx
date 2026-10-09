@@ -70,7 +70,11 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
       cell: ({ row }) => (
         <div className="flex items-center gap-1.5">
           <Badge variant="secondary">{MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>
-          {row.original.recorded_as_supervisor_direct && <Badge variant="pending">Recorded by Supervisor — Applied</Badge>}
+          {row.original.recorded_as_supervisor_direct && (
+            <Badge variant="pending">
+              Recorded by {row.original.performed_by_role === 'super_admin' ? 'Admin' : 'Supervisor'} — Applied
+            </Badge>
+          )}
         </div>
       ),
     },

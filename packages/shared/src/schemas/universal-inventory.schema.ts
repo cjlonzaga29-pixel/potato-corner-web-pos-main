@@ -286,6 +286,10 @@ export const inventoryStockMovementResponseSchema = z.object({
   // Expense.receipt_url. Null when no photo was attached.
   proof_url: z.string().nullable(),
   performed_by_name: z.string().nullable(),
+  // POS-PERF-P29R — the performer's role at read time, so the UI can label a
+  // direct-recorded movement by who actually recorded it (Admin vs.
+  // Supervisor) instead of hardcoding "Supervisor" for both.
+  performed_by_role: z.string().nullable().optional(),
   responsible_user_name: z.string().nullable(),
   // POS-PERF-P25 — the originating sale's own receipt/transaction number,
   // resolved only for SALE movements (reference_type === 'transaction').

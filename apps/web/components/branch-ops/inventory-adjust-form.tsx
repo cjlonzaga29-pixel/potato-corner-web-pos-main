@@ -188,7 +188,7 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
               inventoryItemId,
               quantity: Number(form.watch('quantity_delta') || 0),
               reasonCode: form.watch('reason_code'),
-              notes: form.watch('notes'),
+              notes: form.watch('notes') || undefined,
             }}
             verificationToken={verificationToken}
             onVerified={setVerificationToken}

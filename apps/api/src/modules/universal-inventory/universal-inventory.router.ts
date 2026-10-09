@@ -977,7 +977,11 @@ stockBranchRouter.post(
         { buffer: req.file.buffer, originalname: req.file.originalname },
         proofType,
       );
-      res.status(201).json({ data: result, error: null, meta: null });
+      res.status(201).json({
+        data: { evidence_key: result.evidenceKey, expires_at: result.expiresAt },
+        error: null,
+        meta: null,
+      });
     } catch (error) {
       handleModuleError(error, res, next);
     }

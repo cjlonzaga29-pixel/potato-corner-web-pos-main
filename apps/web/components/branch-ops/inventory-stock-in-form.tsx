@@ -137,7 +137,9 @@ function StockInFormContent({ basePath }: { basePath: string }) {
         <h1 className="text-2xl font-bold">Stock In</h1>
         <p className="text-sm text-muted-foreground">Record what&apos;s on the receipt — the system converts the quantity into inventory units.</p>
         <p className="text-sm text-muted-foreground">
-          {isDirectRecord ? 'Recorded by Supervisor — applies immediately.' : "Submitted for supervisor review — stock will not change until it's approved."}
+          {isDirectRecord
+            ? `Recorded by ${role === 'super_admin' ? 'Admin' : 'Supervisor'} — applies immediately.`
+            : "Submitted for supervisor review — stock will not change until it's approved."}
         </p>
       </div>
 
@@ -225,7 +227,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
 
           <StaffPinEntryField
             branchId={activeBranchId}
-            draft={{ operation: 'RECEIVING', inventoryItemId, quantity: Number(quantity || 0), unitId: enteredUnitId, notes: form.watch('notes') }}
+            draft={{ operation: 'RECEIVING', inventoryItemId, quantity: Number(quantity || 0), unitId: enteredUnitId, notes: form.watch('notes') || undefined }}
             verificationToken={verificationToken}
             onVerified={setVerificationToken}
           />

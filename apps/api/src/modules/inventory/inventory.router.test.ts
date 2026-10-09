@@ -366,97 +366,60 @@ describe('GET /ingredients/:id — branch protection', () => {
   });
 });
 
-describe('POST /ingredients/:id/stock-in, /adjust, /waste — branch protection (Task 209.49)', () => {
-  // Same gap class as the GET /ingredients/:id fix above, but on the write
-  // path: none of these three routes checked the target ingredient's branch
-  // against the actor's accessible branches before this fix, so a `branch`-
-  // or supervisor-role actor could mutate another branch's stock ledger by
-  // guessing/enumerating an ingredient id that wasn't theirs.
-  it("blocks a supervisor from stocking in another branch's ingredient — 403 BRANCH_ACCESS_DENIED", async () => {
-    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
-    const token = generateSupervisorToken([BRANCH_1]);
-    const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 10 } });
-    const res = mockRes();
-    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
+describe('POST /ingredients/:id/stock-in, /adjust, /waste — retired legacy mutation (POS-PERF-P29R5)', () => {
+  // These three routes predate P29/CR-001 and never collected a
+  // verification_token/evidence_key for any actor or operation — the
+  // MANUAL_INVENTORY_APPROVAL_REQUIRED flag's approval-queue branch merely
+  // reviewed that gap, it never closed it (a queued request with no
+  // responsible-staff identity or evidence is still a policy bypass, just
+  // a reviewed one). apps/web has zero remaining callers of
+  // useStockIn/useAdjustIngredient/useWasteIngredient (every branch-ops
+  // form now posts through the Universal Inventory
+  // /inventory-stock/:inventoryItemId/{receive,adjust,waste} routes
+  // instead), so these are retired outright: every actor, every branch
+  // relationship, and both kill-switch states get the same 410 — no stock
+  // write, no approval request ever created.
+  const routes = [
+    { path: '/ingredients/:id/stock-in', service: 'stockIn' as const, body: { quantity: 10 } },
+    { path: '/ingredients/:id/adjust', service: 'adjustIngredient' as const, body: { quantity_delta: -5, reason_code: 'count_correction' } },
+    { path: '/ingredients/:id/waste', service: 'wasteIngredient' as const, body: { quantity: 5, reason_code: 'spoilage' } },
+  ];
 
-    await runHandlers(handlers, req, res);
+  for (const { path, service, body } of routes) {
+    for (const approvalRequired of [false, true]) {
+      it(`${path} — a super_admin's own-branch request is rejected 410 LEGACY_INVENTORY_MUTATION_RETIRED (manualInventoryApprovalRequired=${approvalRequired})`, async () => {
+        (config as { manualInventoryApprovalRequired: boolean }).manualInventoryApprovalRequired = approvalRequired;
+        const handlers = getRouteHandlers(inventoryRouter, 'post', path);
+        const token = generateSuperAdminToken();
+        const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body });
+        const res = mockRes();
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
-    expect(inventoryService.stockIn).not.toHaveBeenCalled();
-  });
+        await runHandlers(handlers, req, res);
 
-  it("blocks a branch account from adjusting another branch's ingredient — 403 BRANCH_ACCESS_DENIED", async () => {
-    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/adjust');
-    const token = generateBranchToken(BRANCH_1);
-    const req = mockReq({
-      ...authHeader(token),
-      params: { id: INGREDIENT_1 },
-      body: { quantity_delta: -5, reason_code: 'count_correction' },
+        expect(res.status).toHaveBeenCalledWith(410);
+        expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'LEGACY_INVENTORY_MUTATION_RETIRED' }) }));
+        expect(inventoryService[service]).not.toHaveBeenCalled();
+        expect(inventoryService.getIngredientById).not.toHaveBeenCalled();
+        (config as { manualInventoryApprovalRequired: boolean }).manualInventoryApprovalRequired = false;
+      });
+    }
+
+    it(`${path} — a branch account's cross-branch request is also rejected 410, not a branch-ownership 403 (the route never reaches that check)`, async () => {
+      const handlers = getRouteHandlers(inventoryRouter, 'post', path);
+      const token = generateBranchToken(BRANCH_1);
+      const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(410);
+      expect(inventoryService[service]).not.toHaveBeenCalled();
     });
-    const res = mockRes();
-    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
-    expect(inventoryService.adjustIngredient).not.toHaveBeenCalled();
-  });
-
-  it("blocks a branch account from wasting stock on another branch's ingredient — 403 BRANCH_ACCESS_DENIED", async () => {
-    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/waste');
-    const token = generateBranchToken(BRANCH_1);
-    const req = mockReq({
-      ...authHeader(token),
-      params: { id: INGREDIENT_1 },
-      body: { quantity: 5, reason_code: 'spoilage' },
-    });
-    const res = mockRes();
-    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
-    expect(inventoryService.wasteIngredient).not.toHaveBeenCalled();
-  });
-
-  it('allows a branch account to stock in an ingredient belonging to its own branch — 201', async () => {
-    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
-    const token = generateBranchToken(BRANCH_1);
-    const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 10 } });
-    const res = mockRes();
-    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_1 } as never);
-    vi.mocked(inventoryService.stockIn).mockResolvedValue({ id: 'mov-1' } as never);
-
-    await runHandlers(handlers, req, res);
-
-    expect(inventoryService.stockIn).toHaveBeenCalledOnce();
-    expect(res.status).toHaveBeenCalledWith(201);
-  });
-
-  it('allows a super_admin to stock in any ingredient regardless of branch — 201', async () => {
-    const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
-    const token = generateSuperAdminToken();
-    const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 10 } });
-    const res = mockRes();
-    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_2 } as never);
-    vi.mocked(inventoryService.stockIn).mockResolvedValue({ id: 'mov-1' } as never);
-
-    await runHandlers(handlers, req, res);
-
-    expect(inventoryService.stockIn).toHaveBeenCalledOnce();
-    expect(res.status).toHaveBeenCalledWith(201);
-  });
+  }
 });
 
-describe('POST /ingredients/:id/stock-in — validate middleware', () => {
-  it('rejects a payload missing the required quantity field with 422 VALIDATION_ERROR', async () => {
-    // Every route in this codebase returns 422 (not 400) for a failed
-    // validate(schema) check — see middleware/validate.ts and every other
-    // module's router. Asserting 400 here would test for behavior this
-    // codebase deliberately doesn't have.
+describe('POST /ingredients/:id/stock-in — validate middleware still runs ahead of the retirement response', () => {
+  it('a malformed payload (missing required quantity) still gets 422 VALIDATION_ERROR, not 410', async () => {
     const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: {} });
@@ -469,20 +432,56 @@ describe('POST /ingredients/:id/stock-in — validate middleware', () => {
     expect(inventoryService.stockIn).not.toHaveBeenCalled();
   });
 
-  it('a valid stock-in request passes validate() and reaches the service, returning 201', async () => {
+  it('a well-formed payload still gets 410, never reaching the service', async () => {
     const handlers = getRouteHandlers(inventoryRouter, 'post', '/ingredients/:id/stock-in');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: INGREDIENT_1 }, body: { quantity: 25 } });
     const res = mockRes();
-    vi.mocked(inventoryService.getIngredientById).mockResolvedValue({ id: INGREDIENT_1, branch_id: BRANCH_1 } as never);
-    vi.mocked(inventoryService.stockIn).mockResolvedValue({ id: 'mov-1' } as never);
 
     await runHandlers(handlers, req, res);
 
-    expect(inventoryService.stockIn).toHaveBeenCalledWith(INGREDIENT_1, { quantity: 25 }, expect.objectContaining({ id: expect.any(String) }), null);
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { id: 'mov-1' }, error: null }));
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ data: null, error: expect.objectContaining({ code: 'LEGACY_INVENTORY_MUTATION_RETIRED' }) }),
+    );
+    expect(inventoryService.stockIn).not.toHaveBeenCalled();
   });
+});
+
+describe('POST /:branchId/inventory/count — retired legacy mutation (POS-PERF-P29R5)', () => {
+  // Same retirement as stock-in/adjust/waste above — this route only ever
+  // submitted LEGACY_INGREDIENT counts (never UNIVERSAL_ITEM), and
+  // apps/web's physical-count form now posts through Universal Inventory's
+  // /inventory-stock/count instead (use-universal-inventory.ts's
+  // useSubmitInventoryStockCount). Covers the multi-line-submission shape
+  // specifically, per the fix's required test coverage.
+  for (const approvalRequired of [false, true]) {
+    it(`a multi-line physical count submission is rejected 410, regardless of manualInventoryApprovalRequired=${approvalRequired}`, async () => {
+      (config as { manualInventoryApprovalRequired: boolean }).manualInventoryApprovalRequired = approvalRequired;
+      const handlers = getRouteHandlers(inventoryBranchRouter, 'post', '/:branchId/inventory/count');
+      const token = generateSupervisorToken([BRANCH_1]);
+      const req = mockReq({
+        ...authHeader(token),
+        params: { branchId: BRANCH_1 },
+        body: {
+          branch_id: BRANCH_1,
+          started_at: new Date().toISOString(),
+          counts: [
+            { ingredient_id: INGREDIENT_1, counted_quantity: 12 },
+            { ingredient_id: randomUUID(), counted_quantity: 5 },
+          ],
+        },
+      });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(410);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'LEGACY_INVENTORY_MUTATION_RETIRED' }) }));
+      expect(inventoryService.submitPhysicalCount).not.toHaveBeenCalled();
+      (config as { manualInventoryApprovalRequired: boolean }).manualInventoryApprovalRequired = false;
+    });
+  }
 });
 
 describe('POST /:branchId/inventory/transfer — same-branch transfer rejection', () => {

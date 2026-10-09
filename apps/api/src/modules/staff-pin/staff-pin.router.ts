@@ -132,6 +132,16 @@ router.post(
       );
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
+      // POS-PERF-P29R5 — marks this request for staffPinVerifyFailureLimiter's
+      // requestWasSuccessful override (rate-limiter.ts) so ONLY a genuine
+      // wrong-PIN rejection burns the brute-force budget. Every other error
+      // this handler can throw (DB/storage failure, etc.) is a real failure
+      // response to the caller but must not count against that budget —
+      // validate(verifyStaffPinSchema)'s own 422 for a malformed draft never
+      // reaches here at all, since it responds before this handler runs.
+      if (error instanceof StaffPinError && error.code === 'INVALID_PIN') {
+        res.locals.staffPinInvalid = true;
+      }
       handleModuleError(error, res, next);
     }
   },

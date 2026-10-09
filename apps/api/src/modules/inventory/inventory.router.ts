@@ -13,8 +13,6 @@ import {
 } from '@potato-corner/shared';
 import { inventoryService } from './inventory.service.js';
 import { IngredientError } from './inventory.types.js';
-import { inventoryApprovalService } from '../inventory-approval/inventory-approval.service.js';
-import { config } from '../../config/index.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -39,6 +37,33 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
     return;
   }
   next(error);
+}
+
+/**
+ * POS-PERF-P29R5 — these four legacy LEGACY_INGREDIENT mutation routes
+ * (stock-in/adjust/waste on /ingredients/:id, physical count on
+ * /branches/:branchId/inventory/count) predate P29/CR-001 and never
+ * collected a verification_token/evidence_key. The approval-queue branch
+ * added for the MANUAL_INVENTORY_APPROVAL_REQUIRED flag papered over that —
+ * an approval queue is not the same as the responsible-staff-identity +
+ * evidence policy itself, so a request without either was still a policy
+ * bypass, just a reviewed one. CR-001/Universal Inventory fully superseded
+ * this surface (apps/web has zero remaining callers of
+ * useStockIn/useAdjustIngredient/useWasteIngredient/useSubmitPhysicalCount
+ * in hooks/queries/use-inventory.ts — every branch-ops form now posts
+ * through use-universal-inventory.ts instead), so rather than retrofit PIN
+ * capture onto a dead code path, these routes are retired outright: no
+ * stock write, no approval request, regardless of the kill-switch state.
+ */
+function rejectRetiredLegacyMutation(res: Response, universalPath: string): void {
+  res.status(410).json({
+    data: null,
+    error: {
+      code: 'LEGACY_INVENTORY_MUTATION_RETIRED',
+      message: `This legacy ingredient endpoint no longer accepts writes. Use the Universal Inventory workflow instead: POST /api/branches/:branchId/${universalPath}.`,
+    },
+    meta: null,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -176,50 +201,7 @@ inventoryRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      // Task 209.49 — branchGuard can't run here (only an ingredient id is in
-      // the URL, same as GET/PATCH /ingredients/:id above), and unlike those
-      // two routes this write mutated another branch's stock ledger with no
-      // check at all: a `branch`-role actor could stock-in against any
-      // ingredient id regardless of which branch it belonged to. Same inline
-      // allow/deny check as GET /ingredients/:id, applied before the write
-      // instead of only before the read.
-      let existing;
-      try {
-        existing = await inventoryService.getIngredientById(req.params.id as string);
-      } catch (error) {
-        return handleModuleError(error, res, next);
-      }
-      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
-        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
-        return;
-      }
-      // POS-PERF-P28 — this legacy stock-in endpoint has no live frontend
-      // caller but is still a reachable "alternative route" performing the
-      // same manual operation the universal-inventory /receive route now
-      // gates — same approval requirement, same single-env kill switch.
-      if (config.manualInventoryApprovalRequired) {
-        const body = req.body as z.infer<typeof stockInSchema>;
-        const result = await inventoryApprovalService.submitReceiving(
-          {
-            target: 'LEGACY_INGREDIENT',
-            branchId: existing.branch_id,
-            legacyIngredientId: req.params.id as string,
-            enteredQuantity: body.quantity,
-            deliveryReference: body.supplier_reference,
-            notes: body.notes,
-          },
-          req.user,
-        );
-        res.status(201).json({ data: result, error: null, meta: null });
-        return;
-      }
-      const movement = await inventoryService.stockIn(
-        req.params.id as string,
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
-      res.status(201).json({ data: movement, error: null, meta: null });
+      rejectRetiredLegacyMutation(res, 'inventory-stock/:inventoryItemId/receive');
     } catch (error) {
       handleModuleError(error, res, next);
     }
@@ -235,41 +217,7 @@ inventoryRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      // Task 209.49 — same missing branch-ownership check as stock-in above;
-      // see its comment.
-      let existing;
-      try {
-        existing = await inventoryService.getIngredientById(req.params.id as string);
-      } catch (error) {
-        return handleModuleError(error, res, next);
-      }
-      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
-        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
-        return;
-      }
-      if (config.manualInventoryApprovalRequired) {
-        const body = req.body as z.infer<typeof adjustIngredientSchema>;
-        const result = await inventoryApprovalService.submitAdjustment(
-          {
-            target: 'LEGACY_INGREDIENT',
-            branchId: existing.branch_id,
-            legacyIngredientId: req.params.id as string,
-            quantityDelta: body.quantity_delta,
-            reasonCode: body.reason_code,
-            notes: body.notes,
-          },
-          req.user,
-        );
-        res.status(201).json({ data: result, error: null, meta: null });
-        return;
-      }
-      const movement = await inventoryService.adjustIngredient(
-        req.params.id as string,
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
-      res.status(201).json({ data: movement, error: null, meta: null });
+      rejectRetiredLegacyMutation(res, 'inventory-stock/:inventoryItemId/adjust');
     } catch (error) {
       handleModuleError(error, res, next);
     }
@@ -285,50 +233,7 @@ inventoryRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      // Task 209.49 — same missing branch-ownership check as stock-in above;
-      // see its comment.
-      let existing;
-      try {
-        existing = await inventoryService.getIngredientById(req.params.id as string);
-      } catch (error) {
-        return handleModuleError(error, res, next);
-      }
-      if (!(await hasBranchAccess(req.user, existing.branch_id))) {
-        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
-        return;
-      }
-      // POS-PERF-P29R3 — this legacy waste endpoint was the one reachable
-      // write path that never honored MANUAL_INVENTORY_APPROVAL_REQUIRED at
-      // all: stock-in/adjust above both gate through the Pending Review
-      // queue when the flag is on, but waste always wrote straight to the
-      // ledger regardless of it. That is a bypass of the review requirement
-      // itself (not of PIN verification — LEGACY_INGREDIENT never collected
-      // one for any operation, see requestRequiresStaffVerification's doc
-      // comment in inventory-approval.service.ts), and is fixed here to
-      // match stock-in/adjust exactly.
-      if (config.manualInventoryApprovalRequired) {
-        const body = req.body as z.infer<typeof wasteIngredientSchema>;
-        const result = await inventoryApprovalService.submitWaste(
-          {
-            target: 'LEGACY_INGREDIENT',
-            branchId: existing.branch_id,
-            legacyIngredientId: req.params.id as string,
-            quantity: body.quantity,
-            reasonCode: body.reason_code,
-            notes: body.notes,
-          },
-          req.user,
-        );
-        res.status(201).json({ data: result, error: null, meta: null });
-        return;
-      }
-      const movement = await inventoryService.wasteIngredient(
-        req.params.id as string,
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
-      res.status(201).json({ data: movement, error: null, meta: null });
+      rejectRetiredLegacyMutation(res, 'inventory-stock/:inventoryItemId/waste');
     } catch (error) {
       handleModuleError(error, res, next);
     }
@@ -441,33 +346,7 @@ inventoryBranchRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const branchId = req.params.branchId as string;
-      const body = req.body as { branch_id: string };
-      if (body.branch_id !== branchId) {
-        res.status(400).json({ data: null, error: { code: 'BRANCH_ID_MISMATCH' }, meta: null });
-        return;
-      }
-      if (config.manualInventoryApprovalRequired) {
-        const parsedBody = req.body as z.infer<typeof physicalCountSubmissionSchema>;
-        const requests = await inventoryApprovalService.submitPhysicalCount(
-          {
-            target: 'LEGACY_INGREDIENT',
-            branchId,
-            counts: parsedBody.counts.map((c) => ({ legacyIngredientId: c.ingredient_id, countedQuantity: c.counted_quantity })),
-            notes: parsedBody.notes,
-          },
-          req.user,
-        );
-        res.status(201).json({ data: { requests }, error: null, meta: null });
-        return;
-      }
-      const result = await inventoryService.submitPhysicalCount(
-        branchId,
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
-      res.status(201).json({ data: result, error: null, meta: null });
+      rejectRetiredLegacyMutation(res, 'inventory-stock/count');
     } catch (error) {
       handleModuleError(error, res, next);
     }

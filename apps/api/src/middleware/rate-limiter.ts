@@ -139,30 +139,34 @@ function staffPinVerifyKey(req: Request): string {
 }
 
 /**
- * POS-PERF-P29R2/R4 — 5 *failed* PIN attempts per 5 minutes per (branchId,
- * actor). `skipSuccessfulRequests: true` means a correct PIN (the verify
- * route responds 200) never consumes this budget — only a wrong-PIN 401
- * does (StaffPinError's statusCode, surfaced via handleModuleError, is what
- * express-rate-limit's default `requestWasSuccessful` checks:
- * res.statusCode < 400). This is the actual brute-force/enumeration
- * lockout: five wrong guesses in five minutes blocks further guessing
- * regardless of how many correct verifications happened in between, and
- * concurrent guesses against the same key are serialized by the same
- * counter (express-rate-limit's MemoryStore increments synchronously per
+ * POS-PERF-P29R2/R4/R5 — 5 *failed* PIN attempts per 5 minutes per
+ * (branchId, actor). This is the actual brute-force/enumeration lockout:
+ * five wrong guesses in five minutes blocks further guessing regardless of
+ * how many correct verifications happened in between, and concurrent
+ * guesses against the same key are serialized by the same counter
+ * (express-rate-limit's MemoryStore increments synchronously per
  * event-loop tick, so a burst of parallel wrong-PIN requests still can't
  * exceed the limit before the 6th is rejected).
  *
+ * `requestWasSuccessful` overrides express-rate-limit's default
+ * status-code check (res.statusCode < 400). A plain status check cannot
+ * tell "the PIN itself was wrong" apart from any other non-2xx outcome
+ * reaching this same route — a malformed draft rejected by validate() with
+ * 422, a DB/storage failure thrown before bcrypt ever ran, or (pre-R4) the
+ * resource-cap limiter's own 429 — every one of those would otherwise be
+ * misread as a "failure" and silently burn one unit of the wrong-PIN
+ * budget for an attempt that never actually checked a PIN. The verify-pin
+ * route handler (staff-pin.router.ts) sets
+ * `res.locals.staffPinInvalid = true` ONLY when staffPinService.verifyPin
+ * throws its genuine StaffPinError('INVALID_PIN', ...); every other
+ * outcome — success, validation error, infra error — leaves it unset, so
+ * `requestWasSuccessful` reports true (skip) for all of them and this
+ * counter only ever reflects real wrong-PIN attempts.
+ *
  * MUST be mounted AFTER staffPinVerifyOverallLimiter on any route (see
- * staff-pin.router.ts's /branches/:branchId/verify) — this limiter's
- * `skipSuccessfulRequests` decrement only inspects the final response
- * status, with no way to distinguish "the PIN itself was wrong" from "some
- * other middleware later in the chain rejected this request with a
- * non-2xx status." If the overall resource-cap limiter ran afterward and
- * rejected a request this limiter had already let through, the resulting
- * 429 would read as a "failure" here too — silently charging a legitimate,
- * never-even-checked PIN attempt against the wrong-PIN lockout budget.
- * Mounting the resource cap first means anything it rejects never reaches
- * this limiter at all, so only genuine PIN-check outcomes are ever counted.
+ * staff-pin.router.ts's /branches/:branchId/verify) — belt-and-suspenders
+ * with the fix above: mounting the resource cap first means a request it
+ * rejects never reaches this limiter (or the route handler) at all.
  */
 export const staffPinVerifyFailureLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -170,6 +174,7 @@ export const staffPinVerifyFailureLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
+  requestWasSuccessful: (_req: Request, res: Response) => !(res as Response & { locals: Record<string, unknown> }).locals.staffPinInvalid,
   keyGenerator: staffPinVerifyKey,
   handler: rateLimitHandler,
 });

@@ -30,6 +30,7 @@ function mockRes() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors the mockRes pattern in auth.router.test.ts/rbac.test.ts
   const res: any = emitter;
   res.writableEnded = false;
+  res.locals = {};
   res.status = vi.fn((code: number) => {
     res.statusCode = code;
     return res;
@@ -63,8 +64,23 @@ async function hit(limiter: Limiter, req: Request): Promise<{ allowed: boolean; 
  * downstream route handler finishing with `outcomeStatus` and emits
  * 'finish' so the store's post-response decrement logic actually runs
  * before the next request in the same test is sent.
+ *
+ * `staffPinInvalid` mirrors what staff-pin.router.ts's verify-pin handler
+ * actually sets on `res.locals` — ONLY on a genuine StaffPinError(
+ * 'INVALID_PIN', ...), which staffPinVerifyFailureLimiter's
+ * requestWasSuccessful override (rate-limiter.ts) reads instead of trusting
+ * the raw status code. Defaults to `outcomeStatus === 401` so every
+ * pre-existing call site (which used 401 to mean "a wrong PIN") keeps its
+ * original meaning unchanged; tests that need to simulate a non-2xx
+ * outcome that was NOT a wrong PIN (a validation/infra failure) pass it
+ * explicitly as `false`.
  */
-async function hitWithOutcome(limiter: Limiter, req: Request, outcomeStatus: 200 | 401): Promise<{ allowed: boolean; status?: number }> {
+async function hitWithOutcome(
+  limiter: Limiter,
+  req: Request,
+  outcomeStatus: 200 | 401 | 422 | 500,
+  staffPinInvalid: boolean = outcomeStatus === 401,
+): Promise<{ allowed: boolean; status?: number }> {
   const res = mockRes();
   let allowed = false;
   await limiter(req, res, (() => {
@@ -72,6 +88,7 @@ async function hitWithOutcome(limiter: Limiter, req: Request, outcomeStatus: 200
   }) as NextFunction);
   if (allowed) {
     res.statusCode = outcomeStatus;
+    res.locals.staffPinInvalid = staffPinInvalid;
     (res as unknown as EventEmitter).emit('finish');
     // response.on('finish', async () => ...) handlers are async — flush microtasks.
     await new Promise((resolve) => setImmediate(resolve));
@@ -401,7 +418,12 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
    * own 429, so every limiter still earlier in the chain that already let
    * it through sees that same 429 on its own finish-hook bookkeeping.
    */
-  async function hitChain(limiters: Limiter[], req: Request, outcomeStatus: 200 | 401): Promise<{ allowed: boolean; status?: number }> {
+  async function hitChain(
+    limiters: Limiter[],
+    req: Request,
+    outcomeStatus: 200 | 401,
+    staffPinInvalid: boolean = outcomeStatus === 401,
+  ): Promise<{ allowed: boolean; status?: number }> {
     const res = mockRes();
     let allowed = true;
     for (const limiter of limiters) {
@@ -416,6 +438,7 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
     }
     if (allowed) {
       res.statusCode = outcomeStatus;
+      res.locals.staffPinInvalid = staffPinInvalid;
     }
     // Whichever limiter stopped the chain (or the simulated route handler,
     // if every limiter passed it through) is what actually set res.statusCode
@@ -457,8 +480,10 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
   );
 
   it(
-    'demonstrates the bug the fix closes: mounted failure-limiter-first (the old, wrong order), an overall-capped ' +
-      'correct-PIN request IS wrongly charged against the wrong-PIN lockout budget',
+    'POS-PERF-P29R5 — the requestWasSuccessful fix is defense-in-depth: even mounted failure-limiter-first ' +
+      '(the old, wrong order the R4 fix moved away from), an overall-capped correct-PIN request no longer ' +
+      "contaminates the wrong-PIN budget, because res.locals.staffPinInvalid (not the raw 429 status) is what " +
+      "this limiter's finish-hook now reads",
     async () => {
       const branchId = randomUUID();
       const userId = randomUUID();
@@ -470,21 +495,60 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
         expect(result.allowed).toBe(true);
       }
       // The 31st passes the failure limiter (it's a correct PIN) but is then rejected by the overall cap —
-      // finishing with status 429, which the failure limiter's own finish-hook reads as "not successful."
+      // finishing with status 429. hitChain only sets res.locals.staffPinInvalid when the request was actually
+      // `allowed` through the whole chain, so this capped request never sets it — the fix holds regardless of
+      // which limiter's rejection produced the non-2xx status.
       const capped = await hitChain(oldOrderChain, req, 200);
       expect(capped.allowed).toBe(false);
       expect(capped.status).toBe(429);
 
-      // That spurious "failure" now occupies 1 of the failure limiter's 5 slots — only 4 genuinely wrong
-      // PIN attempts are admitted before the lockout trips, even though none of the 31 prior requests was
-      // ever actually a wrong PIN.
-      for (let i = 0; i < 4; i++) {
+      // Even mounted in the old, wrong order, the failure budget is untouched by that 429 — all 5 genuinely
+      // wrong PIN attempts are still admitted before the lockout trips.
+      for (let i = 0; i < 5; i++) {
         const wrongPin = await hitChain([staffPinVerifyFailureLimiter], req, 401);
         expect(wrongPin.allowed).toBe(true);
       }
-      const prematurelyLockedOut = await hitChain([staffPinVerifyFailureLimiter], req, 401);
-      expect(prematurelyLockedOut.allowed).toBe(false);
-      expect(prematurelyLockedOut.status).toBe(429);
+      const blocked = await hitChain([staffPinVerifyFailureLimiter], req, 401);
+      expect(blocked.allowed).toBe(false);
+      expect(blocked.status).toBe(429);
     },
   );
+
+  /**
+   * POS-PERF-P29R5 — requestWasSuccessful reads res.locals.staffPinInvalid
+   * instead of the raw status code, so a non-2xx outcome that was never a
+   * wrong-PIN rejection (a malformed draft the validate() middleware caught
+   * with 422, or a DB/storage failure thrown before bcrypt ever ran, 500)
+   * must not consume any of the 5-attempt lockout budget — only a real
+   * StaffPinError('INVALID_PIN', ...) may.
+   */
+  it('does not charge the wrong-PIN budget for a 422 (malformed draft, never reached the PIN check)', async () => {
+    const req = pinReq();
+    for (let i = 0; i < 20; i++) {
+      const result = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 422, false);
+      expect(result.allowed).toBe(true);
+    }
+  });
+
+  it('does not charge the wrong-PIN budget for a 500 (infra/storage failure, never reached the PIN check)', async () => {
+    const req = pinReq();
+    for (let i = 0; i < 20; i++) {
+      const result = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 500, false);
+      expect(result.allowed).toBe(true);
+    }
+  });
+
+  it('a mix of 422/500 non-PIN failures still leaves the full 5-attempt budget for genuine wrong PINs', async () => {
+    const req = pinReq();
+    for (let i = 0; i < 10; i++) {
+      await hitWithOutcome(staffPinVerifyFailureLimiter, req, i % 2 === 0 ? 422 : 500, false);
+    }
+    for (let i = 0; i < 5; i++) {
+      const wrongPin = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 401);
+      expect(wrongPin.allowed).toBe(true);
+    }
+    const blocked = await hitWithOutcome(staffPinVerifyFailureLimiter, req, 401);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.status).toBe(429);
+  });
 });

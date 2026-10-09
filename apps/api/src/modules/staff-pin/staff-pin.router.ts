@@ -90,8 +90,20 @@ router.post(
   adminSupervisorOrBranch,
   requirePasswordChange,
   branchGuard,
-  staffPinVerifyFailureLimiter,
+  // Resource cap first, deliberately: it must reject a request (429) BEFORE
+  // the failure/lockout limiter's counter is ever touched. With the order
+  // reversed, a request that the failure limiter let through but the
+  // overall cap then rejected would finish with status 429 (>= 400) —
+  // and since that's the status the failure limiter's own
+  // `skipSuccessfulRequests` decrement logic inspects, it would treat a
+  // perfectly valid, never-even-checked PIN attempt as a "failure" and
+  // permanently consume one unit of the wrong-PIN brute-force budget.
+  // Running the resource cap first means a request it rejects never
+  // reaches the failure limiter at all, so it can never contaminate that
+  // counter — only requests that genuinely reached the PIN check (and so
+  // have an honest success/failure status) are ever counted there.
   staffPinVerifyOverallLimiter,
+  staffPinVerifyFailureLimiter,
   validate(verifyStaffPinSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

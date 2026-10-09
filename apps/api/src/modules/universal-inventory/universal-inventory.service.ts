@@ -1187,7 +1187,9 @@ export const universalInventoryService = {
         const proofKey =
           m.proofKey ?? (m.referenceType === 'transfer' && m.referenceId ? (siblingProofKeyByReferenceId.get(m.referenceId) ?? null) : null);
         return toStockMovementResponse(m, {
-          proofUrl: proofKey ? await getSignedInventoryProofUrl(proofKey) : null,
+          // Same reasoning as inventory-approval.service.ts's toResponse: one
+          // row's unsignable proof object must not fail the whole page.
+          proofUrl: proofKey ? await getSignedInventoryProofUrl(proofKey).catch(() => null) : null,
           performedByName: m.performedByUserId ? (nameById.get(m.performedByUserId) ?? null) : null,
           performedByRole: m.performedByUserId ? (roleById.get(m.performedByUserId) ?? null) : null,
           responsibleUserName: m.responsibleUserId ? (nameById.get(m.responsibleUserId) ?? null) : null,
@@ -1756,7 +1758,7 @@ export const universalInventoryService = {
       corrections.map(async (c) =>
         toCostCorrectionResponse(c, {
           correctedByName: nameById.get(c.correctedByUserId) ?? null,
-          proofUrl: c.proofKey ? await getSignedInventoryProofUrl(c.proofKey) : null,
+          proofUrl: c.proofKey ? await getSignedInventoryProofUrl(c.proofKey).catch(() => null) : null,
         }),
       ),
     );

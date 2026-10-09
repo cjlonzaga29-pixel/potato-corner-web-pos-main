@@ -142,7 +142,11 @@ async function toResponse(request: RequestRow) {
     universalInventoryRepository.findUsersByIds(
       [request.submittedByUserId, request.reviewedByUserId, request.cancelledByUserId].filter((id): id is string => id !== null),
     ),
-    request.proofKey ? getSignedInventoryProofUrl(request.proofKey) : Promise.resolve(null),
+    // A single request whose stored proof object can no longer be signed
+    // (deleted, bucket hiccup, environment mismatch) must not take down the
+    // whole list/detail response for every other request alongside it —
+    // fall back to a null proof_url for that one row instead of rejecting.
+    request.proofKey ? getSignedInventoryProofUrl(request.proofKey).catch(() => null) : Promise.resolve(null),
   ]);
   const nameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
 

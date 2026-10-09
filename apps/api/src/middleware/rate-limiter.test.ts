@@ -390,4 +390,101 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
     expect(admitted.length + rejected.length).toBe(40);
     for (const r of rejected) expect(r.status).toBe(429);
   });
+
+  /**
+   * POS-PERF-P29R4 — runs both limiters chained, in whatever order the
+   * caller supplies, the way Express actually composes route middleware
+   * (one shared req/res pair, each limiter's `next()` gating whether the
+   * next one in the list runs at all). A request rejected partway through
+   * the chain never reaches the remaining limiters — its res never gets a
+   * 2xx/finish from the real route handler, only the rejecting limiter's
+   * own 429, so every limiter still earlier in the chain that already let
+   * it through sees that same 429 on its own finish-hook bookkeeping.
+   */
+  async function hitChain(limiters: Limiter[], req: Request, outcomeStatus: 200 | 401): Promise<{ allowed: boolean; status?: number }> {
+    const res = mockRes();
+    let allowed = true;
+    for (const limiter of limiters) {
+      let calledNext = false;
+      await limiter(req, res, (() => {
+        calledNext = true;
+      }) as NextFunction);
+      if (!calledNext) {
+        allowed = false;
+        break;
+      }
+    }
+    if (allowed) {
+      res.statusCode = outcomeStatus;
+    }
+    // Whichever limiter stopped the chain (or the simulated route handler,
+    // if every limiter passed it through) is what actually set res.statusCode
+    // — fire 'finish' once so every limiter earlier in the chain that
+    // already incremented its own counter runs its post-response bookkeeping
+    // against that final, real status.
+    (res as unknown as EventEmitter).emit('finish');
+    await new Promise((resolve) => setImmediate(resolve));
+    return { allowed, status: allowed ? undefined : res.statusCode };
+  }
+
+  it(
+    'mounted overall-limiter-first (the fixed order): a request the overall cap rejects never touches the failure/lockout budget — ' +
+      'a subsequent genuinely wrong PIN still has its full 5-attempt budget',
+    async () => {
+      const branchId = randomUUID();
+      const userId = randomUUID();
+      const req = pinReq({ branchId, userId });
+      const chain = [staffPinVerifyOverallLimiter, staffPinVerifyFailureLimiter];
+
+      // 30 legitimate, correctly-PIN'd requests exhaust the overall (resource-cap) budget.
+      for (let i = 0; i < 30; i++) {
+        const result = await hitChain(chain, req, 200);
+        expect(result.allowed).toBe(true);
+      }
+      // The 31st — still a correct PIN, never even reaches the failure limiter's route handler — is rejected by the overall cap alone.
+      const capped = await hitChain(chain, req, 200);
+      expect(capped.allowed).toBe(false);
+      expect(capped.status).toBe(429);
+
+      // The failure/lockout budget must be completely untouched by that rejection: a fresh actor identity
+      // sharing nothing but this test's assertion intent would trivially pass, so prove it on the SAME
+      // (branchId, actor) key instead — all 5 wrong-PIN attempts below must still be admitted.
+      for (let i = 0; i < 5; i++) {
+        const wrongPin = await hitChain([staffPinVerifyFailureLimiter], req, 401);
+        expect(wrongPin.allowed).toBe(true);
+      }
+    },
+  );
+
+  it(
+    'demonstrates the bug the fix closes: mounted failure-limiter-first (the old, wrong order), an overall-capped ' +
+      'correct-PIN request IS wrongly charged against the wrong-PIN lockout budget',
+    async () => {
+      const branchId = randomUUID();
+      const userId = randomUUID();
+      const req = pinReq({ branchId, userId });
+      const oldOrderChain = [staffPinVerifyFailureLimiter, staffPinVerifyOverallLimiter];
+
+      for (let i = 0; i < 30; i++) {
+        const result = await hitChain(oldOrderChain, req, 200);
+        expect(result.allowed).toBe(true);
+      }
+      // The 31st passes the failure limiter (it's a correct PIN) but is then rejected by the overall cap —
+      // finishing with status 429, which the failure limiter's own finish-hook reads as "not successful."
+      const capped = await hitChain(oldOrderChain, req, 200);
+      expect(capped.allowed).toBe(false);
+      expect(capped.status).toBe(429);
+
+      // That spurious "failure" now occupies 1 of the failure limiter's 5 slots — only 4 genuinely wrong
+      // PIN attempts are admitted before the lockout trips, even though none of the 31 prior requests was
+      // ever actually a wrong PIN.
+      for (let i = 0; i < 4; i++) {
+        const wrongPin = await hitChain([staffPinVerifyFailureLimiter], req, 401);
+        expect(wrongPin.allowed).toBe(true);
+      }
+      const prematurelyLockedOut = await hitChain([staffPinVerifyFailureLimiter], req, 401);
+      expect(prematurelyLockedOut.allowed).toBe(false);
+      expect(prematurelyLockedOut.status).toBe(429);
+    },
+  );
 });

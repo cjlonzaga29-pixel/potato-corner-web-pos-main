@@ -23,6 +23,7 @@ const OPERATION_LABELS: Record<string, string> = {
   RECEIVING: 'Stock In',
   ADJUSTMENT: 'Stock Adjustment',
   PHYSICAL_COUNT: 'Physical Count',
+  WASTE: 'Waste',
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -83,7 +84,11 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
   const current = data;
   const isSubmitter = user?.id === current.submitted_by_user_id;
   const quantityField =
-    current.operation === 'RECEIVING' ? current.entered_quantity : current.operation === 'ADJUSTMENT' ? current.quantity_delta : current.counted_quantity;
+    current.operation === 'RECEIVING' || current.operation === 'WASTE'
+      ? current.entered_quantity
+      : current.operation === 'ADJUSTMENT'
+        ? current.quantity_delta
+        : current.counted_quantity;
 
   async function handleCorrect() {
     if (!id) return;
@@ -121,6 +126,8 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
             <Field label="Submitted At" value={formatDateTime(data.submitted_at)} />
             <Field label="Reviewed/Approved By" value={data.reviewed_by_name} />
             <Field label="Reviewed At" value={data.reviewed_at ? formatDateTime(data.reviewed_at) : null} />
+            <Field label="Responsible Staff (PIN-verified)" value={data.responsible_staff_name} />
+            <Field label="PIN Verified At" value={data.pin_verified_at ? formatDateTime(data.pin_verified_at) : null} />
           </div>
           <Field label="Notes" value={data.notes} />
           {data.status === 'RETURNED' && <Field label="Return Reason" value={data.return_reason} />}

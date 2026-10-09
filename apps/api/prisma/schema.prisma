@@ -337,6 +337,7 @@ model User {
   paymentProofVerifiedTransactions Transaction[]          @relation("TransactionPaymentProofVerifiedBy")
   refreshTokens                    RefreshToken[]
   pinCredentials                   PinCredential[]
+  staffPin                         StaffPin?
   holdOrders                       HoldOrder[]
   passwordResetTokens              PasswordResetToken[]
 
@@ -397,6 +398,7 @@ model Branch {
   inventoryStocks InventoryStock[]
   inventoryStockMovements InventoryStockMovement[]
   inventoryCostCorrections InventoryCostCorrection[]
+  staffPinBranchLookups StaffPinBranchLookup[]
 
   // CR-001
   exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
@@ -536,6 +538,136 @@ model PinCredential {
 
   @@unique([userId, deviceId])
   @@map("pin_credentials")
+}
+
+/// POS-PERF-P29 -- one row per staff User, global (not per-branch). A
+/// separate system from PinCredential (above): PinCredential is a login
+/// shortcut on an already-authenticated device and fully elevates a
+/// session; StaffPin only identifies *who physically performed* an
+/// inventory operation an already-authenticated branch/supervisor/admin
+/// session is submitting -- it never issues or elevates a session itself.
+/// pinHash is the authoritative bcrypt check; pinLookupDigest (HMAC-SHA256,
+/// STAFF_PIN_HMAC_SECRET) exists only so a candidate row can be found by
+/// (branchId, digest) before the slow bcrypt compare runs -- see
+/// StaffPinBranchLookup.
+model StaffPin {
+  id               String  @id @default(uuid())
+  userId           String  @unique @map("user_id")
+  pinHash          String  @map("pin_hash")
+  pinLookupDigest  String  @map("pin_lookup_digest")
+  isActive         Boolean @default(true) @map("is_active")
+
+  setByUserId String?   @map("set_by_user_id")
+  setAt       DateTime  @default(now()) @map("set_at")
+  revokedAt   DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  branchLookups StaffPinBranchLookup[]
+  verifications StaffPinVerification[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("staff_pins")
+}
+
+/// POS-PERF-P29 -- one row per active (StaffPin, branch) pair, derived from
+/// StaffPin + UserBranchAssignment and transactionally maintained whenever
+/// either changes. The @@unique below is the DB-level constraint making "PIN
+/// uniqueness among active staff in the same branch" atomic under
+/// concurrent provisioning -- a second INSERT for the same (branchId,
+/// digest) fails at the database, not in application logic that could race.
+model StaffPinBranchLookup {
+  id              String @id @default(uuid())
+  staffPinId      String @map("staff_pin_id")
+  branchId        String @map("branch_id")
+  pinLookupDigest String @map("pin_lookup_digest")
+
+  staffPin StaffPin @relation(fields: [staffPinId], references: [id], onDelete: Cascade)
+  branch   Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([branchId, pinLookupDigest])
+  @@index([staffPinId])
+  @@map("staff_pin_branch_lookups")
+}
+
+/// POS-PERF-P29 -- opaque, instantly-revocable proof that a given staff PIN
+/// was verified for a specific draft operation. Not a JWT: a random token
+/// whose SHA-256 digest is stored (never the reusable plaintext), so a leaked
+/// log line can't be replayed. payloadHash binds the token to the exact
+/// quantity/unit/reason/notes present at verification time -- submit
+/// re-derives the hash from the submitted body and rejects on mismatch.
+model StaffPinVerification {
+  id               String   @id @default(uuid())
+  tokenDigest      String   @unique @map("token_digest")
+  staffPinId       String   @map("staff_pin_id")
+  verifiedByActorUserId String @map("verified_by_actor_user_id")
+  branchId         String   @map("branch_id")
+  operation        InventoryApprovalOperation
+  inventoryItemId  String?  @map("inventory_item_id")
+  payloadHash      String   @map("payload_hash")
+
+  expiresAt  DateTime  @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  staffPin StaffPin @relation(fields: [staffPinId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([staffPinId])
+  @@index([expiresAt])
+  @@map("staff_pin_verifications")
+}
+
+/// POS-PERF-P29 -- idempotency ledger for the receive/adjust/waste manual
+/// inventory endpoints, mirroring ExpenseIdempotencyKey/CheckoutAttempt.
+/// Keyed by the client-supplied Idempotency-Key header + actor: a retry with
+/// the same key AND the same payloadHash replays resultId; same key with a
+/// different payloadHash is rejected as a conflict (never silently
+/// re-applied under a changed body).
+model InventoryOperationAttempt {
+  id          String   @id @default(uuid())
+  idempotencyKey String @map("idempotency_key")
+  actorUserId String   @map("actor_user_id")
+  branchId    String   @map("branch_id")
+  operation   InventoryApprovalOperation
+  payloadHash String   @map("payload_hash")
+  resultId    String?  @map("result_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([idempotencyKey, actorUserId])
+  @@map("inventory_operation_attempts")
+}
+
+/// POS-PERF-P29 -- a blocking pre-submit evidence upload. The client uploads
+/// the proof photo first and gets back this row's id as an opaque
+/// evidenceKey reference; submit endpoints validate it server-side (exists,
+/// belongs to this actor+branch, unconsumed, within TTL) and link it into
+/// the created request/movement's proofKey/proofType columns atomically,
+/// stamping consumedAt so it can never be reused for a second submission.
+/// An abandoned row (never linked) is swept by a scheduled cleanup once
+/// past expiresAt -- see staff-pin module's evidence-sweep job. Evidence
+/// already linked to a request (consumedAt set) is never touched by the
+/// sweep.
+model InventoryEvidenceUpload {
+  id            String          @id @default(uuid())
+  branchId      String          @map("branch_id")
+  uploadedByUserId String       @map("uploaded_by_user_id")
+  storageKey    String          @map("storage_key")
+  proofType     ImageProofType  @map("proof_type")
+  expiresAt     DateTime        @map("expires_at")
+  consumedAt    DateTime?       @map("consumed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([branchId, uploadedByUserId])
+  @@index([expiresAt])
+  @@map("inventory_evidence_uploads")
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,6 +1477,15 @@ model InventoryStockMovement {
   proofKey           String?                    @map("proof_key")
   proofType          ImageProofType?            @map("proof_type")
 
+  // POS-PERF-P29 -- set when a supervisor/admin wrote this movement directly
+  // (role-branch bypass of the Pending Review queue), never for a movement
+  // applied from an approved InventoryApprovalRequest. responsibleStaffName/
+  // pinVerifiedAt mirror InventoryApprovalRequest's denormalized staff
+  // identity, resolved from a StaffPinVerification token at write time.
+  recordedAsSupervisorDirect Boolean   @default(false) @map("recorded_as_supervisor_direct")
+  responsibleStaffName       String?   @map("responsible_staff_name")
+  pinVerifiedAt              DateTime? @map("pin_verified_at")
+
   branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   unit          UnitOfMeasure? @relation("InventoryStockMovementUnit", fields: [unitId], references: [id])
@@ -1397,6 +1538,11 @@ enum InventoryApprovalOperation {
   RECEIVING
   ADJUSTMENT
   PHYSICAL_COUNT
+  /// POS-PERF-P29 -- Waste now routes through the same Pending Review gate
+  /// as the other three operations for branch/staff actors. Supervisor/
+  /// admin actors still write immediately (see InventoryStockMovement's
+  /// recordedAsSupervisorDirect below) and never create a row here.
+  WASTE
 }
 
 enum InventoryApprovalStatus {
@@ -1500,6 +1646,14 @@ model InventoryApprovalRequest {
   cancelledByUserId String?   @map("cancelled_by_user_id")
   cancelledAt       DateTime? @map("cancelled_at")
   cancelReason      String?   @map("cancel_reason")
+
+  // POS-PERF-P29 -- staff responsibility, resolved and denormalized from the
+  // StaffPinVerification token at submit time so display stays stable even
+  // if the staff member is later deactivated/renamed. Loose references
+  // (same convention as submittedByUserId etc.) -- never a Prisma relation.
+  responsibleStaffUserId String?   @map("responsible_staff_user_id")
+  responsibleStaffName   String?   @map("responsible_staff_name")
+  pinVerifiedAt          DateTime? @map("pin_verified_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

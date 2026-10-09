@@ -9,7 +9,7 @@ import { z } from 'zod';
 // This file only adds the review-workflow's own request/response shapes.
 // ---------------------------------------------------------------------------
 
-export const inventoryApprovalOperationSchema = z.enum(['RECEIVING', 'ADJUSTMENT', 'PHYSICAL_COUNT']);
+export const inventoryApprovalOperationSchema = z.enum(['RECEIVING', 'ADJUSTMENT', 'PHYSICAL_COUNT', 'WASTE']);
 // POS-PERF-P28R2: CANCELLED is a permanent terminal state for a request
 // retired during rollback/reconciliation — see cancelInventoryApprovalRequestSchema.
 export const inventoryApprovalStatusSchema = z.enum(['PENDING', 'APPROVED', 'RETURNED', 'CANCELLED']);
@@ -63,6 +63,12 @@ export const inventoryApprovalRequestResponseSchema = z.object({
   reason_code: z.string().nullable(),
   notes: z.string().nullable(),
   proof_url: z.string().nullable(),
+
+  // POS-PERF-P29 — responsible staff resolved from the StaffPinVerification
+  // token at submit time, denormalized for stable display.
+  responsible_staff_user_id: z.uuid().nullable(),
+  responsible_staff_name: z.string().nullable(),
+  pin_verified_at: z.iso.datetime().nullable(),
 
   status: inventoryApprovalStatusSchema,
   submitted_by_user_id: z.uuid(),

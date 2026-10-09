@@ -124,6 +124,28 @@ export const receiptLookupLimiter = rateLimit({
   handler: rateLimitHandler,
 });
 
+/**
+ * POS-PERF-P29 — 5 attempts per 5 minutes per (branchId, actor) combination
+ * — applied to POST /api/staff-pin/branches/:branchId/verify. Keyed by the
+ * authenticated actor submitting the operation, not by which staff PIN was
+ * guessed, so a string of wrong guesses throttles the *guesser*'s budget
+ * rather than ever being usable to enumerate which staff identity is
+ * currently locked out — there is no staff-keyed lockout state anywhere,
+ * only this short, per-actor cooldown window.
+ */
+export const staffPinVerifyLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const branchId = (req.params as Record<string, unknown> | undefined)?.branchId;
+    const branchKey = typeof branchId === 'string' ? branchId : 'unknown-branch';
+    return `${branchKey}:${req.user?.user_id ?? req.ip ?? 'unknown'}`;
+  },
+  handler: rateLimitHandler,
+});
+
 /** 100 requests per minute — applied globally; keyed by authenticated user when available, else IP. */
 export const apiLimiter = rateLimit({
   windowMs: 60 * 1000,

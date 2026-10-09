@@ -218,6 +218,16 @@ const envSchema = z.object({
    * queries and never used as a Prisma datasource in schema.prisma.
    */
   DATABASE_URL_SESSION_COMPARISON: z.string().optional(),
+  /**
+   * POS-PERF-P29 — server-only HMAC key for the staff-PIN branch lookup
+   * digest (StaffPinBranchLookup.pinLookupDigest / StaffPin.pinLookupDigest
+   * — see schema.prisma). Never used for the authoritative PIN check
+   * (bcrypt handles that); this only narrows a verify request to a
+   * candidate row before the slow bcrypt compare runs. Must be at least 32
+   * chars, same floor as JWT_REFRESH_SECRET, since a short key would make
+   * the digest brute-forceable against a leaked StaffPinBranchLookup row.
+   */
+  STAFF_PIN_HMAC_SECRET: z.string().min(32, 'STAFF_PIN_HMAC_SECRET must be at least 32 characters'),
 });
 
 /**
@@ -319,6 +329,7 @@ export const config = {
   databaseRoundTripDiagnosticsEnabled: env.DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED,
   poolerComparisonEnabled: env.POOLER_COMPARISON_ENABLED,
   poolerComparisonSessionUrl: env.DATABASE_URL_SESSION_COMPARISON,
+  staffPinHmacSecret: env.STAFF_PIN_HMAC_SECRET,
 } as const;
 
 /**

@@ -181,6 +181,17 @@ const stockMovementTypeEnum = z.enum([
   'SALE_REVERSAL',
 ]);
 
+/**
+ * POS-PERF-P29 — both fields are mandatory on receive/adjust/waste. A client
+ * that omits either (e.g. an older frontend build) gets a standard
+ * VALIDATION_ERROR from `validate()`, never a silent bypass of the
+ * PIN-verification/evidence gate.
+ */
+const staffPinVerifiedOperationFields = {
+  verification_token: z.string().min(1, 'PIN verification is required before this can be submitted'),
+  evidence_key: z.uuid('A proof photo must be uploaded before this can be submitted'),
+};
+
 export const receiveInventoryStockSchema = z.object({
   quantity: z.number().positive(),
   // Total peso cost for this delivery, as printed on the receipt — the
@@ -194,20 +205,25 @@ export const receiveInventoryStockSchema = z.object({
   entered_unit_id: z.uuid().optional(),
   delivery_reference: z.string().max(100).optional(),
   notes: z.string().optional(),
+  ...staffPinVerifiedOperationFields,
 });
 
 export const adjustInventoryStockSchema = z.object({
   quantity_delta: z.number().refine((n) => n !== 0, 'quantity_delta must not be zero'),
   reason_code: z.enum(adjustmentReasonValues),
   notes: z.string().optional(),
+  ...staffPinVerifiedOperationFields,
 });
 
 export const wasteInventoryStockSchema = z.object({
   quantity: z.number().positive(),
   entered_unit_id: z.uuid().optional(),
   reason_code: z.enum(wasteReasonValues),
-  responsible_user_id: z.uuid('Select the staff member responsible for this waste'),
+  // POS-PERF-P29 — responsible_user_id removed: the accountable staff
+  // member is now always server-resolved from verification_token's
+  // StaffPinVerification row, never trusted from the client body.
   notes: z.string().optional(),
+  ...staffPinVerifiedOperationFields,
 });
 
 export const transferInventoryStockSchema = z.object({
@@ -276,6 +292,10 @@ export const inventoryStockMovementResponseSchema = z.object({
   // Null for every other movement type and for a sale whose Transaction
   // row can no longer be found (never invented).
   receipt_number: z.string().nullable().optional(),
+  // POS-PERF-P29 — see schema.prisma's InventoryStockMovement doc comment.
+  recorded_as_supervisor_direct: z.boolean().optional(),
+  responsible_staff_name: z.string().nullable().optional(),
+  pin_verified_at: z.iso.datetime().nullable().optional(),
   created_at: z.iso.datetime(),
 });
 

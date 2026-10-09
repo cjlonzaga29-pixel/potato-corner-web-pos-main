@@ -473,60 +473,84 @@ export function useInventoryStockRealtimeSync(branchId: string | null | undefine
   );
 }
 
-/** POS-PERF-P28 — receiving no longer writes InventoryStock directly: it creates a Pending Review request (see inventoryApprovalRequestResponseSchema) that a supervisor/admin must approve before stock changes. */
+/** POS-PERF-P29 — branch actors create a Pending Review request; supervisor/admin now write immediately (role branching) and get an InventoryStockMovement back instead. */
 export function useReceiveInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: ReceiveInventoryStockInput) => {
-      const response = await apiClient<InventoryApprovalRequestResponse>(
+      const response = await apiClient<InventoryApprovalRequestResponse | InventoryStockMovementResponse>(
         `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/receive`,
         { method: 'POST', body: JSON.stringify(input) },
       );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit receiving for review'));
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit receiving'));
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       invalidateInventoryStock(queryClient, branchId);
-      toast.success('Submitted for supervisor review — stock has not changed yet');
+      toast.success('status' in data ? 'Submitted for supervisor review — stock has not changed yet' : 'Stock in recorded');
     },
     onError: (error: Error) => toast.error(error.message),
   });
 }
 
-/** POS-PERF-P28 — adjustment no longer writes InventoryStock directly: see useReceiveInventoryStock's note above. */
+/** POS-PERF-P29 — see useReceiveInventoryStock's note above. */
 export function useAdjustInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: AdjustInventoryStockInput) => {
-      const response = await apiClient<InventoryApprovalRequestResponse>(
+      const response = await apiClient<InventoryApprovalRequestResponse | InventoryStockMovementResponse>(
         `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/adjust`,
         { method: 'POST', body: JSON.stringify(input) },
       );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit adjustment for review'));
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to submit adjustment'));
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       invalidateInventoryStock(queryClient, branchId);
-      toast.success('Submitted for supervisor review — stock has not changed yet');
+      toast.success('status' in data ? 'Submitted for supervisor review — stock has not changed yet' : 'Adjustment recorded');
     },
     onError: (error: Error) => toast.error(error.message),
   });
 }
 
+/** POS-PERF-P29 — waste now routes through Pending Review for branch actors too; supervisor/admin still write immediately. */
 export function useWasteInventoryStock(branchId: string | null | undefined, inventoryItemId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: WasteInventoryStockInput) => {
-      const response = await apiClient<InventoryStockMovementResponse>(
+      const response = await apiClient<InventoryApprovalRequestResponse | InventoryStockMovementResponse>(
         `/api/branches/${branchId}/inventory-stock/${inventoryItemId}/waste`,
         { method: 'POST', body: JSON.stringify(input) },
       );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to record waste'));
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       invalidateInventoryStock(queryClient, branchId);
-      toast.success('Waste recorded');
+      toast.success('status' in data ? 'Submitted for supervisor review — stock has not changed yet' : 'Waste recorded');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * POS-PERF-P29 — mandatory pre-submit evidence upload for receive/adjust/
+ * waste. Uploads immediately on file selection (not on form submit) and
+ * returns an opaque evidence_key the submit mutation then requires — never
+ * cached as a query, since each upload is single-use server-side.
+ */
+export function useUploadInventoryEvidence(branchId: string | null | undefined) {
+  return useMutation({
+    mutationFn: async ({ file, proofType }: { file: File; proofType: 'live_capture' | 'gallery_upload' }) => {
+      const formData = new FormData();
+      formData.set('proof', file);
+      formData.set('proof_type', proofType);
+      const response = await apiClient<{ evidence_key: string; expires_at: string }>(`/api/branches/${branchId}/inventory-stock/evidence`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to upload proof photo'));
+      return response.data;
     },
     onError: (error: Error) => toast.error(error.message),
   });

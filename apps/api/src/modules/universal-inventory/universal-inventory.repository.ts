@@ -61,6 +61,10 @@ export interface CreateStockMovementInput {
   enteredUnitId?: string;
   proofKey?: string;
   proofType?: InventoryProofType;
+  /** POS-PERF-P29 — see schema.prisma's InventoryStockMovement doc comment. */
+  recordedAsSupervisorDirect?: boolean;
+  responsibleStaffName?: string;
+  pinVerifiedAt?: Date;
 }
 
 /**
@@ -363,6 +367,9 @@ export const universalInventoryRepository = {
         enteredUnitId: input.enteredUnitId,
         proofKey: input.proofKey,
         proofType: input.proofType,
+        recordedAsSupervisorDirect: input.recordedAsSupervisorDirect,
+        responsibleStaffName: input.responsibleStaffName,
+        pinVerifiedAt: input.pinVerifiedAt,
       },
       include: stockMovementInclude,
     });

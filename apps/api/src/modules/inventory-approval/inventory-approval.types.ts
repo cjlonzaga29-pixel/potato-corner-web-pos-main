@@ -14,8 +14,21 @@ export class InventoryApprovalError extends Error {
 }
 
 export type InventoryApprovalTarget = 'UNIVERSAL_ITEM' | 'LEGACY_INGREDIENT';
-export type InventoryApprovalOperation = 'RECEIVING' | 'ADJUSTMENT' | 'PHYSICAL_COUNT';
+export type InventoryApprovalOperation = 'RECEIVING' | 'ADJUSTMENT' | 'PHYSICAL_COUNT' | 'WASTE';
 export type InventoryApprovalStatus = 'PENDING' | 'APPROVED' | 'RETURNED' | 'CANCELLED';
+
+/** POS-PERF-P29 — resolved server-side from a StaffPinVerification token, never from a client-supplied id. Attached to every submit*Data variant below. */
+export interface StaffPinResolution {
+  responsibleStaffUserId: string;
+  responsibleStaffName: string;
+  pinVerifiedAt: Date;
+}
+
+/** POS-PERF-P29 — evidence is now a pre-submit blocking upload (InventoryEvidenceUpload), resolved to a storage key/type before the request row is created. */
+export interface ResolvedEvidence {
+  proofKey: string;
+  proofType: ImageProofType;
+}
 
 export interface SubmitReceivingData {
   target: InventoryApprovalTarget;
@@ -27,6 +40,8 @@ export interface SubmitReceivingData {
   totalCost?: number;
   deliveryReference?: string;
   notes?: string;
+  staffPin?: StaffPinResolution;
+  evidence?: ResolvedEvidence;
 }
 
 export interface SubmitAdjustmentData {
@@ -37,6 +52,21 @@ export interface SubmitAdjustmentData {
   quantityDelta: number;
   reasonCode: string;
   notes?: string;
+  staffPin?: StaffPinResolution;
+  evidence?: ResolvedEvidence;
+}
+
+export interface SubmitWasteData {
+  target: InventoryApprovalTarget;
+  branchId: string;
+  inventoryItemId?: string;
+  legacyIngredientId?: string;
+  quantity: number;
+  enteredUnitId?: string;
+  reasonCode: string;
+  notes?: string;
+  staffPin: StaffPinResolution;
+  evidence?: ResolvedEvidence;
 }
 
 export interface SubmitPhysicalCountData {

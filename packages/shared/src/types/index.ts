@@ -136,6 +136,12 @@ export type CorrectInventoryApprovalRequestInput = z.infer<typeof schemas.correc
 export type InventoryApprovalRequestResponse = z.infer<typeof schemas.inventoryApprovalRequestResponseSchema>;
 export type InventoryApprovalRequestListResponse = z.infer<typeof schemas.inventoryApprovalRequestListResponseSchema>;
 export type InventoryApprovalRequestDetailResponse = z.infer<typeof schemas.inventoryApprovalRequestDetailResponseSchema>;
+export type InventoryApprovalOperation = z.infer<typeof schemas.inventoryApprovalOperationSchema>;
+
+export type SetStaffPinInput = z.infer<typeof schemas.setStaffPinSchema>;
+export type VerifyStaffPinInput = z.infer<typeof schemas.verifyStaffPinSchema>;
+export type StaffPinVerifyResponse = z.infer<typeof schemas.staffPinVerifyResponseSchema>;
+export type StaffPinStatusResponse = z.infer<typeof schemas.staffPinStatusResponseSchema>;
 
 export type CreateInventoryCostCorrectionInput = z.infer<typeof schemas.createInventoryCostCorrectionSchema>;
 export type InventoryCostCorrectionResponse = z.infer<typeof schemas.inventoryCostCorrectionResponseSchema>;

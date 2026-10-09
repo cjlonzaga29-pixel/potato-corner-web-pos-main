@@ -23,6 +23,7 @@ import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { authRepository } from '../auth/auth.repository.js';
 import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 import { getIO } from '../../socket/socket.server.js';
+import { staffPinService } from '../staff-pin/staff-pin.service.js';
 import { userRoom } from '../../socket/rooms.js';
 
 /**
@@ -321,6 +322,7 @@ export const employeesService = {
         }
       }
       await employeesRepository.updateBranchAssignments(employeeId, data.branch_ids, updatedBy.user_id);
+      await staffPinService.refreshBranchLookupsForUser(employeeId);
     }
 
     const employee = await employeesRepository.update(employeeId, {
@@ -374,6 +376,7 @@ export const employeesService = {
     await employeesRepository.deactivate(employeeId, deactivatedBy.user_id, data.reason);
     await authRepository.revokeAllUserTokens(employeeId);
     await employeesRepository.updateBranchAssignments(employeeId, [], deactivatedBy.user_id);
+    await staffPinService.refreshBranchLookupsForUser(employeeId);
     revokeEmployeeSession(employeeId, 'inactive');
 
     const employee = await employeesRepository.findById(employeeId);
@@ -403,6 +406,7 @@ export const employeesService = {
     if (before.role === ROLES.BRANCH) {
       await employeesRepository.restoreMostRecentBranchAssignment(employeeId);
     }
+    await staffPinService.refreshBranchLookupsForUser(employeeId);
 
     await recordAuditLog({
       action: 'EMPLOYEE_REACTIVATED',
@@ -471,6 +475,7 @@ export const employeesService = {
       // to a branch stays a conscious admin action.
       await employeesRepository.restoreMostRecentBranchAssignment(employeeId);
     }
+    await staffPinService.refreshBranchLookupsForUser(employeeId);
 
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);

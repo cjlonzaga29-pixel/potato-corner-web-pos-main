@@ -19,18 +19,24 @@ import {
   physicalCountInventoryStockSchema,
   createInventoryCostCorrectionSchema,
 } from '@potato-corner/shared';
-import { universalInventoryService } from './universal-inventory.service.js';
+import { universalInventoryService, uploadInventoryEvidence, consumeInventoryEvidence } from './universal-inventory.service.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
 import type { InventoryStockMovementType, InventoryStockMovementCategory } from './universal-inventory.types.js';
 import { runMigrationDryRun } from '../inventory-migration/dry-run.service.js';
 import { inventoryApprovalService } from '../inventory-approval/inventory-approval.service.js';
+import { InventoryApprovalError } from '../inventory-approval/inventory-approval.types.js';
+import { staffPinService } from '../staff-pin/staff-pin.service.js';
+import { StaffPinError } from '../staff-pin/staff-pin.types.js';
 import { config } from '../../config/index.js';
+import { ROLES } from '@potato-corner/shared';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
+import { sha256Hex } from '../../lib/hash.js';
+import { checkIdempotency, recordIdempotencyResult, InventoryIdempotencyConflictError } from '../../lib/inventory-idempotency.js';
 
 const proofUpload = multer({
   storage: multer.memoryStorage(),
@@ -78,10 +84,14 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
   return true;
 }
 
-/** Routes UniversalInventoryError to its declared status code; unexpected errors fall through to the global handler. */
+/** Routes UniversalInventoryError/StaffPinError/InventoryApprovalError/idempotency-conflict to their declared status codes; unexpected errors fall through to the global handler. */
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
-  if (error instanceof UniversalInventoryError) {
+  if (error instanceof UniversalInventoryError || error instanceof StaffPinError || error instanceof InventoryApprovalError) {
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
+    return;
+  }
+  if (error instanceof InventoryIdempotencyConflictError) {
+    res.status(409).json({ data: null, error: { code: 'IDEMPOTENCY_KEY_CONFLICT', message: error.message }, meta: null });
     return;
   }
   next(error);
@@ -571,6 +581,47 @@ stockBranchRouter.get(
   },
 );
 
+/**
+ * POS-PERF-P29 — shared by receive/adjust/waste below. Resolves and
+ * atomically consumes the verification_token (responsible staff identity,
+ * never trusted from the client) and evidence_key (proof photo, uploaded
+ * via the mandatory pre-submit /evidence endpoint above). Both are consumed
+ * exactly once; a caller that fails after this point must not retry with
+ * the same token/key — that's exactly what Idempotency-Key + a fresh
+ * verify+upload round trip is for.
+ */
+async function resolveStaffPinAndEvidence(params: {
+  token: string;
+  evidenceKey: string;
+  actorUserId: string;
+  branchId: string;
+  operation: 'RECEIVING' | 'ADJUSTMENT' | 'WASTE';
+  inventoryItemId: string;
+  quantity?: number;
+  unitId?: string;
+  reasonCode?: string;
+  notes?: string;
+}) {
+  const staffPin = await staffPinService.consumeVerification({
+    token: params.token,
+    actorUserId: params.actorUserId,
+    branchId: params.branchId,
+    operation: params.operation,
+    inventoryItemId: params.inventoryItemId,
+    quantity: params.quantity,
+    unitId: params.unitId,
+    reasonCode: params.reasonCode,
+    notes: params.notes,
+  });
+  const evidence = await consumeInventoryEvidence(params.evidenceKey, params.actorUserId, params.branchId);
+  return { staffPin, evidence };
+}
+
+/** Role branching (role-policy correction): branch/staff always go through Pending Review regardless of who is PIN-identified as responsible; supervisor/super_admin write immediately, labeled. The MANUAL_INVENTORY_APPROVAL_REQUIRED kill switch overrides this entirely — when off, every role writes immediately exactly as before P28 (recordedAsSupervisorDirect is still set purely by actor role, independent of the flag, since it only ever describes "who authored this movement directly"). */
+function requiresPendingReview(actorRole: string): boolean {
+  return config.manualInventoryApprovalRequired && actorRole === ROLES.BRANCH;
+}
+
 stockBranchRouter.post(
   '/:branchId/inventory-stock/:inventoryItemId/receive',
   authenticate,
@@ -582,40 +633,70 @@ stockBranchRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof receiveInventoryStockSchema>;
-      // POS-PERF-P28 — Receiving now requires supervisor/admin approval
-      // before it touches InventoryStock; this route only creates a pending
-      // request (config.manualInventoryApprovalRequired is the single-env
-      // kill switch back to the pre-P28 immediate-write behavior below).
-      if (config.manualInventoryApprovalRequired) {
+      const branchId = req.params.branchId as string;
+      const inventoryItemId = req.params.inventoryItemId as string;
+      const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+      const payloadHash = sha256Hex(JSON.stringify({ quantity: body.quantity, unitId: body.entered_unit_id, totalCost: body.total_cost, deliveryReference: body.delivery_reference, notes: body.notes }));
+      const idem = await checkIdempotency({ idempotencyKey, actorUserId: req.user.user_id, branchId, operation: 'RECEIVING', payloadHash });
+      if (idem.cachedResultId) {
+        res.status(200).json({ data: { id: idem.cachedResultId, replayed: true }, error: null, meta: null });
+        return;
+      }
+
+      const { staffPin, evidence } = await resolveStaffPinAndEvidence({
+        token: body.verification_token,
+        evidenceKey: body.evidence_key,
+        actorUserId: req.user.user_id,
+        branchId,
+        operation: 'RECEIVING',
+        inventoryItemId,
+        quantity: body.quantity,
+        unitId: body.entered_unit_id,
+        notes: body.notes,
+      });
+
+      let resultId: string;
+      if (requiresPendingReview(req.user.role)) {
         const result = await inventoryApprovalService.submitReceiving(
           {
             target: 'UNIVERSAL_ITEM',
-            branchId: req.params.branchId as string,
-            inventoryItemId: req.params.inventoryItemId as string,
+            branchId,
+            inventoryItemId,
             enteredQuantity: body.quantity,
             totalCost: body.total_cost,
             enteredUnitId: body.entered_unit_id,
             deliveryReference: body.delivery_reference,
             notes: body.notes,
+            staffPin,
+            evidence,
           },
           req.user,
         );
+        resultId = result.id;
+        await recordIdempotencyResult(idempotencyKey, req.user.user_id, resultId);
         res.status(201).json({ data: result, error: null, meta: null });
         return;
       }
       const result = await universalInventoryService.receiveStock(
         {
-          branchId: req.params.branchId as string,
-          inventoryItemId: req.params.inventoryItemId as string,
+          branchId,
+          inventoryItemId,
           quantity: body.quantity,
           totalCost: body.total_cost,
           enteredUnitId: body.entered_unit_id,
           deliveryReference: body.delivery_reference,
           notes: body.notes,
+          proofKey: evidence.proofKey,
+          proofType: evidence.proofType,
+          recordedAsSupervisorDirect: req.user.role === ROLES.SUPERVISOR || req.user.role === ROLES.SUPER_ADMIN,
+          responsibleStaffName: staffPin.responsibleStaffName,
+          pinVerifiedAt: staffPin.pinVerifiedAt,
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
+      resultId = result.id;
+      await recordIdempotencyResult(idempotencyKey, req.user.user_id, resultId);
       res.status(201).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -634,25 +715,52 @@ stockBranchRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof adjustInventoryStockSchema>;
-      if (config.manualInventoryApprovalRequired) {
+      const branchId = req.params.branchId as string;
+      const inventoryItemId = req.params.inventoryItemId as string;
+      const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+      const payloadHash = sha256Hex(JSON.stringify({ quantityDelta: body.quantity_delta, reasonCode: body.reason_code, notes: body.notes }));
+      const idem = await checkIdempotency({ idempotencyKey, actorUserId: req.user.user_id, branchId, operation: 'ADJUSTMENT', payloadHash });
+      if (idem.cachedResultId) {
+        res.status(200).json({ data: { id: idem.cachedResultId, replayed: true }, error: null, meta: null });
+        return;
+      }
+
+      const { staffPin, evidence } = await resolveStaffPinAndEvidence({
+        token: body.verification_token,
+        evidenceKey: body.evidence_key,
+        actorUserId: req.user.user_id,
+        branchId,
+        operation: 'ADJUSTMENT',
+        inventoryItemId,
+        quantity: body.quantity_delta,
+        reasonCode: body.reason_code,
+        notes: body.notes,
+      });
+
+      let resultId: string;
+      if (requiresPendingReview(req.user.role)) {
         const result = await inventoryApprovalService.submitAdjustment(
           {
             target: 'UNIVERSAL_ITEM',
-            branchId: req.params.branchId as string,
-            inventoryItemId: req.params.inventoryItemId as string,
+            branchId,
+            inventoryItemId,
             quantityDelta: body.quantity_delta,
             reasonCode: body.reason_code,
             notes: body.notes,
+            staffPin,
+            evidence,
           },
           req.user,
         );
+        resultId = result.id;
+        await recordIdempotencyResult(idempotencyKey, req.user.user_id, resultId);
         res.status(201).json({ data: result, error: null, meta: null });
         return;
       }
       const result = await universalInventoryService.adjustStock(
         {
-          branchId: req.params.branchId as string,
-          inventoryItemId: req.params.inventoryItemId as string,
+          branchId,
+          inventoryItemId,
           quantityDelta: body.quantity_delta,
           reasonCode: body.reason_code,
           notes: body.notes,
@@ -660,6 +768,8 @@ stockBranchRouter.post(
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
+      resultId = result.id;
+      await recordIdempotencyResult(idempotencyKey, req.user.user_id, resultId);
       res.status(201).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -678,19 +788,70 @@ stockBranchRouter.post(
     try {
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof wasteInventoryStockSchema>;
+      const branchId = req.params.branchId as string;
+      const inventoryItemId = req.params.inventoryItemId as string;
+      const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+      const payloadHash = sha256Hex(JSON.stringify({ quantity: body.quantity, unitId: body.entered_unit_id, reasonCode: body.reason_code, notes: body.notes }));
+      const idem = await checkIdempotency({ idempotencyKey, actorUserId: req.user.user_id, branchId, operation: 'WASTE', payloadHash });
+      if (idem.cachedResultId) {
+        res.status(200).json({ data: { id: idem.cachedResultId, replayed: true }, error: null, meta: null });
+        return;
+      }
+
+      const { staffPin, evidence } = await resolveStaffPinAndEvidence({
+        token: body.verification_token,
+        evidenceKey: body.evidence_key,
+        actorUserId: req.user.user_id,
+        branchId,
+        operation: 'WASTE',
+        inventoryItemId,
+        quantity: body.quantity,
+        unitId: body.entered_unit_id,
+        reasonCode: body.reason_code,
+        notes: body.notes,
+      });
+
+      let resultId: string;
+      if (requiresPendingReview(req.user.role)) {
+        const result = await inventoryApprovalService.submitWaste(
+          {
+            target: 'UNIVERSAL_ITEM',
+            branchId,
+            inventoryItemId,
+            quantity: body.quantity,
+            enteredUnitId: body.entered_unit_id,
+            reasonCode: body.reason_code,
+            notes: body.notes,
+            staffPin,
+            evidence,
+          },
+          req.user,
+        );
+        resultId = result.id;
+        await recordIdempotencyResult(idempotencyKey, req.user.user_id, resultId);
+        res.status(201).json({ data: result, error: null, meta: null });
+        return;
+      }
       const result = await universalInventoryService.wasteStock(
         {
-          branchId: req.params.branchId as string,
-          inventoryItemId: req.params.inventoryItemId as string,
+          branchId,
+          inventoryItemId,
           quantity: body.quantity,
           enteredUnitId: body.entered_unit_id,
           reasonCode: body.reason_code,
-          responsibleUserId: body.responsible_user_id,
+          responsibleUserId: staffPin.responsibleStaffUserId,
           notes: body.notes,
+          proofKey: evidence.proofKey,
+          proofType: evidence.proofType,
+          recordedAsSupervisorDirect: req.user.role === ROLES.SUPERVISOR || req.user.role === ROLES.SUPER_ADMIN,
+          responsibleStaffName: staffPin.responsibleStaffName,
+          pinVerifiedAt: staffPin.pinVerifiedAt,
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );
+      resultId = result.id;
+      await recordIdempotencyResult(idempotencyKey, req.user.user_id, resultId);
       res.status(201).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
@@ -779,6 +940,42 @@ stockBranchRouter.post(
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
+      );
+      res.status(201).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POS-PERF-P29 — mandatory pre-submit evidence upload for receive/adjust/
+// waste. Unlike the proof-photo endpoint below (optional, attached AFTER a
+// movement/request already exists), this uploads FIRST and returns an
+// opaque evidenceKey reference that /receive, /adjust, /waste then require
+// and validate server-side before the write happens at all.
+// ---------------------------------------------------------------------------
+
+stockBranchRouter.post(
+  '/:branchId/inventory-stock/evidence',
+  authenticate,
+  adminSupervisorOrBranch,
+  requirePasswordChange,
+  branchGuard,
+  handleUpload(proofUpload.single('proof')),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      if (!req.file) {
+        res.status(422).json({ data: null, error: { code: 'IMAGE_REQUIRED', message: 'A proof image file is required' }, meta: null });
+        return;
+      }
+      const proofType = req.body.proof_type === 'live_capture' ? 'live_capture' : 'gallery_upload';
+      const result = await uploadInventoryEvidence(
+        req.params.branchId as string,
+        req.user.user_id,
+        { buffer: req.file.buffer, originalname: req.file.originalname },
+        proofType,
       );
       res.status(201).json({ data: result, error: null, meta: null });
     } catch (error) {

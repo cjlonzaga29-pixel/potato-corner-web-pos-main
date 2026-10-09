@@ -46,6 +46,7 @@ let branchId: string;
 let inventoryItemId: string;
 let adminAccessToken: string;
 let supervisorAccessToken: string;
+let staffPin: string;
 // This dev database is reused across runs of this spec (not torn down
 // between them), so quantities are salted to a fresh random base each run —
 // row-disambiguation below matches on exact quantity text, and a collision
@@ -78,6 +79,17 @@ test.beforeAll(async ({ browser, request, baseURL }) => {
 
   const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
   supervisorAccessToken = supervisor.accessToken;
+
+  // POS-PERF-P29 — adjust/receive/waste now require a verified staff PIN
+  // before submit. There is no PIN-setup UI in this slice yet, so the PIN
+  // is provisioned directly via the admin-provisioning API (exactly the
+  // "supervisor/admin provisions" path staff-pin.router.ts exposes), using
+  // the seeded staff@potatocorner.test account (assigned to MAIN01 per
+  // fixtures/test-users.ts).
+  const staffLogin = await apiLogin(request, TEST_USERS.staff.email, TEST_USERS.staff.password);
+  staffPin = String(Math.floor(100000 + Math.random() * 900000));
+  const pinResult = await authedPost(request, url, `/api/staff-pin/${staffLogin.userId}/pin`, adminAccessToken, { pin: staffPin });
+  if (pinResult.status >= 300) throw new Error(`Failed to provision staff PIN: ${pinResult.status} ${JSON.stringify(pinResult.error)}`);
 
   // Best-effort cleanup of dangling PENDING/RETURNED requests this fixture
   // item may have accumulated from an earlier interrupted run, so this
@@ -115,6 +127,18 @@ async function submitAdjustment(page: Page, basePath: string, quantityDelta: num
   await page.getByRole('option', { name: new RegExp(UNIVERSAL_ITEM_FIXTURE.itemName) }).click();
   await page.getByLabel(/Quantity Change/).fill(String(quantityDelta));
   await page.getByLabel('Notes').fill(notes);
+
+  // POS-PERF-P29 — mandatory pre-submit evidence upload, then PIN
+  // verification, both required before the submit button enables.
+  const fixturePath = path.join(__dirname, 'fixtures', 'gcash-test.png');
+  await page.getByRole('button', { name: 'Upload Photo' }).click();
+  await page.locator('input[type="file"]').setInputFiles(fixturePath);
+  await expect(page.getByText('Uploaded')).toBeVisible({ timeout: 15_000 });
+
+  await page.getByPlaceholder('Enter 4-6 digit PIN').fill(staffPin);
+  await page.getByRole('button', { name: 'Verify' }).click();
+  await expect(page.getByText(/Verified — Jenny Santos/)).toBeVisible({ timeout: 10_000 });
+
   await page.getByRole('button', { name: 'Submit for Review' }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Submit for Review' }).click();
   await page.waitForURL(`**${basePath}/inventory/approvals`, { timeout: NAV_TIMEOUT });
@@ -187,7 +211,7 @@ async function openRequestByQuantity(
     // 'timeout' with no error shown: the row may just not be rendered yet
     // (query still in flight) — loop reloads and re-checks.
   }
-  await row.getByRole('button', { name: 'View' }).click();
+  await row.getByRole('button', { name: 'Review' }).click();
 }
 
 /**
@@ -246,19 +270,50 @@ test.describe.serial('Inventory approval — real-browser lineage cancellation',
     expect(afterQty).toBe(beforeQty + Q_INITIAL);
   });
 
-  test('self-approval is denied in the UI: a supervisor cannot approve their own submission', async () => {
-    await submitAdjustment(supervisorPage, '/supervisor', Q_SELF_APPROVAL, 'P28R3 browser test: self-approval check');
+  // POS-PERF-P29 role-policy correction: a supervisor's NEW submission no
+  // longer goes through Pending Review at all — it applies immediately,
+  // labeled as a supervisor-direct record (schema.prisma's
+  // InventoryStockMovement.recordedAsSupervisorDirect). The old P28R3
+  // self-approval-denied scenario (supervisor submits, can't approve their
+  // own PENDING row) is structurally unreachable now: there is no PENDING
+  // row to self-approve. This replaces that test with an assertion of the
+  // new direct-record behavior.
+  test('a supervisor\'s own submission applies immediately, labeled as supervisor-direct — no approval queue entry is created', async ({ request }) => {
+    const before = await getItemStock(request);
 
-    await openRequestByQuantity(supervisorPage, '/supervisor', 'PENDING', String(Q_SELF_APPROVAL));
-    await expect(supervisorPage.getByText('You submitted this request — it must be reviewed by someone else.')).toBeVisible();
-    await expect(supervisorPage.getByRole('button', { name: 'Approve' })).toHaveCount(0);
-    await expect(supervisorPage.getByText('P28R3 browser test: self-approval check')).toBeVisible();
+    await supervisorPage.goto('/supervisor/inventory/adjust', { waitUntil: 'networkidle' });
+    await supervisorPage.getByRole('combobox').first().click();
+    await supervisorPage.getByRole('option', { name: new RegExp(UNIVERSAL_ITEM_FIXTURE.itemName) }).click();
+    await supervisorPage.getByLabel(/Quantity Change/).fill(String(Q_SELF_APPROVAL));
+    await supervisorPage.getByLabel('Notes').fill('P29 browser test: supervisor direct-record');
 
-    // Clean up: cancel it so it doesn't linger as a dangling PENDING row
-    // forever claimable by nobody (self-submitted, nobody else expected it).
-    await supervisorPage.getByRole('button', { name: 'Cancel Request Permanently' }).click();
-    await supervisorPage.getByLabel('Explanation (required)').fill('cleanup after self-approval-denied check');
-    await supervisorPage.getByRole('dialog').getByRole('button', { name: 'Cancel Request Permanently' }).click();
+    const fixturePath = path.join(__dirname, 'fixtures', 'gcash-test.png');
+    await supervisorPage.getByRole('button', { name: 'Upload Photo' }).click();
+    await supervisorPage.locator('input[type="file"]').setInputFiles(fixturePath);
+    await expect(supervisorPage.getByText('Uploaded')).toBeVisible({ timeout: 15_000 });
+
+    await supervisorPage.getByPlaceholder('Enter 4-6 digit PIN').fill(staffPin);
+    await supervisorPage.getByRole('button', { name: 'Verify' }).click();
+    await expect(supervisorPage.getByText(/Verified — Jenny Santos/)).toBeVisible({ timeout: 10_000 });
+
+    const saveButton = supervisorPage.getByRole('button', { name: 'Save Adjustment' });
+    await expect(saveButton).toBeVisible();
+    await saveButton.click();
+    await supervisorPage.getByRole('alertdialog').getByRole('button', { name: 'Save Adjustment' }).click();
+    await supervisorPage.waitForURL('**/supervisor/inventory', { timeout: NAV_TIMEOUT });
+
+    // Applied immediately — no Pending Review round trip needed.
+    const after = await getItemStock(request);
+    expect(after).toBe(before + Q_SELF_APPROVAL);
+
+    await supervisorPage.goto('/supervisor/inventory/movements', { waitUntil: 'networkidle' });
+    await expect(
+      supervisorPage
+        .getByRole('row')
+        .filter({ hasText: UNIVERSAL_ITEM_FIXTURE.itemName })
+        .filter({ has: supervisorPage.getByText('Recorded by Supervisor — Applied') })
+        .first(),
+    ).toBeVisible({ timeout: NAV_TIMEOUT });
   });
 
   test('cross-branch review is denied: a supervisor with no access to another branch cannot see or act on its requests', async ({ request }) => {

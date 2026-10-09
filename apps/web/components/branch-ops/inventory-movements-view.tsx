@@ -67,7 +67,12 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
     {
       id: 'movement_type',
       header: 'Type',
-      cell: ({ row }) => <Badge variant="secondary">{MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>,
+      cell: ({ row }) => (
+        <div className="flex items-center gap-1.5">
+          <Badge variant="secondary">{MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>
+          {row.original.recorded_as_supervisor_direct && <Badge variant="pending">Recorded by Supervisor — Applied</Badge>}
+        </div>
+      ),
     },
     {
       id: 'quantity_change',

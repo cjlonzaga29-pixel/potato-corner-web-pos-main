@@ -6,17 +6,21 @@ import { InventoryAdjustForm } from './inventory-adjust-form';
 const {
   mockPush,
   mockUseBranchStore,
+  mockUseAuthStore,
   mockUseBranchInventoryStock,
   mockUseAdjustInventoryStock,
-  mockUseUploadMovementProof,
   mockUseInventoryStockMovements,
+  mockUseUploadInventoryEvidence,
+  mockUseVerifyStaffPin,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUseBranchStore: vi.fn(),
+  mockUseAuthStore: vi.fn(),
   mockUseBranchInventoryStock: vi.fn(),
   mockUseAdjustInventoryStock: vi.fn(),
-  mockUseUploadMovementProof: vi.fn(),
   mockUseInventoryStockMovements: vi.fn(),
+  mockUseUploadInventoryEvidence: vi.fn(),
+  mockUseVerifyStaffPin: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -28,18 +32,21 @@ vi.mock('@/stores/branch.store', () => ({
   useBranchStore: mockUseBranchStore,
 }));
 
+vi.mock('@/stores/auth.store', () => ({
+  useAuthStore: mockUseAuthStore,
+}));
+
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useBranchInventoryStock: mockUseBranchInventoryStock,
   useAdjustInventoryStock: mockUseAdjustInventoryStock,
   // Backs InventoryAdjustmentHistory, rendered below the form itself.
   useInventoryStockMovements: mockUseInventoryStockMovements,
+  useUploadInventoryEvidence: mockUseUploadInventoryEvidence,
 }));
 
-// POS-PERF-P28 — the form's proof-upload hook moved to the approvals module
-// (requests, not movements, now take the proof); mock it there instead of
-// leaving the stale use-universal-inventory mock unwired to the component.
-vi.mock('@/hooks/queries/use-inventory-approvals', () => ({
-  useUploadInventoryApprovalProof: mockUseUploadMovementProof,
+// POS-PERF-P29 — PIN verification is a separate module now.
+vi.mock('@/hooks/queries/use-staff-pin', () => ({
+  useVerifyStaffPin: mockUseVerifyStaffPin,
 }));
 
 /** Same jsdom-friendly native-<select> stand-in as inventory-stock-in-form.test.tsx. */
@@ -88,7 +95,19 @@ function jpegFile(name = 'proof.jpg', size = 1024, type = 'image/jpeg'): File {
   return new File([new Uint8Array(size)], name, { type });
 }
 
-async function fillAndSubmit() {
+/** Drives the mandatory evidence-upload + PIN-verify steps now required before submit can enable. */
+async function completeEvidenceAndPin() {
+  const fileInput = document.querySelector('input[type="file"]');
+  if (!fileInput) throw new Error('file input not found');
+  fireEvent.change(fileInput, { target: { files: [jpegFile()] } });
+  await waitFor(() => expect(screen.getByText('Uploaded')).toBeInTheDocument());
+
+  fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+  await waitFor(() => expect(screen.getByText('Jenny Santos')).toBeInTheDocument());
+}
+
+async function fillAndSubmit(confirmLabel = 'Submit for Review') {
   const [itemSelect] = screen.getAllByRole('combobox');
   if (!itemSelect) throw new Error('item select not found');
   fireEvent.change(itemSelect, { target: { value: ITEM_ID } });
@@ -96,20 +115,21 @@ async function fillAndSubmit() {
   const quantityInput = screen.getByRole('spinbutton');
   fireEvent.change(quantityInput, { target: { value: '-5' } });
 
-  const fileInput = document.querySelector('input[type="file"]');
-  if (!fileInput) throw new Error('file input not found');
-  fireEvent.change(fileInput, { target: { files: [jpegFile()] } });
+  await completeEvidenceAndPin();
 
-  fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
+  fireEvent.click(screen.getByRole('button', { name: confirmLabel }));
 
   const dialog = await screen.findByRole('alertdialog');
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Submit for Review' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: confirmLabel }));
 }
 
 beforeEach(() => {
   vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:mock-url'), revokeObjectURL: vi.fn() });
   mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) =>
     selector({ activeBranchId: BRANCH_ID }),
+  );
+  mockUseAuthStore.mockImplementation((selector: (s: { user: { role: string } | null }) => unknown) =>
+    selector({ user: { role: 'branch' } }),
   );
   mockUseBranchInventoryStock.mockReturnValue({
     data: { items: [{ inventory_item_id: ITEM_ID, name: 'Cheese Flavor Powder', base_unit_code: 'g', quantity_on_hand: 100 }] },
@@ -120,6 +140,15 @@ beforeEach(() => {
     isError: false,
     refetch: vi.fn(),
   });
+  mockUseUploadInventoryEvidence.mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue({ evidence_key: 'evidence-1', expires_at: new Date().toISOString() }),
+    isPending: false,
+  });
+  mockUseVerifyStaffPin.mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue({ staff_name: 'Jenny Santos', verification_token: 'tok-1', expires_at: new Date().toISOString() }),
+    isPending: false,
+    isError: false,
+  });
 });
 
 afterEach(() => {
@@ -128,75 +157,10 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InventoryAdjustForm — proof upload failure recovery', () => {
-  it('does not re-run the adjustment mutation on retry after the movement was already recorded', async () => {
-    const adjustMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-123' });
+describe('InventoryAdjustForm — branch submission (Pending Review)', () => {
+  it('keeps submit disabled until both evidence and PIN verification complete, then submits with the token/key', async () => {
+    const adjustMutateAsync = vi.fn().mockResolvedValue({ id: 'request-123', status: 'PENDING' });
     mockUseAdjustInventoryStock.mockReturnValue({ mutateAsync: adjustMutateAsync, isPending: false });
-
-    const uploadProofMutateAsync = vi.fn().mockRejectedValueOnce(new Error('Failed to upload the proof image')).mockResolvedValueOnce({});
-    mockUseUploadMovementProof.mockReturnValue({ mutateAsync: uploadProofMutateAsync, isPending: false });
-
-    render(<InventoryAdjustForm basePath="/branch" />);
-    await fillAndSubmit();
-
-    await waitFor(() =>
-      expect(screen.getByText('Stock adjustment was submitted for review, but the proof photo could not be uploaded.')).toBeInTheDocument(),
-    );
-    expect(adjustMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ id: 'movement-123' }));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Photo Upload' }));
-
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals'));
-
-    // The core regression: retrying the photo must never re-apply the adjustment.
-    expect(adjustMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).toHaveBeenCalledTimes(2);
-    expect(uploadProofMutateAsync).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'movement-123' }));
-  });
-
-  it('"Continue Without Photo" navigates away without re-applying the adjustment or retrying the upload', async () => {
-    const adjustMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-456' });
-    mockUseAdjustInventoryStock.mockReturnValue({ mutateAsync: adjustMutateAsync, isPending: false });
-
-    const uploadProofMutateAsync = vi.fn().mockRejectedValue(new Error('Failed to upload the proof image'));
-    mockUseUploadMovementProof.mockReturnValue({ mutateAsync: uploadProofMutateAsync, isPending: false });
-
-    render(<InventoryAdjustForm basePath="/branch" />);
-    await fillAndSubmit();
-
-    await waitFor(() =>
-      expect(screen.getByText('Stock adjustment was submitted for review, but the proof photo could not be uploaded.')).toBeInTheDocument(),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Continue Without Photo' }));
-
-    expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals');
-    expect(adjustMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
-  });
-
-  it('navigates away directly when both the adjustment and the proof upload succeed', async () => {
-    const adjustMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-789' });
-    mockUseAdjustInventoryStock.mockReturnValue({ mutateAsync: adjustMutateAsync, isPending: false });
-
-    const uploadProofMutateAsync = vi.fn().mockResolvedValue({});
-    mockUseUploadMovementProof.mockReturnValue({ mutateAsync: uploadProofMutateAsync, isPending: false });
-
-    render(<InventoryAdjustForm basePath="/branch" />);
-    await fillAndSubmit();
-
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals'));
-    expect(adjustMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).toHaveBeenCalledTimes(1);
-  });
-
-  it('records the adjustment without ever calling the upload mutation when no photo was attached', async () => {
-    const adjustMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-999' });
-    mockUseAdjustInventoryStock.mockReturnValue({ mutateAsync: adjustMutateAsync, isPending: false });
-    const uploadProofMutateAsync = vi.fn();
-    mockUseUploadMovementProof.mockReturnValue({ mutateAsync: uploadProofMutateAsync, isPending: false });
 
     render(<InventoryAdjustForm basePath="/branch" />);
 
@@ -204,12 +168,29 @@ describe('InventoryAdjustForm — proof upload failure recovery', () => {
     if (!itemSelect) throw new Error('item select not found');
     fireEvent.change(itemSelect, { target: { value: ITEM_ID } });
     fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '-5' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
-    const dialog = await screen.findByRole('alertdialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Submit for Review' }));
+
+    expect(screen.getByRole('button', { name: 'Submit for Review' })).toBeDisabled();
+
+    await fillAndSubmit();
 
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals'));
-    expect(adjustMutateAsync).toHaveBeenCalledTimes(1);
-    expect(uploadProofMutateAsync).not.toHaveBeenCalled();
+    expect(adjustMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ quantity_delta: -5, verification_token: 'tok-1', evidence_key: 'evidence-1' }),
+    );
+  });
+});
+
+describe('InventoryAdjustForm — supervisor direct record', () => {
+  it('labels the action "Save Adjustment" and navigates to the stock list, not the approval queue', async () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { role: string } | null }) => unknown) =>
+      selector({ user: { role: 'supervisor' } }),
+    );
+    const adjustMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-999', movement_type: 'ADJUSTMENT_OUT' });
+    mockUseAdjustInventoryStock.mockReturnValue({ mutateAsync: adjustMutateAsync, isPending: false });
+
+    render(<InventoryAdjustForm basePath="/supervisor" />);
+    await fillAndSubmit('Save Adjustment');
+
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/supervisor/inventory'));
   });
 });

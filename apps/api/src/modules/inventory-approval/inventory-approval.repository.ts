@@ -25,6 +25,12 @@ export interface CreateApprovalRequestInput {
   reasonCode?: string | null;
   notes?: string | null;
   submittedByUserId: string;
+  /** POS-PERF-P29 — see schema.prisma's InventoryApprovalRequest doc comment. */
+  responsibleStaffUserId?: string | null;
+  responsibleStaffName?: string | null;
+  pinVerifiedAt?: Date | null;
+  proofKey?: string | null;
+  proofType?: ImageProofType | null;
 }
 
 export const inventoryApprovalRepository = {
@@ -52,6 +58,11 @@ export const inventoryApprovalRepository = {
         reasonCode: input.reasonCode ?? null,
         notes: input.notes ?? null,
         submittedByUserId: input.submittedByUserId,
+        responsibleStaffUserId: input.responsibleStaffUserId ?? null,
+        responsibleStaffName: input.responsibleStaffName ?? null,
+        pinVerifiedAt: input.pinVerifiedAt ?? null,
+        proofKey: input.proofKey ?? null,
+        proofType: input.proofType ?? null,
       })),
     });
   },

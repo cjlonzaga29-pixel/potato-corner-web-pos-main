@@ -7,6 +7,7 @@ import { createSocketServer } from './socket/socket.server.js';
 import { scheduleNightlyFraudScan } from './queues/fraud.queue.js';
 import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 import { scheduleEvery } from './lib/daily-scheduler.js';
+import { sweepExpiredInventoryEvidence } from './modules/universal-inventory/universal-inventory.service.js';
 import { createInventoryDeductionWorker } from './modules/inventory-deduction/inventory-deduction.worker.js';
 import { authRepository } from './modules/auth/auth.repository.js';
 import { disconnectPrisma, prisma } from './lib/prisma.js';
@@ -63,6 +64,13 @@ async function start(): Promise<void> {
     console.error('Failed to register the nightly EOD summary:', error);
     Sentry.captureException(error);
   }
+
+  // POS-PERF-P29 — sweeps abandoned (never-linked, past-TTL) InventoryEvidenceUpload
+  // rows every 15 minutes. Never touches evidence already linked to a request/movement.
+  scheduleEvery(15 * 60 * 1000, async () => {
+    const removed = await sweepExpiredInventoryEvidence();
+    if (removed > 0) console.warn(`[evidence-sweep] removed ${removed} abandoned inventory evidence upload(s).`);
+  });
 
   scheduleEvery(60 * 60 * 1000, () => authRepository.pruneRotationCache());
   console.log('Hourly refresh-token rotation cache cleanup scheduled.');

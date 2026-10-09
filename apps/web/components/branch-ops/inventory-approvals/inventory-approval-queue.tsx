@@ -18,6 +18,7 @@ const OPERATION_LABELS: Record<string, string> = {
   RECEIVING: 'Stock In',
   ADJUSTMENT: 'Stock Adjustment',
   PHYSICAL_COUNT: 'Physical Count',
+  WASTE: 'Waste',
 };
 
 /**
@@ -44,7 +45,8 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
       header: 'Quantity',
       cell: ({ row }) => {
         const r = row.original;
-        const value = r.operation === 'RECEIVING' ? r.entered_quantity : r.operation === 'ADJUSTMENT' ? r.quantity_delta : r.counted_quantity;
+        const value =
+          r.operation === 'RECEIVING' || r.operation === 'WASTE' ? r.entered_quantity : r.operation === 'ADJUSTMENT' ? r.quantity_delta : r.counted_quantity;
         return <span className="tabular-nums">{value ?? '—'}</span>;
       },
     },
@@ -69,7 +71,7 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
       header: '',
       cell: ({ row }) => (
         <Button variant="ghost" size="sm" onClick={() => setSelectedId(row.original.id)}>
-          View
+          Review
         </Button>
       ),
     },

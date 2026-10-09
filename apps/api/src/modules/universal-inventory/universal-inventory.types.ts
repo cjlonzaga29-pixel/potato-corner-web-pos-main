@@ -106,6 +106,12 @@ export interface ReceiveInventoryStockData {
   deliveryReference?: string;
   notes?: string;
   performedByUserId?: string;
+  /** POS-PERF-P29 — supervisor/admin direct-record path only; see schema.prisma's InventoryStockMovement doc comment. */
+  recordedAsSupervisorDirect?: boolean;
+  responsibleStaffName?: string;
+  pinVerifiedAt?: Date;
+  proofKey?: string;
+  proofType?: InventoryProofType;
 }
 
 export interface AdjustInventoryStockData {
@@ -115,6 +121,11 @@ export interface AdjustInventoryStockData {
   reasonCode: string;
   notes?: string;
   performedByUserId?: string;
+  recordedAsSupervisorDirect?: boolean;
+  responsibleStaffName?: string;
+  pinVerifiedAt?: Date;
+  proofKey?: string;
+  proofType?: InventoryProofType;
 }
 
 export interface WasteInventoryStockData {
@@ -127,6 +138,12 @@ export interface WasteInventoryStockData {
   responsibleUserId: string;
   notes?: string;
   performedByUserId?: string;
+  /** POS-PERF-P29 — supervisor/admin direct-record path only; see schema.prisma's InventoryStockMovement doc comment. */
+  recordedAsSupervisorDirect?: boolean;
+  responsibleStaffName?: string;
+  pinVerifiedAt?: Date;
+  proofKey?: string;
+  proofType?: InventoryProofType;
 }
 
 export interface TransferInventoryStockData {

@@ -14,6 +14,7 @@ import { convertQuantity } from '../product-components/unit-conversion.util.js';
 import { dayBounds } from '../../lib/manila-time.js';
 import { blendWeightedAverageCost } from '../../lib/inventory-cost.js';
 import { getTransferDestinationBranchIds } from '../../lib/branch-access.js';
+import { staffPinRepository } from '../staff-pin/staff-pin.repository.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -67,6 +68,70 @@ export async function uploadInventoryProofImage(
     throw new UniversalInventoryError('PROOF_UPLOAD_FAILED', 'Failed to upload the proof image', 502);
   }
   return path;
+}
+
+const EVIDENCE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * POS-PERF-P29 — pre-submit blocking evidence upload. Uploads the proof
+ * photo immediately (reusing the exact same compress/upload primitive as
+ * every other proof upload in this file) and returns an opaque
+ * InventoryEvidenceUpload row id ("evidenceKey") that the submit endpoints
+ * require and validate server-side — never trusting a client-supplied
+ * storage path directly, since that would let a client link an arbitrary
+ * object it never actually uploaded (or someone else's) into its own
+ * request.
+ */
+export async function uploadInventoryEvidence(
+  branchId: string,
+  uploadedByUserId: string,
+  file: { buffer: Buffer; originalname: string },
+  proofType: InventoryProofType,
+): Promise<{ evidenceKey: string; expiresAt: string }> {
+  const proofKey = await uploadInventoryProofImage(`evidence/${branchId}`, file, null);
+  const expiresAt = new Date(Date.now() + EVIDENCE_TTL_MS);
+  const row = await staffPinRepository.createEvidence({ branchId, uploadedByUserId, storageKey: proofKey, proofType, expiresAt });
+  return { evidenceKey: row.id, expiresAt: expiresAt.toISOString() };
+}
+
+/**
+ * Validate and atomically consume an evidenceKey for the given actor/branch,
+ * returning the storage key/type to link into the created request or
+ * movement. Throws a distinct error for not-found/wrong-owner/wrong-branch/
+ * expired/already-consumed, mirroring staffPinService.consumeVerification's
+ * error granularity.
+ */
+export async function consumeInventoryEvidence(
+  evidenceKey: string,
+  actorUserId: string,
+  branchId: string,
+): Promise<{ proofKey: string; proofType: InventoryProofType }> {
+  const evidence = await staffPinRepository.findEvidenceById(evidenceKey);
+  if (!evidence) throw new UniversalInventoryError('EVIDENCE_NOT_FOUND', 'Proof photo not found — please upload it again', 422);
+  if (evidence.uploadedByUserId !== actorUserId || evidence.branchId !== branchId) {
+    throw new UniversalInventoryError('EVIDENCE_NOT_FOUND', 'Proof photo not found — please upload it again', 422);
+  }
+  if (evidence.consumedAt) {
+    throw new UniversalInventoryError('EVIDENCE_ALREADY_CONSUMED', 'This proof photo was already used for another submission — please upload a new one', 422);
+  }
+  if (evidence.expiresAt.getTime() < Date.now()) {
+    throw new UniversalInventoryError('EVIDENCE_EXPIRED', 'This proof photo upload expired — please upload it again', 422);
+  }
+  const consumed = await prisma.$transaction((tx) => staffPinRepository.markEvidenceConsumedIfUnconsumed(evidence.id, tx));
+  if (!consumed) {
+    throw new UniversalInventoryError('EVIDENCE_ALREADY_CONSUMED', 'This proof photo was already used for another submission — please upload a new one', 422);
+  }
+  return { proofKey: evidence.storageKey, proofType: evidence.proofType as InventoryProofType };
+}
+
+/** Periodic sweep of abandoned (never-linked, past-TTL) evidence rows — see server.ts's scheduleEvidenceSweep. Never touches a row with consumedAt set, i.e. never an object already linked to a request/movement. */
+export async function sweepExpiredInventoryEvidence(limit = 100): Promise<number> {
+  const expired = await staffPinRepository.findExpiredUnconsumedEvidence(new Date(), limit);
+  if (expired.length === 0) return 0;
+  const { error } = await supabaseAdmin.storage.from(INVENTORY_PROOF_BUCKET).remove(expired.map((row) => row.storageKey));
+  if (error) console.error('Failed to remove expired inventory evidence objects from Storage:', error);
+  await staffPinRepository.deleteEvidenceRows(expired.map((row) => row.id));
+  return expired.length;
 }
 
 function toCategoryResponse(category: {
@@ -207,6 +272,9 @@ interface StockMovementRow {
   enteredUnitId: string | null;
   enteredUnit: { code: string } | null;
   proofKey: string | null;
+  recordedAsSupervisorDirect?: boolean;
+  responsibleStaffName?: string | null;
+  pinVerifiedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -246,6 +314,9 @@ function toStockMovementResponse(
     performed_by_name: enrichment?.performedByName ?? null,
     responsible_user_name: enrichment?.responsibleUserName ?? null,
     receipt_number: enrichment?.receiptNumber ?? null,
+    recorded_as_supervisor_direct: row.recordedAsSupervisorDirect,
+    responsible_staff_name: row.responsibleStaffName,
+    pin_verified_at: row.pinVerifiedAt?.toISOString() ?? null,
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -398,6 +469,9 @@ export async function applyReceivingInTx(
     enteredUnitId: string;
     proofKey?: string;
     proofType?: InventoryProofType;
+    recordedAsSupervisorDirect?: boolean;
+    responsibleStaffName?: string;
+    pinVerifiedAt?: Date;
   },
 ) {
   const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
@@ -430,6 +504,9 @@ export async function applyReceivingInTx(
       enteredUnitId: params.enteredUnitId,
       proofKey: params.proofKey,
       proofType: params.proofType,
+      recordedAsSupervisorDirect: params.recordedAsSupervisorDirect,
+      responsibleStaffName: params.responsibleStaffName,
+      pinVerifiedAt: params.pinVerifiedAt,
     },
     tx,
   );
@@ -445,6 +522,11 @@ export async function applyAdjustmentInTx(
     reasonCode: string;
     notes?: string;
     performedByUserId: string;
+    proofKey?: string;
+    proofType?: InventoryProofType;
+    recordedAsSupervisorDirect?: boolean;
+    responsibleStaffName?: string;
+    pinVerifiedAt?: Date;
   },
 ) {
   const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
@@ -471,6 +553,80 @@ export async function applyAdjustmentInTx(
       unitId: params.baseUnitId,
       notes: `Reason: ${params.reasonCode}${params.notes ? ` — ${params.notes}` : ''}`,
       performedByUserId: params.performedByUserId,
+      proofKey: params.proofKey,
+      proofType: params.proofType,
+      recordedAsSupervisorDirect: params.recordedAsSupervisorDirect,
+      responsibleStaffName: params.responsibleStaffName,
+      pinVerifiedAt: params.pinVerifiedAt,
+    },
+    tx,
+  );
+}
+
+/**
+ * POS-PERF-P29 — extracted from wasteStock's transaction body so the same
+ * locked-read/validate/write primitive can be reused by the Pending Review
+ * approval path (inventory-approval.service.ts#applyWaste) once waste
+ * starts routing through approval for branch/staff actors, exactly the way
+ * applyReceivingInTx/applyAdjustmentInTx are already shared between direct
+ * writes and applyApprovedRequest.
+ */
+export async function applyWasteInTx(
+  tx: Prisma.TransactionClient,
+  params: {
+    branchId: string;
+    inventoryItemId: string;
+    baseUnitId: string;
+    baseQuantity: Prisma.Decimal;
+    reasonCode: string;
+    notes?: string;
+    performedByUserId: string;
+    responsibleUserId?: string;
+    enteredQuantity: number;
+    enteredUnitId: string;
+    proofKey?: string;
+    proofType?: InventoryProofType;
+    recordedAsSupervisorDirect?: boolean;
+    responsibleStaffName?: string;
+    pinVerifiedAt?: Date;
+  },
+) {
+  const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
+  if (!stock) {
+    throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
+  }
+  const quantityBefore = stock.quantityOnHand;
+  if (quantityBefore.minus(stock.quantityReserved).minus(params.baseQuantity).lessThan(0)) {
+    throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds available stock (some stock is reserved for pending sales)', 409);
+  }
+  if (quantityBefore.minus(params.baseQuantity).lessThan(0)) {
+    throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
+  }
+  const unitCost = stock.unitCost;
+  const totalCost = unitCost ? unitCost.mul(params.baseQuantity) : null;
+  const updated = await repo.incrementStockQuantity(params.branchId, params.inventoryItemId, params.baseQuantity.negated(), tx);
+  const quantityAfter = updated.quantityOnHand;
+  return repo.createStockMovement(
+    {
+      branchId: params.branchId,
+      inventoryItemId: params.inventoryItemId,
+      movementType: 'WASTE',
+      quantityChange: params.baseQuantity.negated(),
+      quantityBefore,
+      quantityAfter,
+      unitId: params.baseUnitId,
+      notes: `Reason: ${params.reasonCode}${params.notes ? ` — ${params.notes}` : ''}`,
+      performedByUserId: params.performedByUserId,
+      responsibleUserId: params.responsibleUserId,
+      enteredQuantity: params.enteredQuantity,
+      enteredUnitId: params.enteredUnitId,
+      unitCost: unitCost ?? undefined,
+      totalCost: totalCost ?? undefined,
+      proofKey: params.proofKey,
+      proofType: params.proofType,
+      recordedAsSupervisorDirect: params.recordedAsSupervisorDirect,
+      responsibleStaffName: params.responsibleStaffName,
+      pinVerifiedAt: params.pinVerifiedAt,
     },
     tx,
   );
@@ -1075,6 +1231,11 @@ export const universalInventoryService = {
         performedByUserId: data.performedByUserId ?? actor.id,
         enteredQuantity: data.quantity,
         enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
+        proofKey: data.proofKey,
+        proofType: data.proofType,
+        recordedAsSupervisorDirect: data.recordedAsSupervisorDirect,
+        responsibleStaffName: data.responsibleStaffName,
+        pinVerifiedAt: data.pinVerifiedAt,
       }),
     );
 
@@ -1113,6 +1274,11 @@ export const universalInventoryService = {
         reasonCode: data.reasonCode,
         notes: data.notes,
         performedByUserId: data.performedByUserId ?? actor.id,
+        proofKey: data.proofKey,
+        proofType: data.proofType,
+        recordedAsSupervisorDirect: data.recordedAsSupervisorDirect,
+        responsibleStaffName: data.responsibleStaffName,
+        pinVerifiedAt: data.pinVerifiedAt,
       }),
     );
 
@@ -1162,51 +1328,25 @@ export const universalInventoryService = {
 
     const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);
 
-    const movement = await prisma.$transaction(async (tx) => {
-      const stock = await repo.lockAndGetStock(data.branchId, data.inventoryItemId, tx);
-      if (!stock) {
-        throw new UniversalInventoryError('STOCK_ROW_NOT_FOUND', 'No InventoryStock row exists for this branch/item — provisioning has not completed', 404);
-      }
-      const quantityBefore = stock.quantityOnHand;
-      // Same locked-read-then-atomic-write reasoning as adjustStock above.
-      // POS-PERF-P15: waste must not consume stock already reserved for a
-      // pending sale's inventory deduction job (see the same check in
-      // adjustStock above).
-      if (quantityBefore.minus(stock.quantityReserved).minus(baseQuantity).lessThan(0)) {
-        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds available stock (some stock is reserved for pending sales)', 409);
-      }
-      if (quantityBefore.minus(baseQuantity).lessThan(0)) {
-        throw new UniversalInventoryError('INSUFFICIENT_STOCK', 'Waste quantity exceeds current stock', 409);
-      }
-      // Waste consumes at the current carrying cost — it never changes the
-      // average (unlike receiving), so the cost argument to
-      // incrementStockQuantity is deliberately omitted. If cost was never
-      // initialized for this item, unitCost/totalCost stay null (never a
-      // fabricated 0) rather than under-reporting waste loss as free.
-      const unitCost = stock.unitCost;
-      const totalCost = unitCost ? unitCost.mul(baseQuantity) : null;
-      const updated = await repo.incrementStockQuantity(data.branchId, data.inventoryItemId, baseQuantity.negated(), tx);
-      const quantityAfter = updated.quantityOnHand;
-      return repo.createStockMovement(
-        {
-          branchId: data.branchId,
-          inventoryItemId: data.inventoryItemId,
-          movementType: 'WASTE',
-          quantityChange: baseQuantity.negated(),
-          quantityBefore,
-          quantityAfter,
-          unitId: item.baseUnitId,
-          notes: `Reason: ${data.reasonCode}${data.notes ? ` — ${data.notes}` : ''}`,
-          performedByUserId: data.performedByUserId ?? actor.id,
-          responsibleUserId: data.responsibleUserId,
-          enteredQuantity: data.quantity,
-          enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
-          unitCost: unitCost ?? undefined,
-          totalCost: totalCost ?? undefined,
-        },
-        tx,
-      );
-    });
+    const movement = await prisma.$transaction((tx) =>
+      applyWasteInTx(tx, {
+        branchId: data.branchId,
+        inventoryItemId: data.inventoryItemId,
+        baseUnitId: item.baseUnitId,
+        baseQuantity,
+        reasonCode: data.reasonCode,
+        notes: data.notes,
+        performedByUserId: data.performedByUserId ?? actor.id,
+        responsibleUserId: data.responsibleUserId,
+        enteredQuantity: data.quantity,
+        enteredUnitId: data.enteredUnitId ?? item.baseUnitId,
+        proofKey: data.proofKey,
+        proofType: data.proofType,
+        recordedAsSupervisorDirect: data.recordedAsSupervisorDirect,
+        responsibleStaffName: data.responsibleStaffName,
+        pinVerifiedAt: data.pinVerifiedAt,
+      }),
+    );
 
     const response = toStockMovementResponse(movement);
 

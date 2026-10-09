@@ -16,9 +16,10 @@ import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
 import { useAuthStore } from '@/stores/auth.store';
-import { useBranchInventoryStock, useUploadMovementProof, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
-import { useEmployees } from '@/hooks/queries/use-employees';
-import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
+import { useBranchInventoryStock, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
+import { EvidenceUploadField } from './evidence-upload-field';
+import { StaffPinEntryField } from './staff-pin-entry-field';
+import { LockedItemDisplay } from './locked-item-display';
 
 const REASON_LABELS: Record<WasteReason, string> = {
   spoilage: 'Spoilage',
@@ -32,7 +33,6 @@ const formSchema = z.object({
   inventory_item_id: z.uuid('Select an item'),
   quantity: z.coerce.number().positive('Must be greater than zero'),
   reason_code: z.enum(Object.values(WASTE_REASON) as [WasteReason, ...WasteReason[]]),
-  responsible_user_id: z.uuid('Select the staff member responsible'),
   notes: z.string().optional(),
 });
 
@@ -42,7 +42,6 @@ const DEFAULT_VALUES: FormValues = {
   inventory_item_id: '',
   quantity: 0,
   reason_code: 'spoilage',
-  responsible_user_id: '',
   notes: '',
 };
 
@@ -50,32 +49,29 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
+  const role = useAuthStore((s) => s.user?.role);
+  const isDirectRecord = role === 'supervisor' || role === 'super_admin';
   const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
-  const inventoryItemId = form.watch('inventory_item_id');
+  // A row action's ?inventory_item_id= is read directly from the URL on
+  // every render (never subject to whatever reset the watched form field
+  // back to '' below) and takes priority over the form's own value — the
+  // form field is still kept in sync (for submission) by the effect, but
+  // display/lookup never depends on that sync having already landed.
+  const lockedItemId = searchParams.get('inventory_item_id');
+  const watchedItemId = form.watch('inventory_item_id');
+  const inventoryItemId = lockedItemId || watchedItemId;
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const waste = useWasteInventoryStock(activeBranchId, inventoryItemId);
-  const uploadProof = useUploadMovementProof(activeBranchId);
-  const [proofFile, setProofFile] = useState<File | null>(null);
-  const currentUser = useAuthStore((s) => s.user);
-  const { data: staffData } = useEmployees({ branchId: activeBranchId ?? undefined, isActive: true }, { enabled: Boolean(activeBranchId) });
-  const staff = staffData?.employees ?? [];
+  const [evidenceKey, setEvidenceKey] = useState<string | null>(null);
+  const [verificationToken, setVerificationToken] = useState<string | null>(null);
 
   useEffect(() => {
-    const preselected = searchParams.get('inventory_item_id');
-    if (preselected) form.setValue('inventory_item_id', preselected);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
-  // Default Responsible Staff to the logged-in actor once the same-branch roster loads and includes them.
-  useEffect(() => {
-    if (!currentUser) return;
-    if (form.getValues('responsible_user_id')) return;
-    if (staff.some((employee) => employee.id === currentUser.id)) {
-      form.setValue('responsible_user_id', currentUser.id);
+    if (lockedItemId && form.getValues('inventory_item_id') !== lockedItemId) {
+      form.setValue('inventory_item_id', lockedItemId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [staff, currentUser]);
+  }, [lockedItemId, watchedItemId]);
 
   const [pendingValues, setPendingValues] = useState<z.output<typeof formSchema> | null>(null);
 
@@ -84,59 +80,65 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   }
 
   async function handleConfirm() {
-    if (!pendingValues) return;
-    const movement = await waste.mutateAsync({
+    if (!pendingValues || !verificationToken || !evidenceKey) return;
+    await waste.mutateAsync({
       quantity: pendingValues.quantity,
       reason_code: pendingValues.reason_code,
-      responsible_user_id: pendingValues.responsible_user_id,
       notes: pendingValues.notes || undefined,
+      verification_token: verificationToken,
+      evidence_key: evidenceKey,
     });
-    if (proofFile) {
-      await uploadProof.mutateAsync({ movementId: movement.id, file: proofFile });
-    }
-    router.push(`${basePath}/inventory`);
+    router.push(isDirectRecord ? `${basePath}/inventory` : `${basePath}/inventory/approvals`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording waste.</p>;
   }
 
+  const canSubmit = Boolean(verificationToken && evidenceKey);
+
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Record Waste</h1>
         <p className="text-sm text-muted-foreground">Remove spoiled, damaged, or otherwise unusable stock from the ledger.</p>
+        <p className="text-sm text-muted-foreground">
+          {isDirectRecord ? 'Recorded by Supervisor — applies immediately.' : "Submitted for supervisor review — stock will not change until it's approved."}
+        </p>
       </div>
 
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-          {/* Radix Select takes value/onValueChange, not the onChange FormFieldWrapper clones onto children — wired directly via FormField instead. */}
-          <FormField
-            control={form.control}
-            name="inventory_item_id"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>
-                  Item<span className="ml-0.5 text-destructive">*</span>
-                </FormLabel>
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select an item" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {stock?.items.map((i) => (
-                      <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
-                        {i.name} ({i.base_unit_code})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+          {lockedItemId && item ? (
+            <LockedItemDisplay name={item.name} unitCode={item.base_unit_code} />
+          ) : (
+            <FormField
+              control={form.control}
+              name="inventory_item_id"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    Item<span className="ml-0.5 text-destructive">*</span>
+                  </FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select an item" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {stock?.items.map((i) => (
+                        <SelectItem key={i.inventory_item_id} value={i.inventory_item_id}>
+                          {i.name} ({i.base_unit_code})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
 
           {item && (
             <p className="rounded-md border bg-muted/30 p-3 text-sm">
@@ -147,33 +149,6 @@ function WasteFormContent({ basePath }: { basePath: string }) {
           <FormFieldWrapper<FormValues> name="quantity" label={`Quantity Wasted${item ? ` (${item.base_unit_code})` : ''}`} required>
             <Input type="number" step="any" inputMode="decimal" />
           </FormFieldWrapper>
-
-          <FormField
-            control={form.control}
-            name="responsible_user_id"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>
-                  Responsible Staff<span className="ml-0.5 text-destructive">*</span>
-                </FormLabel>
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select the staff member responsible" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {staff.map((employee) => (
-                      <SelectItem key={employee.id} value={employee.id}>
-                        {employee.first_name} {employee.last_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
 
           <FormField
             control={form.control}
@@ -202,19 +177,35 @@ function WasteFormContent({ basePath }: { basePath: string }) {
             )}
           />
 
-          <InventoryProofPhotoPicker label="Photo Proof (optional)" file={proofFile} onChange={setProofFile} />
+          <EvidenceUploadField branchId={activeBranchId} label="Photo Proof" evidenceKey={evidenceKey} onChange={setEvidenceKey} />
 
           <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
             <Textarea rows={3} />
           </FormFieldWrapper>
 
+          {/* POS-PERF-P29 — Responsible Staff is no longer a client-picked field: the
+              PIN verification below resolves and server-authenticates the
+              accountable staff member, replacing the old spoofable responsible_user_id select. */}
+          <StaffPinEntryField
+            branchId={activeBranchId}
+            draft={{
+              operation: 'WASTE',
+              inventoryItemId,
+              quantity: Number(form.watch('quantity') || 0),
+              reasonCode: form.watch('reason_code'),
+              notes: form.watch('notes'),
+            }}
+            verificationToken={verificationToken}
+            onVerified={setVerificationToken}
+          />
+
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => router.back()}>
               Cancel
             </Button>
-            <Button type="submit" disabled={waste.isPending || uploadProof.isPending}>
-              {(waste.isPending || uploadProof.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Record Waste
+            <Button type="submit" disabled={!canSubmit || waste.isPending}>
+              {waste.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isDirectRecord ? 'Save Waste' : 'Submit for Review'}
             </Button>
           </div>
         </form>
@@ -223,8 +214,12 @@ function WasteFormContent({ basePath }: { basePath: string }) {
         open={!!pendingValues}
         onOpenChange={(o) => !o && setPendingValues(null)}
         title="Confirm Waste Entry"
-        description="This immediately removes the stock from the ledger."
-        confirmLabel="Record Waste"
+        description={
+          isDirectRecord
+            ? 'This immediately removes the stock from the ledger, labeled as recorded by a supervisor.'
+            : "This submits the waste entry for supervisor review — stock will not change until it's approved."
+        }
+        confirmLabel={isDirectRecord ? 'Save Waste' : 'Submit for Review'}
         variant="danger"
         onConfirm={handleConfirm}
       />

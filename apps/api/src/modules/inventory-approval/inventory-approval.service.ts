@@ -15,6 +15,7 @@ import {
   applyAdjustmentInTx,
   applyPhysicalCountLineInTx,
   applyReceivingInTx,
+  applyWasteInTx,
   notifyIfLowStock as notifyUniversalIfLowStock,
   getSignedInventoryProofUrl,
   uploadInventoryProofImage,
@@ -33,6 +34,7 @@ import type {
   SubmitAdjustmentData,
   SubmitPhysicalCountData,
   SubmitReceivingData,
+  SubmitWasteData,
 } from './inventory-approval.types.js';
 
 const INVENTORY_PROOF_BUCKET_PREFIX = 'approval-requests';
@@ -133,6 +135,10 @@ async function toResponse(request: RequestRow) {
     notes: request.notes,
     proof_url: proofUrl,
 
+    responsible_staff_user_id: request.responsibleStaffUserId,
+    responsible_staff_name: request.responsibleStaffName,
+    pin_verified_at: request.pinVerifiedAt?.toISOString() ?? null,
+
     status: request.status,
     submitted_by_user_id: request.submittedByUserId,
     submitted_by_name: nameById.get(request.submittedByUserId) ?? null,
@@ -186,6 +192,11 @@ export const inventoryApprovalService = {
         deliveryReference: data.deliveryReference ?? null,
         submittedByUserId: actor.user_id,
         notes: data.notes ?? null,
+        responsibleStaffUserId: data.staffPin?.responsibleStaffUserId,
+        responsibleStaffName: data.staffPin?.responsibleStaffName,
+        pinVerifiedAt: data.staffPin?.pinVerifiedAt,
+        proofKey: data.evidence?.proofKey,
+        proofType: data.evidence?.proofType,
       },
     ]);
     await recordAuditLog({
@@ -218,6 +229,11 @@ export const inventoryApprovalService = {
         reasonCode: data.reasonCode,
         notes: data.notes ?? null,
         submittedByUserId: actor.user_id,
+        responsibleStaffUserId: data.staffPin?.responsibleStaffUserId,
+        responsibleStaffName: data.staffPin?.responsibleStaffName,
+        pinVerifiedAt: data.staffPin?.pinVerifiedAt,
+        proofKey: data.evidence?.proofKey,
+        proofType: data.evidence?.proofType,
       },
     ]);
     await recordAuditLog({
@@ -228,6 +244,45 @@ export const inventoryApprovalService = {
       actorRole: actor.role,
       branchId: data.branchId,
       afterState: { operation: 'ADJUSTMENT', target: data.target },
+      ipAddress: null,
+    });
+    notifySupervisorsPendingReview(data.branchId);
+    return toResponse(await findRequestOrThrow(id));
+  },
+
+  /** POS-PERF-P29 — waste now routes through Pending Review for branch/staff actors, same as receiving/adjustment. staffPin is mandatory (unlike receiving/adjustment's optional field): a waste write always names an accountable staff member. */
+  async submitWaste(data: SubmitWasteData, actor: JwtPayload) {
+    const id = randomUUID();
+    await inventoryApprovalRepository.createMany([
+      {
+        id,
+        rootRequestId: id,
+        revisionNumber: 1,
+        target: data.target,
+        branchId: data.branchId,
+        inventoryItemId: data.inventoryItemId ?? null,
+        legacyIngredientId: data.legacyIngredientId ?? null,
+        operation: 'WASTE',
+        enteredQuantity: data.quantity,
+        enteredUnitId: data.enteredUnitId ?? null,
+        reasonCode: data.reasonCode,
+        notes: data.notes ?? null,
+        submittedByUserId: actor.user_id,
+        responsibleStaffUserId: data.staffPin.responsibleStaffUserId,
+        responsibleStaffName: data.staffPin.responsibleStaffName,
+        pinVerifiedAt: data.staffPin.pinVerifiedAt,
+        proofKey: data.evidence?.proofKey,
+        proofType: data.evidence?.proofType,
+      },
+    ]);
+    await recordAuditLog({
+      action: 'INVENTORY_APPROVAL_SUBMITTED',
+      entityType: 'inventory_approval_request',
+      entityId: id,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId: data.branchId,
+      afterState: { operation: 'WASTE', target: data.target },
       ipAddress: null,
     });
     notifySupervisorsPendingReview(data.branchId);
@@ -625,6 +680,42 @@ async function applyApprovedRequest(
         reasonCode: request.reasonCode ?? 'count_correction',
         notes: request.notes ?? undefined,
         performedByUserId: request.submittedByUserId,
+      });
+      return {
+        movementId: movement.id,
+        lowStock: async () => {
+          const stockAfter = await universalInventoryRepository.findStock(branchId, inventoryItemId);
+          await notifyUniversalIfLowStock({
+            branchId,
+            inventoryItemId,
+            itemName: item.name,
+            quantityAfter: movement.quantityAfter.toNumber(),
+            lowStockThreshold: stockAfter?.lowStockThreshold?.toNumber() ?? null,
+            criticalThreshold: stockAfter?.criticalThreshold?.toNumber() ?? null,
+          });
+        },
+      };
+    }
+
+    if (request.operation === 'WASTE') {
+      const enteredQuantity = (request.enteredQuantity as Prisma.Decimal).toNumber();
+      const enteredUnitId = request.enteredUnitId ?? item.baseUnitId;
+      const baseQuantity = await convertQuantity(enteredQuantity, enteredUnitId, item.baseUnitId, item.id);
+      const movement = await applyWasteInTx(tx, {
+        branchId,
+        inventoryItemId,
+        baseUnitId: item.baseUnitId,
+        baseQuantity,
+        reasonCode: request.reasonCode ?? 'other',
+        notes: request.notes ?? undefined,
+        performedByUserId: request.submittedByUserId,
+        responsibleUserId: request.responsibleStaffUserId ?? request.submittedByUserId,
+        enteredQuantity,
+        enteredUnitId,
+        proofKey: request.proofKey ?? undefined,
+        proofType: request.proofType ?? undefined,
+        responsibleStaffName: request.responsibleStaffName ?? undefined,
+        pinVerifiedAt: request.pinVerifiedAt ?? undefined,
       });
       return {
         movementId: movement.id,

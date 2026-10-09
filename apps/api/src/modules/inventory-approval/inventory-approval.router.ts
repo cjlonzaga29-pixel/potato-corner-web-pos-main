@@ -107,7 +107,7 @@ router.post('/:id/approve', authenticate, adminOrSupervisor, requirePasswordChan
   }
 });
 
-/** POS-PERF-P29R2 — explicit legacy-reconciliation path; see inventoryApprovalService.reconcileLegacy's doc comment. Same role gate as /approve, not broader. */
+/** POS-PERF-P29R3 — administrative acknowledgment ONLY for an old pending request with no responsible-staff attribution; never applies stock or approves — see inventoryApprovalService.reconcileLegacy's doc comment. Same role gate as /approve, not broader. */
 router.post(
   '/:id/legacy-reconcile',
   authenticate,

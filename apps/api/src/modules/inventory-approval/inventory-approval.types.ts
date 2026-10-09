@@ -65,7 +65,19 @@ export interface SubmitWasteData {
   enteredUnitId?: string;
   reasonCode: string;
   notes?: string;
-  staffPin: StaffPinResolution;
+  /**
+   * Mandatory in practice for every UNIVERSAL_ITEM waste submission —
+   * wasteInventoryStockSchema's verification_token is required at the
+   * schema level, so universal-inventory.router.ts always resolves and
+   * passes one. Optional here only so the legacy /ingredients/:id/waste
+   * route (POS-PERF-P29R3 — see inventory.router.ts) can route a
+   * LEGACY_INGREDIENT waste through this same Pending Review queue without
+   * one: that system predates P29 and never collected a PIN at all (see
+   * requestRequiresStaffVerification's doc comment in
+   * inventory-approval.service.ts — it never required one for
+   * LEGACY_INGREDIENT, for any operation).
+   */
+  staffPin?: StaffPinResolution;
   evidence?: ResolvedEvidence;
 }
 

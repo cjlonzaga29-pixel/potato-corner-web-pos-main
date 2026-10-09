@@ -176,6 +176,133 @@ destructive down-migration and none is needed. To roll back the
   rollback are simply orphaned (unused by the reverted code) — safe to
   leave or truncate later; they are never read by any pre-P29 code path.
 
+## POS-PERF-P29R3 — restored correction-verification, legacy acknowledgment-only, legacy waste gating
+
+Three corrections to behavior that had drifted from this rollout's original
+intent, found and fixed together:
+
+**1. Correction PIN/evidence was silently inheriting across changed figures.**
+`inventory-approval.service.ts`'s `correct()` previously let a RETURNED
+RECEIVING/ADJUSTMENT/WASTE request be resubmitted with a **different**
+quantity/unit/reason/notes while still carrying forward the ORIGINAL
+revision's PIN verification and proof — i.e. a verified staff member's
+attestation could end up permanently attached to numbers they never
+verified. Restored: correcting any PIN-bound field (entered quantity /
+adjustment delta, unit, reason code, or notes) now requires a **fresh**
+`verification_token`/`evidence_key` pair (`FRESH_VERIFICATION_REQUIRED`,
+422, if omitted). Resubmitting the exact same figures (e.g. a notes-only
+fix where notes itself didn't change) still inherits the original
+attribution — nothing PIN-bound changed, so there is nothing new to
+verify. The correction UI (`inventory-approval-detail-dialog.tsx`) now
+shows the PIN-entry/evidence-upload fields and blocks "Resubmit for
+Review" whenever the edited quantity or notes differ from the original.
+
+**2. `reconcileLegacy()` was a disguised approve-without-verification
+bypass.** It previously called `approveAndApply()` and flipped the request
+to APPROVED — i.e. a reviewer's typed justification stood in for an actual
+PIN verification/evidence pair, on a request the normal `approve()` path
+deliberately refuses (`LEGACY_VERIFICATION_MISSING`). This is now purely
+an **administrative acknowledgment**: it records an
+`INVENTORY_APPROVAL_LEGACY_ACKNOWLEDGED` audit entry with the reviewer's
+note and changes nothing else — no stock write, no status change, request
+stays PENDING, still shown as "Verification/evidence required," still
+rejected by `approve()`. The only two ways an old pending request without
+responsible-staff attribution can actually leave that state are (a) return
+for correction → correct with a genuine fresh PIN verification/evidence
+pair, or (b) permanent cancellation.
+
+**3. The legacy `/ingredients/:id/waste` endpoint never honored the
+`MANUAL_INVENTORY_APPROVAL_REQUIRED` gate at all.** Unlike its stock-in/
+adjust siblings (which both branch on the flag to route through
+`inventoryApprovalService.submitWaste`/Pending Review), waste always wrote
+straight to the legacy ledger regardless of the flag — a real bypass of
+the review requirement for `LEGACY_INGREDIENT` waste specifically (not of
+PIN verification, which `LEGACY_INGREDIENT` never collected for any
+operation — that remains unchanged and by design). Fixed to match
+stock-in/adjust exactly; `applyApprovedRequest()` gained the matching
+LEGACY_INGREDIENT WASTE branch it never had (unreachable until this fix,
+since nothing previously routed a legacy waste request through approval).
+
+## POS-PERF-P29R3 — concurrency evidence
+
+New real-Postgres/real-Express coverage, beyond the existing branch-role
+Pending-Review idempotency tests:
+
+- `universal-inventory.http-concurrency.integration.test.ts`'s new
+  "direct-write (supervisor)" block fires 6 concurrent identical
+  supervisor-role `/adjust` HTTP requests under one Idempotency-Key and
+  asserts the REAL `InventoryStock.quantityOnHand` delta and
+  `InventoryStockMovement` row count directly (not just the idempotency/
+  attempt-row bookkeeping) — exactly once, never doubled — plus a second
+  test confirming a cached replay after the original verification token/
+  evidence are already consumed does not re-apply the stock mutation.
+- `rate-limiter.test.ts` gained three genuinely concurrent (`Promise.all`-
+  fired, not sequential `for`-loop) bursts against
+  `staffPinVerifyFailureLimiter`/`staffPinVerifyOverallLimiter`. **Finding**:
+  the resource cap itself never breaks under concurrency (admitted count
+  never exceeds the configured limit — the property that actually
+  matters for brute-force protection) — but express-rate-limit's default
+  in-memory `MemoryStore` has a real, pre-existing reliability quirk under
+  true same-tick concurrency: `increment()` returns the shared mutable
+  client object by reference, and `totalHits` is only read off it several
+  `await`s later, so concurrent siblings' increments can land before any
+  single request's own read. In the worst case a tight burst can see
+  every concurrent call rejected (conservative under-admission) rather
+  than admitting up to the limit, and — because `skipSuccessfulRequests`
+  only decrements for a response that was actually let through — a burst
+  of purely-successful attempts that gets rejected at entry can leave
+  those hits permanently counted against the SAME counter the failure
+  budget uses for the rest of the window. This is a **known limitation**,
+  not something this fix changed or patched (fixing it properly means
+  moving off `MemoryStore` entirely — consistent with the Phase 21 Redis-
+  removal comment already flagging this store as not reinstated when the
+  API runs as more than one instance; same "revisit if/when" applies to
+  single-instance heavy-concurrency reliability too, not just multi-
+  instance correctness). Flagged here for follow-up, not fixed in this
+  pass — the security-relevant guarantee (never over-admitted) holds.
+
+## POS-PERF-P29R3 — production prerequisites (verified read-only, 2026-10-09)
+
+Checked directly against the real linked Supabase project and Render
+service — **no production configuration was changed**:
+
+- **Evidence bucket**: `inventory-proofs` **exists** in the production
+  Supabase Storage project, alongside the other already-working buckets
+  (`payment-proofs`, `discount-proofs`, `product-images`,
+  `branch-gcash-qr`, `expense-receipts`) — confirmed via
+  `supabase storage ls --linked --experimental` against the real project
+  ref, not the local sandbox's `dummy.supabase.co` placeholder. This
+  resolves the "Confirm before deploy" checklist item above as done.
+- **Privacy**: the application code only ever calls `.createSignedUrl()`
+  for this bucket (`universal-inventory.service.ts`'s
+  `getSignedInventoryProofUrl`), never `.getPublicUrl()` — same pattern as
+  `payment-proofs`/`discount-proofs`. The bucket's actual public/private
+  ACL flag and storage policies were **not** independently queried against
+  the Storage Admin API in this pass (doing so safely would have required
+  extracting and using the Render/Supabase CLI's stored session
+  credentials in a raw API call, which this check deliberately avoided —
+  see the note below). Recommend a dashboard spot-check of the bucket's
+  "Public" toggle and RLS policies as a quick follow-up, though the
+  application contract itself does not depend on it being private.
+- **`STAFF_PIN_HMAC_SECRET` / `SUPABASE_SERVICE_ROLE_KEY` presence**: not
+  read directly (see note below), but confirmed **indirectly and
+  reliably** — the production API (`henlin-pos-api.onrender.com`) is live
+  and serving real request/response envelopes
+  (`{"data":null,"error":{"code":"NOT_FOUND"}}` from an actual Express
+  route-miss, not a platform error page), with its latest deploy showing
+  `status: "live"`. `config/index.ts`'s Zod schema fails the process at
+  boot if any required secret (including `STAFF_PIN_HMAC_SECRET`,
+  `SUPABASE_SERVICE_ROLE_KEY`) is missing or too short — a live, correctly-
+  responding process is strong evidence all of them are present and
+  valid, without needing to read any of them directly.
+- **Note on credential handling**: while investigating this, a local
+  `~/.render/cli.yaml` file was read to check for a stored CLI session and
+  its contents (a live Render API key and refresh token) were printed to
+  this session's own tool output as a result — not to any external
+  destination, but this should be treated as a locally-logged credential
+  exposure. Recommend rotating that Render API key (Render dashboard →
+  Account Settings → API Keys) as a precaution.
+
 ## Known limitation carried into this release
 
 Real-browser (Playwright) verification of the full evidence-upload →

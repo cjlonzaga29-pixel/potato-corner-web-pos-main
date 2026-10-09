@@ -297,6 +297,31 @@ inventoryRouter.post(
         res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
         return;
       }
+      // POS-PERF-P29R3 — this legacy waste endpoint was the one reachable
+      // write path that never honored MANUAL_INVENTORY_APPROVAL_REQUIRED at
+      // all: stock-in/adjust above both gate through the Pending Review
+      // queue when the flag is on, but waste always wrote straight to the
+      // ledger regardless of it. That is a bypass of the review requirement
+      // itself (not of PIN verification — LEGACY_INGREDIENT never collected
+      // one for any operation, see requestRequiresStaffVerification's doc
+      // comment in inventory-approval.service.ts), and is fixed here to
+      // match stock-in/adjust exactly.
+      if (config.manualInventoryApprovalRequired) {
+        const body = req.body as z.infer<typeof wasteIngredientSchema>;
+        const result = await inventoryApprovalService.submitWaste(
+          {
+            target: 'LEGACY_INGREDIENT',
+            branchId: existing.branch_id,
+            legacyIngredientId: req.params.id as string,
+            quantity: body.quantity,
+            reasonCode: body.reason_code,
+            notes: body.notes,
+          },
+          req.user,
+        );
+        res.status(201).json({ data: result, error: null, meta: null });
+        return;
+      }
       const movement = await inventoryService.wasteIngredient(
         req.params.id as string,
         req.body,

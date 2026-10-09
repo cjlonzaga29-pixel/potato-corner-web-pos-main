@@ -25,15 +25,17 @@ export const cancelInventoryApprovalRequestSchema = z.object({
 });
 
 /**
- * POS-PERF-P29R2 — explicit reconciliation path for a PENDING request that
- * predates the mandatory staff-PIN-verification/evidence policy (RECEIVING/
- * ADJUSTMENT/WASTE submitted before responsible_staff_user_id/proof_key
- * existed, or before they were required). Normal approve() refuses these
- * outright rather than silently approving them — this is the deliberate,
- * explicit alternative, and the mandatory reason is the reviewer's written
- * justification for approving without a PIN verification or evidence,
- * recorded permanently in the audit log rather than fabricated onto the
- * request itself.
+ * POS-PERF-P29R3 — administrative-acknowledgment-only path for a PENDING
+ * request that predates the mandatory staff-PIN-verification/evidence
+ * policy (RECEIVING/ADJUSTMENT/WASTE submitted before
+ * responsible_staff_user_id/proof_key existed, or before they were
+ * required). This does NOT approve the request and does NOT apply stock —
+ * normal approve() still refuses it outright (LEGACY_VERIFICATION_MISSING).
+ * The mandatory reason is only the reviewer's written note for the audit
+ * log; it is never accepted as a substitute for an actual PIN verification/
+ * evidence pair. The only ways to actually resolve the request are a
+ * correction carrying a fresh verification_token/evidence_key, or permanent
+ * cancellation.
  */
 export const legacyReconcileInventoryApprovalRequestSchema = z.object({
   reason: z.string().min(1, 'A reconciliation justification is required').max(1000),

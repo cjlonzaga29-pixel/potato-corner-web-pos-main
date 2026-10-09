@@ -214,7 +214,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     await inventoryApprovalService.returnForCorrection(request.id, 'cleanup', actor('super_admin', adminUserId));
   });
 
-  it('correcting a RETURNED request without a fresh PIN inherits the original responsible-staff attribution onto the new revision (preserved, not fabricated, not dropped)', async () => {
+  it('correcting a RETURNED request with a CHANGED PIN-bound field requires a fresh PIN verification — the old one does not carry forward onto new figures', async () => {
     const originalStaffPin = staffPinFixture();
     const request = await inventoryApprovalService.submitAdjustment(
       { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 5, reasonCode: 'count_correction', staffPin: originalStaffPin },
@@ -222,13 +222,36 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     );
     await inventoryApprovalService.returnForCorrection(request.id, 'wrong quantity', actor('supervisor', supervisorUserId, [branchId]));
 
-    // No staffPin passed to correct() here — the real correction UI today never re-verifies a PIN.
-    const corrected = await inventoryApprovalService.correct(request.id, { quantityDelta: 7 }, actor('branch', branchUserId, [branchId]));
+    // Changing the quantity without a fresh staffPin is refused outright — POS-PERF-P29R3 restored requirement.
+    await expect(inventoryApprovalService.correct(request.id, { quantityDelta: 7 }, actor('branch', branchUserId, [branchId]))).rejects.toMatchObject({
+      code: 'FRESH_VERIFICATION_REQUIRED',
+    });
+
+    // A fresh staffPin provided alongside the changed quantity is accepted, and overrides (not merges with) the original attribution.
+    const freshStaffPin = staffPinFixture();
+    const corrected = await inventoryApprovalService.correct(request.id, { quantityDelta: 7, staffPin: freshStaffPin }, actor('branch', branchUserId, [branchId]));
+    expect(corrected.responsible_staff_user_id).toBe(freshStaffPin.responsibleStaffUserId);
+    expect(corrected.quantity_delta).toBe(7);
+
+    const approved = await inventoryApprovalService.approve(corrected.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+    expect(approved.responsible_staff_user_id).toBe(freshStaffPin.responsibleStaffUserId);
+  });
+
+  it('correcting a RETURNED request with the SAME quantity (e.g. a notes-only fix) inherits the original responsible-staff attribution — nothing PIN-bound actually changed', async () => {
+    const originalStaffPin = staffPinFixture();
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 5, reasonCode: 'count_correction', notes: 'original note', staffPin: originalStaffPin },
+      actor('branch', branchUserId, [branchId]),
+    );
+    await inventoryApprovalService.returnForCorrection(request.id, 'typo in notes', actor('supervisor', supervisorUserId, [branchId]));
+
+    // Same quantity resubmitted, no staffPin supplied — allowed to inherit, since no PIN-bound field changed.
+    const corrected = await inventoryApprovalService.correct(request.id, { quantityDelta: 5 }, actor('branch', branchUserId, [branchId]));
     expect(corrected.responsible_staff_user_id).toBe(originalStaffPin.responsibleStaffUserId);
     expect(corrected.responsible_staff_name).toBe(originalStaffPin.responsibleStaffName);
     expect(corrected.pin_verified_at).not.toBeNull();
 
-    // Inherited attribution is enough to pass approve()'s verification gate — this is not a legacy-unverified request.
     const approved = await inventoryApprovalService.approve(corrected.id, actor('supervisor', supervisorUserId, [branchId]), null);
     expect(approved.status).toBe('APPROVED');
     expect(approved.responsible_staff_user_id).toBe(originalStaffPin.responsibleStaffUserId);
@@ -309,6 +332,25 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
     expect(approved.status).toBe('APPROVED');
     expect(await inventoryRepository.countMovements(legacyIngredientId)).toBe(ledgerCountBefore + 1);
+  });
+
+  it('legacy waste requests also gate through the same approval flow — POS-PERF-P29R3 fix for a route that previously never checked the gate at all', async () => {
+    const ledgerCountBefore = await inventoryRepository.countMovements(legacyIngredientId);
+    const stockBefore = await inventoryRepository.getCurrentStock(legacyIngredientId);
+    const request = await inventoryApprovalService.submitWaste(
+      { target: 'LEGACY_INGREDIENT', branchId, legacyIngredientId, quantity: 3, reasonCode: 'spoilage' },
+      actor('branch', branchUserId, [branchId]),
+    );
+    expect(request.status).toBe('PENDING');
+    // Not applied yet — this is the entire point of the fix: the legacy route used to write immediately regardless of the gate.
+    expect(await inventoryRepository.countMovements(legacyIngredientId)).toBe(ledgerCountBefore);
+    expect((await inventoryRepository.getCurrentStock(legacyIngredientId)).toString()).toBe(stockBefore.toString());
+
+    const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+    expect(await inventoryRepository.countMovements(legacyIngredientId)).toBe(ledgerCountBefore + 1);
+    const stockAfter = await inventoryRepository.getCurrentStock(legacyIngredientId);
+    expect(stockAfter.toNumber()).toBe(stockBefore.toNumber() - 3);
   });
 
   it('waste remains immediate and unaffected by the approval gate', async () => {
@@ -637,39 +679,58 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     await inventoryApprovalService.returnForCorrection(request.id, 'missing PIN verification — recorded before the mandatory policy', actor('supervisor', supervisorUserId, [branchId]));
   });
 
-  it('explicit legacy reconciliation applies the movement exactly once without fabricating a PIN verification, and is recorded in the audit log', async () => {
+  it('legacy reconciliation records an administrative acknowledgment only — it never applies stock, never approves, and the request stays blocked', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(
       { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 12, reasonCode: 'count_correction' },
       actor('branch', branchUserId, [branchId]),
     );
 
-    const reconciled = await inventoryApprovalService.reconcileLegacy(
+    const acknowledged = await inventoryApprovalService.reconcileLegacy(
       request.id,
       'Pre-dates mandatory PIN policy; branch manager confirmed physical count by phone',
       actor('supervisor', supervisorUserId, [branchId]),
       null,
     );
-    expect(reconciled.status).toBe('APPROVED');
-    // Recorded By (submittedByUserId) is never equated with a verified Responsible Staff — these stay null.
-    expect(reconciled.responsible_staff_user_id).toBeNull();
-    expect(reconciled.responsible_staff_name).toBeNull();
-    expect(reconciled.pin_verified_at).toBeNull();
+    // POS-PERF-P29R3 — a reviewer's written justification is never a
+    // substitute for a real PIN verification/evidence pair: this call must
+    // NOT move the request to APPROVED, and must NOT touch stock.
+    expect(acknowledged.status).toBe('PENDING');
+    expect(acknowledged.responsible_staff_user_id).toBeNull();
+    expect(acknowledged.responsible_staff_name).toBeNull();
+    expect(acknowledged.pin_verified_at).toBeNull();
 
     const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
-    expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 12);
+    expect(stockAfter.quantityOnHand.toString()).toBe(stockBefore.quantityOnHand.toString());
 
     const auditEntry = await prisma.auditLog.findFirst({
-      where: { action: 'INVENTORY_APPROVAL_LEGACY_RECONCILED', entityId: request.id },
+      where: { action: 'INVENTORY_APPROVAL_LEGACY_ACKNOWLEDGED', entityId: request.id },
       orderBy: { createdAt: 'desc' },
     });
     expect(auditEntry).not.toBeNull();
     expect(auditEntry?.actorId).toBe(supervisorUserId);
 
-    // A second reconciliation/approval attempt is rejected — the movement is never double-applied.
-    await expect(
-      inventoryApprovalService.reconcileLegacy(request.id, 'retry', actor('super_admin', adminUserId), null),
-    ).rejects.toMatchObject({ code: 'ALREADY_PROCESSED' });
+    // The request is still exactly as blocked as before the acknowledgment — normal approve() still refuses it.
+    await expect(inventoryApprovalService.approve(request.id, actor('super_admin', adminUserId), null)).rejects.toMatchObject({
+      code: 'LEGACY_VERIFICATION_MISSING',
+    });
+    // Acknowledging again is allowed (it mutates nothing reviewable) and still applies no stock.
+    await inventoryApprovalService.reconcileLegacy(request.id, 'second look, still no PIN available', actor('super_admin', adminUserId), null);
+    const stockStillUnchanged = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockStillUnchanged.quantityOnHand.toString()).toBe(stockBefore.quantityOnHand.toString());
+
+    // The only real way out: return for correction, then correct with a genuine fresh PIN verification + evidence.
+    await inventoryApprovalService.returnForCorrection(request.id, 'no PIN on file — resubmit with verification', actor('supervisor', supervisorUserId, [branchId]));
+    const corrected = await inventoryApprovalService.correct(
+      request.id,
+      { quantityDelta: 12, staffPin: staffPinFixture() },
+      actor('branch', branchUserId, [branchId]),
+    );
+    expect(corrected.responsible_staff_user_id).not.toBeNull();
+    const approved = await inventoryApprovalService.approve(corrected.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+    const stockFinal = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    expect(stockFinal.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + 12);
   });
 
   it('legacy reconciliation refuses a request that already has staff-PIN verification on file — that one goes through the normal approve() path', async () => {

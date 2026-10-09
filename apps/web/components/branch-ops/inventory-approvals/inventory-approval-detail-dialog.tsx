@@ -18,6 +18,8 @@ import {
   useInventoryApprovalDetail,
   useReturnInventoryApprovalRequest,
 } from '@/hooks/queries/use-inventory-approvals';
+import { EvidenceUploadField } from '@/components/branch-ops/evidence-upload-field';
+import { StaffPinEntryField } from '@/components/branch-ops/staff-pin-entry-field';
 
 const OPERATION_LABELS: Record<string, string> = {
   RECEIVING: 'Stock In',
@@ -72,6 +74,8 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [correctionQuantity, setCorrectionQuantity] = useState('');
   const [correctionNotes, setCorrectionNotes] = useState('');
+  const [correctionEvidenceKey, setCorrectionEvidenceKey] = useState<string | null>(null);
+  const [correctionVerificationToken, setCorrectionVerificationToken] = useState<string | null>(null);
 
   if (!data) {
     return (
@@ -90,13 +94,30 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
         ? current.quantity_delta
         : current.counted_quantity;
 
+  // POS-PERF-P29R3 — mirrors the server's own correct() gate
+  // (inventory-approval.service.ts's pinBoundFieldChanged check): only
+  // RECEIVING/ADJUSTMENT/WASTE against a UNIVERSAL_ITEM ever carried a
+  // mandatory PIN/evidence requirement, and a correction that changes the
+  // quantity or notes from what the original revision recorded is treated
+  // as a fresh physical event, not an edit to the old one — it needs its
+  // own fresh verification/evidence rather than inheriting the original's.
+  // Re-submitting the exact same figures (a notes-only correction, or
+  // fixing something else the server tracks that this dialog doesn't even
+  // expose for editing) is allowed to inherit, same as the server.
+  const requiresVerification = current.target === 'UNIVERSAL_ITEM' && (current.operation === 'RECEIVING' || current.operation === 'ADJUSTMENT' || current.operation === 'WASTE');
+  const quantityChanged = correctionQuantity !== '' && Number(correctionQuantity) !== (quantityField ?? Number.NaN);
+  const notesChanged = correctionNotes.trim() !== '' && correctionNotes.trim() !== (current.notes ?? '').trim();
+  const needsFreshVerification = requiresVerification && (quantityChanged || notesChanged);
+  const canCorrect = Boolean(correctionQuantity) && (!needsFreshVerification || Boolean(correctionVerificationToken && correctionEvidenceKey));
+
   async function handleCorrect() {
     if (!id) return;
+    const verification = needsFreshVerification ? { verification_token: correctionVerificationToken ?? undefined, evidence_key: correctionEvidenceKey ?? undefined } : {};
     const input =
       current.operation === 'RECEIVING'
-        ? { entered_quantity: Number(correctionQuantity), notes: correctionNotes || undefined }
+        ? { entered_quantity: Number(correctionQuantity), notes: correctionNotes || undefined, ...verification }
         : current.operation === 'ADJUSTMENT'
-          ? { quantity_delta: Number(correctionQuantity), notes: correctionNotes || undefined }
+          ? { quantity_delta: Number(correctionQuantity), notes: correctionNotes || undefined, ...verification }
           : { counted_quantity: Number(correctionQuantity), notes: correctionNotes || undefined };
     await correct.mutateAsync({ id, input });
     onOpenChange(false);
@@ -171,7 +192,28 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
               <Input id="correction-quantity" type="number" step="any" value={correctionQuantity} onChange={(e) => setCorrectionQuantity(e.target.value)} placeholder={String(quantityField ?? '')} />
               <Label htmlFor="correction-notes">Notes</Label>
               <Textarea id="correction-notes" value={correctionNotes} onChange={(e) => setCorrectionNotes(e.target.value)} rows={2} />
-              <Button onClick={() => void handleCorrect()} disabled={correct.isPending || !correctionQuantity}>
+
+              {needsFreshVerification && (
+                <div className="space-y-3 rounded-md border border-amber-400 bg-amber-50 p-3">
+                  <p className="text-sm text-amber-900">
+                    The quantity or notes changed from the original submission — a fresh staff PIN verification and proof photo are required before this correction can be resubmitted.
+                  </p>
+                  <EvidenceUploadField branchId={branchId} label="Proof Photo" evidenceKey={correctionEvidenceKey} onChange={setCorrectionEvidenceKey} />
+                  <StaffPinEntryField
+                    branchId={branchId}
+                    draft={{
+                      operation: current.operation as 'RECEIVING' | 'ADJUSTMENT' | 'WASTE',
+                      inventoryItemId: current.inventory_item_id ?? undefined,
+                      quantity: Number(correctionQuantity || 0),
+                      notes: correctionNotes || undefined,
+                    }}
+                    verificationToken={correctionVerificationToken}
+                    onVerified={setCorrectionVerificationToken}
+                  />
+                </div>
+              )}
+
+              <Button onClick={() => void handleCorrect()} disabled={correct.isPending || !canCorrect}>
                 {correct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Resubmit for Review
               </Button>

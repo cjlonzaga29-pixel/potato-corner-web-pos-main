@@ -367,6 +367,20 @@ test.describe.serial('Inventory approval — real-browser lineage cancellation',
     await openRequestByQuantity(branchPage, '/branch', 'RETURNED', String(Q_RETURN_ORIGINAL));
     await expect(branchPage.getByRole('dialog').getByText('wrong quantity, please resubmit')).toBeVisible();
     await branchPage.getByLabel('Corrected Quantity').fill(String(Q_RETURN_CORRECTED));
+
+    // POS-PERF-P29R3 — the corrected figure differs from the original
+    // submission, so the restored policy requires a fresh staff PIN
+    // verification + evidence before this correction can be resubmitted;
+    // the original verification does not carry forward onto new numbers.
+    await expect(branchPage.getByText(/fresh staff PIN verification/)).toBeVisible();
+    const fixturePath = path.join(__dirname, 'fixtures', 'gcash-test.png');
+    await branchPage.getByRole('button', { name: 'Upload Photo' }).click();
+    await branchPage.locator('input[type="file"]').setInputFiles(fixturePath);
+    await expect(branchPage.getByText('Uploaded')).toBeVisible({ timeout: 15_000 });
+    await branchPage.getByPlaceholder('Enter 4-6 digit PIN').fill(staffPin);
+    await branchPage.getByRole('button', { name: 'Verify' }).click();
+    await expect(branchPage.getByText(/Verified — Jenny Santos/)).toBeVisible({ timeout: 10_000 });
+
     await branchPage.getByRole('button', { name: 'Resubmit for Review' }).click();
     await branchPage.waitForURL('**/branch/inventory/approvals', { timeout: NAV_TIMEOUT });
 

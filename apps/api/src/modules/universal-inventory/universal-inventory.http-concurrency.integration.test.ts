@@ -36,7 +36,7 @@ const { config } = await import('../../config/index.js');
 const { staffPinService } = await import('../staff-pin/staff-pin.service.js');
 const { staffPinRepository } = await import('../staff-pin/staff-pin.repository.js');
 const universalInventoryServiceModule = await import('./universal-inventory.service.js');
-const { generateBranchToken } = await import('../../test-utils/auth-tokens.js');
+const { generateBranchToken, generateSupervisorToken } = await import('../../test-utils/auth-tokens.js');
 const { ROLES } = await import('@potato-corner/shared');
 import type { JwtPayload } from '@potato-corner/shared';
 
@@ -100,17 +100,17 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
   });
 
   /** Fresh staff PIN + verification token + evidence key for one ADJUSTMENT draft, exactly as a real client would obtain them before submitting. */
-  async function provisionAdjustmentCredentials(quantityDelta: number, reasonCode = 'count_correction') {
+  async function provisionAdjustmentCredentials(quantityDelta: number, reasonCode = 'count_correction', uploaderUserId: string = branchUserId) {
     const staffUser = await prisma.user.create({
       data: { role: 'staff', firstName: 'Staff', lastName: randomUUID().slice(0, 8), employmentType: 'regular', email: `staff-${randomUUID()}@test.local` },
     });
     await prisma.userBranchAssignment.create({ data: { userId: staffUser.id, branchId } });
     const pin = String(Math.floor(1000 + Math.random() * 8999));
-    await staffPinService.setPin(staffUser.id, pin, branchActor(branchUserId, branchId), null);
+    await staffPinService.setPin(staffUser.id, pin, branchActor(uploaderUserId, branchId), null);
 
     const verified = await staffPinService.verifyPin(
       { branchId, pin, operation: 'ADJUSTMENT', inventoryItemId: itemId, quantity: quantityDelta, reasonCode },
-      branchActor(branchUserId, branchId),
+      branchActor(uploaderUserId, branchId),
     );
     // No real Supabase Storage endpoint exists in this test environment —
     // bypass uploadInventoryEvidence's actual upload the same way
@@ -118,10 +118,15 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
     // InventoryEvidenceUpload row directly rather than performing a real
     // storage round trip. The HTTP endpoint under test (adjust) only ever
     // consumes the evidence_key through consumeInventoryEvidence, which
-    // doesn't care how the row was created.
+    // doesn't care how the row was created — EXCEPT that consumeInventoryEvidence
+    // requires evidence.uploadedByUserId to match the actor consuming it
+    // (universal-inventory.service.ts's consumeInventoryEvidence), so this
+    // must be the same user whose token authenticates the eventual request —
+    // branchUserId for the branch-role tests above, the caller-supplied
+    // supervisor id for the direct-write tests below.
     const evidence = await staffPinRepository.createEvidence({
       branchId,
-      uploadedByUserId: branchUserId,
+      uploadedByUserId: uploaderUserId,
       storageKey: `evidence/${branchId}/${randomUUID()}.png`,
       proofType: 'gallery_upload',
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
@@ -213,5 +218,97 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
     expect(replay.status).toBe(200);
     expect(replay.json.data?.replayed).toBe(true);
     expect(replay.json.data?.id).toBe(originalId);
+  });
+
+  /**
+   * POS-PERF-P29R3 — the three tests above all exercise the branch-role
+   * PENDING-review path, where "applied exactly once" only ever means "one
+   * InventoryApprovalRequest row exists" — no stock write happens until a
+   * separate approve() call, so a race in THIS endpoint could never double-
+   * apply real stock. A supervisor/super_admin actor is different:
+   * requiresPendingReview() (universal-inventory.router.ts) is false for
+   * them, so this same /adjust endpoint calls universalInventoryService.
+   * adjustStock() directly and writes the real ledger inline — a race here
+   * is the one that could actually double-apply stock. Asserts the real
+   * InventoryStock.quantityOnHand delta and InventoryStockMovement row
+   * count directly, not just the idempotency/attempt-row bookkeeping.
+   */
+  describe('direct-write (supervisor) concurrency — the actual stock mutation, not just the approval-request row', () => {
+    let supervisorUserId: string;
+    let supervisorToken: string;
+
+    beforeAll(async () => {
+      const supervisorUser = await prisma.user.create({
+        data: { role: 'supervisor', firstName: 'Supervisor', lastName: 'Direct', employmentType: 'regular', email: `supervisor-${randomUUID()}@test.local` },
+      });
+      supervisorUserId = supervisorUser.id;
+      await prisma.userBranchAssignment.create({ data: { userId: supervisorUserId, branchId } });
+      supervisorToken = generateSupervisorToken([branchId], { userId: supervisorUserId });
+    });
+
+    afterAll(async () => {
+      await prisma.userBranchAssignment.deleteMany({ where: { userId: supervisorUserId } });
+      await prisma.user.deleteMany({ where: { id: supervisorUserId } });
+    });
+
+    async function postSupervisorAdjust(body: Record<string, unknown>, idempotencyKey: string) {
+      const res = await fetch(`${baseUrl}/api/branches/${branchId}/inventory-stock/${itemId}/adjust`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supervisorToken}`, 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json()) as { data: { id?: string; replayed?: boolean } | null; error: { code: string } | null };
+      return { status: res.status, json };
+    }
+
+    it('concurrent identical direct-write adjustments under the same Idempotency-Key change InventoryStock exactly once and create exactly one movement', async () => {
+      const quantityDelta = 9;
+      const { verificationToken, evidenceKey } = await provisionAdjustmentCredentials(quantityDelta, 'count_correction', supervisorUserId);
+      const idempotencyKey = randomUUID();
+      const body = { quantity_delta: quantityDelta, reason_code: 'count_correction', verification_token: verificationToken, evidence_key: evidenceKey };
+
+      const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+      const movementCountBefore = await prisma.inventoryStockMovement.count({ where: { branchId, inventoryItemId: itemId } });
+
+      const results = await Promise.all(Array.from({ length: 6 }, () => postSupervisorAdjust(body, idempotencyKey)));
+
+      for (const { status, json } of results) {
+        expect([200, 201, 409, 422]).toContain(status);
+        if (status >= 400) expect(json.error?.code).toBeTruthy();
+      }
+      const successes = results.filter((r) => r.status === 200 || r.status === 201);
+      expect(successes.length).toBeGreaterThanOrEqual(1);
+      const resultId = successes[0]?.json.data?.id;
+      for (const success of successes) expect(success.json.data?.id).toBe(resultId);
+
+      // The actual mutation — asserted directly, not inferred from the HTTP responses or the idempotency ledger alone.
+      const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+      expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + quantityDelta);
+      const movementCountAfter = await prisma.inventoryStockMovement.count({ where: { branchId, inventoryItemId: itemId } });
+      expect(movementCountAfter).toBe(movementCountBefore + 1);
+
+      // Evidence/verification are each single-use — exactly one of the concurrent callers actually consumed them.
+      const evidenceRow = await staffPinRepository.findEvidenceById(evidenceKey);
+      expect(evidenceRow?.consumedAt).not.toBeNull();
+    });
+
+    it('a cached replay after the original verification token/evidence are already consumed still succeeds (idempotency cache, not re-verification)', async () => {
+      const quantityDelta = 5;
+      const { verificationToken, evidenceKey } = await provisionAdjustmentCredentials(quantityDelta, 'count_correction', supervisorUserId);
+      const idempotencyKey = randomUUID();
+      const body = { quantity_delta: quantityDelta, reason_code: 'count_correction', verification_token: verificationToken, evidence_key: evidenceKey };
+
+      const original = await postSupervisorAdjust(body, idempotencyKey);
+      expect(original.status).toBe(201);
+      const stockAfterOriginal = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+
+      const replay = await postSupervisorAdjust(body, idempotencyKey);
+      expect(replay.status).toBe(200);
+      expect(replay.json.data?.replayed).toBe(true);
+
+      // The cached replay must not re-apply the stock mutation a second time.
+      const stockAfterReplay = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+      expect(stockAfterReplay.quantityOnHand.toNumber()).toBe(stockAfterOriginal.quantityOnHand.toNumber());
+    });
   });
 });

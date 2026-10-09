@@ -289,4 +289,105 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
     const blocked = await hitWithOutcome(staffPinVerifyOverallLimiter, req, 401);
     expect(blocked.allowed).toBe(false);
   });
+
+  /**
+   * POS-PERF-P29R3 — every test above dispatches its hits strictly one at a
+   * time (`for` + `await`), which only proves the limiter is correct under
+   * SEQUENTIAL load. That says nothing about whether a burst of genuinely
+   * concurrent failed PIN attempts (the actual brute-force/enumeration
+   * shape this limiter exists to stop) could over-admit past the 5-failure
+   * cap before any single request's accounting has been written back —
+   * the exact kind of race a sequential pass cannot exercise, let alone
+   * disprove. One real HTTP request == one distinct Express `req` object —
+   * express-rate-limit's own double-count guard (singleCountKeys, a WeakMap
+   * keyed on the request object) enforces exactly that, and throws if the
+   * same object is re-presented as a second "request" — so a genuinely
+   * concurrent burst from the same actor is N DIFFERENT request objects
+   * landing in the same window, not one object reused; each call below
+   * gets its own mockReq() sharing only the (branchId, userId) key.
+   *
+   * Finding: firing the burst via Promise.all (so every call's
+   * `store.increment()` races the others instead of running strictly after
+   * each other) proves the resource cap genuinely holds — admitted count
+   * never exceeds the configured limit, so no flood of simultaneous
+   * attempts can slip past it. It also surfaces a real, pre-existing
+   * reliability quirk in express-rate-limit's default MemoryStore
+   * (unrelated to this fix, inherited from the Phase 21 Redis-removal —
+   * see rate-limiter.ts's own header comment on that store being per-
+   * process/non-atomic): `increment()` returns the shared mutable client
+   * object by reference, and `totalHits` is only read off it several
+   * `await`s later. Under true same-tick concurrency every sibling's
+   * increment can land before any single request's own read, so a request
+   * can see a `totalHits` higher than its own call actually produced — in
+   * the extreme, a burst this tight can see EVERY concurrent call rejected
+   * (0 admitted) rather than admitting up to the limit. That is a
+   * conservative failure mode (never a cap breach, only ever an
+   * under-admission of requests that should have fit), so it is captured
+   * and asserted here rather than silently tightened further — the
+   * guarantee this limiter must never lose is "never over-admitted," which
+   * holds either way.
+   */
+  it('a burst of concurrent (Promise.all-fired) failed PIN attempts never over-admits past the 5-failure cap', async () => {
+    const branchId = randomUUID();
+    const userId = randomUUID();
+    const burst = await Promise.all(Array.from({ length: 12 }, () => hitWithOutcome(staffPinVerifyFailureLimiter, pinReq({ branchId, userId }), 401)));
+    const admitted = burst.filter((r) => r.allowed);
+    const rejected = burst.filter((r) => !r.allowed);
+    // The one guarantee that must never break: the cap is never exceeded, regardless of dispatch order or the MemoryStore quirk documented above.
+    expect(admitted.length).toBeLessThanOrEqual(5);
+    expect(admitted.length + rejected.length).toBe(12);
+    for (const r of rejected) expect(r.status).toBe(429);
+
+    // The cap (or its conservative floor) holds, and the limiter still recovers with a clear, actionable follow-up request once the window has room again.
+    const afterBurst = await hitWithOutcome(staffPinVerifyFailureLimiter, pinReq({ branchId, userId }), 401);
+    expect(afterBurst.allowed).toBe(false);
+    expect(afterBurst.status).toBe(429);
+  });
+
+  /**
+   * skipSuccessfulRequests only decrements the shared counter AFTER a
+   * successful response finishes — it does not exempt entry from the raw
+   * per-key limit check that happens at increment() time, before the
+   * outcome is known. Combined with the shared-mutable-client read race
+   * documented on the test above, this surfaces a real, pre-existing
+   * reliability gap in this limiter under true same-tick concurrency: a
+   * burst of purely-successful attempts that gets mostly/entirely rejected
+   * at entry (never "allowed", so never reaches the finish-hook that would
+   * decrement it) leaves those hits permanently counted against the SAME
+   * counter the failure budget uses, for the rest of the window — i.e. a
+   * big enough simultaneous burst of correct PIN entries could exhaust real
+   * subsequent failure-attempt budget even though none of them were
+   * failures. This is a genuine finding (logged for the runbook/follow-up,
+   * not silently patched here — fixing it means moving off MemoryStore
+   * entirely, consistent with Phase 21's already-flagged revisit-when-
+   * multi-instance plan), not an artifact of this test. What's asserted
+   * here is the property that DOES hold regardless: every one of the 25
+   * concurrent calls resolves to a well-formed outcome (never a raw/
+   * unhandled error), and the resource cap is still never exceeded.
+   */
+  it('a burst of concurrent successful PIN verifications resolves every call to a well-formed outcome, with the cap never exceeded', async () => {
+    const branchId = randomUUID();
+    const userId = randomUUID();
+    const burst = await Promise.all(Array.from({ length: 25 }, () => hitWithOutcome(staffPinVerifyFailureLimiter, pinReq({ branchId, userId }), 200)));
+    const admitted = burst.filter((r) => r.allowed);
+    const rejected = burst.filter((r) => !r.allowed);
+    expect(admitted.length + rejected.length).toBe(25);
+    expect(admitted.length).toBeLessThanOrEqual(5);
+    for (const r of rejected) expect(r.status).toBe(429);
+  });
+
+  it('the overall per-actor cap (30/5min) is never over-admitted under a genuinely concurrent mixed burst', async () => {
+    const branchId = randomUUID();
+    const userId = randomUUID();
+    const burst = await Promise.all([
+      ...Array.from({ length: 20 }, () => hitWithOutcome(staffPinVerifyOverallLimiter, pinReq({ branchId, userId }), 200)),
+      ...Array.from({ length: 20 }, () => hitWithOutcome(staffPinVerifyOverallLimiter, pinReq({ branchId, userId }), 401)),
+    ]);
+    const admitted = burst.filter((r) => r.allowed);
+    const rejected = burst.filter((r) => !r.allowed);
+    // Same resource-cap guarantee as the failure-limiter burst test above — see its comment for why this is <= rather than ===.
+    expect(admitted.length).toBeLessThanOrEqual(30);
+    expect(admitted.length + rejected.length).toBe(40);
+    for (const r of rejected) expect(r.status).toBe(429);
+  });
 });

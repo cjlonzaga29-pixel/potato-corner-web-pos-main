@@ -73,8 +73,20 @@ export function InventoryAdjustmentHistory() {
         </span>
       ),
     },
-    { id: 'performed_by', header: 'Recorded By', cell: ({ row }) => row.original.performed_by_name ?? '—' },
-    { id: 'responsible', header: 'Responsible Staff', cell: ({ row }) => row.original.responsible_user_name ?? '—' },
+    { id: 'performed_by', header: 'Recorded By (Account)', cell: ({ row }) => row.original.performed_by_name ?? '—' },
+    { id: 'responsible', header: 'Responsible Staff', cell: ({ row }) => row.original.responsible_staff_name ?? 'Not recorded' },
+    {
+      id: 'pin_verified',
+      header: 'Identity Status',
+      cell: ({ row }) =>
+        row.original.pin_verified_at ? (
+          <Badge variant="active">PIN Verified</Badge>
+        ) : row.original.responsible_staff_name ? (
+          <Badge variant="secondary">Not PIN verified</Badge>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
     // notes already carries "Reason: <code> — <notes>" verbatim (see
     // adjustStock) — never relabeled or split, so nothing is invented here.
     { id: 'notes', header: 'Reason / Notes', cell: ({ row }) => row.original.notes ?? '—' },

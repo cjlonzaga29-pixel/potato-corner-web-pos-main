@@ -143,12 +143,25 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
           <div className="grid grid-cols-2 gap-3">
             <Field label="Quantity" value={quantityField !== undefined && quantityField !== null ? `${quantityField} ${data.item_unit_code ?? ''}` : null} />
             <Field label="Reason" value={data.reason_code} />
-            <Field label="Recorded By" value={data.submitted_by_name} />
+            <Field label="Submitted By (Account)" value={data.submitted_by_name} />
             <Field label="Submitted At" value={formatDateTime(data.submitted_at)} />
             <Field label="Reviewed/Approved By" value={data.reviewed_by_name} />
             <Field label="Reviewed At" value={data.reviewed_at ? formatDateTime(data.reviewed_at) : null} />
-            <Field label="Responsible Staff (PIN-verified)" value={data.responsible_staff_name} />
-            <Field label="PIN Verified At" value={data.pin_verified_at ? formatDateTime(data.pin_verified_at) : null} />
+            <Field label="Responsible Staff" value={data.responsible_staff_name ?? 'Not recorded'} />
+            <div>
+              <p className="text-xs text-muted-foreground">Identity Status</p>
+              <p className="text-sm">
+                {data.pin_verified_at ? (
+                  <>
+                    <Badge variant="active">PIN Verified</Badge> <span className="text-xs text-muted-foreground">{formatDateTime(data.pin_verified_at)}</span>
+                  </>
+                ) : data.responsible_staff_name ? (
+                  <Badge variant="secondary">Not PIN verified</Badge>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </p>
+            </div>
           </div>
           <Field label="Notes" value={data.notes} />
           {data.status === 'RETURNED' && <Field label="Return Reason" value={data.return_reason} />}

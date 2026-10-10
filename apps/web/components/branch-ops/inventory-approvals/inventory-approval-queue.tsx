@@ -50,7 +50,20 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
         return <span className="tabular-nums">{value ?? '—'}</span>;
       },
     },
-    { id: 'submitted_by', header: 'Recorded By', cell: ({ row }) => row.original.submitted_by_name ?? '—' },
+    { id: 'submitted_by', header: 'Submitted By (Account)', cell: ({ row }) => row.original.submitted_by_name ?? '—' },
+    { id: 'responsible_staff', header: 'Responsible Staff', cell: ({ row }) => row.original.responsible_staff_name ?? 'Not recorded' },
+    {
+      id: 'pin_verified',
+      header: 'Identity Status',
+      cell: ({ row }) =>
+        row.original.pin_verified_at ? (
+          <Badge variant="active">PIN Verified</Badge>
+        ) : row.original.responsible_staff_name ? (
+          <Badge variant="secondary">Not PIN verified</Badge>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
     ...(status === 'APPROVED'
       ? [
           { id: 'reviewed_by', header: 'Approved By', cell: ({ row }: { row: { original: InventoryApprovalRequestResponse } }) => row.original.reviewed_by_name ?? '—' },

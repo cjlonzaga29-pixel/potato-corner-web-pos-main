@@ -201,6 +201,40 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     expect(adjustmentMovement.pinVerifiedAt?.getTime()).toBe(staffPin.pinVerifiedAt.getTime());
   });
 
+  /**
+   * POS-PERF-P30R5 — applyApprovedRequest's ADJUSTMENT branch called
+   * applyAdjustmentInTx without proofKey/proofType, even though that
+   * function already accepts and persists both (the RECEIVING and WASTE
+   * branches right next to it already forwarded them). An adjustment
+   * submitted with a verified evidence upload showed proof on the pending
+   * approval request, then silently lost it on the resulting
+   * InventoryStockMovement the moment it was approved.
+   */
+  it('approving an ADJUSTMENT request with evidence on file carries the proof key/type onto the resulting movement', async () => {
+    const staffPin = staffPinFixture();
+    const proofKey = `approval-requests/${randomUUID()}/evidence.jpg`;
+    const request = await inventoryApprovalService.submitAdjustment(
+      {
+        target: 'UNIVERSAL_ITEM',
+        branchId,
+        inventoryItemId: itemId,
+        quantityDelta: 1,
+        reasonCode: 'count_correction',
+        staffPin,
+        evidence: { proofKey, proofType: 'gallery_upload' },
+      },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const storedRequest = await prisma.inventoryApprovalRequest.findUniqueOrThrow({ where: { id: request.id } });
+    expect(storedRequest.proofKey).toBe(proofKey);
+    expect(storedRequest.proofType).toBe('gallery_upload');
+
+    const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    const movement = await prisma.inventoryStockMovement.findUniqueOrThrow({ where: { id: approved.applied_movement_id as string } });
+    expect(movement.proofKey).toBe(proofKey);
+    expect(movement.proofType).toBe('gallery_upload');
+  });
+
   it('concurrent approval attempts on the same request apply exactly once', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(

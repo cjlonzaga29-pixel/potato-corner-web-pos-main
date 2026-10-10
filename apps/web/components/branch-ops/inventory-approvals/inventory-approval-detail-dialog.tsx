@@ -143,11 +143,10 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
           <div className="grid grid-cols-2 gap-3">
             <Field label="Quantity" value={quantityField !== undefined && quantityField !== null ? `${quantityField} ${data.item_unit_code ?? ''}` : null} />
             <Field label="Reason" value={data.reason_code} />
-            <Field label="Submitted By (Account)" value={data.submitted_by_name} />
             <Field label="Submitted At" value={formatDateTime(data.submitted_at)} />
-            <Field label="Reviewed/Approved By" value={data.reviewed_by_name} />
+            <Field label="Reviewed By" value={data.reviewed_by_name} />
             <Field label="Reviewed At" value={data.reviewed_at ? formatDateTime(data.reviewed_at) : null} />
-            <Field label="Responsible Staff" value={data.responsible_staff_name ?? 'Not recorded'} />
+            <Field label="Recorded By" value={data.responsible_staff_name ?? 'Not recorded'} />
             <div>
               <p className="text-xs text-muted-foreground">Identity Status</p>
               <div className="text-sm">

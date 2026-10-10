@@ -95,34 +95,53 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InventoryApprovalDetailDialog — Responsible Staff / Identity Status (POS-PERF-P30R4)', () => {
-  it('shows the account submitter and a distinct PIN-verified responsible staff member with the verification timestamp', () => {
+describe('InventoryApprovalDetailDialog — Recorded By / Identity Status', () => {
+  it('never renders the account submitter — only shows the PIN-identified Recorded By staff', () => {
     renderWithDetail({
       submitted_by_name: 'Branch Account',
       responsible_staff_name: 'Juan Dela Cruz',
       pin_verified_at: '2026-08-03T02:00:00.000Z',
     });
 
-    expect(screen.getByText('Branch Account')).toBeInTheDocument();
+    expect(screen.queryByText('Branch Account')).not.toBeInTheDocument();
+    expect(screen.queryByText('Submitted By (Account)')).not.toBeInTheDocument();
+    expect(screen.getByText('Recorded By')).toBeInTheDocument();
     expect(screen.getByText('Juan Dela Cruz')).toBeInTheDocument();
     expect(screen.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('shows the same person for submitter and responsible staff on a supervisor direct record', () => {
+  it('keeps Reviewed By separate from Recorded By for the approving supervisor', () => {
+    renderWithDetail({
+      responsible_staff_name: 'Juan Dela Cruz',
+      pin_verified_at: '2026-08-03T02:00:00.000Z',
+      status: 'APPROVED',
+      reviewed_by_user_id: 'sup-1',
+      reviewed_by_name: 'Supervisor Reyes',
+      reviewed_at: '2026-08-03T03:00:00.000Z',
+    });
+
+    expect(screen.getByText('Reviewed By')).toBeInTheDocument();
+    expect(screen.getByText('Supervisor Reyes')).toBeInTheDocument();
+    expect(screen.getByText('Recorded By')).toBeInTheDocument();
+    expect(screen.getByText('Juan Dela Cruz')).toBeInTheDocument();
+  });
+
+  it('shows the same person for Recorded By on a supervisor direct record without rendering it twice as submitter', () => {
     renderWithDetail({
       submitted_by_name: 'Maria Santos',
       responsible_staff_name: 'Maria Santos',
       pin_verified_at: '2026-08-03T02:00:00.000Z',
     });
 
-    expect(screen.getAllByText('Maria Santos')).toHaveLength(2);
+    expect(screen.getAllByText('Maria Santos')).toHaveLength(1);
     expect(screen.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('shows Not recorded with a dash status when there is no responsible staff identity', () => {
-    renderWithDetail({ responsible_staff_name: null, pin_verified_at: null });
+  it('shows Not recorded with a dash status when there is no responsible staff identity — never falls back to the submitter', () => {
+    renderWithDetail({ responsible_staff_name: null, pin_verified_at: null, submitted_by_name: 'Branch Account' });
 
     expect(screen.getByText('Not recorded')).toBeInTheDocument();
+    expect(screen.queryByText('Branch Account')).not.toBeInTheDocument();
     expect(screen.queryByText('PIN Verified')).not.toBeInTheDocument();
     expect(screen.queryByText('Not PIN verified')).not.toBeInTheDocument();
   });

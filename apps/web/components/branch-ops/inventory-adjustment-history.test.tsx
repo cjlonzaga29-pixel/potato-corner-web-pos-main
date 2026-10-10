@@ -78,23 +78,34 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InventoryAdjustmentHistory — Responsible Staff / Identity Status (POS-PERF-P30R4)', () => {
-  it('shows the PIN-verified staff name and a PIN Verified badge when a branch account submits for a different staff member', () => {
+describe('InventoryAdjustmentHistory — Recorded By / Identity Status', () => {
+  it('never renders the account submitter — only the PIN-identified Recorded By staff', () => {
     renderWithMovement({
       performed_by_name: 'Branch Account',
       responsible_staff_name: 'Juan Dela Cruz',
       pin_verified_at: '2026-08-03T02:00:00.000Z',
     });
 
+    expect(screen.queryByText('Branch Account')).not.toBeInTheDocument();
+    expect(screen.queryByText('Recorded By (Account)')).not.toBeInTheDocument();
+
     const row = within(dataRow());
-    expect(row.getByText('Branch Account')).toBeInTheDocument();
     expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
-    // Account and staff names must remain two distinct values, never merged.
-    expect(screen.queryAllByText('Branch Account')).toHaveLength(1);
   });
 
-  it('shows the same name in both columns without claiming PIN verification for supervisor direct recording', () => {
+  it('has no duplicate Responsible Staff / Recorded By columns', () => {
+    renderWithMovement({
+      responsible_staff_name: 'Juan Dela Cruz',
+      pin_verified_at: '2026-08-03T02:00:00.000Z',
+    });
+
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
+    expect(headers.filter((h) => h === 'Recorded By')).toHaveLength(1);
+    expect(headers).not.toContain('Responsible Staff');
+  });
+
+  it('shows the same name once for Recorded By on a supervisor direct record, not duplicated as account', () => {
     renderWithMovement({
       performed_by_name: 'Maria Santos',
       performed_by_role: 'supervisor',
@@ -104,12 +115,13 @@ describe('InventoryAdjustmentHistory — Responsible Staff / Identity Status (PO
     });
 
     const row = within(dataRow());
-    expect(row.getAllByText('Maria Santos')).toHaveLength(2);
+    expect(row.getAllByText('Maria Santos')).toHaveLength(1);
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
   });
 
   it('preserves a historical responsible_user_name and labels it Not PIN verified when there is no staff PIN evidence', () => {
     renderWithMovement({
+      performed_by_name: 'Branch Account',
       responsible_staff_name: null,
       pin_verified_at: null,
       responsible_user_id: 'legacy-user-1',
@@ -120,10 +132,12 @@ describe('InventoryAdjustmentHistory — Responsible Staff / Identity Status (PO
     expect(row.getByText('Legacy Staff Member')).toBeInTheDocument();
     expect(row.getByText('Not PIN verified')).toBeInTheDocument();
     expect(row.queryByText('Not recorded')).not.toBeInTheDocument();
+    expect(row.queryByText('Branch Account')).not.toBeInTheDocument();
   });
 
   it('shows Not recorded and a dash badge when there is no responsible identity at all', () => {
     renderWithMovement({
+      performed_by_name: 'Branch Account',
       responsible_staff_name: null,
       pin_verified_at: null,
       responsible_user_id: null,
@@ -135,6 +149,7 @@ describe('InventoryAdjustmentHistory — Responsible Staff / Identity Status (PO
     expect(row.getAllByText('—').length).toBeGreaterThanOrEqual(1);
     expect(row.queryByText('PIN Verified')).not.toBeInTheDocument();
     expect(row.queryByText('Not PIN verified')).not.toBeInTheDocument();
+    expect(row.queryByText('Branch Account')).not.toBeInTheDocument();
   });
 
   it('labels a staff name as Not PIN verified when the verification timestamp is missing despite the name being present', () => {

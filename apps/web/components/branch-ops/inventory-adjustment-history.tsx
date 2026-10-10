@@ -73,10 +73,9 @@ export function InventoryAdjustmentHistory() {
         </span>
       ),
     },
-    { id: 'performed_by', header: 'Recorded By (Account)', cell: ({ row }) => row.original.performed_by_name ?? '—' },
     {
-      id: 'responsible',
-      header: 'Responsible Staff',
+      id: 'recorded_by',
+      header: 'Recorded By',
       // POS-PERF-P30R4 — responsible_staff_name (PIN-verified, P29+) and
       // responsible_user_name (legacy pre-P29 responsible_user_id, never
       // PIN-verified) are two distinct identity sources on the same row;

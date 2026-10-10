@@ -168,6 +168,39 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     expect(movements).toBeGreaterThanOrEqual(1);
   });
 
+  /**
+   * POS-PERF-P30R4 — applyApprovedRequest's RECEIVING and ADJUSTMENT
+   * branches were constructing applyReceivingInTx/applyAdjustmentInTx calls
+   * without responsibleStaffName/pinVerifiedAt (only the WASTE branch passed
+   * them), even though both functions already accept and persist those
+   * fields. The approval queue correctly showed the PIN-verified staff
+   * identity before approval; the resulting InventoryStockMovement silently
+   * lost it, so the Adjustment History page showed "Not recorded" for an
+   * approval that had genuinely been PIN-verified. Covers both operations
+   * the bug affected.
+   */
+  it('approving a RECEIVING or ADJUSTMENT request carries the PIN-verified responsible-staff identity onto the resulting movement', async () => {
+    const staffPin = staffPinFixture();
+
+    const receivingRequest = await inventoryApprovalService.submitReceiving(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, enteredQuantity: 4, enteredUnitId: unitId, staffPin },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const approvedReceiving = await inventoryApprovalService.approve(receivingRequest.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    const receivingMovement = await prisma.inventoryStockMovement.findUniqueOrThrow({ where: { id: approvedReceiving.applied_movement_id as string } });
+    expect(receivingMovement.responsibleStaffName).toBe(staffPin.responsibleStaffName);
+    expect(receivingMovement.pinVerifiedAt?.getTime()).toBe(staffPin.pinVerifiedAt.getTime());
+
+    const adjustmentRequest = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction', staffPin },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const approvedAdjustment = await inventoryApprovalService.approve(adjustmentRequest.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    const adjustmentMovement = await prisma.inventoryStockMovement.findUniqueOrThrow({ where: { id: approvedAdjustment.applied_movement_id as string } });
+    expect(adjustmentMovement.responsibleStaffName).toBe(staffPin.responsibleStaffName);
+    expect(adjustmentMovement.pinVerifiedAt?.getTime()).toBe(staffPin.pinVerifiedAt.getTime());
+  });
+
   it('concurrent approval attempts on the same request apply exactly once', async () => {
     const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
     const request = await inventoryApprovalService.submitAdjustment(

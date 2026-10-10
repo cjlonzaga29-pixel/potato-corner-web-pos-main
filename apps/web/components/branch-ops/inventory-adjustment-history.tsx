@@ -74,14 +74,23 @@ export function InventoryAdjustmentHistory() {
       ),
     },
     { id: 'performed_by', header: 'Recorded By (Account)', cell: ({ row }) => row.original.performed_by_name ?? '—' },
-    { id: 'responsible', header: 'Responsible Staff', cell: ({ row }) => row.original.responsible_staff_name ?? 'Not recorded' },
+    {
+      id: 'responsible',
+      header: 'Responsible Staff',
+      // POS-PERF-P30R4 — responsible_staff_name (PIN-verified, P29+) and
+      // responsible_user_name (legacy pre-P29 responsible_user_id, never
+      // PIN-verified) are two distinct identity sources on the same row;
+      // a row predating the PIN requirement only ever has the latter, and
+      // falling straight to "Not recorded" would erase a real recorded name.
+      cell: ({ row }) => row.original.responsible_staff_name ?? row.original.responsible_user_name ?? 'Not recorded',
+    },
     {
       id: 'pin_verified',
       header: 'Identity Status',
       cell: ({ row }) =>
         row.original.pin_verified_at ? (
           <Badge variant="active">PIN Verified</Badge>
-        ) : row.original.responsible_staff_name ? (
+        ) : row.original.responsible_staff_name || row.original.responsible_user_name ? (
           <Badge variant="secondary">Not PIN verified</Badge>
         ) : (
           <span className="text-muted-foreground">—</span>

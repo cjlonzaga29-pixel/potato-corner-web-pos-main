@@ -150,7 +150,7 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
             <Field label="Responsible Staff" value={data.responsible_staff_name ?? 'Not recorded'} />
             <div>
               <p className="text-xs text-muted-foreground">Identity Status</p>
-              <p className="text-sm">
+              <div className="text-sm">
                 {data.pin_verified_at ? (
                   <>
                     <Badge variant="active">PIN Verified</Badge> <span className="text-xs text-muted-foreground">{formatDateTime(data.pin_verified_at)}</span>
@@ -160,7 +160,7 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
                 ) : (
                   <span className="text-muted-foreground">—</span>
                 )}
-              </p>
+              </div>
             </div>
           </div>
           <Field label="Notes" value={data.notes} />

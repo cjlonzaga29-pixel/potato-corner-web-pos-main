@@ -805,6 +805,8 @@ async function applyApprovedRequest(
         enteredUnitId,
         proofKey: request.proofKey ?? undefined,
         proofType: request.proofType ?? undefined,
+        responsibleStaffName: request.responsibleStaffName ?? undefined,
+        pinVerifiedAt: request.pinVerifiedAt ?? undefined,
       });
       return {
         movementId: movement.id,
@@ -831,6 +833,8 @@ async function applyApprovedRequest(
         reasonCode: request.reasonCode ?? 'count_correction',
         notes: request.notes ?? undefined,
         performedByUserId: request.submittedByUserId,
+        responsibleStaffName: request.responsibleStaffName ?? undefined,
+        pinVerifiedAt: request.pinVerifiedAt ?? undefined,
       });
       return {
         movementId: movement.id,

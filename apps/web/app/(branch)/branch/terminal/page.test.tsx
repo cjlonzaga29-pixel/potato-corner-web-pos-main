@@ -17,7 +17,9 @@ const {
   mockClockOutMutateAsync,
   mockUseAuth,
   mockSelectEmployee,
+  mockRefreshEmployeeSession,
   mockUseEmployees,
+  mockVerifyPosPinMutateAsync,
   mockCreateTransactionMutateAsync,
   mockUseClockIn,
   mockUseClockOut,
@@ -47,7 +49,9 @@ const {
   mockClockOutMutateAsync: vi.fn(),
   mockUseAuth: vi.fn(),
   mockSelectEmployee: vi.fn(),
+  mockRefreshEmployeeSession: vi.fn(),
   mockUseEmployees: vi.fn(),
+  mockVerifyPosPinMutateAsync: vi.fn(),
   // Task 120: these wrap the mutation hooks so tests can inspect what
   // accessTokenOverride terminal/page.tsx actually threaded through — the
   // whole point of the fix is that this is the selected Employee's token,
@@ -113,6 +117,10 @@ vi.mock('@/components/ui/select', () => {
 
 vi.mock('@/hooks/use-auth', () => ({
   useAuth: mockUseAuth,
+}));
+
+vi.mock('@/hooks/queries/use-staff-pin', () => ({
+  useVerifyPosPin: () => ({ mutateAsync: mockVerifyPosPinMutateAsync, isPending: false }),
 }));
 
 vi.mock('@/hooks/queries/use-employees', () => ({
@@ -350,7 +358,7 @@ function catalogWith(variants: PosCatalogProduct['variants'][number][]): { produ
 }
 
 beforeEach(() => {
-  mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+  mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
   mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
   localStorage.clear();
   mockResolveAndFenceCheckoutAttempt.mockReset();
@@ -2045,7 +2053,7 @@ describe('TerminalPage — checkout payload selected_option_ids (Task 26)', () =
 // must disable Charge and make a second submit impossible.
 describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)', () => {
   beforeEach(() => {
-    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
     mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
@@ -2160,7 +2168,7 @@ describe('TerminalPage — Charge reliability and cart preservation (Task 209.3)
 // recovery via the mount-time pending-attempt check.
 describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () => {
   beforeEach(() => {
-    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
     mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
@@ -2296,7 +2304,7 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
 // detach instead of silently accepting it.
 describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)', () => {
   beforeEach(() => {
-    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
     mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
     mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
@@ -2502,18 +2510,16 @@ describe('TerminalPage — non-blocking checkout / detached sales (POS-PERF-P19)
   });
 });
 
-// Task 120: a `branch` (Branch Account) session sees "Who is working?"
+// POS-PERF-P30: a `branch` (Branch Account) session sees "Who is working?"
 // right inside POS Terminal — no separate /branch/select-employee route/
-// redirect — and selecting an Employee there never authenticates as anyone
-// else: it only sets terminal-local "active employee" state. The Branch
-// Account's own session (useAuthStore) is never touched by any of this. A
-// `staff` session (already bound to one Employee) never sees this at all,
-// covered by the STAFF_USER default in the top-level beforeEach above.
+// redirect — as a locked PIN-entry screen, not a free pick from an employee
+// list. Verifying a PIN resolves (and shows for confirmation) the staff
+// name; only confirming ("Continue as X") consumes the token and sets
+// terminal-local "active employee" state. The Branch Account's own session
+// (useAuthStore) is never touched by any of this. A `staff` session
+// (already bound to one Employee) never sees this at all, covered by the
+// STAFF_USER default in the top-level beforeEach above.
 describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)', () => {
-  function employee(overrides: Record<string, unknown> = {}) {
-    return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
-  }
-
   function selectEmployeeResult(overrides: Record<string, unknown> = {}) {
     return {
       user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
@@ -2522,36 +2528,43 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     };
   }
 
+  /** Types a PIN, verifies it, and confirms "Continue as Jane" — the two-step flow Part C's spec describes. */
+  async function verifyAndConfirmPin(verificationToken = 'verify-token-1') {
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Jane Doe', verification_token: verificationToken, expires_at: '2026-01-01T00:05:00.000Z' });
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    await screen.findByText('Jane Doe');
+    fireEvent.click(screen.getByRole('button', { name: /Continue as Jane/ }));
+  }
+
   beforeEach(() => {
-    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
     useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
     mockUseClockIn.mockClear();
     mockUseClockOut.mockClear();
     mockUseCreateTransaction.mockClear();
+    mockVerifyPosPinMutateAsync.mockReset();
+    mockSelectEmployee.mockReset();
   });
 
   afterEach(() => cleanup());
 
-  it('shows "Who\'s working?" and active employees instead of the catalog or Clock In card', () => {
-    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
-
+  it('shows "Who\'s working?" and a PIN entry field instead of the catalog or Clock In card', () => {
     render(<TerminalPage />);
 
     expect(screen.getByText("Who's working?")).toBeInTheDocument();
-    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.getByText('Cashier')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Enter 4-6 digit PIN')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clock In' })).not.toBeInTheDocument();
   });
 
-  it('selects an employee inline (no navigation) and shows a specific error if selection fails', async () => {
-    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
+  it('verifies the PIN, shows the resolved name for confirmation, and shows a specific error if confirming the selection fails', async () => {
     mockSelectEmployee.mockRejectedValueOnce(new Error('This employee is not active'));
 
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Jane Doe'));
+    await verifyAndConfirmPin();
 
-    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('verify-token-1'));
     expect(await screen.findByText('This employee is not active')).toBeInTheDocument();
     // Still on the same page/component — no router navigation exists to assert against.
     expect(screen.getByText("Who's working?")).toBeInTheDocument();
@@ -2559,17 +2572,20 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
   });
 
-  it('shows an empty state with a link to the Employees section when no active employees are assigned to the branch', () => {
-    mockUseEmployees.mockReturnValue({ data: { employees: [] }, isLoading: false, isError: false, refetch: vi.fn() });
+  it('a wrong PIN shows a generic error and never reveals which employee (if any) it belonged to', async () => {
+    mockVerifyPosPinMutateAsync.mockRejectedValueOnce(new Error('Invalid PIN'));
 
     render(<TerminalPage />);
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '0000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
 
-    expect(screen.getByText('No active employees')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Go to Employees' })).toHaveAttribute('href', '/branch/employees');
+    expect(await screen.findByText('Invalid PIN')).toBeInTheDocument();
+    expect(screen.queryByText(/Continue as/)).not.toBeInTheDocument();
+    // The PIN field is cleared, never left populated for inspection/replay.
+    expect(screen.getByPlaceholderText('Enter 4-6 digit PIN')).toHaveValue('');
   });
 
   it('never authenticates as the selected Employee — the Branch Account session is untouched before, during, and after selection', async () => {
-    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
     mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
     mockCartItems.mockReturnValue([]);
     mockSelectEmployee.mockResolvedValue(selectEmployeeResult());
@@ -2577,8 +2593,8 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     render(<TerminalPage />);
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
 
-    fireEvent.click(screen.getByText('Jane Doe'));
-    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+    await verifyAndConfirmPin();
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('verify-token-1'));
 
     // Employee selected -> falls straight into STATE 2 (Clock In), inline, no navigation.
     expect(await screen.findByText('Clock In to Start Selling')).toBeInTheDocument();
@@ -2590,8 +2606,6 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
   });
 
   it('clocks in and checks out using the selected Employee\'s token, never the Branch Account\'s', async () => {
-    const employees = { data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() };
-    mockUseEmployees.mockReturnValue(employees);
     mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
     mockCartItems.mockReturnValue([]);
     mockSelectEmployee.mockResolvedValue(selectEmployeeResult());
@@ -2600,8 +2614,8 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
 
     const { rerender } = render(<TerminalPage />);
 
-    fireEvent.click(screen.getByText('Jane Doe'));
-    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+    await verifyAndConfirmPin();
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('verify-token-1'));
 
     // Clock In: attendance is recorded for the selected Employee, authorized with that Employee's token.
     fireEvent.click(await screen.findByRole('button', { name: 'Clock In' }));
@@ -2635,20 +2649,16 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
   });
 });
 
-// Task 209.56C — the Employee-scoped access token (activeEmployeeToken,
-// minted by select-employee) has no refresh token of its own and a 15-minute
-// TTL, so a shift running longer than that used to hit a raw, unrecoverable
+// Task 209.56C / POS-PERF-P30 — the Employee-scoped access token
+// (activeEmployeeToken) has no refresh token of its own and a 15-minute TTL,
+// so a shift running longer than that used to hit a raw, unrecoverable
 // TOKEN_EXPIRED. terminal/page.tsx now threads a refreshEmployeeToken
-// callback (which re-calls select-employee) into every operatorToken-scoped
-// mutation hook as its second argument — api-client.ts invokes it on a 401.
-// These tests grab that callback straight off the mock (rather than faking a
-// 401 through a live api-client/fetch stack, already covered end-to-end in
-// api-client.test.ts) and invoke it directly to prove the wiring is real.
+// callback (which calls refresh-employee-session, NOT a fresh PIN/
+// select-employee — see auth.service.ts#refreshEmployeeSession) into every
+// operatorToken-scoped mutation hook as its second argument — api-client.ts
+// invokes it on a 401. These tests grab that callback straight off the mock
+// and invoke it directly to prove the wiring is real.
 describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)', () => {
-  function employee(overrides: Record<string, unknown> = {}) {
-    return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
-  }
-
   function employeeSelection(accessToken: string) {
     return {
       user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
@@ -2656,8 +2666,16 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
     };
   }
 
+  async function verifyAndConfirmPin() {
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Jane Doe', verification_token: 'verify-token-1', expires_at: '2026-01-01T00:05:00.000Z' });
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    await screen.findByText('Jane Doe');
+    fireEvent.click(screen.getByRole('button', { name: /Continue as Jane/ }));
+  }
+
   beforeEach(() => {
-    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
     useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
     // Task 209.27's real (unmocked) sessionStorage-backed store restores a
@@ -2675,33 +2693,28 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
       role: undefined,
       hasHydrated: true,
     });
-    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
     mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
     mockCartItems.mockReturnValue([]);
     mockUseClockIn.mockClear();
     mockUseClockOut.mockClear();
     mockUseCreateTransaction.mockClear();
     mockSelectEmployee.mockReset();
+    mockRefreshEmployeeSession.mockReset();
+    mockVerifyPosPinMutateAsync.mockReset();
   });
 
-  // Belt-and-suspenders alongside the per-test beforeEach reset above: every
-  // test here queues its select-employee resolutions with `...Once()`, and a
-  // queued-but-unconsumed `...Once()` value takes priority over whatever a
-  // later describe block's own `mockResolvedValue(...)` sets, which leaked a
-  // rejection into an unrelated Task 209.27 test the first time this block
-  // was written. Reset unconditionally after every test so nothing carries
-  // over regardless of exactly which assertion in a given test consumed
-  // (or didn't) its queued value.
   afterEach(() => {
     cleanup();
     mockSelectEmployee.mockReset();
+    mockRefreshEmployeeSession.mockReset();
   });
 
-  it('re-mints a fresh Employee token via select-employee and threads it into the next mutation call', async () => {
-    mockSelectEmployee.mockResolvedValueOnce(employeeSelection('employee-token-1')).mockResolvedValueOnce(employeeSelection('employee-token-2'));
+  it('re-mints a fresh Employee token via refresh-employee-session (no fresh PIN) and threads it into the next mutation call', async () => {
+    mockSelectEmployee.mockResolvedValueOnce(employeeSelection('employee-token-1'));
+    mockRefreshEmployeeSession.mockResolvedValueOnce(employeeSelection('employee-token-2'));
 
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Jane Doe'));
+    await verifyAndConfirmPin();
     await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token-1', expect.any(Function)));
 
     // Simulate api-client.ts invoking the refresher after the current
@@ -2712,8 +2725,9 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
       refreshed = await refreshEmployeeToken();
     });
 
-    expect(mockSelectEmployee).toHaveBeenCalledTimes(2); // once for the initial pick, once for the refresh
-    expect(mockSelectEmployee).toHaveBeenLastCalledWith('employee-1');
+    expect(mockSelectEmployee).toHaveBeenCalledTimes(1); // only the initial PIN-verified pick
+    expect(mockRefreshEmployeeSession).toHaveBeenCalledTimes(1); // the silent refresh, no fresh PIN
+    expect(mockRefreshEmployeeSession).toHaveBeenLastCalledWith('employee-1');
     expect(refreshed).toBe('employee-token-2');
     // Threaded into whatever mutation is wired up next — the retry itself
     // (api-client.ts) uses the returned token directly; this proves the
@@ -2724,11 +2738,12 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
   });
 
-  it('drops back to "Who\'s working?" — never the cart or the Branch Account session — when the Employee can no longer be selected', async () => {
-    mockSelectEmployee.mockResolvedValueOnce(employeeSelection('employee-token-1')).mockRejectedValueOnce(new Error('This employee is not active'));
+  it('drops back to "Who\'s working?" — never the cart or the Branch Account session — when the Employee can no longer be refreshed (e.g. clocked out elsewhere)', async () => {
+    mockSelectEmployee.mockResolvedValueOnce(employeeSelection('employee-token-1'));
+    mockRefreshEmployeeSession.mockRejectedValueOnce(new Error('This employee must clock in again before continuing'));
 
     render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Jane Doe'));
+    await verifyAndConfirmPin();
     await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-token-1', expect.any(Function)));
 
     const refreshEmployeeToken = mockUseCreateTransaction.mock.calls.at(-1)?.[1] as () => Promise<string | null>;
@@ -2753,12 +2768,8 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
 // this survives across separate render() calls the same way it survives
 // across a real unmount/remount).
 describe('TerminalPage — active operator restoration across navigation (Task 209.27)', () => {
-  function employee(overrides: Record<string, unknown> = {}) {
-    return { id: 'employee-1', first_name: 'Jane', last_name: 'Doe', position: 'Cashier', ...overrides };
-  }
-
   beforeEach(() => {
-    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
     useTerminalOperatorStore.setState({
       branchId: null,
@@ -2771,16 +2782,17 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
     });
     mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
     mockCartItems.mockReturnValue([]);
-    mockUseEmployees.mockReturnValue({ data: { employees: [employee()] }, isLoading: false, isError: false, refetch: vi.fn() });
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: false, record: null, isLoading: false });
     mockUseClockIn.mockClear();
     mockUseClockOut.mockClear();
     mockUseCreateTransaction.mockClear();
+    mockVerifyPosPinMutateAsync.mockReset();
   });
 
   afterEach(() => cleanup());
 
   async function clockInAsJane() {
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Jane Doe', verification_token: 'verify-token-1', expires_at: '2026-01-01T00:05:00.000Z' });
     mockSelectEmployee.mockResolvedValue({
       user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
       accessToken: 'employee-token',
@@ -2788,8 +2800,11 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
     mockClockInMutateAsync.mockResolvedValue({ id: 'attendance-1' });
 
     const { rerender } = render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Jane Doe'));
-    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('employee-1'));
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    await screen.findByText('Jane Doe');
+    fireEvent.click(screen.getByRole('button', { name: /Continue as Jane/ }));
+    await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('verify-token-1'));
     fireEvent.click(await screen.findByRole('button', { name: 'Clock In' }));
     await waitFor(() => expect(mockClockInMutateAsync).toHaveBeenCalled());
     // The mutation resolving flips attendance to clocked-in (mirroring the
@@ -2927,21 +2942,21 @@ describe('TerminalPage — Void / Refund Sale entry point (Task 140)', () => {
   afterEach(() => cleanup());
 
   it('shows the Void / Refund Sale button for an authorized role (supervisor)', () => {
-    mockUseAuth.mockReturnValue({ user: SUPERVISOR_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: SUPERVISOR_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     render(<TerminalPage />);
 
     expect(screen.getByRole('button', { name: 'Void / Refund Sale' })).toBeInTheDocument();
   });
 
   it('hides the Void / Refund Sale button for STAFF', () => {
-    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     render(<TerminalPage />);
 
     expect(screen.queryByRole('button', { name: 'Void / Refund Sale' })).not.toBeInTheDocument();
   });
 
   it('opens the Void or Refund Sale dialog when the button is clicked', () => {
-    mockUseAuth.mockReturnValue({ user: SUPERVISOR_USER, selectEmployee: mockSelectEmployee });
+    mockUseAuth.mockReturnValue({ user: SUPERVISOR_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     render(<TerminalPage />);
 
     expect(screen.queryByTestId('void-refund-sale-dialog')).not.toBeInTheDocument();

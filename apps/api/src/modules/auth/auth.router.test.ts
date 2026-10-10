@@ -127,7 +127,7 @@ describe('POST /select-employee — cookie behavior (Task 122)', () => {
     } as never);
 
     const handlers = getRouteHandlers(authRouter, 'post', '/select-employee');
-    const req = mockReq({ ...authHeader(branchToken), body: { employee_id: EMPLOYEE_ID, device_id: DEVICE_ID } });
+    const req = mockReq({ ...authHeader(branchToken), body: { verification_token: 'verification-token-1', device_id: DEVICE_ID } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
@@ -147,7 +147,7 @@ describe('POST /select-employee — cookie behavior (Task 122)', () => {
     const handlers = getRouteHandlers(authRouter, 'post', '/select-employee');
     const req = mockReq({
       ...authHeader(branchToken),
-      body: { employee_id: EMPLOYEE_ID, device_id: DEVICE_ID },
+      body: { verification_token: 'verification-token-1', device_id: DEVICE_ID },
       cookies: { refresh_token: 'existing-branch-refresh-token' },
     });
     const res = mockRes();
@@ -166,7 +166,7 @@ describe('POST /select-employee — cookie behavior (Task 122)', () => {
     } as never);
 
     const handlers = getRouteHandlers(authRouter, 'post', '/select-employee');
-    const req = mockReq({ ...authHeader(branchToken), body: { employee_id: EMPLOYEE_ID, device_id: DEVICE_ID } });
+    const req = mockReq({ ...authHeader(branchToken), body: { verification_token: 'verification-token-1', device_id: DEVICE_ID } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
@@ -181,7 +181,7 @@ describe('POST /select-employee — cookie behavior (Task 122)', () => {
     const staffToken = generateStaffToken(BRANCH_ID);
 
     const handlers = getRouteHandlers(authRouter, 'post', '/select-employee');
-    const req = mockReq({ ...authHeader(staffToken), body: { employee_id: EMPLOYEE_ID, device_id: DEVICE_ID } });
+    const req = mockReq({ ...authHeader(staffToken), body: { verification_token: 'verification-token-1', device_id: DEVICE_ID } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
@@ -198,7 +198,7 @@ describe('POST /select-employee — cookie behavior (Task 122)', () => {
     );
 
     const handlers = getRouteHandlers(authRouter, 'post', '/select-employee');
-    const req = mockReq({ ...authHeader(branchToken), body: { employee_id: EMPLOYEE_ID, device_id: DEVICE_ID } });
+    const req = mockReq({ ...authHeader(branchToken), body: { verification_token: 'verification-token-1', device_id: DEVICE_ID } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);

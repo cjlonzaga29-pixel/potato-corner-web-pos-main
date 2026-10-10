@@ -43,3 +43,15 @@ export interface ConsumeVerificationInput {
   reasonCode?: string;
   notes?: string;
 }
+
+/** POS-PERF-P30 -- draft for a dedicated-purpose POS identity verification: no operation/draft fields, since it only resolves "who is this" for clock-in/cashier-identity, never an inventory mutation. */
+export interface VerifyPosPinDraft {
+  branchId: string;
+  pin: string;
+}
+
+export interface ConsumePosVerificationInput {
+  token: string;
+  actorUserId: string;
+  branchId: string;
+}

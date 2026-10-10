@@ -20,6 +20,8 @@ import { encryptField, decryptField } from '../../lib/encryption.js';
 import { revokedTokenHash } from '../../middleware/authenticate.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { employeesRepository } from '../employees/employees.repository.js';
+import { staffPinService } from '../staff-pin/staff-pin.service.js';
+import { attendanceRepository } from '../attendance/attendance.repository.js';
 
 const BCRYPT_COST_FACTOR = 12;
 const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
@@ -506,7 +508,7 @@ export const authService = {
    */
   async selectEmployee(
     branchActor: JwtPayload,
-    employeeId: string,
+    verificationToken: string,
     ipAddress: string | null,
   ): Promise<LoginResponse> {
     if (!('branch_ids' in branchActor) || branchActor.branch_ids.length === 0) {
@@ -514,7 +516,21 @@ export const authService = {
     }
     const branchId = branchActor.branch_ids[0] as string;
 
-    const employee = await employeesRepository.findById(employeeId);
+    // POS-PERF-P30 — the employee identity is never client-supplied: it is
+    // resolved here from a consumed, single-use `pos`-purpose PIN
+    // verification token, bound at mint time to this exact branchId. A
+    // forged, expired, revoked, cross-branch, already-consumed, or
+    // wrong-purpose (e.g. an inventory-operation) token is rejected before
+    // any employee row is even looked up — StaffPinError propagates as-is,
+    // mapped to an HTTP response by this route's handleAuthError (it isn't
+    // an AuthError, so it falls through to that generic mapping).
+    const resolved = await staffPinService.consumePosVerification({
+      token: verificationToken,
+      actorUserId: branchActor.user_id,
+      branchId,
+    });
+
+    const employee = await employeesRepository.findById(resolved.responsibleStaffUserId);
     if (!employee || employee.role !== ROLES.STAFF) {
       throw new AuthError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     }
@@ -548,6 +564,71 @@ export const authService = {
         ipAddress,
       }),
     ]);
+
+    return {
+      access_token: accessToken,
+      user: toUserSummary({ ...employee, mustChangePassword: false }, [branchId]),
+    };
+  },
+
+  /**
+   * POS-PERF-P30 — re-mints the Employee-scoped access token without a
+   * fresh PIN entry, for a Branch Account's still-open terminal session
+   * (the Employee token's own 15-minute TTL is far shorter than a typical
+   * shift — see terminal/page.tsx's refreshEmployeeToken). Unlike
+   * selectEmployee, the employeeId here IS client-supplied, but that alone
+   * grants nothing: the request is only honored if that employee currently
+   * has an OPEN AttendanceRecord at the actor's own branch — i.e. they were
+   * already PIN-verified once via selectEmployee and clocked in, and have
+   * not clocked out or been switched away from since. A caller cannot use
+   * this to mint a session for a staff member who hasn't gone through the
+   * PIN gate at all, or who has since clocked out, deactivated, or
+   * transferred branches.
+   */
+  async refreshEmployeeSession(
+    branchActor: JwtPayload,
+    employeeId: string,
+    ipAddress: string | null,
+  ): Promise<LoginResponse> {
+    if (!('branch_ids' in branchActor) || branchActor.branch_ids.length === 0) {
+      throw new AuthError('EMPLOYEE_ACCESS_DENIED', 'No branch assigned to this session', 403);
+    }
+    const branchId = branchActor.branch_ids[0] as string;
+
+    const employee = await employeesRepository.findById(employeeId);
+    if (!employee || employee.role !== ROLES.STAFF) {
+      throw new AuthError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    }
+    const belongsToBranch = employee.branchAssignments.some((assignment) => assignment.branchId === branchId);
+    if (!belongsToBranch) {
+      throw new AuthError('EMPLOYEE_ACCESS_DENIED', 'This employee is not assigned to your branch', 403);
+    }
+    if (employee.status !== 'active' || !employee.isActive) {
+      throw new AuthError('EMPLOYEE_INACTIVE', 'This employee is not active', 403);
+    }
+
+    const openAttendance = await attendanceRepository.findActiveRecord(employeeId);
+    if (!openAttendance || openAttendance.branchId !== branchId) {
+      throw new AuthError('EMPLOYEE_NOT_CLOCKED_IN', 'This employee must clock in again before continuing', 409);
+    }
+
+    const accessToken = generateAccessToken({
+      id: employee.id,
+      role: employee.role,
+      email: employee.email,
+      branchIds: [branchId],
+      mustChangePassword: false,
+    });
+
+    await recordAuditLog({
+      action: 'EMPLOYEE_SESSION_REFRESHED',
+      entityType: 'user',
+      entityId: employee.id,
+      actorId: branchActor.user_id,
+      actorRole: branchActor.role,
+      branchId,
+      ipAddress,
+    });
 
     return {
       access_token: accessToken,

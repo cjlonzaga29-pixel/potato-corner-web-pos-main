@@ -69,7 +69,8 @@ export const staffPinRepository = {
       staffPinId: string;
       verifiedByActorUserId: string;
       branchId: string;
-      operation: string;
+      purpose: 'inventory' | 'pos';
+      operation?: string | null;
       inventoryItemId?: string | null;
       payloadHash: string;
       expiresAt: Date;
@@ -82,7 +83,8 @@ export const staffPinRepository = {
         staffPinId: input.staffPinId,
         verifiedByActorUserId: input.verifiedByActorUserId,
         branchId: input.branchId,
-        operation: input.operation as Prisma.StaffPinVerificationCreateInput['operation'],
+        purpose: input.purpose as Prisma.StaffPinVerificationCreateInput['purpose'],
+        operation: (input.operation ?? null) as Prisma.StaffPinVerificationCreateInput['operation'],
         inventoryItemId: input.inventoryItemId ?? null,
         payloadHash: input.payloadHash,
         expiresAt: input.expiresAt,

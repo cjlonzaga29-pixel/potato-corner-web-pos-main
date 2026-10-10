@@ -600,13 +600,30 @@ model StaffPinBranchLookup {
 /// log line can't be replayed. payloadHash binds the token to the exact
 /// quantity/unit/reason/notes present at verification time -- submit
 /// re-derives the hash from the submitted body and rejects on mismatch.
+/// POS-PERF-P30 -- distinguishes a StaffPinVerification minted to identify
+/// the staff member performing a manual inventory operation (`inventory`,
+/// the original POS-PERF-P29 purpose) from one minted to resolve POS
+/// terminal cashier identity / staff clock-in (`pos`). Never shared: each
+/// consume path hard-rejects a token whose purpose doesn't match.
+enum StaffPinPurpose {
+  inventory
+  pos
+}
+
 model StaffPinVerification {
   id               String   @id @default(uuid())
   tokenDigest      String   @unique @map("token_digest")
   staffPinId       String   @map("staff_pin_id")
   verifiedByActorUserId String @map("verified_by_actor_user_id")
   branchId         String   @map("branch_id")
-  operation        InventoryApprovalOperation
+  // POS-PERF-P30 -- purpose-separates this token so an inventory-operation
+  // verification can never be replayed to unlock the POS (and vice versa).
+  // `operation` is inventory-purpose-only (the InventoryApprovalOperation the
+  // token was issued for) and is null on every `pos` row -- consumePin for
+  // each purpose checks `purpose` first, before anything else, and rejects a
+  // mismatch the same generic way as every other invalid-token path.
+  purpose          StaffPinPurpose @default(inventory)
+  operation        InventoryApprovalOperation?
   inventoryItemId  String?  @map("inventory_item_id")
   payloadHash      String   @map("payload_hash")
 

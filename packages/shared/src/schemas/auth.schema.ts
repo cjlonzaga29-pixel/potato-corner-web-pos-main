@@ -162,10 +162,26 @@ export const jwtPayloadSchema = z.discriminatedUnion('role', [
  * already-authenticated `branch` session — the employee never presents a
  * password. device_id is required for the same reason /login's is: the
  * minted refresh token is bound to this device.
+ *
+ * POS-PERF-P30 — the employee identity is never client-supplied: it is
+ * resolved server-side from a consumed `pos`-purpose StaffPinVerification
+ * token (see staff-pin.schema.ts's verifyPosPinSchema /
+ * POST /api/staff-pin/branches/:branchId/verify-pos). A PIN is how the
+ * caller proves which employee this is; it is not what grants the session.
  */
 export const selectEmployeeSchema = z.object({
-  employee_id: z.uuid(),
+  verification_token: z.string().min(1),
   device_id: z.uuid(),
+});
+
+/**
+ * POS-PERF-P30 — re-mint an Employee access token without a fresh PIN. See
+ * auth.service.ts#refreshEmployeeSession: this alone grants nothing, the
+ * server still requires that employee_id to currently have an open
+ * attendance record at the actor's branch.
+ */
+export const refreshEmployeeSessionSchema = z.object({
+  employee_id: z.uuid(),
 });
 
 export const roleSchema = z.enum(roleValues);

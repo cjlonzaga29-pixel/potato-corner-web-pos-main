@@ -7,7 +7,14 @@ import { hmacSha256Hex, sha256Hex, randomOpaqueToken } from '../../lib/hash.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
 import { staffPinRepository } from './staff-pin.repository.js';
-import { StaffPinError, type ConsumeVerificationInput, type ConsumedVerification, type VerifyPinDraft } from './staff-pin.types.js';
+import {
+  StaffPinError,
+  type ConsumeVerificationInput,
+  type ConsumedVerification,
+  type VerifyPinDraft,
+  type VerifyPosPinDraft,
+  type ConsumePosVerificationInput,
+} from './staff-pin.types.js';
 
 const BCRYPT_COST_FACTOR = 12;
 const VERIFICATION_TTL_MS = 5 * 60 * 1000;
@@ -179,6 +186,7 @@ export const staffPinService = {
       staffPinId: staffPin.id,
       verifiedByActorUserId: actor.user_id,
       branchId: draft.branchId,
+      purpose: 'inventory',
       operation: draft.operation,
       inventoryItemId: draft.inventoryItemId ?? null,
       payloadHash: hashPayload(draft),
@@ -212,6 +220,13 @@ export const staffPinService = {
     if (verification.expiresAt.getTime() < Date.now()) {
       throw new StaffPinError('VERIFICATION_EXPIRED', 'This PIN verification has expired — please verify again', 422);
     }
+    // POS-PERF-P30 -- purpose separation: an inventory-purpose consume must
+    // never accept a `pos`-purpose token (and consumePosVerification below
+    // enforces the mirror image), even if every other field happens to line
+    // up (same branch/actor).
+    if (verification.purpose !== 'inventory') {
+      throw new StaffPinError('VERIFICATION_CONTEXT_MISMATCH', 'This PIN verification does not match this operation — please verify again', 422);
+    }
     if (verification.branchId !== input.branchId || verification.operation !== input.operation) {
       throw new StaffPinError('VERIFICATION_CONTEXT_MISMATCH', 'This PIN verification does not match this operation — please verify again', 422);
     }
@@ -221,6 +236,100 @@ export const staffPinService = {
     const payloadHash = hashPayload(input);
     if (payloadHash !== verification.payloadHash) {
       throw new StaffPinError('VERIFICATION_PAYLOAD_MISMATCH', 'This form changed since it was verified — please verify again', 422);
+    }
+
+    const consumed = await prisma.$transaction((tx) => staffPinRepository.markConsumedIfUnconsumed(verification.id, tx));
+    if (!consumed) {
+      throw new StaffPinError('VERIFICATION_ALREADY_CONSUMED', 'This PIN verification has already been used — please verify again', 422);
+    }
+
+    const staffPin = await staffPinRepository.findById(verification.staffPinId);
+    if (!staffPin) throw new StaffPinError('VERIFICATION_NOT_FOUND', 'PIN verification not found — please verify again', 422);
+    const user = await staffPinRepository.findUserBasic(staffPin.userId);
+    if (!user) throw new StaffPinError('VERIFICATION_NOT_FOUND', 'PIN verification not found — please verify again', 422);
+
+    return {
+      responsibleStaffUserId: user.id,
+      responsibleStaffName: `${user.firstName} ${user.lastName}`,
+      pinVerifiedAt: verification.createdAt,
+    };
+  },
+
+  /**
+   * POS-PERF-P30 -- resolve a PIN to a staff identity for POS terminal
+   * cashier identification / clock-in, under its own `pos` purpose so the
+   * resulting token can never be replayed against an inventory operation
+   * (consumeVerification above hard-rejects it, and vice versa in
+   * consumePosVerification below). Same generic-failure contract as
+   * verifyPin: every rejection path is INVALID_PIN, never revealing which
+   * staff member (if any) the PIN belonged to.
+   */
+  async verifyPosPin(draft: VerifyPosPinDraft, actor: JwtPayload): Promise<{ staff_name: string; verification_token: string; expires_at: string }> {
+    const digest = hmacPin(draft.pin);
+    const lookup = await staffPinRepository.findActiveBranchLookup(draft.branchId, digest);
+    if (!lookup) {
+      throw new StaffPinError('INVALID_PIN', 'Invalid PIN', 401);
+    }
+
+    const staffPin = await staffPinRepository.findById(lookup.staffPinId);
+    if (!staffPin || !staffPin.isActive || staffPin.revokedAt) {
+      throw new StaffPinError('INVALID_PIN', 'Invalid PIN', 401);
+    }
+
+    const matches = await bcrypt.compare(draft.pin, staffPin.pinHash);
+    if (!matches) {
+      throw new StaffPinError('INVALID_PIN', 'Invalid PIN', 401);
+    }
+
+    const user = await staffPinRepository.findUserBasic(staffPin.userId);
+    if (!user || !user.isActive) {
+      throw new StaffPinError('INVALID_PIN', 'Invalid PIN', 401);
+    }
+
+    const token = randomOpaqueToken();
+    const expiresAt = new Date(Date.now() + VERIFICATION_TTL_MS);
+    await staffPinRepository.createVerification({
+      tokenDigest: sha256Hex(token),
+      staffPinId: staffPin.id,
+      verifiedByActorUserId: actor.user_id,
+      branchId: draft.branchId,
+      purpose: 'pos',
+      operation: null,
+      inventoryItemId: null,
+      payloadHash: hashPayload({}),
+      expiresAt,
+    });
+
+    return {
+      staff_name: `${user.firstName} ${user.lastName}`,
+      verification_token: token,
+      expires_at: expiresAt.toISOString(),
+    };
+  },
+
+  /**
+   * Validate and atomically consume a `pos`-purpose verification token,
+   * resolving it to the staff identity it was issued for. Used by
+   * auth.service.ts#selectEmployee as the sole source of the Employee id it
+   * mints a session for — the caller never supplies employeeId directly.
+   */
+  async consumePosVerification(input: ConsumePosVerificationInput): Promise<ConsumedVerification> {
+    const tokenDigest = sha256Hex(input.token);
+    const verification = await staffPinRepository.findVerificationByTokenDigest(tokenDigest);
+    if (!verification) {
+      throw new StaffPinError('VERIFICATION_NOT_FOUND', 'PIN verification not found — please verify again', 422);
+    }
+    if (verification.revokedAt) {
+      throw new StaffPinError('VERIFICATION_REVOKED', 'This PIN verification was revoked — please verify again', 422);
+    }
+    if (verification.expiresAt.getTime() < Date.now()) {
+      throw new StaffPinError('VERIFICATION_EXPIRED', 'This PIN verification has expired — please verify again', 422);
+    }
+    if (verification.purpose !== 'pos') {
+      throw new StaffPinError('VERIFICATION_CONTEXT_MISMATCH', 'This PIN verification does not match this operation — please verify again', 422);
+    }
+    if (verification.branchId !== input.branchId) {
+      throw new StaffPinError('VERIFICATION_CONTEXT_MISMATCH', 'This PIN verification does not match this branch — please verify again', 422);
     }
 
     const consumed = await prisma.$transaction((tx) => staffPinRepository.markConsumedIfUnconsumed(verification.id, tx));

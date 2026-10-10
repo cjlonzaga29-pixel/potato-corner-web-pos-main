@@ -4,8 +4,9 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { MoreHorizontal, Plus } from 'lucide-react';
-import type { EmployeeResponse } from '@potato-corner/shared';
+import { ROLES, type EmployeeResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,9 +19,22 @@ import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
 import { useEmployees } from '@/hooks/queries/use-employees';
+import { useStaffPinStatus } from '@/hooks/queries/use-staff-pin';
 import { SupervisorCreateEmployeeDialog } from '@/components/supervisor/employees/create-employee-dialog';
 import { SupervisorEditEmployeeDialog } from '@/components/supervisor/employees/edit-employee-dialog';
 import { SetEmployeeStatusDialog } from '@/components/supervisor/employees/set-employee-status-dialog';
+import { ManageStaffPinDialog } from '@/components/supervisor/employees/manage-staff-pin-dialog';
+
+/** Inventory/POS PIN status cell — one query per staff row, enabled only for staff (PIN never applies to supervisor/branch/admin rows). */
+function PinStatusCell({ employee }: { employee: EmployeeResponse }) {
+  const isStaff = employee.role === ROLES.STAFF;
+  const status = useStaffPinStatus(employee.id, isStaff);
+  if (!isStaff) return <span className="text-muted-foreground">—</span>;
+  if (status.isLoading) return <span className="text-xs text-muted-foreground">Loading…</span>;
+  if (status.data?.has_pin && status.data.is_active) return <Badge variant="active">Active</Badge>;
+  if (status.data?.has_pin && !status.data.is_active) return <Badge variant="secondary">Inactive</Badge>;
+  return <Badge variant="outline">Not Set</Badge>;
+}
 
 /**
  * Shared body behind both `/supervisor/employees` and `/branch/employees` —
@@ -35,6 +49,7 @@ export function EmployeesList({ basePath }: { basePath: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<EmployeeResponse | null>(null);
   const [statusEmployee, setStatusEmployee] = useState<EmployeeResponse | null>(null);
+  const [pinEmployee, setPinEmployee] = useState<EmployeeResponse | null>(null);
 
   const { data, isLoading, isError, refetch } = useEmployees({ search: search || undefined, limit: 100 });
 
@@ -48,6 +63,11 @@ export function EmployeesList({ basePath }: { basePath: string }) {
       accessorKey: 'position',
       header: 'Position',
       cell: ({ row }) => row.original.position ?? '—',
+    },
+    {
+      id: 'pin_status',
+      header: 'Inventory/POS PIN',
+      cell: ({ row }) => <PinStatusCell employee={row.original} />,
     },
     {
       accessorKey: 'employment_type',
@@ -85,6 +105,9 @@ export function EmployeesList({ basePath }: { basePath: string }) {
               <DropdownMenuItem onClick={() => router.push(`${basePath}/employees/${employee.id}`)}>View</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setEditingEmployee(employee)}>Edit</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setStatusEmployee(employee)}>Change Status</DropdownMenuItem>
+              {employee.role === ROLES.STAFF && (
+                <DropdownMenuItem onClick={() => setPinEmployee(employee)}>Manage Inventory/POS PIN</DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         );
@@ -124,6 +147,7 @@ export function EmployeesList({ basePath }: { basePath: string }) {
       {statusEmployee && (
         <SetEmployeeStatusDialog open onOpenChange={(open) => !open && setStatusEmployee(null)} employee={statusEmployee} />
       )}
+      {pinEmployee && <ManageStaffPinDialog open onOpenChange={(open) => !open && setPinEmployee(null)} employee={pinEmployee} />}
     </div>
   );
 }

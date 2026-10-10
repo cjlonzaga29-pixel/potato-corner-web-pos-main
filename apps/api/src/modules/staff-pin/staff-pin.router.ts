@@ -1,9 +1,9 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { setStaffPinSchema, verifyStaffPinSchema } from '@potato-corner/shared';
+import { setStaffPinSchema, verifyStaffPinSchema, verifyPosPinSchema } from '@potato-corner/shared';
 import { staffPinService } from './staff-pin.service.js';
 import { StaffPinError } from './staff-pin.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { adminSupervisorOrBranch, branchOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { validate } from '../../middleware/validate.js';
@@ -139,6 +139,41 @@ router.post(
       // response to the caller but must not count against that budget —
       // validate(verifyStaffPinSchema)'s own 422 for a malformed draft never
       // reaches here at all, since it responds before this handler runs.
+      if (error instanceof StaffPinError && error.code === 'INVALID_PIN') {
+        res.locals.staffPinInvalid = true;
+      }
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+/**
+ * POS-PERF-P30 — verify a PIN to resolve POS terminal cashier identity /
+ * staff clock-in, under the dedicated `pos` purpose (never the `inventory`
+ * one /verify above uses) so the resulting token can only ever be consumed
+ * by auth.service.ts#selectEmployee, never an inventory submit. branchOnly:
+ * only a Branch Account session runs a POS terminal and triggers "Who's
+ * working?" — same role restriction /api/auth/select-employee itself has.
+ * Reuses the same two-tier rate limiter as /verify (see that route's doc
+ * comment for the ordering rationale) — the brute-force budget is shared
+ * per (branch, actor) regardless of which purpose is being verified.
+ */
+router.post(
+  '/branches/:branchId/verify-pos',
+  authenticate,
+  branchOnly,
+  requirePasswordChange,
+  branchGuard,
+  staffPinVerifyOverallLimiter,
+  staffPinVerifyFailureLimiter,
+  validate(verifyPosPinSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as { pin: string };
+      const result = await staffPinService.verifyPosPin({ branchId: req.params.branchId as string, pin: body.pin }, req.user);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
       if (error instanceof StaffPinError && error.code === 'INVALID_PIN') {
         res.locals.staffPinInvalid = true;
       }

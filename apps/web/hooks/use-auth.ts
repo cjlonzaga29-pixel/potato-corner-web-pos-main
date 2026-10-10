@@ -283,15 +283,36 @@ export function useAuth() {
    * checkout, payment-proof upload) — see terminal/page.tsx's activeEmployee
    * state. It is never written into the global auth store.
    */
-  async function selectEmployee(employeeId: string) {
+  /**
+   * POS-PERF-P30 — the employee is never named directly; verificationToken
+   * is the single-use token returned by a successful
+   * POST /api/staff-pin/branches/:branchId/verify-pos call, which already
+   * resolved and displayed the staff name for confirmation before this is
+   * called.
+   */
+  async function selectEmployee(verificationToken: string) {
     const deviceId = getOrCreateDeviceId();
     const response = await apiClient<SelectEmployeeResponseData>('/api/auth/select-employee', {
       method: 'POST',
-      body: JSON.stringify({ employee_id: employeeId, device_id: deviceId }),
+      body: JSON.stringify({ verification_token: verificationToken, device_id: deviceId }),
     });
 
     if (!response.data) {
       throw new Error(typeof response.error === 'string' ? response.error : response.error?.message ?? 'Could not start employee session');
+    }
+
+    return { user: toAuthUser(response.data.user), accessToken: response.data.access_token };
+  }
+
+  /** POS-PERF-P30 — re-mint an already-PIN-verified employee's token (no fresh PIN) while they remain clocked in; see auth.service.ts#refreshEmployeeSession. */
+  async function refreshEmployeeSession(employeeId: string) {
+    const response = await apiClient<SelectEmployeeResponseData>('/api/auth/refresh-employee-session', {
+      method: 'POST',
+      body: JSON.stringify({ employee_id: employeeId }),
+    });
+
+    if (!response.data) {
+      throw new Error(typeof response.error === 'string' ? response.error : response.error?.message ?? 'Could not refresh employee session');
     }
 
     return { user: toAuthUser(response.data.user), accessToken: response.data.access_token };
@@ -330,6 +351,7 @@ export function useAuth() {
     login,
     completeLogin,
     selectEmployee,
+    refreshEmployeeSession,
     logout,
     logoutAll,
     hasRole,

@@ -75,6 +75,18 @@ vi.mock('../employees/employees.repository.js', () => ({
   },
 }));
 
+vi.mock('../staff-pin/staff-pin.service.js', () => ({
+  staffPinService: {
+    consumePosVerification: vi.fn(),
+  },
+}));
+
+vi.mock('../attendance/attendance.repository.js', () => ({
+  attendanceRepository: {
+    findActiveRecord: vi.fn(),
+  },
+}));
+
 vi.mock('../../lib/email.js', () => ({
   sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
 }));
@@ -91,6 +103,8 @@ vi.mock('../../lib/encryption.js', () => ({
 
 const { authRepository } = await import('./auth.repository.js');
 const { authService } = await import('./auth.service.js');
+const { staffPinService } = await import('../staff-pin/staff-pin.service.js');
+const { attendanceRepository } = await import('../attendance/attendance.repository.js');
 const { totpService } = await import('./totp.service.js');
 const { config } = await import('../../config/index.js');
 const { employeesRepository } = await import('../employees/employees.repository.js');
@@ -585,11 +599,22 @@ describe('authService.selectEmployee', () => {
     };
   }
 
+  function mockResolvedVerification(overrides: Partial<Record<string, unknown>> = {}) {
+    vi.mocked(staffPinService.consumePosVerification).mockResolvedValue({
+      responsibleStaffUserId: 'emp-1',
+      responsibleStaffName: 'Juan Dela Cruz',
+      pinVerifiedAt: new Date(),
+      ...overrides,
+    } as never);
+  }
+
   it('mints a staff access token bound to the branch actor own branch when the employee is active and assigned there, without creating a refresh token', async () => {
+    mockResolvedVerification();
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
 
-    const result = await authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null);
+    const result = await authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null);
 
+    expect(staffPinService.consumePosVerification).toHaveBeenCalledWith({ token: 'tok-1', actorUserId: 'branch-account-1', branchId: 'branch-1' });
     expect(result.access_token).toEqual(expect.any(String));
     expect(result).not.toHaveProperty('refreshToken');
     expect(result.user.id).toBe('emp-1');
@@ -598,11 +623,12 @@ describe('authService.selectEmployee', () => {
   });
 
   it('rejects an employee not assigned to the branch actor own branch', async () => {
+    mockResolvedVerification();
     vi.mocked(employeesRepository.findById).mockResolvedValue(
       buildStaffEmployee({ branchAssignments: [{ branchId: 'branch-2' }] }) as never,
     );
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_ACCESS_DENIED',
       statusCode: 403,
     });
@@ -610,29 +636,95 @@ describe('authService.selectEmployee', () => {
   });
 
   it('rejects a non-active employee', async () => {
+    mockResolvedVerification();
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee({ status: 'suspended', isActive: false }) as never);
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_INACTIVE',
       statusCode: 403,
     });
   });
 
-  it('rejects an unknown employee id', async () => {
+  it('rejects an unknown employee id resolved from the verification token', async () => {
+    mockResolvedVerification({ responsibleStaffUserId: 'missing' });
     vi.mocked(employeesRepository.findById).mockResolvedValue(null);
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'missing', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_NOT_FOUND',
       statusCode: 404,
     });
   });
 
   it('rejects selecting a non-staff row (e.g. another branch account)', async () => {
+    mockResolvedVerification();
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee({ role: ROLES.SUPERVISOR }) as never);
 
-    await expect(authService.selectEmployee(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_NOT_FOUND',
       statusCode: 404,
+    });
+  });
+
+  it('propagates a StaffPinError (e.g. expired/wrong-purpose token) without looking up any employee', async () => {
+    const { StaffPinError } = await import('../staff-pin/staff-pin.types.js');
+    vi.mocked(staffPinService.consumePosVerification).mockRejectedValue(new StaffPinError('VERIFICATION_EXPIRED', 'expired', 422));
+
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).rejects.toMatchObject({ code: 'VERIFICATION_EXPIRED' });
+    expect(employeesRepository.findById).not.toHaveBeenCalled();
+  });
+});
+
+describe('authService.refreshEmployeeSession', () => {
+  const BRANCH_ACTOR = {
+    user_id: 'branch-account-1',
+    role: ROLES.BRANCH,
+    email: 'branch@potatocorner.test',
+    branch_ids: ['branch-1'] as string[],
+    iat: 0,
+    exp: 9999999999,
+  };
+
+  function buildStaffEmployee(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'emp-1',
+      email: null,
+      firstName: 'Juan',
+      lastName: 'Dela Cruz',
+      role: ROLES.STAFF,
+      status: 'active',
+      isActive: true,
+      mustChangePassword: false,
+      branchAssignments: [{ branchId: 'branch-1' }],
+      ...overrides,
+    };
+  }
+
+  it('re-mints a token while the employee has an open attendance record at this branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-1' } as never);
+
+    const result = await authService.refreshEmployeeSession(BRANCH_ACTOR, 'emp-1', null);
+
+    expect(result.access_token).toEqual(expect.any(String));
+    expect(result.user.id).toBe('emp-1');
+  });
+
+  it('rejects when the employee has no open attendance record (never clocked in / already clocked out)', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue(null);
+
+    await expect(authService.refreshEmployeeSession(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
+      code: 'EMPLOYEE_NOT_CLOCKED_IN',
+      statusCode: 409,
+    });
+  });
+
+  it('rejects when the open attendance record belongs to a different branch', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-2' } as never);
+
+    await expect(authService.refreshEmployeeSession(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
+      code: 'EMPLOYEE_NOT_CLOCKED_IN',
     });
   });
 });

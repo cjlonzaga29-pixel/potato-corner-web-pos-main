@@ -180,6 +180,7 @@ describe('staffPinService.consumeVerification', () => {
     id: 'v1',
     staffPinId: 'sp1',
     branchId: 'branch-1',
+    purpose: 'inventory',
     operation: 'WASTE',
     inventoryItemId: 'item-1',
     payloadHash: '',

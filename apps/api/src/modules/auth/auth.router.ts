@@ -8,6 +8,7 @@ import {
   pinSetSchema,
   pinLoginSchema,
   selectEmployeeSchema,
+  refreshEmployeeSessionSchema,
   updateProfileSchema,
   unlockAccountSchema,
   confirm2FASchema,
@@ -18,6 +19,7 @@ import {
 } from '@potato-corner/shared';
 import { authService } from './auth.service.js';
 import { AuthError } from './auth.types.js';
+import { StaffPinError } from '../staff-pin/staff-pin.types.js';
 import { validate } from '../../middleware/validate.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, branchOnly } from '../../middleware/authorize.js';
@@ -82,6 +84,13 @@ function getBearerToken(req: Request): string | undefined {
 /** Routes AuthError to its declared status code; unexpected errors fall through to the global handler. */
 function handleAuthError(error: unknown, res: Response, next: NextFunction): void {
   if (error instanceof AuthError) {
+    res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
+    return;
+  }
+  // POS-PERF-P30 — selectEmployee now resolves its target via a consumed
+  // StaffPinVerification token, so every rejection path on that call throws
+  // StaffPinError, not AuthError; map it the same way here.
+  if (error instanceof StaffPinError) {
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
     return;
   }
@@ -293,8 +302,36 @@ router.post(
         res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
         return;
       }
-      const { employee_id } = req.body as { employee_id: string; device_id: string };
-      const result = await authService.selectEmployee(req.user, employee_id, req.ip ?? null);
+      const { verification_token } = req.body as { verification_token: string; device_id: string };
+      const result = await authService.selectEmployee(req.user, verification_token, req.ip ?? null);
+      res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
+    } catch (error) {
+      handleAuthError(error, res, next);
+    }
+  },
+);
+
+/**
+ * POS-PERF-P30 — re-mint an already-PIN-verified Employee's access token
+ * without a fresh PIN entry. Only succeeds while that employee has an open
+ * attendance record at the actor's own branch (see
+ * authService.refreshEmployeeSession's doc comment) — selectEmployeeLimiter
+ * is reused here since this is the same credential-adjacent surface.
+ */
+router.post(
+  '/refresh-employee-session',
+  authenticate,
+  branchOnly,
+  selectEmployeeLimiter,
+  validate(refreshEmployeeSessionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+        return;
+      }
+      const { employee_id } = req.body as { employee_id: string };
+      const result = await authService.refreshEmployeeSession(req.user, employee_id, req.ip ?? null);
       res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);

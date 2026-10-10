@@ -1,14 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
-import { Fingerprint, Loader2, LogOut, ShoppingCart, User } from 'lucide-react';
+import { Fingerprint, Loader2, Lock, LogOut, ShoppingCart } from 'lucide-react';
 import { ROLES } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -37,7 +37,7 @@ import { useCatalog, useCatalogRealtimeSync, useCheckCartAvailability } from '@/
 import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useClockInLocation } from '@/hooks/use-clock-in-location';
-import { useEmployees } from '@/hooks/queries/use-employees';
+import { useVerifyPosPin } from '@/hooks/queries/use-staff-pin';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof, TransactionApiError } from '@/hooks/queries/use-transactions';
 import { useDiscountPolicy } from '@/hooks/queries/use-settings';
@@ -80,6 +80,13 @@ import { toast } from 'sonner';
 // gates Void/Refund actions on (view-transaction-detail-dialog.tsx); kept
 // here only to decide whether the POS entry point is worth showing at all.
 const VOID_REFUND_ENTRY_ROLES: readonly string[] = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH];
+
+// POS-PERF-P30 — documented default idle-lock window: no pointer/key
+// activity at this terminal for this long re-locks it to the PIN screen
+// (Part E). Only armed while the cart is empty (see the effect below) so an
+// in-progress sale is never silently interrupted; attendance is untouched
+// either way (locking is never a clock-out).
+const IDLE_LOCK_MS = 5 * 60 * 1000;
 
 // Task 200 (adaptive density engine) — the inline-cart-vs-Sheet split used to
 // be a single raw `useIsDesktop('(min-width: 1024px)')` width check. It's
@@ -268,7 +275,7 @@ function previewAmounts(
 }
 
 export default function TerminalPage() {
-  const { user, selectEmployee, isLoading: isAuthLoading } = useAuth();
+  const { user, selectEmployee, refreshEmployeeSession, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
   const isBranchAccount = user?.role === ROLES.BRANCH;
   // Task 140 — the authenticated account's own role, never the selected
@@ -321,11 +328,21 @@ export default function TerminalPage() {
   // back up even for a still-clocked-in Employee. useTerminalOperator below
   // restores it from a branch-scoped sessionStorage hint, but only once
   // it has re-validated that Employee against live attendance.
-  const [employeeSearch, setEmployeeSearch] = useState('');
-  const [selectingEmployeeId, setSelectingEmployeeId] = useState<string | null>(null);
+  // POS-PERF-P30 — "Who's working?" is now a locked PIN-entry screen, not a
+  // free pick from an employee list: `pin` is cleared immediately after
+  // every verify attempt (success or failure) and is never persisted.
+  // `pinVerification` holds the resolved staff name + single-use token
+  // between "PIN verified" (step 4, resolved name shown for confirmation)
+  // and "Clock In & Open POS" / "Continue as [name]" (step 5, which
+  // consumes the token). Closing/cancelling at any point clears both.
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinVerification, setPinVerification] = useState<{ staffName: string; token: string } | null>(null);
   const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
+  const [isSelectingEmployee, setIsSelectingEmployee] = useState(false);
   const [activeEmployee, setActiveEmployee] = useState<{ id: string; firstName: string; lastName: string; role: string } | null>(null);
   const [activeEmployeeToken, setActiveEmployeeToken] = useState<string | null>(null);
+  const verifyPosPin = useVerifyPosPin(branchId);
 
   const {
     operatorId,
@@ -362,7 +379,12 @@ export default function TerminalPage() {
   const refreshEmployeeToken = useCallback(async (): Promise<string | null> => {
     if (!activeEmployee) return null;
     try {
-      const selected = await selectEmployee(activeEmployee.id);
+      // POS-PERF-P30 — re-mints via refresh-employee-session (no PIN
+      // re-entry), not selectEmployee: the latter now requires a freshly
+      // consumed PIN-verification token, which this silent background
+      // refresh never has. refreshEmployeeSession only succeeds while this
+      // employee still has an open attendance record at this branch.
+      const selected = await refreshEmployeeSession(activeEmployee.id);
       setActiveEmployeeToken(selected.accessToken);
       return selected.accessToken;
     } catch {
@@ -371,7 +393,7 @@ export default function TerminalPage() {
       clearTerminalOperator();
       return null;
     }
-  }, [activeEmployee, selectEmployee, clearTerminalOperator]);
+  }, [activeEmployee, refreshEmployeeSession, clearTerminalOperator]);
 
   const { items, addItem, removeItem, updateItemQuantity, replaceItem, clearCart } = useCart();
   const {
@@ -397,28 +419,43 @@ export default function TerminalPage() {
   const { isLocating, locationError, isPermissionDenied, getLocation } = useClockInLocation();
   const [isClockingOut, setIsClockingOut] = useState(false);
 
-  const {
-    data: employeesData,
-    isLoading: isEmployeesLoading,
-    isError: isEmployeesError,
-    refetch: refetchEmployees,
-  } = useEmployees(
-    { role: ROLES.STAFF, isActive: true, search: employeeSearch || undefined, limit: 100 },
-    { enabled: isBranchAccount && !activeEmployee && !isRestoringOperator },
-  );
+  /** POS-PERF-P30 — step 2/3: staff enters their PIN; server resolves + verifies branch eligibility. PIN is cleared from state the instant this call settles, success or failure. */
+  async function handlePinVerify() {
+    if (verifyPosPin.isPending || pin.length < 4) return;
+    setPinError(null);
+    try {
+      const result = await verifyPosPin.mutateAsync(pin);
+      setPinVerification({ staffName: result.staff_name, token: result.verification_token });
+    } catch (error) {
+      setPinVerification(null);
+      setPinError(error instanceof Error ? error.message : 'Invalid PIN');
+    } finally {
+      setPin('');
+    }
+  }
 
-  async function handleSelectEmployee(employeeId: string) {
-    if (selectingEmployeeId) return;
-    setSelectingEmployeeId(employeeId);
+  /** Dismiss the "verified" confirmation without consuming the token — e.g. "that's not me" / cancel. Never silently reuses a stale verification. */
+  function handleCancelPinVerification() {
+    setPinVerification(null);
+    setPinError(null);
+    setPin('');
+  }
+
+  /** POS-PERF-P30 — step 5: consumes the verification token and mints the Employee session. Clock-in (or "Continue as", if already clocked in) happens below once activeEmployee is set and live attendance resolves. */
+  async function handleConfirmIdentity() {
+    if (!pinVerification || isSelectingEmployee) return;
+    setIsSelectingEmployee(true);
     setSelectEmployeeError(null);
     try {
-      const selected = await selectEmployee(employeeId);
+      const selected = await selectEmployee(pinVerification.token);
       setActiveEmployee({ id: selected.user.id, firstName: selected.user.firstName, lastName: selected.user.lastName, role: selected.user.role });
       setActiveEmployeeToken(selected.accessToken);
+      setPinVerification(null);
     } catch (error) {
       setSelectEmployeeError(error instanceof Error ? error.message : 'Could not start employee session');
+      setPinVerification(null);
     } finally {
-      setSelectingEmployeeId(null);
+      setIsSelectingEmployee(false);
     }
   }
 
@@ -933,6 +970,26 @@ export default function TerminalPage() {
     }
   }
 
+  /**
+   * POS-PERF-P30 — "Switch Cashier / Lock": drops only the terminal-local
+   * Employee identity (back to the PIN screen), WITHOUT clocking out —
+   * attendance is a separate concept from "who is at the terminal right
+   * now" (Part D). Refuses to run with an unsent cart rather than silently
+   * discarding it (Part E) — the cashier must finish or clear the sale
+   * first. Not available to a genuine `staff` login (it has nowhere else
+   * to go — same reasoning as handleClockOut's isBranchAccount guard).
+   */
+  function handleLockTerminal() {
+    if (!isBranchAccount || isChargeInFlight) return;
+    if (items.length > 0) {
+      toast.error('Finish or clear the current cart before switching cashiers.');
+      return;
+    }
+    setActiveEmployee(null);
+    setActiveEmployeeToken(null);
+    clearTerminalOperator();
+  }
+
   async function handleClockOut() {
     if (!operatorId || !branchId || isChargeInFlight) return;
     setIsClockingOut(true);
@@ -954,6 +1011,28 @@ export default function TerminalPage() {
       clearTerminalOperator();
     }
   }
+
+  // POS-PERF-P30 — idle lock (Part E, default documented in IDLE_LOCK_MS):
+  // re-locks to the PIN screen after IDLE_LOCK_MS of no pointer/key
+  // activity. Only armed while there's an active Employee and an empty
+  // cart — never fires mid-sale, and never touches attendance (same
+  // "lock is not clock-out" rule as the manual Switch Cashier button).
+  useEffect(() => {
+    if (!isBranchAccount || !activeEmployee || items.length > 0) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => handleLockTerminal(), IDLE_LOCK_MS);
+    };
+    const events = ['pointerdown', 'keydown', 'touchstart'] as const;
+    events.forEach((event) => window.addEventListener(event, reset));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach((event) => window.removeEventListener(event, reset));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBranchAccount, activeEmployee?.id, items.length]);
 
   // Refresh the offline cache whenever the live catalog loads — Architecture
   // doc §10.1: refreshed on connect and at least every 30 minutes.
@@ -2140,60 +2219,67 @@ export default function TerminalPage() {
       );
     }
     return (
-      <div className="mx-auto max-w-3xl app-section app-section-gap overflow-y-auto p-6">
-        <div>
+      <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-4 p-6">
+        <Fingerprint className="h-10 w-10 text-primary" />
+        <div className="text-center">
           <h1 className="app-title font-bold">Who&apos;s working?</h1>
-          <p className="text-sm text-muted-foreground">Select the employee operating the POS Terminal right now.</p>
+          <p className="text-sm text-muted-foreground">Enter your PIN to identify yourself at this terminal.</p>
         </div>
 
-        <SearchInput value={employeeSearch} onChange={setEmployeeSearch} placeholder="Search by name..." />
-
         {selectEmployeeError && (
-          <Alert variant="destructive">
+          <Alert variant="destructive" className="w-full">
             <AlertTitle>Could not start employee session</AlertTitle>
             <AlertDescription>{selectEmployeeError}</AlertDescription>
           </Alert>
         )}
 
-        {isEmployeesLoading ? (
-          <div className="flex justify-center py-16">
-            <LoadingSpinner size="lg" />
-          </div>
-        ) : isEmployeesError ? (
-          <ErrorState title="Failed to load employees" retry={() => void refetchEmployees()} />
-        ) : (employeesData?.employees.length ?? 0) === 0 ? (
-          <EmptyState
-            icon={User}
-            title="No active employees"
-            description="No active employees are assigned to this branch. If staff already exist, their branch assignment may need to be restored — otherwise, add one from the Employees section."
-            action={
-              <Button asChild size="sm">
-                <Link href="/branch/employees">Go to Employees</Link>
-              </Button>
-            }
-          />
+        {pinVerification ? (
+          <Card className="w-full">
+            <CardContent className="space-y-4 p-6 text-center">
+              <p className="text-sm text-muted-foreground">Verified</p>
+              <p className="text-xl font-semibold">{pinVerification.staffName}</p>
+              <div className="flex flex-col gap-2">
+                <Button className="w-full touch-target" size="lg" onClick={() => void handleConfirmIdentity()} disabled={isSelectingEmployee}>
+                  {isSelectingEmployee && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Continue as {pinVerification.staffName.split(' ')[0]}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleCancelPinVerification} disabled={isSelectingEmployee}>
+                  Not me — enter a different PIN
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {employeesData?.employees.map((employee) => (
-              <Card
-                key={employee.id}
-                className="touch-target min-h-[120px] cursor-pointer transition-colors hover:border-primary"
-                onClick={() => selectingEmployeeId === null && void handleSelectEmployee(employee.id)}
+          <Card className="w-full">
+            <CardContent className="space-y-4 p-6">
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                autoFocus
+                placeholder="Enter 4-6 digit PIN"
+                value={pin}
+                onChange={(e) => {
+                  setPinError(null);
+                  setPin(e.target.value.replace(/\D/g, ''));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handlePinVerify();
+                }}
+                className="text-center text-lg tracking-widest"
+              />
+              {pinError && <p className="text-sm text-destructive">{pinError}</p>}
+              <Button
+                className="w-full touch-target"
+                size="lg"
+                onClick={() => void handlePinVerify()}
+                disabled={verifyPosPin.isPending || pin.length < 4}
               >
-                <CardContent className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
-                  {selectingEmployeeId === employee.id ? (
-                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  ) : (
-                    <User className="h-8 w-8 text-muted-foreground" />
-                  )}
-                  <span className="text-lg font-medium">
-                    {employee.first_name} {employee.last_name}
-                  </span>
-                  {employee.position && <span className="text-sm text-muted-foreground">{employee.position}</span>}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                {verifyPosPin.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Verify PIN
+              </Button>
+            </CardContent>
+          </Card>
         )}
       </div>
     );
@@ -2385,6 +2471,7 @@ export default function TerminalPage() {
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card px-3 py-2">
         <div className="flex items-center gap-2 text-sm">
           <Badge variant="active">Clocked In</Badge>
+          <span className="text-muted-foreground">Current Cashier:</span>
           <span className="font-medium">{operatorName}</span>
           {attendanceRecord && (
             <span className="text-xs text-muted-foreground">
@@ -2393,6 +2480,19 @@ export default function TerminalPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {isBranchAccount && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="touch-target gap-1.5"
+              onClick={handleLockTerminal}
+              disabled={isChargeInFlight}
+              title={items.length > 0 ? 'Finish or clear the current cart before switching cashiers' : undefined}
+            >
+              <Lock className="h-4 w-4" />
+              Switch Cashier
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

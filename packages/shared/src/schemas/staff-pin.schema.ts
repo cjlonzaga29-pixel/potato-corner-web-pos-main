@@ -35,6 +35,18 @@ export const staffPinVerifyResponseSchema = z.object({
   expires_at: z.iso.datetime(),
 });
 
+// POS-PERF-P30 — dedicated `pos` purpose: resolves POS terminal cashier
+// identity / staff clock-in only, no operation/draft fields to bind to.
+export const verifyPosPinSchema = z.object({
+  pin: pinFormatSchema,
+});
+
+export const staffPinVerifyPosResponseSchema = z.object({
+  staff_name: z.string(),
+  verification_token: z.string(),
+  expires_at: z.iso.datetime(),
+});
+
 export const staffPinStatusResponseSchema = z.object({
   user_id: z.uuid(),
   has_pin: z.boolean(),

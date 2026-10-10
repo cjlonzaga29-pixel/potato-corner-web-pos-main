@@ -143,6 +143,8 @@ export type SetStaffPinInput = z.infer<typeof schemas.setStaffPinSchema>;
 export type VerifyStaffPinInput = z.infer<typeof schemas.verifyStaffPinSchema>;
 export type StaffPinVerifyResponse = z.infer<typeof schemas.staffPinVerifyResponseSchema>;
 export type StaffPinStatusResponse = z.infer<typeof schemas.staffPinStatusResponseSchema>;
+export type VerifyPosPinInput = z.infer<typeof schemas.verifyPosPinSchema>;
+export type StaffPinVerifyPosResponse = z.infer<typeof schemas.staffPinVerifyPosResponseSchema>;
 
 export type CreateInventoryCostCorrectionInput = z.infer<typeof schemas.createInventoryCostCorrectionSchema>;
 export type InventoryCostCorrectionResponse = z.infer<typeof schemas.inventoryCostCorrectionResponseSchema>;

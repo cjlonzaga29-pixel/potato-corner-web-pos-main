@@ -363,6 +363,27 @@ export default function TerminalPage() {
   const operatorToken = isBranchAccount ? (activeEmployeeToken ?? undefined) : undefined;
   const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
 
+  // POS-PERF-P30R — a mutation (checkout/proof-upload/clock-in/clock-out)
+  // that was in flight under cashier A's token at the moment it was issued
+  // keeps the EXACT refreshEmployeeToken closure that existed on that render
+  // (React Query's mutationFn closes over it once, at call time — it does
+  // not get swapped out mid-flight even though this callback is recreated on
+  // every render). If A's request 401s only after the terminal has since
+  // locked, switched to cashier B, or logged out, that stale closure must
+  // not be allowed to write into CURRENT component state — otherwise a late
+  // 401 retry for A's abandoned request can silently overwrite B's active
+  // token (session hijack: B's screen keeps showing B, but operatorToken now
+  // authenticates as A) or forcibly clear B's session entirely (an
+  // unrelated, late failure for A logs B out). activeEmployeeRef always
+  // holds the live value, independent of which render's closure is running,
+  // so every state-mutating branch below can check "is the employee I just
+  // asked about still the one actually at the terminal?" before touching
+  // React/session state. The resolved token/null is still returned either
+  // way so A's own retry (and only A's) can complete or fail on its own
+  // terms — this only gates what gets written into shared terminal state.
+  const activeEmployeeRef = useRef(activeEmployee);
+  activeEmployeeRef.current = activeEmployee;
+
   // Task 209.56C — the Employee-scoped access token above (activeEmployeeToken)
   // has no refresh token of its own (see selectEmployee's comment in
   // use-auth.ts) and a 15-minute TTL, so a shift running longer than that —
@@ -377,20 +398,28 @@ export default function TerminalPage() {
   // the cart/branch/Branch-Account session) when the Employee itself can no
   // longer be selected, e.g. deactivated mid-shift.
   const refreshEmployeeToken = useCallback(async (): Promise<string | null> => {
-    if (!activeEmployee) return null;
+    const employeeAtCallTime = activeEmployee;
+    if (!employeeAtCallTime) return null;
     try {
       // POS-PERF-P30 — re-mints via refresh-employee-session (no PIN
       // re-entry), not selectEmployee: the latter now requires a freshly
       // consumed PIN-verification token, which this silent background
       // refresh never has. refreshEmployeeSession only succeeds while this
       // employee still has an open attendance record at this branch.
-      const selected = await refreshEmployeeSession(activeEmployee.id);
-      setActiveEmployeeToken(selected.accessToken);
+      const selected = await refreshEmployeeSession(employeeAtCallTime.id);
+      // Stale-closure guard (see activeEmployeeRef's doc comment above) —
+      // only commit this to state if this employee is still the one
+      // actually at the terminal right now.
+      if (activeEmployeeRef.current?.id === employeeAtCallTime.id) {
+        setActiveEmployeeToken(selected.accessToken);
+      }
       return selected.accessToken;
     } catch {
-      setActiveEmployee(null);
-      setActiveEmployeeToken(null);
-      clearTerminalOperator();
+      if (activeEmployeeRef.current?.id === employeeAtCallTime.id) {
+        setActiveEmployee(null);
+        setActiveEmployeeToken(null);
+        clearTerminalOperator();
+      }
       return null;
     }
   }, [activeEmployee, refreshEmployeeSession, clearTerminalOperator]);

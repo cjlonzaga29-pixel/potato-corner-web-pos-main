@@ -2758,6 +2758,71 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
   });
+
+  // POS-PERF-P30R — a mutation issued under cashier A's token closes over
+  // the refreshEmployeeToken callback that existed at THAT render. If A's
+  // request only 401s after the terminal has since switched to cashier B,
+  // that stale closure must not be allowed to resurrect A into B's active
+  // session (either by overwriting B's token with A's freshly-refreshed one,
+  // or by force-clearing B's session on A's unrelated failure) — see
+  // page.tsx's activeEmployeeRef guard.
+  it('a stale refresh captured before Switch Cashier never overwrites or logs out the cashier who replaced them', async () => {
+    function employeeSelectionFor(accessToken: string, employee: { id: string; firstName: string; lastName: string }) {
+      return {
+        user: { id: employee.id, role: 'staff' as const, email: null, firstName: employee.firstName, lastName: employee.lastName, branchIds: ['branch-1'] },
+        accessToken,
+      };
+    }
+
+    mockSelectEmployee
+      .mockResolvedValueOnce(employeeSelectionFor('employee-a-token-1', { id: 'employee-a', firstName: 'Alice', lastName: 'A' }))
+      .mockResolvedValueOnce(employeeSelectionFor('employee-b-token-1', { id: 'employee-b', firstName: 'Bob', lastName: 'B' }));
+    // Alice's OWN refresh is legitimately still valid (e.g. she's still
+    // clocked in) — the fix must not depend on it failing to be safe.
+    mockRefreshEmployeeSession.mockResolvedValueOnce(employeeSelectionFor('employee-a-token-2', { id: 'employee-a', firstName: 'Alice', lastName: 'A' }));
+
+    render(<TerminalPage />);
+
+    // Alice is selected first.
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Alice A', verification_token: 'verify-token-a', expires_at: '2026-01-01T00:05:00.000Z' });
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1111' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    await screen.findByText('Alice A');
+    fireEvent.click(screen.getByRole('button', { name: /Continue as Alice/ }));
+    await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-a-token-1', expect.any(Function)));
+
+    // Capture the refreshEmployeeToken closure bound to Alice BEFORE switching.
+    const staleRefreshEmployeeToken = mockUseCreateTransaction.mock.calls.at(-1)?.[1] as () => Promise<string | null>;
+
+    // Switch Cashier — drops back to the PIN screen without clocking Alice out.
+    fireEvent.click(screen.getByRole('button', { name: 'Switch Cashier' }));
+    await screen.findByText("Who's working?");
+
+    // Bob is selected next.
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Bob B', verification_token: 'verify-token-b', expires_at: '2026-01-01T00:05:00.000Z' });
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '2222' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    await screen.findByText('Bob B');
+    fireEvent.click(screen.getByRole('button', { name: /Continue as Bob/ }));
+    await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-b-token-1', expect.any(Function)));
+
+    // Alice's abandoned request's 401 retry finally resolves, using the
+    // STALE closure captured while she was still the active cashier.
+    let staleResult: string | null = 'unset' as unknown as string | null;
+    await act(async () => {
+      staleResult = await staleRefreshEmployeeToken();
+    });
+
+    // Alice's own retry still legitimately succeeds on its own terms...
+    expect(mockRefreshEmployeeSession).toHaveBeenCalledWith('employee-a');
+    expect(staleResult).toBe('employee-a-token-2');
+    // ...but Bob's active session is untouched: he's still shown as the
+    // current cashier, never bounced back to the PIN screen, and the token
+    // threaded into the next mutation is still his, never Alice's.
+    expect(screen.getByText('Bob B')).toBeInTheDocument();
+    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-b-token-1', expect.any(Function));
+  });
 });
 
 // Task 209.27 — a still clocked-in Employee must survive navigating away from

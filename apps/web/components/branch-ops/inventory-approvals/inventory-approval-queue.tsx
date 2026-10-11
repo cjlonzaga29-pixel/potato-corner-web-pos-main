@@ -45,14 +45,16 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
       // itself: Pending/Returned/Cancelled never apply one, and even an
       // Approved zero-variance physical count applies none (see
       // applyApprovedRequest's placeholder movementId in
-      // inventory-approval.service.ts). Never fabricated — read directly
-      // from whether applied_movement_id resolves to a real movement.
+      // inventory-approval.service.ts). Read from the server-computed
+      // stock_changed flag, never re-derived from applied_movement_id's
+      // truthiness/equality on the client.
       id: 'stock_change',
       header: 'Stock Change',
       cell: ({ row }) => {
         const r = row.original;
-        const noStockChange = r.status !== 'APPROVED' || !r.applied_movement_id || r.applied_movement_id === r.id;
-        return noStockChange ? <span className="text-xs text-muted-foreground">No stock change</span> : <Badge variant="active">Applied</Badge>;
+        if (r.stock_changed) return <Badge variant="active">Applied</Badge>;
+        if (r.status === 'APPROVED') return <span className="text-xs text-muted-foreground">No quantity change</span>;
+        return <span className="text-xs text-muted-foreground">No stock change</span>;
       },
     },
     {

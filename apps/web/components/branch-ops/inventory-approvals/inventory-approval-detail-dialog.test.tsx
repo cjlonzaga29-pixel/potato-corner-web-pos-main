@@ -80,6 +80,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     reviewed_at: null,
     return_reason: null,
     applied_movement_id: null,
+    stock_changed: false,
     cancelled_by_user_id: null,
     cancelled_by_name: null,
     cancelled_at: null,
@@ -173,6 +174,42 @@ describe('InventoryApprovalDetailDialog — Recorded By / Identity Status', () =
     });
 
     expect(screen.getByText('Maria Concepcion Dela Cruz-Santos Bautista')).toBeInTheDocument();
+  });
+});
+
+describe('InventoryApprovalDetailDialog — stock-change semantics (POS-PERF-P31R)', () => {
+  it('shows a link-free "Not yet applied to stock" banner while PENDING, never "No stock change"', () => {
+    renderWithDetail({ status: 'PENDING', applied_movement_id: null, stock_changed: false });
+    expect(screen.getByText('Not yet applied to stock.')).toBeInTheDocument();
+    expect(screen.queryByText('No stock change.')).not.toBeInTheDocument();
+  });
+
+  it('shows "No stock change." for a RETURNED request regardless of any applied_movement_id value', () => {
+    renderWithDetail({ status: 'RETURNED', applied_movement_id: null, stock_changed: false, return_reason: 'fix quantity' });
+    expect(screen.getByText('No stock change.')).toBeInTheDocument();
+  });
+
+  it('shows "No stock change." for a CANCELLED request', () => {
+    renderWithDetail({ status: 'CANCELLED', applied_movement_id: null, stock_changed: false, cancel_reason: 'duplicate entry' });
+    expect(screen.getByText('No stock change.')).toBeInTheDocument();
+  });
+
+  it('shows the zero-variance message (not a generic "No stock change") for an APPROVED physical count whose applied_movement_id is the documented placeholder (equal to its own id)', () => {
+    renderWithDetail({
+      status: 'APPROVED',
+      operation: 'PHYSICAL_COUNT',
+      applied_movement_id: 'req-1', // placeholder: applyApprovedRequest returns movementId: request.id
+      stock_changed: false,
+    });
+    expect(screen.getByText('No quantity change — the physical count matched stock on hand.')).toBeInTheDocument();
+    expect(screen.queryByText('No stock change.')).not.toBeInTheDocument();
+  });
+
+  it('shows neither banner for an APPROVED request with a real applied movement (stock_changed true)', () => {
+    renderWithDetail({ status: 'APPROVED', applied_movement_id: 'movement-xyz', stock_changed: true });
+    expect(screen.queryByText('No stock change.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/No quantity change/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Not yet applied to stock.')).not.toBeInTheDocument();
   });
 });
 

@@ -191,6 +191,12 @@ async function toResponse(request: RequestRow) {
     reviewed_at: request.reviewedAt?.toISOString() ?? null,
     return_reason: request.returnReason,
     applied_movement_id: request.appliedMovementId,
+    // Explicit server-computed flag — the client must never re-derive this
+    // from applied_movement_id's truthiness or its equality with id itself
+    // (the zero-variance physical-count placeholder is request.id, see
+    // applyApprovedRequest). Only an APPROVED request with a real movement
+    // id actually changed stock.
+    stock_changed: request.status === 'APPROVED' && request.appliedMovementId !== null && request.appliedMovementId !== request.id,
 
     cancelled_by_user_id: request.cancelledByUserId,
     cancelled_by_name: request.cancelledByUserId ? nameById.get(request.cancelledByUserId) ?? null : null,

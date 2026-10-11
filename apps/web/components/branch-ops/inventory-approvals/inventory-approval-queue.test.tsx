@@ -64,6 +64,7 @@ function request(overrides: Record<string, unknown> = {}) {
     reviewed_at: null,
     return_reason: null,
     applied_movement_id: null,
+    stock_changed: false,
     cancelled_by_user_id: null,
     cancelled_by_name: null,
     cancelled_at: null,
@@ -196,5 +197,39 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
     expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
     expect(row.getByRole('button', { name: 'Review' })).toBeInTheDocument();
+  });
+});
+
+describe('InventoryApprovalQueue — Stock Change column', () => {
+  // POS-PERF-P31R — must read the server-computed stock_changed flag, never
+  // re-derive "did this change stock" from applied_movement_id's truthiness
+  // or its equality with the request's own id (the zero-variance
+  // placeholder) on the client.
+  it('shows "Applied" only when stock_changed is true', () => {
+    renderWithRequests([
+      request({ status: 'APPROVED', applied_movement_id: 'movement-1', stock_changed: true }),
+    ]);
+    const row = within(dataRow());
+    expect(row.getByText('Applied')).toBeInTheDocument();
+  });
+
+  it('shows "No quantity change" for an APPROVED request with stock_changed false (zero-variance physical count)', () => {
+    renderWithRequests([
+      request({
+        status: 'APPROVED',
+        operation: 'PHYSICAL_COUNT',
+        applied_movement_id: 'req-1', // the documented placeholder: equals the request's own id
+        stock_changed: false,
+      }),
+    ]);
+    const row = within(dataRow());
+    expect(row.getByText('No quantity change')).toBeInTheDocument();
+    expect(row.queryByText('Applied')).not.toBeInTheDocument();
+  });
+
+  it('shows "No stock change" for a non-APPROVED request regardless of any applied_movement_id value', () => {
+    renderWithRequests([request({ status: 'RETURNED', applied_movement_id: null, stock_changed: false })]);
+    const row = within(dataRow());
+    expect(row.getByText('No stock change')).toBeInTheDocument();
   });
 });

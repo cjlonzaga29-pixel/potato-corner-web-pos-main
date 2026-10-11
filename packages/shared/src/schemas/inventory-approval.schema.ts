@@ -113,6 +113,11 @@ export const inventoryApprovalRequestResponseSchema = z.object({
   reviewed_at: z.iso.datetime().nullable(),
   return_reason: z.string().nullable(),
   applied_movement_id: z.string().nullable(),
+  // True only for an APPROVED request whose applied_movement_id is a real
+  // movement — never derived client-side from applied_movement_id's
+  // truthiness, which is also non-null for the zero-variance physical-count
+  // placeholder (applied_movement_id === id).
+  stock_changed: z.boolean(),
 
   cancelled_by_user_id: z.uuid().nullable(),
   cancelled_by_name: z.string().nullable(),

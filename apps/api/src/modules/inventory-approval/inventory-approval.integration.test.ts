@@ -821,6 +821,7 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     );
     const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
     expect(approved.applied_movement_id).not.toBeNull();
+    expect(approved.stock_changed).toBe(true);
 
     const history = await universalInventoryService.getStockMovements(branchId, { page: 1, limit: 50 });
     const movement = history.movements.find((m) => m.id === approved.applied_movement_id);
@@ -845,8 +846,39 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
     const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
     expect(approved.status).toBe('APPROVED');
     expect(approved.applied_movement_id).toBe(approved.id); // the documented placeholder, not a real movement id
+    // POS-PERF-P31R — the explicit server-computed flag must read false here
+    // even though applied_movement_id is non-null (it's the placeholder) and
+    // status is APPROVED; the client must never re-derive this itself.
+    expect(approved.stock_changed).toBe(false);
 
     const history = await universalInventoryService.getStockMovements(branchId, { page: 1, limit: 50 });
     expect(history.movements.find((m) => m.id === approved.applied_movement_id)).toBeUndefined();
+  });
+
+  // POS-PERF-P31R — status-transition matrix for the stock_changed flag:
+  // Pending/Returned/Cancelled must never read true regardless of any
+  // applied_movement_id value (defense against a future bug that sets one
+  // prematurely); only an APPROVED request with a real movement does.
+  it('stock_changed is false for every non-APPROVED status, and true only for an APPROVED request with a real movement', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 2, reasonCode: 'count_correction', staffPin: staffPinFixture() },
+      actor('branch', branchUserId, [branchId]),
+    );
+    expect(request.status).toBe('PENDING');
+    expect(request.stock_changed).toBe(false);
+
+    const returned = await inventoryApprovalService.returnForCorrection(request.id, 'fix notes', actor('supervisor', supervisorUserId, [branchId]));
+    expect(returned.status).toBe('RETURNED');
+    expect(returned.stock_changed).toBe(false);
+
+    const corrected = await inventoryApprovalService.correct(
+      returned.id,
+      { quantityDelta: 2, reasonCode: 'count_correction' },
+      actor('branch', branchUserId, [branchId]),
+    );
+
+    const cancelled = await inventoryApprovalService.cancel(corrected.id, 'no longer needed', actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(cancelled.status).toBe('CANCELLED');
+    expect(cancelled.stock_changed).toBe(false);
   });
 });

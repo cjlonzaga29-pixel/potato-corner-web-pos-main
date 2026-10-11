@@ -337,11 +337,13 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
   const current = data;
   const isSubmitter = user?.id === current.submitted_by_user_id;
   const quantityField = quantityFieldOf(current);
-  // Zero-variance physical-count approvals apply no stock movement at all
-  // (applyApprovedRequest returns movementId: request.id as a placeholder —
-  // see inventory-approval.service.ts) — that must read as "no stock
-  // change," never as a fabricated applied movement.
-  const hasNoStockChange = current.status !== 'APPROVED' || !current.applied_movement_id || current.applied_movement_id === current.id;
+  // Server-computed: true only for an APPROVED request with a real applied
+  // movement. Zero-variance physical-count approvals apply no stock movement
+  // at all (applyApprovedRequest returns movementId: request.id as a
+  // placeholder — see inventory-approval.service.ts) — never re-derive this
+  // from applied_movement_id's truthiness/equality on the client.
+  const hasNoStockChange = !current.stock_changed;
+  const isZeroVarianceApproval = current.status === 'APPROVED' && !current.stock_changed;
 
   return (
     <Sheet open={Boolean(id)} onOpenChange={handleOpenChange}>
@@ -357,7 +359,9 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
           <p className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-900">Not yet applied to stock.</p>
         )}
         {hasNoStockChange && current.status !== 'PENDING' && (
-          <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">No stock change.</p>
+          <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+            {isZeroVarianceApproval ? 'No quantity change — the physical count matched stock on hand.' : 'No stock change.'}
+          </p>
         )}
 
         <div className="grid grid-cols-2 gap-3">

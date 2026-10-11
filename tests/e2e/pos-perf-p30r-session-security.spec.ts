@@ -116,23 +116,24 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
 
   test('2. A wrong PIN fails without unlocking POS', async () => {
     await terminalPage.goto('/branch/terminal', { waitUntil: 'networkidle' });
-    await expect(terminalPage.getByText("Who's working?")).toBeVisible({ timeout: NAV_TIMEOUT });
+    await expect(terminalPage.getByText("Open POS Terminal")).toBeVisible({ timeout: NAV_TIMEOUT });
 
     await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill('000000');
-    await terminalPage.getByRole('button', { name: 'Verify PIN' }).click();
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
     await expect(terminalPage.getByText('Invalid PIN')).toBeVisible({ timeout: 10_000 });
 
     // Never reveals a resolved identity, and the catalog/clock-in flow never appears.
     await expect(terminalPage.getByText(/Continue as/)).toHaveCount(0);
-    await expect(terminalPage.getByText("Who's working?")).toBeVisible();
+    await expect(terminalPage.getByText("Open POS Terminal")).toBeVisible();
   });
 
   test('3. Correct PIN identifies the staff member and Clock In opens the terminal', async () => {
     await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill(jennyPin);
-    await terminalPage.getByRole('button', { name: 'Verify PIN' }).click();
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
     await expect(terminalPage.getByText('Jenny Santos')).toBeVisible({ timeout: 10_000 });
 
-    await terminalPage.getByRole('button', { name: /Continue as Jenny/ }).click();
+    // Jenny has no open attendance record yet — the primary action must say so.
+    await terminalPage.getByRole('button', { name: /Clock In & Open POS/ }).click();
     await expect(terminalPage.getByText('Clock In to Start Selling')).toBeVisible({ timeout: NAV_TIMEOUT });
 
     await terminalPage.getByRole('button', { name: 'Clock In', exact: true }).click();
@@ -143,11 +144,11 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
   test('4. Already-clocked-in staff continues without a duplicate attendance record', async () => {
     await terminalPage.reload({ waitUntil: 'networkidle' });
     // The terminal-operator sessionStorage hint re-validates against live
-    // attendance and restores Jenny directly — "Who's working?" must never
+    // attendance and restores Jenny directly — "Open POS Terminal" must never
     // flash back up for a still-clocked-in operator (Task 209.27).
     await expect(terminalPage.getByText('Current Cashier:')).toBeVisible({ timeout: NAV_TIMEOUT });
     await expect(terminalPage.getByText('Jenny Santos')).toBeVisible();
-    await expect(terminalPage.getByText("Who's working?")).toHaveCount(0);
+    await expect(terminalPage.getByText("Open POS Terminal")).toHaveCount(0);
 
     const records = await authedGet<{ records: { clock_out_server_time: string | null }[] }>(
       terminalPage.request,
@@ -160,7 +161,7 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
 
   test('5. Switch Cashier swaps identity without clocking out the prior cashier', async () => {
     await terminalPage.getByRole('button', { name: 'Switch Cashier' }).click();
-    await expect(terminalPage.getByText("Who's working?")).toBeVisible({ timeout: 10_000 });
+    await expect(terminalPage.getByText("Open POS Terminal")).toBeVisible({ timeout: 10_000 });
 
     // Jenny's attendance must still be open — locking/switching is never a clock-out.
     const afterSwitch = await authedGet<{ records: { clock_out_server_time: string | null }[] }>(
@@ -171,9 +172,10 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
     expect(afterSwitch.data?.records.filter((r) => r.clock_out_server_time === null).length).toBe(1);
 
     await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill(bobPin);
-    await terminalPage.getByRole('button', { name: 'Verify PIN' }).click();
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
     await expect(terminalPage.getByText(/Bob Cashier/)).toBeVisible({ timeout: 10_000 });
-    await terminalPage.getByRole('button', { name: /Continue as Bob/ }).click();
+    // Bob has no open attendance record yet either.
+    await terminalPage.getByRole('button', { name: /Clock In & Open POS/ }).click();
 
     await expect(terminalPage.getByText('Clock In to Start Selling')).toBeVisible({ timeout: NAV_TIMEOUT });
     await terminalPage.getByRole('button', { name: 'Clock In', exact: true }).click();
@@ -279,11 +281,12 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
     expect(setResult.status).toBe(200);
 
     await terminalPage.goto('/branch/terminal', { waitUntil: 'networkidle' });
-    await expect(terminalPage.getByText("Who's working?")).toBeVisible({ timeout: NAV_TIMEOUT });
+    await expect(terminalPage.getByText("Open POS Terminal")).toBeVisible({ timeout: NAV_TIMEOUT });
     await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill(freshPin);
-    await terminalPage.getByRole('button', { name: 'Verify PIN' }).click();
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
     await expect(terminalPage.getByText('Jenny Santos')).toBeVisible({ timeout: 10_000 });
-    await terminalPage.getByRole('button', { name: /Continue as Jenny/ }).click();
+    // Jenny has no open attendance record yet at this point in the test.
+    await terminalPage.getByRole('button', { name: /Clock In & Open POS/ }).click();
     await expect(terminalPage.getByText('Clock In to Start Selling')).toBeVisible({ timeout: NAV_TIMEOUT });
     await terminalPage.getByRole('button', { name: 'Clock In', exact: true }).click();
     await expect(terminalPage.getByText('Current Cashier:')).toBeVisible({ timeout: NAV_TIMEOUT });
@@ -294,7 +297,7 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
     // dispatching any of those events for long enough must trigger it.
     await terminalPage.waitForTimeout(5 * 60 * 1000 + 20_000);
 
-    await expect(terminalPage.getByText("Who's working?")).toBeVisible({ timeout: 10_000 });
+    await expect(terminalPage.getByText("Open POS Terminal")).toBeVisible({ timeout: 10_000 });
     // Idle lock is a terminal-local lock, never a clock-out — attendance
     // must still be open after the lock fires.
     const stillClockedIn = await authedGet<{ records: { clock_out_server_time: string | null }[] }>(
@@ -306,7 +309,14 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
 
     // The idle-locked screen must require the PIN again — a wrong PIN still fails here too.
     await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill('000000');
-    await terminalPage.getByRole('button', { name: 'Verify PIN' }).click();
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
     await expect(terminalPage.getByText('Invalid PIN')).toBeVisible({ timeout: 10_000 });
+
+    // Jenny's own PIN, re-entered on the screen her own idle timeout locked —
+    // the primary action must read "Unlock POS", not a generic clock-in/
+    // continue label, since the server confirms she's still clocked in.
+    await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill(freshPin);
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
+    await expect(terminalPage.getByRole('button', { name: 'Unlock POS' })).toBeVisible({ timeout: 10_000 });
   });
 });

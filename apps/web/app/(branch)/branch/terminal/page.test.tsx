@@ -222,6 +222,12 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
 // query hook it touches rather than rendering inside a real
 // QueryClientProvider, so useDiscountPolicy must be mocked too or the
 // unmocked real useQuery call would throw ("No QueryClient set").
+// POS-PERF-P32 — the redesigned locked screen shows the branch name; same
+// "mock every query hook, no real QueryClientProvider" rule as useDiscountPolicy above.
+vi.mock('@/hooks/queries/use-branches', () => ({
+  useBranch: () => ({ data: { id: 'branch-1', name: 'Main Branch' }, isLoading: false }),
+}));
+
 vi.mock('@/hooks/queries/use-settings', () => ({
   useDiscountPolicy: () => ({
     data: {
@@ -2528,13 +2534,19 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     };
   }
 
-  /** Types a PIN, verifies it, and confirms "Continue as Jane" — the two-step flow Part C's spec describes. */
+  /** Types a PIN, verifies it, and confirms "Clock In & Open POS" (this describe block's attendance mock says not yet clocked in — Part C's two-step flow). */
   async function verifyAndConfirmPin(verificationToken = 'verify-token-1') {
-    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Jane Doe', verification_token: verificationToken, expires_at: '2026-01-01T00:05:00.000Z' });
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_id: 'employee-1',
+      staff_name: 'Jane Doe',
+      is_clocked_in: false,
+      verification_token: verificationToken,
+      expires_at: '2026-01-01T00:05:00.000Z',
+    });
     fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByText('Jane Doe');
-    fireEvent.click(screen.getByRole('button', { name: /Continue as Jane/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Clock In & Open POS/ }));
   }
 
   beforeEach(() => {
@@ -2553,7 +2565,7 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
   it('shows "Who\'s working?" and a PIN entry field instead of the catalog or Clock In card', () => {
     render(<TerminalPage />);
 
-    expect(screen.getByText("Who's working?")).toBeInTheDocument();
+    expect(screen.getByText("Open POS Terminal")).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Enter 4-6 digit PIN')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clock In' })).not.toBeInTheDocument();
   });
@@ -2567,7 +2579,7 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('verify-token-1'));
     expect(await screen.findByText('This employee is not active')).toBeInTheDocument();
     // Still on the same page/component — no router navigation exists to assert against.
-    expect(screen.getByText("Who's working?")).toBeInTheDocument();
+    expect(screen.getByText("Open POS Terminal")).toBeInTheDocument();
     // A failed selection must not have touched the Branch Account's session either.
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
   });
@@ -2577,7 +2589,7 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
 
     render(<TerminalPage />);
     fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '0000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(await screen.findByText('Invalid PIN')).toBeInTheDocument();
     expect(screen.queryByText(/Continue as/)).not.toBeInTheDocument();
@@ -2635,7 +2647,7 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     // that finished, regardless of what the still-static isClockedIn mock
     // says (its guard runs before the isClockedIn check in the component).
     fireEvent.click(screen.getByRole('button', { name: /Clock Out/ }));
-    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(await screen.findByText("Open POS Terminal")).toBeInTheDocument();
     expect(mockClockOutMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ employee_id: 'employee-1', branch_id: 'branch-1' }));
     // useClockOut was wired to the Employee's token while the sale/clock-out
     // was active — checked via the full call history, not the last call,
@@ -2667,9 +2679,15 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
   }
 
   async function verifyAndConfirmPin() {
-    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Jane Doe', verification_token: 'verify-token-1', expires_at: '2026-01-01T00:05:00.000Z' });
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_id: 'employee-1',
+      staff_name: 'Jane Doe',
+      is_clocked_in: true,
+      verification_token: 'verify-token-1',
+      expires_at: '2026-01-01T00:05:00.000Z',
+    });
     fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByText('Jane Doe');
     fireEvent.click(screen.getByRole('button', { name: /Continue as Jane/ }));
   }
@@ -2753,7 +2771,7 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
     });
 
     expect(refreshed).toBeNull();
-    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(await screen.findByText("Open POS Terminal")).toBeInTheDocument();
     // A dead Employee token must never cascade into the Branch Account's own session.
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
@@ -2784,9 +2802,15 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
     render(<TerminalPage />);
 
     // Alice is selected first.
-    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Alice A', verification_token: 'verify-token-a', expires_at: '2026-01-01T00:05:00.000Z' });
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_id: 'employee-a',
+      staff_name: 'Alice A',
+      is_clocked_in: true,
+      verification_token: 'verify-token-a',
+      expires_at: '2026-01-01T00:05:00.000Z',
+    });
     fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1111' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByText('Alice A');
     fireEvent.click(screen.getByRole('button', { name: /Continue as Alice/ }));
     await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-a-token-1', expect.any(Function)));
@@ -2796,12 +2820,18 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
 
     // Switch Cashier — drops back to the PIN screen without clocking Alice out.
     fireEvent.click(screen.getByRole('button', { name: 'Switch Cashier' }));
-    await screen.findByText("Who's working?");
+    await screen.findByText("Open POS Terminal");
 
     // Bob is selected next.
-    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Bob B', verification_token: 'verify-token-b', expires_at: '2026-01-01T00:05:00.000Z' });
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_id: 'employee-b',
+      staff_name: 'Bob B',
+      is_clocked_in: true,
+      verification_token: 'verify-token-b',
+      expires_at: '2026-01-01T00:05:00.000Z',
+    });
     fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '2222' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByText('Bob B');
     fireEvent.click(screen.getByRole('button', { name: /Continue as Bob/ }));
     await waitFor(() => expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-b-token-1', expect.any(Function)));
@@ -2820,13 +2850,13 @@ describe('TerminalPage — Employee-scoped token silent refresh (Task 209.56C)',
     // current cashier, never bounced back to the PIN screen, and the token
     // threaded into the next mutation is still his, never Alice's.
     expect(screen.getByText('Bob B')).toBeInTheDocument();
-    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open POS Terminal")).not.toBeInTheDocument();
     expect(mockUseCreateTransaction).toHaveBeenLastCalledWith('employee-b-token-1', expect.any(Function));
   });
 });
 
 // Task 209.27 — a still clocked-in Employee must survive navigating away from
-// and back to /branch/terminal (and a refresh) without "Who's working?"
+// and back to /branch/terminal (and a refresh) without "Open POS Terminal"
 // reappearing. Each test below unmounts and re-renders TerminalPage to
 // simulate the route remount a real navigation causes, relying on the
 // sessionStorage-backed terminal-operator store (unlike component state,
@@ -2857,7 +2887,13 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
   afterEach(() => cleanup());
 
   async function clockInAsJane() {
-    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({ staff_name: 'Jane Doe', verification_token: 'verify-token-1', expires_at: '2026-01-01T00:05:00.000Z' });
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_id: 'employee-1',
+      staff_name: 'Jane Doe',
+      is_clocked_in: false,
+      verification_token: 'verify-token-1',
+      expires_at: '2026-01-01T00:05:00.000Z',
+    });
     mockSelectEmployee.mockResolvedValue({
       user: { id: 'employee-1', role: 'staff' as const, email: null, firstName: 'Jane', lastName: 'Doe', branchIds: ['branch-1'] },
       accessToken: 'employee-token',
@@ -2866,9 +2902,9 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
 
     const { rerender } = render(<TerminalPage />);
     fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByText('Jane Doe');
-    fireEvent.click(screen.getByRole('button', { name: /Continue as Jane/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Clock In & Open POS/ }));
     await waitFor(() => expect(mockSelectEmployee).toHaveBeenCalledWith('verify-token-1'));
     fireEvent.click(await screen.findByRole('button', { name: 'Clock In' }));
     await waitFor(() => expect(mockClockInMutateAsync).toHaveBeenCalled());
@@ -2888,7 +2924,7 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
     render(<TerminalPage />);
 
     expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open POS Terminal")).not.toBeInTheDocument();
   });
 
   it('3. survives multiple route round-trips (Dashboard -> Inventory -> Sales -> POS)', async () => {
@@ -2902,12 +2938,12 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
 
     render(<TerminalPage />);
     expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open POS Terminal")).not.toBeInTheDocument();
     cleanup();
 
     render(<TerminalPage />);
     expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open POS Terminal")).not.toBeInTheDocument();
   });
 
   it('4. a full refresh (fresh module state, only sessionStorage persists) still restores the operator', async () => {
@@ -2919,7 +2955,7 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
     render(<TerminalPage />);
 
     expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open POS Terminal")).not.toBeInTheDocument();
   });
 
   it('5. a direct visit to /branch/terminal restores the operator the same as a navigated return', async () => {
@@ -2940,7 +2976,7 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
 
     mockClockOutMutateAsync.mockResolvedValue({ id: 'attendance-1' });
     fireEvent.click(screen.getByRole('button', { name: /Clock Out/ }));
-    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(await screen.findByText("Open POS Terminal")).toBeInTheDocument();
     expect(useTerminalOperatorStore.getState().employeeId).toBeNull();
 
     // Clocked out — attendance now says so for anyone who mounts next.
@@ -2948,9 +2984,9 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
     cleanup();
 
     render(<TerminalPage />);
-    // Back to STATE 1 (Who's working?) — never straight back into the
+    // Back to STATE 1 (Open POS Terminal) — never straight back into the
     // catalog/cart, and no lingering Clock Out button for the old operator.
-    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(await screen.findByText("Open POS Terminal")).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Clock Out/ })).not.toBeInTheDocument();
   });
 
@@ -2967,7 +3003,7 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
 
     render(<TerminalPage />);
 
-    expect(await screen.findByText("Who's working?")).toBeInTheDocument();
+    expect(await screen.findByText("Open POS Terminal")).toBeInTheDocument();
     expect(useTerminalOperatorStore.getState().employeeId).toBeNull();
   });
 
@@ -2985,13 +3021,13 @@ describe('TerminalPage — active operator restoration across navigation (Task 2
 
     render(<TerminalPage />);
 
-    expect(screen.queryByText("Who's working?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open POS Terminal")).not.toBeInTheDocument();
   });
 });
 
 // Task 140 — POS Terminal entry point onto the existing Void/Refund workflow.
 // Uses a SUPERVISOR session (authorized, and not the `branch` role) so the
-// terminal renders directly without the "Who's working?" employee-selection
+// terminal renders directly without the "Open POS Terminal" employee-selection
 // step a `branch` account would hit first — that step is orthogonal to
 // button visibility, which is covered by role alone.
 describe('TerminalPage — Void / Refund Sale entry point (Task 140)', () => {

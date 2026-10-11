@@ -4,15 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
-import { Fingerprint, Loader2, Lock, LogOut, ShoppingCart } from 'lucide-react';
-import { ROLES } from '@potato-corner/shared';
+import { KeyRound, Loader2, Lock, LockKeyhole, LogOut, ShoppingCart, WifiOff } from 'lucide-react';
+import { ROLES, STAFF_PIN_MAX_LENGTH, STAFF_PIN_MIN_LENGTH } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
+import { PinKeypad } from '@/components/pos/pin-keypad';
 import { ProductCard } from '@/components/pos/product-card';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
@@ -35,6 +35,7 @@ import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync, useCheckCartAvailability } from '@/hooks/queries/use-products';
 import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
+import { useBranch } from '@/hooks/queries/use-branches';
 import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useClockInLocation } from '@/hooks/use-clock-in-location';
 import { useVerifyPosPin } from '@/hooks/queries/use-staff-pin';
@@ -337,12 +338,24 @@ export default function TerminalPage() {
   // consumes the token). Closing/cancelling at any point clears both.
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
-  const [pinVerification, setPinVerification] = useState<{ staffName: string; token: string } | null>(null);
+  const [pinVerification, setPinVerification] = useState<{ staffId: string; staffName: string; isClockedIn: boolean; token: string } | null>(
+    null,
+  );
   const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
   const [isSelectingEmployee, setIsSelectingEmployee] = useState(false);
   const [activeEmployee, setActiveEmployee] = useState<{ id: string; firstName: string; lastName: string; role: string } | null>(null);
   const [activeEmployeeToken, setActiveEmployeeToken] = useState<string | null>(null);
+  // POS-PERF-P32 — which employee this locked screen belongs to and why it
+  // locked, so the confirmation step can tell "Unlock POS" (this exact
+  // employee walked away/idled out, cart was already empty, never clocked
+  // out) apart from "Continue as [name]" (a different already-clocked-in
+  // employee is taking over) — both server-verified, never guessed: the
+  // former also requires pinVerification.isClockedIn to be true. Cleared the
+  // moment a clock-out or a successful identity switch moves past it, so a
+  // stale lock reason never survives into the next employee's screen.
+  const [lockContext, setLockContext] = useState<{ reason: 'idle' | 'manual'; employeeId: string } | null>(null);
   const verifyPosPin = useVerifyPosPin(branchId);
+  const { data: branch } = useBranch(branchId);
 
   const {
     operatorId,
@@ -448,18 +461,32 @@ export default function TerminalPage() {
   const { isLocating, locationError, isPermissionDenied, getLocation } = useClockInLocation();
   const [isClockingOut, setIsClockingOut] = useState(false);
 
+  // POS-PERF-P32 — synchronous double-submit guard, same reasoning as
+  // chargeTokenRef elsewhere in this file: verifyPosPin.isPending is a
+  // useMutation snapshot that only updates on the next render, so two fast
+  // taps/Enter-presses issued before that re-render commits could both pass
+  // the `isPending` check and fire two verify calls under one PIN entry.
+  const isVerifyingPinRef = useRef(false);
+
   /** POS-PERF-P30 — step 2/3: staff enters their PIN; server resolves + verifies branch eligibility. PIN is cleared from state the instant this call settles, success or failure. */
   async function handlePinVerify() {
-    if (verifyPosPin.isPending || pin.length < 4) return;
+    if (isVerifyingPinRef.current || verifyPosPin.isPending || pin.length < STAFF_PIN_MIN_LENGTH) return;
+    isVerifyingPinRef.current = true;
     setPinError(null);
     try {
       const result = await verifyPosPin.mutateAsync(pin);
-      setPinVerification({ staffName: result.staff_name, token: result.verification_token });
+      // Never show a resolved identity for a different staff member's stale
+      // response — see chargeTokenRef's doc comment above for the same
+      // stale-closure class of bug. A verify call is one-shot and PIN-bound,
+      // so in practice this only guards against a slow first attempt
+      // resolving after the cashier already cleared/retried.
+      setPinVerification({ staffId: result.staff_id, staffName: result.staff_name, isClockedIn: result.is_clocked_in, token: result.verification_token });
     } catch (error) {
       setPinVerification(null);
       setPinError(error instanceof Error ? error.message : 'Invalid PIN');
     } finally {
       setPin('');
+      isVerifyingPinRef.current = false;
     }
   }
 
@@ -480,6 +507,9 @@ export default function TerminalPage() {
       setActiveEmployee({ id: selected.user.id, firstName: selected.user.firstName, lastName: selected.user.lastName, role: selected.user.role });
       setActiveEmployeeToken(selected.accessToken);
       setPinVerification(null);
+      // This lock is now resolved — whatever the next lock reason is (idle,
+      // Switch Cashier, clock-out) will set its own context from scratch.
+      setLockContext(null);
     } catch (error) {
       setSelectEmployeeError(error instanceof Error ? error.message : 'Could not start employee session');
       setPinVerification(null);
@@ -1008,12 +1038,18 @@ export default function TerminalPage() {
    * first. Not available to a genuine `staff` login (it has nowhere else
    * to go — same reasoning as handleClockOut's isBranchAccount guard).
    */
-  function handleLockTerminal() {
+  function handleLockTerminal(reason: 'idle' | 'manual' = 'manual') {
     if (!isBranchAccount || isChargeInFlight) return;
     if (items.length > 0) {
       toast.error('Finish or clear the current cart before switching cashiers.');
       return;
     }
+    // POS-PERF-P32 — captured before clearing activeEmployee: the locked
+    // screen's "Unlock POS" label only applies when this exact employee
+    // (who we already know is clocked in, since they were the live
+    // operator) comes back on an idle timeout — never on a deliberate
+    // Switch Cashier, which is explicitly a handoff to someone else.
+    if (activeEmployee) setLockContext({ reason, employeeId: activeEmployee.id });
     setActiveEmployee(null);
     setActiveEmployeeToken(null);
     clearTerminalOperator();
@@ -1038,6 +1074,10 @@ export default function TerminalPage() {
       setActiveEmployee(null);
       setActiveEmployeeToken(null);
       clearTerminalOperator();
+      // Clocked out, not merely locked — the next PIN entry for this
+      // employee must resolve to "Clock In & Open POS" again, never a
+      // stale "Unlock POS" left over from before the clock-out.
+      setLockContext(null);
     }
   }
 
@@ -1051,7 +1091,7 @@ export default function TerminalPage() {
     let timer: ReturnType<typeof setTimeout>;
     const reset = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => handleLockTerminal(), IDLE_LOCK_MS);
+      timer = setTimeout(() => handleLockTerminal('idle'), IDLE_LOCK_MS);
     };
     const events = ['pointerdown', 'keydown', 'touchstart'] as const;
     events.forEach((event) => window.addEventListener(event, reset));
@@ -2247,69 +2287,118 @@ export default function TerminalPage() {
         </div>
       );
     }
+
+    // POS-PERF-P32 — the one locked screen covers three distinct real
+    // states (never clocked in yet, already clocked in and picking back
+    // up, or this exact cashier's own idle-locked session) but they are
+    // ALL resolved from server-verified facts only: pinVerification.isClockedIn
+    // comes from the verify-pos response, and the "idle unlock" case
+    // additionally requires lockContext to say THIS screen locked because
+    // of inactivity for THIS SAME staff id — never inferred or guessed
+    // client-side.
+    const isIdleUnlockForThisStaff =
+      pinVerification !== null &&
+      pinVerification.isClockedIn &&
+      lockContext?.reason === 'idle' &&
+      lockContext.employeeId === pinVerification.staffId;
+    const primaryActionLabel = !pinVerification
+      ? 'Continue'
+      : isIdleUnlockForThisStaff
+        ? 'Unlock POS'
+        : pinVerification.isClockedIn
+          ? `Continue as ${pinVerification.staffName.split(' ')[0]}`
+          : 'Clock In & Open POS';
+
     return (
-      <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-4 p-6">
-        <Fingerprint className="h-10 w-10 text-primary" />
-        <div className="text-center">
-          <h1 className="app-title font-bold">Who&apos;s working?</h1>
-          <p className="text-sm text-muted-foreground">Enter your PIN to identify yourself at this terminal.</p>
-        </div>
-
-        {selectEmployeeError && (
-          <Alert variant="destructive" className="w-full">
-            <AlertTitle>Could not start employee session</AlertTitle>
-            <AlertDescription>{selectEmployeeError}</AlertDescription>
-          </Alert>
-        )}
-
-        {pinVerification ? (
-          <Card className="w-full">
-            <CardContent className="space-y-4 p-6 text-center">
-              <p className="text-sm text-muted-foreground">Verified</p>
-              <p className="text-xl font-semibold">{pinVerification.staffName}</p>
-              <div className="flex flex-col gap-2">
-                <Button className="w-full touch-target" size="lg" onClick={() => void handleConfirmIdentity()} disabled={isSelectingEmployee}>
-                  {isSelectingEmployee && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Continue as {pinVerification.staffName.split(' ')[0]}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={handleCancelPinVerification} disabled={isSelectingEmployee}>
-                  Not me — enter a different PIN
-                </Button>
+      <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-4 p-4 sm:p-6">
+        <Card className="w-full">
+          <CardContent className="flex flex-col items-center gap-4 p-5 sm:p-6">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <LockKeyhole className="h-7 w-7" aria-hidden="true" />
+            </div>
+            <div className="space-y-1.5 text-center">
+              <h1 className="app-title font-bold">Open POS Terminal</h1>
+              <div className="flex items-center justify-center gap-1.5 text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">{branch?.name ?? 'This branch'}</span>
+                <span aria-hidden="true">·</span>
+                <Badge variant="secondary" className="gap-1">
+                  <Lock className="h-3 w-3" aria-hidden="true" />
+                  Terminal Locked
+                </Badge>
               </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <Card className="w-full">
-            <CardContent className="space-y-4 p-6">
-              <Input
-                type="password"
-                inputMode="numeric"
-                maxLength={6}
-                autoFocus
-                placeholder="Enter 4-6 digit PIN"
-                value={pin}
-                onChange={(e) => {
-                  setPinError(null);
-                  setPin(e.target.value.replace(/\D/g, ''));
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void handlePinVerify();
-                }}
-                className="text-center text-lg tracking-widest"
-              />
-              {pinError && <p className="text-sm text-destructive">{pinError}</p>}
-              <Button
-                className="w-full touch-target"
-                size="lg"
-                onClick={() => void handlePinVerify()}
-                disabled={verifyPosPin.isPending || pin.length < 4}
-              >
-                {verifyPosPin.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Verify PIN
-              </Button>
-            </CardContent>
-          </Card>
-        )}
+              {!isOnline && (
+                <p className="flex items-center justify-center gap-1 text-xs font-medium text-warning">
+                  <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
+                  Offline — PIN verification needs a connection.
+                </p>
+              )}
+            </div>
+
+            {selectEmployeeError && (
+              <Alert variant="destructive" className="w-full" role="alert">
+                <AlertTitle>Could not start employee session</AlertTitle>
+                <AlertDescription>{selectEmployeeError}</AlertDescription>
+              </Alert>
+            )}
+
+            {pinVerification ? (
+              <div className="flex w-full flex-col items-center gap-4">
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground">Verified</p>
+                  <p className="text-xl font-semibold">{pinVerification.staffName}</p>
+                </div>
+                <div className="flex w-full flex-col gap-2">
+                  <Button
+                    className="w-full touch-target"
+                    size="lg"
+                    onClick={() => void handleConfirmIdentity()}
+                    disabled={isSelectingEmployee}
+                  >
+                    {isSelectingEmployee && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                    {primaryActionLabel}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={handleCancelPinVerification} disabled={isSelectingEmployee}>
+                    Not me — enter a different PIN
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex w-full flex-col items-center gap-4">
+                <p className="text-sm text-muted-foreground">Enter your staff PIN to continue.</p>
+                <PinKeypad
+                  value={pin}
+                  maxLength={STAFF_PIN_MAX_LENGTH}
+                  disabled={verifyPosPin.isPending}
+                  onChange={(next) => {
+                    setPinError(null);
+                    setPin(next);
+                  }}
+                  onSubmit={() => void handlePinVerify()}
+                  aria-label="Staff PIN"
+                />
+                {pinError && (
+                  <p className="text-sm font-medium text-destructive" role="alert" aria-live="assertive">
+                    {pinError}
+                  </p>
+                )}
+                <Button
+                  type="button"
+                  className="w-full touch-target"
+                  size="lg"
+                  onClick={() => void handlePinVerify()}
+                  disabled={verifyPosPin.isPending || pin.length < STAFF_PIN_MIN_LENGTH}
+                >
+                  {verifyPosPin.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                  Continue
+                </Button>
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                  No PIN or forgot it? Ask your supervisor.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -2330,7 +2419,7 @@ export default function TerminalPage() {
       <div className="flex h-full items-center justify-center p-6">
         <Card className="w-full max-w-sm">
           <CardContent className="space-y-4 p-6 text-center">
-            <Fingerprint className="mx-auto h-10 w-10 text-primary" />
+            <KeyRound className="mx-auto h-10 w-10 text-primary" aria-hidden="true" />
             <div>
               <p className="text-lg font-semibold">Clock In to Start Selling</p>
               <p className="text-sm text-muted-foreground">You need to clock in before you can use the POS Terminal.</p>
@@ -2514,7 +2603,7 @@ export default function TerminalPage() {
               variant="outline"
               size="sm"
               className="touch-target gap-1.5"
-              onClick={handleLockTerminal}
+              onClick={() => handleLockTerminal('manual')}
               disabled={isChargeInFlight}
               title={items.length > 0 ? 'Finish or clear the current cart before switching cashiers' : undefined}
             >

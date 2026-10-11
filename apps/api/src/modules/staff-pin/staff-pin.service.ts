@@ -6,6 +6,7 @@ import { config } from '../../config/index.js';
 import { hmacSha256Hex, sha256Hex, randomOpaqueToken } from '../../lib/hash.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
+import { attendanceRepository } from '../attendance/attendance.repository.js';
 import { staffPinRepository } from './staff-pin.repository.js';
 import {
   StaffPinError,
@@ -264,7 +265,10 @@ export const staffPinService = {
    * verifyPin: every rejection path is INVALID_PIN, never revealing which
    * staff member (if any) the PIN belonged to.
    */
-  async verifyPosPin(draft: VerifyPosPinDraft, actor: JwtPayload): Promise<{ staff_name: string; verification_token: string; expires_at: string }> {
+  async verifyPosPin(
+    draft: VerifyPosPinDraft,
+    actor: JwtPayload,
+  ): Promise<{ staff_id: string; staff_name: string; is_clocked_in: boolean; verification_token: string; expires_at: string }> {
     const digest = hmacPin(draft.pin);
     const lookup = await staffPinRepository.findActiveBranchLookup(draft.branchId, digest);
     if (!lookup) {
@@ -300,8 +304,16 @@ export const staffPinService = {
       expiresAt,
     });
 
+    // POS-PERF-P32 — read-only attendance lookup, same "one open record"
+    // query the attendance module itself uses (findActiveRecord). Purely
+    // informational for the locked screen's button label; it never opens,
+    // closes, or otherwise mutates attendance.
+    const activeAttendance = await attendanceRepository.findActiveRecord(user.id);
+
     return {
+      staff_id: user.id,
       staff_name: `${user.firstName} ${user.lastName}`,
+      is_clocked_in: activeAttendance !== null,
       verification_token: token,
       expires_at: expiresAt.toISOString(),
     };

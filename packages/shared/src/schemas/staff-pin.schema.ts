@@ -8,6 +8,12 @@ import { inventoryApprovalOperationSchema } from './inventory-approval.schema.js
 // performed an operation an already-authenticated session is submitting.
 // ---------------------------------------------------------------------------
 
+// POS-PERF-P32 — single source of truth for the allowed PIN length, so any
+// PIN-entry UI (keypad, legacy text input) reads the real bounds instead of
+// hardcoding a possibly-conflicting min/max.
+export const STAFF_PIN_MIN_LENGTH = 4;
+export const STAFF_PIN_MAX_LENGTH = 6;
+
 const pinFormatSchema = z
   .string()
   .regex(/^\d{4,6}$/, 'PIN must be 4-6 digits');
@@ -42,7 +48,12 @@ export const verifyPosPinSchema = z.object({
 });
 
 export const staffPinVerifyPosResponseSchema = z.object({
+  staff_id: z.uuid(),
   staff_name: z.string(),
+  // POS-PERF-P32 — lets the locked screen show the correct primary action
+  // (Clock In & Open POS vs Continue as / Unlock POS) BEFORE the staff
+  // taps through, without the client guessing attendance state itself.
+  is_clocked_in: z.boolean(),
   verification_token: z.string(),
   expires_at: z.iso.datetime(),
 });

@@ -12,10 +12,11 @@ import { InventoryApprovalError } from './inventory-approval.types.js';
 import { UniversalInventoryError } from '../universal-inventory/universal-inventory.types.js';
 import { IngredientError } from '../inventory/inventory.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { adminOrSupervisor } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 import { resolveStaffPinAndEvidence } from '../universal-inventory/universal-inventory.router.js';
+import { consumeInventoryEvidence } from '../universal-inventory/universal-inventory.service.js';
 
 const proofUpload = multer({
   storage: multer.memoryStorage(),
@@ -67,7 +68,7 @@ const listQuerySchema = z.object({
 
 const router: Router = Router();
 
-router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = listQuerySchema.safeParse(req.query);
@@ -87,7 +88,7 @@ router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, as
   }
 });
 
-router.get('/:id', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await inventoryApprovalService.getRequestDetail(req.params.id as string, req.user);
@@ -165,7 +166,7 @@ router.post(
 router.post(
   '/:id/correct',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(correctInventoryApprovalRequestSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -173,34 +174,41 @@ router.post(
       if (!requireUser(req, res)) return;
       const body = req.body as z.infer<typeof correctInventoryApprovalRequestSchema>;
 
-      // POS-PERF-P29R2 — a correction to a RECEIVING/ADJUSTMENT/WASTE
-      // UNIVERSAL_ITEM request requires its own fresh verification_token/
-      // evidence_key, resolved the same way the original submission's was
-      // (see resolveStaffPinAndEvidence's doc comment in
-      // universal-inventory.router.ts). The detail lookup here also
-      // enforces branch access before any token/evidence consumption.
+      // POS-PERF-P29R2 / POS-PERF-P33 — a correction to a RECEIVING/
+      // ADJUSTMENT/WASTE UNIVERSAL_ITEM request requires its own fresh
+      // evidence_key (PIN verification is no longer required — this route
+      // is supervisor/admin-only now). If a verification_token is also
+      // supplied (an old cached client), it's still resolved and honored
+      // exactly as before via resolveStaffPinAndEvidence; otherwise only
+      // the evidence is consumed, independently of any PIN. The detail
+      // lookup here also enforces branch access before any evidence
+      // consumption.
       const detail = await inventoryApprovalService.getRequestDetail(req.params.id as string, req.user);
       let staffPin: Awaited<ReturnType<typeof resolveStaffPinAndEvidence>>['staffPin'] | undefined;
       let evidence: Awaited<ReturnType<typeof resolveStaffPinAndEvidence>>['evidence'] | undefined;
-      if (body.verification_token && body.evidence_key) {
+      if (body.evidence_key) {
         if (detail.target !== 'UNIVERSAL_ITEM' || !detail.inventory_item_id || !(detail.operation === 'RECEIVING' || detail.operation === 'ADJUSTMENT' || detail.operation === 'WASTE')) {
-          res.status(422).json({ data: null, error: { code: 'VERIFICATION_NOT_APPLICABLE', message: 'This request does not accept a PIN verification/evidence on correction' }, meta: null });
+          res.status(422).json({ data: null, error: { code: 'VERIFICATION_NOT_APPLICABLE', message: 'This request does not accept evidence on correction' }, meta: null });
           return;
         }
-        const resolved = await resolveStaffPinAndEvidence({
-          token: body.verification_token,
-          evidenceKey: body.evidence_key,
-          actorUserId: req.user.user_id,
-          branchId: detail.branch_id,
-          operation: detail.operation,
-          inventoryItemId: detail.inventory_item_id,
-          quantity: detail.operation === 'ADJUSTMENT' ? body.quantity_delta : body.entered_quantity,
-          unitId: body.entered_unit_id,
-          reasonCode: body.reason_code,
-          notes: body.notes,
-        });
-        staffPin = resolved.staffPin;
-        evidence = resolved.evidence;
+        if (body.verification_token) {
+          const resolved = await resolveStaffPinAndEvidence({
+            token: body.verification_token,
+            evidenceKey: body.evidence_key,
+            actorUserId: req.user.user_id,
+            branchId: detail.branch_id,
+            operation: detail.operation,
+            inventoryItemId: detail.inventory_item_id,
+            quantity: detail.operation === 'ADJUSTMENT' ? body.quantity_delta : body.entered_quantity,
+            unitId: body.entered_unit_id,
+            reasonCode: body.reason_code,
+            notes: body.notes,
+          });
+          staffPin = resolved.staffPin;
+          evidence = resolved.evidence;
+        } else {
+          evidence = await consumeInventoryEvidence(body.evidence_key, req.user.user_id, detail.branch_id);
+        }
       }
 
       const result = await inventoryApprovalService.correct(
@@ -215,6 +223,7 @@ router.post(
           reasonCode: body.reason_code,
           notes: body.notes,
           staffPin,
+          staffInvolvedName: body.staff_involved_name,
           evidence,
         },
         req.user,
@@ -229,7 +238,7 @@ router.post(
 router.post(
   '/:id/proof',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   handleUpload(proofUpload.single('proof')),
   async (req: Request, res: Response, next: NextFunction) => {

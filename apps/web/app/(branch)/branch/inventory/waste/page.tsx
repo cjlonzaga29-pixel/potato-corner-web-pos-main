@@ -1,7 +1,5 @@
-'use client';
-
-import { InventoryWasteForm } from '@/components/branch-ops/inventory-waste-form';
+import { InventoryManagedBySupervisorNotice } from '@/components/branch-ops/inventory-managed-by-supervisor-notice';
 
 export default function BranchWastePage() {
-  return <InventoryWasteForm basePath="/branch" />;
+  return <InventoryManagedBySupervisorNotice />;
 }

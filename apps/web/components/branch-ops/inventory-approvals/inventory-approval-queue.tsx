@@ -67,7 +67,8 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
         return <span className="tabular-nums">{value ?? '—'}</span>;
       },
     },
-    { id: 'recorded_by', header: 'Recorded By', cell: ({ row }) => row.original.responsible_staff_name ?? 'Not recorded' },
+    { id: 'recorded_by', header: 'Recorded By', cell: ({ row }) => row.original.submitted_by_name ?? 'Not recorded' },
+    { id: 'staff_involved', header: 'Staff Involved', cell: ({ row }) => row.original.responsible_staff_name ?? '—' },
     {
       id: 'pin_verified',
       header: 'Identity Status',

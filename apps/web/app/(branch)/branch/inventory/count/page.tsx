@@ -1,7 +1,5 @@
-'use client';
-
-import { InventoryCountForm } from '@/components/branch-ops/inventory-count-form';
+import { InventoryManagedBySupervisorNotice } from '@/components/branch-ops/inventory-managed-by-supervisor-notice';
 
 export default function BranchCountPage() {
-  return <InventoryCountForm basePath="/branch" />;
+  return <InventoryManagedBySupervisorNotice />;
 }

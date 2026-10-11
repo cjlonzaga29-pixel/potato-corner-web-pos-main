@@ -1,7 +1,5 @@
-'use client';
-
-import { InventoryStockInForm } from '@/components/branch-ops/inventory-stock-in-form';
+import { InventoryManagedBySupervisorNotice } from '@/components/branch-ops/inventory-managed-by-supervisor-notice';
 
 export default function BranchStockInPage() {
-  return <InventoryStockInForm basePath="/branch" />;
+  return <InventoryManagedBySupervisorNotice />;
 }

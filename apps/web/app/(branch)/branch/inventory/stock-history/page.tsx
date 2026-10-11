@@ -1,7 +1,5 @@
-'use client';
-
-import { StockHistoryView } from '@/components/branch-ops/stock-history/stock-history-view';
+import { InventoryManagedBySupervisorNotice } from '@/components/branch-ops/inventory-managed-by-supervisor-notice';
 
 export default function BranchInventoryStockHistoryPage() {
-  return <StockHistoryView basePath="/branch" />;
+  return <InventoryManagedBySupervisorNotice />;
 }

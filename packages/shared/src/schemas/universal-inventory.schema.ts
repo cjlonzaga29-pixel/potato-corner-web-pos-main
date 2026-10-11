@@ -182,13 +182,18 @@ const stockMovementTypeEnum = z.enum([
 ]);
 
 /**
- * POS-PERF-P29 — both fields are mandatory on receive/adjust/waste. A client
- * that omits either (e.g. an older frontend build) gets a standard
- * VALIDATION_ERROR from `validate()`, never a silent bypass of the
- * PIN-verification/evidence gate.
+ * POS-PERF-P29 — evidence_key is mandatory on receive/adjust/waste. A client
+ * that omits it gets a standard VALIDATION_ERROR from `validate()`, never a
+ * silent bypass of the evidence gate.
+ *
+ * POS-PERF-P33 — verification_token is now optional: inventory-PIN
+ * identification was only ever needed because the Branch Account login is
+ * shared/generic. These routes are supervisor/admin-only now, so the
+ * authenticated account itself is the identity — no PIN step is required.
+ * A client that still sends a token (old cached build) is still honored.
  */
 const staffPinVerifiedOperationFields = {
-  verification_token: z.string().min(1, 'PIN verification is required before this can be submitted'),
+  verification_token: z.string().min(1).optional(),
   evidence_key: z.uuid('A proof photo must be uploaded before this can be submitted'),
 };
 
@@ -212,6 +217,11 @@ export const adjustInventoryStockSchema = z.object({
   quantity_delta: z.number().refine((n) => n !== 0, 'quantity_delta must not be zero'),
   reason_code: z.enum(adjustmentReasonValues),
   notes: z.string().optional(),
+  // POS-PERF-P33 — optional free-text attribution of who physically
+  // reported/caused this adjustment, distinct from "Recorded By" (the
+  // authenticated supervisor/admin). Never identity-verified; never shown
+  // as a PIN-verified badge.
+  staff_involved_name: z.string().max(100).optional(),
   ...staffPinVerifiedOperationFields,
 });
 
@@ -223,6 +233,8 @@ export const wasteInventoryStockSchema = z.object({
   // member is now always server-resolved from verification_token's
   // StaffPinVerification row, never trusted from the client body.
   notes: z.string().optional(),
+  // POS-PERF-P33 — see adjustInventoryStockSchema's staff_involved_name.
+  staff_involved_name: z.string().max(100).optional(),
   ...staffPinVerifiedOperationFields,
 });
 

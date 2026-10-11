@@ -52,12 +52,34 @@ describe('branchNavItemsForRole', () => {
       expect(item.href).toBeTruthy();
     }
   });
+
+  // POS-PERF-P33 — inventory is now supervisor/admin-managed; only the
+  // read-only Order Deductions view survives for the Branch Account.
+  it('does not show Inventory, Receiving, Stock Adjustments, Waste Management, Transfers, or Stock History for the branch role', () => {
+    const hrefs = branchNavItemsForRole('branch').map((i) => i.href);
+    expect(hrefs).not.toContain('/branch/inventory');
+    expect(hrefs).not.toContain('/branch/inventory/stock-in');
+    expect(hrefs).not.toContain('/branch/inventory/adjust');
+    expect(hrefs).not.toContain('/branch/inventory/waste');
+    expect(hrefs).not.toContain('/branch/inventory/transfer');
+    expect(hrefs).not.toContain('/branch/inventory/stock-history');
+  });
+
+  it('keeps Order Deductions for the branch role', () => {
+    const hrefs = branchNavItemsForRole('branch').map((i) => i.href);
+    expect(hrefs).toContain('/branch/inventory/movements');
+  });
 });
 
 describe('branchNavGroupsForRole', () => {
-  it('groups items under the expected section headers, in order, dropping the now-empty Products/People/Reports sections', () => {
+  it('groups items under the expected section headers, in order, dropping the now-empty Settings section for the branch role', () => {
     const groups = branchNavGroupsForRole('branch').map((g) => g.group);
-    expect(groups).toEqual(['Overview', 'Inventory']);
+    expect(groups).toEqual(['Overview']);
+  });
+
+  it('places Order Deductions under Overview for the branch role', () => {
+    const overview = branchNavGroupsForRole('branch').find((g) => g.group === 'Overview');
+    expect(overview?.items.map((i) => i.href)).toContain('/branch/inventory/movements');
   });
 
   it('places POS Terminal under Overview', () => {

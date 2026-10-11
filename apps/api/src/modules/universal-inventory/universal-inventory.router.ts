@@ -593,9 +593,17 @@ stockBranchRouter.get(
  * exactly once; a caller that fails after this point must not retry with
  * the same token/key — that's exactly what Idempotency-Key + a fresh
  * verify+upload round trip is for.
+ *
+ * POS-PERF-P33 — `token` is now optional: supervisor/admin-only routes no
+ * longer require inventory-PIN identification (that policy only ever made
+ * sense for the generic, shared Branch Account login). When omitted,
+ * `staffPin` resolves to `undefined` and PIN consumption is skipped
+ * entirely — evidence is still always mandatory and always consumed. Any
+ * caller that does still supply a token (back-compat for an old cached
+ * client) gets the exact original behavior.
  */
 export async function resolveStaffPinAndEvidence(params: {
-  token: string;
+  token?: string;
   evidenceKey: string;
   actorUserId: string;
   branchId: string;
@@ -606,17 +614,19 @@ export async function resolveStaffPinAndEvidence(params: {
   reasonCode?: string;
   notes?: string;
 }) {
-  const staffPin = await staffPinService.consumeVerification({
-    token: params.token,
-    actorUserId: params.actorUserId,
-    branchId: params.branchId,
-    operation: params.operation,
-    inventoryItemId: params.inventoryItemId,
-    quantity: params.quantity,
-    unitId: params.unitId,
-    reasonCode: params.reasonCode,
-    notes: params.notes,
-  });
+  const staffPin = params.token
+    ? await staffPinService.consumeVerification({
+        token: params.token,
+        actorUserId: params.actorUserId,
+        branchId: params.branchId,
+        operation: params.operation,
+        inventoryItemId: params.inventoryItemId,
+        quantity: params.quantity,
+        unitId: params.unitId,
+        reasonCode: params.reasonCode,
+        notes: params.notes,
+      })
+    : undefined;
   const evidence = await consumeInventoryEvidence(params.evidenceKey, params.actorUserId, params.branchId);
   return { staffPin, evidence };
 }
@@ -629,7 +639,7 @@ function requiresPendingReview(actorRole: string): boolean {
 stockBranchRouter.post(
   '/:branchId/inventory-stock/:inventoryItemId/receive',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(receiveInventoryStockSchema),
@@ -693,8 +703,8 @@ stockBranchRouter.post(
           proofKey: evidence.proofKey,
           proofType: evidence.proofType,
           recordedAsSupervisorDirect: req.user.role === ROLES.SUPERVISOR || req.user.role === ROLES.SUPER_ADMIN,
-          responsibleStaffName: staffPin.responsibleStaffName,
-          pinVerifiedAt: staffPin.pinVerifiedAt,
+          responsibleStaffName: staffPin?.responsibleStaffName ?? undefined,
+          pinVerifiedAt: staffPin?.pinVerifiedAt ?? undefined,
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
@@ -711,7 +721,7 @@ stockBranchRouter.post(
 stockBranchRouter.post(
   '/:branchId/inventory-stock/:inventoryItemId/adjust',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(adjustInventoryStockSchema),
@@ -752,6 +762,7 @@ stockBranchRouter.post(
             reasonCode: body.reason_code,
             notes: body.notes,
             staffPin,
+            staffInvolvedName: body.staff_involved_name,
             evidence,
           },
           req.user,
@@ -771,8 +782,8 @@ stockBranchRouter.post(
           proofKey: evidence.proofKey,
           proofType: evidence.proofType,
           recordedAsSupervisorDirect: req.user.role === ROLES.SUPERVISOR || req.user.role === ROLES.SUPER_ADMIN,
-          responsibleStaffName: staffPin.responsibleStaffName,
-          pinVerifiedAt: staffPin.pinVerifiedAt,
+          responsibleStaffName: staffPin?.responsibleStaffName ?? body.staff_involved_name ?? undefined,
+          pinVerifiedAt: staffPin?.pinVerifiedAt ?? undefined,
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
@@ -789,7 +800,7 @@ stockBranchRouter.post(
 stockBranchRouter.post(
   '/:branchId/inventory-stock/:inventoryItemId/waste',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(wasteInventoryStockSchema),
@@ -832,6 +843,7 @@ stockBranchRouter.post(
             reasonCode: body.reason_code,
             notes: body.notes,
             staffPin,
+            staffInvolvedName: body.staff_involved_name,
             evidence,
           },
           req.user,
@@ -848,13 +860,13 @@ stockBranchRouter.post(
           quantity: body.quantity,
           enteredUnitId: body.entered_unit_id,
           reasonCode: body.reason_code,
-          responsibleUserId: staffPin.responsibleStaffUserId,
+          responsibleUserId: staffPin?.responsibleStaffUserId,
           notes: body.notes,
           proofKey: evidence.proofKey,
           proofType: evidence.proofType,
           recordedAsSupervisorDirect: req.user.role === ROLES.SUPERVISOR || req.user.role === ROLES.SUPER_ADMIN,
-          responsibleStaffName: staffPin.responsibleStaffName,
-          pinVerifiedAt: staffPin.pinVerifiedAt,
+          responsibleStaffName: staffPin?.responsibleStaffName ?? body.staff_involved_name ?? undefined,
+          pinVerifiedAt: staffPin?.pinVerifiedAt ?? undefined,
         },
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
@@ -891,7 +903,7 @@ stockBranchRouter.get(
 stockBranchRouter.post(
   '/:branchId/inventory-stock/transfer',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(transferInventoryStockSchema),
@@ -920,7 +932,7 @@ stockBranchRouter.post(
 stockBranchRouter.post(
   '/:branchId/inventory-stock/count',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(physicalCountInventoryStockSchema),
@@ -968,7 +980,7 @@ stockBranchRouter.post(
 stockBranchRouter.post(
   '/:branchId/inventory-stock/evidence',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   handleUpload(proofUpload.single('proof')),
@@ -1007,7 +1019,7 @@ stockBranchRouter.post(
 stockBranchRouter.post(
   '/:branchId/inventory-stock/movements/:movementId/proof',
   authenticate,
-  adminSupervisorOrBranch,
+  adminOrSupervisor,
   requirePasswordChange,
   branchGuard,
   handleUpload(proofUpload.single('proof')),

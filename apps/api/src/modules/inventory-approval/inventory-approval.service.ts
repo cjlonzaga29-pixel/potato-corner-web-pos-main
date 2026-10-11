@@ -279,7 +279,7 @@ export const inventoryApprovalService = {
         notes: data.notes ?? null,
         submittedByUserId: actor.user_id,
         responsibleStaffUserId: data.staffPin?.responsibleStaffUserId,
-        responsibleStaffName: data.staffPin?.responsibleStaffName,
+        responsibleStaffName: data.staffPin?.responsibleStaffName ?? data.staffInvolvedName,
         pinVerifiedAt: data.staffPin?.pinVerifiedAt,
         proofKey: data.evidence?.proofKey,
         proofType: data.evidence?.proofType,
@@ -318,7 +318,7 @@ export const inventoryApprovalService = {
         notes: data.notes ?? null,
         submittedByUserId: actor.user_id,
         responsibleStaffUserId: data.staffPin?.responsibleStaffUserId,
-        responsibleStaffName: data.staffPin?.responsibleStaffName,
+        responsibleStaffName: data.staffPin?.responsibleStaffName ?? data.staffInvolvedName,
         pinVerifiedAt: data.staffPin?.pinVerifiedAt,
         proofKey: data.evidence?.proofKey,
         proofType: data.evidence?.proofType,
@@ -487,38 +487,39 @@ export const inventoryApprovalService = {
     if (request.status !== 'RETURNED') {
       throw new InventoryApprovalError('NOT_RETURNED', 'Only a returned request can be corrected', 409);
     }
-    // POS-PERF-P29R3 — "does a correction need fresh PIN verification/
-    // evidence?" Restored to: yes, whenever any PIN-bound field actually
-    // changes. A correction that edits the quantity, unit, or reason/notes
-    // is a materially different physical event from the one the original
-    // responsible-staff PIN verification attested to — carrying that old
-    // verification forward onto new numbers would let anyone silently
-    // rewrite what a verified staff member is on record as having done.
-    // Only a correction that changes nothing PIN-bound (e.g. a notes-only
-    // typo fix with notes itself unchanged, or re-submitting identical
-    // figures after a Return) may inherit the original revision's
-    // responsibleStaffUserId/proof — see the pinBoundFieldChanged check
-    // immediately below. A caller that supplies a fresh verification_token/evidence_key
-    // (data.staffPin/data.evidence) always wins over inheritance, changed or
-    // not. A request that was already legacy-unverified (no
-    // responsibleStaffUserId to begin with) stays that way after correction
-    // too, and remains subject to the same approve()-time
-    // LEGACY_VERIFICATION_MISSING gate.
-    if (requestRequiresStaffVerification(request) && !data.staffPin) {
-      const quantityField = request.operation === 'ADJUSTMENT' ? 'quantityDelta' : 'enteredQuantity';
-      const pinBoundFieldChanged =
-        (data.enteredQuantity !== undefined && !decimalEquals(request.enteredQuantity, data.enteredQuantity)) ||
+    // POS-PERF-P29R3 / POS-PERF-P33 — "does a correction need fresh
+    // evidence?" Yes, whenever any PIN-bound field actually changes. A
+    // correction that edits the quantity, unit, or reason/notes is a
+    // materially different physical event from the one the original
+    // submission's proof attested to — carrying that old proof forward
+    // onto new numbers would let anyone silently rewrite what was recorded
+    // without any new evidence of it. Only a correction that changes
+    // nothing PIN-bound (e.g. a notes-only typo fix with notes itself
+    // unchanged, or re-submitting identical figures after a Return) may
+    // inherit the original revision's identity/proof — see
+    // pinBoundFieldChanged below, computed unconditionally so the
+    // inheritance decision further down stays consistent with the gate
+    // here. PIN verification (data.staffPin) is no longer required (this
+    // route is supervisor/admin-only); fresh evidence (data.evidence)
+    // alone satisfies the requirement now. A caller that supplies either
+    // always wins over inheritance, changed or not. A request that was
+    // already legacy-unverified (no responsibleStaffUserId to begin with)
+    // stays that way after correction too, and remains subject to the same
+    // approve()-time LEGACY_VERIFICATION_MISSING gate.
+    const pinBoundFieldChanged =
+      requestRequiresStaffVerification(request) &&
+      ((data.enteredQuantity !== undefined && !decimalEquals(request.enteredQuantity, data.enteredQuantity)) ||
         (data.quantityDelta !== undefined && !decimalEquals(request.quantityDelta, data.quantityDelta)) ||
         (data.enteredUnitId !== undefined && data.enteredUnitId !== request.enteredUnitId) ||
         (data.reasonCode !== undefined && data.reasonCode !== request.reasonCode) ||
-        (data.notes !== undefined && data.notes !== request.notes);
-      if (pinBoundFieldChanged) {
-        throw new InventoryApprovalError(
-          'FRESH_VERIFICATION_REQUIRED',
-          `Changing ${quantityField === 'quantityDelta' ? 'the adjustment quantity' : 'the quantity'}, unit, reason, or notes on this correction requires a fresh staff PIN verification and evidence — the original verification does not carry forward onto changed figures. Verify again before resubmitting.`,
-          422,
-        );
-      }
+        (data.notes !== undefined && data.notes !== request.notes));
+    if (pinBoundFieldChanged && !data.staffPin && !data.evidence) {
+      const quantityField = request.operation === 'ADJUSTMENT' ? 'quantityDelta' : 'enteredQuantity';
+      throw new InventoryApprovalError(
+        'FRESH_VERIFICATION_REQUIRED',
+        `Changing ${quantityField === 'quantityDelta' ? 'the adjustment quantity' : 'the quantity'}, unit, reason, or notes on this correction requires a fresh proof photo — the original evidence does not carry forward onto changed figures. Upload a new one before resubmitting.`,
+        422,
+      );
     }
 
     // PHYSICAL_COUNT's fresh staleness snapshot does its own read (and, via
@@ -558,9 +559,14 @@ export const inventoryApprovalService = {
       submittedByUserId: actor.user_id,
       quantityOnHandAtSubmission: physicalCountSnapshot?.quantityOnHand,
       stockVersionAtSubmission: physicalCountSnapshot?.stockVersion,
-      responsibleStaffUserId: data.staffPin?.responsibleStaffUserId ?? request.responsibleStaffUserId,
-      responsibleStaffName: data.staffPin?.responsibleStaffName ?? request.responsibleStaffName,
-      pinVerifiedAt: data.staffPin?.pinVerifiedAt ?? request.pinVerifiedAt,
+      // A PIN-bound field change invalidates the old proof/identity for
+      // these new figures — only inherit responsibleStaffUserId/
+      // pinVerifiedAt (both attest to a specific past verification) when
+      // nothing PIN-bound changed. responsibleStaffName may still take the
+      // new, unverified staffInvolvedName even when inherited otherwise.
+      responsibleStaffUserId: data.staffPin?.responsibleStaffUserId ?? (pinBoundFieldChanged ? undefined : request.responsibleStaffUserId),
+      responsibleStaffName: data.staffPin?.responsibleStaffName ?? data.staffInvolvedName ?? (pinBoundFieldChanged ? undefined : request.responsibleStaffName),
+      pinVerifiedAt: data.staffPin?.pinVerifiedAt ?? (pinBoundFieldChanged ? undefined : request.pinVerifiedAt),
       proofKey: data.evidence?.proofKey ?? request.proofKey,
       proofType: data.evidence?.proofType ?? request.proofType,
     };

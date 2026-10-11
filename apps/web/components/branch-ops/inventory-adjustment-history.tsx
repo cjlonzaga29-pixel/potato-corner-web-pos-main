@@ -74,14 +74,24 @@ export function InventoryAdjustmentHistory() {
       ),
     },
     {
+      // POS-PERF-P33 — "Recorded By" is the authenticated account that
+      // wrote this movement (performed_by_name), same as
+      // inventory-movements-view.tsx/stock-changes-view.tsx/
+      // order-deductions-view.tsx. responsible_staff_name/
+      // responsible_user_name are a separate, optional "Staff Involved"
+      // attribution below — never shown as the recorder.
       id: 'recorded_by',
       header: 'Recorded By',
-      // POS-PERF-P30R4 — responsible_staff_name (PIN-verified, P29+) and
-      // responsible_user_name (legacy pre-P29 responsible_user_id, never
-      // PIN-verified) are two distinct identity sources on the same row;
-      // a row predating the PIN requirement only ever has the latter, and
-      // falling straight to "Not recorded" would erase a real recorded name.
-      cell: ({ row }) => row.original.responsible_staff_name ?? row.original.responsible_user_name ?? 'Not recorded',
+      cell: ({ row }) => row.original.performed_by_name ?? 'Not recorded',
+    },
+    {
+      id: 'staff_involved',
+      header: 'Staff Involved',
+      // responsible_staff_name (free text, P33+, or PIN-verified pre-P33)
+      // and responsible_user_name (legacy pre-P29 responsible_user_id,
+      // never PIN-verified) are two distinct identity sources on the same
+      // row; a row predating both only has neither.
+      cell: ({ row }) => row.original.responsible_staff_name ?? row.original.responsible_user_name ?? '—',
     },
     {
       id: 'pin_verified',

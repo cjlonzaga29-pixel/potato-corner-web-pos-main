@@ -145,8 +145,8 @@ export interface WasteInventoryStockData {
   quantity: number;
   enteredUnitId?: string;
   reasonCode: string;
-  /** Accountable staff member for this waste — must be an active user assigned to branchId. Distinct from performedByUserId ("recorded by"). */
-  responsibleUserId: string;
+  /** Accountable staff member for this waste — must be an active user assigned to branchId. Distinct from performedByUserId ("recorded by"). POS-PERF-P33: optional now that inventory-PIN identification is no longer required for supervisor/admin direct writes — a free-text "Staff Involved" name (responsibleStaffName) replaces it when no PIN-resolved user id exists. */
+  responsibleUserId?: string;
   notes?: string;
   performedByUserId?: string;
   /** POS-PERF-P29 — supervisor/admin direct-record path only; see schema.prisma's InventoryStockMovement doc comment. */

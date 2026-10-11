@@ -97,24 +97,26 @@ afterEach(() => {
 });
 
 describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
-  it('never renders the account submitter — only the PIN-identified Recorded By staff', () => {
+  // POS-PERF-P33 — "Recorded By" is now the authenticated submitting
+  // account (never a shared generic login under the new supervisor-managed
+  // policy); the PIN-identified/free-text name is a separate "Staff
+  // Involved" column.
+  it('shows the submitting account as Recorded By and the PIN-identified name as a separate Staff Involved column', () => {
     renderWithRequests([
       request({
-        submitted_by_name: 'Branch Account',
+        submitted_by_name: 'Maria Santos',
         responsible_staff_name: 'Juan Dela Cruz',
         pin_verified_at: '2026-08-03T02:00:00.000Z',
       }),
     ]);
 
-    expect(screen.queryByText('Branch Account')).not.toBeInTheDocument();
-    expect(screen.queryByText('Submitted By (Account)')).not.toBeInTheDocument();
-
     const row = within(dataRow());
+    expect(row.getByText('Maria Santos')).toBeInTheDocument();
     expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('has no duplicate Responsible Staff / Recorded By columns', () => {
+  it('has no duplicate Recorded By columns, and a distinct Staff Involved column', () => {
     renderWithRequests([
       request({
         responsible_staff_name: 'Juan Dela Cruz',
@@ -124,18 +126,15 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
 
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
     expect(headers.filter((h) => h === 'Recorded By')).toHaveLength(1);
-    expect(headers).not.toContain('Responsible Staff');
+    expect(headers.filter((h) => h === 'Staff Involved')).toHaveLength(1);
   });
 
-  it('shows Not recorded with a dash badge when no responsible staff identity exists — never falls back to the submitter', () => {
-    renderWithRequests([
-      request({ responsible_staff_name: null, pin_verified_at: null, submitted_by_name: 'Branch Account' }),
-    ]);
+  it('shows Not recorded for Recorded By when the submitting account is missing, and a dash for Staff Involved when no responsible staff identity exists', () => {
+    renderWithRequests([request({ submitted_by_name: null, responsible_staff_name: null, pin_verified_at: null })]);
 
     const row = within(dataRow());
     expect(row.getByText('Not recorded')).toBeInTheDocument();
-    expect(row.getByText('—')).toBeInTheDocument();
-    expect(row.queryByText('Branch Account')).not.toBeInTheDocument();
+    expect(row.getAllByText('—').length).toBeGreaterThanOrEqual(1);
   });
 
   it('labels a present staff name as Not PIN verified when the verification timestamp is missing', () => {

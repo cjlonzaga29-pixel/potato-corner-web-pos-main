@@ -1,7 +1,5 @@
-'use client';
-
-import { InventoryTransferForm } from '@/components/branch-ops/inventory-transfer-form';
+import { InventoryManagedBySupervisorNotice } from '@/components/branch-ops/inventory-managed-by-supervisor-notice';
 
 export default function BranchTransferPage() {
-  return <InventoryTransferForm basePath="/branch" />;
+  return <InventoryManagedBySupervisorNotice />;
 }

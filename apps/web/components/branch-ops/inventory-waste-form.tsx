@@ -15,10 +15,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useAuthStore } from '@/stores/auth.store';
 import { useBranchInventoryStock, useWasteInventoryStock } from '@/hooks/queries/use-universal-inventory';
 import { EvidenceUploadField } from './evidence-upload-field';
-import { StaffPinEntryField } from './staff-pin-entry-field';
 import { LockedItemDisplay } from './locked-item-display';
 
 const REASON_LABELS: Record<WasteReason, string> = {
@@ -34,6 +32,7 @@ const formSchema = z.object({
   quantity: z.coerce.number().positive('Must be greater than zero'),
   reason_code: z.enum(Object.values(WASTE_REASON) as [WasteReason, ...WasteReason[]]),
   notes: z.string().optional(),
+  staff_involved_name: z.string().optional(),
 });
 
 type FormValues = z.input<typeof formSchema>;
@@ -43,14 +42,13 @@ const DEFAULT_VALUES: FormValues = {
   quantity: 0,
   reason_code: 'spoilage',
   notes: '',
+  staff_involved_name: '',
 };
 
 function WasteFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const role = useAuthStore((s) => s.user?.role);
-  const isDirectRecord = role === 'supervisor' || role === 'super_admin';
   const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   // A row action's ?inventory_item_id= is read directly from the URL on
@@ -64,7 +62,6 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const waste = useWasteInventoryStock(activeBranchId, inventoryItemId);
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null);
-  const [verificationToken, setVerificationToken] = useState<string | null>(null);
 
   useEffect(() => {
     if (lockedItemId && form.getValues('inventory_item_id') !== lockedItemId) {
@@ -80,33 +77,29 @@ function WasteFormContent({ basePath }: { basePath: string }) {
   }
 
   async function handleConfirm() {
-    if (!pendingValues || !verificationToken || !evidenceKey) return;
+    if (!pendingValues || !evidenceKey) return;
     await waste.mutateAsync({
       quantity: pendingValues.quantity,
       reason_code: pendingValues.reason_code,
       notes: pendingValues.notes || undefined,
-      verification_token: verificationToken,
+      staff_involved_name: pendingValues.staff_involved_name || undefined,
       evidence_key: evidenceKey,
     });
-    router.push(isDirectRecord ? `${basePath}/inventory` : `${basePath}/inventory/approvals`);
+    router.push(`${basePath}/inventory`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording waste.</p>;
   }
 
-  const canSubmit = Boolean(verificationToken && evidenceKey);
+  const canSubmit = Boolean(evidenceKey);
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Record Waste</h1>
         <p className="text-sm text-muted-foreground">Remove spoiled, damaged, or otherwise unusable stock from the ledger.</p>
-        <p className="text-sm text-muted-foreground">
-          {isDirectRecord
-            ? `Recorded by ${role === 'super_admin' ? 'Admin' : 'Supervisor'} — applies immediately.`
-            : "Submitted for supervisor review — stock will not change until it's approved."}
-        </p>
+        <p className="text-sm text-muted-foreground">Recorded under your account — applies immediately.</p>
       </div>
 
       <Form {...form}>
@@ -185,21 +178,13 @@ function WasteFormContent({ basePath }: { basePath: string }) {
             <Textarea rows={3} />
           </FormFieldWrapper>
 
-          {/* POS-PERF-P29 — Responsible Staff is no longer a client-picked field: the
-              PIN verification below resolves and server-authenticates the
-              accountable staff member, replacing the old spoofable responsible_user_id select. */}
-          <StaffPinEntryField
-            branchId={activeBranchId}
-            draft={{
-              operation: 'WASTE',
-              inventoryItemId,
-              quantity: Number(form.watch('quantity') || 0),
-              reasonCode: form.watch('reason_code'),
-              notes: form.watch('notes') || undefined,
-            }}
-            verificationToken={verificationToken}
-            onVerified={setVerificationToken}
-          />
+          <FormFieldWrapper<FormValues>
+            name="staff_involved_name"
+            label="Staff Involved / Reported By"
+            description="Optional — who physically reported or caused this, if relevant. Not identity-verified."
+          >
+            <Input />
+          </FormFieldWrapper>
 
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => router.back()}>
@@ -207,7 +192,7 @@ function WasteFormContent({ basePath }: { basePath: string }) {
             </Button>
             <Button type="submit" disabled={!canSubmit || waste.isPending}>
               {waste.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isDirectRecord ? 'Save Waste' : 'Submit for Review'}
+              Save Waste
             </Button>
           </div>
         </form>
@@ -216,12 +201,8 @@ function WasteFormContent({ basePath }: { basePath: string }) {
         open={!!pendingValues}
         onOpenChange={(o) => !o && setPendingValues(null)}
         title="Confirm Waste Entry"
-        description={
-          isDirectRecord
-            ? 'This immediately removes the stock from the ledger, labeled as recorded by a supervisor.'
-            : "This submits the waste entry for supervisor review — stock will not change until it's approved."
-        }
-        confirmLabel={isDirectRecord ? 'Save Waste' : 'Submit for Review'}
+        description="This immediately removes the stock from the ledger, recorded under your account."
+        confirmLabel="Save Waste"
         variant="danger"
         onConfirm={handleConfirm}
       />

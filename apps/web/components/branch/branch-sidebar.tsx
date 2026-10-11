@@ -7,13 +7,7 @@ import {
   LayoutDashboard,
   ShoppingCart,
   TrendingUp,
-  Boxes,
-  PackagePlus,
   ArrowLeftRight,
-  SlidersHorizontal,
-  Trash2,
-  Truck,
-  ClipboardCheck,
   Bell,
   User,
   Receipt,
@@ -37,7 +31,7 @@ interface BranchNavItem extends NavItem {
   /** Which roles see this item. Omitted (or `['branch']`) means branch-only; staff only ever sees the explicitly-listed subset. */
   roles?: Role[];
   /** Sidebar section header this item renders under. */
-  group: 'Overview' | 'Inventory' | 'Settings';
+  group: 'Overview' | 'Settings';
 }
 
 /**
@@ -55,28 +49,25 @@ interface BranchNavItem extends NavItem {
  *   shift-guard.ts). Their historical data is preserved read-only under
  *   Reports -> Activity Logs -> Historical Shift Records
  *   (historical-shift-records.tsx), not part of normal branch operations.
+ *
+ * POS-PERF-P33 — Inventory, Receiving, Stock Adjustments, Waste Management,
+ * Transfers, and Stock History were removed entirely for the Branch
+ * Account: inventory is now supervisor/admin-managed. Order Deductions
+ * survives as a read-only view of automatic sale-linked deductions/
+ * reversals, moved here under Overview (same URL — unchanged to avoid
+ * breaking bookmarks). Every other /branch/inventory/* route now renders
+ * InventoryManagedBySupervisorNotice instead of its old form/list (see
+ * apps/web/app/(branch)/branch/inventory/*\/page.tsx) — backend role
+ * checks are the actual enforcement, this is just the UX side of it.
  */
 export const BRANCH_NAV_ITEMS = [
   { label: 'Dashboard', href: '/branch/dashboard', icon: LayoutDashboard, group: 'Overview' },
   { label: 'POS Terminal', href: '/branch/terminal', icon: ShoppingCart, roles: ['branch', 'staff'], group: 'Overview' },
   { label: 'Sales', href: '/branch/sales', icon: TrendingUp, group: 'Overview' },
-
-  { label: 'Inventory', href: '/branch/inventory', icon: Boxes, group: 'Inventory' },
-  { label: 'Receiving', href: '/branch/inventory/stock-in', icon: PackagePlus, group: 'Inventory' },
-  // POS-PERF-P27 — renamed from "Stock Movement": this page now shows only
+  // POS-PERF-P27 — renamed from "Stock Movement": this page shows only
   // sale-linked deductions/returns (see order-deductions-view.tsx), not the
   // full movement ledger.
-  { label: 'Order Deductions', href: '/branch/inventory/movements', icon: ArrowLeftRight, group: 'Inventory' },
-  { label: 'Stock Adjustments', href: '/branch/inventory/adjust', icon: SlidersHorizontal, group: 'Inventory' },
-  { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2, group: 'Inventory' },
-  { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck, group: 'Inventory' },
-  // POS-PERF-P28 — Stock In/Adjustments/Physical Count now require
-  // supervisor approval before stock changes.
-  // POS-PERF-P31 — "Inventory Approvals" was folded into Stock History's
-  // "Request History" tab (alongside the applied-movement ledger as "Stock
-  // Changes") to avoid two separate, overlapping review surfaces. The old
-  // /branch/inventory/approvals URL still works via a redirect.
-  { label: 'Stock History', href: '/branch/inventory/stock-history', icon: ClipboardCheck, group: 'Inventory' },
+  { label: 'Order Deductions', href: '/branch/inventory/movements', icon: ArrowLeftRight, group: 'Overview' },
 
   // POS-PERF-P26 — Products, Employees, Attendance, Reports, and Branch
   // Settings were removed entirely for the Branch Account: they were
@@ -89,7 +80,7 @@ export const BRANCH_NAV_ITEMS = [
   { label: 'Profile', href: '/branch/profile', icon: User, roles: ['staff'], group: 'Settings' },
 ] satisfies ReadonlyArray<BranchNavItem>;
 
-const GROUP_ORDER: BranchNavItem['group'][] = ['Overview', 'Inventory', 'Settings'];
+const GROUP_ORDER: BranchNavItem['group'][] = ['Overview', 'Settings'];
 
 /** Items visible to the given role — undefined `roles` (or `roles: ['branch']`) means branch-only. */
 export function branchNavItemsForRole(role: Role | undefined): BranchNavItem[] {

@@ -21,7 +21,6 @@ import {
 } from '@/hooks/queries/use-inventory-approvals';
 import { useInventoryItemConversions } from '@/hooks/queries/use-universal-inventory';
 import { EvidenceUploadField } from '@/components/branch-ops/evidence-upload-field';
-import { StaffPinEntryField } from '@/components/branch-ops/staff-pin-entry-field';
 
 const OPERATION_LABELS: Record<string, string> = {
   RECEIVING: 'Stock In',
@@ -63,20 +62,24 @@ function Field({ label, value }: { label: string; value: string | number | null 
   );
 }
 
+/** POS-PERF-P33 — "Staff Involved": a historical PIN-identified name (pre-P33 submissions) shows the "PIN Verified" badge; a post-P33 free-text name shows "Not PIN verified" — never conflated. */
 function IdentityStatus({ name, pinVerifiedAt }: { name: string | null; pinVerifiedAt: string | null }) {
   return (
     <div>
-      <p className="text-xs text-muted-foreground">Identity Status</p>
+      <p className="text-xs text-muted-foreground">Staff Involved</p>
       <div className="text-sm">
+        {name ? <span>{name}</span> : <span className="text-muted-foreground">—</span>}
         {pinVerifiedAt ? (
           <>
+            {' '}
             <Badge variant="active">PIN Verified</Badge> <span className="text-xs text-muted-foreground">{formatDateTime(pinVerifiedAt)}</span>
           </>
         ) : name ? (
-          <Badge variant="secondary">Not PIN verified</Badge>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
+          <>
+            {' '}
+            <Badge variant="secondary">Not PIN verified</Badge>
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -114,8 +117,12 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
   const [notes, setNotes] = useState(request.notes ?? '');
   const [enteredUnitId, setEnteredUnitId] = useState(request.entered_unit_id ?? '');
   const [reasonCode, setReasonCode] = useState(request.reason_code ?? '');
+  // Deliberately NOT seeded from request.responsible_staff_name — that
+  // value may be a historical PIN-verified identity, and this field is
+  // always unverified free text; starting it blank keeps the two from
+  // being visually conflated.
+  const [staffInvolvedName, setStaffInvolvedName] = useState('');
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null);
-  const [verificationToken, setVerificationToken] = useState<string | null>(null);
 
   const { data: conversions = [] } = useInventoryItemConversions(op === 'RECEIVING' ? (request.inventory_item_id ?? undefined) : undefined);
   const unitOptions = conversions.length
@@ -134,14 +141,16 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
       )
     : [];
 
-  // POS-PERF-P29R3 / P31 — mirrors the server's exact pinBoundFieldChanged
-  // check in inventory-approval.service.ts#correct(): only RECEIVING/
-  // ADJUSTMENT/WASTE against a UNIVERSAL_ITEM ever carry a mandatory PIN/
-  // evidence requirement, and only actually CHANGING a PIN-bound field
-  // (quantity, unit, reason, or notes) demands fresh verification —
+  // POS-PERF-P29R3 / P31 / P33 — mirrors the server's exact
+  // pinBoundFieldChanged check in inventory-approval.service.ts#correct():
+  // only RECEIVING/ADJUSTMENT/WASTE against a UNIVERSAL_ITEM ever carry a
+  // mandatory evidence requirement, and only actually CHANGING a PIN-bound
+  // field (quantity, unit, reason, or notes) demands fresh evidence —
   // resubmitting unchanged figures, or a notes-only correction that leaves
   // everything else untouched, may inherit the original revision's
-  // verification, exactly as the server allows.
+  // proof, exactly as the server allows. PIN verification is no longer
+  // required here (this route is supervisor/admin-only) — fresh evidence
+  // alone satisfies it.
   const requiresVerification = request.target === 'UNIVERSAL_ITEM' && (op === 'RECEIVING' || op === 'ADJUSTMENT' || op === 'WASTE');
   const quantityChanged = quantity !== '' && Number(quantity) !== (originalQuantity ?? Number.NaN);
   const unitChanged = op === 'RECEIVING' && enteredUnitId !== '' && enteredUnitId !== (request.entered_unit_id ?? '');
@@ -155,19 +164,19 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
   if (op === 'ADJUSTMENT' && Number(quantity) === 0) missingReasons.push('Quantity change must not be zero.');
   if ((op === 'ADJUSTMENT' || op === 'WASTE') && !reasonCode) missingReasons.push('Select a reason.');
   if (needsFreshVerification && !evidenceKey) missingReasons.push('Upload a new proof photo — the quantity, unit, reason, or notes changed.');
-  if (needsFreshVerification && !verificationToken) missingReasons.push('Verify a staff PIN again — the quantity, unit, reason, or notes changed.');
 
   const canSubmit = missingReasons.length === 0 && !correct.isPending;
 
   async function handleSubmit() {
-    const verification = needsFreshVerification ? { verification_token: verificationToken ?? undefined, evidence_key: evidenceKey ?? undefined } : {};
+    const verification = needsFreshVerification ? { evidence_key: evidenceKey ?? undefined } : {};
+    const staffInvolved = op === 'ADJUSTMENT' || op === 'WASTE' ? { staff_involved_name: staffInvolvedName || undefined } : {};
     const input =
       op === 'RECEIVING'
         ? { entered_quantity: Number(quantity), entered_unit_id: enteredUnitId || undefined, notes: notes || undefined, ...verification }
         : op === 'ADJUSTMENT'
-          ? { quantity_delta: Number(quantity), reason_code: reasonCode, notes: notes || undefined, ...verification }
+          ? { quantity_delta: Number(quantity), reason_code: reasonCode, notes: notes || undefined, ...verification, ...staffInvolved }
           : op === 'WASTE'
-            ? { entered_quantity: Number(quantity), reason_code: reasonCode, notes: notes || undefined, ...verification }
+            ? { entered_quantity: Number(quantity), reason_code: reasonCode, notes: notes || undefined, ...verification, ...staffInvolved }
             : { counted_quantity: Number(quantity), notes: notes || undefined };
     await correct.mutateAsync({ id: request.id, input });
     onDone();
@@ -178,7 +187,7 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
       <p className="text-sm font-medium">Correct &amp; Resubmit</p>
 
       <div className="rounded-md border bg-muted/30 p-3 text-sm">
-        <p className="text-xs text-muted-foreground">Original Verification (carried forward unless a quantity/unit/reason/notes field below changes)</p>
+        <p className="text-xs text-muted-foreground">Original Staff Involved / Proof (carried forward unless a quantity/unit/reason/notes field below changes)</p>
         <IdentityStatus name={request.responsible_staff_name} pinVerifiedAt={request.pin_verified_at} />
       </div>
 
@@ -244,27 +253,26 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
       <Label htmlFor="correction-notes">Notes</Label>
       <Textarea id="correction-notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
 
+      {(op === 'ADJUSTMENT' || op === 'WASTE') && (
+        <>
+          <Label htmlFor="correction-staff-involved">Staff Involved / Reported By</Label>
+          <Input
+            id="correction-staff-involved"
+            value={staffInvolvedName}
+            onChange={(e) => setStaffInvolvedName(e.target.value)}
+            placeholder="Optional — not identity-verified"
+          />
+        </>
+      )}
+
       {needsFreshVerification && (
         <div className="space-y-3 rounded-md border border-amber-400 bg-amber-50 p-3">
-          <p className="text-sm font-medium text-amber-900">New Verification Required</p>
+          <p className="text-sm font-medium text-amber-900">New Proof Required</p>
           <p className="text-sm text-amber-900">
-            The quantity, unit, reason, or notes changed from the original submission — a fresh staff PIN verification and proof photo are required before
-            this correction can be resubmitted.
+            The quantity, unit, reason, or notes changed from the original submission — a fresh proof photo is required before this correction can be
+            resubmitted.
           </p>
           <EvidenceUploadField branchId={branchId} label="Proof Photo" evidenceKey={evidenceKey} onChange={setEvidenceKey} />
-          <StaffPinEntryField
-            branchId={branchId}
-            draft={{
-              operation: op,
-              inventoryItemId: request.inventory_item_id ?? undefined,
-              quantity: Number(quantity || 0),
-              unitId: enteredUnitId || undefined,
-              reasonCode: reasonCode || undefined,
-              notes: notes || undefined,
-            }}
-            verificationToken={verificationToken}
-            onVerified={setVerificationToken}
-          />
         </div>
       )}
 
@@ -370,7 +378,7 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
           <Field label="Submitted At" value={formatDateTime(current.submitted_at)} />
           <Field label="Reviewed By" value={current.reviewed_by_name} />
           <Field label="Reviewed At" value={current.reviewed_at ? formatDateTime(current.reviewed_at) : null} />
-          <Field label="Recorded By" value={current.responsible_staff_name ?? 'Not recorded'} />
+          <Field label="Recorded By" value={current.submitted_by_name ?? 'Not recorded'} />
           <IdentityStatus name={current.responsible_staff_name} pinVerifiedAt={current.pin_verified_at} />
         </div>
         <Field label="Notes" value={current.notes} />

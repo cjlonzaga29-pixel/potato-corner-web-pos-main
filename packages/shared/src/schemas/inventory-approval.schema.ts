@@ -48,14 +48,18 @@ export const legacyReconcileInventoryApprovalRequestSchema = z.object({
  * correcting an already-superseded revision).
  *
  * POS-PERF-P29R2 — verification_token/evidence_key are optional here at the
- * schema level (unlike receiveInventoryStockSchema/adjustInventoryStockSchema/
- * wasteInventoryStockSchema, where they are always mandatory) because
- * PHYSICAL_COUNT corrections never require them; the service enforces them
- * as mandatory for RECEIVING/ADJUSTMENT/WASTE corrections specifically
- * (operationRequiresStaffVerification in inventory-approval.service.ts) —
- * a correction changes the entered quantity/reason, so it is treated as a
- * fresh operation requiring its own fresh PIN verification and proof, not
- * one inherited from the original (now-returned) submission.
+ * schema level because PHYSICAL_COUNT corrections never require them.
+ *
+ * POS-PERF-P33 — verification_token itself is now optional everywhere
+ * (correct() is supervisor/admin-only); the service enforces a fresh
+ * evidence_key (not a PIN) as mandatory for RECEIVING/ADJUSTMENT/WASTE
+ * corrections specifically, whenever a PIN-bound field (quantity/unit/
+ * reason/notes) actually changes (requestRequiresStaffVerification +
+ * pinBoundFieldChanged in inventory-approval.service.ts) — a correction
+ * changing those figures is treated as a fresh event requiring its own
+ * fresh proof, not one inherited from the original (now-returned)
+ * submission. A caller that still sends a verification_token (old cached
+ * build) is still honored.
  */
 export const correctInventoryApprovalRequestSchema = z.object({
   entered_quantity: z.number().positive().optional(),
@@ -68,6 +72,10 @@ export const correctInventoryApprovalRequestSchema = z.object({
   notes: z.string().optional(),
   verification_token: z.string().min(1).optional(),
   evidence_key: z.uuid().optional(),
+  // POS-PERF-P33 — see adjustInventoryStockSchema's staff_involved_name;
+  // same optional, unverified free-text attribution, now also available on
+  // a correction to an ADJUSTMENT/WASTE request.
+  staff_involved_name: z.string().max(100).optional(),
 });
 
 export const inventoryApprovalRequestResponseSchema = z.object({

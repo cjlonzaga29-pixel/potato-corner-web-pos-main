@@ -13,10 +13,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useAuthStore } from '@/stores/auth.store';
 import { useBranchInventoryStock, useInventoryItemConversions, useReceiveInventoryStock } from '@/hooks/queries/use-universal-inventory';
 import { EvidenceUploadField } from './evidence-upload-field';
-import { StaffPinEntryField } from './staff-pin-entry-field';
 import { LockedItemDisplay } from './locked-item-display';
 
 const formSchema = z.object({
@@ -67,8 +65,6 @@ function StockInFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const role = useAuthStore((s) => s.user?.role);
-  const isDirectRecord = role === 'supervisor' || role === 'super_admin';
   const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   // POS-PERF-P29 — a row action passes ?inventory_item_id=; once present the
@@ -83,7 +79,6 @@ function StockInFormContent({ basePath }: { basePath: string }) {
   const { data: conversions = [] } = useInventoryItemConversions(inventoryItemId || undefined);
   const stockIn = useReceiveInventoryStock(activeBranchId, inventoryItemId);
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null);
-  const [verificationToken, setVerificationToken] = useState<string | null>(null);
 
   const purchaseUnitOptions = useMemo(
     () => (item ? buildPurchaseUnitOptions(item.base_unit_id, item.base_unit_code, conversions) : []),
@@ -114,33 +109,28 @@ function StockInFormContent({ basePath }: { basePath: string }) {
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
-    if (!verificationToken || !evidenceKey) return;
+    if (!evidenceKey) return;
     await stockIn.mutateAsync({
       quantity: parsed.quantity,
       entered_unit_id: parsed.entered_unit_id,
       notes: parsed.notes || undefined,
-      verification_token: verificationToken,
       evidence_key: evidenceKey,
     });
-    router.push(isDirectRecord ? `${basePath}/inventory` : `${basePath}/inventory/approvals`);
+    router.push(`${basePath}/inventory`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording stock-in.</p>;
   }
 
-  const canSubmit = Boolean(verificationToken && evidenceKey) && !stockIn.isPending;
+  const canSubmit = Boolean(evidenceKey) && !stockIn.isPending;
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Stock In</h1>
         <p className="text-sm text-muted-foreground">Record what&apos;s on the receipt — the system converts the quantity into inventory units.</p>
-        <p className="text-sm text-muted-foreground">
-          {isDirectRecord
-            ? `Recorded by ${role === 'super_admin' ? 'Admin' : 'Supervisor'} — applies immediately.`
-            : "Submitted for supervisor review — stock will not change until it's approved."}
-        </p>
+        <p className="text-sm text-muted-foreground">Recorded under your account — applies immediately.</p>
       </div>
 
       <Form {...form}>
@@ -225,13 +215,6 @@ function StockInFormContent({ basePath }: { basePath: string }) {
             <Textarea rows={3} />
           </FormFieldWrapper>
 
-          <StaffPinEntryField
-            branchId={activeBranchId}
-            draft={{ operation: 'RECEIVING', inventoryItemId, quantity: Number(quantity || 0), unitId: enteredUnitId, notes: form.watch('notes') || undefined }}
-            verificationToken={verificationToken}
-            onVerified={setVerificationToken}
-          />
-
           {item && selectedUnit && baseQuantityAdded > 0 && (
             <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
               <p className="font-medium">Calculated by System</p>
@@ -247,7 +230,7 @@ function StockInFormContent({ basePath }: { basePath: string }) {
             </Button>
             <Button type="submit" disabled={!canSubmit}>
               {stockIn.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isDirectRecord ? 'Save Stock In' : 'Submit for Review'}
+              Save Stock In
             </Button>
           </div>
         </form>

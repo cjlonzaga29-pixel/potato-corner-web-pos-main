@@ -53,6 +53,8 @@ export interface SubmitAdjustmentData {
   reasonCode: string;
   notes?: string;
   staffPin?: StaffPinResolution;
+  /** POS-PERF-P33 — optional free-text "who physically reported/caused this" attribution, distinct from staffPin (identity-verified) and from submittedByUserId (the authenticated recorder). */
+  staffInvolvedName?: string;
   evidence?: ResolvedEvidence;
 }
 
@@ -78,6 +80,8 @@ export interface SubmitWasteData {
    * LEGACY_INGREDIENT, for any operation).
    */
   staffPin?: StaffPinResolution;
+  /** POS-PERF-P33 — see SubmitAdjustmentData.staffInvolvedName. */
+  staffInvolvedName?: string;
   evidence?: ResolvedEvidence;
 }
 
@@ -97,8 +101,10 @@ export interface CorrectRequestData {
   countedQuantity?: number;
   reasonCode?: string;
   notes?: string;
-  /** POS-PERF-P29R2 — mandatory for RECEIVING/ADJUSTMENT/WASTE corrections (resolved server-side, same as on initial submission); never applicable to PHYSICAL_COUNT. */
+  /** POS-PERF-P29R2 — resolved server-side, same as on initial submission; never applicable to PHYSICAL_COUNT. POS-PERF-P33: no longer mandatory — evidence alone satisfies a RECEIVING/ADJUSTMENT/WASTE correction's fresh-verification requirement when a PIN-bound field changes; see pinBoundFieldChanged in inventory-approval.service.ts#correct. */
   staffPin?: StaffPinResolution;
+  /** POS-PERF-P33 — see SubmitAdjustmentData.staffInvolvedName. */
+  staffInvolvedName?: string;
   evidence?: ResolvedEvidence;
 }
 

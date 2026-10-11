@@ -46,7 +46,6 @@ vi.mock('../branches/branches.repository.js', () => ({
 
 const { prisma } = await import('../../lib/prisma.js');
 const { inventoryService } = await import('./inventory.service.js');
-const { IngredientError } = await import('./inventory.types.js');
 const { inventoryRouter, inventoryBranchRouter } = await import('./inventory.router.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
 const { config } = await import('../../config/index.js');
@@ -484,16 +483,12 @@ describe('POST /:branchId/inventory/count — retired legacy mutation (POS-PERF-
   }
 });
 
-describe('POST /:branchId/inventory/transfer — same-branch transfer rejection', () => {
-  it('surfaces the service-layer INVALID_TRANSFER rejection as 422, not a 500', async () => {
-    // transferIngredientSchema has no from/to-branch-equality rule of its
-    // own to reject at validate() — `to_branch_id === :branchId` is a
-    // cross-field business rule enforced in inventoryService.transferStock
-    // (see inventory.service.test.ts's "rejects a transfer where the
-    // destination equals the source branch" test for the rule itself).
-    // What belongs here, at the router layer, is confirming the router's
-    // error handler correctly maps that thrown domain error to a 422
-    // response instead of letting it fall through as an unhandled 500.
+// POS-PERF-P33 — retired like its stock-in/adjust/waste/count siblings
+// above: the live transfer path is now universal-inventory.router.ts's
+// POST /:branchId/inventory-stock/transfer. This route never reaches
+// inventoryService.transferStock anymore, regardless of role.
+describe('POST /:branchId/inventory/transfer — retired legacy mutation', () => {
+  it('unconditionally 410s instead of writing a transfer, for any role', async () => {
     const handlers = getRouteHandlers(inventoryBranchRouter, 'post', '/:branchId/inventory/transfer');
     const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({
@@ -502,13 +497,11 @@ describe('POST /:branchId/inventory/transfer — same-branch transfer rejection'
       body: { ingredient_id: INGREDIENT_1, to_branch_id: BRANCH_1, quantity: 5 },
     });
     const res = mockRes();
-    vi.mocked(inventoryService.transferStock).mockRejectedValue(
-      new IngredientError('INVALID_TRANSFER', 'Cannot transfer stock to the same branch', 422),
-    );
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(422);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'INVALID_TRANSFER' }) }));
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'LEGACY_INVENTORY_MUTATION_RETIRED' }) }));
+    expect(inventoryService.transferStock).not.toHaveBeenCalled();
   });
 });

@@ -1355,10 +1355,15 @@ export const universalInventoryService = {
 
     // Responsible Staff must be an active user actually assigned to this
     // branch — never let a caller attribute waste to someone in another
-    // branch (or a deactivated account).
-    const responsibleUserValid = await repo.isActiveUserInBranch(data.responsibleUserId, data.branchId);
-    if (!responsibleUserValid) {
-      throw new UniversalInventoryError('INVALID_RESPONSIBLE_USER', 'Responsible staff must be an active user assigned to this branch', 400);
+    // branch (or a deactivated account). POS-PERF-P33: only checked when a
+    // PIN-resolved responsibleUserId is actually present — supervisor/
+    // admin direct writes no longer require PIN identification at all, and
+    // the free-text staff_involved_name alternative is never a User id.
+    if (data.responsibleUserId) {
+      const responsibleUserValid = await repo.isActiveUserInBranch(data.responsibleUserId, data.branchId);
+      if (!responsibleUserValid) {
+        throw new UniversalInventoryError('INVALID_RESPONSIBLE_USER', 'Responsible staff must be an active user assigned to this branch', 400);
+      }
     }
 
     const baseQuantity = await convertQuantity(data.quantity, data.enteredUnitId ?? item.baseUnitId, item.baseUnitId, item.id);

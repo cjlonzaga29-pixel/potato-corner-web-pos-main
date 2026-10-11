@@ -353,6 +353,14 @@ inventoryBranchRouter.post(
   },
 );
 
+// POS-PERF-P33 — retired like its stock-in/adjust/waste/count siblings
+// above: the live transfer path is universal-inventory.router.ts's
+// POST /:branchId/inventory-stock/transfer (via useTransferInventoryStock
+// on the frontend). This legacy route had no remaining caller — the
+// frontend's own legacy hook for it (useTransferStock in
+// use-inventory.ts) was verified unused by any component before retiring
+// this — so it now unconditionally 410s rather than writing stock,
+// consistent with the rest of this file.
 inventoryBranchRouter.post(
   '/:branchId/inventory/transfer',
   authenticate,
@@ -363,13 +371,7 @@ inventoryBranchRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const result = await inventoryService.transferStock(
-        req.params.branchId as string,
-        req.body,
-        { id: req.user.user_id, role: req.user.role },
-        req.ip ?? null,
-      );
-      res.status(201).json({ data: result, error: null, meta: null });
+      rejectRetiredLegacyMutation(res, 'inventory-stock/transfer');
     } catch (error) {
       handleModuleError(error, res, next);
     }

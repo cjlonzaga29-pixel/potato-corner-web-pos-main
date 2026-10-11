@@ -145,93 +145,43 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
     return { status: res.status, json };
   }
 
-  it('concurrent identical submissions under the same Idempotency-Key create exactly one PENDING request; every losing call resolves consistently (no raw error, no proof consumed twice)', async () => {
-    const quantityDelta = 11;
-    const { verificationToken, evidenceKey } = await provisionAdjustmentCredentials(quantityDelta);
-    const idempotencyKey = randomUUID();
-    const body = { quantity_delta: quantityDelta, reason_code: 'count_correction', verification_token: verificationToken, evidence_key: evidenceKey };
-
-    const results = await Promise.all(Array.from({ length: 5 }, () => postAdjust(body, idempotencyKey)));
-
-    // Every response is one of three well-formed, documented outcomes — never an unhandled 500.
-    for (const { status, json } of results) {
-      expect([200, 201, 409, 422]).toContain(status);
-      if (status >= 400) {
-        expect(json.error?.code).toBeTruthy();
-      }
-    }
-
-    const successes = results.filter((r) => r.status === 200 || r.status === 201);
-    expect(successes.length).toBeGreaterThanOrEqual(1);
-    const resultId = successes[0]?.json.data?.id;
-    expect(resultId).toBeTruthy();
-    // Every successful response (the original 201 plus any idempotent 200 replays) points at the exact same request id.
-    for (const success of successes) {
-      expect(success.json.data?.id).toBe(resultId);
-    }
-
-    const requests = await prisma.inventoryApprovalRequest.findMany({ where: { branchId, inventoryItemId: itemId, quantityDelta: quantityDelta.toString() } });
-    expect(requests.length).toBe(1);
-    expect(requests[0]?.id).toBe(resultId);
-  });
-
-  it('reusing the same Idempotency-Key with a different payload is rejected as a conflict, not silently applied', async () => {
-    const { verificationToken, evidenceKey } = await provisionAdjustmentCredentials(3);
-    const idempotencyKey = randomUUID();
-    const first = await postAdjust({ quantity_delta: 3, reason_code: 'count_correction', verification_token: verificationToken, evidence_key: evidenceKey }, idempotencyKey);
-    expect([200, 201]).toContain(first.status);
-
-    const { verificationToken: secondToken, evidenceKey: secondEvidence } = await provisionAdjustmentCredentials(4);
-    const conflicting = await postAdjust(
-      { quantity_delta: 4, reason_code: 'count_correction', verification_token: secondToken, evidence_key: secondEvidence },
-      idempotencyKey,
+  // POS-PERF-P33 — manual inventory writes are now supervisor/admin-only;
+  // a branch-role token is rejected by role middleware before it ever
+  // reaches requiresPendingReview()/the PENDING-review path these three
+  // tests used to exercise (that path is now permanently unreachable for
+  // new submissions — existing PENDING rows from before this change are
+  // still resolved by a supervisor via approve/return/cancel/correct, see
+  // inventory-approval.integration.test.ts). The idempotency/concurrency
+  // guarantees below are instead verified against the one remaining
+  // reachable path: supervisor direct-write (see the nested describe).
+  it('rejects a branch-role token on /adjust outright — never reaches PIN verification, evidence consumption, or the approval queue', async () => {
+    const { verificationToken, evidenceKey } = await provisionAdjustmentCredentials(11);
+    const result = await postAdjust(
+      { quantity_delta: 11, reason_code: 'count_correction', verification_token: verificationToken, evidence_key: evidenceKey },
+      randomUUID(),
     );
-    expect(conflicting.status).toBe(409);
-    expect(conflicting.json.error?.code).toBe('IDEMPOTENCY_KEY_CONFLICT');
 
-    // The second verification token/evidence were never consumed by the rejected conflicting call — both remain usable under a fresh key.
-    const retryKey = randomUUID();
-    const retried = await postAdjust(
-      { quantity_delta: 4, reason_code: 'count_correction', verification_token: secondToken, evidence_key: secondEvidence },
-      retryKey,
-    );
-    expect([200, 201]).toContain(retried.status);
-  });
-
-  it('a committed replay under the same key+payload succeeds from the idempotency cache alone, even though the original verification token is already consumed and cannot be verified again', async () => {
-    const { verificationToken, evidenceKey } = await provisionAdjustmentCredentials(6);
-    const idempotencyKey = randomUUID();
-    const body = { quantity_delta: 6, reason_code: 'count_correction', verification_token: verificationToken, evidence_key: evidenceKey };
-
-    const original = await postAdjust(body, idempotencyKey);
-    expect(original.status).toBe(201);
-    const originalId = original.json.data?.id;
-
-    // The verification token this request consumed cannot be used again directly...
+    expect(result.status).toBe(403);
+    const requests = await prisma.inventoryApprovalRequest.findMany({ where: { branchId, inventoryItemId: itemId } });
+    expect(requests.length).toBe(0);
+    // The token and evidence this branch actor obtained before being rejected are still unconsumed.
+    const evidenceRow = await staffPinRepository.findEvidenceById(evidenceKey);
+    expect(evidenceRow?.consumedAt).toBeNull();
     await expect(
-      staffPinService.consumeVerification({ token: verificationToken, actorUserId: branchUserId, branchId, operation: 'ADJUSTMENT', inventoryItemId: itemId, quantity: 6, reasonCode: 'count_correction' }),
-    ).rejects.toMatchObject({ code: 'VERIFICATION_ALREADY_CONSUMED' });
-
-    // ...yet replaying the exact same HTTP request (same key, same body) still succeeds, because checkIdempotency
-    // short-circuits to the cached result before ever touching PIN verification/evidence again.
-    const replay = await postAdjust(body, idempotencyKey);
-    expect(replay.status).toBe(200);
-    expect(replay.json.data?.replayed).toBe(true);
-    expect(replay.json.data?.id).toBe(originalId);
+      staffPinService.consumeVerification({ token: verificationToken, actorUserId: branchUserId, branchId, operation: 'ADJUSTMENT', inventoryItemId: itemId, quantity: 11, reasonCode: 'count_correction' }),
+    ).resolves.toMatchObject({ responsibleStaffName: expect.any(String) });
   });
 
   /**
-   * POS-PERF-P29R3 — the three tests above all exercise the branch-role
-   * PENDING-review path, where "applied exactly once" only ever means "one
-   * InventoryApprovalRequest row exists" — no stock write happens until a
-   * separate approve() call, so a race in THIS endpoint could never double-
-   * apply real stock. A supervisor/super_admin actor is different:
-   * requiresPendingReview() (universal-inventory.router.ts) is false for
-   * them, so this same /adjust endpoint calls universalInventoryService.
-   * adjustStock() directly and writes the real ledger inline — a race here
-   * is the one that could actually double-apply stock. Asserts the real
-   * InventoryStock.quantityOnHand delta and InventoryStockMovement row
-   * count directly, not just the idempotency/attempt-row bookkeeping.
+   * POS-PERF-P29R3 / P33 — a supervisor/super_admin actor is the only
+   * actor that can reach this endpoint now: requiresPendingReview()
+   * (universal-inventory.router.ts) is permanently false since branch can
+   * never reach here, so this /adjust endpoint always calls
+   * universalInventoryService.adjustStock() directly and writes the real
+   * ledger inline — a race here is the one that could actually
+   * double-apply stock. Asserts the real InventoryStock.quantityOnHand
+   * delta and InventoryStockMovement row count directly, not just the
+   * idempotency/attempt-row bookkeeping.
    */
   describe('direct-write (supervisor) concurrency — the actual stock mutation, not just the approval-request row', () => {
     let supervisorUserId: string;
@@ -309,6 +259,52 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
       // The cached replay must not re-apply the stock mutation a second time.
       const stockAfterReplay = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
       expect(stockAfterReplay.quantityOnHand.toNumber()).toBe(stockAfterOriginal.quantityOnHand.toNumber());
+    });
+
+    // POS-PERF-P33 — the actual policy change this phase introduces: no
+    // verification_token at all, just evidence + an optional free-text
+    // staff_involved_name. Idempotency safety is independent of PIN
+    // consumption (checkIdempotency runs before any PIN/evidence touch),
+    // so this must behave identically to the PIN-carrying tests above.
+    it('a direct-write adjustment with no verification_token still writes stock exactly once under concurrent identical submissions, and records the free-text staff_involved_name', async () => {
+      const quantityDelta = 7;
+      const evidence = await staffPinRepository.createEvidence({
+        branchId,
+        uploadedByUserId: supervisorUserId,
+        storageKey: `evidence/${branchId}/${randomUUID()}.png`,
+        proofType: 'gallery_upload',
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      });
+      const idempotencyKey = randomUUID();
+      const body = { quantity_delta: quantityDelta, reason_code: 'count_correction', staff_involved_name: 'Juan Dela Cruz', evidence_key: evidence.id };
+
+      const stockBefore = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+      const movementCountBefore = await prisma.inventoryStockMovement.count({ where: { branchId, inventoryItemId: itemId } });
+
+      const results = await Promise.all(Array.from({ length: 6 }, () => postSupervisorAdjust(body, idempotencyKey)));
+
+      for (const { status, json } of results) {
+        expect([200, 201, 409, 422]).toContain(status);
+        if (status >= 400) expect(json.error?.code).toBeTruthy();
+      }
+      const successes = results.filter((r) => r.status === 200 || r.status === 201);
+      expect(successes.length).toBeGreaterThanOrEqual(1);
+      const resultId = successes[0]?.json.data?.id;
+      for (const success of successes) expect(success.json.data?.id).toBe(resultId);
+
+      const stockAfter = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+      expect(stockAfter.quantityOnHand.toNumber()).toBe(stockBefore.quantityOnHand.toNumber() + quantityDelta);
+      const movementCountAfter = await prisma.inventoryStockMovement.count({ where: { branchId, inventoryItemId: itemId } });
+      expect(movementCountAfter).toBe(movementCountBefore + 1);
+
+      const movement = await prisma.inventoryStockMovement.findUnique({ where: { id: resultId } });
+      expect(movement?.responsibleStaffName).toBe('Juan Dela Cruz');
+      // Never a false PIN-verified claim on a free-text, unverified name.
+      expect(movement?.pinVerifiedAt).toBeNull();
+      expect(movement?.recordedAsSupervisorDirect).toBe(true);
+
+      const evidenceRow = await staffPinRepository.findEvidenceById(evidence.id);
+      expect(evidenceRow?.consumedAt).not.toBeNull();
     });
   });
 });

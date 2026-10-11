@@ -461,10 +461,28 @@ describe('GET /:branchId/inventory-stock/movements — date filter boundary reso
  * is a body field with no equivalent route-level guard.
  */
 describe('POST /:branchId/inventory-stock/transfer — source-branch authorization (branchGuard)', () => {
-  it('branch account transferring from its own branch reaches the service', async () => {
+  // POS-PERF-P33 — manual inventory writes (including transfer) are now
+  // supervisor/admin-only; a branch-role token is rejected by the role
+  // middleware before branchGuard or the service ever run.
+  it('rejects a branch-role token entirely, regardless of its own branch', async () => {
     const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/transfer');
     const req = mockReq({
       ...authHeader(generateBranchToken(BRANCH_1)),
+      params: { branchId: BRANCH_1 },
+      body: { inventory_item_id: randomUUID(), to_branch_id: BRANCH_2, quantity: 5 },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.transferStock).not.toHaveBeenCalled();
+  });
+
+  it('supervisor account transferring from its own assigned branch reaches the service', async () => {
+    const handlers = getRouteHandlers(inventoryStockBranchRouter, 'post', '/:branchId/inventory-stock/transfer');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       params: { branchId: BRANCH_1 },
       body: { inventory_item_id: randomUUID(), to_branch_id: BRANCH_2, quantity: 5 },
     });

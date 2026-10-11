@@ -3,25 +3,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { InventoryStockInForm } from './inventory-stock-in-form';
 
-const {
-  mockPush,
-  mockUseBranchStore,
-  mockUseAuthStore,
-  mockUseBranchInventoryStock,
-  mockUseInventoryItemConversions,
-  mockUseReceiveInventoryStock,
-  mockUseUploadInventoryEvidence,
-  mockUseVerifyStaffPin,
-} = vi.hoisted(() => ({
-  mockPush: vi.fn(),
-  mockUseBranchStore: vi.fn(),
-  mockUseAuthStore: vi.fn(),
-  mockUseBranchInventoryStock: vi.fn(),
-  mockUseInventoryItemConversions: vi.fn(),
-  mockUseReceiveInventoryStock: vi.fn(),
-  mockUseUploadInventoryEvidence: vi.fn(),
-  mockUseVerifyStaffPin: vi.fn(),
-}));
+const { mockPush, mockUseBranchStore, mockUseBranchInventoryStock, mockUseInventoryItemConversions, mockUseReceiveInventoryStock, mockUseUploadInventoryEvidence } =
+  vi.hoisted(() => ({
+    mockPush: vi.fn(),
+    mockUseBranchStore: vi.fn(),
+    mockUseBranchInventoryStock: vi.fn(),
+    mockUseInventoryItemConversions: vi.fn(),
+    mockUseReceiveInventoryStock: vi.fn(),
+    mockUseUploadInventoryEvidence: vi.fn(),
+  }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush, back: vi.fn() }),
@@ -32,20 +22,11 @@ vi.mock('@/stores/branch.store', () => ({
   useBranchStore: mockUseBranchStore,
 }));
 
-vi.mock('@/stores/auth.store', () => ({
-  useAuthStore: mockUseAuthStore,
-}));
-
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useBranchInventoryStock: mockUseBranchInventoryStock,
   useInventoryItemConversions: mockUseInventoryItemConversions,
   useReceiveInventoryStock: mockUseReceiveInventoryStock,
   useUploadInventoryEvidence: mockUseUploadInventoryEvidence,
-}));
-
-// POS-PERF-P29 — PIN verification is a separate module now.
-vi.mock('@/hooks/queries/use-staff-pin', () => ({
-  useVerifyStaffPin: mockUseVerifyStaffPin,
 }));
 
 /**
@@ -114,26 +95,17 @@ function selectItemAndFillForm() {
   fireEvent.change(quantityInput, { target: { value: '10' } });
 }
 
-/** Drives the mandatory evidence-upload + PIN-verify steps now required before submit can enable. */
-async function completeEvidenceAndPin() {
+/** POS-PERF-P33 — PIN verification was removed; only the evidence-upload step gates submit now. */
+async function completeEvidence() {
   const fileInput = document.querySelector('input[type="file"]');
   if (!fileInput) throw new Error('file input not found');
   fireEvent.change(fileInput, { target: { files: [jpegFile()] } });
   await waitFor(() => expect(screen.getByText('Uploaded')).toBeInTheDocument());
-
-  fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '123456' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
-  await waitFor(() => expect(screen.getByText('Jenny Santos')).toBeInTheDocument());
 }
 
 beforeEach(() => {
   vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:mock-url'), revokeObjectURL: vi.fn() });
-  mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) =>
-    selector({ activeBranchId: BRANCH_ID }),
-  );
-  mockUseAuthStore.mockImplementation((selector: (s: { user: { role: string } | null }) => unknown) =>
-    selector({ user: { role: 'branch' } }),
-  );
+  mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId: BRANCH_ID }));
   mockUseBranchInventoryStock.mockReturnValue({
     data: {
       items: [
@@ -152,11 +124,6 @@ beforeEach(() => {
     mutateAsync: vi.fn().mockResolvedValue({ evidence_key: 'evidence-1', expires_at: new Date().toISOString() }),
     isPending: false,
   });
-  mockUseVerifyStaffPin.mockReturnValue({
-    mutateAsync: vi.fn().mockResolvedValue({ staff_name: 'Jenny Santos', verification_token: 'tok-1', expires_at: new Date().toISOString() }),
-    isPending: false,
-    isError: false,
-  });
 });
 
 afterEach(() => {
@@ -165,59 +132,41 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InventoryStockInForm — branch submission (Pending Review)', () => {
-  it('keeps submit disabled until both evidence and PIN verification complete, then submits with the token/key', async () => {
-    const stockInMutateAsync = vi.fn().mockResolvedValue({ id: 'request-123', status: 'PENDING' });
-    mockUseReceiveInventoryStock.mockReturnValue({ mutateAsync: stockInMutateAsync, isPending: false });
-
-    render(<InventoryStockInForm basePath="/branch" />);
-    selectItemAndFillForm();
-
-    expect(screen.getByRole('button', { name: 'Submit for Review' })).toBeDisabled();
-
-    await completeEvidenceAndPin();
-
-    expect(screen.getByRole('button', { name: 'Submit for Review' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
-
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/branch/inventory/approvals'));
-    expect(stockInMutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ quantity: 10, verification_token: 'tok-1', evidence_key: 'evidence-1' }),
-    );
-  });
-});
-
-describe('InventoryStockInForm — supervisor direct record', () => {
-  it('labels the action "Save Stock In" and navigates to the stock list, not the approval queue', async () => {
-    mockUseAuthStore.mockImplementation((selector: (s: { user: { role: string } | null }) => unknown) =>
-      selector({ user: { role: 'supervisor' } }),
-    );
+describe('InventoryStockInForm — supervisor/admin direct record (POS-PERF-P33: no PIN)', () => {
+  it('keeps submit disabled until evidence is uploaded, then saves immediately with no verification_token', async () => {
     const stockInMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-999', movement_type: 'RECEIVING' });
     mockUseReceiveInventoryStock.mockReturnValue({ mutateAsync: stockInMutateAsync, isPending: false });
 
     render(<InventoryStockInForm basePath="/supervisor" />);
     selectItemAndFillForm();
-    await completeEvidenceAndPin();
 
+    expect(screen.getByRole('button', { name: 'Save Stock In' })).toBeDisabled();
+
+    await completeEvidence();
+
+    expect(screen.getByRole('button', { name: 'Save Stock In' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save Stock In' }));
 
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/supervisor/inventory'));
+    const call = stockInMutateAsync.mock.calls[0]?.[0];
+    expect(call).toMatchObject({ quantity: 10, evidence_key: 'evidence-1' });
+    expect(call).not.toHaveProperty('verification_token');
   });
 });
 
 describe('InventoryStockInForm — P1 cost UI retirement', () => {
   it('submits the same quantity as before with no total_cost field in the payload', async () => {
-    const stockInMutateAsync = vi.fn().mockResolvedValue({ id: 'request-999', status: 'PENDING' });
+    const stockInMutateAsync = vi.fn().mockResolvedValue({ id: 'movement-999', movement_type: 'RECEIVING' });
     mockUseReceiveInventoryStock.mockReturnValue({ mutateAsync: stockInMutateAsync, isPending: false });
 
-    render(<InventoryStockInForm basePath="/branch" />);
+    render(<InventoryStockInForm basePath="/supervisor" />);
 
     expect(screen.queryByText('Total Purchase Cost')).not.toBeInTheDocument();
     expect(screen.getAllByRole('spinbutton')).toHaveLength(1);
 
     selectItemAndFillForm();
-    await completeEvidenceAndPin();
-    fireEvent.click(screen.getByRole('button', { name: 'Submit for Review' }));
+    await completeEvidence();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Stock In' }));
 
     await waitFor(() => expect(stockInMutateAsync).toHaveBeenCalledTimes(1));
     const payload = stockInMutateAsync.mock.calls[0]?.[0];

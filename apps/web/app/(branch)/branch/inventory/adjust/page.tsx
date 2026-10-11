@@ -1,7 +1,5 @@
-'use client';
-
-import { InventoryAdjustForm } from '@/components/branch-ops/inventory-adjust-form';
+import { InventoryManagedBySupervisorNotice } from '@/components/branch-ops/inventory-managed-by-supervisor-notice';
 
 export default function BranchAdjustPage() {
-  return <InventoryAdjustForm basePath="/branch" />;
+  return <InventoryManagedBySupervisorNotice />;
 }

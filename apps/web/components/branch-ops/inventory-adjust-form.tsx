@@ -15,10 +15,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranchStore } from '@/stores/branch.store';
-import { useAuthStore } from '@/stores/auth.store';
 import { useAdjustInventoryStock, useBranchInventoryStock } from '@/hooks/queries/use-universal-inventory';
 import { EvidenceUploadField } from './evidence-upload-field';
-import { StaffPinEntryField } from './staff-pin-entry-field';
 import { LockedItemDisplay } from './locked-item-display';
 import { InventoryAdjustmentHistory } from './inventory-adjustment-history';
 
@@ -35,18 +33,23 @@ const formSchema = z.object({
   quantity_delta: z.coerce.number().refine((n) => n !== 0, 'Must not be zero'),
   reason_code: z.enum(Object.values(ADJUSTMENT_REASON) as [AdjustmentReason, ...AdjustmentReason[]]),
   notes: z.string().optional(),
+  staff_involved_name: z.string().optional(),
 });
 
 type FormValues = z.input<typeof formSchema>;
 
-const DEFAULT_VALUES: FormValues = { inventory_item_id: '', quantity_delta: 0, reason_code: 'count_correction', notes: '' };
+const DEFAULT_VALUES: FormValues = {
+  inventory_item_id: '',
+  quantity_delta: 0,
+  reason_code: 'count_correction',
+  notes: '',
+  staff_involved_name: '',
+};
 
 function AdjustFormContent({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  const role = useAuthStore((s) => s.user?.role);
-  const isDirectRecord = role === 'supervisor' || role === 'super_admin';
   const { data: stock } = useBranchInventoryStock(activeBranchId);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   // See inventory-waste-form.tsx's matching comment: the URL param takes
@@ -58,7 +61,6 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
   const item = stock?.items.find((i) => i.inventory_item_id === inventoryItemId);
   const adjust = useAdjustInventoryStock(activeBranchId, inventoryItemId);
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null);
-  const [verificationToken, setVerificationToken] = useState<string | null>(null);
 
   useEffect(() => {
     if (lockedItemId && form.getValues('inventory_item_id') !== lockedItemId) {
@@ -74,22 +76,22 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
   }
 
   async function handleConfirm() {
-    if (!pendingValues || !verificationToken || !evidenceKey) return;
+    if (!pendingValues || !evidenceKey) return;
     await adjust.mutateAsync({
       quantity_delta: pendingValues.quantity_delta,
       reason_code: pendingValues.reason_code,
       notes: pendingValues.notes || undefined,
-      verification_token: verificationToken,
+      staff_involved_name: pendingValues.staff_involved_name || undefined,
       evidence_key: evidenceKey,
     });
-    router.push(isDirectRecord ? `${basePath}/inventory` : `${basePath}/inventory/approvals`);
+    router.push(`${basePath}/inventory`);
   }
 
   if (!activeBranchId) {
     return <p className="text-sm text-destructive">Select an active branch before recording an adjustment.</p>;
   }
 
-  const canSubmit = Boolean(verificationToken && evidenceKey);
+  const canSubmit = Boolean(evidenceKey);
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -181,18 +183,13 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
             <Textarea rows={3} />
           </FormFieldWrapper>
 
-          <StaffPinEntryField
-            branchId={activeBranchId}
-            draft={{
-              operation: 'ADJUSTMENT',
-              inventoryItemId,
-              quantity: Number(form.watch('quantity_delta') || 0),
-              reasonCode: form.watch('reason_code'),
-              notes: form.watch('notes') || undefined,
-            }}
-            verificationToken={verificationToken}
-            onVerified={setVerificationToken}
-          />
+          <FormFieldWrapper<FormValues>
+            name="staff_involved_name"
+            label="Staff Involved / Reported By"
+            description="Optional — who physically reported or caused this, if relevant. Not identity-verified."
+          >
+            <Input />
+          </FormFieldWrapper>
 
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => router.back()}>
@@ -200,7 +197,7 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
             </Button>
             <Button type="submit" disabled={!canSubmit || adjust.isPending}>
               {adjust.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isDirectRecord ? 'Save Adjustment' : 'Submit for Review'}
+              Save Adjustment
             </Button>
           </div>
         </form>
@@ -209,12 +206,8 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
         open={!!pendingValues}
         onOpenChange={(o) => !o && setPendingValues(null)}
         title="Confirm Stock Adjustment"
-        description={
-          isDirectRecord
-            ? 'This applies the adjustment immediately — labeled as recorded by a supervisor.'
-            : "This submits the adjustment for supervisor review — stock will not change until it's approved."
-        }
-        confirmLabel={isDirectRecord ? 'Save Adjustment' : 'Submit for Review'}
+        description="This applies the adjustment immediately — recorded under your account."
+        confirmLabel="Save Adjustment"
         variant="danger"
         onConfirm={handleConfirm}
       />

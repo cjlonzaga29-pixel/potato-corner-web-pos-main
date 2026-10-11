@@ -318,5 +318,23 @@ test.describe.serial('POS-PERF-P30R — session security real-browser verificati
     await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill(freshPin);
     await terminalPage.getByRole('button', { name: 'Continue' }).click();
     await expect(terminalPage.getByRole('button', { name: 'Unlock POS' })).toBeVisible({ timeout: 10_000 });
+
+    // POS-PERF-P32R — the SAME idle-locked screen (lockContext still names
+    // Jenny's own employeeId, set by her own idle timeout) must NOT read
+    // "Unlock POS" for a DIFFERENT eligible staff member's correct PIN. Bob
+    // was clocked in during test 5 above and never clocked out since, so
+    // the server-confirmed handoff action here is "Continue as Bob", never
+    // a guessed/generic label and never "Unlock POS" (that is reserved for
+    // the exact staff member whose own idle timeout locked this screen).
+    // Cancelled afterward ("Not me") rather than confirmed, so this check
+    // doesn't disturb either Jenny's or Bob's attendance state for any
+    // later assertions in this file.
+    await terminalPage.getByRole('button', { name: 'Not me — enter a different PIN' }).click();
+    await terminalPage.getByPlaceholder('Enter 4-6 digit PIN').fill(bobPin);
+    await terminalPage.getByRole('button', { name: 'Continue' }).click();
+    await expect(terminalPage.getByText(/Bob Cashier/)).toBeVisible({ timeout: 10_000 });
+    await expect(terminalPage.getByRole('button', { name: 'Unlock POS' })).toHaveCount(0);
+    await expect(terminalPage.getByRole('button', { name: /Continue as Bob/ })).toBeVisible();
+    await terminalPage.getByRole('button', { name: 'Not me — enter a different PIN' }).click();
   });
 });

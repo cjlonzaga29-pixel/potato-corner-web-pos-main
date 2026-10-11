@@ -338,9 +338,20 @@ export default function TerminalPage() {
   // consumes the token). Closing/cancelling at any point clears both.
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
-  const [pinVerification, setPinVerification] = useState<{ staffId: string; staffName: string; isClockedIn: boolean; token: string } | null>(
-    null,
-  );
+  // staffId/isClockedIn are typed as possibly-absent here (rather than
+  // trusting StaffPinVerifyPosResponse's compile-time-only `string`/`boolean`)
+  // because this value is populated straight from a parsed HTTP response: an
+  // API instance still running pre-P32 code genuinely omits both fields at
+  // runtime, regardless of what the current TS type claims. See
+  // handlePinVerify's `typeof` guards below and primaryActionLabel's
+  // three-way (true/false/unknown) branch — an old API's omission must never
+  // be coerced into `false` and surfaced as a guessed "Clock In & Open POS".
+  const [pinVerification, setPinVerification] = useState<{
+    staffId: string | null;
+    staffName: string;
+    isClockedIn: boolean | null;
+    token: string;
+  } | null>(null);
   const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
   const [isSelectingEmployee, setIsSelectingEmployee] = useState(false);
   const [activeEmployee, setActiveEmployee] = useState<{ id: string; firstName: string; lastName: string; role: string } | null>(null);
@@ -480,7 +491,21 @@ export default function TerminalPage() {
       // stale-closure class of bug. A verify call is one-shot and PIN-bound,
       // so in practice this only guards against a slow first attempt
       // resolving after the cashier already cleared/retried.
-      setPinVerification({ staffId: result.staff_id, staffName: result.staff_name, isClockedIn: result.is_clocked_in, token: result.verification_token });
+      //
+      // POS-PERF-P32R — `typeof` guards, not a bare field read: an API
+      // instance still on pre-P32 code returns a response with no
+      // `staff_id`/`is_clocked_in` keys at all, so `result.is_clocked_in`
+      // is `undefined` at runtime no matter what the compile-time response
+      // type claims. Falling back to `null` (unknown) instead of letting
+      // that `undefined` read as falsy is what keeps primaryActionLabel
+      // below from silently treating "the old API didn't tell me" as "not
+      // clocked in."
+      setPinVerification({
+        staffId: typeof result.staff_id === 'string' ? result.staff_id : null,
+        staffName: result.staff_name,
+        isClockedIn: typeof result.is_clocked_in === 'boolean' ? result.is_clocked_in : null,
+        token: result.verification_token,
+      });
     } catch (error) {
       setPinVerification(null);
       setPinError(error instanceof Error ? error.message : 'Invalid PIN');
@@ -2296,18 +2321,28 @@ export default function TerminalPage() {
     // additionally requires lockContext to say THIS screen locked because
     // of inactivity for THIS SAME staff id — never inferred or guessed
     // client-side.
+    //
+    // POS-PERF-P32R — isClockedIn is a true three-way value (true / false /
+    // null-for-"the API didn't say"), not a boolean, precisely so a stale
+    // API instance that omits the field can't be misread as `false` here.
+    // `=== true` / `=== false` (rather than truthy/falsy) keeps that null
+    // case falling through to the generic label below instead of silently
+    // asserting "Clock In & Open POS" for a staff member who, for all this
+    // screen actually knows, is already clocked in.
     const isIdleUnlockForThisStaff =
       pinVerification !== null &&
-      pinVerification.isClockedIn &&
+      pinVerification.isClockedIn === true &&
       lockContext?.reason === 'idle' &&
       lockContext.employeeId === pinVerification.staffId;
     const primaryActionLabel = !pinVerification
       ? 'Continue'
       : isIdleUnlockForThisStaff
         ? 'Unlock POS'
-        : pinVerification.isClockedIn
+        : pinVerification.isClockedIn === true
           ? `Continue as ${pinVerification.staffName.split(' ')[0]}`
-          : 'Clock In & Open POS';
+          : pinVerification.isClockedIn === false
+            ? 'Clock In & Open POS'
+            : 'Continue';
 
     return (
       <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-4 p-4 sm:p-6">

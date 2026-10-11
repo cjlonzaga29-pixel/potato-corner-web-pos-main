@@ -2659,6 +2659,45 @@ describe('TerminalPage — embedded "Who is working?" (Branch Account sessions)'
     expect(useAuthStore.getState().user).toEqual(BRANCH_USER);
     expect(useAuthStore.getState().accessToken).toBe('branch-token');
   });
+
+  // POS-PERF-P32R — the idle-lock-driven "Unlock POS" vs "correct handoff"
+  // label behavior (lockContext) is deliberately NOT unit-tested here with
+  // faked timers: React's own scheduler relies on real timer APIs even
+  // inside jsdom, so faking setTimeout ahead of a render makes the
+  // component's state updates stop flushing entirely (tried; every
+  // subsequent findBy/waitFor call hung for the real per-test timeout,
+  // including ones before the fake-time advance). The real, un-mocked
+  // IDLE_LOCK_MS wait in tests/e2e/pos-perf-p30r-session-security.spec.ts
+  // (test 9) is the actual verification for this behavior — see that spec
+  // and docs/runbooks/pos-perf-p30r-session-security-verification.md.
+
+  // POS-PERF-P32R — frontend/API version-skew compatibility: a `verify-pos`
+  // response from an API instance still on pre-P32 code has no
+  // `staff_id`/`is_clocked_in` keys at all (not `null`, genuinely absent),
+  // so this new frontend's parsed response reads them as `undefined`. The
+  // label must fall back to a neutral "Continue" rather than guessing
+  // `is_clocked_in: false` from the missing field — the live attendance
+  // check downstream (mockUseIsClockedIn) remains the actual gate, this only
+  // covers the confirmation button's own text.
+  it('a verify-pos response missing staff_id/is_clocked_in (old API) never guesses attendance state', async () => {
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_name: 'Jane Doe',
+      verification_token: 'verify-token-legacy',
+      expires_at: '2026-01-01T00:05:00.000Z',
+    } as unknown as { staff_id: string; staff_name: string; is_clocked_in: boolean; verification_token: string; expires_at: string });
+
+    render(<TerminalPage />);
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await screen.findByText('Jane Doe');
+    // Never a guessed "Clock In & Open POS" (would misread missing as false)
+    // and never "Continue as Jane" or "Unlock POS" (would misread missing as true).
+    expect(screen.queryByRole('button', { name: /Clock In & Open POS/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Continue as Jane/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unlock POS' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+  });
 });
 
 // Task 209.56C / POS-PERF-P30 — the Employee-scoped access token

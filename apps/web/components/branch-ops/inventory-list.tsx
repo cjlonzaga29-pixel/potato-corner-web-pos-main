@@ -146,9 +146,9 @@ export function InventoryList({ basePath }: { basePath: string }) {
             <ClipboardList className="mr-2 h-4 w-4" />
             Physical Count
           </Button>
-          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/approvals`)} className="w-full sm:w-auto">
+          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/stock-history`)} className="w-full sm:w-auto">
             <ClipboardCheck className="mr-2 h-4 w-4" />
-            Approvals
+            Stock History
           </Button>
         </div>
       </div>

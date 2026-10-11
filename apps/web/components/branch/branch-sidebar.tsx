@@ -71,9 +71,12 @@ export const BRANCH_NAV_ITEMS = [
   { label: 'Waste Management', href: '/branch/inventory/waste', icon: Trash2, group: 'Inventory' },
   { label: 'Transfers', href: '/branch/inventory/transfer', icon: Truck, group: 'Inventory' },
   // POS-PERF-P28 — Stock In/Adjustments/Physical Count now require
-  // supervisor approval before stock changes; this is where a branch
-  // account tracks its own submissions' status.
-  { label: 'Inventory Approvals', href: '/branch/inventory/approvals', icon: ClipboardCheck, group: 'Inventory' },
+  // supervisor approval before stock changes.
+  // POS-PERF-P31 — "Inventory Approvals" was folded into Stock History's
+  // "Request History" tab (alongside the applied-movement ledger as "Stock
+  // Changes") to avoid two separate, overlapping review surfaces. The old
+  // /branch/inventory/approvals URL still works via a redirect.
+  { label: 'Stock History', href: '/branch/inventory/stock-history', icon: ClipboardCheck, group: 'Inventory' },
 
   // POS-PERF-P26 — Products, Employees, Attendance, Reports, and Branch
   // Settings were removed entirely for the Branch Account: they were

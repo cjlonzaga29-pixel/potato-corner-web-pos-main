@@ -83,15 +83,26 @@ export type InventoryStockMovementType =
 
 /**
  * POS-PERF-P27 — view-level groupings over InventoryStockMovementType, used
- * only to filter the two branch-facing history screens (Order Deductions /
- * Stock Adjustments history) server-side. Admin/Supervisor's full ledger
- * view never sends a category and is unaffected.
+ * only to filter branch-facing history screens server-side. Admin/
+ * Supervisor's full ledger view never sends a category and is unaffected.
+ *
+ * POS-PERF-P31 — stock_in/waste/transfers added for the Stock History page's
+ * "Stock Changes" tab filter (All / Stock In / Adjustments / Waste /
+ * Transfers / Orders). order_deductions/adjustments are unchanged from their
+ * original meaning (Order Deductions page / Stock Adjustments history) —
+ * Stock History reuses them as-is for its own "Orders"/"Adjustments"
+ * filters rather than redefining them. PHYSICAL_COUNT has no dedicated
+ * bucket (not in the brief's named filter list) and only ever appears under
+ * "All".
  */
-export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments';
+export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments' | 'stock_in' | 'waste' | 'transfers';
 
 export const STOCK_MOVEMENT_CATEGORY_TYPES: Record<InventoryStockMovementCategory, InventoryStockMovementType[]> = {
   order_deductions: ['SALE', 'SALE_REVERSAL'],
   adjustments: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'],
+  stock_in: ['RECEIVING'],
+  waste: ['WASTE'],
+  transfers: ['TRANSFER_IN', 'TRANSFER_OUT'],
 };
 
 export type InventoryProofType = 'live_capture' | 'gallery_upload';

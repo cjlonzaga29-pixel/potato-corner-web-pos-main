@@ -107,6 +107,16 @@ vi.mock('../../queues/notification.queue.js', () => ({
   enqueueRawNotificationJob: vi.fn().mockResolvedValue(undefined),
 }));
 
+// POS-PERF-P31 — getStockMovements's reverse lookup from movement to the
+// approval request that produced it. Mocked the same way as every other
+// repository dependency above; tests that care about linked_request_id set
+// their own resolved value, everything else just needs this to resolve.
+vi.mock('../inventory-approval/inventory-approval.repository.js', () => ({
+  inventoryApprovalRepository: {
+    findByAppliedMovementIds: vi.fn(),
+  },
+}));
+
 // Branch inventory cutover — receive/waste convert the entered unit to the
 // item's base unit before touching InventoryStock. Tests below always enter
 // quantities already in the base unit, so the identity conversion here keeps
@@ -117,6 +127,7 @@ vi.mock('../product-components/unit-conversion.util.js', () => ({
 }));
 
 const { universalInventoryRepository: repo } = await import('./universal-inventory.repository.js');
+const { inventoryApprovalRepository } = await import('../inventory-approval/inventory-approval.repository.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
 const { getTransferDestinationBranchIds } = await import('../../lib/branch-access.js');
 const { recordAuditLog } = await import('../../middleware/audit-log.js');
@@ -215,6 +226,7 @@ beforeEach(() => {
   vi.mocked(repo.findUsersByIds).mockResolvedValue([]);
   vi.mocked(repo.findSiblingProofKeysByReferenceIds).mockResolvedValue(new Map());
   vi.mocked(repo.findTransactionReceiptNumbersByIds).mockResolvedValue([]);
+  vi.mocked(inventoryApprovalRepository.findByAppliedMovementIds).mockResolvedValue([]);
   // Mirrors a real Prisma round-trip: Decimal-typed columns always come back
   // as Decimal instances on read, even when the write was given a plain
   // number (as adjustStock's quantityDelta and transferStock's quantity are).
@@ -658,6 +670,69 @@ describe('universalInventoryService.getStockMovements', () => {
     const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
 
     expect(result.movements[0]).toMatchObject({ receipt_number: null });
+  });
+
+  // POS-PERF-P31 — Stock History's "Stock Changes" tab links a row back to
+  // the approval request that produced it (if any), via a reverse lookup on
+  // appliedMovementId. Never fabricated for a movement nothing points at.
+  it('sets linked_request_id from a matching approval request', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'movement-1' })],
+      total: 1,
+    } as never);
+    vi.mocked(inventoryApprovalRepository.findByAppliedMovementIds).mockResolvedValue([
+      { id: 'request-1', appliedMovementId: 'movement-1', reviewedByUserId: 'sup-1', reviewedAt: new Date('2026-08-03') },
+    ] as never);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(inventoryApprovalRepository.findByAppliedMovementIds).toHaveBeenCalledWith(['movement-1']);
+    expect(result.movements[0]).toMatchObject({ linked_request_id: 'request-1' });
+  });
+
+  it('leaves linked_request_id and reviewed_by_name null for a supervisor-direct movement nothing points at', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'movement-direct', recordedAsSupervisorDirect: true })],
+      total: 1,
+    } as never);
+    vi.mocked(inventoryApprovalRepository.findByAppliedMovementIds).mockResolvedValue([]);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(result.movements[0]).toMatchObject({ linked_request_id: null, reviewed_by_name: null });
+  });
+
+  it('resolves reviewed_by_name from the linked request\'s reviewer, batched', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'movement-1' })],
+      total: 1,
+    } as never);
+    vi.mocked(inventoryApprovalRepository.findByAppliedMovementIds).mockResolvedValue([
+      { id: 'request-1', appliedMovementId: 'movement-1', reviewedByUserId: 'sup-1', reviewedAt: new Date('2026-08-03') },
+    ] as never);
+    vi.mocked(repo.findUsersByIds).mockResolvedValue([{ id: 'sup-1', firstName: 'Supe', lastName: 'Visor', role: 'supervisor' }] as never);
+
+    const result = await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(repo.findUsersByIds).toHaveBeenCalledWith(['sup-1']);
+    expect(result.movements[0]).toMatchObject({ reviewed_by_name: 'Supe Visor' });
+  });
+
+  // The zero-variance physical-count placeholder (approveAndApply returns
+  // movementId: request.id when nothing was applied — see
+  // inventory-approval.service.ts) must never surface as a fabricated
+  // self-link: the repository call only ever receives this page's real
+  // movement ids, which that placeholder id is not one of.
+  it('never passes a non-movement id to the linked-request lookup', async () => {
+    vi.mocked(repo.findStockMovements).mockResolvedValue({
+      movements: [buildMovement({ id: 'movement-1' }), buildMovement({ id: 'movement-2' })],
+      total: 2,
+    } as never);
+    vi.mocked(inventoryApprovalRepository.findByAppliedMovementIds).mockResolvedValue([]);
+
+    await universalInventoryService.getStockMovements('branch-1', { page: 1, limit: 10 });
+
+    expect(inventoryApprovalRepository.findByAppliedMovementIds).toHaveBeenCalledWith(['movement-1', 'movement-2']);
   });
 });
 

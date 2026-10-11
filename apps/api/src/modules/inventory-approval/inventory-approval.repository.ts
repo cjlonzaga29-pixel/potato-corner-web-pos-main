@@ -179,4 +179,24 @@ export const inventoryApprovalRepository = {
   updateProof(id: string, proofKey: string, proofType: ImageProofType) {
     return prisma.inventoryApprovalRequest.update({ where: { id }, data: { proofKey, proofType } });
   },
+
+  /**
+   * POS-PERF-P31 — reverse lookup for the Stock History "Stock Changes" tab:
+   * which approval request (if any) produced each of these
+   * InventoryStockMovement ids. Only APPROVED UNIVERSAL_ITEM requests ever
+   * set appliedMovementId to a real movement id (see approveAndApply in
+   * inventory-approval.service.ts); a supervisor-direct write or legacy row
+   * simply won't match anything here, which the caller must read as "no
+   * linked request" rather than retrying or fabricating one. Callers are
+   * responsible for excluding the zero-variance physical-count placeholder
+   * case (appliedMovementId === the request's own id, not a real movement)
+   * before trusting a match — see getStockMovements's doc comment.
+   */
+  findByAppliedMovementIds(movementIds: string[]) {
+    if (movementIds.length === 0) return Promise.resolve([]);
+    return prisma.inventoryApprovalRequest.findMany({
+      where: { appliedMovementId: { in: movementIds }, target: 'UNIVERSAL_ITEM' },
+      select: { id: true, appliedMovementId: true, reviewedByUserId: true, reviewedAt: true },
+    });
+  },
 };

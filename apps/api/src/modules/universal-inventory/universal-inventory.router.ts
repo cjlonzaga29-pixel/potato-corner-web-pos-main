@@ -493,7 +493,7 @@ const stockMovementTypeValues = [
 // and reports.schema.ts's ReportFiltersSchema. Previously z.iso.datetime()-only,
 // which rejected the bare date the Stock Movement page's date filter sends,
 // surfacing as a 422 ("Something went wrong") whenever a date range was set.
-const stockMovementCategoryValues = ['order_deductions', 'adjustments'] as const;
+const stockMovementCategoryValues = ['order_deductions', 'adjustments', 'stock_in', 'waste', 'transfers'] as const;
 
 const stockMovementsQuerySchema = z.object({
   inventory_item_id: z.uuid().optional(),

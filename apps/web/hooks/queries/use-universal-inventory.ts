@@ -406,7 +406,7 @@ export function useBranchInventoryStockAlerts(branchId: string | null | undefine
  * (Order Deductions / Stock Adjustments history). Omitted by the Admin/
  * Supervisor full-ledger view, which still sees every movement type.
  */
-export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments';
+export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments' | 'stock_in' | 'waste' | 'transfers';
 
 export interface InventoryStockMovementFilters {
   inventory_item_id?: string;

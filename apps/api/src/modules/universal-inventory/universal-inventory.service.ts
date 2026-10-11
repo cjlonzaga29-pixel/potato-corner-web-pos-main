@@ -15,6 +15,7 @@ import { dayBounds } from '../../lib/manila-time.js';
 import { blendWeightedAverageCost } from '../../lib/inventory-cost.js';
 import { getTransferDestinationBranchIds } from '../../lib/branch-access.js';
 import { staffPinRepository } from '../staff-pin/staff-pin.repository.js';
+import { inventoryApprovalRepository } from '../inventory-approval/inventory-approval.repository.js';
 import type {
   CreateInventoryCategoryData,
   UpdateInventoryCategoryData,
@@ -293,6 +294,8 @@ function toStockMovementResponse(
     performedByRole?: string | null;
     responsibleUserName?: string | null;
     receiptNumber?: string | null;
+    linkedRequestId?: string | null;
+    reviewedByName?: string | null;
   },
 ) {
   return {
@@ -324,6 +327,8 @@ function toStockMovementResponse(
     recorded_as_supervisor_direct: row.recordedAsSupervisorDirect,
     responsible_staff_name: row.responsibleStaffName,
     pin_verified_at: row.pinVerifiedAt?.toISOString() ?? null,
+    linked_request_id: enrichment?.linkedRequestId ?? null,
+    reviewed_by_name: enrichment?.reviewedByName ?? null,
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -1182,11 +1187,29 @@ export const universalInventoryService = {
     const transactionReceipts = await repo.findTransactionReceiptNumbersByIds(transactionReferenceIds);
     const receiptNumberByTransactionId = new Map(transactionReceipts.map((t) => [t.id, t.transactionNumber]));
 
+    // POS-PERF-P31 — reverse lookup to the approval request (if any) that
+    // produced each movement. The zero-variance physical-count placeholder
+    // (approveAndApply returns movementId: request.id when nothing was
+    // applied) must never surface here as a fabricated self-link: filtering
+    // to requests whose appliedMovementId matches one of THIS PAGE's actual
+    // movement ids already excludes it, since that placeholder id is the
+    // request's own id, not a real InventoryStockMovement id in this list.
+    const movementIds = movements.map((m) => m.id);
+    const linkedRequests = await inventoryApprovalRepository.findByAppliedMovementIds(movementIds);
+    const requestIdByMovementId = new Map(linkedRequests.map((r) => [r.appliedMovementId as string, r.id]));
+    const reviewedByUserIdByMovementId = new Map(
+      linkedRequests.filter((r) => r.reviewedByUserId !== null).map((r) => [r.appliedMovementId as string, r.reviewedByUserId as string]),
+    );
+    const reviewerIds = Array.from(new Set(linkedRequests.map((r) => r.reviewedByUserId).filter((id): id is string => id !== null)));
+    const reviewerNameById = new Map((await repo.findUsersByIds(reviewerIds)).map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+
     const enrichedMovements = await Promise.all(
       movements.map(async (m) => {
         const proofKey =
           m.proofKey ?? (m.referenceType === 'transfer' && m.referenceId ? (siblingProofKeyByReferenceId.get(m.referenceId) ?? null) : null);
+        const reviewedByUserId = reviewedByUserIdByMovementId.get(m.id) ?? null;
         return toStockMovementResponse(m, {
+          reviewedByName: reviewedByUserId ? (reviewerNameById.get(reviewedByUserId) ?? null) : null,
           // Same reasoning as inventory-approval.service.ts's toResponse: one
           // row's unsignable proof object must not fail the whole page.
           proofUrl: proofKey ? await getSignedInventoryProofUrl(proofKey).catch(() => null) : null,
@@ -1195,6 +1218,7 @@ export const universalInventoryService = {
           responsibleUserName: m.responsibleUserId ? (nameById.get(m.responsibleUserId) ?? null) : null,
           receiptNumber:
             m.referenceType === 'transaction' && m.referenceId ? (receiptNumberByTransactionId.get(m.referenceId) ?? null) : null,
+          linkedRequestId: requestIdByMovementId.get(m.id) ?? null,
         });
       }),
     );

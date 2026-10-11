@@ -811,4 +811,42 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
 
     await inventoryApprovalService.returnForCorrection(request.id, 'cleanup', actor('supervisor', supervisorUserId, [branchId]));
   });
+
+  // POS-PERF-P31 — Stock History's "Stock Changes" tab links a movement row
+  // back to the approval request that produced it.
+  it('approving a request links its applied movement back to the request, end to end', async () => {
+    const request = await inventoryApprovalService.submitAdjustment(
+      { target: 'UNIVERSAL_ITEM', branchId, inventoryItemId: itemId, quantityDelta: 3, reasonCode: 'count_correction', staffPin: staffPinFixture() },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.applied_movement_id).not.toBeNull();
+
+    const history = await universalInventoryService.getStockMovements(branchId, { page: 1, limit: 50 });
+    const movement = history.movements.find((m) => m.id === approved.applied_movement_id);
+    expect(movement).toBeDefined();
+    expect(movement?.linked_request_id).toBe(request.id);
+    expect(movement?.reviewed_by_name).toBe('Supe Visor');
+  });
+
+  // A zero-variance physical count applies no InventoryStockMovement at all
+  // (applyApprovedRequest's placeholder movementId === request.id, not a
+  // real movement) — it must never surface as a fabricated self-link, which
+  // this proves by confirming the placeholder id never appears as a real
+  // movement in the ledger at all (nothing to mislink in the first place).
+  it('a zero-variance physical count approval applies no movement and links to nothing', async () => {
+    const onHand = await prisma.inventoryStock.findUniqueOrThrow({ where: { branchId_inventoryItemId: { branchId, inventoryItemId: itemId } } });
+    const requests = await inventoryApprovalService.submitPhysicalCount(
+      { target: 'UNIVERSAL_ITEM', branchId, counts: [{ inventoryItemId: itemId, countedQuantity: onHand.quantityOnHand.toNumber() }] },
+      actor('branch', branchUserId, [branchId]),
+    );
+    const [request] = requests;
+    if (!request) throw new Error('expected submitPhysicalCount to return exactly one request');
+    const approved = await inventoryApprovalService.approve(request.id, actor('supervisor', supervisorUserId, [branchId]), null);
+    expect(approved.status).toBe('APPROVED');
+    expect(approved.applied_movement_id).toBe(approved.id); // the documented placeholder, not a real movement id
+
+    const history = await universalInventoryService.getStockMovements(branchId, { page: 1, limit: 50 });
+    expect(history.movements.find((m) => m.id === approved.applied_movement_id)).toBeUndefined();
+  });
 });

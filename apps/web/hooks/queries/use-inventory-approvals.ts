@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
@@ -27,6 +27,25 @@ function queryKey(branchId: string | null | undefined, status: InventoryApproval
   return ['inventory-approvals', branchId, status] as const;
 }
 
+/**
+ * POS-PERF-P31 — targeted invalidation: a given action only ever moves a
+ * request between two of the four status tabs (or touches stock), so only
+ * those tabs' cached data needs to be refetched — not every status/branch
+ * combination the queue has ever fetched. Falls back to invalidating every
+ * status for this branch when the caller doesn't know which two are
+ * affected (e.g. a correction, which always goes RETURNED -> PENDING but is
+ * simplest to just invalidate broadly for).
+ */
+function invalidateApprovalStatuses(
+  queryClient: ReturnType<typeof useQueryClient>,
+  branchId: string | null | undefined,
+  statuses: InventoryApprovalStatusFilter[],
+) {
+  for (const status of statuses) {
+    void queryClient.invalidateQueries({ queryKey: queryKey(branchId, status) });
+  }
+}
+
 function invalidateApprovals(queryClient: ReturnType<typeof useQueryClient>, branchId: string | null | undefined) {
   void queryClient.invalidateQueries({ queryKey: ['inventory-approvals', branchId] });
   void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock', branchId] });
@@ -44,6 +63,11 @@ export function useInventoryApprovals(branchId: string | null | undefined, statu
     },
     enabled: Boolean(branchId),
     staleTime: 10 * 1000,
+    // Switching back to a tab/filter combination already fetched shows its
+    // own last-good data immediately instead of a blank/loading flash,
+    // while a background refetch runs — see the Updating indicator in
+    // inventory-approval-queue.tsx, driven by isFetching.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -73,7 +97,11 @@ export function useApproveInventoryApprovalRequest(branchId: string | null | und
       return response.data;
     },
     onSuccess: () => {
-      invalidateApprovals(queryClient, branchId);
+      // Moves PENDING -> APPROVED and changes stock — the movements/stock
+      // queries (keyed under 'branch-inventory-stock') aren't split by
+      // approval status, so they stay a broad invalidation.
+      invalidateApprovalStatuses(queryClient, branchId, ['PENDING', 'APPROVED']);
+      void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock', branchId] });
       toast.success('Approved — stock has been updated');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -92,7 +120,7 @@ export function useReturnInventoryApprovalRequest(branchId: string | null | unde
       return response.data;
     },
     onSuccess: () => {
-      invalidateApprovals(queryClient, branchId);
+      invalidateApprovalStatuses(queryClient, branchId, ['PENDING', 'RETURNED']);
       toast.success('Returned for correction');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -112,7 +140,8 @@ export function useCancelInventoryApprovalRequest(branchId: string | null | unde
       return response.data;
     },
     onSuccess: () => {
-      invalidateApprovals(queryClient, branchId);
+      // Reachable from either PENDING or RETURNED — invalidate both plus the destination.
+      invalidateApprovalStatuses(queryClient, branchId, ['PENDING', 'RETURNED', 'CANCELLED']);
       toast.success('Request permanently cancelled');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -131,7 +160,7 @@ export function useCorrectInventoryApprovalRequest(branchId: string | null | und
       return response.data;
     },
     onSuccess: () => {
-      invalidateApprovals(queryClient, branchId);
+      invalidateApprovalStatuses(queryClient, branchId, ['RETURNED', 'PENDING']);
       toast.success('Resubmitted for review');
     },
     onError: (error: Error) => toast.error(error.message),

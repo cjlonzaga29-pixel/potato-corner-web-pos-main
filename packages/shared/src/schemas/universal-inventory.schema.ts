@@ -300,6 +300,17 @@ export const inventoryStockMovementResponseSchema = z.object({
   recorded_as_supervisor_direct: z.boolean().optional(),
   responsible_staff_name: z.string().nullable().optional(),
   pin_verified_at: z.iso.datetime().nullable().optional(),
+  // POS-PERF-P31 — the InventoryApprovalRequest whose approval produced this
+  // movement, when there is one (null for a supervisor-direct write, a
+  // legacy row, or any movement not written via the approval queue — never
+  // fabricated). Lets the Stock History "Stock Changes" tab link a row back
+  // to its Request History entry instead of duplicating that data.
+  linked_request_id: z.uuid().nullable().optional(),
+  // The supervisor/admin who approved the linked_request_id request, if any
+  // — null whenever linked_request_id is null (nothing was reviewed) or the
+  // reviewer can no longer be resolved. Never the performer/responsible
+  // staff name repeated under a different label.
+  reviewed_by_name: z.string().nullable().optional(),
   created_at: z.iso.datetime(),
 });
 

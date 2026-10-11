@@ -1,7 +1,6 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { InventoryApprovalQueue } from '@/components/branch-ops/inventory-approvals/inventory-approval-queue';
-
+/** POS-PERF-P31 — folded into Stock History's "Request History" tab; kept as a compatibility redirect so the old URL keeps working. */
 export default function BranchInventoryApprovalsPage() {
-  return <InventoryApprovalQueue basePath="/branch" />;
+  redirect('/branch/inventory/stock-history?tab=requests');
 }

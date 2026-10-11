@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { ClipboardCheck } from 'lucide-react';
+import { ClipboardCheck, Loader2 } from 'lucide-react';
 import type { InventoryApprovalRequestResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,12 +34,27 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
   const [status, setStatus] = useState<InventoryApprovalStatusFilter>('PENDING');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   useInventoryApprovalRealtimeSync(activeBranchId);
-  const { data, isLoading, isError, refetch } = useInventoryApprovals(activeBranchId, status);
+  const { data, isLoading, isFetching, isError, refetch } = useInventoryApprovals(activeBranchId, status);
 
   const columns: ColumnDef<InventoryApprovalRequestResponse>[] = [
     { id: 'submitted_at', header: 'Submitted At', cell: ({ row }) => formatDateTime(row.original.submitted_at) },
     { id: 'item', header: 'Item', cell: ({ row }) => row.original.item_name ?? '—' },
     { id: 'operation', header: 'Operation', cell: ({ row }) => <Badge variant="secondary">{OPERATION_LABELS[row.original.operation] ?? row.original.operation}</Badge> },
+    {
+      // POS-PERF-P31 — a request's own status never implies a stock delta by
+      // itself: Pending/Returned/Cancelled never apply one, and even an
+      // Approved zero-variance physical count applies none (see
+      // applyApprovedRequest's placeholder movementId in
+      // inventory-approval.service.ts). Never fabricated — read directly
+      // from whether applied_movement_id resolves to a real movement.
+      id: 'stock_change',
+      header: 'Stock Change',
+      cell: ({ row }) => {
+        const r = row.original;
+        const noStockChange = r.status !== 'APPROVED' || !r.applied_movement_id || r.applied_movement_id === r.id;
+        return noStockChange ? <span className="text-xs text-muted-foreground">No stock change</span> : <Badge variant="active">Applied</Badge>;
+      },
+    },
     {
       id: 'quantity',
       header: 'Quantity',
@@ -95,10 +110,7 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Inventory Approvals</h1>
-        <p className="text-sm text-muted-foreground">Manual Stock In, Adjustments, and Physical Counts require supervisor review before they change stock.</p>
-      </div>
+      <p className="text-sm text-muted-foreground">Manual Stock In, Adjustments, and Physical Counts require supervisor review before they change stock.</p>
 
       <Tabs value={status} onValueChange={(v) => setStatus(v as InventoryApprovalStatusFilter)}>
         <TabsList>
@@ -108,6 +120,12 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
           <TabsTrigger value="CANCELLED">Cancelled</TabsTrigger>
         </TabsList>
       </Tabs>
+
+      {isFetching && !isLoading && (
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" /> Updating…
+        </span>
+      )}
 
       <DataTable
         columns={columns}

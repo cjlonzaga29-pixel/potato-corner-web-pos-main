@@ -61,6 +61,16 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
   let branchUserId: string;
   let supervisorUserId: string;
   let adminUserId: string;
+  // POS-PERF-P34R2 — guards afterAll against running its deleteMany calls
+  // with an unassigned (undefined) id when beforeAll throws partway through
+  // setup. Prisma silently treats an undefined value inside `{ in: [...] }`
+  // as "no filter", not "match nothing" — so an unguarded cleanup for a
+  // failed setup can delete every row of that model instead of none,
+  // masking the real beforeAll failure behind an unrelated FK error.
+  // Reproduced live against this project's disposable local Postgres: an
+  // unguarded afterAll of this exact shape deleted every row of an
+  // unrelated table instance-wide after a seed call failed partway through.
+  let setupSucceeded = false;
 
   beforeAll(async () => {
     const branch = await prisma.branch.create({
@@ -113,9 +123,11 @@ describe.skipIf(!isLocalDatabase)('inventory-approval integration (real Postgres
       data: { role: 'super_admin', firstName: 'Admin', lastName: 'User', employmentType: 'regular', email: `admin-${randomUUID()}@test.local` },
     });
     adminUserId = adminUser.id;
+    setupSucceeded = true;
   });
 
   afterAll(async () => {
+    if (!setupSucceeded) return;
     // InventoryMovement/InventoryStockMovement rows are immutable (CR-004) —
     // a direct deleteMany on either is blocked by prisma-immutability.ts.
     // Deleting their owning Branch/InventoryItem/Ingredient instead cascades

@@ -54,6 +54,13 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
   let branchUserId: string;
   let branchToken: string;
   let originalFlag: boolean;
+  // POS-PERF-P34R2 — same guard as inventory-approval.integration.test.ts
+  // and staff-pin.integration.test.ts: an unassigned id reaching a
+  // deleteMany's `where` (directly or inside `{ in: [...] }`) is read by
+  // Prisma as "no filter," not "match nothing," so a beforeAll failure
+  // partway through setup must short-circuit afterAll's cleanup entirely
+  // rather than let it run against whatever ids did get assigned.
+  let setupSucceeded = false;
 
   beforeAll(async () => {
     originalFlag = config.manualInventoryApprovalRequired;
@@ -85,9 +92,11 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
     await new Promise<void>((resolve) => server.once('listening', resolve));
     const { port } = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${port}`;
+    setupSucceeded = true;
   });
 
   afterAll(async () => {
+    if (!setupSucceeded) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await prisma.inventoryOperationAttempt.deleteMany({ where: { branchId } });
     await prisma.inventoryApprovalRequest.deleteMany({ where: { branchId } });
@@ -186,6 +195,15 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
   describe('direct-write (supervisor) concurrency — the actual stock mutation, not just the approval-request row', () => {
     let supervisorUserId: string;
     let supervisorToken: string;
+    // POS-PERF-P34R2 — see the module-level setupSucceeded guard above; this
+    // nested block's own afterAll needs the identical guard. Without it, a
+    // user.create failure here would leave supervisorUserId undefined, and
+    // afterAll's deleteMany({ where: { userId: supervisorUserId } }) /
+    // ({ where: { id: supervisorUserId } }) would each run as an unscoped
+    // delete — every userBranchAssignment, then every user, in the
+    // database — since Prisma reads an undefined filter value as "no
+    // filter" rather than "match nothing."
+    let nestedSetupSucceeded = false;
 
     beforeAll(async () => {
       const supervisorUser = await prisma.user.create({
@@ -194,9 +212,11 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
       supervisorUserId = supervisorUser.id;
       await prisma.userBranchAssignment.create({ data: { userId: supervisorUserId, branchId } });
       supervisorToken = generateSupervisorToken([branchId], { userId: supervisorUserId });
+      nestedSetupSucceeded = true;
     });
 
     afterAll(async () => {
+      if (!nestedSetupSucceeded) return;
       await prisma.userBranchAssignment.deleteMany({ where: { userId: supervisorUserId } });
       await prisma.user.deleteMany({ where: { id: supervisorUserId } });
     });

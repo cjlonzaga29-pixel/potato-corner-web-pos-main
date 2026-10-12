@@ -32,6 +32,12 @@ describe.skipIf(!isLocalDatabase)('staff-pin integration (real Postgres)', () =>
   let staff1Id: string;
   let staff2Id: string;
   let adminUserId: string;
+  // POS-PERF-P34R2 — see the identical guard in
+  // inventory-approval.integration.test.ts: afterAll must not run its
+  // deleteMany calls against ids beforeAll never got to assign, since
+  // Prisma treats an undefined value inside `{ in: [...] }` as no filter at
+  // all rather than "match nothing."
+  let setupSucceeded = false;
 
   beforeAll(async () => {
     const branchA = await prisma.branch.create({
@@ -59,9 +65,11 @@ describe.skipIf(!isLocalDatabase)('staff-pin integration (real Postgres)', () =>
       data: { role: 'super_admin', firstName: 'Admin', lastName: 'User', employmentType: 'regular', email: `admin-${randomUUID()}@test.local` },
     });
     adminUserId = admin.id;
+    setupSucceeded = true;
   });
 
   afterAll(async () => {
+    if (!setupSucceeded) return;
     await prisma.staffPinVerification.deleteMany({ where: { branchId: { in: [branchAId, branchBId] } } });
     await prisma.staffPinBranchLookup.deleteMany({ where: { branchId: { in: [branchAId, branchBId] } } });
     await prisma.staffPin.deleteMany({ where: { userId: { in: [staff1Id, staff2Id] } } });

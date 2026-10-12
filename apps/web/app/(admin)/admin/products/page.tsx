@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil, Plus } from 'lucide-react';
+import { Pencil } from 'lucide-react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import type { ProductResponse } from '@potato-corner/shared';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -15,7 +15,6 @@ import { useProducts } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { BranchExclusiveBadge } from '@/components/admin/products/branch-exclusive-badge';
-import { CreateProductDialog } from '@/components/admin/products/create-product-dialog';
 import { ProductImageThumbnail } from '@/components/admin/products/product-image-thumbnail';
 
 const STATUS_FILTERS = [
@@ -37,7 +36,6 @@ export default function ProductCatalogPage() {
   const [status, setStatus] = useState<string>('active');
   const [seasonal, setSeasonal] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const [createOpen, setCreateOpen] = useState(false);
 
   const { data, isLoading, isError, refetch } = useProducts({
     status: status === 'all' ? undefined : (status as ProductResponse['status']),
@@ -95,12 +93,10 @@ export default function ProductCatalogPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="app-title font-bold">Product Catalog</h1>
-          <p className="text-sm text-muted-foreground">Manage the global product catalog, variants, and flavor pricing.</p>
+          <p className="text-sm text-muted-foreground">
+            View the global product catalog, variants, and flavor pricing. New products are created by Supervisors.
+          </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
-          <Plus className="mr-2 h-4 w-4" />
-          Create Product
-        </Button>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -170,10 +166,8 @@ export default function ProductCatalogPage() {
         onPaginationChange={setPagination}
         rowCount={data?.total ?? 0}
         onRowClick={(product) => router.push(`/admin/products/${product.id}`)}
-        emptyState={<EmptyState title="No products yet" description="Click Create Product to add the first one." />}
+        emptyState={<EmptyState title="No products yet" description="Supervisors create new products from their Products page." />}
       />
-
-      <CreateProductDialog open={createOpen} onOpenChange={setCreateOpen} />
     </div>
   );
 }

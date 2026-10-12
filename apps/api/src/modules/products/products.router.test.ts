@@ -3,9 +3,14 @@ import type { NextFunction, Request, Response, Router } from 'express';
 import { randomUUID } from 'node:crypto';
 
 /**
- * Task 209.6 — Product Image Management (Admin Only). Only Admin may
- * upload/replace/delete a product's image; Supervisor/Branch keep the same
- * read access they already have to products (adminSupervisorOrBranch).
+ * Task 209.6 / POS-PERF-P34 — Product Image Management. Upload is now
+ * Admin-or-Supervisor at the router/authorize level (Supervisor creates
+ * products, and the creation form immediately uploads an optional image);
+ * ownership scoping — a Supervisor may only upload to a product they
+ * created — is enforced inside productsService.uploadProductImage, not at
+ * this middleware layer, so it isn't observable in these router-wiring
+ * tests (the service is mocked). Delete stays Admin-only. Branch keeps the
+ * same read access it already has to products (adminSupervisorOrBranch).
  * Checked against the real authorize() middleware chain rather than mocked
  * away, same technique as product-categories.router.test.ts and
  * cash.router.test.ts — no supertest/HTTP harness, so multer's own
@@ -126,7 +131,7 @@ describe('GET /api/products/:productId/image — read access mirrors product rea
   });
 });
 
-describe('POST /api/products/:productId/image — Admin only', () => {
+describe('POST /api/products/:productId/image — Admin or Supervisor', () => {
   it('rejects a branch actor with 403, never reaching multer or the service (unauthorized upload)', async () => {
     const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/image');
     const req = mockReq({ ...authHeader(generateBranchToken(randomUUID())), params: { productId: 'prod-1' } });
@@ -137,19 +142,31 @@ describe('POST /api/products/:productId/image — Admin only', () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(productsService.uploadProductImage).not.toHaveBeenCalled();
     // Confirms the 403 fired at the authorize() step (index 1: authenticate,
-    // adminOnly), before ever reaching multer's parsing middleware.
+    // adminOrSupervisor), before ever reaching multer's parsing middleware.
     expect(ran).toBe(2);
   });
 
-  it('rejects a supervisor actor with 403, never reaching multer or the service (unauthorized upload)', async () => {
+  it('lets a supervisor actor through authorize() to the finalizer (ownership is enforced in the service, not here)', async () => {
+    vi.mocked(productsService.uploadProductImage).mockResolvedValue({ image_url: 'https://example.com/signed.webp' });
     const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/image');
-    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), params: { productId: 'prod-1' } });
+    const finalizer = handlers[handlers.length - 1] as Middleware;
+    const req = mockReq({
+      params: { productId: 'prod-1' },
+      user: { user_id: 'supervisor-1', role: 'supervisor', email: 's@test.com' },
+      file: { buffer: Buffer.from('fake'), originalname: 'photo.jpg' },
+      ip: '127.0.0.1',
+    } as never);
     const res = mockRes();
 
-    await runHandlers(handlers, req, res);
+    await finalizer(req, res, vi.fn() as NextFunction);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(productsService.uploadProductImage).not.toHaveBeenCalled();
+    expect(productsService.uploadProductImage).toHaveBeenCalledWith(
+      'prod-1',
+      { buffer: Buffer.from('fake'), originalname: 'photo.jpg' },
+      { id: 'supervisor-1', role: 'supervisor' },
+      '127.0.0.1',
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 
   it('rejects the finalizer with 422 IMAGE_REQUIRED when multer found no file', async () => {

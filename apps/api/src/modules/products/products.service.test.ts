@@ -63,6 +63,13 @@ const storageMock = {
   remove: vi.fn().mockResolvedValue({ error: null }),
 };
 
+// POS-PERF-P34 — createProduct checks a supervisor's branch access for
+// branch-exclusive products via hasBranchAccess; mocked so these tests never
+// hit the real branchesRepository/prisma.
+vi.mock('../../lib/branch-access.js', () => ({
+  hasBranchAccess: vi.fn(),
+}));
+
 vi.mock('../../lib/supabase.js', () => ({
   supabaseAdmin: {
     storage: {
@@ -201,6 +208,7 @@ const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
 const { prisma } = await import('../../lib/prisma.js');
+const { hasBranchAccess } = await import('../../lib/branch-access.js');
 
 // Task 209.x — the signed-URL reuse cache (products.service.ts) is
 // module-level state that otherwise persists across every test in this
@@ -305,6 +313,7 @@ function buildCreateResult(productOverrides: Partial<Record<string, unknown>> = 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(hasBranchAccess).mockResolvedValue(true);
 });
 
 describe('productsService.createProduct', () => {
@@ -454,6 +463,57 @@ describe('productsService.createProduct', () => {
         null,
       ),
     ).rejects.toMatchObject({ code: 'EXCLUSIVE_BRANCH_NOT_FOUND', statusCode: 422 });
+
+    expect(productsRepository.createWithCascade).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P34 — Supervisor product creation
+  it('allows a supervisor to create a non-exclusive product (cascades to every active branch, same as super_admin)', async () => {
+    vi.mocked(productsRepository.createWithCascade).mockResolvedValue(
+      buildCreateResult({ status: 'draft', createdBy: SUPERVISOR.id }, ['branch-a', 'branch-b']) as never,
+    );
+
+    const result = await productsService.createProduct(
+      { name: 'Cheese Fries', status: 'draft', is_seasonal: false, branch_exclusive: false },
+      SUPERVISOR,
+      null,
+    );
+
+    expect(result.status).toBe('draft');
+    expect(productsRepository.createWithCascade).toHaveBeenCalledWith(expect.objectContaining({ branchExclusive: false }), SUPERVISOR.id);
+  });
+
+  it('allows a supervisor to create a branch-exclusive product scoped to a branch they have access to', async () => {
+    vi.mocked(productsRepository.findActiveBranch).mockResolvedValue({ id: 'branch-a', name: 'Main' } as never);
+    vi.mocked(hasBranchAccess).mockResolvedValue(true);
+    vi.mocked(productsRepository.createWithCascade).mockResolvedValue(
+      buildCreateResult({ status: 'draft', branchExclusive: true, exclusiveBranchId: 'branch-a' }, ['branch-a']) as never,
+    );
+
+    await productsService.createProduct(
+      { name: 'Branch Special Fries', status: 'draft', is_seasonal: false, branch_exclusive: true, exclusive_branch_id: 'branch-a' },
+      SUPERVISOR,
+      null,
+    );
+
+    expect(hasBranchAccess).toHaveBeenCalledWith(expect.objectContaining({ user_id: SUPERVISOR.id, role: ROLES.SUPERVISOR }), 'branch-a');
+    expect(productsRepository.createWithCascade).toHaveBeenCalledWith(
+      expect.objectContaining({ branchExclusive: true, exclusiveBranchId: 'branch-a' }),
+      SUPERVISOR.id,
+    );
+  });
+
+  it('rejects a supervisor creating a branch-exclusive product scoped to a branch they cannot access', async () => {
+    vi.mocked(productsRepository.findActiveBranch).mockResolvedValue({ id: 'branch-z', name: 'Other' } as never);
+    vi.mocked(hasBranchAccess).mockResolvedValue(false);
+
+    await expect(
+      productsService.createProduct(
+        { name: 'Branch Special Fries', status: 'draft', is_seasonal: false, branch_exclusive: true, exclusive_branch_id: 'branch-z' },
+        SUPERVISOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'EXCLUSIVE_BRANCH_ACCESS_DENIED', statusCode: 403 });
 
     expect(productsRepository.createWithCascade).not.toHaveBeenCalled();
   });
@@ -2494,6 +2554,25 @@ describe('productsService.uploadProductImage', () => {
       productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPER_ADMIN, null),
     ).rejects.toMatchObject({ code: 'PRODUCT_IMAGE_UPLOAD_FAILED', statusCode: 502 });
     expect(productsRepository.updateImagePath).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P34 — Supervisor may upload only to a product they created
+  it('allows a supervisor to upload an image for a product they created', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null, createdBy: SUPERVISOR.id } as never);
+    vi.mocked(productsRepository.updateImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
+
+    const result = await productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPERVISOR, null);
+
+    expect(result).toEqual({ image_url: 'https://example.com/product-image.webp' });
+  });
+
+  it('rejects a supervisor uploading an image for a product they did not create', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null, createdBy: SUPER_ADMIN.id } as never);
+
+    await expect(
+      productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPERVISOR, null),
+    ).rejects.toMatchObject({ code: 'PRODUCT_IMAGE_FORBIDDEN', statusCode: 403 });
+    expect(storageMock.upload).not.toHaveBeenCalled();
   });
 });
 

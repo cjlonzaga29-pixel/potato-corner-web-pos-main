@@ -18,6 +18,7 @@ import { productReadinessService } from '../product-readiness/product-readiness.
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
 import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
 import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -722,6 +723,21 @@ export const productsService = {
       const branch = await productsRepository.findActiveBranch(data.exclusive_branch_id);
       if (!branch) {
         throw new ProductError('EXCLUSIVE_BRANCH_NOT_FOUND', 'exclusive_branch_id must reference an active branch', 422);
+      }
+
+      // POS-PERF-P34 — a supervisor may only scope a branch-exclusive
+      // product to one of their own active branch assignments (checked
+      // against the database, never the JWT's stale branch_ids claim — see
+      // hasBranchAccess). super_admin is unrestricted and never reaches
+      // this branch since the router only lets super_admin/supervisor POST here.
+      if (createdBy.role === ROLES.SUPERVISOR) {
+        const allowed = await hasBranchAccess(
+          { user_id: createdBy.id, role: createdBy.role, branch_ids: [] } as unknown as JwtPayload,
+          data.exclusive_branch_id,
+        );
+        if (!allowed) {
+          throw new ProductError('EXCLUSIVE_BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+        }
       }
     }
 
@@ -1850,6 +1866,14 @@ export const productsService = {
   ): Promise<{ image_url: string | null }> {
     const existing = await productsRepository.findImagePath(productId);
     if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    // POS-PERF-P34 — product creation (and its image step) opened up to
+    // Supervisor, but image management for the broader catalog stays
+    // super_admin-only: a supervisor may only set/replace the image on a
+    // product they themselves created, not edit an arbitrary existing one.
+    if (actor.role === ROLES.SUPERVISOR && existing.createdBy !== actor.id) {
+      throw new ProductError('PRODUCT_IMAGE_FORBIDDEN', 'You may only upload an image for a product you created', 403);
+    }
 
     const compressed = await sharp(file.buffer)
       .resize({ width: 1200, withoutEnlargement: true })

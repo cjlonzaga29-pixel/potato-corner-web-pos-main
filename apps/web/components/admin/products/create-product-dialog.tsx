@@ -73,7 +73,7 @@ interface CreateProductDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-/** Product Management is the sole source of truth for new products (Product Request workflow removed) — created here as draft/active, then variants, flavors, and ProductInventory mappings are added from the product's own detail page. */
+/** POS-PERF-P34 — Supervisor-only product creation (Product Request workflow removed) — created here as draft/active, then variants, flavors, and ProductInventory mappings are added from the product's own detail page by an admin. */
 export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogProps) {
   const router = useRouter();
   const createProduct = useCreateProduct();
@@ -164,7 +164,10 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
     }
 
     handleOpenChange(false);
-    router.push(`/admin/products/${productId}`);
+    // POS-PERF-P34 — product creation moved to Supervisor; this dialog is
+    // only ever opened from /supervisor/products now (Admin keeps read-only
+    // visibility via its own product list, not this dialog).
+    router.push(`/supervisor/products/${productId}`);
   }
 
   const isRetryingImage = Boolean(createdProductId) && Boolean(imageUploadError);

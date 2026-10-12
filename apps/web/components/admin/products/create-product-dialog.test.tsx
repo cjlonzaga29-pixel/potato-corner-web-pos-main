@@ -189,7 +189,7 @@ describe('CreateProductDialog — Product Image (Task 209.6)', () => {
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
     expect(uploadImageMutateAsync).not.toHaveBeenCalled();
-    expect(mockPush).toHaveBeenCalledWith('/admin/products/product-1');
+    expect(mockPush).toHaveBeenCalledWith('/supervisor/products/product-1');
   });
 
   it('stages an image via ImageUpload and uploads it to the newly created product on submit', async () => {
@@ -204,7 +204,7 @@ describe('CreateProductDialog — Product Image (Task 209.6)', () => {
     const [uploadArgs] = uploadImageMutateAsync.mock.calls[0] as [{ productId: string; file: File }];
     expect(uploadArgs.productId).toBe('product-1');
     expect(uploadArgs.file.name).toBe('photo.jpg');
-    expect(mockPush).toHaveBeenCalledWith('/admin/products/product-1');
+    expect(mockPush).toHaveBeenCalledWith('/supervisor/products/product-1');
   });
 
   it('staging an image replaces the picker with a Remove/Replace preview instead of calling the network', () => {
@@ -244,7 +244,7 @@ describe('CreateProductDialog — Product Image (Task 209.6)', () => {
     uploadImageMutateAsync.mockResolvedValueOnce({ image_url: 'https://example.com/signed.webp' });
     fireEvent.click(retryButton);
 
-    await vi.waitFor(() => expect(mockPush).toHaveBeenCalledWith('/admin/products/product-1'));
+    await vi.waitFor(() => expect(mockPush).toHaveBeenCalledWith('/supervisor/products/product-1'));
     // Retry re-uses the already-created product — createProduct is never called a second time.
     expect(mutateAsync).toHaveBeenCalledTimes(1);
     expect(uploadImageMutateAsync).toHaveBeenCalledTimes(2);

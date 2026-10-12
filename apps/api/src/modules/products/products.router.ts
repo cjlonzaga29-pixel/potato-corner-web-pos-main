@@ -33,7 +33,7 @@ import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
 
-// Task 209.6 — Product Image Management (Admin Only). Same limits/shape as
+// Task 209.6 — Product Image Management. Same limits/shape as
 // expenses.router.ts's receiptUpload: 5MB cap, JPEG/PNG/WebP only.
 const productImageUpload = multer({
   storage: multer.memoryStorage(),
@@ -168,7 +168,11 @@ router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange
   }
 });
 
-router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+// POS-PERF-P34 — product creation moved to Supervisor (and super_admin, for
+// read-only/reporting continuity). Branch/staff still cannot create
+// products. Supervisor-specific scoping (e.g. exclusive_branch_id must be
+// one of their own branches) is enforced in productsService.createProduct.
+router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.createProduct(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -203,10 +207,13 @@ router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, asy
   }
 });
 
-// Task 209.6 — Product Image Management (Admin Only). Read mirrors
-// GET /:productId (adminOrSupervisor); upload/delete are write
-// operations restricted to Admin, the same posture as every other
-// product-identity write route (POST/PATCH/DELETE /:productId above).
+// Task 209.6 — Product Image Management. Read mirrors GET /:productId
+// (adminOrSupervisor). Upload is opened to Supervisor as part of the
+// product-creation workflow (POS-PERF-P34) but scoped in the service layer
+// to products the supervisor themselves created. Delete stays Admin-only —
+// it's a catalog-maintenance action on an existing product, not a creation
+// step, same posture as every other product-identity write route
+// (PATCH/DELETE /:productId above).
 
 router.get('/:productId/image', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -221,7 +228,7 @@ router.get('/:productId/image', authenticate, adminOrSupervisor, requirePassword
 router.post(
   '/:productId/image',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   (req: Request, res: Response, next: NextFunction) => {
     productImageUpload.single('image')(req, res, (error: unknown) => {

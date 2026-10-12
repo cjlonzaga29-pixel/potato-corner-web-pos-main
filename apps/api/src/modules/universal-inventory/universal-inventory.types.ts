@@ -135,6 +135,8 @@ export interface AdjustInventoryStockData {
   recordedAsSupervisorDirect?: boolean;
   responsibleStaffName?: string;
   pinVerifiedAt?: Date;
+  /** POS-PERF-P33R — distinct, never-verified free-text attribution; never copied into responsibleStaffName. See schema.prisma's InventoryStockMovement doc comment. */
+  staffInvolvedName?: string;
   proofKey?: string;
   proofType?: InventoryProofType;
 }
@@ -145,7 +147,7 @@ export interface WasteInventoryStockData {
   quantity: number;
   enteredUnitId?: string;
   reasonCode: string;
-  /** Accountable staff member for this waste — must be an active user assigned to branchId. Distinct from performedByUserId ("recorded by"). POS-PERF-P33: optional now that inventory-PIN identification is no longer required for supervisor/admin direct writes — a free-text "Staff Involved" name (responsibleStaffName) replaces it when no PIN-resolved user id exists. */
+  /** Accountable staff member for this waste — must be an active user assigned to branchId. Distinct from performedByUserId ("recorded by"). POS-PERF-P33: optional now that inventory-PIN identification is no longer required for supervisor/admin direct writes. */
   responsibleUserId?: string;
   notes?: string;
   performedByUserId?: string;
@@ -153,6 +155,8 @@ export interface WasteInventoryStockData {
   recordedAsSupervisorDirect?: boolean;
   responsibleStaffName?: string;
   pinVerifiedAt?: Date;
+  /** POS-PERF-P33R — distinct, never-verified free-text attribution; never copied into responsibleStaffName. See schema.prisma's InventoryStockMovement doc comment. */
+  staffInvolvedName?: string;
   proofKey?: string;
   proofType?: InventoryProofType;
 }

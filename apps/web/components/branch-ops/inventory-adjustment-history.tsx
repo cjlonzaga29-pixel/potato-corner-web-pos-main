@@ -85,12 +85,13 @@ export function InventoryAdjustmentHistory() {
       cell: ({ row }) => row.original.performed_by_name ?? 'Not recorded',
     },
     {
-      id: 'staff_involved',
-      header: 'Staff Involved',
-      // responsible_staff_name (free text, P33+, or PIN-verified pre-P33)
-      // and responsible_user_name (legacy pre-P29 responsible_user_id,
-      // never PIN-verified) are two distinct identity sources on the same
-      // row; a row predating both only has neither.
+      id: 'responsible_staff',
+      header: 'Responsible Staff',
+      // responsible_staff_name (PIN-verified pre-P33 identity) and
+      // responsible_user_name (legacy pre-P29 responsible_user_id, never
+      // PIN-verified) are two distinct identity sources on the same row; a
+      // row predating both only has neither. POS-PERF-P33R: distinct from
+      // staff_involved_name (below) — never the same column.
       cell: ({ row }) => row.original.responsible_staff_name ?? row.original.responsible_user_name ?? '—',
     },
     {
@@ -104,6 +105,13 @@ export function InventoryAdjustmentHistory() {
         ) : (
           <span className="text-muted-foreground">—</span>
         ),
+    },
+    {
+      id: 'staff_involved',
+      header: 'Staff Involved (reported)',
+      // POS-PERF-P33R — distinct, never-verified free-text attribution;
+      // never conflated with responsible_staff_name/responsible_user_name.
+      cell: ({ row }) => row.original.staff_involved_name ?? '—',
     },
     // notes already carries "Reason: <code> — <notes>" verbatim (see
     // adjustStock) — never relabeled or split, so nothing is invented here.

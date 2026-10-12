@@ -65,6 +65,8 @@ export interface CreateStockMovementInput {
   recordedAsSupervisorDirect?: boolean;
   responsibleStaffName?: string;
   pinVerifiedAt?: Date;
+  /** POS-PERF-P33R — distinct, never-verified free-text attribution (Adjustment/Waste only); see schema.prisma's InventoryStockMovement doc comment. Must never be written into responsibleStaffName. */
+  staffInvolvedName?: string;
 }
 
 /**
@@ -370,6 +372,7 @@ export const universalInventoryRepository = {
         recordedAsSupervisorDirect: input.recordedAsSupervisorDirect,
         responsibleStaffName: input.responsibleStaffName,
         pinVerifiedAt: input.pinVerifiedAt,
+        staffInvolvedName: input.staffInvolvedName,
       },
       include: stockMovementInclude,
     });

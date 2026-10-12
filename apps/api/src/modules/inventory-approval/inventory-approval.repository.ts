@@ -29,6 +29,8 @@ export interface CreateApprovalRequestInput {
   responsibleStaffUserId?: string | null;
   responsibleStaffName?: string | null;
   pinVerifiedAt?: Date | null;
+  /** POS-PERF-P33R — distinct, never-verified free-text attribution; see schema.prisma's InventoryApprovalRequest doc comment. Must never be written into responsibleStaffName. */
+  staffInvolvedName?: string | null;
   proofKey?: string | null;
   proofType?: ImageProofType | null;
 }
@@ -61,6 +63,7 @@ export const inventoryApprovalRepository = {
         responsibleStaffUserId: input.responsibleStaffUserId ?? null,
         responsibleStaffName: input.responsibleStaffName ?? null,
         pinVerifiedAt: input.pinVerifiedAt ?? null,
+        staffInvolvedName: input.staffInvolvedName ?? null,
         proofKey: input.proofKey ?? null,
         proofType: input.proofType ?? null,
       })),

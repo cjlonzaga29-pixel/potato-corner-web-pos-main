@@ -298,7 +298,11 @@ describe.skipIf(!isLocalDatabase)('universal-inventory write endpoints — HTTP 
       expect(movementCountAfter).toBe(movementCountBefore + 1);
 
       const movement = await prisma.inventoryStockMovement.findUnique({ where: { id: resultId } });
-      expect(movement?.responsibleStaffName).toBe('Juan Dela Cruz');
+      // POS-PERF-P33R — staff_involved_name is distinct from
+      // responsibleStaffName (an identity-verified field) and must never be
+      // written into it.
+      expect(movement?.staffInvolvedName).toBe('Juan Dela Cruz');
+      expect(movement?.responsibleStaffName).toBeNull();
       // Never a false PIN-verified claim on a free-text, unverified name.
       expect(movement?.pinVerifiedAt).toBeNull();
       expect(movement?.recordedAsSupervisorDirect).toBe(true);

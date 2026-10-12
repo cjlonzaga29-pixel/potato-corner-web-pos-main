@@ -181,6 +181,10 @@ async function toResponse(request: RequestRow) {
     responsible_staff_user_id: request.responsibleStaffUserId,
     responsible_staff_name: request.responsibleStaffName,
     pin_verified_at: request.pinVerifiedAt?.toISOString() ?? null,
+    // POS-PERF-P33R — distinct from responsible_staff_name above: never
+    // identity-verified, may be populated even when responsible_staff_name
+    // is null. See schema.prisma's InventoryApprovalRequest doc comment.
+    staff_involved_name: request.staffInvolvedName,
 
     status: request.status,
     submitted_by_user_id: request.submittedByUserId,
@@ -279,8 +283,9 @@ export const inventoryApprovalService = {
         notes: data.notes ?? null,
         submittedByUserId: actor.user_id,
         responsibleStaffUserId: data.staffPin?.responsibleStaffUserId,
-        responsibleStaffName: data.staffPin?.responsibleStaffName ?? data.staffInvolvedName,
+        responsibleStaffName: data.staffPin?.responsibleStaffName,
         pinVerifiedAt: data.staffPin?.pinVerifiedAt,
+        staffInvolvedName: data.staffInvolvedName,
         proofKey: data.evidence?.proofKey,
         proofType: data.evidence?.proofType,
       },
@@ -318,8 +323,9 @@ export const inventoryApprovalService = {
         notes: data.notes ?? null,
         submittedByUserId: actor.user_id,
         responsibleStaffUserId: data.staffPin?.responsibleStaffUserId,
-        responsibleStaffName: data.staffPin?.responsibleStaffName ?? data.staffInvolvedName,
+        responsibleStaffName: data.staffPin?.responsibleStaffName,
         pinVerifiedAt: data.staffPin?.pinVerifiedAt,
+        staffInvolvedName: data.staffInvolvedName,
         proofKey: data.evidence?.proofKey,
         proofType: data.evidence?.proofType,
       },
@@ -561,12 +567,15 @@ export const inventoryApprovalService = {
       stockVersionAtSubmission: physicalCountSnapshot?.stockVersion,
       // A PIN-bound field change invalidates the old proof/identity for
       // these new figures — only inherit responsibleStaffUserId/
-      // pinVerifiedAt (both attest to a specific past verification) when
-      // nothing PIN-bound changed. responsibleStaffName may still take the
-      // new, unverified staffInvolvedName even when inherited otherwise.
+      // responsibleStaffName/pinVerifiedAt (all three attest to a specific
+      // past verification) when nothing PIN-bound changed. staffInvolvedName
+      // is never PIN-bound — it's unverified free text — so it always takes
+      // the caller's fresh value when supplied, and otherwise carries
+      // forward regardless of pinBoundFieldChanged.
       responsibleStaffUserId: data.staffPin?.responsibleStaffUserId ?? (pinBoundFieldChanged ? undefined : request.responsibleStaffUserId),
-      responsibleStaffName: data.staffPin?.responsibleStaffName ?? data.staffInvolvedName ?? (pinBoundFieldChanged ? undefined : request.responsibleStaffName),
+      responsibleStaffName: data.staffPin?.responsibleStaffName ?? (pinBoundFieldChanged ? undefined : request.responsibleStaffName),
       pinVerifiedAt: data.staffPin?.pinVerifiedAt ?? (pinBoundFieldChanged ? undefined : request.pinVerifiedAt),
+      staffInvolvedName: data.staffInvolvedName ?? request.staffInvolvedName,
       proofKey: data.evidence?.proofKey ?? request.proofKey,
       proofType: data.evidence?.proofType ?? request.proofType,
     };
@@ -849,6 +858,7 @@ async function applyApprovedRequest(
         proofType: request.proofType ?? undefined,
         responsibleStaffName: request.responsibleStaffName ?? undefined,
         pinVerifiedAt: request.pinVerifiedAt ?? undefined,
+        staffInvolvedName: request.staffInvolvedName ?? undefined,
       });
       return {
         movementId: movement.id,
@@ -885,6 +895,7 @@ async function applyApprovedRequest(
         proofType: request.proofType ?? undefined,
         responsibleStaffName: request.responsibleStaffName ?? undefined,
         pinVerifiedAt: request.pinVerifiedAt ?? undefined,
+        staffInvolvedName: request.staffInvolvedName ?? undefined,
       });
       return {
         movementId: movement.id,

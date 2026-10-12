@@ -111,6 +111,9 @@ export const inventoryApprovalRequestResponseSchema = z.object({
   responsible_staff_user_id: z.uuid().nullable(),
   responsible_staff_name: z.string().nullable(),
   pin_verified_at: z.iso.datetime().nullable(),
+  // POS-PERF-P33R — distinct, never-verified free-text attribution; see
+  // schema.prisma's InventoryApprovalRequest doc comment.
+  staff_involved_name: z.string().nullable(),
 
   status: inventoryApprovalStatusSchema,
   submitted_by_user_id: z.uuid(),

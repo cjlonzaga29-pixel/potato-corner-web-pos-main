@@ -113,8 +113,8 @@ All endpoints below are implemented as of Phase 11 + CR-001 (see `.claude/CLAUDE
 | GET | `/api/branches/:branchId/inventory` | admin+sup, `branchGuard` | — | Full branch stock snapshot. |
 | GET | `/api/branches/:branchId/inventory/alerts` | admin+sup, `branchGuard` | — | Low/critical stock alerts. |
 | GET | `/api/branches/:branchId/inventory/movements` | admin+sup, `branchGuard` | query: `ingredient_id?`, `movement_type?`, `from_date?`, `to_date?`, `page`, `limit` | |
-| POST | `/api/branches/:branchId/inventory/count` | admin+sup, `branchGuard` | `physicalCountSubmissionSchema` | `400 BRANCH_ID_MISMATCH` if the body's `branch_id` disagrees with the URL. |
-| POST | `/api/branches/:branchId/inventory/transfer` | admin+sup, `branchGuard` | `transferIngredientSchema` | Branch-to-branch stock transfer, one atomic transaction. |
+| POST | `/api/branches/:branchId/inventory/count` | admin+sup, `branchGuard` | `physicalCountSubmissionSchema` | **Retired (POS-PERF-P33 and earlier) — unconditionally `410`s**, same as its stock-in/adjust/waste siblings. Live replacement: `POST /api/branches/:branchId/inventory-stock/count` (`universal-inventory.router.ts`). |
+| POST | `/api/branches/:branchId/inventory/transfer` | admin+sup, `branchGuard` | `transferIngredientSchema` | **Retired (POS-PERF-P33) — unconditionally `410`s**; writes nothing regardless of role. POS-PERF-P33R audit (frontend/scripts/tests/docs/integrations) found no live caller — the frontend's own legacy hook for it (`useTransferStock` in `use-inventory.ts`) is defined but imported by no component; the live transfer UI (`inventory-transfer-form.tsx`) calls `useTransferInventoryStock` against the replacement below instead. No external/integration consumer is known, but none could be positively ruled out beyond this codebase's own surface — see `inventory.router.ts`'s doc comment on this route. Live replacement: `POST /api/branches/:branchId/inventory-stock/transfer` (`universal-inventory.router.ts`), one atomic transaction, admin/supervisor-only, with the same branch/stock protections as before. |
 
 ## product-requests — mounted at `/api/product-requests` (CR-001)
 

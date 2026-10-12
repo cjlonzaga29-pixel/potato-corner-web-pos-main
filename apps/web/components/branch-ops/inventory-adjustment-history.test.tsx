@@ -47,6 +47,7 @@ function movement(overrides: Record<string, unknown> = {}) {
     responsible_user_name: null,
     responsible_staff_name: null,
     pin_verified_at: null,
+    staff_involved_name: null,
     recorded_as_supervisor_direct: false,
     created_at: '2026-08-03T02:00:00.000Z',
     ...overrides,
@@ -82,8 +83,11 @@ describe('InventoryAdjustmentHistory — Recorded By / Identity Status', () => {
   // POS-PERF-P33 — the actor is now always a named, individually-
   // authenticated supervisor/admin account (never a shared generic
   // "Branch Account" login), so "Recorded By" shows that account directly;
-  // the PIN-identified/free-text name is a separate "Staff Involved" column.
-  it('shows the authenticated account as Recorded By and the PIN-identified name as a separate Staff Involved column', () => {
+  // the PIN-identified name is a separate "Responsible Staff" column.
+  // POS-PERF-P33R — staff_involved_name is yet another, distinct,
+  // never-verified free-text column ("Staff Involved (reported)") — never
+  // conflated with responsible_staff_name.
+  it('shows the authenticated account as Recorded By and the PIN-identified name as a separate Responsible Staff column', () => {
     renderWithMovement({
       performed_by_name: 'Maria Santos',
       responsible_staff_name: 'Juan Dela Cruz',
@@ -96,18 +100,20 @@ describe('InventoryAdjustmentHistory — Recorded By / Identity Status', () => {
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('has no duplicate Responsible Staff / Recorded By columns', () => {
+  it('has exactly one Recorded By, one Responsible Staff, and one Staff Involved (reported) column — no duplicates', () => {
     renderWithMovement({
       responsible_staff_name: 'Juan Dela Cruz',
       pin_verified_at: '2026-08-03T02:00:00.000Z',
+      staff_involved_name: 'Reported Person',
     });
 
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
     expect(headers.filter((h) => h === 'Recorded By')).toHaveLength(1);
-    expect(headers).not.toContain('Responsible Staff');
+    expect(headers.filter((h) => h === 'Responsible Staff')).toHaveLength(1);
+    expect(headers.filter((h) => h === 'Staff Involved (reported)')).toHaveLength(1);
   });
 
-  it('shows Recorded By and Staff Involved separately even when they happen to be the same supervisor', () => {
+  it('shows Recorded By and Responsible Staff separately even when they happen to be the same supervisor', () => {
     renderWithMovement({
       performed_by_name: 'Maria Santos',
       performed_by_role: 'supervisor',
@@ -121,7 +127,7 @@ describe('InventoryAdjustmentHistory — Recorded By / Identity Status', () => {
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('shows Not recorded for Recorded By when performed_by_name is missing, independent of Staff Involved', () => {
+  it('shows Not recorded for Recorded By when performed_by_name is missing, independent of Responsible Staff', () => {
     renderWithMovement({
       performed_by_name: null,
       responsible_staff_name: 'Juan Dela Cruz',
@@ -131,6 +137,30 @@ describe('InventoryAdjustmentHistory — Recorded By / Identity Status', () => {
     const row = within(dataRow());
     expect(row.getByText('Not recorded')).toBeInTheDocument();
     expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
+  });
+
+  it('shows staff_involved_name in its own column, distinct from and even when different from responsible_staff_name', () => {
+    renderWithMovement({
+      responsible_staff_name: 'Juan Dela Cruz',
+      pin_verified_at: '2026-08-03T02:00:00.000Z',
+      staff_involved_name: 'Pedro Who Reported It',
+    });
+
+    const row = within(dataRow());
+    expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
+    expect(row.getByText('Pedro Who Reported It')).toBeInTheDocument();
+  });
+
+  it('shows a dash for Staff Involved (reported) when no free-text attribution was supplied, even when Responsible Staff is PIN-verified', () => {
+    renderWithMovement({
+      responsible_staff_name: 'Juan Dela Cruz',
+      pin_verified_at: '2026-08-03T02:00:00.000Z',
+      staff_involved_name: null,
+    });
+
+    const row = within(dataRow());
+    expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
+    expect(row.getAllByText('—').length).toBeGreaterThanOrEqual(1);
   });
 
   it('preserves a historical responsible_user_name and labels it Not PIN verified when there is no staff PIN evidence', () => {

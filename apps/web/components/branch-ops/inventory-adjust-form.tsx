@@ -185,7 +185,7 @@ function AdjustFormContent({ basePath }: { basePath: string }) {
 
           <FormFieldWrapper<FormValues>
             name="staff_involved_name"
-            label="Staff Involved / Reported By"
+            label="Staff Involved (reported)"
             description="Optional — who physically reported or caused this, if relevant. Not identity-verified."
           >
             <Input />

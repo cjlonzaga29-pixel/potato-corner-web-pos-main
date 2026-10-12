@@ -312,6 +312,9 @@ export const inventoryStockMovementResponseSchema = z.object({
   recorded_as_supervisor_direct: z.boolean().optional(),
   responsible_staff_name: z.string().nullable().optional(),
   pin_verified_at: z.iso.datetime().nullable().optional(),
+  // POS-PERF-P33R — distinct, never-verified free-text attribution; see
+  // schema.prisma's InventoryStockMovement doc comment.
+  staff_involved_name: z.string().nullable().optional(),
   // POS-PERF-P31 — the InventoryApprovalRequest whose approval produced this
   // movement, when there is one (null for a supervisor-direct write, a
   // legacy row, or any movement not written via the approval queue — never

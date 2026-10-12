@@ -276,6 +276,7 @@ interface StockMovementRow {
   recordedAsSupervisorDirect?: boolean;
   responsibleStaffName?: string | null;
   pinVerifiedAt?: Date | null;
+  staffInvolvedName?: string | null;
   createdAt: Date;
 }
 
@@ -327,6 +328,8 @@ function toStockMovementResponse(
     recorded_as_supervisor_direct: row.recordedAsSupervisorDirect,
     responsible_staff_name: row.responsibleStaffName,
     pin_verified_at: row.pinVerifiedAt?.toISOString() ?? null,
+    // POS-PERF-P33R — distinct, never-verified free-text attribution; see schema.prisma's InventoryStockMovement doc comment.
+    staff_involved_name: row.staffInvolvedName,
     linked_request_id: enrichment?.linkedRequestId ?? null,
     reviewed_by_name: enrichment?.reviewedByName ?? null,
     created_at: row.createdAt.toISOString(),
@@ -539,6 +542,7 @@ export async function applyAdjustmentInTx(
     recordedAsSupervisorDirect?: boolean;
     responsibleStaffName?: string;
     pinVerifiedAt?: Date;
+    staffInvolvedName?: string;
   },
 ) {
   const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
@@ -570,6 +574,7 @@ export async function applyAdjustmentInTx(
       recordedAsSupervisorDirect: params.recordedAsSupervisorDirect,
       responsibleStaffName: params.responsibleStaffName,
       pinVerifiedAt: params.pinVerifiedAt,
+      staffInvolvedName: params.staffInvolvedName,
     },
     tx,
   );
@@ -601,6 +606,7 @@ export async function applyWasteInTx(
     recordedAsSupervisorDirect?: boolean;
     responsibleStaffName?: string;
     pinVerifiedAt?: Date;
+    staffInvolvedName?: string;
   },
 ) {
   const stock = await repo.lockAndGetStock(params.branchId, params.inventoryItemId, tx);
@@ -639,6 +645,7 @@ export async function applyWasteInTx(
       recordedAsSupervisorDirect: params.recordedAsSupervisorDirect,
       responsibleStaffName: params.responsibleStaffName,
       pinVerifiedAt: params.pinVerifiedAt,
+      staffInvolvedName: params.staffInvolvedName,
     },
     tx,
   );
@@ -1314,6 +1321,7 @@ export const universalInventoryService = {
         recordedAsSupervisorDirect: data.recordedAsSupervisorDirect,
         responsibleStaffName: data.responsibleStaffName,
         pinVerifiedAt: data.pinVerifiedAt,
+        staffInvolvedName: data.staffInvolvedName,
       }),
     );
 
@@ -1385,6 +1393,7 @@ export const universalInventoryService = {
         recordedAsSupervisorDirect: data.recordedAsSupervisorDirect,
         responsibleStaffName: data.responsibleStaffName,
         pinVerifiedAt: data.pinVerifiedAt,
+        staffInvolvedName: data.staffInvolvedName,
       }),
     );
 

@@ -55,6 +55,7 @@ function request(overrides: Record<string, unknown> = {}) {
     responsible_staff_user_id: null,
     responsible_staff_name: null,
     pin_verified_at: null,
+    staff_involved_name: null,
     status: 'PENDING',
     submitted_by_user_id: 'account-1',
     submitted_by_name: 'Branch Account',
@@ -99,9 +100,12 @@ afterEach(() => {
 describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
   // POS-PERF-P33 — "Recorded By" is now the authenticated submitting
   // account (never a shared generic login under the new supervisor-managed
-  // policy); the PIN-identified/free-text name is a separate "Staff
-  // Involved" column.
-  it('shows the submitting account as Recorded By and the PIN-identified name as a separate Staff Involved column', () => {
+  // policy); the PIN-identified name is a separate "Identity Status" badge
+  // keyed off responsible_staff_name/pin_verified_at.
+  // POS-PERF-P33R — staff_involved_name is a distinct, never-verified
+  // free-text column ("Staff Involved (reported)") — never conflated with
+  // responsible_staff_name.
+  it('shows the submitting account as Recorded By and the PIN-identified name with a PIN Verified badge', () => {
     renderWithRequests([
       request({
         submitted_by_name: 'Maria Santos',
@@ -112,25 +116,25 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
 
     const row = within(dataRow());
     expect(row.getByText('Maria Santos')).toBeInTheDocument();
-    expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('has no duplicate Recorded By columns, and a distinct Staff Involved column', () => {
+  it('has no duplicate Recorded By columns, and a distinct Staff Involved (reported) column', () => {
     renderWithRequests([
       request({
         responsible_staff_name: 'Juan Dela Cruz',
         pin_verified_at: '2026-08-03T02:00:00.000Z',
+        staff_involved_name: 'Reported Person',
       }),
     ]);
 
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
     expect(headers.filter((h) => h === 'Recorded By')).toHaveLength(1);
-    expect(headers.filter((h) => h === 'Staff Involved')).toHaveLength(1);
+    expect(headers.filter((h) => h === 'Staff Involved (reported)')).toHaveLength(1);
   });
 
-  it('shows Not recorded for Recorded By when the submitting account is missing, and a dash for Staff Involved when no responsible staff identity exists', () => {
-    renderWithRequests([request({ submitted_by_name: null, responsible_staff_name: null, pin_verified_at: null })]);
+  it('shows Not recorded for Recorded By when the submitting account is missing, and a dash for Staff Involved (reported) when no free-text attribution exists', () => {
+    renderWithRequests([request({ submitted_by_name: null, responsible_staff_name: null, pin_verified_at: null, staff_involved_name: null })]);
 
     const row = within(dataRow());
     expect(row.getByText('Not recorded')).toBeInTheDocument();
@@ -141,16 +145,14 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
     renderWithRequests([request({ responsible_staff_name: 'Pedro Reyes', pin_verified_at: null })]);
 
     const row = within(dataRow());
-    expect(row.getByText('Pedro Reyes')).toBeInTheDocument();
     expect(row.getByText('Not PIN verified')).toBeInTheDocument();
     expect(row.queryByText('PIN Verified')).not.toBeInTheDocument();
   });
 
-  it('renders a long responsible staff name in full', () => {
+  it('renders a long staff_involved_name in full in its own column', () => {
     renderWithRequests([
       request({
-        responsible_staff_name: 'Maria Concepcion Dela Cruz-Santos Bautista',
-        pin_verified_at: '2026-08-03T02:00:00.000Z',
+        staff_involved_name: 'Maria Concepcion Dela Cruz-Santos Bautista',
       }),
     ]);
 
@@ -176,7 +178,7 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
     expect(screen.queryByRole('columnheader', { name: 'Approved By' })).not.toBeInTheDocument();
     const row = within(dataRow());
     expect(row.getByText('Supervisor Reyes')).toBeInTheDocument();
-    expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
+    expect(row.getByText('PIN Verified')).toBeInTheDocument();
   });
 
   it('keeps the filter tabs, Review action, and other columns unaffected by identity rendering', () => {
@@ -184,6 +186,7 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
       request({
         responsible_staff_name: 'Juan Dela Cruz',
         pin_verified_at: '2026-08-03T02:00:00.000Z',
+        staff_involved_name: 'Reported Person',
       }),
     ]);
 
@@ -193,7 +196,7 @@ describe('InventoryApprovalQueue — Recorded By / Identity Status', () => {
 
     const row = within(dataRow());
     expect(row.getByText('Potato Flakes')).toBeInTheDocument();
-    expect(row.getByText('Juan Dela Cruz')).toBeInTheDocument();
+    expect(row.getByText('Reported Person')).toBeInTheDocument();
     expect(row.getByText('PIN Verified')).toBeInTheDocument();
     expect(row.getByRole('button', { name: 'Review' })).toBeInTheDocument();
   });

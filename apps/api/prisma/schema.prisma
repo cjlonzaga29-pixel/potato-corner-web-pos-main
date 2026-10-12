@@ -1503,6 +1503,16 @@ model InventoryStockMovement {
   responsibleStaffName       String?   @map("responsible_staff_name")
   pinVerifiedAt              DateTime? @map("pin_verified_at")
 
+  // POS-PERF-P33R — distinct from responsibleStaffName/pinVerifiedAt above.
+  // responsibleStaffName/pinVerifiedAt attest to an identity-verified staff
+  // member (resolved from a StaffPinVerification token); staffInvolvedName
+  // is an optional, never-verified free-text "who physically reported/
+  // caused this" note a supervisor/admin may type on Adjustment/Waste. It
+  // must never be copied into responsibleStaffName and never implies
+  // pinVerifiedAt was set. See inventory-approval.service.ts and
+  // universal-inventory.service.ts for the write paths.
+  staffInvolvedName String? @map("staff_involved_name")
+
   branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   unit          UnitOfMeasure? @relation("InventoryStockMovementUnit", fields: [unitId], references: [id])
@@ -1671,6 +1681,12 @@ model InventoryApprovalRequest {
   responsibleStaffUserId String?   @map("responsible_staff_user_id")
   responsibleStaffName   String?   @map("responsible_staff_name")
   pinVerifiedAt          DateTime? @map("pin_verified_at")
+
+  // POS-PERF-P33R — see InventoryStockMovement.staffInvolvedName's doc
+  // comment; same distinct, never-verified free-text field, carried on the
+  // approval request so it survives the submit -> approve -> movement
+  // pipeline without ever overwriting responsibleStaffName/pinVerifiedAt.
+  staffInvolvedName String? @map("staff_involved_name")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

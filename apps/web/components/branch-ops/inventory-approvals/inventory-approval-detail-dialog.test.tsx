@@ -71,6 +71,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     responsible_staff_user_id: null,
     responsible_staff_name: null,
     pin_verified_at: null,
+    staff_involved_name: null,
     status: 'PENDING',
     submitted_by_user_id: 'account-1',
     submitted_by_name: 'Branch Account',
@@ -110,9 +111,11 @@ afterEach(() => {
 
 describe('InventoryApprovalDetailDialog — Recorded By / Identity Status', () => {
   // POS-PERF-P33 — "Recorded By" is the authenticated submitting account
-  // (submitted_by_name); the PIN-identified/free-text name is a separate
-  // "Staff Involved" field, never conflated with the recorder.
-  it('shows the submitting account as Recorded By and the PIN-identified name as a separate Staff Involved field', () => {
+  // (submitted_by_name); the PIN-identified name is a separate
+  // "Responsible Staff" field, never conflated with the recorder.
+  // POS-PERF-P33R — staff_involved_name is yet another, distinct,
+  // never-verified free-text field ("Staff Involved (reported)").
+  it('shows the submitting account as Recorded By and the PIN-identified name as a separate Responsible Staff field', () => {
     renderWithDetail({
       submitted_by_name: 'Maria Santos',
       responsible_staff_name: 'Juan Dela Cruz',
@@ -121,9 +124,22 @@ describe('InventoryApprovalDetailDialog — Recorded By / Identity Status', () =
 
     expect(screen.getByText('Recorded By')).toBeInTheDocument();
     expect(screen.getByText('Maria Santos')).toBeInTheDocument();
-    expect(screen.getByText('Staff Involved')).toBeInTheDocument();
+    expect(screen.getByText('Responsible Staff')).toBeInTheDocument();
     expect(screen.getByText('Juan Dela Cruz')).toBeInTheDocument();
     expect(screen.getByText('PIN Verified')).toBeInTheDocument();
+  });
+
+  it('shows staff_involved_name in its own Staff Involved (reported) field, distinct from Responsible Staff', () => {
+    renderWithDetail({
+      submitted_by_name: 'Maria Santos',
+      responsible_staff_name: 'Juan Dela Cruz',
+      pin_verified_at: '2026-08-03T02:00:00.000Z',
+      staff_involved_name: 'Pedro Who Reported It',
+    });
+
+    expect(screen.getByText('Staff Involved (reported)')).toBeInTheDocument();
+    expect(screen.getByText('Pedro Who Reported It')).toBeInTheDocument();
+    expect(screen.getByText('Juan Dela Cruz')).toBeInTheDocument();
   });
 
   it('keeps Reviewed By separate from Recorded By for the approving supervisor', () => {
@@ -143,7 +159,7 @@ describe('InventoryApprovalDetailDialog — Recorded By / Identity Status', () =
     expect(screen.getByText('Maria Santos')).toBeInTheDocument();
   });
 
-  it('shows the same person for Recorded By and Staff Involved when a supervisor both records and is named involved', () => {
+  it('shows the same person for Recorded By and Responsible Staff when a supervisor both records and is PIN-verified as responsible', () => {
     renderWithDetail({
       submitted_by_name: 'Maria Santos',
       responsible_staff_name: 'Maria Santos',
@@ -154,7 +170,7 @@ describe('InventoryApprovalDetailDialog — Recorded By / Identity Status', () =
     expect(screen.getByText('PIN Verified')).toBeInTheDocument();
   });
 
-  it('shows Not recorded for Recorded By when the submitting account name is missing, independent of Staff Involved', () => {
+  it('shows Not recorded for Recorded By when the submitting account name is missing, independent of Responsible Staff', () => {
     renderWithDetail({ responsible_staff_name: null, pin_verified_at: null, submitted_by_name: null });
 
     expect(screen.getByText('Not recorded')).toBeInTheDocument();
@@ -261,6 +277,7 @@ describe('InventoryApprovalDetailDialog — Correct & Resubmit (POS-PERF-P31)', 
       reason_code: 'count_correction',
       responsible_staff_name: 'Juan Dela Cruz',
       pin_verified_at: '2026-08-03T02:00:00.000Z',
+      staff_involved_name: 'Pedro Who Reported It',
     });
 
     fireEvent.change(screen.getByLabelText('Corrected Quantity Change'), { target: { value: '-8' } });
@@ -271,8 +288,11 @@ describe('InventoryApprovalDetailDialog — Correct & Resubmit (POS-PERF-P31)', 
     expect(screen.getByText('New Proof Required')).toBeInTheDocument();
     expect(screen.getByText(/Upload a new proof photo/)).toBeInTheDocument();
     expect(screen.queryByText(/Verify a staff PIN again/)).not.toBeInTheDocument();
-    // The original (pre-change) staff involved/proof is still shown, distinctly labeled, not hidden.
-    expect(screen.getByText(/Original Staff Involved/)).toBeInTheDocument();
+    // The original (pre-change) identity and staff-involved attribution are still shown, distinctly labeled, not hidden.
+    expect(screen.getByText(/Original Identity/)).toBeInTheDocument();
+    expect(screen.getByText(/Original Staff Involved \(reported\)/)).toBeInTheDocument();
+    // Appears twice: once in the main detail grid, once in the "Original" summary box.
+    expect(screen.getAllByText('Pedro Who Reported It')).toHaveLength(2);
   });
 
   it('a correction with no PIN-bound changes can resubmit without any fresh verification UI at all', () => {
@@ -298,7 +318,7 @@ describe('InventoryApprovalDetailDialog — Correct & Resubmit (POS-PERF-P31)', 
       reason_code: 'count_correction',
     });
 
-    expect(screen.getByLabelText('Staff Involved / Reported By')).toBeInTheDocument();
+    expect(screen.getByLabelText('Staff Involved (reported)')).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('Enter 4-6 digit PIN')).not.toBeInTheDocument();
   });
 });

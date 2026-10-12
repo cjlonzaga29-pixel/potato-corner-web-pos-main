@@ -68,7 +68,11 @@ export function InventoryApprovalQueue({ basePath: _basePath }: { basePath: stri
       },
     },
     { id: 'recorded_by', header: 'Recorded By', cell: ({ row }) => row.original.submitted_by_name ?? 'Not recorded' },
-    { id: 'staff_involved', header: 'Staff Involved', cell: ({ row }) => row.original.responsible_staff_name ?? '—' },
+    // POS-PERF-P33R — responsible_staff_name/pin_verified_at (Identity
+    // Status column below) are a verified identity, resolved from a PIN
+    // token; staff_involved_name is separate, free-text, and never implies
+    // verification — these must never be shown as the same column.
+    { id: 'staff_involved', header: 'Staff Involved (reported)', cell: ({ row }) => row.original.staff_involved_name ?? '—' },
     {
       id: 'pin_verified',
       header: 'Identity Status',

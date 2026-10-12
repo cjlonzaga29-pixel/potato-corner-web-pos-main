@@ -62,11 +62,11 @@ function Field({ label, value }: { label: string; value: string | number | null 
   );
 }
 
-/** POS-PERF-P33 — "Staff Involved": a historical PIN-identified name (pre-P33 submissions) shows the "PIN Verified" badge; a post-P33 free-text name shows "Not PIN verified" — never conflated. */
+/** POS-PERF-P33R — "Responsible Staff": the identity-verified staff member resolved from a PIN token (pre-P33 submissions only). Distinct from the unrelated, never-verified "Staff Involved (reported)" free-text field — see request.staff_involved_name, shown separately. */
 function IdentityStatus({ name, pinVerifiedAt }: { name: string | null; pinVerifiedAt: string | null }) {
   return (
     <div>
-      <p className="text-xs text-muted-foreground">Staff Involved</p>
+      <p className="text-xs text-muted-foreground">Responsible Staff</p>
       <div className="text-sm">
         {name ? <span>{name}</span> : <span className="text-muted-foreground">—</span>}
         {pinVerifiedAt ? (
@@ -187,8 +187,14 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
       <p className="text-sm font-medium">Correct &amp; Resubmit</p>
 
       <div className="rounded-md border bg-muted/30 p-3 text-sm">
-        <p className="text-xs text-muted-foreground">Original Staff Involved / Proof (carried forward unless a quantity/unit/reason/notes field below changes)</p>
+        <p className="text-xs text-muted-foreground">Original Identity / Proof (carried forward unless a quantity/unit/reason/notes field below changes)</p>
         <IdentityStatus name={request.responsible_staff_name} pinVerifiedAt={request.pin_verified_at} />
+        {request.staff_involved_name && (
+          <div className="mt-1">
+            <p className="text-xs text-muted-foreground">Original Staff Involved (reported)</p>
+            <p className="text-sm">{request.staff_involved_name}</p>
+          </div>
+        )}
       </div>
 
       <Label htmlFor="correction-quantity">
@@ -255,7 +261,7 @@ function CorrectionForm({ request, branchId, onDone }: CorrectionFormProps) {
 
       {(op === 'ADJUSTMENT' || op === 'WASTE') && (
         <>
-          <Label htmlFor="correction-staff-involved">Staff Involved / Reported By</Label>
+          <Label htmlFor="correction-staff-involved">Staff Involved (reported)</Label>
           <Input
             id="correction-staff-involved"
             value={staffInvolvedName}
@@ -380,6 +386,7 @@ export function InventoryApprovalDetailDialog({ id, onOpenChange, branchId }: In
           <Field label="Reviewed At" value={current.reviewed_at ? formatDateTime(current.reviewed_at) : null} />
           <Field label="Recorded By" value={current.submitted_by_name ?? 'Not recorded'} />
           <IdentityStatus name={current.responsible_staff_name} pinVerifiedAt={current.pin_verified_at} />
+          <Field label="Staff Involved (reported)" value={current.staff_involved_name} />
         </div>
         <Field label="Notes" value={current.notes} />
         {current.status === 'RETURNED' && <Field label="Return Reason" value={current.return_reason} />}

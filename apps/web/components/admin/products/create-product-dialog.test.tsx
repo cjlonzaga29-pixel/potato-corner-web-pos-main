@@ -109,8 +109,10 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+const BRANCHES = [{ id: 'branch-1', name: 'Main Branch', code: 'BR1' }];
+
 function setup(categories: ProductCategoryResponse[] = CATEGORIES, categoriesLoading = false) {
-  mockUseBranches.mockReturnValue({ data: { branches: [] }, isLoading: false });
+  mockUseBranches.mockReturnValue({ data: { branches: BRANCHES }, isLoading: false });
   mockUseProductCategories.mockReturnValue({ data: { categories, total: categories.length, page: 1, limit: 100 }, isLoading: categoriesLoading });
   const mutateAsync = vi.fn().mockResolvedValue({ id: 'product-1' });
   mockUseCreateProduct.mockReturnValue({ mutateAsync, isPending: false });
@@ -141,6 +143,7 @@ describe('CreateProductDialog — Category field', () => {
 
     fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
     fireEvent.click(screen.getByText('Drinks'));
+    fireEvent.click(screen.getByText('Main Branch (BR1)'));
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
@@ -151,7 +154,8 @@ describe('CreateProductDialog — Category field', () => {
         category_id: 'category-2',
         status: 'draft',
         is_seasonal: false,
-        branch_exclusive: false,
+        branch_exclusive: true,
+        exclusive_branch_id: 'branch-1',
       }),
     );
     expect(payload.category).toBeUndefined();
@@ -170,6 +174,7 @@ describe('CreateProductDialog — Category field', () => {
     fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
     // No free-text category input exists to type into; only Select options are selectable.
     expect(screen.queryByPlaceholderText('Fries')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Main Branch (BR1)'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 
@@ -185,6 +190,7 @@ describe('CreateProductDialog — Product Image (Task 209.6)', () => {
     const { mutateAsync, uploadImageMutateAsync } = setup();
 
     fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
+    fireEvent.click(screen.getByText('Main Branch (BR1)'));
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
@@ -196,6 +202,7 @@ describe('CreateProductDialog — Product Image (Task 209.6)', () => {
     const { mutateAsync, uploadImageMutateAsync } = setup();
 
     fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
+    fireEvent.click(screen.getByText('Main Branch (BR1)'));
     fireEvent.click(screen.getByRole('button', { name: 'Product Image' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 
@@ -231,6 +238,7 @@ describe('CreateProductDialog — Product Image (Task 209.6)', () => {
     uploadImageMutateAsync.mockRejectedValueOnce(new Error('Network error'));
 
     fireEvent.change(screen.getByLabelText(/product name/i), { target: { value: 'Cheese Fries' } });
+    fireEvent.click(screen.getByText('Main Branch (BR1)'));
     fireEvent.click(screen.getByRole('button', { name: 'Product Image' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create Product' }));
 

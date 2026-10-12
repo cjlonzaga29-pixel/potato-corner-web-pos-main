@@ -1,4 +1,4 @@
-import type { JwtPayload } from '@potato-corner/shared';
+import { ROLES, type JwtPayload } from '@potato-corner/shared';
 import { productOptionsRepository as repo } from './product-options.repository.js';
 import {
   ProductOptionError,
@@ -493,6 +493,12 @@ export const productOptionsService = {
   ) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    // POS-PERF-P34R — a supervisor may only assign an existing Option Group
+    // to a variant on a product they created; the Option Group/Option
+    // catalog itself stays adminOnly (createGroup/updateGroup/etc. above).
+    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_OPTION_GROUP_ASSIGN_FORBIDDEN', 'You may only assign option groups on a product you created', 403);
+    }
 
     const group = await repo.findGroupById(data.option_group_id);
     if (!group) throw new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404);
@@ -537,6 +543,9 @@ export const productOptionsService = {
   ) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only update option group assignments on a product you created', 403);
+    }
 
     const before = await repo.findVariantOptionGroupById(assignmentId);
     if (!before || before.productVariantId !== variantId) {
@@ -571,6 +580,9 @@ export const productOptionsService = {
   async unassignOptionGroupFromVariant(productId: string, variantId: string, assignmentId: string, actor: ActorContext, ipAddress: string | null) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_OPTION_GROUP_UNASSIGN_FORBIDDEN', 'You may only remove option group assignments on a product you created', 403);
+    }
 
     const before = await repo.findVariantOptionGroupById(assignmentId);
     if (!before || before.productVariantId !== variantId) {

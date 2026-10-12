@@ -38,8 +38,7 @@ const formSchema = z
     is_seasonal: z.boolean(),
     seasonal_start_date: z.string().optional(),
     seasonal_end_date: z.string().optional(),
-    branch_exclusive: z.boolean(),
-    exclusive_branch_id: z.string().optional(),
+    exclusive_branch_id: z.string().min(1, 'Select a branch'),
   })
   .superRefine((data, ctx) => {
     if (data.is_seasonal && (!data.seasonal_start_date || !data.seasonal_end_date)) {
@@ -47,9 +46,6 @@ const formSchema = z
     }
     if (data.is_seasonal && data.seasonal_start_date && data.seasonal_end_date && data.seasonal_end_date < data.seasonal_start_date) {
       ctx.addIssue({ code: 'custom', path: ['seasonal_end_date'], message: 'End date must not be before the start date' });
-    }
-    if (data.branch_exclusive && !data.exclusive_branch_id) {
-      ctx.addIssue({ code: 'custom', path: ['exclusive_branch_id'], message: 'Select a branch for a branch-exclusive product' });
     }
   });
 
@@ -64,7 +60,6 @@ const DEFAULT_VALUES: FormValues = {
   is_seasonal: false,
   seasonal_start_date: '',
   seasonal_end_date: '',
-  branch_exclusive: false,
   exclusive_branch_id: '',
 };
 
@@ -81,7 +76,6 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
   const { data: categoryData, isLoading: categoriesLoading } = useProductCategories({ isActive: true, limit: 100 });
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: DEFAULT_VALUES });
   const isSeasonal = form.watch('is_seasonal');
-  const branchExclusive = form.watch('branch_exclusive');
 
   // Task 209.6 — image upload needs a product id, which doesn't exist until
   // the product itself is created. onSubmit stages the create first, then
@@ -143,8 +137,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
         is_seasonal: parsed.is_seasonal,
         seasonal_start_date: parsed.is_seasonal ? parsed.seasonal_start_date : undefined,
         seasonal_end_date: parsed.is_seasonal ? parsed.seasonal_end_date : undefined,
-        branch_exclusive: parsed.branch_exclusive,
-        exclusive_branch_id: parsed.branch_exclusive ? parsed.exclusive_branch_id : undefined,
+        // POS-PERF-P34R — a supervisor may only create a branch-exclusive
+        // product scoped to one of their own branches (enforced again
+        // server-side in productsService.createProduct); a non-exclusive
+        // product would cascade a catalog row to every branch company-wide.
+        branch_exclusive: true,
+        exclusive_branch_id: parsed.exclusive_branch_id,
       });
       productId = created.id;
       setCreatedProductId(created.id);
@@ -256,41 +254,28 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               </div>
             )}
 
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">Branch-Exclusive</p>
-                <p className="text-xs text-muted-foreground">Available only at one branch instead of every active branch.</p>
-              </div>
-              <Switch
-                checked={branchExclusive}
-                onCheckedChange={(checked) => {
-                  form.setValue('branch_exclusive', checked);
-                  if (!checked) form.setValue('exclusive_branch_id', '');
-                }}
-              />
+            <div className="space-y-2">
+              <Label htmlFor="create-product-branch">Branch</Label>
+              <p className="text-xs text-muted-foreground">
+                New products are scoped to one of your own branches. An admin can expand availability to other branches later.
+              </p>
+              <Select
+                value={form.watch('exclusive_branch_id')}
+                onValueChange={(value) => form.setValue('exclusive_branch_id', value)}
+                disabled={branchesLoading}
+              >
+                <SelectTrigger id="create-product-branch">
+                  <SelectValue placeholder={branchesLoading ? 'Loading…' : 'Select a branch'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(branchData?.branches ?? []).map((branch) => (
+                    <SelectItem key={branch.id} value={branch.id}>
+                      {branch.name} ({branch.code})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-
-            {branchExclusive && (
-              <div className="space-y-2">
-                <Label htmlFor="create-product-branch">Exclusive Branch</Label>
-                <Select
-                  value={form.watch('exclusive_branch_id')}
-                  onValueChange={(value) => form.setValue('exclusive_branch_id', value)}
-                  disabled={branchesLoading}
-                >
-                  <SelectTrigger id="create-product-branch">
-                    <SelectValue placeholder={branchesLoading ? 'Loading…' : 'Select a branch'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(branchData?.branches ?? []).map((branch) => (
-                      <SelectItem key={branch.id} value={branch.id}>
-                        {branch.name} ({branch.code})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
 
             <div className="space-y-2">
               {!pendingImage ? (

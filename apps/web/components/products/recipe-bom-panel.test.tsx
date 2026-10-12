@@ -61,7 +61,7 @@ afterEach(() => {
 
 describe('RecipeBomPanel — loading/empty/error states', () => {
   it('shows a loading indicator while the query is in flight', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() });
 
     const { container } = render(<RecipeBomPanel productVariantId="variant-1" variantLabel="Regular (Small)" />);
@@ -71,7 +71,7 @@ describe('RecipeBomPanel — loading/empty/error states', () => {
 
   it('shows an error state with retry on failure', () => {
     const refetch = vi.fn();
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch });
 
     renderPanel();
@@ -80,7 +80,7 @@ describe('RecipeBomPanel — loading/empty/error states', () => {
   });
 
   it('shows an empty state when there are no components', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();
@@ -91,7 +91,7 @@ describe('RecipeBomPanel — loading/empty/error states', () => {
 
 describe('RecipeBomPanel — Admin write access', () => {
   it('shows Add Component, Edit, and Remove controls for Admin', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();
@@ -102,7 +102,7 @@ describe('RecipeBomPanel — Admin write access', () => {
   });
 
   it('shows the component name, quantity, unit, and active status', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();
@@ -115,7 +115,7 @@ describe('RecipeBomPanel — Admin write access', () => {
 
   it('opens a confirmation dialog before removing a component, and only calls delete after confirming', () => {
     const mutateAsync = vi.fn();
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
     mockUseDeleteProductComponent.mockReturnValue({ mutateAsync });
 
@@ -133,7 +133,7 @@ describe('RecipeBomPanel — Admin write access', () => {
   });
 
   it('opens the form dialog in edit mode with the selected component', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();
@@ -148,7 +148,7 @@ describe('RecipeBomPanel — Admin write access', () => {
 
 describe('RecipeBomPanel — Inventory Ready badge', () => {
   it('shows Inventory Ready when the branch readiness report has no blockers for this variant', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
     mockUseRecipeReadiness.mockReturnValue({
       data: { variants: [{ product_variant_id: 'variant-1', status: 'READY' }] },
@@ -161,7 +161,7 @@ describe('RecipeBomPanel — Inventory Ready badge', () => {
   });
 
   it('shows Inventory Incomplete when the branch is missing InventoryStock for a component', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true });
+    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
     mockUseRecipeReadiness.mockReturnValue({
       data: { variants: [{ product_variant_id: 'variant-1', status: 'INCOMPLETE_BRANCH_STOCK' }] },
@@ -174,9 +174,24 @@ describe('RecipeBomPanel — Inventory Ready badge', () => {
   });
 });
 
-describe('RecipeBomPanel — Supervisor read-only access', () => {
-  it('does not show Add Component, Edit, or Remove controls for a non-Admin (Supervisor) caller', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => false });
+// POS-PERF-P34R — a Supervisor may configure the Recipe/BOM for a variant
+// on a product they created (ownership enforced server-side); client-side
+// gating here only distinguishes Admin/Supervisor from Branch/Staff, same
+// as the rest of this product's configuration controls.
+describe('RecipeBomPanel — Supervisor write access', () => {
+  it('shows Add Component, Edit, and Remove controls for a Supervisor caller', () => {
+    mockUseAuth.mockReturnValue({ isAdmin: () => false, isSupervisor: () => true });
+    mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
+
+    renderPanel();
+
+    expect(screen.getByText('Add Component')).toBeInTheDocument();
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(screen.getByText('Remove')).toBeInTheDocument();
+  });
+
+  it('does not show Add Component, Edit, or Remove controls for a Branch/Staff caller', () => {
+    mockUseAuth.mockReturnValue({ isAdmin: () => false, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();

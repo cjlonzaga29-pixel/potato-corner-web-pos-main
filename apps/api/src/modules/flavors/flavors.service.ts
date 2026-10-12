@@ -1,5 +1,5 @@
 import { IngredientCategory } from '@prisma/client';
-import type { JwtPayload } from '@potato-corner/shared';
+import { ROLES, type JwtPayload } from '@potato-corner/shared';
 import { flavorsRepository } from './flavors.repository.js';
 import { FlavorError, type FlavorListFilters } from './flavors.types.js';
 import { productsRepository } from '../products/products.repository.js';
@@ -233,6 +233,12 @@ export const flavorsService = {
     if (!variant || variant.productId !== productId) {
       throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
     }
+    // POS-PERF-P34R — a supervisor may only link an existing flavor to a
+    // variant on a product they created; the flavor catalog itself stays
+    // read-only to them (standalone creation/edit are adminOnly above).
+    if (actor.role === ROLES.SUPERVISOR && product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_FLAVOR_LINK_FORBIDDEN', 'You may only link flavors on a product you created', 403);
+    }
 
     const flavor = await flavorsRepository.findById(data.flavor_id);
     if (!flavor) throw new FlavorError('FLAVOR_NOT_FOUND', 'Flavor not found', 404);
@@ -275,6 +281,9 @@ export const flavorsService = {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) {
       throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    }
+    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_FLAVOR_UPDATE_FORBIDDEN', 'You may only update flavor links on a product you created', 403);
     }
 
     const existingLink = await flavorsRepository.findVariantFlavorLink(variantId, flavorId);

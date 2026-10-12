@@ -467,20 +467,19 @@ describe('productsService.createProduct', () => {
     expect(productsRepository.createWithCascade).not.toHaveBeenCalled();
   });
 
-  // POS-PERF-P34 — Supervisor product creation
-  it('allows a supervisor to create a non-exclusive product (cascades to every active branch, same as super_admin)', async () => {
-    vi.mocked(productsRepository.createWithCascade).mockResolvedValue(
-      buildCreateResult({ status: 'draft', createdBy: SUPERVISOR.id }, ['branch-a', 'branch-b']) as never,
-    );
+  // POS-PERF-P34R — a non-exclusive product cascades a catalog row to every
+  // active branch company-wide; a supervisor may never trigger that, only
+  // super_admin (see the "cascades to all active branches" test below).
+  it('rejects a supervisor creating a non-exclusive product', async () => {
+    await expect(
+      productsService.createProduct(
+        { name: 'Cheese Fries', status: 'draft', is_seasonal: false, branch_exclusive: false },
+        SUPERVISOR,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: 'SUPERVISOR_EXCLUSIVE_BRANCH_REQUIRED', statusCode: 403 });
 
-    const result = await productsService.createProduct(
-      { name: 'Cheese Fries', status: 'draft', is_seasonal: false, branch_exclusive: false },
-      SUPERVISOR,
-      null,
-    );
-
-    expect(result.status).toBe('draft');
-    expect(productsRepository.createWithCascade).toHaveBeenCalledWith(expect.objectContaining({ branchExclusive: false }), SUPERVISOR.id);
+    expect(productsRepository.createWithCascade).not.toHaveBeenCalled();
   });
 
   it('allows a supervisor to create a branch-exclusive product scoped to a branch they have access to', async () => {
@@ -834,6 +833,41 @@ describe('productsService.publishProduct (Phase D1)', () => {
     expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPER_ADMIN.id);
     expect((result as { is_available: boolean }).is_available).toBe(true);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
+  });
+
+  // POS-PERF-P34R — branch_exclusive has no ongoing enforcement past
+  // creation except here: a supervisor must never be able to publish a
+  // branch-exclusive product (even a READY one) to any branch other than
+  // its own exclusiveBranchId. super_admin is unrestricted.
+  it('rejects a supervisor publishing a branch-exclusive product to a branch other than its exclusiveBranchId', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
+    vi.mocked(productsRepository.findById).mockResolvedValue(
+      buildProduct({ status: 'active', branchExclusive: true, exclusiveBranchId: 'branch-a' }) as never,
+    );
+
+    await expect(productsService.publishProduct('prod-1', 'branch-b', SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'PRODUCT_BRANCH_EXCLUSIVE',
+      statusCode: 403,
+    });
+    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor to publish a branch-exclusive product to its own exclusiveBranchId', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
+    vi.mocked(productsRepository.findById).mockResolvedValue(
+      buildProduct({ status: 'active', branchExclusive: true, exclusiveBranchId: 'branch-a' }) as never,
+    );
+    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
+      id: 'row-1',
+      branchId: 'branch-a',
+      isAvailable: true,
+      updatedAt: new Date(),
+      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+    } as never);
+
+    const result = await productsService.publishProduct('prod-1', 'branch-a', SUPERVISOR, null);
+
+    expect((result as { is_available: boolean }).is_available).toBe(true);
   });
 
   it('publishes a READY product, reusing updateBranchProductAvailability (existing BranchProductAvailability model, no new writes)', async () => {

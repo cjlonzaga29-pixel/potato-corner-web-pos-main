@@ -65,6 +65,34 @@ function assertVariantTransition(current: VariantLifecycleStatus, next: VariantL
   }
 }
 
+/**
+ * POS-PERF-P34R — a supervisor may never enable a branch-exclusive
+ * product's availability at any branch other than its own
+ * exclusiveBranchId. branch_exclusive otherwise has zero ongoing
+ * enforcement (it's only read at creation time, see createWithCascade),
+ * which — now that supervisor-created products are always
+ * branch-exclusive — would let any supervisor with access to another
+ * branch quietly spread a product outside the branch its creator scoped
+ * it to, via the same branch-availability/publish actions that are
+ * otherwise correctly branch-scoped by branchGuard. super_admin is
+ * unrestricted, same as every other branch_exclusive-adjacent action.
+ */
+function assertSupervisorMayEnableAtBranch(
+  product: { branchExclusive: boolean; exclusiveBranchId: string | null },
+  branchId: string,
+  isAvailable: boolean,
+  actor: ActorContext,
+): void {
+  if (!isAvailable || actor.role !== ROLES.SUPERVISOR) return;
+  if (product.branchExclusive && product.exclusiveBranchId !== branchId) {
+    throw new ProductError(
+      'PRODUCT_BRANCH_EXCLUSIVE',
+      'This product is branch-exclusive and cannot be enabled at a different branch',
+      403,
+    );
+  }
+}
+
 /** Every branch this product currently has a branch_product_availability row for — the "branch rooms" a variant lifecycle event is broadcast to. */
 async function notifyVariantBranches(productId: string, event: string, payload: unknown): Promise<void> {
   const rows = await productsRepository.findBranchProductAvailability(productId);
@@ -716,6 +744,21 @@ export const productsService = {
       seasonalEndDate: data.seasonal_end_date,
     });
 
+    // POS-PERF-P34R — a supervisor may only ever create a branch-exclusive
+    // product scoped to one of their own branches: a non-exclusive product
+    // cascades a branch_product_availability row to every active branch
+    // company-wide (see createWithCascade), which would let a supervisor
+    // provision catalog state at branches outside their assignment. This is
+    // the safe, explicit, narrower rule — super_admin keeps the existing
+    // broader (company-wide) creation capability.
+    if (createdBy.role === ROLES.SUPERVISOR && !data.branch_exclusive) {
+      throw new ProductError(
+        'SUPERVISOR_EXCLUSIVE_BRANCH_REQUIRED',
+        'As a supervisor, you must create this product as branch-exclusive, scoped to one of your own branches',
+        403,
+      );
+    }
+
     if (data.branch_exclusive) {
       if (!data.exclusive_branch_id) {
         throw new ProductError('EXCLUSIVE_BRANCH_REQUIRED', 'exclusive_branch_id is required when branch_exclusive is true', 422);
@@ -938,6 +981,7 @@ export const productsService = {
       }
 
       const isAvailable = data.status === 'active';
+      assertSupervisorMayEnableAtBranch(product, data.branch_id, isAvailable, actor);
       const row = await productsRepository.upsertBranchProductAvailability(data.branch_id, productId, isAvailable, actor.id);
 
       await recordAuditLog({
@@ -962,6 +1006,12 @@ export const productsService = {
     if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
     if (product.status === 'archived') {
       throw new ProductError('PRODUCT_ARCHIVED', 'Archived products cannot receive new variants', 409);
+    }
+    // POS-PERF-P34R — configuration ownership: a supervisor may add variants
+    // only to a product they themselves created, same posture as
+    // uploadProductImage above.
+    if (actor.role === ROLES.SUPERVISOR && product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_CREATE_FORBIDDEN', 'You may only add variants to a product you created', 403);
     }
 
     if (data.lifecycle_status !== undefined && !VALID_LIFECYCLE_STATUSES.has(data.lifecycle_status)) {
@@ -1273,6 +1323,9 @@ export const productsService = {
     if (existing.product.status === 'archived') {
       throw new ProductError('PRODUCT_ARCHIVED', 'Archived products cannot have their variants updated', 409);
     }
+    if (actor.role === ROLES.SUPERVISOR && existing.product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_UPDATE_FORBIDDEN', 'You may only update variants on a product you created', 403);
+    }
 
     const updated = await productsRepository.updateVariant(variantId, {
       name: data.name,
@@ -1338,6 +1391,7 @@ export const productsService = {
         409,
       );
     }
+    assertSupervisorMayEnableAtBranch(product, branchId, isAvailable, actor);
 
     const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actor.id);
 
@@ -1371,6 +1425,9 @@ export const productsService = {
         'Cannot enable a globally discontinued or archived product for a branch',
         409,
       );
+    }
+    for (const update of updates) {
+      assertSupervisorMayEnableAtBranch(product, update.branch_id, update.is_available, actor);
     }
 
     const rows = await prisma.$transaction(async (tx) => {
@@ -1683,6 +1740,9 @@ export const productsService = {
     const existing = await productsRepository.findVariantById(variantId);
     if (!existing || existing.productId !== productId) {
       throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
+    }
+    if (actor.role === ROLES.SUPERVISOR && existing.product.createdBy !== actor.id) {
+      throw new ProductError('VARIANT_DELETE_FORBIDDEN', 'You may only delete variants on a product you created', 403);
     }
 
     try {

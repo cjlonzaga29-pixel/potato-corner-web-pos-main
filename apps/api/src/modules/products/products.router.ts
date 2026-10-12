@@ -441,10 +441,16 @@ router.post(
   },
 );
 
+// POS-PERF-P34R — variant CRUD, flavor linking, and option-group assignment
+// opened to Supervisor as essential product-configuration steps. Each is
+// scoped in its service layer to products the acting supervisor themselves
+// created (see products.service.ts / flavors.service.ts /
+// product-options.service.ts) — never an arbitrary existing product.
+
 router.post(
   '/:productId/variants',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(createVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -466,7 +472,7 @@ router.post(
 router.patch(
   '/:productId/variants/:variantId',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(updateVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -489,7 +495,7 @@ router.patch(
 router.delete(
   '/:productId/variants/:variantId',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -510,7 +516,7 @@ router.delete(
 router.post(
   '/:productId/variants/:variantId/flavors',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(linkVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -533,7 +539,7 @@ router.post(
 router.patch(
   '/:productId/variants/:variantId/flavors/:flavorId',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(updateVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -554,9 +560,10 @@ router.patch(
   },
 );
 
-// CR-008 R6 — Variant <-> Product Option Group assignment. Same posture as
-// the flavor-linking routes above: Admin only (Supervisor/Branch have no
-// write access to catalog identity, per R13).
+// CR-008 R6 — Variant <-> Product Option Group assignment. POS-PERF-P34R
+// opens assignment (not the Option Group/Option catalog itself, which stays
+// adminOnly below) to Supervisor, ownership-scoped in
+// productOptionsService to variants on a product they created.
 
 router.get(
   '/:productId/variants/:variantId/option-groups',
@@ -577,7 +584,7 @@ router.get(
 router.post(
   '/:productId/variants/:variantId/option-groups',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(assignVariantOptionGroupSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -600,7 +607,7 @@ router.post(
 router.patch(
   '/:productId/variants/:variantId/option-groups/:assignmentId',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   validate(updateVariantOptionGroupSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -624,7 +631,7 @@ router.patch(
 router.delete(
   '/:productId/variants/:variantId/option-groups/:assignmentId',
   authenticate,
-  adminOnly,
+  adminOrSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

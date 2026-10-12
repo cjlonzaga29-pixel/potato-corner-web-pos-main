@@ -25,13 +25,16 @@ interface RecipeBomPanelProps {
  * CR-011.1/CR-012 Recipe/BOM: ProductVariant -> InventoryItem components.
  * ProductComponent + InventoryStock is the authoritative POS inventory
  * pipeline (see recipe-readiness.service.ts) — this panel is the sole
- * inventory-mapping UI for a variant. Read-only for Supervisor and
- * read/write for Admin, matching the existing product-components
- * authorization split.
+ * inventory-mapping UI for a variant. Read/write for Admin (any product)
+ * and Supervisor (POS-PERF-P34R — a product they themselves created;
+ * ownership is enforced server-side in productComponentsService, so a
+ * supervisor viewing someone else's product sees these controls but gets
+ * a 403 on submit, same posture as this variant's other configuration
+ * actions on the supervisor product detail page).
  */
 export function RecipeBomPanel({ productVariantId, variantLabel, branchId }: RecipeBomPanelProps) {
-  const { isAdmin } = useAuth();
-  const canManage = isAdmin();
+  const { isAdmin, isSupervisor } = useAuth();
+  const canManage = isAdmin() || isSupervisor();
 
   const { data: components, isLoading, isError, refetch } = useProductComponents(productVariantId);
   const deleteComponent = useDeleteProductComponent(productVariantId);

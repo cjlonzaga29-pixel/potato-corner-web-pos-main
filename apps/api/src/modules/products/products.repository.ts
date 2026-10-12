@@ -126,18 +126,25 @@ export const productsRepository = {
         },
       });
 
+      // POS-PERF-P34R — rows are seeded unavailable (isAvailable: false):
+      // "a branch_product_availability row exists" must never mean "this
+      // product is published and sellable there." Publishing is a distinct,
+      // readiness-gated action (productsService.publishProduct /
+      // updateBranchProductAvailability) performed after setup — never an
+      // automatic side effect of creation. This matches publishProduct's own
+      // assumption that BRANCH_NOT_AVAILABLE is the normal pre-publish state.
       let cascadedBranchIds: string[];
       if (data.branchExclusive && data.exclusiveBranchId) {
         cascadedBranchIds = [data.exclusiveBranchId];
         await tx.branchProductAvailability.create({
-          data: { branchId: data.exclusiveBranchId, productId: product.id, isAvailable: true, updatedBy: createdBy },
+          data: { branchId: data.exclusiveBranchId, productId: product.id, isAvailable: false, updatedBy: createdBy },
         });
       } else {
         const activeBranches = await tx.branch.findMany({ where: { status: 'active' }, select: { id: true } });
         cascadedBranchIds = activeBranches.map((b) => b.id);
         if (activeBranches.length > 0) {
           await tx.branchProductAvailability.createMany({
-            data: activeBranches.map((b) => ({ branchId: b.id, productId: product.id, isAvailable: true, updatedBy: createdBy })),
+            data: activeBranches.map((b) => ({ branchId: b.id, productId: product.id, isAvailable: false, updatedBy: createdBy })),
           });
         }
       }

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { CreateProductComponentInput, UpdateProductComponentInput } from '@potato-corner/shared';
+import { ROLES, type CreateProductComponentInput, type UpdateProductComponentInput } from '@potato-corner/shared';
 import { productComponentsRepository as repo } from './product-components.repository.js';
 import { ProductComponentError } from './product-components.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
@@ -68,14 +68,26 @@ async function resolveRecipeUnitId(baseUnitId: string, requestedUnitId: string |
   return requestedUnitId;
 }
 
-/** Blocks recipe mutations on components belonging to an archived product — archived products are read-only, mirroring ProductError('PRODUCT_ARCHIVED') in the products module. */
-async function assertParentProductNotArchived(productVariantId: string): Promise<void> {
+/**
+ * Blocks recipe mutations on components belonging to an archived product
+ * (mirroring ProductError('PRODUCT_ARCHIVED') in the products module), and —
+ * POS-PERF-P34R — restricts a supervisor to recipe/BOM mappings on a
+ * product they themselves created.
+ */
+async function assertParentProductWritable(productVariantId: string, actor: ActorContext): Promise<void> {
   const variant = await productsRepository.findVariantById(productVariantId);
   if (variant?.product?.status === 'archived') {
     throw new ProductComponentError(
       'PRODUCT_ARCHIVED',
       'This product is archived and its recipe components are read-only',
       409,
+    );
+  }
+  if (actor.role === ROLES.SUPERVISOR && variant?.product?.createdBy !== actor.id) {
+    throw new ProductComponentError(
+      'RECIPE_COMPONENT_FORBIDDEN',
+      'You may only configure the Recipe/BOM for a product you created',
+      403,
     );
   }
 }
@@ -89,13 +101,7 @@ export const productComponentsService = {
   async createMapping(data: CreateProductComponentInput, actor: ActorContext, ipAddress: string | null) {
     const variant = await productsRepository.findVariantById(data.product_variant_id);
     if (!variant) throw new ProductComponentError('PRODUCT_VARIANT_NOT_FOUND', 'product_variant_id does not exist', 404);
-    if (variant.product?.status === 'archived') {
-      throw new ProductComponentError(
-        'PRODUCT_ARCHIVED',
-        'This product is archived and its recipe components are read-only',
-        409,
-      );
-    }
+    await assertParentProductWritable(data.product_variant_id, actor);
 
     const item = await universalInventoryRepository.findItemById(data.inventory_item_id);
     if (!item) throw new ProductComponentError('INVENTORY_ITEM_NOT_FOUND', 'inventory_item_id does not exist', 404);
@@ -140,7 +146,7 @@ export const productComponentsService = {
   async updateMapping(id: string, data: UpdateProductComponentInput, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
-    await assertParentProductNotArchived(before.productVariantId);
+    await assertParentProductWritable(before.productVariantId, actor);
 
     const updateData: { quantityRequired?: number; recipeUnitId?: string; isActive?: boolean } = {};
     if (data.quantity_required !== undefined) updateData.quantityRequired = data.quantity_required;
@@ -169,7 +175,7 @@ export const productComponentsService = {
   async deleteMapping(id: string, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
-    await assertParentProductNotArchived(before.productVariantId);
+    await assertParentProductWritable(before.productVariantId, actor);
 
     await repo.delete(id, actor.id);
 

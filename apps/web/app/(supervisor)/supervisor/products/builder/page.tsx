@@ -249,6 +249,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
 
   const myActiveBranchIds = user?.branchIds ?? [];
   const myBranches = (branchData?.branches ?? []).filter((b) => myActiveBranchIds.includes(b.id));
+  const myOnlyBranch = myBranches.length === 1 ? myBranches[0] : undefined;
 
   const form = useForm<DetailsFormValues>({
     resolver: zodResolver(detailsFormSchema),
@@ -256,7 +257,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
       name: '',
       description: '',
       category_id: '',
-      branch_id: myBranches.length === 1 ? myBranches[0]!.id : '',
+      branch_id: myOnlyBranch?.id ?? '',
     },
   });
   const [pendingImage, setPendingImage] = useState<File | null>(null);
@@ -264,11 +265,11 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
 
   // Auto-select when exactly one active branch resolves after load; otherwise leave cleared for a deliberate pick.
   useEffect(() => {
-    if (myBranches.length === 1 && !form.getValues('branch_id')) {
-      form.setValue('branch_id', myBranches[0]!.id);
+    if (myOnlyBranch && !form.getValues('branch_id')) {
+      form.setValue('branch_id', myOnlyBranch.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myBranches.length]);
+  }, [myOnlyBranch]);
 
   async function onSubmit(values: DetailsFormValues) {
     let productId = createdProductId;
@@ -337,9 +338,9 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
 
             <div className="space-y-2">
               <Label htmlFor="builder-branch">Branch</Label>
-              {myBranches.length === 1 ? (
+              {myOnlyBranch ? (
                 <p className="bg-muted/30 rounded-md border px-3 py-2 text-sm font-medium">
-                  {myBranches[0]!.name} ({myBranches[0]!.code})
+                  {myOnlyBranch.name} ({myOnlyBranch.code})
                 </p>
               ) : (
                 <Select

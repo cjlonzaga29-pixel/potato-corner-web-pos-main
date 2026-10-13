@@ -85,8 +85,8 @@ export function InlineCreateInventoryItemDialog({
         <DialogHeader>
           <DialogTitle>New Inventory Item</DialogTitle>
           <DialogDescription>
-            e.g. "Raw Fries", "Small Cup", "Cheese Powder". This becomes available everywhere items
-            are picked.
+            e.g. &quot;Raw Fries&quot;, &quot;Small Cup&quot;, &quot;Cheese Powder&quot;. This becomes available
+            everywhere items are picked.
           </DialogDescription>
         </DialogHeader>
 
@@ -134,7 +134,7 @@ export function InlineCreateInventoryItemDialog({
               </SelectContent>
             </Select>
             <p className="text-muted-foreground text-xs">
-              A measurement unit only — "cup" is an item, not a unit.
+              A measurement unit only — &quot;cup&quot; is an item, not a unit.
             </p>
           </div>
         </div>

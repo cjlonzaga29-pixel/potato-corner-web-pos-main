@@ -85,20 +85,23 @@ export async function authedGet<T>(
 
 /**
  * Product Request workflow was removed — Product Management (POST
- * /api/products, adminOnly) is the sole path to a new product. Creates the
- * product branch-exclusive to branchId, then adds each variant.
+ * /api/products) is the sole path to a new product. POS-PERF-P35 moved this
+ * write to supervisorOnly (Admin's product-catalog write access, including
+ * create, was revoked server-side) — callers must pass a Supervisor's
+ * access token, not Admin's. Creates the product branch-exclusive to
+ * branchId, then adds each variant.
  */
 export async function createProduct(
   request: APIRequestContext,
   baseURL: string,
   params: {
     branchId: string;
-    adminAccessToken: string;
+    supervisorAccessToken: string;
     proposedName: string;
     variants: { name: string; size_label: string; base_price: number }[];
   },
 ): Promise<{ productId: string }> {
-  const created = await authedPost<{ id: string }>(request, baseURL, '/api/products', params.adminAccessToken, {
+  const created = await authedPost<{ id: string }>(request, baseURL, '/api/products', params.supervisorAccessToken, {
     name: params.proposedName,
     category: 'E2E',
     status: 'active',
@@ -115,7 +118,7 @@ export async function createProduct(
       request,
       baseURL,
       `/api/products/${created.data.id}/variants`,
-      params.adminAccessToken,
+      params.supervisorAccessToken,
       { name: variant.name, size_label: variant.size_label, base_price: variant.base_price, is_active: true },
     );
     if (!createdVariant.data?.id) {

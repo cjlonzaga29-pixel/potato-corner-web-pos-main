@@ -204,6 +204,18 @@ describe('productOptionsService.updateGroup', () => {
     expect(repo.updateGroup).not.toHaveBeenCalled();
   });
 
+  it('POS-PERF-P35R2 shared-reference protection: blocks a selection_type change when an assigned variant belongs to an unassigned/shared product (createdBy and managedBy both null)', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findAssignedProductOwnership).mockResolvedValue([
+      { productVariant: { product: { createdBy: null, managedBy: null } } },
+    ] as never);
+
+    await expect(
+      productOptionsService.updateGroup('group-1', { selection_type: 'MULTIPLE' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'OPTION_GROUP_SEMANTIC_CHANGE_BLOCKED', statusCode: 409 });
+    expect(repo.updateGroup).not.toHaveBeenCalled();
+  });
+
   it('allows a selection_type change when every assigned variant belongs to a product the actor themselves manages', async () => {
     vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
     vi.mocked(repo.findAssignedProductOwnership).mockResolvedValue([

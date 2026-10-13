@@ -329,19 +329,21 @@ export const productOptionsService = {
       throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only edit an option group you created or have been assigned to manage', 403);
     }
 
-    // POS-PERF-P35R — shared-reference protection: selection_type/min/max
+    // POS-PERF-P35R2 — shared-reference protection: selection_type/min/max
     // selections are the group's selection *semantics*, not cosmetic
     // fields. Changing them silently reshapes every variant that already
     // has this group assigned — including variants on products another
-    // supervisor manages, who never consented to that change. Cosmetic
-    // fields (name/description/pos_button_label/is_active/sort_order)
-    // stay editable regardless of who else depends on this group.
+    // supervisor manages, and variants on unassigned/Admin-created/shared
+    // products (managedBy and createdBy both null), which have no owner to
+    // have consented to the change either. Cosmetic fields
+    // (name/description/pos_button_label/is_active/sort_order) stay
+    // editable regardless of who else depends on this group.
     const changesSemantics = data.selection_type !== undefined || data.min_selections !== undefined || data.max_selections !== undefined;
     if (changesSemantics) {
       const assignments = await repo.findAssignedProductOwnership(id);
       const otherOwnerAssignment = assignments.some((a) => {
         const owner = a.productVariant.product.managedBy ?? a.productVariant.product.createdBy;
-        return owner !== null && owner !== actor.id;
+        return owner !== actor.id;
       });
       if (otherOwnerAssignment) {
         throw new ProductOptionError(

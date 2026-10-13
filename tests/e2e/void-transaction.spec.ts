@@ -36,7 +36,7 @@ test.beforeAll(async ({ request, baseURL }) => {
 
   await createProduct(request, url, {
     branchId,
-    adminAccessToken: admin.accessToken,
+    supervisorAccessToken: supervisor.accessToken,
     proposedName: VOID_PRODUCT.name,
     variants: [{ name: VOID_PRODUCT.variantName, size_label: 'Regular', base_price: VOID_PRODUCT.price }],
   });

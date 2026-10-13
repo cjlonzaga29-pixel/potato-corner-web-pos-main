@@ -27,17 +27,26 @@ export const CATALOG_FIXTURE = {
 };
 
 /**
- * Logs in as the seeded admin, creates the fixture product + two variants
+ * Logs in as the seeded admin (to resolve the seeded branch — still a plain
+ * reporting read) and the seeded supervisor (POS-PERF-P35 moved product
+ * creation to supervisorOnly), creates the fixture product + two variants
  * directly through Product Management, and returns the branch id both
  * seeded non-admin accounts are assigned to. Call once per spec file in
  * `test.beforeAll`, not per-test — this hits real write endpoints.
  */
 export async function seedCatalog(request: APIRequestContext, baseURL: string): Promise<{ branchId: string }> {
   const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
+  const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
 
   // Branch is seeded by name/code ("Main Branch" / MAIN01) — fetched by
-  // listing branches rather than hardcoding an id that could drift.
-  const branchList = await authedGet<{ branches: { id: string; code: string }[] }>(request, '/api/branches', admin.accessToken);
+  // listing branches rather than hardcoding an id that could drift. Scoped
+  // with ?search so a long-lived dev database accumulating branches from
+  // other test runs doesn't push MAIN01 past the default page size.
+  const branchList = await authedGet<{ branches: { id: string; code: string }[] }>(
+    request,
+    '/api/branches?search=MAIN01',
+    admin.accessToken,
+  );
   const branch = branchList.data?.branches.find((b) => b.code === 'MAIN01');
   if (!branch) {
     throw new Error('Seeded "Main Branch" (MAIN01) not found — run apps/api/prisma/seed.ts first');
@@ -45,7 +54,7 @@ export async function seedCatalog(request: APIRequestContext, baseURL: string): 
 
   await createProduct(request, baseURL, {
     branchId: branch.id,
-    adminAccessToken: admin.accessToken,
+    supervisorAccessToken: supervisor.accessToken,
     proposedName: CATALOG_FIXTURE.productName,
     variants: [
       { name: CATALOG_FIXTURE.classicVariantName, size_label: 'Regular', base_price: CATALOG_FIXTURE.classicPrice },

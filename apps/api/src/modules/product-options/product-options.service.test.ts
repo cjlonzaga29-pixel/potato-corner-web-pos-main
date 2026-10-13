@@ -449,6 +449,33 @@ describe('productOptionsService.createOption — inventory_deduction (TASK 75)',
   });
 });
 
+describe('productOptionsService.updateOption — ownership is per-option, not inherited from the parent group (POS-PERF-P35R3)', () => {
+  it('denies a supervisor who manages the parent GROUP but not this specific OPTION — owning the group does not widen into owning every option inside it', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ createdBy: 'other-supervisor', managedBy: null }) as never);
+
+    await expect(
+      productOptionsService.updateOption('group-1', 'option-1', { name: 'Cheese v2' }, { id: ACTOR.id, role: 'supervisor' }, null),
+    ).rejects.toMatchObject({ code: 'OPTION_UPDATE_FORBIDDEN' });
+    expect(repo.updateOption).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor who manages this specific OPTION even though they do not manage the parent group — PRODUCT_OPTION is independently ownable, by design (catalog-assignment.types.ts\'s CatalogResourceType lists it separately from PRODUCT_OPTION_GROUP)', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ createdBy: 'other-supervisor', managedBy: ACTOR.id, inventoryMapping: null }) as never);
+    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ managedBy: ACTOR.id, inventoryMapping: null }) as never);
+
+    const result = await productOptionsService.updateOption(
+      'group-1',
+      'option-1',
+      { name: 'Cheese v2' },
+      { id: ACTOR.id, role: 'supervisor' },
+      null,
+    );
+
+    expect(repo.updateOption).toHaveBeenCalled();
+    expect(result.name).toBe('Cheese');
+  });
+});
+
 describe('productOptionsService.updateOption — inventory_deduction (TASK 75)', () => {
   it('preserves the existing mapping when inventory_deduction is omitted', async () => {
     vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ inventoryMapping: buildMapping() }) as never);

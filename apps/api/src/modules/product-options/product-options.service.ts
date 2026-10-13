@@ -10,7 +10,7 @@ import { productsRepository } from '../products/products.repository.js';
 import { ProductError } from '../products/products.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { isCatalogManager } from '../../lib/catalog-ownership.js';
+import { isCatalogManager, isCatalogManagerForProduct } from '../../lib/catalog-ownership.js';
 
 type ActorContext = { id: string; role: string };
 type Decimalish = { toNumber(): number };
@@ -544,7 +544,7 @@ export const productOptionsService = {
     // Option catalog itself is ownership-scoped separately (createGroup/
     // updateGroup/etc. above) — assigning an existing shared group never
     // requires owning that group, only the product being configured.
-    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(variant.product, actor.id)) {
+    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
       throw new ProductError('VARIANT_OPTION_GROUP_ASSIGN_FORBIDDEN', 'You may only assign option groups on a product you created', 403);
     }
 
@@ -591,7 +591,7 @@ export const productOptionsService = {
   ) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(variant.product, actor.id)) {
+    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
       throw new ProductError('VARIANT_OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only update option group assignments on a product you created', 403);
     }
 
@@ -628,7 +628,7 @@ export const productOptionsService = {
   async unassignOptionGroupFromVariant(productId: string, variantId: string, assignmentId: string, actor: ActorContext, ipAddress: string | null) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(variant.product, actor.id)) {
+    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
       throw new ProductError('VARIANT_OPTION_GROUP_UNASSIGN_FORBIDDEN', 'You may only remove option group assignments on a product you created', 403);
     }
 

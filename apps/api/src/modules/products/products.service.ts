@@ -254,6 +254,9 @@ function toProductBase(product: {
   createdBy: string | null;
   createdAt: Date;
   updatedAt: Date;
+  // POS-PERF-P36R — optional so pre-existing partial-shape call sites (tests,
+  // cascade audit snapshots) don't need updating; a real row always has one.
+  version?: number;
 }) {
   return {
     id: product.id,
@@ -275,6 +278,7 @@ function toProductBase(product: {
     created_by: product.createdBy,
     created_at: product.createdAt.toISOString(),
     updated_at: product.updatedAt.toISOString(),
+    version: product.version ?? 1,
   };
 }
 
@@ -373,6 +377,7 @@ interface UpdateProductInput {
   is_seasonal?: boolean;
   seasonal_start_date?: string | null;
   seasonal_end_date?: string | null;
+  expected_version?: number;
 }
 
 interface ChangeStatusInput {
@@ -417,11 +422,19 @@ interface EditActiveVariantInput {
 
 // --- CR-005 Sub-phase 3d — flavor slot CRUD ---
 
-type SlotOperation = 'ADD_SLOT' | 'UPDATE_SLOT' | 'REMOVE_SLOT' | 'REORDER_SLOTS';
+type SlotOperation = 'ADD_SLOT' | 'UPDATE_SLOT' | 'REMOVE_SLOT' | 'REORDER_SLOTS' | 'ADD_SNACK_OPTION' | 'REMOVE_SNACK_OPTION';
 
 type VariantWithRelations = NonNullable<Awaited<ReturnType<typeof productsRepository.findVariantById>>>;
 
-function toFlavorSlotSnapshot(slot: { id: string; slotIndex: number; label: string; flavorQty: { toNumber(): number }; unit: string; required: boolean }) {
+function toFlavorSlotSnapshot(slot: {
+  id: string;
+  slotIndex: number;
+  label: string;
+  flavorQty: { toNumber(): number };
+  unit: string;
+  required: boolean;
+  snackOptions?: { snackProductVariantId: string }[];
+}) {
   return {
     id: slot.id,
     slot_index: slot.slotIndex,
@@ -429,6 +442,36 @@ function toFlavorSlotSnapshot(slot: { id: string; slotIndex: number; label: stri
     flavor_qty: slot.flavorQty.toNumber(),
     unit: slot.unit,
     required: slot.required,
+    // Sorted so snack-option ADD/REMOVE is detected regardless of insertion
+    // order — the ACTIVE-governance no-op guard compares this snapshot
+    // before/after, not the raw array.
+    snack_option_variant_ids: (slot.snackOptions ?? []).map((so) => so.snackProductVariantId).sort(),
+  };
+}
+
+export function toFlavorSlotResponse(slot: {
+  id: string;
+  productVariantId: string;
+  slotIndex: number;
+  label: string;
+  flavorQty: { toNumber(): number };
+  unit: string;
+  required: boolean;
+  snackOptions?: { id: string; snackProductVariantId: string; snackProductVariant?: { name: string; sizeLabel: string } }[];
+}) {
+  return {
+    id: slot.id,
+    product_variant_id: slot.productVariantId,
+    slot_index: slot.slotIndex,
+    label: slot.label,
+    flavor_qty: slot.flavorQty.toNumber(),
+    unit: slot.unit,
+    required: slot.required,
+    snack_options: (slot.snackOptions ?? []).map((so) => ({
+      id: so.id,
+      snack_product_variant_id: so.snackProductVariantId,
+      snack_variant_name: so.snackProductVariant ? `${so.snackProductVariant.name} (${so.snackProductVariant.sizeLabel})` : null,
+    })),
   };
 }
 
@@ -460,8 +503,24 @@ async function performSlotEditWithActiveGovernance<T>(
   let result: T;
 
   if (variant.lifecycleStatus === 'ACTIVE') {
-    if (actor.role !== ROLES.SUPER_ADMIN) {
-      throw new ProductError('VARIANT_SLOT_EDIT_FORBIDDEN', 'Only super_admin may edit flavor slots on an ACTIVE variant', 403);
+    // POS-PERF-P36R — a brand-new ProductVariant defaults to lifecycleStatus
+    // ACTIVE at creation (Prisma schema default; product-readiness.service.ts
+    // requires exactly that for "Add to POS" eligibility, so the builder
+    // never demotes it to DRAFT). Restricting ACTIVE-variant slot edits to
+    // super_admin only — this governance rule's original CR-005 posture,
+    // written before branch-team authority existed — made Mix & Max
+    // permanently unreachable through the builder: every variant a
+    // supervisor creates is ACTIVE from the moment it exists. Extended to
+    // match every other P36 mutation's posture: a supervisor with active
+    // branch authority over the product may also edit, still gated on the
+    // same mandatory reason as super_admin.
+    const supervisorHasAuthority = actor.role === ROLES.SUPERVISOR && (await hasActiveCatalogAuthorityForProduct(variant.product, actor.id));
+    if (actor.role !== ROLES.SUPER_ADMIN && !supervisorHasAuthority) {
+      throw new ProductError(
+        'VARIANT_SLOT_EDIT_FORBIDDEN',
+        'You may only edit flavor slots on an ACTIVE variant if you are super_admin or a supervisor with active branch authority over this product',
+        403,
+      );
     }
     if (!reason || !reason.trim()) {
       throw new ProductError('VARIANT_SLOT_EDIT_REASON_REQUIRED', 'A reason is required to edit flavor slots on an ACTIVE variant', 400);
@@ -503,6 +562,20 @@ async function performSlotEditWithActiveGovernance<T>(
   } else {
     if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.SUPERVISOR) {
       throw new ProductError('VARIANT_SLOT_EDIT_FORBIDDEN', 'Only super_admin or supervisor may edit flavor slots', 403);
+    }
+    // POS-PERF-P36R — flavor-slot CRUD was missing the same branch-authority
+    // check every other variant mutation (updateVariant, product-components)
+    // already enforces, leaving a cross-branch gap: a supervisor with no
+    // assignment to the product's branch could still add/edit/remove its
+    // Mix & Max slots. hasActiveCatalogAuthorityForProduct's "never
+    // published -> any active supervisor" fallback still applies, so a
+    // brand-new draft variant isn't orphaned before its first publish.
+    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(variant.product, actor.id))) {
+      throw new ProductError(
+        'VARIANT_SLOT_EDIT_FORBIDDEN',
+        'You may only edit flavor slots on a product an active branch assignment gives you authority over',
+        403,
+      );
     }
     result = await mutation(prisma, variant);
   }
@@ -855,6 +928,18 @@ export const productsService = {
     if (updatedBy.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(before, updatedBy.id))) {
       throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product an active branch assignment gives you authority over', 403);
     }
+    // POS-PERF-P36R — closes the gap flagged in docs/decisions/POS-PERF-P36
+    // §5: variant-level expected_version existed, but Product-level fields
+    // (name/category/display_order/seasonal window) had no equivalent, so a
+    // stale Edit Product form could silently overwrite another supervisor's
+    // concurrent change. Same posture as updateVariant: omitted = no check.
+    if (data.expected_version !== undefined && data.expected_version !== before.version) {
+      throw new ProductError(
+        'PRODUCT_CONFLICT',
+        'This product was changed by someone else since you loaded it. Reload to see the latest version before saving again.',
+        409,
+      );
+    }
 
     const mergedIsSeasonal = data.is_seasonal ?? before.isSeasonal;
     const mergedStart =
@@ -885,6 +970,7 @@ export const productsService = {
       isSeasonal: data.is_seasonal,
       seasonalStartDate: data.seasonal_start_date,
       seasonalEndDate: data.seasonal_end_date,
+      version: before.version + 1,
     });
 
     const response = toProductDetailResponse(product as DetailRow);
@@ -1938,6 +2024,55 @@ export const productsService = {
     if (!variant) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
 
     return productsRepository.listVariantFlavorSlots(variantId);
+  },
+
+  /**
+   * POS-PERF-P36R — ProductFlavorSlotSnackOption CRUD. snackProductVariantId
+   * must reference a real, active ProductVariant (the "snack" sold into this
+   * slot, e.g. Fries Regular) — never the Mix & Max variant itself, since
+   * inventory deduction resolves against the snack variant's own recipe
+   * (product-inventory.service.ts's computeDeductionForSlots), not the
+   * parent slot's.
+   */
+  async addSnackOption(
+    slotId: string,
+    data: { snackProductVariantId: string },
+    reason: string | undefined,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ) {
+    const slot = await productsRepository.findFlavorSlotById(slotId);
+    if (!slot) throw new ProductError('VARIANT_SLOT_NOT_FOUND', 'Flavor slot not found', 404);
+
+    const snackVariant = await productsRepository.findVariantById(data.snackProductVariantId);
+    if (!snackVariant) throw new ProductError('VARIANT_NOT_FOUND', 'snackProductVariantId does not reference an existing variant', 404);
+    if (snackVariant.id === slot.productVariantId) {
+      throw new ProductError('SNACK_OPTION_SELF_REFERENCE', 'A Mix & Max variant cannot be its own snack option', 400);
+    }
+    if (!snackVariant.isActive) {
+      throw new ProductError('SNACK_OPTION_VARIANT_INACTIVE', 'snackProductVariantId must reference an active variant', 400);
+    }
+
+    return performSlotEditWithActiveGovernance(slot.productVariantId, reason, actor, ipAddress, 'ADD_SNACK_OPTION', async (tx) => {
+      const existing = await tx.productFlavorSlotSnackOption.findUnique({
+        where: { flavorSlotId_snackProductVariantId: { flavorSlotId: slotId, snackProductVariantId: data.snackProductVariantId } },
+      });
+      if (existing) throw new ProductError('SNACK_OPTION_ALREADY_EXISTS', 'This variant is already a snack option for this slot', 409);
+
+      return productsRepository.insertSnackOption({ flavorSlotId: slotId, snackProductVariantId: data.snackProductVariantId }, tx);
+    });
+  },
+
+  async removeSnackOption(slotId: string, snackOptionId: string, reason: string | undefined, actor: ActorContext, ipAddress: string | null) {
+    const option = await productsRepository.findSnackOptionById(snackOptionId);
+    if (!option || option.flavorSlotId !== slotId) throw new ProductError('SNACK_OPTION_NOT_FOUND', 'Snack option not found', 404);
+
+    const slot = await productsRepository.findFlavorSlotById(slotId);
+    if (!slot) throw new ProductError('VARIANT_SLOT_NOT_FOUND', 'Flavor slot not found', 404);
+
+    await performSlotEditWithActiveGovernance(slot.productVariantId, reason, actor, ipAddress, 'REMOVE_SNACK_OPTION', async (tx) => {
+      await productsRepository.deleteSnackOption(snackOptionId, tx);
+    });
   },
 
   // --- Task 209.6 — Product Image Management (Admin Only) ---

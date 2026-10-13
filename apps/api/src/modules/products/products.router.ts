@@ -15,10 +15,14 @@ import {
   publishProductSchema,
   unpublishProductSchema,
   cartAvailabilityCheckSchema,
+  addFlavorSlotSchema,
+  updateFlavorSlotSchema,
+  reorderFlavorSlotsSchema,
+  addSnackOptionSchema,
   PRODUCT_STATUS,
   type ProductStatus,
 } from '@potato-corner/shared';
-import { productsService } from './products.service.js';
+import { productsService, toFlavorSlotResponse } from './products.service.js';
 import { ProductError } from './products.types.js';
 import { FlavorError } from '../flavors/flavors.types.js';
 import { flavorsService } from '../flavors/flavors.service.js';
@@ -654,6 +658,172 @@ router.delete(
         req.params.productId as string,
         req.params.variantId as string,
         req.params.assignmentId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(204).send();
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P36R — Mix & Max flavor-slot CRUD. The service layer
+// (performSlotEditWithActiveGovernance, CR-005 Sub-phase 3d) already existed
+// but had no HTTP route at all — this was the actual, previously-undocumented
+// gap in "the builder doesn't expose a Mix & Max editor" (the P36 doc assumed
+// direct API access was still possible as a workaround; it wasn't).
+
+router.get(
+  '/:productId/variants/:variantId/flavor-slots',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const slots = await productsService.listFlavorSlots(req.params.variantId as string, { id: req.user.user_id, role: req.user.role });
+      res.status(200).json({ data: slots.map(toFlavorSlotResponse), error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:productId/variants/:variantId/flavor-slots',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(addFlavorSlotSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { reason, ...rest } = req.body as z.infer<typeof addFlavorSlotSchema>;
+      const slot = await productsService.addFlavorSlot(
+        req.params.variantId as string,
+        { label: rest.label, flavorQty: rest.flavor_qty, unit: rest.unit, required: rest.required },
+        reason,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: toFlavorSlotResponse(slot), error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/:productId/variants/:variantId/flavor-slots/:slotId',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(updateFlavorSlotSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { reason, ...rest } = req.body as z.infer<typeof updateFlavorSlotSchema>;
+      const slot = await productsService.updateFlavorSlot(
+        req.params.slotId as string,
+        { label: rest.label, flavorQty: rest.flavor_qty, unit: rest.unit, required: rest.required },
+        reason,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: toFlavorSlotResponse(slot), error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.delete(
+  '/:productId/variants/:variantId/flavor-slots/:slotId',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(z.object({ reason: z.string().max(255).optional() })),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { reason } = req.body as { reason?: string };
+      await productsService.removeFlavorSlot(req.params.slotId as string, reason, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+      res.status(204).send();
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:productId/variants/:variantId/flavor-slots/reorder',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(reorderFlavorSlotsSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { reason, slot_ids } = req.body as z.infer<typeof reorderFlavorSlotsSchema>;
+      const slots = await productsService.reorderFlavorSlots(
+        req.params.variantId as string,
+        { slotIds: slot_ids },
+        reason,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: slots.map(toFlavorSlotResponse), error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:productId/variants/:variantId/flavor-slots/:slotId/snack-options',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(addSnackOptionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { reason, snack_product_variant_id } = req.body as z.infer<typeof addSnackOptionSchema>;
+      const option = await productsService.addSnackOption(
+        req.params.slotId as string,
+        { snackProductVariantId: snack_product_variant_id },
+        reason,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: { id: option.id, snack_product_variant_id: option.snackProductVariantId }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.delete(
+  '/:productId/variants/:variantId/flavor-slots/:slotId/snack-options/:snackOptionId',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(z.object({ reason: z.string().max(255).optional() })),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { reason } = req.body as { reason?: string };
+      await productsService.removeSnackOption(
+        req.params.slotId as string,
+        req.params.snackOptionId as string,
+        reason,
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
       );

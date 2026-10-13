@@ -36,12 +36,14 @@ import {
   useDeleteVariant,
   useProductReadiness,
   usePublishProduct,
+  isReadyToPublish,
 } from '@/hooks/queries/use-products';
 import {
   useVariantOptionGroups,
   useUnassignVariantOptionGroup,
 } from '@/hooks/queries/use-product-options';
 import { RecipeBomPanel } from '@/components/products/recipe-bom-panel';
+import { FlavorSlotPanel } from '@/components/admin/products/flavor-slot-panel';
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { AssignOptionGroupDialog } from '@/components/admin/products/assign-option-group-dialog';
@@ -274,11 +276,21 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
   async function onSubmit(values: DetailsFormValues) {
     let productId = createdProductId;
     if (!productId) {
+      // POS-PERF-P36R — Product.status must be 'active', not 'draft':
+      // productReadinessService's PRODUCT_INACTIVE check is an unconditional
+      // publish blocker (products.service.ts's publishProduct never excludes
+      // it from gatingBlockers), and the builder has no later step that ever
+      // changes it. A product created as 'draft' here could never reach
+      // "Add to POS" — confirmed by actually driving this wizard in a real
+      // browser (found during POS-PERF-P36R verification). "Not yet live" is
+      // already fully represented by BranchProductAvailability.isAvailable
+      // staying false until Review's "Add to POS" — that's the actual draft
+      // state, not this column.
       const created = await createProduct.mutateAsync({
         name: values.name,
         description: values.description || undefined,
         category_id: values.category_id || undefined,
-        status: 'draft',
+        status: 'active',
         is_seasonal: false,
         branch_exclusive: true,
         exclusive_branch_id: values.branch_id,
@@ -592,6 +604,7 @@ function ChoicesForVariant({
   const [linkFlavorOpen, setLinkFlavorOpen] = useState(false);
 
   return (
+    <div className="space-y-3">
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0">
         <div>
@@ -666,6 +679,14 @@ function ChoicesForVariant({
         linkedFlavorIds={variant.flavors.map((f) => f.flavor_id)}
       />
     </Card>
+
+    <FlavorSlotPanel
+      productId={productId}
+      variantId={variant.id}
+      variantLabel={`${variant.name} (${variant.size_label})`}
+      lifecycleStatus={variant.lifecycle_status}
+    />
+    </div>
   );
 }
 
@@ -757,7 +778,7 @@ function ReviewStep({
               isPublished ||
               !readiness.data ||
               readiness.data.scope !== 'branch' ||
-              !readiness.data.sellable ||
+              !isReadyToPublish(readiness.data) ||
               publishProduct.isPending
             }
           >

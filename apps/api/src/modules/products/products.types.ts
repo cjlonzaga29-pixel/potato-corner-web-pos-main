@@ -35,6 +35,7 @@ export interface UpdateProductData {
   isSeasonal?: boolean;
   seasonalStartDate?: string | null;
   seasonalEndDate?: string | null;
+  version?: number;
 }
 
 export interface CreateVariantData {

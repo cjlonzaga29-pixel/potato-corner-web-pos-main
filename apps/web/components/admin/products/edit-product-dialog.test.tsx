@@ -62,6 +62,7 @@ function buildProduct(overrides: Partial<ProductResponse> = {}): ProductResponse
     variant_count: 0,
     active_variant_count: 0,
     active_branch_count: 0,
+    version: 1,
     ...overrides,
   };
 }

@@ -149,6 +149,19 @@ export const productComponentsService = {
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
     await assertParentProductWritable(before.productVariantId, actor);
 
+    // POS-PERF-P36R — Recipe/BOM mappings already carried a `version` column
+    // (bumped on every update) but nothing ever checked it, so two
+    // supervisors editing the same ingredient quantity concurrently could
+    // silently overwrite each other. Mirrors updateVariant/updateProduct's
+    // expected_version posture: omitted = no check (backward compatible).
+    if (data.expected_version !== undefined && data.expected_version !== before.version) {
+      throw new ProductComponentError(
+        'MAPPING_CONFLICT',
+        'This recipe component was changed by someone else since you loaded it. Reload to see the latest version before saving again.',
+        409,
+      );
+    }
+
     const updateData: { quantityRequired?: number; recipeUnitId?: string; isActive?: boolean } = {};
     if (data.quantity_required !== undefined) updateData.quantityRequired = data.quantity_required;
     if (data.recipe_unit_id !== undefined) {

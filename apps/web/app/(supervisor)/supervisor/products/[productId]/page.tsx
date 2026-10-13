@@ -23,6 +23,7 @@ import {
   useUploadProductImage,
   usePublishProduct,
   useUnpublishProduct,
+  isReadyToPublish,
 } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
@@ -302,7 +303,7 @@ function VariantsTab({
                 <div className="flex-1">
                   <p className="text-sm font-medium">{isPublishedAtBranch ? 'Published at your branch' : 'Not published at your branch'}</p>
                   <p className="text-xs text-muted-foreground">
-                    {readiness.data.sellable
+                    {isReadyToPublish(readiness.data)
                       ? 'Readiness checks pass — ready to publish.'
                       : 'Resolve the blocking issues below before publishing.'}
                   </p>
@@ -323,7 +324,7 @@ function VariantsTab({
                     <Button
                       type="button"
                       size="sm"
-                      disabled={!readiness.data.sellable || publishProduct.isPending || isArchived}
+                      disabled={!isReadyToPublish(readiness.data) || publishProduct.isPending || isArchived}
                       onClick={() => void publishProduct.mutateAsync(branchId)}
                     >
                       {publishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

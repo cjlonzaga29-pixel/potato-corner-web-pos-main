@@ -359,6 +359,7 @@ describe('RecipeComponentFormDialog — edit mode', () => {
         quantity_required: 2,
         recipe_unit_id: 'unit-g',
         is_active: true,
+        expected_version: EDITING_COMPONENT.version,
       }),
     );
   });

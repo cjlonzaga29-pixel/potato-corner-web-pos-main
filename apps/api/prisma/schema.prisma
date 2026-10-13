@@ -750,6 +750,13 @@ model Product {
   // an overwrite of createdBy itself.
   managedBy String? @map("managed_by")
 
+  // POS-PERF-P36R — optimistic-concurrency token for Product-level fields
+  // (name/description/category/display order/seasonal window). Mirrors
+  // ProductVariant.version (POS-PERF-P36): UpdateProductInput's optional
+  // expected_version, when supplied, must match this before the update is
+  // allowed; mismatch is a 409 PRODUCT_CONFLICT, never a silent overwrite.
+  version Int @default(1)
+
   creator            User?                       @relation(fields: [createdBy], references: [id])
   manager            User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])

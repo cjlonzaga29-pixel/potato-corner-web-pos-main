@@ -89,6 +89,13 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
+    // POS-PERF-P36R — surfaces a 409 PRODUCT_CONFLICT (someone else saved
+    // this product since the dialog loaded it) instead of silently
+    // overwriting their change. mutateAsync throwing on conflict means this
+    // function returns early, before handleOpenChange(false) — the dialog
+    // stays open with the user's edits intact (react-hook-form state is
+    // untouched by a rejected mutation) so nothing typed is lost; the error
+    // toast (useUpdateProduct's onError) tells them to reload and retry.
     await updateProduct.mutateAsync({
       name: parsed.name,
       description: parsed.description || undefined,
@@ -97,6 +104,7 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
       is_seasonal: parsed.is_seasonal,
       seasonal_start_date: parsed.is_seasonal ? parsed.seasonal_start_date : null,
       seasonal_end_date: parsed.is_seasonal ? parsed.seasonal_end_date : null,
+      expected_version: product.version,
     });
     handleOpenChange(false);
   }

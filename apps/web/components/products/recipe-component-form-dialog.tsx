@@ -162,10 +162,13 @@ export function RecipeComponentFormDialog({
   async function handleSubmit() {
     const numericQuantity = Number(quantityRequired);
     if (isEdit) {
+      // POS-PERF-P36R — surfaces a 409 MAPPING_CONFLICT instead of silently
+      // overwriting someone else's concurrent edit to this same ingredient.
       await updateComponent.mutateAsync({
         quantity_required: numericQuantity,
         recipe_unit_id: recipeUnitId,
         is_active: isActive,
+        expected_version: editingComponent?.version,
       });
     } else {
       if (!inventoryItemId) return;

@@ -113,6 +113,10 @@ export const updateProductSchema = z
     is_seasonal: z.boolean().optional(),
     seasonal_start_date: z.iso.date().nullable().optional(),
     seasonal_end_date: z.iso.date().nullable().optional(),
+    // POS-PERF-P36R — optional optimistic-concurrency token (the product's
+    // `version` as loaded by the caller). Omitted = no conflict check, same
+    // backward-compatible posture as updateVariantSchema's expected_version.
+    expected_version: z.number().int().positive().optional(),
   })
   .superRefine((data, ctx) => {
     validateSeasonalFields(
@@ -156,6 +160,54 @@ export const updateVariantSchema = z.object({
   expected_version: z.number().int().positive().optional(),
 });
 
+// POS-PERF-P36R — Mix & Max flavor-slot CRUD request bodies. `reason` is
+// optional on every one of these: products.service.ts's
+// performSlotEditWithActiveGovernance only requires it when the variant is
+// already ACTIVE (a super_admin-only path with a mandatory audit reason);
+// DRAFT/PENDING_APPROVAL edits by a supervisor never need it.
+export const addFlavorSlotSchema = z.object({
+  label: z.string().min(1).max(60),
+  flavor_qty: z.number().positive(),
+  unit: z.string().min(1).max(20),
+  required: z.boolean().optional(),
+  reason: z.string().max(255).optional(),
+});
+
+export const updateFlavorSlotSchema = z.object({
+  label: z.string().min(1).max(60).optional(),
+  flavor_qty: z.number().positive().optional(),
+  unit: z.string().min(1).max(20).optional(),
+  required: z.boolean().optional(),
+  reason: z.string().max(255).optional(),
+});
+
+export const reorderFlavorSlotsSchema = z.object({
+  slot_ids: z.array(z.uuid()).min(1),
+  reason: z.string().max(255).optional(),
+});
+
+export const addSnackOptionSchema = z.object({
+  snack_product_variant_id: z.uuid(),
+  reason: z.string().max(255).optional(),
+});
+
+export const flavorSlotResponseSchema = z.object({
+  id: z.string(),
+  product_variant_id: z.uuid(),
+  slot_index: z.number().int(),
+  label: z.string(),
+  flavor_qty: z.number(),
+  unit: z.string(),
+  required: z.boolean(),
+  snack_options: z.array(
+    z.object({
+      id: z.string(),
+      snack_product_variant_id: z.uuid(),
+      snack_variant_name: z.string().nullable(),
+    }),
+  ),
+});
+
 export const productVariantResponseSchema = z.object({
   id: z.uuid(),
   product_id: z.uuid(),
@@ -168,6 +220,10 @@ export const productVariantResponseSchema = z.object({
   // expected_version; always present on a real variant row, nullable here
   // only because a handful of legacy partial-shape test fixtures omit it.
   version: z.number().int().nullable(),
+  // POS-PERF-P36R — exposed so the builder's Mix & Max slot editor knows
+  // whether a reason is required (performSlotEditWithActiveGovernance only
+  // requires one once the variant is ACTIVE).
+  lifecycle_status: z.string().nullable(),
   flavors: z.array(
     z.object({
       flavor_id: z.uuid(),
@@ -244,6 +300,9 @@ export const productResponseSchema = z.object({
   variant_count: z.number().int(),
   active_variant_count: z.number().int(),
   active_branch_count: z.number().int(),
+  // POS-PERF-P36R — optimistic-concurrency token for updateProductSchema's
+  // expected_version.
+  version: z.number().int(),
 });
 
 export const productDetailResponseSchema = productResponseSchema.extend({

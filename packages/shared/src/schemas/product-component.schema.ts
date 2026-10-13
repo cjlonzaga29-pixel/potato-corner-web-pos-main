@@ -19,6 +19,11 @@ export const updateProductComponentSchema = z
     quantity_required: z.number().positive().optional(),
     recipe_unit_id: z.uuid().optional(),
     is_active: z.boolean().optional(),
+    // POS-PERF-P36R — optional optimistic-concurrency token (the mapping's
+    // `version`, already written on every update but never checked against
+    // until now). Omitted = no conflict check, same backward-compatible
+    // posture as updateVariantSchema's expected_version.
+    expected_version: z.number().int().positive().optional(),
   })
   .refine(
     (data) => data.quantity_required !== undefined || data.recipe_unit_id !== undefined || data.is_active !== undefined,

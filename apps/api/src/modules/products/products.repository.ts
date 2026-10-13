@@ -170,6 +170,7 @@ export const productsRepository = {
         ...(data.seasonalEndDate !== undefined && {
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : null,
         }),
+        ...(data.version !== undefined && { version: data.version }),
       },
       include: detailInclude,
     });
@@ -438,11 +439,35 @@ export const productsRepository = {
   // --- CR-005 Sub-phase 3d — flavor slot CRUD ---
 
   listVariantFlavorSlots(productVariantId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
-    return tx.productFlavorSlot.findMany({ where: { productVariantId }, orderBy: { slotIndex: 'asc' } });
+    return tx.productFlavorSlot.findMany({
+      where: { productVariantId },
+      orderBy: { slotIndex: 'asc' },
+      include: {
+        snackOptions: {
+          select: { id: true, snackProductVariantId: true, snackProductVariant: { select: { name: true, sizeLabel: true } } },
+        },
+      },
+    });
   },
 
   findFlavorSlotById(slotId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
     return tx.productFlavorSlot.findUnique({ where: { id: slotId } });
+  },
+
+  // --- POS-PERF-P36R — Mix & Max snack-option CRUD (ProductFlavorSlot was
+  // write-exposed; ProductFlavorSlotSnackOption, the "which snack variants
+  // are sellable into this slot" row, had no write path at all). ---
+
+  findSnackOptionById(id: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlotSnackOption.findUnique({ where: { id } });
+  },
+
+  insertSnackOption(data: { flavorSlotId: string; snackProductVariantId: string }, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlotSnackOption.create({ data });
+  },
+
+  deleteSnackOption(id: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productFlavorSlotSnackOption.delete({ where: { id } });
   },
 
   insertFlavorSlot(

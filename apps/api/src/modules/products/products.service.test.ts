@@ -271,6 +271,12 @@ function buildVariant(overrides: Partial<Record<string, unknown>> = {}) {
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     variantFlavors: [],
+    // POS-PERF-P36R — flavor-slot CRUD now re-checks branch authority for a
+    // SUPERVISOR actor (hasActiveCatalogAuthorityForProduct), which reads
+    // variant.product. A never-published, non-exclusive product (this
+    // default) falls back to "any active supervisor", matching every
+    // pre-existing test's assumption before that check existed.
+    product: { branchExclusive: false, exclusiveBranchId: null, branchAvailability: [] },
     ...overrides,
   };
 }
@@ -1500,12 +1506,44 @@ describe('productsService flavor slots — RBAC governance', () => {
     expect(productsRepository.insertVariantChangeLog).not.toHaveBeenCalled();
   });
 
-  it('supervisor is blocked (403) mutating slots on an ACTIVE variant', async () => {
-    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+  it('a supervisor with no active branch authority over the product is blocked (403) mutating slots on an ACTIVE variant', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({
+        lifecycleStatus: 'ACTIVE',
+        // Published at a branch the supervisor has no active assignment to
+        // (branchesRepository.findAllActiveBranchIds is mocked to ['branch-1']
+        // in this file's default beforeEach) — the "never published -> any
+        // active supervisor" fallback does not apply once it's published.
+        product: { branchExclusive: false, exclusiveBranchId: null, branchAvailability: [{ branchId: 'branch-other', isAvailable: true }] },
+      }) as never,
+    );
 
     await expect(
       productsService.addFlavorSlot('variant-1', { label: 'Flavor A', flavorQty: 10, unit: 'grams' }, 'reason', SUPERVISOR, null),
     ).rejects.toMatchObject({ code: 'VARIANT_SLOT_EDIT_FORBIDDEN', statusCode: 403 });
+  });
+
+  it('a supervisor with active branch authority over the product CAN mutate slots on an ACTIVE variant with a reason (POS-PERF-P36R)', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE', maxFlavors: 3 }) as never);
+    vi.mocked(productsRepository.countVariantFlavorSlots).mockResolvedValue(0);
+    vi.mocked(productsRepository.listVariantFlavorSlots)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([buildFlavorSlot()] as never);
+    vi.mocked(productsRepository.insertFlavorSlot).mockResolvedValue(buildFlavorSlot() as never);
+    vi.mocked(productsRepository.updateVariantLifecycle).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE', version: 2 }) as never);
+
+    const result = await productsService.addFlavorSlot('variant-1', { label: 'Flavor A', flavorQty: 10, unit: 'grams' }, 'adding a flavor', SUPERVISOR, null);
+
+    expect((result as { label: string }).label).toBe('Flavor A');
+    expect(productsRepository.updateVariantLifecycle).toHaveBeenCalled();
+  });
+
+  it('a supervisor with active branch authority is still blocked without a reason on an ACTIVE variant', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant({ lifecycleStatus: 'ACTIVE' }) as never);
+
+    await expect(
+      productsService.addFlavorSlot('variant-1', { label: 'Flavor A', flavorQty: 10, unit: 'grams' }, undefined, SUPERVISOR, null),
+    ).rejects.toMatchObject({ code: 'VARIANT_SLOT_EDIT_REASON_REQUIRED', statusCode: 400 });
   });
 
   it('super_admin can mutate slots on an ACTIVE variant with a reason: bumps version, writes ChangeLog', async () => {

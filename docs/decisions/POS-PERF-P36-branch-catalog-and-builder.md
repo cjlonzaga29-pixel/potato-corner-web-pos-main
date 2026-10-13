@@ -8,6 +8,18 @@ Mix & Max data/behavior is preserved, just not re-exposed in the new wizard —
 see §5 limitations) and Playwright browser e2e scenarios (unit/integration
 coverage only — see §8).
 
+**Superseded in part by `docs/decisions/POS-PERF-P36R-branch-isolation-mix-
+max-concurrency.md`**: that phase added the Mix & Max slot editor this doc
+deferred, proved the branch-isolation claim below with real-Postgres tests
+instead of just an audit, closed the Product-level concurrency gap (§5), and
+— via an actual browser run of this builder — found and fixed three defects
+this doc's unit/integration-only verification could not have caught: every
+builder-created product was permanently stuck at `status: 'draft'` (never
+publishable), the Publish/"Add to POS" button could never become enabled on
+a first publish (frontend/backend readiness-gate mismatch), and flavor-slot
+governance blocked every supervisor outright. Read that doc for the current
+state of all three.
+
 ## 1. Why
 
 The POS-PERF-P35R catalog-management model granted authority one resource at

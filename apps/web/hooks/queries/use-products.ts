@@ -345,6 +345,24 @@ export function useProductReadiness(productId: string | null | undefined, branch
   });
 }
 
+/**
+ * POS-PERF-P36R — mirrors products.service.ts's publishProduct exactly:
+ * BRANCH_NOT_AVAILABLE is the one blocking issue publish itself resolves,
+ * so it must never be a precondition for enabling the Publish/"Add to POS"
+ * button. readiness.sellable (= blockingIssues.length === 0, no exclusion)
+ * does treat it as a precondition — every caller that gated a publish
+ * button on `.sellable` directly made a first-time publish of any
+ * branch-exclusive product (the only kind a supervisor may create, per
+ * POS-PERF-P34R) permanently unclickable, confirmed by actually driving the
+ * Simple Product Builder in a real browser. Never remove this exclusion
+ * without re-verifying a first publish end-to-end in a browser.
+ */
+export function isReadyToPublish(readiness: { eligible_variant_count: number; blocking_issues: { code: string }[] } | null | undefined): boolean {
+  if (!readiness) return false;
+  const gatingBlockers = readiness.blocking_issues.filter((issue) => issue.code !== 'BRANCH_NOT_AVAILABLE');
+  return readiness.eligible_variant_count > 0 && gatingBlockers.length === 0;
+}
+
 /** Scoped invalidation only (Phase D1 spec): product detail, readiness (every branch view for this product), and the affected branch's catalog — never a global reset. */
 function invalidateAfterPublishChange(queryClient: ReturnType<typeof useQueryClient>, productId: string, branchId: string) {
   void queryClient.invalidateQueries({ queryKey: ['product', productId] });

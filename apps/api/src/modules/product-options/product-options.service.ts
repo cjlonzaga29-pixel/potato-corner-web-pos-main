@@ -10,6 +10,7 @@ import { productsRepository } from '../products/products.repository.js';
 import { ProductError } from '../products/products.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { isCatalogManager } from '../../lib/catalog-ownership.js';
 
 type ActorContext = { id: string; role: string };
 type Decimalish = { toNumber(): number };
@@ -324,8 +325,31 @@ export const productOptionsService = {
     if (!before) throw new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404);
     // POS-PERF-P35 — a supervisor may edit only an option group they
     // themselves created; a shared/historical group is not editable here.
-    if (before.createdBy !== actor.id) {
-      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only edit an option group you created', 403);
+    if (!isCatalogManager(before, actor.id)) {
+      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only edit an option group you created or have been assigned to manage', 403);
+    }
+
+    // POS-PERF-P35R — shared-reference protection: selection_type/min/max
+    // selections are the group's selection *semantics*, not cosmetic
+    // fields. Changing them silently reshapes every variant that already
+    // has this group assigned — including variants on products another
+    // supervisor manages, who never consented to that change. Cosmetic
+    // fields (name/description/pos_button_label/is_active/sort_order)
+    // stay editable regardless of who else depends on this group.
+    const changesSemantics = data.selection_type !== undefined || data.min_selections !== undefined || data.max_selections !== undefined;
+    if (changesSemantics) {
+      const assignments = await repo.findAssignedProductOwnership(id);
+      const otherOwnerAssignment = assignments.some((a) => {
+        const owner = a.productVariant.product.managedBy ?? a.productVariant.product.createdBy;
+        return owner !== null && owner !== actor.id;
+      });
+      if (otherOwnerAssignment) {
+        throw new ProductOptionError(
+          'OPTION_GROUP_SEMANTIC_CHANGE_BLOCKED',
+          'This option group is assigned to a product variant managed by another supervisor — changing selection_type, min_selections, or max_selections here would silently change their product too. Create a new option group for this change instead.',
+          409,
+        );
+      }
     }
 
     const group = await repo.updateGroup(id, {
@@ -359,8 +383,8 @@ export const productOptionsService = {
     const before = await repo.findGroupById(id);
     if (!before) throw new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404);
     // POS-PERF-P35 — see updateGroup's ownership check above.
-    if (before.createdBy !== actor.id) {
-      throw new ProductOptionError('OPTION_GROUP_DELETE_FORBIDDEN', 'You may only delete an option group you created', 403);
+    if (!isCatalogManager(before, actor.id)) {
+      throw new ProductOptionError('OPTION_GROUP_DELETE_FORBIDDEN', 'You may only delete an option group you created or have been assigned to manage', 403);
     }
 
     const assignedVariantCount = await repo.countVariantAssignments(id);
@@ -412,8 +436,8 @@ export const productOptionsService = {
     // POS-PERF-P35 — adding an option to someone else's group is the same
     // "alter another supervisor's shared catalog indirectly" case the
     // ownership rule exists for; gated the same as updateGroup.
-    if (group.createdBy !== actor.id) {
-      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only add options to an option group you created', 403);
+    if (!isCatalogManager(group, actor.id)) {
+      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only add options to an option group you created or have been assigned to manage', 403);
     }
 
     const existing = await repo.findOptionByCode(optionGroupId, data.code);
@@ -456,8 +480,8 @@ export const productOptionsService = {
     }
     // POS-PERF-P35 — a supervisor may edit only an option they themselves
     // created; a shared/historical option is not editable here.
-    if (before.createdBy !== actor.id) {
-      throw new ProductOptionError('OPTION_UPDATE_FORBIDDEN', 'You may only edit an option you created', 403);
+    if (!isCatalogManager(before, actor.id)) {
+      throw new ProductOptionError('OPTION_UPDATE_FORBIDDEN', 'You may only edit an option you created or have been assigned to manage', 403);
     }
 
     let inventoryDeduction: ResolvedInventoryDeduction | null | undefined;
@@ -518,7 +542,7 @@ export const productOptionsService = {
     // Option catalog itself is ownership-scoped separately (createGroup/
     // updateGroup/etc. above) — assigning an existing shared group never
     // requires owning that group, only the product being configured.
-    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(variant.product, actor.id)) {
       throw new ProductError('VARIANT_OPTION_GROUP_ASSIGN_FORBIDDEN', 'You may only assign option groups on a product you created', 403);
     }
 
@@ -565,7 +589,7 @@ export const productOptionsService = {
   ) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(variant.product, actor.id)) {
       throw new ProductError('VARIANT_OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only update option group assignments on a product you created', 403);
     }
 
@@ -602,7 +626,7 @@ export const productOptionsService = {
   async unassignOptionGroupFromVariant(productId: string, variantId: string, assignmentId: string, actor: ActorContext, ipAddress: string | null) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && variant.product.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(variant.product, actor.id)) {
       throw new ProductError('VARIANT_OPTION_GROUP_UNASSIGN_FORBIDDEN', 'You may only remove option group assignments on a product you created', 403);
     }
 

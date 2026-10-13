@@ -517,7 +517,7 @@ export const productsRepository = {
 
   /** Narrow lookup for the image endpoints — avoids detailInclude's variant/flavor/branch joins when only imagePath is needed. createdBy lets the service scope supervisor uploads to products they created (POS-PERF-P34). */
   findImagePath(productId: string) {
-    return prisma.product.findUnique({ where: { id: productId }, select: { id: true, imagePath: true, createdBy: true } });
+    return prisma.product.findUnique({ where: { id: productId }, select: { id: true, imagePath: true, createdBy: true, managedBy: true } });
   },
 
   /** Single-column update — never touches variants, recipes, inventory, pricing, or availability rows. No transaction needed: one row, one column. */

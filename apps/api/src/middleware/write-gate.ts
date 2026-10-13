@@ -32,6 +32,10 @@ const GATED_PATH_PATTERNS: RegExp[] = [
   /^\/api\/flavors(\/|$)/,
   /^\/api\/product-options(\/|$)/,
   /^\/api\/product-categories(\/|$)/,
+  // POS-PERF-P35R — the catalog-management assignment write (POST) is a
+  // catalog mutation (it changes who may write to a catalog/inventory
+  // record) and must drain/block the same as every other gated write here.
+  /^\/api\/catalog-assignments(\/|$)/,
 ];
 
 function isGatedRequest(req: Request): boolean {

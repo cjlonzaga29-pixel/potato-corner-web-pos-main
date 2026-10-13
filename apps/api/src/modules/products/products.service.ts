@@ -19,6 +19,7 @@ import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode 
 import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
 import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
+import { isCatalogManager } from '../../lib/catalog-ownership.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -847,8 +848,8 @@ export const productsService = {
     // POS-PERF-P35 — Admin's write access to the catalog is gone entirely;
     // a supervisor may edit only a product they themselves created, same
     // posture as createVariant/uploadProductImage (POS-PERF-P34R).
-    if (updatedBy.role === ROLES.SUPERVISOR && before.createdBy !== updatedBy.id) {
-      throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product you created', 403);
+    if (updatedBy.role === ROLES.SUPERVISOR && !isCatalogManager(before, updatedBy.id)) {
+      throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product you created or have been assigned to manage', 403);
     }
 
     const mergedIsSeasonal = data.is_seasonal ?? before.isSeasonal;
@@ -914,7 +915,7 @@ export const productsService = {
     // a supervisor who did NOT create this product must fall through to
     // the branch-scoped posture below exactly like `branch` does, never
     // silently inherit admin's old global power over someone else's product.
-    if (!data.branch_id && actor.role === ROLES.SUPERVISOR && product.createdBy !== actor.id) {
+    if (!data.branch_id && actor.role === ROLES.SUPERVISOR && !isCatalogManager(product, actor.id)) {
       throw new ProductError('PRODUCT_STATUS_FORBIDDEN', 'You may only change the lifecycle status of a product you created', 403);
     }
 
@@ -1027,7 +1028,7 @@ export const productsService = {
     // POS-PERF-P34R — configuration ownership: a supervisor may add variants
     // only to a product they themselves created, same posture as
     // uploadProductImage above.
-    if (actor.role === ROLES.SUPERVISOR && product.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(product, actor.id)) {
       throw new ProductError('VARIANT_CREATE_FORBIDDEN', 'You may only add variants to a product you created', 403);
     }
 
@@ -1340,7 +1341,7 @@ export const productsService = {
     if (existing.product.status === 'archived') {
       throw new ProductError('PRODUCT_ARCHIVED', 'Archived products cannot have their variants updated', 409);
     }
-    if (actor.role === ROLES.SUPERVISOR && existing.product.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(existing.product, actor.id)) {
       throw new ProductError('VARIANT_UPDATE_FORBIDDEN', 'You may only update variants on a product you created', 403);
     }
 
@@ -1726,7 +1727,7 @@ export const productsService = {
     const existing = await productsRepository.findById(productId);
     if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
     // POS-PERF-P35 — see updateProduct's ownership check above.
-    if (actor.role === ROLES.SUPERVISOR && existing.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(existing, actor.id)) {
       throw new ProductError('PRODUCT_DELETE_FORBIDDEN', 'You may only delete a product you created', 403);
     }
 
@@ -1762,7 +1763,7 @@ export const productsService = {
     if (!existing || existing.productId !== productId) {
       throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
     }
-    if (actor.role === ROLES.SUPERVISOR && existing.product.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(existing.product, actor.id)) {
       throw new ProductError('VARIANT_DELETE_FORBIDDEN', 'You may only delete variants on a product you created', 403);
     }
 
@@ -1952,7 +1953,7 @@ export const productsService = {
     // Supervisor, but image management for the broader catalog stays
     // super_admin-only: a supervisor may only set/replace the image on a
     // product they themselves created, not edit an arbitrary existing one.
-    if (actor.role === ROLES.SUPERVISOR && existing.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(existing, actor.id)) {
       throw new ProductError('PRODUCT_IMAGE_FORBIDDEN', 'You may only upload an image for a product you created', 403);
     }
 
@@ -1999,7 +2000,7 @@ export const productsService = {
     if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
     if (!existing.imagePath) throw new ProductError('NO_PRODUCT_IMAGE', 'This product has no image to delete', 404);
     // POS-PERF-P35 — see updateProduct's ownership check above.
-    if (actor.role === ROLES.SUPERVISOR && existing.createdBy !== actor.id) {
+    if (actor.role === ROLES.SUPERVISOR && !isCatalogManager(existing, actor.id)) {
       throw new ProductError('PRODUCT_IMAGE_FORBIDDEN', 'You may only delete the image for a product you created', 403);
     }
 

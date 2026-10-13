@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
   BarChart3,
   Settings,
+  UserCog,
   ChevronsLeft,
   ChevronsRight,
   ChevronDown,
@@ -46,6 +47,11 @@ export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
+  // POS-PERF-P35R — the one catalog-adjacent action still exclusively
+  // Admin's: explicitly assigning management of a shared/orphaned catalog
+  // or inventory-definition record to a Supervisor. Not catalog CRUD
+  // itself, which stays on the Supervisor side (see the P35 comment above).
+  { label: 'Catalog Assignment', href: '/admin/catalog-assignment', icon: UserCog },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];
 
@@ -54,6 +60,7 @@ const SECTION_LABELS: Record<string, string> = {
   Dashboard: 'Overview',
   Branches: 'Management',
   Employees: 'People',
+  'Catalog Assignment': 'System',
   Settings: 'System',
 };
 

@@ -5,6 +5,7 @@ import { ProductComponentError } from './product-components.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { productsRepository } from '../products/products.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { isCatalogManager } from '../../lib/catalog-ownership.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -83,7 +84,7 @@ async function assertParentProductWritable(productVariantId: string, actor: Acto
       409,
     );
   }
-  if (actor.role === ROLES.SUPERVISOR && variant?.product?.createdBy !== actor.id) {
+  if (actor.role === ROLES.SUPERVISOR && !(variant?.product && isCatalogManager(variant.product, actor.id))) {
     throw new ProductComponentError(
       'RECIPE_COMPONENT_FORBIDDEN',
       'You may only configure the Recipe/BOM for a product you created',

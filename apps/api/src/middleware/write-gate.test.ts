@@ -135,6 +135,10 @@ describe('writeGate — which paths/methods it protects', () => {
     // transactions prefix already covers every route this module adds.
     ['POST /api/transactions/:id/retry-inventory-deduction', 'POST', '/api/transactions/tx-1/retry-inventory-deduction'],
     ['POST /api/transactions/by-idempotency-key/:key/abandon', 'POST', '/api/transactions/by-idempotency-key/some-key/abandon'],
+    // POS-PERF-P35R — explicit catalog-management assignment is a catalog
+    // write (it changes who may write to a catalog/inventory record), so
+    // it must drain/block the same as every other gated write above.
+    ['POST /api/catalog-assignments', 'POST', '/api/catalog-assignments'],
   ])('blocks %s with 503 while the gate is closed', async (_label, method, path) => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({ value: { enabled: true, reason: 'deploy swap' } } as never);
     const req = mockReq({ method, path });

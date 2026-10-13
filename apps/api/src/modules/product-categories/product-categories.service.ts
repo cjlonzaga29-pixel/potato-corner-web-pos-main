@@ -2,6 +2,7 @@ import type { JwtPayload } from '@potato-corner/shared';
 import { productCategoriesRepository as repo } from './product-categories.repository.js';
 import { ProductCategoryError, type ProductCategoryListFilters } from './product-categories.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
+import { isCatalogManager } from '../../lib/catalog-ownership.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -90,8 +91,11 @@ export const productCategoriesService = {
     // created; a shared/historical category (createdBy null, or owned by
     // another supervisor) is not editable here — create a new one instead.
     // Mirrors products.service.ts's updateProduct ownership check.
-    if (before.createdBy !== actor.id) {
-      throw new ProductCategoryError('CATEGORY_UPDATE_FORBIDDEN', 'You may only edit a category you created', 403);
+    // POS-PERF-P35R — unless a Super Admin has explicitly assigned
+    // management of this category to them (managedBy), which takes
+    // precedence over createdBy. See catalog-assignment module.
+    if (!isCatalogManager(before, actor.id)) {
+      throw new ProductCategoryError('CATEGORY_UPDATE_FORBIDDEN', 'You may only edit a category you created or have been assigned to manage', 403);
     }
 
     const category = await repo.update(id, {

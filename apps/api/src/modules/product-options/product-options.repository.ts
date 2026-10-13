@@ -280,6 +280,20 @@ export const productOptionsRepository = {
     return prisma.productVariantOptionGroup.count({ where: { optionGroupId } });
   },
 
+  /**
+   * POS-PERF-P35R shared-reference protection — the distinct effective
+   * managers (createdBy, managedBy pairs) of every product whose variant
+   * has this group assigned. Used to block a selection-semantics change
+   * (selection_type/min/max_selections) on a group another supervisor's
+   * product variants still depend on — see updateGroup's guard.
+   */
+  findAssignedProductOwnership(optionGroupId: string) {
+    return prisma.productVariantOptionGroup.findMany({
+      where: { optionGroupId },
+      select: { productVariant: { select: { product: { select: { createdBy: true, managedBy: true } } } } },
+    });
+  },
+
   // P3D-P3: a group can have zero ProductVariantOptionGroup assignments
   // (the check above) while an individual option under it is still
   // referenced directly by a recipe/BOM component or an inventory

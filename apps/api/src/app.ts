@@ -35,6 +35,7 @@ import { recipeReadinessRouter } from './modules/recipe-readiness/recipe-readine
 import { shadowBomDeductionRouter } from './modules/shadow-bom-deduction/shadow-bom-deduction.router.js';
 import { productCategoriesRouter } from './modules/product-categories/product-categories.router.js';
 import { productOptionsRouter } from './modules/product-options/product-options.router.js';
+import { catalogAssignmentRouter } from './modules/catalog-assignment/catalog-assignment.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
 
 export const app: Express = express();
@@ -106,6 +107,7 @@ app.use('/api/product-categories', productCategoriesRouter);
 app.use('/api/product-options', productOptionsRouter);
 app.use('/api/inventory-approvals', inventoryApprovalRouter);
 app.use('/api/staff-pin', staffPinRouter);
+app.use('/api/catalog-assignments', catalogAssignmentRouter);
 
 // Express 5 catch-all syntax (path-to-regexp v8) — '*' alone is no longer valid.
 app.use('/{*splat}', (_req: Request, res: Response) => {

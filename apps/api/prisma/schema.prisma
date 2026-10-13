@@ -371,6 +371,20 @@ model User {
   createdUnitConversions     UnitConversion[]
   createdInventoryItems      InventoryItem[]
 
+  // POS-PERF-P35R — explicit catalog-management assignment, separate from
+  // the createdBy provenance relations above. A user can be the recorded
+  // manager of records they did not create.
+  managedProducts            Product[]                      @relation("ProductManagedBy")
+  managedProductCategories   ProductCategory[]               @relation("ProductCategoryManagedBy")
+  managedProductOptionGroups ProductOptionGroup[]            @relation("ProductOptionGroupManagedBy")
+  managedProductOptions      ProductOption[]                 @relation("ProductOptionManagedBy")
+  managedInventoryCategories InventoryCategory[]             @relation("InventoryCategoryManagedBy")
+  managedUnitsOfMeasure      UnitOfMeasure[]                 @relation("UnitOfMeasureManagedBy")
+  managedUnitConversions     UnitConversion[]                @relation("UnitConversionManagedBy")
+  managedInventoryItems      InventoryItem[]                 @relation("InventoryItemManagedBy")
+  catalogAssignmentsMade     CatalogManagementAssignment[]   @relation("CatalogAssignmentAssignedBy")
+  catalogAssignmentsReceived CatalogManagementAssignment[]   @relation("CatalogAssignmentNewManager")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -390,6 +404,7 @@ model Branch {
   gcashQrUrl      String?
   gcashQrKey      String?
 
+  catalogAssignments  CatalogManagementAssignment[]
   userAssignments     UserBranchAssignment[]
   productAvailability BranchProductAvailability[]
   flavorAvailability  BranchFlavorAvailability[]
@@ -729,7 +744,14 @@ model Product {
   // getSignedProductImageUrl). Nullable — a product with no image is valid.
   imagePath String? @map("image_path")
 
+  // POS-PERF-P35R — explicit management assignment, distinct from createdBy
+  // provenance. See docs/decisions/POS-PERF-P35R-catalog-assignment.md:
+  // effective manager for edit authority is managedBy ?? createdBy, never
+  // an overwrite of createdBy itself.
+  managedBy String? @map("managed_by")
+
   creator            User?                       @relation(fields: [createdBy], references: [id])
+  manager            User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
   productCategory    ProductCategory?            @relation(fields: [categoryId], references: [id])
   variants           ProductVariant[]
@@ -902,8 +924,11 @@ model ProductCategory {
   isActive    Boolean @default(true) @map("is_active")
   sortOrder   Int?    @map("sort_order")
   createdBy   String? @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy   String? @map("managed_by")
 
   creator  User?     @relation(fields: [createdBy], references: [id])
+  manager  User?     @relation("ProductCategoryManagedBy", fields: [managedBy], references: [id])
   products Product[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -926,8 +951,11 @@ model ProductOptionGroup {
   isActive       Boolean                    @default(true) @map("is_active")
   sortOrder      Int?                       @map("sort_order")
   createdBy      String?                    @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy      String?                    @map("managed_by")
 
   creator            User?                       @relation(fields: [createdBy], references: [id])
+  manager            User?                       @relation("ProductOptionGroupManagedBy", fields: [managedBy], references: [id])
   options            ProductOption[]
   variantAssignments ProductVariantOptionGroup[]
 
@@ -948,9 +976,12 @@ model ProductOption {
   isActive        Boolean @default(true) @map("is_active")
   sortOrder       Int?    @map("sort_order")
   createdBy       String? @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy       String? @map("managed_by")
 
   optionGroup           ProductOptionGroup                @relation(fields: [optionGroupId], references: [id])
   creator               User?                             @relation(fields: [createdBy], references: [id])
+  manager               User?                             @relation("ProductOptionManagedBy", fields: [managedBy], references: [id])
   variantAllowedOptions ProductVariantOptionGroupOption[]
   components            ProductComponent[]
   inventoryMapping      ProductOptionInventoryMapping?
@@ -1239,9 +1270,12 @@ model InventoryCategory {
   // POS-PERF-P35 — nullable: NULL means pre-existing/unowned shared master
   // data, same posture as ProductCategory.createdBy. Not backfilled/guessed.
   createdBy   String? @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy   String? @map("managed_by")
 
   items   InventoryItem[]
   creator User?           @relation(fields: [createdBy], references: [id])
+  manager User?           @relation("InventoryCategoryManagedBy", fields: [managedBy], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1264,8 +1298,11 @@ model UnitOfMeasure {
   isActive   Boolean       @default(true) @map("is_active")
   // POS-PERF-P35 — see InventoryCategory.createdBy.
   createdBy  String?       @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy  String?       @map("managed_by")
 
   creator           User?                    @relation(fields: [createdBy], references: [id])
+  manager           User?                    @relation("UnitOfMeasureManagedBy", fields: [managedBy], references: [id])
   items             InventoryItem[]
   conversionsFrom   UnitConversion[]         @relation("UnitConversionFrom")
   conversionsTo     UnitConversion[]         @relation("UnitConversionTo")
@@ -1293,10 +1330,13 @@ model UnitConversion {
   factor     Decimal @db.Decimal(18, 8)
   // POS-PERF-P35 — see InventoryCategory.createdBy.
   createdBy  String? @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy  String? @map("managed_by")
 
   fromUnit UnitOfMeasure @relation("UnitConversionFrom", fields: [fromUnitId], references: [id])
   toUnit   UnitOfMeasure @relation("UnitConversionTo", fields: [toUnitId], references: [id])
   creator  User?         @relation(fields: [createdBy], references: [id])
+  manager  User?         @relation("UnitConversionManagedBy", fields: [managedBy], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1354,10 +1394,13 @@ model InventoryItem {
   deletedAt      DateTime? @map("deleted_at")
   // POS-PERF-P35 — see InventoryCategory.createdBy.
   createdBy      String?   @map("created_by")
+  // POS-PERF-P35R — see Product.managedBy.
+  managedBy      String?   @map("managed_by")
 
   category          InventoryCategory?         @relation(fields: [categoryId], references: [id])
   baseUnit          UnitOfMeasure              @relation(fields: [baseUnitId], references: [id])
   creator           User?                      @relation(fields: [createdBy], references: [id])
+  manager           User?                      @relation("InventoryItemManagedBy", fields: [managedBy], references: [id])
   stocks            InventoryStock[]
   stockMovements    InventoryStockMovement[]
   costCorrections   InventoryCostCorrection[]
@@ -1372,6 +1415,50 @@ model InventoryItem {
   @@index([categoryId])
   @@index([baseUnitId])
   @@map("inventory_items")
+}
+
+/// POS-PERF-P35R — append-only audit trail for explicit catalog-management
+/// assignment. A Super Admin action, not Admin catalog CRUD: this records
+/// WHO is now responsible for managing a shared/orphaned/other-owned catalog
+/// record, never a change to the record's original createdBy provenance.
+/// previousManagedBy captures the prior value (including NULL) so the full
+/// assignment chain is reconstructable without relying on updatedAt alone.
+enum CatalogResourceType {
+  PRODUCT
+  PRODUCT_CATEGORY
+  PRODUCT_OPTION_GROUP
+  PRODUCT_OPTION
+  INVENTORY_CATEGORY
+  UNIT_OF_MEASURE
+  UNIT_CONVERSION
+  INVENTORY_ITEM
+
+  @@map("catalog_resource_type")
+}
+
+model CatalogManagementAssignment {
+  id                String              @id @default(uuid())
+  resourceType      CatalogResourceType @map("resource_type")
+  resourceId        String              @map("resource_id")
+  previousManagedBy String?             @map("previous_managed_by")
+  newManagedBy      String              @map("new_managed_by")
+  assignedBy        String              @map("assigned_by")
+  reason            String
+  // Branch the assignment was validated against at assignment time (e.g. a
+  // branch-exclusive Product's exclusiveBranchId); NULL for branch-agnostic
+  // resources (categories, units, conversions, items are branch-agnostic
+  // master data per CR-007 §3).
+  branchId          String?             @map("branch_id")
+
+  assignedByUser User    @relation("CatalogAssignmentAssignedBy", fields: [assignedBy], references: [id])
+  newManager     User    @relation("CatalogAssignmentNewManager", fields: [newManagedBy], references: [id])
+  branch         Branch? @relation(fields: [branchId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([resourceType, resourceId])
+  @@index([newManagedBy])
+  @@map("catalog_management_assignments")
 }
 
 /// CR-007 §20.2 -- owns all legacy Ingredient -> InventoryItem migration

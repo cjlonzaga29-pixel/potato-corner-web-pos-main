@@ -23,3 +23,4 @@ export * from './recipe-readiness.schema.js';
 export * from './shadow-bom-deduction.schema.js';
 export * from './inventory-approval.schema.js';
 export * from './staff-pin.schema.js';
+export * from './catalog-assignment.schema.js';

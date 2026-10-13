@@ -8,6 +8,7 @@ vi.mock('./product-options.repository.js', () => ({
     createGroup: vi.fn(),
     updateGroup: vi.fn(),
     countVariantAssignments: vi.fn(),
+    findAssignedProductOwnership: vi.fn(),
     countOptionReferences: vi.fn(),
     deleteGroup: vi.fn(),
     findOptionById: vi.fn(),
@@ -160,6 +161,71 @@ describe('productOptionsService.createGroup', () => {
       ),
     ).rejects.toMatchObject({ code: 'OPTION_GROUP_CODE_CONFLICT' });
     expect(repo.createGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe('productOptionsService.updateGroup', () => {
+  it('404s when the group does not exist', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(null);
+
+    await expect(productOptionsService.updateGroup('missing-group', { name: 'New name' }, ACTOR, null)).rejects.toMatchObject({
+      code: 'OPTION_GROUP_NOT_FOUND',
+    });
+  });
+
+  it('denies editing a group created by (and not assigned to) another supervisor', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup({ createdBy: 'someone-else' }) as never);
+
+    await expect(productOptionsService.updateGroup('group-1', { name: 'New name' }, ACTOR, null)).rejects.toMatchObject({
+      code: 'OPTION_GROUP_UPDATE_FORBIDDEN',
+    });
+    expect(repo.updateGroup).not.toHaveBeenCalled();
+  });
+
+  it('allows a cosmetic change (name) without checking variant assignments at all', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.updateGroup).mockResolvedValue(buildGroup({ name: 'Flavor (Updated)' }) as never);
+
+    await productOptionsService.updateGroup('group-1', { name: 'Flavor (Updated)' }, ACTOR, null);
+
+    expect(repo.findAssignedProductOwnership).not.toHaveBeenCalled();
+    expect(repo.updateGroup).toHaveBeenCalled();
+  });
+
+  it('POS-PERF-P35R shared-reference protection: blocks a selection_type change when another supervisor’s product variant still has this group assigned', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findAssignedProductOwnership).mockResolvedValue([
+      { productVariant: { product: { createdBy: 'someone-else', managedBy: null } } },
+    ] as never);
+
+    await expect(
+      productOptionsService.updateGroup('group-1', { selection_type: 'MULTIPLE' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'OPTION_GROUP_SEMANTIC_CHANGE_BLOCKED', statusCode: 409 });
+    expect(repo.updateGroup).not.toHaveBeenCalled();
+  });
+
+  it('allows a selection_type change when every assigned variant belongs to a product the actor themselves manages', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
+    vi.mocked(repo.findAssignedProductOwnership).mockResolvedValue([
+      { productVariant: { product: { createdBy: ACTOR.id, managedBy: null } } },
+    ] as never);
+    vi.mocked(repo.updateGroup).mockResolvedValue(buildGroup({ selectionType: 'MULTIPLE' }) as never);
+
+    await productOptionsService.updateGroup('group-1', { selection_type: 'MULTIPLE' }, ACTOR, null);
+
+    expect(repo.updateGroup).toHaveBeenCalled();
+  });
+
+  it('respects an explicit management assignment (managedBy) as the effective owner for the semantic-change check', async () => {
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup({ managedBy: ACTOR.id, createdBy: 'original-creator' }) as never);
+    vi.mocked(repo.findAssignedProductOwnership).mockResolvedValue([
+      { productVariant: { product: { createdBy: 'original-creator', managedBy: ACTOR.id } } },
+    ] as never);
+    vi.mocked(repo.updateGroup).mockResolvedValue(buildGroup({ selectionType: 'MULTIPLE' }) as never);
+
+    await productOptionsService.updateGroup('group-1', { selection_type: 'MULTIPLE' }, ACTOR, null);
+
+    expect(repo.updateGroup).toHaveBeenCalled();
   });
 });
 

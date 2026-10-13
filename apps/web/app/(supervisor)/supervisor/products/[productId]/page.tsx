@@ -16,6 +16,7 @@ import { formatDateTime } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import {
   useProduct,
+  useChangeProductStatus,
   useDeleteVariant,
   useProductReadiness,
   useProductImage,
@@ -26,6 +27,8 @@ import {
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { VariantCard } from '@/components/admin/products/variant-card';
+import { EditProductDialog } from '@/components/admin/products/edit-product-dialog';
+import { ChangeProductStatusDialog } from '@/components/admin/products/change-product-status-dialog';
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
@@ -39,7 +42,11 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
   const { productId } = use(params);
   const { user } = useAuth();
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
+  const changeStatus = useChangeProductStatus(productId);
   const [activeTab, setActiveTab] = useState('overview');
+  const [editOpen, setEditOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -72,13 +79,34 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
         </Link>
       </Button>
 
-      <div className="space-y-1">
-        <div className="flex items-center gap-2">
-          <h1 className="app-title font-bold">{product.name}</h1>
-          <ProductStatusBadge status={product.status} />
-          <SeasonalBadge isSeasonal={product.is_seasonal} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <h1 className="app-title font-bold">{product.name}</h1>
+            <ProductStatusBadge status={product.status} />
+            <SeasonalBadge isSeasonal={product.is_seasonal} />
+          </div>
+          <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
         </div>
-        <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
+        {isOwner && (
+          <div className="flex gap-2">
+            {product.status === 'archived' ? (
+              <Button onClick={() => changeStatus.mutate({ status: 'active' })} disabled={changeStatus.isPending}>
+                Restore
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setEditOpen(true)}>
+                  Edit Product
+                </Button>
+                <Button onClick={() => setStatusOpen(true)}>Change Status</Button>
+                <Button variant="danger" onClick={() => setArchiveOpen(true)}>
+                  Archive
+                </Button>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {!isOwner && (
@@ -103,6 +131,24 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
           <VariantsTab product={product} branchId={branchId} isOwner={isOwner} onNavigateToTab={setActiveTab} />
         </TabsContent>
       </Tabs>
+
+      {isOwner && (
+        <>
+          <EditProductDialog open={editOpen} onOpenChange={setEditOpen} product={product} />
+          <ChangeProductStatusDialog open={statusOpen} onOpenChange={setStatusOpen} product={product} />
+          <ConfirmDialog
+            open={archiveOpen}
+            onOpenChange={setArchiveOpen}
+            title={`Archive ${product.name}?`}
+            description="Archived products disappear from the POS and product selectors, but stay visible in past transactions and reports. You can restore this product to Active at any time."
+            confirmLabel="Archive"
+            variant="danger"
+            onConfirm={async () => {
+              await changeStatus.mutateAsync({ status: 'archived' });
+            }}
+          />
+        </>
+      )}
     </div>
   );
 }

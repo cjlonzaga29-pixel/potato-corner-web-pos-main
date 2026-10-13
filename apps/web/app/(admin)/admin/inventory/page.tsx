@@ -3,16 +3,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState, SortingState } from '@tanstack/react-table';
-import { Boxes, ClipboardList, Pencil, Plus } from 'lucide-react';
+import { Boxes, ClipboardList, Eye } from 'lucide-react';
 import type { InventoryItemResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { DataTableColumnHeader } from '@/components/shared/data-table/data-table-column-header';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ManagedElsewhereBanner } from '@/components/shared/managed-elsewhere-banner';
 import { cn } from '@/lib/utils';
 import { useInventoryItems } from '@/hooks/queries/use-universal-inventory';
-import { CreateInventoryItemDialog } from '@/components/admin/inventory/create-inventory-item-dialog';
 import { InventoryCategoryBadge } from '@/components/admin/inventory/inventory-category-badge';
 
 const ALL_CATEGORIES = 'all';
@@ -42,7 +42,6 @@ function compareNullableStrings(a: string | null, b: string | null): number {
 export default function UniversalInventoryPage() {
   const router = useRouter();
   const isDesktop = useIsDesktop();
-  const [dialogOpen, setDialogOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState(ALL_CATEGORIES);
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -138,14 +137,14 @@ export default function UniversalInventoryPage() {
         <Button
           variant="outline"
           size="sm"
-          aria-label={`Edit ${row.original.name}`}
+          aria-label={`View ${row.original.name}`}
           onClick={(event) => {
             event.stopPropagation();
             router.push(`/admin/inventory/${row.original.id}`);
           }}
         >
-          <Pencil className="mr-1 h-4 w-4" />
-          Edit
+          <Eye className="mr-1 h-4 w-4" />
+          View
         </Button>
       ),
     },
@@ -168,12 +167,10 @@ export default function UniversalInventoryPage() {
             <ClipboardList className="mr-2 h-4 w-4" />
             Migration Report
           </Button>
-          <Button onClick={() => setDialogOpen(true)} className="w-full sm:w-auto">
-            <Plus className="mr-2 h-4 w-4" />
-            Create Item
-          </Button>
         </div>
       </div>
+
+      <ManagedElsewhereBanner module="Universal Inventory" managedBy="Supervisor" />
 
       <div className="space-y-3">
         <SearchInput
@@ -239,22 +236,10 @@ export default function UniversalInventoryPage() {
           hasAnyItems && hasFilters ? (
             <EmptyState icon={Boxes} title="No matching items" description="Try a different search term or clear the category filter." />
           ) : (
-            <EmptyState
-              icon={Boxes}
-              title="No inventory items yet"
-              description="Create your first inventory item to start building recipes."
-              action={
-                <Button size="sm" onClick={() => setDialogOpen(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create Item
-                </Button>
-              }
-            />
+            <EmptyState icon={Boxes} title="No inventory items yet" description="Inventory items are created by Supervisors." />
           )
         }
       />
-
-      <CreateInventoryItemDialog open={dialogOpen} onOpenChange={setDialogOpen} />
     </div>
   );
 }

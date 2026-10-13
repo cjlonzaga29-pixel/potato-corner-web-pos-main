@@ -54,10 +54,14 @@ export function ChangeProductStatusDialog({ open, onOpenChange, product }: Chang
   const [selected, setSelected] = useState<ChangeableStatus | ''>('');
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const isSuperAdmin = user?.role === ROLES.SUPER_ADMIN;
+  // POS-PERF-P35 — global lifecycle transitions moved from super_admin to
+  // the supervisor who owns the product (products.service.ts's
+  // changeProductStatus: the global path fires only when branch_id is
+  // omitted and, for a supervisor, only on a product they created).
+  const isGlobalActor = user?.role === ROLES.SUPER_ADMIN || user?.role === ROLES.SUPERVISOR;
   const globallyLocked = product.status === 'discontinued' || product.status === 'archived';
-  const options = isSuperAdmin ? GLOBAL_TRANSITIONS[product.status] : BRANCH_SCOPED_OPTIONS;
-  const canSubmit = isSuperAdmin || (!globallyLocked && Boolean(activeBranchId));
+  const options = isGlobalActor ? GLOBAL_TRANSITIONS[product.status] : BRANCH_SCOPED_OPTIONS;
+  const canSubmit = isGlobalActor || (!globallyLocked && Boolean(activeBranchId));
 
   function handleOpenChange(next: boolean) {
     if (next) setSelected('');
@@ -68,7 +72,7 @@ export function ChangeProductStatusDialog({ open, onOpenChange, product }: Chang
     if (!selected) return;
     await changeStatus.mutateAsync({
       status: selected,
-      branch_id: isSuperAdmin ? undefined : (activeBranchId ?? undefined),
+      branch_id: isGlobalActor ? undefined : (activeBranchId ?? undefined),
     });
     onOpenChange(false);
   }
@@ -92,9 +96,9 @@ export function ChangeProductStatusDialog({ open, onOpenChange, product }: Chang
 
         {product.status === 'archived' ? (
           <p className="text-sm text-muted-foreground">Archived products are read-only and cannot change status.</p>
-        ) : !isSuperAdmin && !activeBranchId ? (
+        ) : !isGlobalActor && !activeBranchId ? (
           <p className="text-sm text-destructive">Select an active branch first.</p>
-        ) : !isSuperAdmin && globallyLocked ? (
+        ) : !isGlobalActor && globallyLocked ? (
           <p className="text-sm text-destructive">
             This product is globally {product.status_label.toLowerCase()} and cannot be enabled at branch level.
           </p>

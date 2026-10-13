@@ -25,7 +25,7 @@ import { flavorsService } from '../flavors/flavors.service.js';
 import { productOptionsService } from '../product-options/product-options.service.js';
 import { ProductOptionError } from '../product-options/product-options.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { adminOrSupervisor, allRoles, supervisorOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
@@ -168,11 +168,13 @@ router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange
   }
 });
 
-// POS-PERF-P34 — product creation moved to Supervisor (and super_admin, for
-// read-only/reporting continuity). Branch/staff still cannot create
-// products. Supervisor-specific scoping (e.g. exclusive_branch_id must be
-// one of their own branches) is enforced in productsService.createProduct.
-router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+// POS-PERF-P34/P35 — product catalog management (create, edit, delete,
+// configure) belongs to Supervisor alone now; super_admin keeps read-only/
+// reporting access (every adminOrSupervisor GET in this router) but no
+// write path. Branch/staff still cannot create products.
+// Supervisor-specific scoping (e.g. exclusive_branch_id must be one of
+// their own branches) is enforced in productsService.createProduct.
+router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.createProduct(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -182,7 +184,7 @@ router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validat
   }
 });
 
-router.patch('/:productId', authenticate, adminOnly, requirePasswordChange, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:productId', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.updateProduct(
@@ -197,7 +199,7 @@ router.patch('/:productId', authenticate, adminOnly, requirePasswordChange, vali
   }
 });
 
-router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:productId', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await productsService.deleteProduct(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -207,12 +209,10 @@ router.delete('/:productId', authenticate, adminOnly, requirePasswordChange, asy
   }
 });
 
-// Task 209.6 — Product Image Management. Read mirrors GET /:productId
-// (adminOrSupervisor). Upload is opened to Supervisor as part of the
-// product-creation workflow (POS-PERF-P34) but scoped in the service layer
-// to products the supervisor themselves created. Delete stays Admin-only —
-// it's a catalog-maintenance action on an existing product, not a creation
-// step, same posture as every other product-identity write route
+// Task 209.6 / POS-PERF-P35 — Product Image Management. Read mirrors GET
+// /:productId (adminOrSupervisor). Upload/delete are Supervisor-only,
+// scoped in the service layer to products the supervisor themselves
+// created — same posture as every other product-identity write route
 // (PATCH/DELETE /:productId above).
 
 router.get('/:productId/image', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
@@ -228,7 +228,7 @@ router.get('/:productId/image', authenticate, adminOrSupervisor, requirePassword
 router.post(
   '/:productId/image',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   (req: Request, res: Response, next: NextFunction) => {
     productImageUpload.single('image')(req, res, (error: unknown) => {
@@ -263,7 +263,7 @@ router.post(
   },
 );
 
-router.delete('/:productId/image', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:productId/image', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await productsService.deleteProductImage(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -276,12 +276,11 @@ router.delete('/:productId/image', authenticate, adminOnly, requirePasswordChang
 router.patch(
   '/:productId/status',
   authenticate,
-  // changeProductStatusSchema's branch_id is optional — this can be a
-  // branch-scoped status flip (e.g. TEMPORARILY_UNAVAILABLE at one branch,
-  // branchGuard-checked below) as well as a global lifecycle change, so
-  // branch needs write access here the same as the branch-availability
-  // toggles below.
-  adminOrSupervisor,
+  // changeProductStatusSchema's branch_id is optional — omitted it's a
+  // global lifecycle change (POS-PERF-P35: supervisor-only now, ownership-
+  // scoped in productsService.changeProductStatus), present it's a
+  // branch-scoped status flip (branchGuard-checked below).
+  supervisorOnly,
   requirePasswordChange,
   validate(changeProductStatusSchema),
   branchGuard,
@@ -323,7 +322,7 @@ router.get(
 router.patch(
   '/:productId/branch-availability/bulk',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   branchGuard,
   validate(bulkBranchProductAvailabilitySchema),
@@ -347,7 +346,7 @@ router.patch(
 router.patch(
   '/:productId/branch-availability/:branchId',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),
@@ -369,10 +368,11 @@ router.patch(
   },
 );
 
-// Phase D1 — Admin Readiness panel & product-level publish/unpublish. Read
+// Phase D1 — Readiness panel & product-level publish/unpublish. Read
 // access mirrors branch-availability (adminOrSupervisor); publish/
-// unpublish are branch-scoped writes, so they get branchGuard the same way
-// the branch-availability PATCH routes above do.
+// unpublish are supervisor-only writes (POS-PERF-P35) and branch-scoped,
+// so they get branchGuard the same way the branch-availability PATCH
+// routes above do.
 
 router.get('/:productId/readiness', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -396,7 +396,7 @@ router.get('/:productId/readiness', authenticate, adminOrSupervisor, requirePass
 router.post(
   '/:productId/publish',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(publishProductSchema),
   branchGuard,
@@ -420,7 +420,7 @@ router.post(
 router.post(
   '/:productId/unpublish',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(unpublishProductSchema),
   branchGuard,
@@ -441,8 +441,8 @@ router.post(
   },
 );
 
-// POS-PERF-P34R — variant CRUD, flavor linking, and option-group assignment
-// opened to Supervisor as essential product-configuration steps. Each is
+// POS-PERF-P34R/P35 — variant CRUD, flavor linking, and option-group
+// assignment are Supervisor-only product-configuration steps. Each is
 // scoped in its service layer to products the acting supervisor themselves
 // created (see products.service.ts / flavors.service.ts /
 // product-options.service.ts) — never an arbitrary existing product.
@@ -450,7 +450,7 @@ router.post(
 router.post(
   '/:productId/variants',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(createVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -472,7 +472,7 @@ router.post(
 router.patch(
   '/:productId/variants/:variantId',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -495,7 +495,7 @@ router.patch(
 router.delete(
   '/:productId/variants/:variantId',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -516,7 +516,7 @@ router.delete(
 router.post(
   '/:productId/variants/:variantId/flavors',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(linkVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -539,7 +539,7 @@ router.post(
 router.patch(
   '/:productId/variants/:variantId/flavors/:flavorId',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -560,10 +560,10 @@ router.patch(
   },
 );
 
-// CR-008 R6 — Variant <-> Product Option Group assignment. POS-PERF-P34R
-// opens assignment (not the Option Group/Option catalog itself, which stays
-// adminOnly below) to Supervisor, ownership-scoped in
-// productOptionsService to variants on a product they created.
+// CR-008 R6 — Variant <-> Product Option Group assignment. Supervisor-only
+// (POS-PERF-P34R/P35), ownership-scoped in productOptionsService to
+// variants on a product they created. The Option Group/Option catalog
+// itself lives in product-options.router.ts, also supervisor-only now.
 
 router.get(
   '/:productId/variants/:variantId/option-groups',
@@ -584,7 +584,7 @@ router.get(
 router.post(
   '/:productId/variants/:variantId/option-groups',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(assignVariantOptionGroupSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -607,7 +607,7 @@ router.post(
 router.patch(
   '/:productId/variants/:variantId/option-groups/:assignmentId',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateVariantOptionGroupSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -631,7 +631,7 @@ router.patch(
 router.delete(
   '/:productId/variants/:variantId/option-groups/:assignmentId',
   authenticate,
-  adminOrSupervisor,
+  supervisorOnly,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

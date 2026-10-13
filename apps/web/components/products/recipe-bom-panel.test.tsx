@@ -89,20 +89,23 @@ describe('RecipeBomPanel — loading/empty/error states', () => {
   });
 });
 
-describe('RecipeBomPanel — Admin write access', () => {
-  it('shows Add Component, Edit, and Remove controls for Admin', () => {
+// POS-PERF-P35 — Admin's write access to the Recipe/BOM is gone; these
+// behaviors (detail display, confirm-delete, edit dialog) are exercised as
+// a Supervisor caller, the only role canManage is true for now.
+describe('RecipeBomPanel — write access details (Supervisor)', () => {
+  it('does not show Add Component, Edit, or Remove controls for an Admin caller (POS-PERF-P35)', () => {
     mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();
 
-    expect(screen.getByText('Add Component')).toBeInTheDocument();
-    expect(screen.getByText('Edit')).toBeInTheDocument();
-    expect(screen.getByText('Remove')).toBeInTheDocument();
+    expect(screen.queryByText('Add Component')).not.toBeInTheDocument();
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument();
+    expect(screen.queryByText('Remove')).not.toBeInTheDocument();
   });
 
   it('shows the component name, quantity, unit, and active status', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
+    mockUseAuth.mockReturnValue({ isAdmin: () => false, isSupervisor: () => true });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();
@@ -115,7 +118,7 @@ describe('RecipeBomPanel — Admin write access', () => {
 
   it('opens a confirmation dialog before removing a component, and only calls delete after confirming', () => {
     const mutateAsync = vi.fn();
-    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
+    mockUseAuth.mockReturnValue({ isAdmin: () => false, isSupervisor: () => true });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
     mockUseDeleteProductComponent.mockReturnValue({ mutateAsync });
 
@@ -133,7 +136,7 @@ describe('RecipeBomPanel — Admin write access', () => {
   });
 
   it('opens the form dialog in edit mode with the selected component', () => {
-    mockUseAuth.mockReturnValue({ isAdmin: () => true, isSupervisor: () => false });
+    mockUseAuth.mockReturnValue({ isAdmin: () => false, isSupervisor: () => true });
     mockUseProductComponents.mockReturnValue({ data: [COMPONENT], isLoading: false, isError: false, refetch: vi.fn() });
 
     renderPanel();

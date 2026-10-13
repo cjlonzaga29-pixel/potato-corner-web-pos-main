@@ -124,6 +124,7 @@ export const universalInventoryRepository = {
         name: data.name,
         dimension: data.dimension,
         isBaseUnit: data.isBaseUnit ?? false,
+        createdBy: data.createdBy ?? null,
       },
     });
   },
@@ -152,7 +153,7 @@ export const universalInventoryRepository = {
   },
   createConversion(data: CreateUnitConversionData) {
     return prisma.unitConversion.create({
-      data: { fromUnitId: data.fromUnitId, toUnitId: data.toUnitId, factor: data.factor },
+      data: { fromUnitId: data.fromUnitId, toUnitId: data.toUnitId, factor: data.factor, createdBy: data.createdBy ?? null },
     });
   },
 
@@ -214,6 +215,7 @@ export const universalInventoryRepository = {
         categoryId: data.categoryId,
         baseUnitId: data.baseUnitId,
         trackInventory: data.trackInventory ?? true,
+        createdBy: data.createdBy ?? null,
       },
       include: inventoryItemInclude,
     });

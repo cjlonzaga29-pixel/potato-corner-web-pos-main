@@ -15,6 +15,8 @@ export interface CreateInventoryCategoryData {
   name: string;
   code?: string;
   description?: string;
+  /** POS-PERF-P35 — creator ownership; see InventoryCategory.createdBy in schema.prisma. */
+  createdBy?: string | null;
 }
 
 export interface UpdateInventoryCategoryData {
@@ -29,6 +31,8 @@ export interface CreateUnitOfMeasureData {
   name: string;
   dimension: 'WEIGHT' | 'VOLUME' | 'COUNT';
   isBaseUnit?: boolean;
+  /** POS-PERF-P35 — see CreateInventoryCategoryData.createdBy. */
+  createdBy?: string | null;
 }
 
 export interface UpdateUnitOfMeasureData {
@@ -40,6 +44,8 @@ export interface CreateUnitConversionData {
   fromUnitId: string;
   toUnitId: string;
   factor: number;
+  /** POS-PERF-P35 — see CreateInventoryCategoryData.createdBy. */
+  createdBy?: string | null;
 }
 
 export interface CreateInventoryItemUnitConversionData {
@@ -60,6 +66,8 @@ export interface CreateInventoryItemData {
   categoryId?: string;
   baseUnitId: string;
   trackInventory?: boolean;
+  /** POS-PERF-P35 — see CreateInventoryCategoryData.createdBy. */
+  createdBy?: string | null;
 }
 
 export interface UpdateInventoryItemData {

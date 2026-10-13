@@ -4,7 +4,7 @@ import { createProductComponentSchema, updateProductComponentSchema } from '@pot
 import { productComponentsService } from './product-components.service.js';
 import { ProductComponentError } from './product-components.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -28,11 +28,11 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
   next(error);
 }
 
-// R9 / POS-PERF-P34R — Admin/Super Admin owns the global mapping
-// capability; Supervisor may also write a Recipe/BOM mapping, but only for
-// a variant on a product they themselves created (ownership-scoped in
-// productComponentsService). Branches have no access — this mapping is not
-// read by any runtime deduction path yet.
+// R9 / POS-PERF-P34R/P35 — Supervisor owns the Recipe/BOM mapping
+// capability now, ownership-scoped to a variant on a product they
+// themselves created (productComponentsService); super_admin is
+// read-only. Branches have no access — this mapping is not read by any
+// runtime deduction path yet.
 
 router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -49,7 +49,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
   }
 });
 
-router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validate(createProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const component = await productComponentsService.createMapping(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -59,7 +59,7 @@ router.post('/', authenticate, adminOrSupervisor, requirePasswordChange, validat
   }
 });
 
-router.patch('/:id', authenticate, adminOrSupervisor, requirePasswordChange, validate(updateProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const component = await productComponentsService.updateMapping(
@@ -74,7 +74,7 @@ router.patch('/:id', authenticate, adminOrSupervisor, requirePasswordChange, val
   }
 });
 
-router.delete('/:id', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await productComponentsService.deleteMapping(req.params.id as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);

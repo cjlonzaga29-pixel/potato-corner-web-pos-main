@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import type { ProductOptionGroupDetailResponse } from '@potato-corner/shared';
 import ProductOptionGroupDetailPage from './page';
 
-const { mockUseProductOptionGroup, mockUseUpdateProductOptionGroup } = vi.hoisted(() => ({
+const { mockUseProductOptionGroup } = vi.hoisted(() => ({
   mockUseProductOptionGroup: vi.fn(),
-  mockUseUpdateProductOptionGroup: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -14,16 +13,6 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/hooks/queries/use-product-options', () => ({
   useProductOptionGroup: mockUseProductOptionGroup,
-  useUpdateProductOptionGroup: mockUseUpdateProductOptionGroup,
-  useUpdateProductOption: () => ({ mutateAsync: vi.fn(), isPending: false }),
-}));
-
-vi.mock('@/components/admin/product-options/create-option-dialog', () => ({
-  CreateOptionDialog: () => null,
-}));
-
-vi.mock('@/components/admin/product-options/edit-option-dialog', () => ({
-  EditOptionDialog: () => null,
 }));
 
 function group(overrides: Partial<ProductOptionGroupDetailResponse> = {}): ProductOptionGroupDetailResponse {
@@ -39,8 +28,21 @@ function group(overrides: Partial<ProductOptionGroupDetailResponse> = {}): Produ
     required: false,
     is_active: true,
     sort_order: 0,
-    option_count: 0,
-    options: [],
+    option_count: 1,
+    options: [
+      {
+        id: 'option-1',
+        option_group_id: 'group-1',
+        code: 'cheese',
+        name: 'Cheese',
+        price_adjustment: 0,
+        image_url: null,
+        is_active: true,
+        sort_order: 0,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -60,48 +62,20 @@ function resolvedParams(groupId: string): Promise<{ groupId: string }> {
   return promise;
 }
 
-describe('ProductOptionGroupDetailPage — POS Button Label edit', () => {
-  it('pre-fills an empty POS Button Label field when the group has none saved', () => {
+// POS-PERF-P35 — Product Options management moved to Supervisor; this page
+// is read-only reporting for Admin now (no POS Button Label form, no
+// Add/Edit Option controls).
+describe('ProductOptionGroupDetailPage — Admin read-only (POS-PERF-P35)', () => {
+  it('shows the managed-elsewhere banner, group info, and option list with no write controls', () => {
     mockUseProductOptionGroup.mockReturnValue({ data: group(), isLoading: false });
-    mockUseUpdateProductOptionGroup.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
 
     render(<ProductOptionGroupDetailPage params={resolvedParams('group-1')} />);
 
-    expect(screen.getByLabelText('POS Button Label')).toHaveValue('');
-  });
-
-  it('pre-fills the saved POS Button Label value', () => {
-    mockUseProductOptionGroup.mockReturnValue({ data: group({ pos_button_label: 'Fries Add-ons' }), isLoading: false });
-    mockUseUpdateProductOptionGroup.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-
-    render(<ProductOptionGroupDetailPage params={resolvedParams('group-1')} />);
-
-    expect(screen.getByLabelText('POS Button Label')).toHaveValue('Fries Add-ons');
-  });
-
-  it('sends the changed value, trimmed, on save', async () => {
-    const mutateAsync = vi.fn().mockResolvedValue(undefined);
-    mockUseProductOptionGroup.mockReturnValue({ data: group({ pos_button_label: 'Fries Add-ons' }), isLoading: false });
-    mockUseUpdateProductOptionGroup.mockReturnValue({ mutateAsync, isPending: false });
-
-    render(<ProductOptionGroupDetailPage params={resolvedParams('group-1')} />);
-
-    fireEvent.change(screen.getByLabelText('POS Button Label'), { target: { value: '  SnackBites Add-ons  ' } });
-    fireEvent.click(screen.getByText('Save'));
-
-    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ pos_button_label: 'SnackBites Add-ons' }));
-  });
-
-  it('clears the POS Button Label back to null on save', async () => {
-    const mutateAsync = vi.fn().mockResolvedValue(undefined);
-    mockUseProductOptionGroup.mockReturnValue({ data: group({ pos_button_label: 'Fries Add-ons' }), isLoading: false });
-    mockUseUpdateProductOptionGroup.mockReturnValue({ mutateAsync, isPending: false });
-
-    render(<ProductOptionGroupDetailPage params={resolvedParams('group-1')} />);
-
-    fireEvent.change(screen.getByLabelText('POS Button Label'), { target: { value: '' } });
-    fireEvent.click(screen.getByText('Save'));
-
-    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ pos_button_label: null }));
+    expect(screen.getByText(/managed by Supervisor now/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Flavor' })).toBeInTheDocument();
+    expect(screen.getByText('Cheese')).toBeInTheDocument();
+    expect(screen.queryByLabelText('POS Button Label')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /add option/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument();
   });
 });

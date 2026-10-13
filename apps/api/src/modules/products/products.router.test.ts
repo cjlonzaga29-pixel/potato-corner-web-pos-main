@@ -209,7 +209,7 @@ describe('POST /api/products/:productId/image — Admin or Supervisor', () => {
   });
 });
 
-describe('DELETE /api/products/:productId/image — Admin only', () => {
+describe('DELETE /api/products/:productId/image — Supervisor only', () => {
   it('rejects a branch actor with 403, never reaching the service (unauthorized delete)', async () => {
     const handlers = getRouteHandlers(productsRouter, 'delete', '/:productId/image');
     const req = mockReq({ ...authHeader(generateBranchToken(randomUUID())), params: { productId: 'prod-1' } });
@@ -221,9 +221,9 @@ describe('DELETE /api/products/:productId/image — Admin only', () => {
     expect(productsService.deleteProductImage).not.toHaveBeenCalled();
   });
 
-  it('rejects a supervisor actor with 403, never reaching the service (unauthorized delete)', async () => {
+  it('rejects a super_admin actor with 403, never reaching the service (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(productsRouter, 'delete', '/:productId/image');
-    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), params: { productId: 'prod-1' } });
+    const req = mockReq({ ...authHeader(generateSuperAdminToken()), params: { productId: 'prod-1' } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
@@ -232,10 +232,10 @@ describe('DELETE /api/products/:productId/image — Admin only', () => {
     expect(productsService.deleteProductImage).not.toHaveBeenCalled();
   });
 
-  it('allows a super_admin actor through to the service', async () => {
+  it('allows a supervisor actor through to the service', async () => {
     vi.mocked(productsService.deleteProductImage).mockResolvedValue({ image_url: null });
     const handlers = getRouteHandlers(productsRouter, 'delete', '/:productId/image');
-    const req = mockReq({ ...authHeader(generateSuperAdminToken()), params: { productId: 'prod-1' } });
+    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), params: { productId: 'prod-1' } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);

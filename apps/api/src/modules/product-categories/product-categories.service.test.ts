@@ -68,6 +68,33 @@ describe('productCategoriesService.updateCategory', () => {
       code: 'CATEGORY_NOT_FOUND',
     });
   });
+
+  it('POS-PERF-P35: rejects editing a category the actor did not create', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildCategory({ createdBy: 'someone-else' }) as never);
+
+    await expect(productCategoriesService.updateCategory('cat-1', { name: 'X' }, ACTOR, null)).rejects.toMatchObject({
+      code: 'CATEGORY_UPDATE_FORBIDDEN',
+    });
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it('POS-PERF-P35: rejects editing a shared/historical category (createdBy null)', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildCategory({ createdBy: null }) as never);
+
+    await expect(productCategoriesService.updateCategory('cat-1', { name: 'X' }, ACTOR, null)).rejects.toMatchObject({
+      code: 'CATEGORY_UPDATE_FORBIDDEN',
+    });
+  });
+
+  it('POS-PERF-P35: allows editing a category the actor created', async () => {
+    vi.mocked(repo.findById).mockResolvedValue(buildCategory({ createdBy: ACTOR.id }) as never);
+    vi.mocked(repo.update).mockResolvedValue(buildCategory({ createdBy: ACTOR.id, name: 'X' }) as never);
+
+    const result = await productCategoriesService.updateCategory('cat-1', { name: 'X' }, ACTOR, null);
+
+    expect(result.name).toBe('X');
+    expect(repo.update).toHaveBeenCalled();
+  });
 });
 
 describe('productCategoriesService.getAllCategories', () => {

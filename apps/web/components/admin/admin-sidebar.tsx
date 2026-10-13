@@ -6,7 +6,6 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   Building2,
-  ShoppingBag,
   Users,
   ClipboardCheck,
   BarChart3,
@@ -16,13 +15,6 @@ import {
   ChevronDown,
   LogOut,
   Loader2,
-  Boxes,
-  Tags,
-  Ruler,
-  ListTree,
-  SlidersHorizontal,
-  ClipboardList,
-  History,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -41,29 +33,21 @@ import type { NavItem } from '@/components/shared/nav-types';
  * ROLE_PATH_OWNERSHIP), not the shorthand "/dashboard"-style paths — the
  * real routes are prefixed with /admin.
  */
-export const ADMIN_NAV_ITEMS = [
+// POS-PERF-P35 — the "Product Creation" group (Products, Product
+// Categories, Product Options, Universal Inventory, Inventory Categories,
+// Units, Inventory Movements, Recipe Readiness) moved to Supervisor and was
+// removed from here. The underlying pages still exist for Admin as
+// read-only reporting views (see ManagedElsewhereBanner), just no longer
+// linked from this nav — reachable only by direct URL.
+export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
   { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
-  {
-    label: 'Product Creation',
-    icon: ShoppingBag,
-    children: [
-      { label: 'Products', href: '/admin/products', icon: ShoppingBag },
-      { label: 'Product Categories', href: '/admin/product-categories', icon: ListTree },
-      { label: 'Product Options', href: '/admin/product-options', icon: SlidersHorizontal },
-      { label: 'Universal Inventory', href: '/admin/inventory', icon: Boxes },
-      { label: 'Inventory Categories', href: '/admin/inventory/categories', icon: Tags },
-      { label: 'Units', href: '/admin/inventory/units', icon: Ruler },
-      { label: 'Inventory Movements', href: '/admin/inventory/movements', icon: History },
-      { label: 'Recipe Readiness', href: '/admin/recipe-readiness', icon: ClipboardList },
-    ],
-  },
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
-] satisfies ReadonlyArray<NavItem>;
+];
 
 /** Purely presentational grouping — a section label rendered above the nav item whose `label` is used as the key. */
 const SECTION_LABELS: Record<string, string> = {

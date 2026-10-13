@@ -531,84 +531,106 @@ describe('productsService.updateProduct', () => {
   });
 });
 
-describe('productsService.changeProductStatus — super_admin global transitions', () => {
+// POS-PERF-P35 — global lifecycle transitions moved from super_admin to the
+// supervisor who created the product (router guard denies super_admin
+// entirely now); every buildProduct() below is owned by SUPERVISOR.
+describe('productsService.changeProductStatus — supervisor global transitions (owned product)', () => {
   it('draft -> active succeeds', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'draft' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'draft', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
 
-    const result = await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null);
+    const result = await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
     expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
     expect((result as { status: string }).status).toBe('active');
   });
 
   it('active -> discontinued succeeds', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'discontinued' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'discontinued', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPERVISOR, null);
 
     expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'discontinued');
   });
 
   it('discontinued -> active succeeds', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'discontinued' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'discontinued', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
     expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
   });
 
   it('any status can transition to archived', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'temporarily_unavailable' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(
+      buildProduct({ status: 'temporarily_unavailable', createdBy: SUPERVISOR.id }) as never,
+    );
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'archived', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'archived' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'archived' }, SUPERVISOR, null);
 
     expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'archived');
   });
 
   it('archived -> active succeeds (Task 34 — Restore) and cascades branch availability back on', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'archived', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
     expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
-    expect(productsRepository.cascadeBranchAvailabilityOn).toHaveBeenCalledWith('prod-1', SUPER_ADMIN.id);
+    expect(productsRepository.cascadeBranchAvailabilityOn).toHaveBeenCalledWith('prod-1', SUPERVISOR.id);
     expect(productsRepository.cascadeBranchAvailabilityOff).not.toHaveBeenCalled();
   });
 
   it('draft -> active does not cascade branch availability (only archived -> active restore does)', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'draft' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'draft', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
     expect(productsRepository.cascadeBranchAvailabilityOn).not.toHaveBeenCalled();
   });
 
   it('discontinuing a product cascades branch availability off and logs the cascade', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'discontinued' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'discontinued', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPERVISOR, null);
 
-    expect(productsRepository.cascadeBranchAvailabilityOff).toHaveBeenCalledWith('prod-1', SUPER_ADMIN.id);
+    expect(productsRepository.cascadeBranchAvailabilityOff).toHaveBeenCalledWith('prod-1', SUPERVISOR.id);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_CATALOG_REMOVAL_CASCADE' }));
   });
 
   it('archiving a product cascades all branch_product_availability rows to unavailable (CR-001)', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
-    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'archived', createdBy: SUPERVISOR.id }) as never);
 
-    await productsService.changeProductStatus('prod-1', { status: 'archived' }, SUPER_ADMIN, null);
+    await productsService.changeProductStatus('prod-1', { status: 'archived' }, SUPERVISOR, null);
 
-    expect(productsRepository.cascadeBranchAvailabilityOff).toHaveBeenCalledWith('prod-1', SUPER_ADMIN.id);
+    expect(productsRepository.cascadeBranchAvailabilityOff).toHaveBeenCalledWith('prod-1', SUPERVISOR.id);
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'PRODUCT_CATALOG_REMOVAL_CASCADE', afterState: expect.objectContaining({ cascadedTo: 'unavailable' }) }),
     );
+  });
+
+  it('rejects a supervisor changing the global status of a product they did not create', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: 'other-supervisor' }) as never);
+
+    await expect(productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'PRODUCT_STATUS_FORBIDDEN',
+    });
+    expect(productsRepository.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it('rejects a super_admin actor outright (POS-PERF-P35 — denied at the service layer too)', async () => {
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPER_ADMIN.id }) as never);
+
+    await expect(productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'INSUFFICIENT_PERMISSIONS',
+    });
   });
 });
 
@@ -2483,8 +2505,8 @@ describe('productsService.getPosCatalog — stock_status (POS-PERF-P24, delegate
   });
 });
 
-// Task 209.6 — Product Image Management (Admin Only). Router-level
-// authorization (adminOnly for upload/delete, adminSupervisorOrBranch for
+// Task 209.6 / POS-PERF-P35 — Product Image Management. Router-level
+// authorization (supervisorOnly for upload/delete, adminOrSupervisor for
 // read) is covered by products.router — these tests exercise only the
 // service's own logic: existence checks, the storage/compression call
 // shape, the single-column repository update, and audit logging. Every

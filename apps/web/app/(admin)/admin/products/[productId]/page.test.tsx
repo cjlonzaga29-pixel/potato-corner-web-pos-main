@@ -234,19 +234,25 @@ describe('ProductDetailPage', () => {
     expect(screen.getByText('Large Cup')).toBeInTheDocument();
   });
 
-  it('shows Archive instead of Delete for an active product', async () => {
+  // POS-PERF-P35 — Admin's write access to product management (Edit,
+  // Change Status, Archive/Restore, Delete) is gone entirely; this page is
+  // read-only reporting now (see ManagedElsewhereBanner).
+  it('shows no Edit/Archive/Restore/Delete controls for an active product (POS-PERF-P35)', async () => {
     await renderPage();
 
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.getByText(/managed by Supervisor now/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit Product' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change Status' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 
-  it('shows Restore instead of Archive/Edit for an archived product', async () => {
+  it('shows no write controls for an archived product either (POS-PERF-P35)', async () => {
     mockUseProduct.mockReturnValue({ data: product({ status: 'archived', status_label: 'Archived' }), isLoading: false, isError: false, refetch: vi.fn() });
     await renderPage();
 
-    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit Product' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
@@ -288,16 +294,15 @@ describe('ProductDetailPage', () => {
       expect(screen.getByText('Large Cup')).toBeInTheDocument();
     });
 
-    it('scrolls/focuses the inline Branch Availability section when the checklist availability quick-action is clicked, without switching tabs', async () => {
+    // POS-PERF-P35 — the inline Branch Availability section is gone from
+    // this now-read-only page, so the quick-action is a no-op; it must not
+    // throw and must leave the tab/content exactly where it was.
+    it('does not throw and stays on the same tab when the Branch Availability quick-action is clicked (POS-PERF-P35, no-op)', async () => {
       await renderPage();
       fireEvent.click(screen.getByRole('tab', { name: 'Variants & Flavors' }));
 
-      const scrollIntoViewSpy = vi.fn();
-      HTMLElement.prototype.scrollIntoView = scrollIntoViewSpy;
-
       fireEvent.click(screen.getByRole('button', { name: 'Manage Branch Availability' }));
 
-      expect(scrollIntoViewSpy).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth', block: 'start' }));
       expect(screen.getByRole('tab', { name: 'Variants & Flavors' })).toHaveAttribute('aria-selected', 'true');
       expect(screen.getByText('Large Cup')).toBeInTheDocument();
     });
@@ -320,18 +325,18 @@ describe('ProductDetailPage', () => {
     });
   });
 
-  describe('Branch Availability embedded in Variants & Flavors tab', () => {
+  describe('Branch Availability (POS-PERF-P35 — removed from this read-only page)', () => {
     it('does not render a standalone Branch Availability tab', async () => {
       await renderPage();
 
       expect(screen.queryByRole('tab', { name: 'Branch Availability' })).not.toBeInTheDocument();
     });
 
-    it('renders the Branch Availability section inline within the Variants & Flavors tab', async () => {
+    it('does not render a Branch Availability section at all', async () => {
       await renderPage();
       fireEvent.click(screen.getByRole('tab', { name: 'Variants & Flavors' }));
 
-      expect(screen.getByText('Branch Availability')).toBeInTheDocument();
+      expect(screen.queryByText('Branch Availability')).not.toBeInTheDocument();
       expect(screen.getByText('Large Cup')).toBeInTheDocument();
     });
   });

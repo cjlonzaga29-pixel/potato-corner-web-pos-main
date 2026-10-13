@@ -25,6 +25,13 @@ const GATED_PATH_PATTERNS: RegExp[] = [
   /^\/api\/product-components(\/|$)/,
   /^\/api\/branches\/[^/]+\/inventory(\/|$)/,
   /^\/api\/branches\/[^/]+\/inventory-stock(\/|$)/,
+  // POS-PERF-P35 — product/catalog mutations moved fully to Supervisor;
+  // closing the gate now also has to stop these from reaching their
+  // handler mid-maintenance, same as the inventory-stock paths above.
+  /^\/api\/products(\/|$)/,
+  /^\/api\/flavors(\/|$)/,
+  /^\/api\/product-options(\/|$)/,
+  /^\/api\/product-categories(\/|$)/,
 ];
 
 function isGatedRequest(req: Request): boolean {

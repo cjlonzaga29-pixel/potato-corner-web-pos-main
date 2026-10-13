@@ -86,9 +86,9 @@ describe('POST /api/product-categories — authorization (R13)', () => {
     expect(productCategoriesService.createCategory).not.toHaveBeenCalled();
   });
 
-  it('rejects a supervisor actor with 403 (read-only per R13)', async () => {
+  it('rejects a super_admin actor with 403 (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(productCategoriesRouter, 'post', '/');
-    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), body: { code: 'fries', name: 'Fries' } });
+    const req = mockReq({ ...authHeader(generateSuperAdminToken()), body: { code: 'fries', name: 'Fries' } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
@@ -97,10 +97,10 @@ describe('POST /api/product-categories — authorization (R13)', () => {
     expect(productCategoriesService.createCategory).not.toHaveBeenCalled();
   });
 
-  it('allows a super_admin actor through to the service', async () => {
+  it('allows a supervisor actor through to the service', async () => {
     vi.mocked(productCategoriesService.createCategory).mockResolvedValue({ id: 'cat-1' } as never);
     const handlers = getRouteHandlers(productCategoriesRouter, 'post', '/');
-    const req = mockReq({ ...authHeader(generateSuperAdminToken()), body: { code: 'fries', name: 'Fries' } });
+    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), body: { code: 'fries', name: 'Fries' } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);

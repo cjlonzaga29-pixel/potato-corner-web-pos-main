@@ -88,11 +88,25 @@ describe('POST /api/product-options — branch cannot create an Option Group (R1
     expect(productOptionsService.createGroup).not.toHaveBeenCalled();
   });
 
-  it('allows a super_admin actor through to the service', async () => {
-    vi.mocked(productOptionsService.createGroup).mockResolvedValue({ id: 'group-1' } as never);
+  it('rejects a super_admin actor with 403 (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(productOptionsRouter, 'post', '/');
     const req = mockReq({
       ...authHeader(generateSuperAdminToken()),
+      body: { code: 'flavor', name: 'Flavor', selection_type: 'SINGLE', min_selections: 0, required: false, is_active: true },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productOptionsService.createGroup).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor actor through to the service', async () => {
+    vi.mocked(productOptionsService.createGroup).mockResolvedValue({ id: 'group-1' } as never);
+    const handlers = getRouteHandlers(productOptionsRouter, 'post', '/');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([randomUUID()])),
       body: { code: 'flavor', name: 'Flavor', selection_type: 'SINGLE', min_selections: 0, required: false, is_active: true },
     });
     const res = mockRes();
@@ -103,7 +117,7 @@ describe('POST /api/product-options — branch cannot create an Option Group (R1
   });
 });
 
-describe('DELETE /api/product-options/:groupId — permanent delete (SUPER_ADMIN only)', () => {
+describe('DELETE /api/product-options/:groupId — permanent delete (Supervisor only)', () => {
   it('rejects a branch actor with 403, never reaching the service', async () => {
     const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
     const req = mockReq({
@@ -118,10 +132,10 @@ describe('DELETE /api/product-options/:groupId — permanent delete (SUPER_ADMIN
     expect(productOptionsService.deleteGroup).not.toHaveBeenCalled();
   });
 
-  it('rejects a supervisor actor with 403, never reaching the service', async () => {
+  it('rejects a super_admin actor with 403, never reaching the service (POS-PERF-P35)', async () => {
     const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
     const req = mockReq({
-      ...authHeader(generateSupervisorToken([randomUUID()])),
+      ...authHeader(generateSuperAdminToken()),
       params: { groupId: 'group-1' },
     });
     const res = mockRes();
@@ -132,18 +146,18 @@ describe('DELETE /api/product-options/:groupId — permanent delete (SUPER_ADMIN
     expect(productOptionsService.deleteGroup).not.toHaveBeenCalled();
   });
 
-  it('allows a super_admin actor through and returns 204 on success', async () => {
+  it('allows a supervisor actor through and returns 204 on success', async () => {
     vi.mocked(productOptionsService.deleteGroup).mockResolvedValue(undefined as never);
     const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([randomUUID()])),
       params: { groupId: 'group-1' },
     });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
 
-    expect(productOptionsService.deleteGroup).toHaveBeenCalledWith('group-1', expect.objectContaining({ role: 'super_admin' }), null);
+    expect(productOptionsService.deleteGroup).toHaveBeenCalledWith('group-1', expect.objectContaining({ role: 'supervisor' }), null);
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.send).toHaveBeenCalled();
   });
@@ -154,7 +168,7 @@ describe('DELETE /api/product-options/:groupId — permanent delete (SUPER_ADMIN
     );
     const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([randomUUID()])),
       params: { groupId: 'missing-group' },
     });
     const res = mockRes();
@@ -172,7 +186,7 @@ describe('DELETE /api/product-options/:groupId — permanent delete (SUPER_ADMIN
     );
     const handlers = getRouteHandlers(productOptionsRouter, 'delete', '/:groupId');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([randomUUID()])),
       params: { groupId: 'group-1' },
     });
     const res = mockRes();

@@ -205,6 +205,9 @@ function buildItem(overrides: Partial<Record<string, unknown>> = {}) {
     categoryId: null,
     baseUnitId: 'unit-1',
     trackInventory: true,
+    // POS-PERF-P35 — defaults to the fixture actor's own item; tests for
+    // the ownership-denial path override this explicitly.
+    createdBy: ACTOR.id,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     category: null,

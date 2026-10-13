@@ -2,18 +2,15 @@
 
 import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { Pencil } from 'lucide-react';
 import type { ProductCategoryResponse } from '@potato-corner/shared';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ManagedElsewhereBanner } from '@/components/shared/managed-elsewhere-banner';
 import { formatDateTime } from '@/lib/utils';
 import { useProductCategories } from '@/hooks/queries/use-product-categories';
-import { CreateCategoryDialog } from '@/components/admin/product-categories/create-category-dialog';
-import { EditCategoryDialog } from '@/components/admin/product-categories/edit-category-dialog';
 
 const ACTIVE_FILTERS = [
   { value: 'all', label: 'All Categories' },
@@ -25,8 +22,6 @@ export default function ProductCategoriesPage() {
   const [search, setSearch] = useState('');
   const [active, setActive] = useState<string>('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<ProductCategoryResponse | null>(null);
 
   const { data, isLoading, isError, refetch } = useProductCategories({
     isActive: active === 'all' ? undefined : active === 'true',
@@ -46,24 +41,6 @@ export default function ProductCategoriesPage() {
       cell: ({ row }) => <Badge variant={row.original.is_active ? 'active' : 'inactive'}>{row.original.is_active ? 'Active' : 'Inactive'}</Badge>,
     },
     { id: 'updated_at', header: 'Updated', cell: ({ row }) => formatDateTime(row.original.updated_at) },
-    {
-      id: 'actions',
-      header: 'Actions',
-      cell: ({ row }) => (
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={`Edit ${row.original.name}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            setEditing(row.original);
-          }}
-        >
-          <Pencil className="mr-1 h-4 w-4" />
-          Edit
-        </Button>
-      ),
-    },
   ];
 
   return (
@@ -73,8 +50,9 @@ export default function ProductCategoriesPage() {
           <h1 className="app-title font-bold">Product Categories</h1>
           <p className="text-sm text-muted-foreground">Company-owned categories, shared across every branch.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">New Category</Button>
       </div>
+
+      <ManagedElsewhereBanner module="Product Categories" managedBy="Supervisor" />
 
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput
@@ -115,12 +93,8 @@ export default function ProductCategoriesPage() {
         pagination={pagination}
         onPaginationChange={setPagination}
         rowCount={data?.total ?? 0}
-        onRowClick={(category) => setEditing(category)}
-        emptyState={<EmptyState title="No categories yet" description="Create your first product category to organize the catalog." />}
+        emptyState={<EmptyState title="No categories yet" description="Product categories are created by Supervisors." />}
       />
-
-      <CreateCategoryDialog open={createOpen} onOpenChange={setCreateOpen} />
-      <EditCategoryDialog category={editing} onOpenChange={(open) => !open && setEditing(null)} />
     </div>
   );
 }

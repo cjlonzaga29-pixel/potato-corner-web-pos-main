@@ -844,6 +844,12 @@ export const productsService = {
     if (before.status === 'archived') {
       throw new ProductError('PRODUCT_ARCHIVED', 'Archived products are read-only and cannot be updated', 409);
     }
+    // POS-PERF-P35 — Admin's write access to the catalog is gone entirely;
+    // a supervisor may edit only a product they themselves created, same
+    // posture as createVariant/uploadProductImage (POS-PERF-P34R).
+    if (updatedBy.role === ROLES.SUPERVISOR && before.createdBy !== updatedBy.id) {
+      throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product you created', 403);
+    }
 
     const mergedIsSeasonal = data.is_seasonal ?? before.isSeasonal;
     const mergedStart =
@@ -901,7 +907,18 @@ export const productsService = {
     const product = await productsRepository.findById(productId);
     if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
 
-    if (actor.role === ROLES.SUPER_ADMIN) {
+    // POS-PERF-P35 — global lifecycle transitions (discontinue/archive/
+    // restore) move from super_admin to the supervisor who created the
+    // product. Router guard is supervisorOnly now (super_admin cannot
+    // reach this endpoint at all), but the ownership check still matters:
+    // a supervisor who did NOT create this product must fall through to
+    // the branch-scoped posture below exactly like `branch` does, never
+    // silently inherit admin's old global power over someone else's product.
+    if (!data.branch_id && actor.role === ROLES.SUPERVISOR && product.createdBy !== actor.id) {
+      throw new ProductError('PRODUCT_STATUS_FORBIDDEN', 'You may only change the lifecycle status of a product you created', 403);
+    }
+
+    if (!data.branch_id && actor.role === ROLES.SUPERVISOR) {
       const allowed = GLOBAL_TRANSITIONS[product.status] ?? [];
       if (!allowed.includes(data.status)) {
         throw new ProductError(
@@ -1708,6 +1725,10 @@ export const productsService = {
   async deleteProduct(productId: string, actor: ActorContext, ipAddress: string | null) {
     const existing = await productsRepository.findById(productId);
     if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+    // POS-PERF-P35 — see updateProduct's ownership check above.
+    if (actor.role === ROLES.SUPERVISOR && existing.createdBy !== actor.id) {
+      throw new ProductError('PRODUCT_DELETE_FORBIDDEN', 'You may only delete a product you created', 403);
+    }
 
     try {
       await productsRepository.deleteProductCascade(
@@ -1977,6 +1998,10 @@ export const productsService = {
     const existing = await productsRepository.findImagePath(productId);
     if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
     if (!existing.imagePath) throw new ProductError('NO_PRODUCT_IMAGE', 'This product has no image to delete', 404);
+    // POS-PERF-P35 — see updateProduct's ownership check above.
+    if (actor.role === ROLES.SUPERVISOR && existing.createdBy !== actor.id) {
+      throw new ProductError('PRODUCT_IMAGE_FORBIDDEN', 'You may only delete the image for a product you created', 403);
+    }
 
     const { error } = await supabaseAdmin.storage.from(PRODUCT_IMAGE_BUCKET).remove([existing.imagePath]);
     if (error) {

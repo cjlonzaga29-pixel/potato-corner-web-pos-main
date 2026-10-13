@@ -65,6 +65,9 @@ function buildGroup(overrides: Partial<Record<string, unknown>> = {}) {
     required: true,
     isActive: true,
     sortOrder: 1,
+    // POS-PERF-P35 — defaults to the fixture actor's own group; tests for
+    // the ownership-denial path override this explicitly.
+    createdBy: ACTOR.id,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     options: [],
@@ -83,6 +86,8 @@ function buildOption(overrides: Partial<Record<string, unknown>> = {}) {
     imageUrl: null,
     isActive: true,
     sortOrder: 1,
+    // POS-PERF-P35 — see buildGroup's createdBy note.
+    createdBy: ACTOR.id,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     ...overrides,

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil } from 'lucide-react';
+import { Eye } from 'lucide-react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import type { ProductResponse } from '@potato-corner/shared';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { ManagedElsewhereBanner } from '@/components/shared/managed-elsewhere-banner';
 import { formatDateTime } from '@/lib/utils';
 import { useProducts } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
@@ -75,14 +76,14 @@ export default function ProductCatalogPage() {
         <Button
           variant="outline"
           size="sm"
-          aria-label={`Edit ${row.original.name}`}
+          aria-label={`View ${row.original.name}`}
           onClick={(event) => {
             event.stopPropagation();
             router.push(`/admin/products/${row.original.id}`);
           }}
         >
-          <Pencil className="mr-1 h-4 w-4" />
-          Edit
+          <Eye className="mr-1 h-4 w-4" />
+          View
         </Button>
       ),
     },
@@ -93,11 +94,11 @@ export default function ProductCatalogPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="app-title font-bold">Product Catalog</h1>
-          <p className="text-sm text-muted-foreground">
-            View the global product catalog, variants, and flavor pricing. New products are created by Supervisors.
-          </p>
+          <p className="text-sm text-muted-foreground">View the global product catalog, variants, and flavor pricing.</p>
         </div>
       </div>
+
+      <ManagedElsewhereBanner module="Products" managedBy="Supervisor" />
 
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput

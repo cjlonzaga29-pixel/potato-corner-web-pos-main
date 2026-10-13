@@ -30,7 +30,7 @@ import { StaffPinError } from '../staff-pin/staff-pin.types.js';
 import { config } from '../../config/index.js';
 import { ROLES } from '@potato-corner/shared';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, supervisorOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -101,12 +101,12 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
   next(error);
 }
 
-// R9 — Universal Inventory identity (categories/units/conversions/items,
-// and which branches an item is assigned to) is Admin/Super Admin owned.
-// Supervisors get read access for oversight, same posture as
-// product-inventory's GET /. Branches have no access here — CR-010 keeps
-// branch stock operations on the existing legacy Ingredient endpoints
-// (apps/api/src/modules/inventory) unchanged.
+// R9/POS-PERF-P35 — Universal Inventory identity (categories/units/
+// conversions/items, and which branches an item is assigned to) is
+// Supervisor-owned now, ownership-scoped (see universal-inventory.service.ts).
+// Super Admin keeps read access for reporting. Branches have no access
+// here — CR-010 keeps branch stock operations on the existing legacy
+// Ingredient endpoints (apps/api/src/modules/inventory) unchanged.
 
 // --- Inventory Categories ---
 
@@ -128,7 +128,7 @@ router.get('/categories', authenticate, adminOrSupervisor, requirePasswordChange
 router.post(
   '/categories',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(createInventoryCategorySchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -145,7 +145,7 @@ router.post(
 router.patch(
   '/categories/:categoryId',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateInventoryCategorySchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -184,7 +184,7 @@ router.get('/units', authenticate, adminOrSupervisor, requirePasswordChange, asy
 router.post(
   '/units',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(createUnitOfMeasureSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -201,7 +201,7 @@ router.post(
 router.patch(
   '/units/:unitId',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateUnitOfMeasureSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -235,7 +235,7 @@ router.get('/conversions', authenticate, adminOrSupervisor, requirePasswordChang
 router.post(
   '/conversions',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(createUnitConversionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -279,7 +279,7 @@ router.get('/items/:itemId', authenticate, adminOrSupervisor, requirePasswordCha
 router.post(
   '/items',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(createInventoryItemSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -308,7 +308,7 @@ router.post(
 router.patch(
   '/items/:itemId',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateInventoryItemSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -334,12 +334,12 @@ router.patch(
   },
 );
 
-// --- Branch assignment (R2 — Admin assigns which branches carry an item) ---
+// --- Branch assignment (R2/POS-PERF-P35 — Supervisor assigns which branches carry an item) ---
 
 router.post(
   '/items/:itemId/branches',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(assignInventoryItemToBranchesSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -362,9 +362,9 @@ router.post(
 
 // Receiving Simplification V2 §3: branch staff need read (never write)
 // access to an item's configured purchase-unit conversions to populate the
-// receiving form's Purchase Unit dropdown — "Admin only [to write]. Supervisor
-// may view. Branch uses the configured purchase units." Write endpoints
-// below stay adminOnly.
+// receiving form's Purchase Unit dropdown. POS-PERF-P35: write endpoints
+// below are supervisor-only now, ownership-scoped to the parent item's
+// creator (see universal-inventory.service.ts).
 router.get(
   '/items/:itemId/conversions',
   authenticate,
@@ -384,7 +384,7 @@ router.get(
 router.post(
   '/items/:itemId/conversions',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(createInventoryItemUnitConversionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -411,7 +411,7 @@ router.post(
 router.patch(
   '/items/:itemId/conversions/:conversionId',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   validate(updateInventoryItemUnitConversionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -435,7 +435,7 @@ router.patch(
 router.delete(
   '/items/:itemId/conversions/:conversionId',
   authenticate,
-  adminOnly,
+  supervisorOnly,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

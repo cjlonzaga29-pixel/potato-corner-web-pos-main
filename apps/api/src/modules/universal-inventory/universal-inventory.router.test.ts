@@ -139,10 +139,10 @@ describe('GET /api/universal-inventory/items', () => {
 });
 
 describe('POST /api/universal-inventory/items', () => {
-  it('rejects a supervisor token — identity creation is Super Admin only', async () => {
+  it('rejects a super_admin token — identity creation moved to Supervisor (POS-PERF-P35)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items');
     const req = mockReq({
-      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      ...authHeader(generateSuperAdminToken()),
       body: { name: 'Cheese Powder', base_unit_id: UNIT_1 },
     });
     const res = mockRes();
@@ -153,10 +153,10 @@ describe('POST /api/universal-inventory/items', () => {
     expect(universalInventoryService.createItem).not.toHaveBeenCalled();
   });
 
-  it('allows a super_admin token to create an item', async () => {
+  it('allows a supervisor token to create an item', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       body: { name: 'Cheese Powder', base_unit_id: UNIT_1 },
     });
     const res = mockRes();
@@ -172,7 +172,7 @@ describe('POST /api/universal-inventory/items', () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items');
     const CATEGORY_1 = randomUUID();
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       body: { name: 'Frozen Fries', sku: 'RAW-001', category_id: CATEGORY_1, base_unit_id: UNIT_1 },
     });
     const res = mockRes();
@@ -190,7 +190,7 @@ describe('POST /api/universal-inventory/items', () => {
   it('accepts blank/omitted sku, barcode, and category as undefined rather than invalid empty values', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       body: { name: 'Frozen Fries', base_unit_id: UNIT_1 },
     });
     const res = mockRes();
@@ -219,10 +219,25 @@ describe('POST /api/universal-inventory/items/:itemId/branches', () => {
     expect(universalInventoryService.assignToBranches).not.toHaveBeenCalled();
   });
 
-  it('forwards assignment to the service for a super_admin token', async () => {
+  it('rejects a super_admin token (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items/:itemId/branches');
     const req = mockReq({
       ...authHeader(generateSuperAdminToken()),
+      params: { itemId: 'item-1' },
+      body: { branch_ids: [BRANCH_1] },
+    });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(universalInventoryService.assignToBranches).not.toHaveBeenCalled();
+  });
+
+  it('forwards assignment to the service for a supervisor token', async () => {
+    const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items/:itemId/branches');
+    const req = mockReq({
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       params: { itemId: 'item-1' },
       body: { branch_ids: [BRANCH_1] },
     });
@@ -241,8 +256,8 @@ describe('POST /api/universal-inventory/items/:itemId/branches', () => {
 describe('GET /api/universal-inventory/items/:itemId/conversions', () => {
   // Receiving Simplification V2 §3: branch staff need read access to an
   // item's configured purchase-unit conversions to populate the receiving
-  // form's Purchase Unit dropdown. Write endpoints (POST/PATCH/DELETE) stay
-  // adminOnly below — only this GET was loosened.
+  // form's Purchase Unit dropdown. Write endpoints (POST/PATCH/DELETE) are
+  // supervisorOnly below (POS-PERF-P35) — only this GET is this broad.
   it('allows a branch-role token (read-only, needed for the receiving form)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'get', '/items/:itemId/conversions');
     const req = mockReq({ ...authHeader(generateBranchToken(BRANCH_1)), params: { itemId: 'item-1' } });
@@ -269,10 +284,10 @@ describe('GET /api/universal-inventory/items/:itemId/conversions', () => {
 });
 
 describe('POST /api/universal-inventory/items/:itemId/conversions', () => {
-  it('rejects a supervisor token — identity mutation is Super Admin only', async () => {
+  it('rejects a super_admin token (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items/:itemId/conversions');
     const req = mockReq({
-      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      ...authHeader(generateSuperAdminToken()),
       params: { itemId: 'item-1' },
       body: { from_unit_id: UNIT_1, to_unit_id: UNIT_1, factor: 7 },
     });
@@ -284,11 +299,11 @@ describe('POST /api/universal-inventory/items/:itemId/conversions', () => {
     expect(universalInventoryService.createItemConversion).not.toHaveBeenCalled();
   });
 
-  it('forwards the create request to the service for a super_admin token', async () => {
+  it('forwards the create request to the service for a supervisor token', async () => {
     const TO_UNIT = randomUUID();
     const handlers = getRouteHandlers(universalInventoryRouter, 'post', '/items/:itemId/conversions');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       params: { itemId: 'item-1' },
       body: { from_unit_id: UNIT_1, to_unit_id: TO_UNIT, factor: 7 },
     });
@@ -307,10 +322,10 @@ describe('POST /api/universal-inventory/items/:itemId/conversions', () => {
 });
 
 describe('PATCH /api/universal-inventory/items/:itemId/conversions/:conversionId', () => {
-  it('rejects a supervisor token', async () => {
+  it('rejects a super_admin token (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'patch', '/items/:itemId/conversions/:conversionId');
     const req = mockReq({
-      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      ...authHeader(generateSuperAdminToken()),
       params: { itemId: 'item-1', conversionId: 'conv-1' },
       body: { factor: 9 },
     });
@@ -325,7 +340,7 @@ describe('PATCH /api/universal-inventory/items/:itemId/conversions/:conversionId
   it('forwards the update to the service scoped to both itemId and conversionId', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'patch', '/items/:itemId/conversions/:conversionId');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       params: { itemId: 'item-1', conversionId: 'conv-1' },
       body: { factor: 9 },
     });
@@ -340,10 +355,10 @@ describe('PATCH /api/universal-inventory/items/:itemId/conversions/:conversionId
 });
 
 describe('DELETE /api/universal-inventory/items/:itemId/conversions/:conversionId', () => {
-  it('rejects a supervisor token', async () => {
+  it('rejects a super_admin token (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'delete', '/items/:itemId/conversions/:conversionId');
     const req = mockReq({
-      ...authHeader(generateSupervisorToken([BRANCH_1])),
+      ...authHeader(generateSuperAdminToken()),
       params: { itemId: 'item-1', conversionId: 'conv-1' },
     });
     const res = mockRes();
@@ -357,7 +372,7 @@ describe('DELETE /api/universal-inventory/items/:itemId/conversions/:conversionI
   it('forwards the delete to the service scoped to both itemId and conversionId', async () => {
     const handlers = getRouteHandlers(universalInventoryRouter, 'delete', '/items/:itemId/conversions/:conversionId');
     const req = mockReq({
-      ...authHeader(generateSuperAdminToken()),
+      ...authHeader(generateSupervisorToken([BRANCH_1])),
       params: { itemId: 'item-1', conversionId: 'conv-1' },
     });
     const res = mockRes();

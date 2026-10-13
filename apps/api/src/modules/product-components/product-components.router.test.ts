@@ -148,22 +148,17 @@ describe('GET / — Admin and Supervisor read access', () => {
   });
 });
 
-describe('POST / — Admin and Supervisor write access (ownership-scoped in the service)', () => {
-  it('allows super_admin to create a component', async () => {
+describe('POST / — Supervisor-only write access (ownership-scoped in the service)', () => {
+  it('rejects super_admin with 403 (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(productComponentsRouter, 'post', '/');
     const token = generateSuperAdminToken();
     const req = mockReq({ ...authHeader(token), body: VALID_BODY });
     const res = mockRes();
-    vi.mocked(productComponentsService.createMapping).mockResolvedValue({ id: 'c1' } as never);
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(productComponentsService.createMapping).toHaveBeenCalledWith(
-      VALID_BODY,
-      expect.objectContaining({ id: expect.any(String), role: 'super_admin' }),
-      null,
-    );
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productComponentsService.createMapping).not.toHaveBeenCalled();
   });
 
   // POS-PERF-P34R — reaches the service layer now; ownership (does the
@@ -200,7 +195,7 @@ describe('POST / — Admin and Supervisor write access (ownership-scoped in the 
 
   it('rejects a payload with quantity_required <= 0 with 422 VALIDATION_ERROR', async () => {
     const handlers = getRouteHandlers(productComponentsRouter, 'post', '/');
-    const token = generateSuperAdminToken();
+    const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), body: { ...VALID_BODY, quantity_required: 0 } });
     const res = mockRes();
 
@@ -213,7 +208,7 @@ describe('POST / — Admin and Supervisor write access (ownership-scoped in the 
   it('returns 409 MAPPING_ALREADY_EXISTS when the service rejects a duplicate', async () => {
     const { ProductComponentError } = await import('./product-components.types.js');
     const handlers = getRouteHandlers(productComponentsRouter, 'post', '/');
-    const token = generateSuperAdminToken();
+    const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), body: VALID_BODY });
     const res = mockRes();
     vi.mocked(productComponentsService.createMapping).mockRejectedValue(
@@ -227,10 +222,22 @@ describe('POST / — Admin and Supervisor write access (ownership-scoped in the 
   });
 });
 
-describe('PATCH /:id — Admin-only write access', () => {
-  it('allows super_admin to update a component', async () => {
+describe('PATCH /:id — Supervisor-only write access', () => {
+  it('rejects super_admin with 403 (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(productComponentsRouter, 'patch', '/:id');
     const token = generateSuperAdminToken();
+    const req = mockReq({ ...authHeader(token), params: { id: 'c1' }, body: { quantity_required: 4 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productComponentsService.updateMapping).not.toHaveBeenCalled();
+  });
+
+  it('allows a supervisor through the router to the service', async () => {
+    const handlers = getRouteHandlers(productComponentsRouter, 'patch', '/:id');
+    const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: 'c1' }, body: { quantity_required: 4 } });
     const res = mockRes();
     vi.mocked(productComponentsService.updateMapping).mockResolvedValue({ id: 'c1', quantity_required: 4 } as never);
@@ -246,21 +253,9 @@ describe('PATCH /:id — Admin-only write access', () => {
     );
   });
 
-  it('allows a supervisor through the router to the service', async () => {
-    const handlers = getRouteHandlers(productComponentsRouter, 'patch', '/:id');
-    const token = generateSupervisorToken([BRANCH_1]);
-    const req = mockReq({ ...authHeader(token), params: { id: 'c1' }, body: { quantity_required: 4 } });
-    const res = mockRes();
-    vi.mocked(productComponentsService.updateMapping).mockResolvedValue({ id: 'c1', quantity_required: 4 } as never);
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(200);
-  });
-
   it('rejects a payload with quantity_required <= 0 with 422 VALIDATION_ERROR', async () => {
     const handlers = getRouteHandlers(productComponentsRouter, 'patch', '/:id');
-    const token = generateSuperAdminToken();
+    const token = generateSupervisorToken([BRANCH_1]);
     const req = mockReq({ ...authHeader(token), params: { id: 'c1' }, body: { quantity_required: -1 } });
     const res = mockRes();
 
@@ -271,17 +266,17 @@ describe('PATCH /:id — Admin-only write access', () => {
   });
 });
 
-describe('DELETE /:id — Admin-only write access', () => {
-  it('allows super_admin to delete a component', async () => {
+describe('DELETE /:id — Supervisor-only write access', () => {
+  it('rejects super_admin with 403 (POS-PERF-P35 — write access moved to Supervisor)', async () => {
     const handlers = getRouteHandlers(productComponentsRouter, 'delete', '/:id');
     const token = generateSuperAdminToken();
     const req = mockReq({ ...authHeader(token), params: { id: 'c1' } });
     const res = mockRes();
-    vi.mocked(productComponentsService.deleteMapping).mockResolvedValue(undefined);
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(204);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productComponentsService.deleteMapping).not.toHaveBeenCalled();
   });
 
   it('allows a supervisor through the router to the service', async () => {

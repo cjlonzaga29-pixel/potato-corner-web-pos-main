@@ -1,34 +1,23 @@
 'use client';
 
-import { use, useRef, useState } from 'react';
+import { use, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Plus } from 'lucide-react';
-import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
+import { ArrowLeft } from 'lucide-react';
+import type { ProductDetailResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { ConfirmDialog } from '@/components/shared/confirm-dialog';
+import { ManagedElsewhereBanner } from '@/components/shared/managed-elsewhere-banner';
 import { formatDateTime } from '@/lib/utils';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
-import {
-  useProduct,
-  useChangeProductStatus,
-  useDeleteVariant,
-  useProductReadiness,
-} from '@/hooks/queries/use-products';
+import { useProduct, useProductReadiness } from '@/hooks/queries/use-products';
 import { BranchSelector } from '@/components/admin/branch-selector';
-import { BranchAvailabilityPanel } from '@/components/products/branch-availability-panel';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
 import { VariantCard } from '@/components/admin/products/variant-card';
-import { EditProductDialog } from '@/components/admin/products/edit-product-dialog';
-import { ChangeProductStatusDialog } from '@/components/admin/products/change-product-status-dialog';
-import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
-import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
-import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
 import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
 
 interface ProductDetailPageProps {
@@ -38,13 +27,9 @@ interface ProductDetailPageProps {
 export default function ProductDetailPage({ params }: ProductDetailPageProps) {
   const { productId } = use(params);
   const { data: product, isLoading, isError, refetch } = useProduct(productId);
-  const changeStatus = useChangeProductStatus(productId);
   const { selectedBranchId, availableBranches } = useSelectedBranch();
   const selectedBranchName = availableBranches.find((b) => b.id === selectedBranchId)?.name ?? null;
 
-  const [editOpen, setEditOpen] = useState(false);
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [archiveOpen, setArchiveOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
 
   if (isLoading) {
@@ -68,36 +53,16 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
         </Link>
       </Button>
 
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="app-title font-bold">{product.name}</h1>
-            <ProductStatusBadge status={product.status} />
-            <SeasonalBadge isSeasonal={product.is_seasonal} />
-          </div>
-          <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <h1 className="app-title font-bold">{product.name}</h1>
+          <ProductStatusBadge status={product.status} />
+          <SeasonalBadge isSeasonal={product.is_seasonal} />
         </div>
-        <div className="flex gap-2">
-          {product.status === 'archived' ? (
-            <Button
-              onClick={() => changeStatus.mutate({ status: 'active' })}
-              disabled={changeStatus.isPending}
-            >
-              Restore
-            </Button>
-          ) : (
-            <>
-              <Button variant="outline" onClick={() => setEditOpen(true)}>
-                Edit Product
-              </Button>
-              <Button onClick={() => setStatusOpen(true)}>Change Status</Button>
-              <Button variant="danger" onClick={() => setArchiveOpen(true)}>
-                Archive
-              </Button>
-            </>
-          )}
-        </div>
+        <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
       </div>
+
+      <ManagedElsewhereBanner module="Products" managedBy="Supervisor" />
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
@@ -118,20 +83,6 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
           />
         </TabsContent>
       </Tabs>
-
-      <EditProductDialog open={editOpen} onOpenChange={setEditOpen} product={product} />
-      <ChangeProductStatusDialog open={statusOpen} onOpenChange={setStatusOpen} product={product} />
-      <ConfirmDialog
-        open={archiveOpen}
-        onOpenChange={setArchiveOpen}
-        title={`Archive ${product.name}?`}
-        description="Archived products disappear from the POS and product selectors, but stay visible in past transactions and reports. You can restore this product to Active at any time."
-        confirmLabel="Archive"
-        variant="danger"
-        onConfirm={async () => {
-          await changeStatus.mutateAsync({ status: 'archived' });
-        }}
-      />
     </div>
   );
 }
@@ -211,35 +162,15 @@ function VariantsTab({
   selectedBranchName: string | null;
   onNavigateToTab: (tab: string) => void;
 }) {
-  const [variantDialog, setVariantDialog] = useState<{ open: boolean; variant?: ProductVariantResponse }>({ open: false });
-  const [linkFlavorFor, setLinkFlavorFor] = useState<ProductVariantResponse | null>(null);
-  const [editFlavor, setEditFlavor] = useState<{ variant: ProductVariantResponse; flavor: ProductVariantResponse['flavors'][number] } | null>(
-    null,
-  );
-  const [deletingVariant, setDeletingVariant] = useState<ProductVariantResponse | null>(null);
-  const deleteVariant = useDeleteVariant(product.id);
   const readiness = useProductReadiness(product.id, selectedBranchId);
-  const availabilitySectionRef = useRef<HTMLDivElement>(null);
 
-  const handleManageBranchAvailability = () => {
-    availabilitySectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-    availabilitySectionRef.current?.focus?.();
-  };
-
-  const isArchived = product.status === 'archived';
   const sortedVariants = [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
   const inventoryBranchId = selectedBranchId === 'all' ? null : selectedBranchId;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <BranchSelector />
-        </div>
-        <Button size="sm" onClick={() => setVariantDialog({ open: true })} disabled={isArchived}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Variant
-        </Button>
+      <div className="min-w-0">
+        <BranchSelector />
       </div>
 
       <Card>
@@ -261,17 +192,13 @@ function VariantsTab({
           ) : readiness.data.scope === 'all_branches' ? (
             <p className="text-sm text-muted-foreground">Select a single branch to see readiness details.</p>
           ) : (
-            <ReadinessChecklist
-              data={readiness.data}
-              onNavigateToTab={onNavigateToTab}
-              onManageBranchAvailability={handleManageBranchAvailability}
-            />
+            <ReadinessChecklist data={readiness.data} onNavigateToTab={onNavigateToTab} onManageBranchAvailability={() => {}} />
           )}
         </CardContent>
       </Card>
 
       {sortedVariants.length === 0 ? (
-        <EmptyState title="No variants yet" description="Add a variant to start selling this product." />
+        <EmptyState title="No variants yet" description="Variants are added by the supervisor who owns this product." />
       ) : (
         <div className="space-y-3">
           {sortedVariants.map((variant) => (
@@ -280,64 +207,14 @@ function VariantsTab({
               variant={variant}
               branchId={inventoryBranchId}
               branchName={inventoryBranchId ? selectedBranchName : null}
-              onEditVariant={() => setVariantDialog({ open: true, variant })}
-              onLinkFlavor={() => setLinkFlavorFor(variant)}
-              onEditFlavorPricing={(flavor) => setEditFlavor({ variant, flavor })}
-              onDeleteVariant={() => setDeletingVariant(variant)}
+              onEditVariant={() => {}}
+              onLinkFlavor={() => {}}
+              onEditFlavorPricing={() => {}}
+              onDeleteVariant={() => {}}
+              readOnly
             />
           ))}
         </div>
-      )}
-
-      <Card ref={availabilitySectionRef} tabIndex={-1} className="outline-none">
-        <CardHeader className="py-3">
-          <CardTitle className="text-sm font-medium">Branch Availability</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <BranchAvailabilityPanel product={product} />
-        </CardContent>
-      </Card>
-
-      <VariantFormDialog
-        open={variantDialog.open}
-        onOpenChange={(open) => setVariantDialog((prev) => ({ ...prev, open }))}
-        productId={product.id}
-        variant={variantDialog.variant}
-      />
-
-      {linkFlavorFor && (
-        <LinkFlavorDialog
-          open
-          onOpenChange={(open) => !open && setLinkFlavorFor(null)}
-          productId={product.id}
-          variantId={linkFlavorFor.id}
-          linkedFlavorIds={linkFlavorFor.flavors.map((f) => f.flavor_id)}
-        />
-      )}
-
-      {editFlavor && (
-        <EditVariantFlavorDialog
-          open
-          onOpenChange={(open) => !open && setEditFlavor(null)}
-          productId={product.id}
-          variantId={editFlavor.variant.id}
-          flavor={editFlavor.flavor}
-        />
-      )}
-
-      {deletingVariant && (
-        <ConfirmDialog
-          open
-          onOpenChange={(open) => !open && setDeletingVariant(null)}
-          title={`Permanently delete "${deletingVariant.name}"?`}
-          description="This permanently deletes the variant. This action cannot be undone. Variants with transaction history cannot be deleted — deactivate them instead."
-          confirmLabel="Permanently Delete"
-          variant="danger"
-          requireTypedConfirmation="DELETE"
-          onConfirm={async () => {
-            await deleteVariant.mutateAsync(deletingVariant.id);
-          }}
-        />
       )}
     </div>
   );

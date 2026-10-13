@@ -363,6 +363,14 @@ model User {
   createdProductOptions             ProductOption[]
   createdProductVariantOptionGroups ProductVariantOptionGroup[]
 
+  // POS-PERF-P35 — catalog/inventory-definition ownership, mirroring the
+  // CR-008 createdBy columns above onto the previously-ownerless universal
+  // inventory master data.
+  createdInventoryCategories InventoryCategory[]
+  createdUnitsOfMeasure      UnitOfMeasure[]
+  createdUnitConversions     UnitConversion[]
+  createdInventoryItems      InventoryItem[]
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -1228,8 +1236,12 @@ model InventoryCategory {
   code        String?
   description String?
   isActive    Boolean @default(true) @map("is_active")
+  // POS-PERF-P35 — nullable: NULL means pre-existing/unowned shared master
+  // data, same posture as ProductCategory.createdBy. Not backfilled/guessed.
+  createdBy   String? @map("created_by")
 
-  items InventoryItem[]
+  items   InventoryItem[]
+  creator User?           @relation(fields: [createdBy], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1250,7 +1262,10 @@ model UnitOfMeasure {
   dimension  UnitDimension
   isBaseUnit Boolean       @default(false) @map("is_base_unit")
   isActive   Boolean       @default(true) @map("is_active")
+  // POS-PERF-P35 — see InventoryCategory.createdBy.
+  createdBy  String?       @map("created_by")
 
+  creator           User?                    @relation(fields: [createdBy], references: [id])
   items             InventoryItem[]
   conversionsFrom   UnitConversion[]         @relation("UnitConversionFrom")
   conversionsTo     UnitConversion[]         @relation("UnitConversionTo")
@@ -1276,9 +1291,12 @@ model UnitConversion {
   fromUnitId String  @map("from_unit_id")
   toUnitId   String  @map("to_unit_id")
   factor     Decimal @db.Decimal(18, 8)
+  // POS-PERF-P35 — see InventoryCategory.createdBy.
+  createdBy  String? @map("created_by")
 
   fromUnit UnitOfMeasure @relation("UnitConversionFrom", fields: [fromUnitId], references: [id])
   toUnit   UnitOfMeasure @relation("UnitConversionTo", fields: [toUnitId], references: [id])
+  creator  User?         @relation(fields: [createdBy], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1334,9 +1352,12 @@ model InventoryItem {
   // InventoryStock.unitCost override exists (CR-007 §20 valuation cutover).
   unitCost       Decimal?  @map("unit_cost") @db.Decimal(10, 4)
   deletedAt      DateTime? @map("deleted_at")
+  // POS-PERF-P35 — see InventoryCategory.createdBy.
+  createdBy      String?   @map("created_by")
 
   category          InventoryCategory?         @relation(fields: [categoryId], references: [id])
   baseUnit          UnitOfMeasure              @relation(fields: [baseUnitId], references: [id])
+  creator           User?                      @relation(fields: [createdBy], references: [id])
   stocks            InventoryStock[]
   stockMovements    InventoryStockMovement[]
   costCorrections   InventoryCostCorrection[]

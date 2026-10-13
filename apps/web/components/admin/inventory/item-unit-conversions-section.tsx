@@ -11,9 +11,11 @@ import { ItemConversionDialog } from './item-conversion-dialog';
 
 interface ItemUnitConversionsSectionProps {
   itemId: string;
+  /** POS-PERF-P35 — hides add/edit/delete controls; used by Admin's now-read-only inventory item detail page. */
+  readOnly?: boolean;
 }
 
-export function ItemUnitConversionsSection({ itemId }: ItemUnitConversionsSectionProps) {
+export function ItemUnitConversionsSection({ itemId, readOnly = false }: ItemUnitConversionsSectionProps) {
   const { data: conversions, isLoading } = useInventoryItemConversions(itemId);
   const { data: units = [] } = useUnitsOfMeasure();
   const [dialogState, setDialogState] = useState<{ open: boolean; conversion: InventoryItemUnitConversionResponse | null }>({
@@ -26,10 +28,12 @@ export function ItemUnitConversionsSection({ itemId }: ItemUnitConversionsSectio
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Item-Specific Unit Conversions</CardTitle>
-        <Button size="sm" onClick={() => setDialogState({ open: true, conversion: null })}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Conversion
-        </Button>
+        {!readOnly && (
+          <Button size="sm" onClick={() => setDialogState({ open: true, conversion: null })}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Conversion
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -48,34 +52,40 @@ export function ItemUnitConversionsSection({ itemId }: ItemUnitConversionsSectio
                     ({conversion.from_unit_name} → {conversion.to_unit_name})
                   </span>
                 </span>
-                <div className="flex gap-1">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    aria-label="Edit conversion"
-                    onClick={() => setDialogState({ open: true, conversion })}
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                  <Button size="icon" variant="ghost" aria-label="Delete conversion" onClick={() => setPendingDelete(conversion)}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
+                {!readOnly && (
+                  <div className="flex gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      aria-label="Edit conversion"
+                      onClick={() => setDialogState({ open: true, conversion })}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" aria-label="Delete conversion" onClick={() => setPendingDelete(conversion)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
       </CardContent>
 
-      <ItemConversionDialog
-        itemId={itemId}
-        units={units}
-        open={dialogState.open}
-        onOpenChange={(open) => setDialogState((prev) => ({ ...prev, open }))}
-        conversion={dialogState.conversion}
-      />
+      {!readOnly && (
+        <>
+          <ItemConversionDialog
+            itemId={itemId}
+            units={units}
+            open={dialogState.open}
+            onOpenChange={(open) => setDialogState((prev) => ({ ...prev, open }))}
+            conversion={dialogState.conversion}
+          />
 
-      <DeleteConversionDialog itemId={itemId} conversion={pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)} />
+          <DeleteConversionDialog itemId={itemId} conversion={pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)} />
+        </>
+      )}
     </Card>
   );
 }

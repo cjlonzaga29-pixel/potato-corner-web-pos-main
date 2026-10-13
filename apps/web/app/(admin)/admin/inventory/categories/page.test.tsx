@@ -1,21 +1,14 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import type { InventoryCategoryResponse } from '@potato-corner/shared';
 import InventoryCategoriesPage from './page';
 
-const { mockUseInventoryCategories, mockUseCreateInventoryCategory, mockUseUpdateInventoryCategory, mockCreateMutateAsync, mockUpdateMutateAsync } =
-  vi.hoisted(() => ({
-    mockUseInventoryCategories: vi.fn(),
-    mockUseCreateInventoryCategory: vi.fn(),
-    mockUseUpdateInventoryCategory: vi.fn(),
-    mockCreateMutateAsync: vi.fn(),
-    mockUpdateMutateAsync: vi.fn(),
-  }));
+const { mockUseInventoryCategories } = vi.hoisted(() => ({
+  mockUseInventoryCategories: vi.fn(),
+}));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useInventoryCategories: mockUseInventoryCategories,
-  useCreateInventoryCategory: mockUseCreateInventoryCategory,
-  useUpdateInventoryCategory: mockUseUpdateInventoryCategory,
 }));
 
 function category(overrides: Partial<InventoryCategoryResponse> = {}): InventoryCategoryResponse {
@@ -36,54 +29,28 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InventoryCategoriesPage', () => {
-  it('renders an Edit button for every category row', () => {
+// POS-PERF-P35 — Inventory Categories management moved to Supervisor;
+// this page is read-only reporting for Admin now (no Create/Edit controls).
+describe('InventoryCategoriesPage — Admin read-only (POS-PERF-P35)', () => {
+  it('shows the managed-elsewhere banner and no Create/Edit controls', () => {
     mockUseInventoryCategories.mockReturnValue({
       data: [category(), category({ id: 'cat-2', name: 'Packaging', code: 'PKG' })],
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
     });
-    mockUseCreateInventoryCategory.mockReturnValue({ mutateAsync: mockCreateMutateAsync, isPending: false });
-    mockUseUpdateInventoryCategory.mockReturnValue({ mutateAsync: mockUpdateMutateAsync, isPending: false });
 
     render(<InventoryCategoriesPage />);
 
-    const table = screen.getByRole('table');
-    expect(within(table).getByRole('button', { name: 'Edit Raw Ingredients' })).toBeInTheDocument();
-    expect(within(table).getByRole('button', { name: 'Edit Packaging' })).toBeInTheDocument();
-  });
-
-  it('opens the edit dialog pre-filled with the row values when Edit is clicked', () => {
-    mockUseInventoryCategories.mockReturnValue({ data: [category()], isLoading: false, isError: false, refetch: vi.fn() });
-    mockUseCreateInventoryCategory.mockReturnValue({ mutateAsync: mockCreateMutateAsync, isPending: false });
-    mockUseUpdateInventoryCategory.mockReturnValue({ mutateAsync: mockUpdateMutateAsync, isPending: false });
-
-    render(<InventoryCategoriesPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Raw Ingredients' }));
-
-    expect(screen.getByRole('heading', { name: 'Edit Inventory Category' })).toBeInTheDocument();
-    expect(screen.getByDisplayValue('Raw Ingredients')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('RAW')).toBeInTheDocument();
-  });
-
-  it('the existing Create Category flow still works', () => {
-    mockUseInventoryCategories.mockReturnValue({ data: [category()], isLoading: false, isError: false, refetch: vi.fn() });
-    mockUseCreateInventoryCategory.mockReturnValue({ mutateAsync: mockCreateMutateAsync, isPending: false });
-    mockUseUpdateInventoryCategory.mockReturnValue({ mutateAsync: mockUpdateMutateAsync, isPending: false });
-
-    render(<InventoryCategoriesPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: /create category/i }));
-
-    expect(screen.getByRole('heading', { name: 'Create Inventory Category' })).toBeInTheDocument();
+    expect(screen.getByText(/managed by Supervisor now/i)).toBeInTheDocument();
+    expect(screen.getByText('Raw Ingredients')).toBeInTheDocument();
+    expect(screen.getByText('Packaging')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create category/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument();
   });
 
   it('renders the empty state when there are no categories', () => {
     mockUseInventoryCategories.mockReturnValue({ data: [], isLoading: false, isError: false, refetch: vi.fn() });
-    mockUseCreateInventoryCategory.mockReturnValue({ mutateAsync: mockCreateMutateAsync, isPending: false });
-    mockUseUpdateInventoryCategory.mockReturnValue({ mutateAsync: mockUpdateMutateAsync, isPending: false });
 
     render(<InventoryCategoriesPage />);
 

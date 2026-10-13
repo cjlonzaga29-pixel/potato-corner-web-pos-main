@@ -4,7 +4,7 @@ import { createProductCategorySchema, updateProductCategorySchema } from '@potat
 import { productCategoriesService } from './product-categories.service.js';
 import { ProductCategoryError } from './product-categories.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor } from '../../middleware/authorize.js';
+import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -38,9 +38,10 @@ function handleModuleError(error: unknown, res: Response, next: NextFunction): v
   next(error);
 }
 
-// R1/R13 — Super Admin owns category identity (write); Supervisor is
-// read-only; Branch has no access — category management is a catalog
-// identity concern, not a branch operational one.
+// R1/R13/POS-PERF-P35 — Supervisor owns category identity (write), scoped
+// to categories they themselves created (see updateCategory); super_admin
+// keeps read-only reporting access. Branch has no access — category
+// management is a catalog identity concern, not a branch operational one.
 
 router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -71,7 +72,7 @@ router.get('/:categoryId', authenticate, adminOrSupervisor, requirePasswordChang
   }
 });
 
-router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createProductCategorySchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductCategorySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const category = await productCategoriesService.createCategory(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -81,7 +82,7 @@ router.post('/', authenticate, adminOnly, requirePasswordChange, validate(create
   }
 });
 
-router.patch('/:categoryId', authenticate, adminOnly, requirePasswordChange, validate(updateProductCategorySchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:categoryId', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductCategorySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const category = await productCategoriesService.updateCategory(

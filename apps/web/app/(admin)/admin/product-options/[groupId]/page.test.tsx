@@ -39,6 +39,7 @@ function group(overrides: Partial<ProductOptionGroupDetailResponse> = {}): Produ
         image_url: null,
         is_active: true,
         sort_order: 0,
+        inventory_deduction: null,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       },

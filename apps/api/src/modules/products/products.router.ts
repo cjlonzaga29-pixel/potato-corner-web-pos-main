@@ -27,7 +27,7 @@ import { ProductOptionError } from '../product-options/product-options.types.js'
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, allRoles, supervisorOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
-import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
+import { requireActiveEmployee, requireActiveSupervisor } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -174,7 +174,7 @@ router.get('/:productId', authenticate, adminOrSupervisor, requirePasswordChange
 // write path. Branch/staff still cannot create products.
 // Supervisor-specific scoping (e.g. exclusive_branch_id must be one of
 // their own branches) is enforced in productsService.createProduct.
-router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.createProduct(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -184,7 +184,7 @@ router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(c
   }
 });
 
-router.patch('/:productId', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:productId', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const product = await productsService.updateProduct(
@@ -199,7 +199,7 @@ router.patch('/:productId', authenticate, supervisorOnly, requirePasswordChange,
   }
 });
 
-router.delete('/:productId', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:productId', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await productsService.deleteProduct(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -229,6 +229,7 @@ router.post(
   '/:productId/image',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   (req: Request, res: Response, next: NextFunction) => {
     productImageUpload.single('image')(req, res, (error: unknown) => {
@@ -263,7 +264,7 @@ router.post(
   },
 );
 
-router.delete('/:productId/image', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:productId/image', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const result = await productsService.deleteProductImage(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -281,6 +282,7 @@ router.patch(
   // scoped in productsService.changeProductStatus), present it's a
   // branch-scoped status flip (branchGuard-checked below).
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(changeProductStatusSchema),
   branchGuard,
@@ -323,6 +325,7 @@ router.patch(
   '/:productId/branch-availability/bulk',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(bulkBranchProductAvailabilitySchema),
@@ -347,6 +350,7 @@ router.patch(
   '/:productId/branch-availability/:branchId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   branchGuard,
   validate(branchAvailabilityBodySchema),
@@ -397,6 +401,7 @@ router.post(
   '/:productId/publish',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(publishProductSchema),
   branchGuard,
@@ -421,6 +426,7 @@ router.post(
   '/:productId/unpublish',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(unpublishProductSchema),
   branchGuard,
@@ -451,6 +457,7 @@ router.post(
   '/:productId/variants',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -473,6 +480,7 @@ router.patch(
   '/:productId/variants/:variantId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateVariantSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -496,6 +504,7 @@ router.delete(
   '/:productId/variants/:variantId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -517,6 +526,7 @@ router.post(
   '/:productId/variants/:variantId/flavors',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(linkVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -540,6 +550,7 @@ router.patch(
   '/:productId/variants/:variantId/flavors/:flavorId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateVariantFlavorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -585,6 +596,7 @@ router.post(
   '/:productId/variants/:variantId/option-groups',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(assignVariantOptionGroupSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -608,6 +620,7 @@ router.patch(
   '/:productId/variants/:variantId/option-groups/:assignmentId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateVariantOptionGroupSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -632,6 +645,7 @@ router.delete(
   '/:productId/variants/:variantId/option-groups/:assignmentId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

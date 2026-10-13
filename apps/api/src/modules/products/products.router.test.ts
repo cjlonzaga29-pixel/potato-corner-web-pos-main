@@ -31,7 +31,10 @@ vi.mock('../flavors/flavors.service.js', () => ({ flavorsService: {} }));
 vi.mock('../product-options/product-options.service.js', () => ({ productOptionsService: {} }));
 
 vi.mock('../../lib/prisma.js', () => ({
-  prisma: { revokedToken: { findFirst: vi.fn() } },
+  prisma: {
+    revokedToken: { findFirst: vi.fn() },
+    user: { findUnique: vi.fn().mockResolvedValue({ status: 'active', isActive: true }) },
+  },
 }));
 
 const { prisma } = await import('../../lib/prisma.js');

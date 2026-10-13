@@ -6,6 +6,7 @@ import { ProductComponentError } from './product-components.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
+import { requireActiveSupervisor } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -49,7 +50,7 @@ router.get('/', authenticate, adminOrSupervisor, requirePasswordChange, async (r
   }
 });
 
-router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, validate(createProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const component = await productComponentsService.createMapping(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -59,7 +60,7 @@ router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(c
   }
 });
 
-router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, validate(updateProductComponentSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const component = await productComponentsService.updateMapping(
@@ -74,7 +75,7 @@ router.patch('/:id', authenticate, supervisorOnly, requirePasswordChange, valida
   }
 });
 
-router.delete('/:id', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await productComponentsService.deleteMapping(req.params.id as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);

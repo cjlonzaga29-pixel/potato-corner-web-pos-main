@@ -11,6 +11,7 @@ import { ProductOptionError } from './product-options.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
+import { requireActiveSupervisor } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
 
 const router: Router = Router();
@@ -76,7 +77,7 @@ router.get('/:groupId', authenticate, adminOrSupervisor, requirePasswordChange, 
   }
 });
 
-router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(createProductOptionGroupSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, validate(createProductOptionGroupSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const group = await productOptionsService.createGroup(req.body, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -86,7 +87,7 @@ router.post('/', authenticate, supervisorOnly, requirePasswordChange, validate(c
   }
 });
 
-router.patch('/:groupId', authenticate, supervisorOnly, requirePasswordChange, validate(updateProductOptionGroupSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:groupId', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, validate(updateProductOptionGroupSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const group = await productOptionsService.updateGroup(
@@ -101,7 +102,7 @@ router.patch('/:groupId', authenticate, supervisorOnly, requirePasswordChange, v
   }
 });
 
-router.delete('/:groupId', authenticate, supervisorOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:groupId', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     await productOptionsService.deleteGroup(req.params.groupId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
@@ -115,6 +116,7 @@ router.post(
   '/:groupId/options',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createProductOptionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -137,6 +139,7 @@ router.patch(
   '/:groupId/options/:optionId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateProductOptionSchema),
   async (req: Request, res: Response, next: NextFunction) => {

@@ -49,3 +49,53 @@ export async function requireActiveEmployee(req: Request, res: Response, next: N
   }
   next();
 }
+
+/**
+ * POS-PERF-P35R4 — same live-status re-check as requireActiveEmployee
+ * above, narrowly for `supervisor` sessions on the P35 catalog-mutation
+ * surface (products/flavors/product-options/product-categories/
+ * product-components/catalog-assignments). deactivateEmployee-equivalent
+ * flows revoke a supervisor's refresh tokens on deactivation but, same gap
+ * as staff before CR-003's requireActiveEmployee, never blacklist the
+ * already-issued access token — isCatalogManager/isCatalogManagerForProduct
+ * only ever check who a record is assigned to, never whether that
+ * assignee's account is still active, so a deactivated supervisor's live
+ * token kept mutating catalog records they were assigned to until the
+ * token's own TTL expired. Shares activeStatusCache with
+ * requireActiveEmployee — safe because a given userId has exactly one role,
+ * so the same cache key never crosses roles. Deliberately not applied
+ * app-wide to every supervisor-accessible route (POS/cash/attendance/etc.)
+ * — only this specific catalog-mutation surface.
+ */
+export async function requireActiveSupervisor(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!req.user || req.user.role !== ROLES.SUPERVISOR) {
+    next();
+    return;
+  }
+
+  const userId = req.user.user_id;
+  const now = Date.now();
+  const cachedExpiry = activeStatusCache.get(userId);
+  if (cachedExpiry && cachedExpiry > now) {
+    next();
+    return;
+  }
+
+  const supervisor = await employeesRepository.findStatusById(userId);
+  if (!supervisor || supervisor.status !== 'active' || !supervisor.isActive) {
+    res.status(403).json({
+      data: null,
+      error: { code: 'SUPERVISOR_INACTIVE', message: 'This supervisor account is no longer active' },
+      meta: null,
+    });
+    return;
+  }
+
+  activeStatusCache.set(userId, now + ACTIVE_STATUS_CACHE_TTL_MS);
+  if (activeStatusCache.size > 10_000) {
+    for (const [key, expiry] of activeStatusCache) {
+      if (expiry < now) activeStatusCache.delete(key);
+    }
+  }
+  next();
+}

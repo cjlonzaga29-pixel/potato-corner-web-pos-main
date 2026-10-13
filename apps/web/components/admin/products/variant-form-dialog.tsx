@@ -74,6 +74,10 @@ export function VariantFormDialog({ open, onOpenChange, productId, variant }: Va
       base_price: parsed.base_price,
       display_order: parsed.display_order,
       is_active: parsed.is_active,
+      // POS-PERF-P36 — surfaces a 409 VARIANT_CONFLICT instead of silently
+      // overwriting someone else's concurrent edit; only meaningful on
+      // update (the variant we loaded this dialog from has a version).
+      ...(isEdit && variant ? { expected_version: variant.version ?? undefined } : {}),
     });
     handleOpenChange(false);
   }

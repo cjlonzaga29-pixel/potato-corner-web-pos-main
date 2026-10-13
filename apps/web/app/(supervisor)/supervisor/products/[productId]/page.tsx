@@ -60,11 +60,19 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
     return <ErrorState title="Product not found" retry={() => void refetch()} />;
   }
 
-  // POS-PERF-P34R — a supervisor may configure (variants, flavors, option
-  // groups, recipe/BOM, image, publish) only a product they themselves
-  // created; the server enforces this on every write, this just drives the
-  // read-only banner and disables the actions up front.
-  const isOwner = Boolean(user) && product.created_by_user?.id === user?.id;
+  // POS-PERF-P36 — authority follows the supervisor's active branch
+  // assignments, not who created the product (apps/api/src/lib/
+  // catalog-authority.ts's hasActiveCatalogAuthorityForProduct). This
+  // mirrors that check client-side using the JWT's branchIds snapshot —
+  // advisory only, driving the read-only banner and disabling actions up
+  // front; the server re-validates live on every write regardless.
+  const activeBranchIds = user?.branchIds ?? [];
+  const sellingBranchIds = product.branch_availability.filter((row) => row.is_available).map((row) => row.branch_id);
+  const isOwner =
+    Boolean(user) &&
+    (product.branch_exclusive
+      ? Boolean(product.exclusive_branch_id) && activeBranchIds.includes(product.exclusive_branch_id as string)
+      : sellingBranchIds.length === 0 || sellingBranchIds.some((id) => activeBranchIds.includes(id)));
   // Supervisor-created products are always branch-exclusive (POS-PERF-P34R) —
   // configuration and publishing both target that one branch directly, no
   // branch selector needed.
@@ -111,9 +119,8 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
 
       {!isOwner && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          This product was created by{' '}
-          {product.created_by_user ? `${product.created_by_user.first_name} ${product.created_by_user.last_name}` : 'another user'}. You can
-          view its configuration, but only the supervisor who created it may edit it.
+          You don&apos;t currently have an active branch assignment that gives you authority over this product. You can view its
+          configuration, but only a supervisor actively assigned to its branch may edit it.
         </div>
       )}
 
@@ -225,7 +232,7 @@ function OverviewTab({ product, isOwner }: { product: ProductDetailResponse; isO
               onImageSelected={handleImageSelected}
             />
           ) : (
-            <p className="text-xs text-muted-foreground">Only the creator of this product may change its image.</p>
+            <p className="text-xs text-muted-foreground">Only a supervisor with active authority over this product may change its image.</p>
           )}
         </CardContent>
       </Card>

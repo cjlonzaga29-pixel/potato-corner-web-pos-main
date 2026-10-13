@@ -1758,6 +1758,42 @@ describe('productsService.reorderFlavorSlots', () => {
   });
 });
 
+describe('productsService.updateVariant', () => {
+  it('updates the variant when no expected_version is supplied (backward compatible)', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({ version: 3, product: { id: 'prod-1', status: 'active', branchExclusive: false, exclusiveBranchId: null, branchAvailability: [] } }) as never,
+    );
+    vi.mocked(productsRepository.updateVariant).mockResolvedValue(buildVariant({ version: 3, name: 'Large' }) as never);
+
+    const result = await productsService.updateVariant('prod-1', 'variant-1', { name: 'Large' }, SUPER_ADMIN, null);
+
+    expect(result.name).toBe('Large');
+  });
+
+  it('POS-PERF-P36: rejects with VARIANT_CONFLICT when expected_version does not match the current version', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({ version: 3, product: { id: 'prod-1', status: 'active', branchExclusive: false, exclusiveBranchId: null, branchAvailability: [] } }) as never,
+    );
+
+    await expect(
+      productsService.updateVariant('prod-1', 'variant-1', { name: 'Large', expected_version: 2 }, SUPER_ADMIN, null),
+    ).rejects.toMatchObject({ code: 'VARIANT_CONFLICT', statusCode: 409 });
+    expect(productsRepository.updateVariant).not.toHaveBeenCalled();
+  });
+
+  it('allows the update when expected_version matches the current version', async () => {
+    vi.mocked(productsRepository.findVariantById).mockResolvedValue(
+      buildVariant({ version: 3, product: { id: 'prod-1', status: 'active', branchExclusive: false, exclusiveBranchId: null, branchAvailability: [] } }) as never,
+    );
+    vi.mocked(productsRepository.updateVariant).mockResolvedValue(buildVariant({ version: 3, name: 'Large' }) as never);
+
+    const result = await productsService.updateVariant('prod-1', 'variant-1', { name: 'Large', expected_version: 3 }, SUPER_ADMIN, null);
+
+    expect(result.name).toBe('Large');
+    expect(productsRepository.updateVariant).toHaveBeenCalled();
+  });
+});
+
 describe('productsService.listFlavorSlots', () => {
   it('returns slots sorted by slotIndex ASC', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(buildVariant() as never);

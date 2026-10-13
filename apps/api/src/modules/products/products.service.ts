@@ -398,6 +398,10 @@ interface UpdateVariantInput {
   base_price?: number;
   display_order?: number;
   is_active?: boolean;
+  // POS-PERF-P36 — optional optimistic-concurrency token. The builder sends
+  // back the `version` it loaded; omitted by every pre-existing caller
+  // (backward compatible — no expected_version means no conflict check).
+  expected_version?: number;
 }
 
 /** CR-005 Sub-phase 3c — editActiveVariant. lifecycleStatus/version/createdById/approvedById/approvedAt/is_active are system-managed and intentionally excluded. */
@@ -1343,6 +1347,15 @@ export const productsService = {
     }
     if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(existing.product, actor.id))) {
       throw new ProductError('VARIANT_UPDATE_FORBIDDEN', 'You may only update variants on a product an active branch assignment gives you authority over', 403);
+    }
+    // POS-PERF-P36 — explicit conflict instead of a silent last-write-wins
+    // overwrite when two supervisors edit the same variant concurrently.
+    if (data.expected_version !== undefined && data.expected_version !== existing.version) {
+      throw new ProductError(
+        'VARIANT_CONFLICT',
+        'This variant was changed by someone else since you loaded it. Reload and try again.',
+        409,
+      );
     }
 
     const updated = await productsRepository.updateVariant(variantId, {

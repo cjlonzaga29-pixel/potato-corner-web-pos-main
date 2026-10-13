@@ -37,6 +37,7 @@ const VARIANT: ProductVariantResponse = {
   base_price: 50,
   display_order: 0,
   is_active: true,
+  version: 1,
   flavors: [],
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',

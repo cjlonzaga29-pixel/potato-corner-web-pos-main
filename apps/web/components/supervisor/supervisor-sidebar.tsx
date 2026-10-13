@@ -17,7 +17,6 @@ import {
   ChevronDown,
   LogOut,
   Loader2,
-  ClipboardList,
   Settings,
   ListTree,
   SlidersHorizontal,
@@ -43,8 +42,12 @@ import { BranchSelector } from './branch-selector';
  * from Admin: Product Categories, Product Options, Universal Inventory,
  * Inventory Categories, Units. Inventory Movements reuses the existing
  * `/supervisor/inventory/movements` page (reachable from the Inventory
- * item's own stock-ops hub) rather than duplicating it here. Products and
- * Recipe Readiness stay as their existing top-level items, unchanged.
+ * item's own stock-ops hub) rather than duplicating it here.
+ *
+ * POS-PERF-P36 — the standalone "Recipe Readiness" item is removed: its
+ * server-side checks now live entirely behind the Simple Product Builder's
+ * Review step / Add to POS gate (productReadinessService, unchanged), so
+ * there is no separate technical-lifecycle page to navigate to anymore.
  */
 export const SUPERVISOR_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/supervisor/dashboard', icon: LayoutDashboard },
@@ -62,7 +65,6 @@ export const SUPERVISOR_NAV_ITEMS: ReadonlyArray<NavItem> = [
       { label: 'Inventory Movements', href: '/supervisor/inventory/movements', icon: History },
     ],
   },
-  { label: 'Recipe Readiness', href: '/supervisor/recipe-readiness', icon: ClipboardList },
   { label: 'Attendance', href: '/supervisor/attendance', icon: Clock },
   { label: 'Cash Management', href: '/supervisor/cash', icon: Banknote },
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },

@@ -4,9 +4,18 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import type { InventoryItemResponse, ProductComponentResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
 import { RecipeComponentFormDialog } from './recipe-component-form-dialog';
 
-const { mockUseInventoryItems, mockUseUnitsOfMeasure, mockUseCreateProductComponent, mockUseUpdateProductComponent } = vi.hoisted(() => ({
+const {
+  mockUseInventoryItems,
+  mockUseUnitsOfMeasure,
+  mockUseInventoryCategories,
+  mockUseCreateInventoryItem,
+  mockUseCreateProductComponent,
+  mockUseUpdateProductComponent,
+} = vi.hoisted(() => ({
   mockUseInventoryItems: vi.fn(),
   mockUseUnitsOfMeasure: vi.fn(),
+  mockUseInventoryCategories: vi.fn(() => ({ data: [], isLoading: false })),
+  mockUseCreateInventoryItem: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   mockUseCreateProductComponent: vi.fn(),
   mockUseUpdateProductComponent: vi.fn(),
 }));
@@ -14,6 +23,10 @@ const { mockUseInventoryItems, mockUseUnitsOfMeasure, mockUseCreateProductCompon
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
   useInventoryItems: mockUseInventoryItems,
   useUnitsOfMeasure: mockUseUnitsOfMeasure,
+  // POS-PERF-P36 — RecipeComponentFormDialog's inline "+ Create new item…"
+  // option renders InlineCreateInventoryItemDialog, which needs these too.
+  useInventoryCategories: mockUseInventoryCategories,
+  useCreateInventoryItem: mockUseCreateInventoryItem,
 }));
 
 vi.mock('@/hooks/queries/use-product-components', () => ({

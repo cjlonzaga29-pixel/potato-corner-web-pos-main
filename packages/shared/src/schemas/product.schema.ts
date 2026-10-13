@@ -150,6 +150,10 @@ export const updateVariantSchema = z.object({
   base_price: moneySchema('base_price must have at most 2 decimal places').optional(),
   display_order: z.number().int().nonnegative().optional(),
   is_active: z.boolean().optional(),
+  // POS-PERF-P36 — optional optimistic-concurrency token (the variant's
+  // `version` as loaded by the caller). Omitted = no conflict check, so
+  // every pre-existing caller is unaffected.
+  expected_version: z.number().int().positive().optional(),
 });
 
 export const productVariantResponseSchema = z.object({
@@ -160,6 +164,10 @@ export const productVariantResponseSchema = z.object({
   base_price: z.number(),
   display_order: z.number().int().nullable(),
   is_active: z.boolean(),
+  // POS-PERF-P36 — optimistic-concurrency token for updateVariantSchema's
+  // expected_version; always present on a real variant row, nullable here
+  // only because a handful of legacy partial-shape test fixtures omit it.
+  version: z.number().int().nullable(),
   flavors: z.array(
     z.object({
       flavor_id: z.uuid(),

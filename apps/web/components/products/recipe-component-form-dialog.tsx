@@ -3,14 +3,33 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { ProductComponentResponse, UnitOfMeasureResponse } from '@potato-corner/shared';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
-import { useCreateProductComponent, useUpdateProductComponent } from '@/hooks/queries/use-product-components';
+import {
+  useCreateProductComponent,
+  useUpdateProductComponent,
+} from '@/hooks/queries/use-product-components';
+import { InlineCreateInventoryItemDialog } from './inline-create-inventory-item-dialog';
+
+const CREATE_NEW_ITEM_VALUE = '__create_new__';
 
 interface RecipeComponentFormDialogProps {
   open: boolean;
@@ -30,10 +49,15 @@ const PREFERRED_RECIPE_UNIT_CODE: Record<string, string> = {
   tbsp: 'tbsp',
 };
 
-function pickDefaultRecipeUnit(compatibleUnits: UnitOfMeasureResponse[], baseUnit: UnitOfMeasureResponse | undefined): string {
+function pickDefaultRecipeUnit(
+  compatibleUnits: UnitOfMeasureResponse[],
+  baseUnit: UnitOfMeasureResponse | undefined,
+): string {
   if (!baseUnit) return '';
   const preferredCode = PREFERRED_RECIPE_UNIT_CODE[baseUnit.code.toLowerCase()];
-  const preferred = preferredCode ? compatibleUnits.find((u) => u.code.toLowerCase() === preferredCode) : undefined;
+  const preferred = preferredCode
+    ? compatibleUnits.find((u) => u.code.toLowerCase() === preferredCode)
+    : undefined;
   return (preferred ?? baseUnit).id;
 }
 
@@ -67,6 +91,7 @@ export function RecipeComponentFormDialog({
   const [quantityRequired, setQuantityRequired] = useState('');
   const [recipeUnitId, setRecipeUnitId] = useState('');
   const [isActive, setIsActive] = useState(true);
+  const [inlineCreateOpen, setInlineCreateOpen] = useState(false);
 
   const createComponent = useCreateProductComponent(productVariantId);
   const updateComponent = useUpdateProductComponent(productVariantId, editingComponent?.id ?? '');
@@ -78,7 +103,9 @@ export function RecipeComponentFormDialog({
   const selectedItem = inventoryItems?.find((item) => item.id === inventoryItemId);
   const baseUnitCode = isEdit ? editingComponent?.base_unit_code : selectedItem?.base_unit_code;
   const baseUnit = units?.find((u) => u.code === baseUnitCode);
-  const compatibleUnits = baseUnit ? (units ?? []).filter((u) => u.dimension === baseUnit.dimension) : [];
+  const compatibleUnits = baseUnit
+    ? (units ?? []).filter((u) => u.dimension === baseUnit.dimension)
+    : [];
 
   useEffect(() => {
     if (!open) return;
@@ -123,6 +150,10 @@ export function RecipeComponentFormDialog({
   }
 
   function handleInventoryItemChange(nextItemId: string) {
+    if (nextItemId === CREATE_NEW_ITEM_VALUE) {
+      setInlineCreateOpen(true);
+      return;
+    }
     setInventoryItemId(nextItemId);
     setRecipeUnitId('');
     setQuantityRequired('');
@@ -149,126 +180,179 @@ export function RecipeComponentFormDialog({
   }
 
   const isValid =
-    (isEdit || Boolean(inventoryItemId)) && quantityRequired !== '' && Number(quantityRequired) > 0 && Boolean(recipeUnitId);
+    (isEdit || Boolean(inventoryItemId)) &&
+    quantityRequired !== '' &&
+    Number(quantityRequired) > 0 &&
+    Boolean(recipeUnitId);
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{isEdit ? 'Edit Recipe Component' : 'Add Recipe Component'}</DialogTitle>
-          <DialogDescription>
-            {isEdit
-              ? 'Change the quantity or the unit it was recorded in.'
-              : 'Choose an inventory item and how much of it this variant consumes.'}
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{isEdit ? 'Edit Recipe Component' : 'Add Recipe Component'}</DialogTitle>
+            <DialogDescription>
+              {isEdit
+                ? 'Change the quantity or the unit it was recorded in.'
+                : 'Choose an inventory item and how much of it this variant consumes.'}
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="space-y-4">
-          {isEdit ? (
-            <div className="rounded-md border bg-muted/30 p-3 text-sm">
-              <p className="font-medium">{editingComponent?.inventory_item_name}</p>
-              {editingComponent?.inventory_item_sku && <p className="text-muted-foreground">SKU: {editingComponent.inventory_item_sku}</p>}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Label htmlFor="recipe-component-item">Inventory Item</Label>
-              <Select value={inventoryItemId} onValueChange={handleInventoryItemChange} disabled={itemsLoading}>
-                <SelectTrigger id="recipe-component-item">
-                  <SelectValue placeholder={itemsLoading ? 'Loading…' : 'Select an inventory item'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableItems.length === 0 && !itemsLoading ? (
-                    <div className="px-2 py-1.5 text-sm text-muted-foreground">No available inventory items to add</div>
-                  ) : (
-                    availableItems.map((item) => (
-                      <SelectItem key={item.id} value={item.id}>
-                        {item.name}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          {selectedItem && (
-            <div className="grid grid-cols-2 gap-3 rounded-md border bg-muted/30 p-3 text-sm">
-              <div>
-                <p className="text-xs text-muted-foreground">Inventory Category</p>
-                <p className="font-medium">{selectedItem.category_name ?? 'Uncategorized'}</p>
+          <div className="space-y-4">
+            {isEdit ? (
+              <div className="bg-muted/30 rounded-md border p-3 text-sm">
+                <p className="font-medium">{editingComponent?.inventory_item_name}</p>
+                {editingComponent?.inventory_item_sku && (
+                  <p className="text-muted-foreground">
+                    SKU: {editingComponent.inventory_item_sku}
+                  </p>
+                )}
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Base Unit</p>
-                <p className="font-medium">{baseUnit ? `${baseUnit.code} — ${baseUnit.name}` : (selectedItem.base_unit_code ?? '—')}</p>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label htmlFor="recipe-component-quantity">Quantity Required</Label>
-              <Input
-                id="recipe-component-quantity"
-                type="number"
-                min="0"
-                step="0.0001"
-                value={quantityRequired}
-                onChange={(event) => setQuantityRequired(event.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="recipe-component-unit">Unit</Label>
-              <Select value={recipeUnitId} onValueChange={setRecipeUnitId} disabled={unitsLoading || compatibleUnits.length === 0}>
-                <SelectTrigger id="recipe-component-unit">
-                  <SelectValue placeholder={unitsLoading ? 'Loading…' : 'Unit'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {compatibleUnits.map((unit) => (
-                    <SelectItem key={unit.id} value={unit.id}>
-                      {unit.code}
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="recipe-component-item">Inventory Item</Label>
+                <Select
+                  value={inventoryItemId}
+                  onValueChange={handleInventoryItemChange}
+                  disabled={itemsLoading}
+                >
+                  <SelectTrigger id="recipe-component-item">
+                    <SelectValue
+                      placeholder={itemsLoading ? 'Loading…' : 'Select an inventory item'}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableItems.length === 0 && !itemsLoading ? (
+                      <div className="text-muted-foreground px-2 py-1.5 text-sm">
+                        No available inventory items to add
+                      </div>
+                    ) : (
+                      availableItems.map((item) => (
+                        <SelectItem key={item.id} value={item.id}>
+                          {item.name}
+                        </SelectItem>
+                      ))
+                    )}
+                    <SelectItem value={CREATE_NEW_ITEM_VALUE} className="text-primary font-medium">
+                      + Create new item…
                     </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {selectedItem && (
+              <div className="bg-muted/30 grid grid-cols-2 gap-3 rounded-md border p-3 text-sm">
+                <div>
+                  <p className="text-muted-foreground text-xs">Inventory Category</p>
+                  <p className="font-medium">{selectedItem.category_name ?? 'Uncategorized'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-xs">Base Unit</p>
+                  <p className="font-medium">
+                    {baseUnit
+                      ? `${baseUnit.code} — ${baseUnit.name}`
+                      : (selectedItem.base_unit_code ?? '—')}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="recipe-component-quantity">Quantity Required</Label>
+                <Input
+                  id="recipe-component-quantity"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={quantityRequired}
+                  onChange={(event) => setQuantityRequired(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="recipe-component-unit">Unit</Label>
+                <Select
+                  value={recipeUnitId}
+                  onValueChange={setRecipeUnitId}
+                  disabled={unitsLoading || compatibleUnits.length === 0}
+                >
+                  <SelectTrigger id="recipe-component-unit">
+                    <SelectValue placeholder={unitsLoading ? 'Loading…' : 'Unit'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {compatibleUnits.map((unit) => (
+                      <SelectItem key={unit.id} value={unit.id}>
+                        {unit.code}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
+
+            {recipeUnitId && quantityRequired !== '' && (
+              <div className="bg-muted/30 rounded-md border p-3 text-sm">
+                <p className="text-muted-foreground text-xs font-medium uppercase">
+                  Deduction Preview
+                </p>
+                <div className="mt-2 space-y-0.5">
+                  {productVariantLabel && <p className="font-medium">{productVariantLabel}</p>}
+                  <p className="font-medium">→ {previewItemName ?? 'Selected item'}</p>
+                </div>
+                <p className="mt-2 text-base font-semibold">
+                  {quantityRequired}{' '}
+                  {compatibleUnits.find((u) => u.id === recipeUnitId)?.code ?? ''}
+                </p>
+                {previewCategoryName && (
+                  <p className="text-muted-foreground text-xs">from {previewCategoryName}</p>
+                )}
+                <p className="text-muted-foreground text-xs">per item sold</p>
+              </div>
+            )}
+
+            {isEdit && (
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <Label htmlFor="recipe-component-active">Active</Label>
+                  <p className="text-muted-foreground text-xs">
+                    Inactive components are excluded from Recipe Readiness and POS deduction.
+                  </p>
+                </div>
+                <Switch
+                  id="recipe-component-active"
+                  checked={isActive}
+                  onCheckedChange={setIsActive}
+                />
+              </div>
+            )}
           </div>
 
-          {recipeUnitId && quantityRequired !== '' && (
-            <div className="rounded-md border bg-muted/30 p-3 text-sm">
-              <p className="text-xs font-medium uppercase text-muted-foreground">Deduction Preview</p>
-              <div className="mt-2 space-y-0.5">
-                {productVariantLabel && <p className="font-medium">{productVariantLabel}</p>}
-                <p className="font-medium">→ {previewItemName ?? 'Selected item'}</p>
-              </div>
-              <p className="mt-2 text-base font-semibold">
-                {quantityRequired} {compatibleUnits.find((u) => u.id === recipeUnitId)?.code ?? ''}
-              </p>
-              {previewCategoryName && <p className="text-xs text-muted-foreground">from {previewCategoryName}</p>}
-              <p className="text-xs text-muted-foreground">per item sold</p>
-            </div>
-          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleSubmit()}
+              disabled={!isValid || mutation.isPending}
+            >
+              {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isEdit ? 'Save Changes' : 'Add Component'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-          {isEdit && (
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <Label htmlFor="recipe-component-active">Active</Label>
-                <p className="text-xs text-muted-foreground">Inactive components are excluded from Recipe Readiness and POS deduction.</p>
-              </div>
-              <Switch id="recipe-component-active" checked={isActive} onCheckedChange={setIsActive} />
-            </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="button" onClick={() => void handleSubmit()} disabled={!isValid || mutation.isPending}>
-            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isEdit ? 'Save Changes' : 'Add Component'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <InlineCreateInventoryItemDialog
+        open={inlineCreateOpen}
+        onOpenChange={setInlineCreateOpen}
+        onCreated={(itemId) => {
+          setInventoryItemId(itemId);
+          setRecipeUnitId('');
+          setQuantityRequired('');
+        }}
+      />
+    </>
   );
 }

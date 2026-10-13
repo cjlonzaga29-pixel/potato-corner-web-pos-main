@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ChevronRight, Plus } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,12 +12,22 @@ import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { useProducts } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
-import { CreateProductDialog } from '@/components/admin/products/create-product-dialog';
+import { useProductBuilderStore } from '@/stores/product-builder.store';
 
 export default function SupervisorProductsPage() {
+  const router = useRouter();
   const [search, setSearch] = useState('');
-  const [createOpen, setCreateOpen] = useState(false);
   const { data, isLoading, isError, refetch } = useProducts({ search: search || undefined, limit: 100 });
+  const resetBuilder = useProductBuilderStore((state) => state.reset);
+
+  // POS-PERF-P36 — the fragmented Create Product dialog is replaced by the
+  // Simple Product Builder's guided Details -> Sizes -> Ingredients ->
+  // Choices -> Review flow; starting one here always discards whatever
+  // unrelated draft was previously in progress.
+  function startNewProduct() {
+    resetBuilder();
+    router.push('/supervisor/products/builder');
+  }
 
   return (
     <div className="app-section app-section-gap">
@@ -25,7 +36,7 @@ export default function SupervisorProductsPage() {
           <h1 className="app-title font-bold">Products</h1>
           <p className="text-sm text-muted-foreground">Create new products, and activate or deactivate existing ones for the branches you manage.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
+        <Button onClick={startNewProduct} className="w-full sm:w-auto">
           <Plus className="mr-2 h-4 w-4" />
           Create Product
         </Button>
@@ -59,8 +70,6 @@ export default function SupervisorProductsPage() {
           ))}
         </div>
       )}
-
-      <CreateProductDialog open={createOpen} onOpenChange={setCreateOpen} />
     </div>
   );
 }

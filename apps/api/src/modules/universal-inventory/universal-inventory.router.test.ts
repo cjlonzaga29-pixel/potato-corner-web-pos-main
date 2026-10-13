@@ -42,7 +42,10 @@ vi.mock('../inventory-migration/dry-run.service.js', () => ({
 }));
 
 vi.mock('../../lib/prisma.js', () => ({
-  prisma: { revokedToken: { findFirst: vi.fn() } },
+  prisma: {
+    revokedToken: { findFirst: vi.fn() },
+    user: { findUnique: vi.fn().mockResolvedValue({ status: 'active', isActive: true }) },
+  },
 }));
 
 // branchGuard/hasBranchAccess resolve Supervisor scope from the database via

@@ -33,6 +33,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, supervisorOnly } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
+import { requireActiveSupervisor } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import { sha256Hex } from '../../lib/hash.js';
@@ -129,6 +130,7 @@ router.post(
   '/categories',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createInventoryCategorySchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -146,6 +148,7 @@ router.patch(
   '/categories/:categoryId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateInventoryCategorySchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -185,6 +188,7 @@ router.post(
   '/units',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createUnitOfMeasureSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -202,6 +206,7 @@ router.patch(
   '/units/:unitId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateUnitOfMeasureSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -236,6 +241,7 @@ router.post(
   '/conversions',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createUnitConversionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -280,6 +286,7 @@ router.post(
   '/items',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createInventoryItemSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -309,6 +316,7 @@ router.patch(
   '/items/:itemId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateInventoryItemSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -340,6 +348,7 @@ router.post(
   '/items/:itemId/branches',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(assignInventoryItemToBranchesSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -385,6 +394,7 @@ router.post(
   '/items/:itemId/conversions',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(createInventoryItemUnitConversionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -412,6 +422,7 @@ router.patch(
   '/items/:itemId/conversions/:conversionId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   validate(updateInventoryItemUnitConversionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
@@ -436,6 +447,7 @@ router.delete(
   '/items/:itemId/conversions/:conversionId',
   authenticate,
   supervisorOnly,
+  requireActiveSupervisor,
   requirePasswordChange,
   async (req: Request, res: Response, next: NextFunction) => {
     try {

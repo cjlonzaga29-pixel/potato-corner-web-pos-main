@@ -2,7 +2,7 @@ import type { JwtPayload } from '@potato-corner/shared';
 import { productCategoriesRepository as repo } from './product-categories.repository.js';
 import { ProductCategoryError, type ProductCategoryListFilters } from './product-categories.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { isCatalogManager } from '../../lib/catalog-ownership.js';
+import { hasSharedCatalogAuthority } from '../../lib/catalog-authority.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -87,15 +87,13 @@ export const productCategoriesService = {
   async updateCategory(id: string, data: UpdateProductCategoryInput, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductCategoryError('CATEGORY_NOT_FOUND', 'Product category not found', 404);
-    // POS-PERF-P35 — a supervisor may edit only a category they themselves
-    // created; a shared/historical category (createdBy null, or owned by
-    // another supervisor) is not editable here — create a new one instead.
-    // Mirrors products.service.ts's updateProduct ownership check.
-    // POS-PERF-P35R — unless a Super Admin has explicitly assigned
-    // management of this category to them (managedBy), which takes
-    // precedence over createdBy. See catalog-assignment module.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new ProductCategoryError('CATEGORY_UPDATE_FORBIDDEN', 'You may only edit a category you created or have been assigned to manage', 403);
+    // POS-PERF-P36 — categories are branch-agnostic shared master data (no
+    // branch to scope against), so any supervisor with at least one active
+    // UserBranchAssignment may edit any category — createdBy/managedBy are
+    // provenance/audit only now, not the live authority check. See
+    // catalog-authority.ts.
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new ProductCategoryError('CATEGORY_UPDATE_FORBIDDEN', 'You may only edit a category an active branch assignment gives you authority over', 403);
     }
 
     const category = await repo.update(id, {

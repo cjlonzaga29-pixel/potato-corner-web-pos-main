@@ -3,17 +3,15 @@ import type { NextFunction, Request, Response, Router } from 'express';
 import { randomUUID } from 'node:crypto';
 
 /**
- * POS-PERF-P35R — catalog-management assignment is a Super Admin-only
- * administrative action; Supervisor has no access to this router at all
- * (no self-claiming). Checked against the real middleware chain, same
- * technique as product-categories.router.test.ts.
+ * POS-PERF-P36 — the write (POST /) and /preview and /unmanaged routes are
+ * retired along with the manual-assignment surface (catalog authority is
+ * now derived live from active branch assignments, see
+ * apps/api/src/lib/catalog-authority.ts). Only the Admin-only read-only
+ * audit history route (GET /) survives.
  */
 vi.mock('./catalog-assignment.service.js', () => ({
   catalogAssignmentService: {
-    previewAssignment: vi.fn(),
-    createAssignment: vi.fn(),
     listHistory: vi.fn(),
-    listUnmanaged: vi.fn(),
   },
 }));
 
@@ -73,101 +71,49 @@ beforeEach(() => {
   vi.mocked(prisma.revokedToken.findFirst).mockResolvedValue(null);
 });
 
-const VALID_BODY = { resource_type: 'INVENTORY_CATEGORY', resource_id: randomUUID(), supervisor_id: randomUUID(), reason: 'Legacy shared master data needs an owner for Phase 20 recipe testing' };
-
-describe('POST /api/catalog-assignments — authorization', () => {
+describe('GET /api/catalog-assignments — authorization', () => {
   it('rejects a branch actor with 403, never reaching the service', async () => {
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'post', '/');
-    const req = mockReq({ ...authHeader(generateBranchToken(randomUUID())), body: VALID_BODY });
+    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/');
+    const req = mockReq({ ...authHeader(generateBranchToken(randomUUID())), query: { resource_type: 'INVENTORY_CATEGORY', resource_id: randomUUID() } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(catalogAssignmentService.createAssignment).not.toHaveBeenCalled();
+    expect(catalogAssignmentService.listHistory).not.toHaveBeenCalled();
   });
 
-  it('rejects a supervisor actor with 403 — never allowed to self-claim or claim on another supervisor’s behalf', async () => {
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'post', '/');
-    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), body: VALID_BODY });
-    const res = mockRes();
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(catalogAssignmentService.createAssignment).not.toHaveBeenCalled();
-  });
-
-  it('allows a super_admin actor through to the service', async () => {
-    vi.mocked(catalogAssignmentService.createAssignment).mockResolvedValue({ id: 'assign-1' } as never);
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'post', '/');
-    const req = mockReq({ ...authHeader(generateSuperAdminToken()), body: VALID_BODY });
-    const res = mockRes();
-
-    await runHandlers(handlers, req, res);
-
-    expect(catalogAssignmentService.createAssignment).toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(201);
-  });
-
-  it('422s a malformed body (reason too short) without reaching the service', async () => {
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'post', '/');
-    const req = mockReq({ ...authHeader(generateSuperAdminToken()), body: { ...VALID_BODY, reason: 'short' } });
-    const res = mockRes();
-
-    await runHandlers(handlers, req, res);
-
-    expect(res.status).toHaveBeenCalledWith(422);
-    expect(catalogAssignmentService.createAssignment).not.toHaveBeenCalled();
-  });
-});
-
-describe('GET /api/catalog-assignments/preview — authorization', () => {
-  it('rejects a supervisor actor with 403', async () => {
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/preview');
+  it('rejects a supervisor actor with 403 — audit history stays Admin-only', async () => {
+    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/');
     const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), query: { resource_type: 'INVENTORY_CATEGORY', resource_id: randomUUID() } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(catalogAssignmentService.previewAssignment).not.toHaveBeenCalled();
+    expect(catalogAssignmentService.listHistory).not.toHaveBeenCalled();
   });
 
   it('allows a super_admin actor through to the service', async () => {
-    vi.mocked(catalogAssignmentService.previewAssignment).mockResolvedValue({ resource_label: 'Toppings' } as never);
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/preview');
+    vi.mocked(catalogAssignmentService.listHistory).mockResolvedValue([] as never);
+    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/');
     const req = mockReq({ ...authHeader(generateSuperAdminToken()), query: { resource_type: 'INVENTORY_CATEGORY', resource_id: randomUUID() } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
 
-    expect(catalogAssignmentService.previewAssignment).toHaveBeenCalled();
+    expect(catalogAssignmentService.listHistory).toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(200);
   });
-});
 
-describe('GET /api/catalog-assignments/unmanaged — authorization', () => {
-  it('rejects a supervisor actor with 403', async () => {
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/unmanaged');
-    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), query: { resource_type: 'INVENTORY_CATEGORY' } });
+  it('422s a malformed query without reaching the service', async () => {
+    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/');
+    const req = mockReq({ ...authHeader(generateSuperAdminToken()), query: { resource_type: 'NOT_A_REAL_TYPE', resource_id: randomUUID() } });
     const res = mockRes();
 
     await runHandlers(handlers, req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(catalogAssignmentService.listUnmanaged).not.toHaveBeenCalled();
-  });
-
-  it('allows a super_admin actor through to the service', async () => {
-    vi.mocked(catalogAssignmentService.listUnmanaged).mockResolvedValue({ resources: [], total: 0, page: 1, limit: 25 } as never);
-    const handlers = getRouteHandlers(catalogAssignmentRouter, 'get', '/unmanaged');
-    const req = mockReq({ ...authHeader(generateSuperAdminToken()), query: { resource_type: 'INVENTORY_CATEGORY' } });
-    const res = mockRes();
-
-    await runHandlers(handlers, req, res);
-
-    expect(catalogAssignmentService.listUnmanaged).toHaveBeenCalledWith('INVENTORY_CATEGORY', 1, 25);
-    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(catalogAssignmentService.listHistory).not.toHaveBeenCalled();
   });
 });

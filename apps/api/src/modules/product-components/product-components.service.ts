@@ -5,7 +5,7 @@ import { ProductComponentError } from './product-components.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { productsRepository } from '../products/products.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { isCatalogManagerForProduct } from '../../lib/catalog-ownership.js';
+import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -84,10 +84,10 @@ async function assertParentProductWritable(productVariantId: string, actor: Acto
       409,
     );
   }
-  if (actor.role === ROLES.SUPERVISOR && !(variant?.product && (await isCatalogManagerForProduct(variant.product, actor.id)))) {
+  if (actor.role === ROLES.SUPERVISOR && !(variant?.product && (await hasActiveCatalogAuthorityForProduct(variant.product, actor.id)))) {
     throw new ProductComponentError(
       'RECIPE_COMPONENT_FORBIDDEN',
-      'You may only configure the Recipe/BOM for a product you created',
+      'You may only configure the Recipe/BOM for a product an active branch assignment gives you authority over',
       403,
     );
   }

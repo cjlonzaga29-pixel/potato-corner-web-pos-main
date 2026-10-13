@@ -10,7 +10,7 @@ import { productsRepository } from '../products/products.repository.js';
 import { ProductError } from '../products/products.types.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { isCatalogManager, isCatalogManagerForProduct } from '../../lib/catalog-ownership.js';
+import { hasSharedCatalogAuthority, hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
 
 type ActorContext = { id: string; role: string };
 type Decimalish = { toNumber(): number };
@@ -325,8 +325,8 @@ export const productOptionsService = {
     if (!before) throw new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404);
     // POS-PERF-P35 — a supervisor may edit only an option group they
     // themselves created; a shared/historical group is not editable here.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only edit an option group you created or have been assigned to manage', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only edit an option group an active branch assignment gives you authority over', 403);
     }
 
     // POS-PERF-P35R2 — shared-reference protection: selection_type/min/max
@@ -385,8 +385,8 @@ export const productOptionsService = {
     const before = await repo.findGroupById(id);
     if (!before) throw new ProductOptionError('OPTION_GROUP_NOT_FOUND', 'Product option group not found', 404);
     // POS-PERF-P35 — see updateGroup's ownership check above.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new ProductOptionError('OPTION_GROUP_DELETE_FORBIDDEN', 'You may only delete an option group you created or have been assigned to manage', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new ProductOptionError('OPTION_GROUP_DELETE_FORBIDDEN', 'You may only delete an option group an active branch assignment gives you authority over', 403);
     }
 
     const assignedVariantCount = await repo.countVariantAssignments(id);
@@ -438,8 +438,8 @@ export const productOptionsService = {
     // POS-PERF-P35 — adding an option to someone else's group is the same
     // "alter another supervisor's shared catalog indirectly" case the
     // ownership rule exists for; gated the same as updateGroup.
-    if (!isCatalogManager(group, actor.id)) {
-      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only add options to an option group you created or have been assigned to manage', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new ProductOptionError('OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only add options to an option group an active branch assignment gives you authority over', 403);
     }
 
     const existing = await repo.findOptionByCode(optionGroupId, data.code);
@@ -482,8 +482,8 @@ export const productOptionsService = {
     }
     // POS-PERF-P35 — a supervisor may edit only an option they themselves
     // created; a shared/historical option is not editable here.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new ProductOptionError('OPTION_UPDATE_FORBIDDEN', 'You may only edit an option you created or have been assigned to manage', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new ProductOptionError('OPTION_UPDATE_FORBIDDEN', 'You may only edit an option an active branch assignment gives you authority over', 403);
     }
 
     let inventoryDeduction: ResolvedInventoryDeduction | null | undefined;
@@ -544,8 +544,8 @@ export const productOptionsService = {
     // Option catalog itself is ownership-scoped separately (createGroup/
     // updateGroup/etc. above) — assigning an existing shared group never
     // requires owning that group, only the product being configured.
-    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
-      throw new ProductError('VARIANT_OPTION_GROUP_ASSIGN_FORBIDDEN', 'You may only assign option groups on a product you created', 403);
+    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(variant.product, actor.id))) {
+      throw new ProductError('VARIANT_OPTION_GROUP_ASSIGN_FORBIDDEN', 'You may only assign option groups on a product an active branch assignment gives you authority over', 403);
     }
 
     const group = await repo.findGroupById(data.option_group_id);
@@ -591,8 +591,8 @@ export const productOptionsService = {
   ) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
-      throw new ProductError('VARIANT_OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only update option group assignments on a product you created', 403);
+    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(variant.product, actor.id))) {
+      throw new ProductError('VARIANT_OPTION_GROUP_UPDATE_FORBIDDEN', 'You may only update option group assignments on a product an active branch assignment gives you authority over', 403);
     }
 
     const before = await repo.findVariantOptionGroupById(assignmentId);
@@ -628,8 +628,8 @@ export const productOptionsService = {
   async unassignOptionGroupFromVariant(productId: string, variantId: string, assignmentId: string, actor: ActorContext, ipAddress: string | null) {
     const variant = await productsRepository.findVariantById(variantId);
     if (!variant || variant.productId !== productId) throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
-    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
-      throw new ProductError('VARIANT_OPTION_GROUP_UNASSIGN_FORBIDDEN', 'You may only remove option group assignments on a product you created', 403);
+    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(variant.product, actor.id))) {
+      throw new ProductError('VARIANT_OPTION_GROUP_UNASSIGN_FORBIDDEN', 'You may only remove option group assignments on a product an active branch assignment gives you authority over', 403);
     }
 
     const before = await repo.findVariantOptionGroupById(assignmentId);

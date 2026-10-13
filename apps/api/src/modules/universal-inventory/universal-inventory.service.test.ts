@@ -81,6 +81,9 @@ vi.mock('../branches/branches.repository.js', () => ({
     listAllBranchIds: vi.fn(),
     findById: vi.fn(),
     findActiveBranchesForTransfer: vi.fn(),
+    // POS-PERF-P36 — catalog-authority.ts's hasSharedCatalogAuthority reads
+    // this for every branch-agnostic mutation check in this module.
+    findAllActiveBranchIds: vi.fn(),
   },
 }));
 
@@ -221,6 +224,9 @@ beforeEach(() => {
   vi.mocked(branchesRepository.listAllBranchIds).mockResolvedValue([]);
   vi.mocked(branchesRepository.findById).mockResolvedValue({ id: 'branch-1', code: 'MNL001', name: 'Manila', status: 'active' } as never);
   vi.mocked(branchesRepository.findActiveBranchesForTransfer).mockResolvedValue([]);
+  // Default: actor has >=1 active branch assignment, so hasSharedCatalogAuthority
+  // passes by default — tests that need to prove the rejection path override this.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
   vi.mocked(getTransferDestinationBranchIds).mockResolvedValue('all');
   vi.mocked(repo.createStockRows).mockResolvedValue({ count: 0 } as never);
   vi.mocked(repo.findItemById).mockResolvedValue(buildItem() as never);

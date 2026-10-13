@@ -1,10 +1,12 @@
 import { z } from 'zod';
 
-// POS-PERF-P35R — explicit catalog-management assignment. A Super Admin
-// action that hands management responsibility for a shared/orphaned/
-// other-owned catalog or inventory-definition record to a specific active
-// Supervisor. Never overwrites the record's original createdBy provenance;
-// see docs/decisions/POS-PERF-P35R-catalog-assignment.md.
+// POS-PERF-P36 — CatalogManagementAssignment is now an append-only audit
+// trail of the retired POS-PERF-P35R manual-assignment era; catalog
+// authority is derived live from a supervisor's active branch assignments
+// (see apps/api/src/lib/catalog-authority.ts) instead of being granted here.
+// Only the read/history schemas survive — the create-assignment,
+// impact-preview, and unmanaged-list schemas had no remaining caller once
+// the write endpoint was removed.
 
 export const CATALOG_RESOURCE_TYPES = [
   'PRODUCT',
@@ -18,13 +20,6 @@ export const CATALOG_RESOURCE_TYPES = [
 ] as const;
 export type CatalogResourceType = (typeof CATALOG_RESOURCE_TYPES)[number];
 
-export const createCatalogAssignmentSchema = z.object({
-  resource_type: z.enum(CATALOG_RESOURCE_TYPES),
-  resource_id: z.uuid(),
-  supervisor_id: z.uuid(),
-  reason: z.string().trim().min(10).max(500),
-});
-
 export const catalogAssignmentResponseSchema = z.object({
   id: z.uuid(),
   resource_type: z.enum(CATALOG_RESOURCE_TYPES),
@@ -35,37 +30,4 @@ export const catalogAssignmentResponseSchema = z.object({
   reason: z.string(),
   branch_id: z.uuid().nullable(),
   created_at: z.iso.datetime(),
-});
-
-export const catalogUnmanagedResourceResponseSchema = z.object({
-  id: z.uuid(),
-  label: z.string(),
-  created_by: z.uuid().nullable(),
-});
-
-export const catalogUnmanagedListResponseSchema = z.object({
-  resources: z.array(catalogUnmanagedResourceResponseSchema),
-  total: z.number().int(),
-  page: z.number().int(),
-  limit: z.number().int(),
-});
-
-export const catalogAssignmentImpactPreviewResponseSchema = z.object({
-  resource_type: z.enum(CATALOG_RESOURCE_TYPES),
-  resource_id: z.uuid(),
-  resource_label: z.string(),
-  current_created_by: z.uuid().nullable(),
-  current_managed_by: z.uuid().nullable(),
-  current_manager_label: z.string().nullable(),
-  // Other catalog records that reference this one (e.g. products under a
-  // category, options under a group) — reassigning management of THIS
-  // record never changes who manages those dependents.
-  dependent_summary: z.array(
-    z.object({
-      resource_type: z.enum(CATALOG_RESOURCE_TYPES),
-      count: z.number().int(),
-      distinct_other_managers: z.number().int(),
-    }),
-  ),
-  eligible_branch_ids: z.array(z.uuid()).nullable(),
 });

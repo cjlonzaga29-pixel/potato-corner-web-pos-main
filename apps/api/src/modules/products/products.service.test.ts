@@ -70,6 +70,17 @@ vi.mock('../../lib/branch-access.js', () => ({
   hasBranchAccess: vi.fn(),
 }));
 
+// POS-PERF-P36 — catalog-authority.ts's hasActiveCatalogAuthorityForProduct
+// reads this. Default to a single active branch so every existing
+// "supervisor may act on their own product" test keeps passing without
+// per-test wiring; tests proving the branch-authority denial path override
+// this explicitly.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 vi.mock('../../lib/supabase.js', () => ({
   supabaseAdmin: {
     storage: {
@@ -209,6 +220,7 @@ const { productReadinessService } = await import('../product-readiness/product-r
 const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
 const { prisma } = await import('../../lib/prisma.js');
 const { hasBranchAccess } = await import('../../lib/branch-access.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 
 // Task 209.x — the signed-URL reuse cache (products.service.ts) is
 // module-level state that otherwise persists across every test in this
@@ -314,6 +326,8 @@ function buildCreateResult(productOverrides: Partial<Record<string, unknown>> = 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(hasBranchAccess).mockResolvedValue(true);
+  // POS-PERF-P36 — see this file's branches.repository.js mock comment above.
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
 });
 
 describe('productsService.createProduct', () => {
@@ -616,8 +630,30 @@ describe('productsService.changeProductStatus — supervisor global transitions 
     );
   });
 
-  it('rejects a supervisor changing the global status of a product they did not create', async () => {
+  it('POS-PERF-P36: allows a supervisor to change the global status of a product created by another supervisor — authority follows active branch assignment, not createdBy', async () => {
     vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: 'other-supervisor' }) as never);
+    vi.mocked(productsRepository.updateStatus).mockResolvedValue(buildProduct({ status: 'discontinued', createdBy: 'other-supervisor' }) as never);
+
+    await productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPERVISOR, null);
+
+    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'discontinued');
+  });
+
+  it('POS-PERF-P36: rejects a supervisor with zero active branch assignments, regardless of createdBy', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active', createdBy: SUPERVISOR.id }) as never);
+
+    await expect(productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPERVISOR, null)).rejects.toMatchObject({
+      code: 'PRODUCT_STATUS_FORBIDDEN',
+    });
+    expect(productsRepository.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it('POS-PERF-P36: rejects a supervisor whose active branches do not intersect a branch-exclusive product\'s exclusiveBranchId', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-other']);
+    vi.mocked(productsRepository.findById).mockResolvedValue(
+      buildProduct({ status: 'active', createdBy: SUPERVISOR.id, branchExclusive: true, exclusiveBranchId: 'branch-1' }) as never,
+    );
 
     await expect(productsService.changeProductStatus('prod-1', { status: 'discontinued' }, SUPERVISOR, null)).rejects.toMatchObject({
       code: 'PRODUCT_STATUS_FORBIDDEN',
@@ -2612,9 +2648,16 @@ describe('productsService.uploadProductImage', () => {
     expect(productsRepository.updateImagePath).not.toHaveBeenCalled();
   });
 
-  // POS-PERF-P34 — Supervisor may upload only to a product they created
-  it('allows a supervisor to upload an image for a product they created', async () => {
-    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null, createdBy: SUPERVISOR.id } as never);
+  // POS-PERF-P36 — authority follows active branch assignment, not createdBy.
+  it('allows a supervisor with an active branch assignment to upload an image for a product created by another supervisor', async () => {
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({
+      id: 'prod-1',
+      imagePath: null,
+      createdBy: SUPER_ADMIN.id,
+      branchExclusive: false,
+      exclusiveBranchId: null,
+      branchAvailability: [],
+    } as never);
     vi.mocked(productsRepository.updateImagePath).mockResolvedValue({ id: 'prod-1', imagePath: 'product-images/prod-1/image.webp' } as never);
 
     const result = await productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPERVISOR, null);
@@ -2622,8 +2665,16 @@ describe('productsService.uploadProductImage', () => {
     expect(result).toEqual({ image_url: 'https://example.com/product-image.webp' });
   });
 
-  it('rejects a supervisor uploading an image for a product they did not create', async () => {
-    vi.mocked(productsRepository.findImagePath).mockResolvedValue({ id: 'prod-1', imagePath: null, createdBy: SUPER_ADMIN.id } as never);
+  it('rejects a supervisor with zero active branch assignments from uploading an image', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+    vi.mocked(productsRepository.findImagePath).mockResolvedValue({
+      id: 'prod-1',
+      imagePath: null,
+      createdBy: SUPERVISOR.id,
+      branchExclusive: false,
+      exclusiveBranchId: null,
+      branchAvailability: [],
+    } as never);
 
     await expect(
       productsService.uploadProductImage('prod-1', { buffer: Buffer.from('x'), originalname: 'a.png' }, SUPERVISOR, null),

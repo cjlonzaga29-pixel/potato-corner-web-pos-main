@@ -8,7 +8,7 @@ import { universalInventoryRepository as repo } from './universal-inventory.repo
 import { UniversalInventoryError } from './universal-inventory.types.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { isCatalogManager } from '../../lib/catalog-ownership.js';
+import { hasSharedCatalogAuthority } from '../../lib/catalog-authority.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { enqueueRawNotificationJob } from '../../queues/notification.queue.js';
 import { convertQuantity } from '../product-components/unit-conversion.util.js';
@@ -751,8 +751,8 @@ export const universalInventoryService = {
     // POS-PERF-P35 — a supervisor may edit only a category they themselves
     // created; a shared/historical category (createdBy null, or owned by
     // another supervisor) is not editable here — create a new one instead.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new UniversalInventoryError('CATEGORY_UPDATE_FORBIDDEN', 'You may only edit an inventory category you created', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('CATEGORY_UPDATE_FORBIDDEN', 'You may only edit an inventory category an active branch assignment gives you authority over', 403);
     }
 
     const category = await repo.updateCategory(id, data);
@@ -802,8 +802,8 @@ export const universalInventoryService = {
     const before = await repo.findUnitById(id);
     if (!before) throw new UniversalInventoryError('UNIT_NOT_FOUND', 'Unit of measure not found', 404);
     // POS-PERF-P35 — see updateCategory's ownership check above.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new UniversalInventoryError('UNIT_UPDATE_FORBIDDEN', 'You may only edit a unit of measure you created', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('UNIT_UPDATE_FORBIDDEN', 'You may only edit a unit of measure an active branch assignment gives you authority over', 403);
     }
 
     const unit = await repo.updateUnit(id, data);
@@ -885,8 +885,8 @@ export const universalInventoryService = {
     // POS-PERF-P35 — an item-specific conversion has no owner of its own;
     // it inherits its parent InventoryItem's, same ownership rule as every
     // other catalog write in this file.
-    if (!isCatalogManager(item, actor.id)) {
-      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only add a unit conversion to an inventory item you created', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only add a unit conversion to an inventory item an active branch assignment gives you authority over', 403);
     }
 
     const [fromUnit, toUnit] = await Promise.all([repo.findUnitById(data.fromUnitId), repo.findUnitById(data.toUnitId)]);
@@ -933,8 +933,8 @@ export const universalInventoryService = {
     }
     // POS-PERF-P35 — see createItemConversion's ownership check above.
     const item = await repo.findItemById(inventoryItemId);
-    if (!item || !isCatalogManager(item, actor.id)) {
-      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only edit a unit conversion on an inventory item you created', 403);
+    if (!item || !(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only edit a unit conversion on an inventory item an active branch assignment gives you authority over', 403);
     }
 
     const conversion = await repo.updateItemConversion(id, data);
@@ -961,8 +961,8 @@ export const universalInventoryService = {
     }
     // POS-PERF-P35 — see createItemConversion's ownership check above.
     const item = await repo.findItemById(inventoryItemId);
-    if (!item || !isCatalogManager(item, actor.id)) {
-      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only delete a unit conversion on an inventory item you created', 403);
+    if (!item || !(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only delete a unit conversion on an inventory item an active branch assignment gives you authority over', 403);
     }
 
     await repo.deleteItemConversion(id);
@@ -1070,8 +1070,8 @@ export const universalInventoryService = {
     const before = await repo.findItemById(id);
     if (!before) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
     // POS-PERF-P35 — see updateCategory's ownership check above.
-    if (!isCatalogManager(before, actor.id)) {
-      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only edit an inventory item you created', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only edit an inventory item an active branch assignment gives you authority over', 403);
     }
 
     if (data.sku) {
@@ -1109,8 +1109,8 @@ export const universalInventoryService = {
     const item = await repo.findItemById(inventoryItemId);
     if (!item) throw new UniversalInventoryError('INVENTORY_ITEM_NOT_FOUND', 'Inventory item not found', 404);
     // POS-PERF-P35 — see updateCategory's ownership check above.
-    if (!isCatalogManager(item, actor.id)) {
-      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only assign branches to an inventory item you created', 403);
+    if (!(await hasSharedCatalogAuthority(actor.id))) {
+      throw new UniversalInventoryError('INVENTORY_ITEM_UPDATE_FORBIDDEN', 'You may only assign branches to an inventory item an active branch assignment gives you authority over', 403);
     }
 
     const validBranchIds = new Set(await branchesRepository.listAllBranchIds());

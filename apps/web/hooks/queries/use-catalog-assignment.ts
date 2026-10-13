@@ -1,7 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
+import { useQuery } from '@tanstack/react-query';
 import type { CatalogResourceType } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 
@@ -14,81 +13,33 @@ function errorMessage(response: ApiErrorShape, fallback: string): string {
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
 }
 
-export interface UnmanagedResource {
+export interface CatalogAssignmentHistoryRow {
   id: string;
-  label: string;
-  created_by: string | null;
-}
-
-export interface UnmanagedListResponse {
-  resources: UnmanagedResource[];
-  total: number;
-  page: number;
-  limit: number;
-}
-
-export interface AssignmentImpactPreview {
   resource_type: CatalogResourceType;
   resource_id: string;
-  resource_label: string;
-  current_created_by: string | null;
-  current_managed_by: string | null;
-  current_manager_label: string | null;
-  dependent_summary: { resource_type: CatalogResourceType; count: number; distinct_other_managers: number }[];
-  eligible_branch_ids: string[] | null;
-}
-
-export interface CreateCatalogAssignmentInput {
-  resource_type: CatalogResourceType;
-  resource_id: string;
-  supervisor_id: string;
+  previous_managed_by: string | null;
+  new_managed_by: string;
+  assigned_by: string;
   reason: string;
+  branch_id: string | null;
+  created_at: string;
 }
 
-// POS-PERF-P35R — the Super Admin catalog-management assignment surface.
-// Every write here goes through POST /api/catalog-assignments, the one
-// path allowed to set managedBy; see catalog-assignment.service.ts.
-
-export function useUnmanagedCatalogResources(resourceType: CatalogResourceType, page = 1, limit = 25) {
+// POS-PERF-P36 — read-only internal audit trail of the retired POS-PERF-P35R
+// manual catalog-assignment era. No mutation hook exists anymore: catalog
+// authority is derived live from a supervisor's active branch assignments
+// (see apps/api/src/lib/catalog-authority.ts), not granted through this
+// surface. See docs/decisions/POS-PERF-P36-branch-catalog-and-builder.md.
+export function useCatalogAssignmentHistory(resourceType: CatalogResourceType | null, resourceId: string | null) {
   return useQuery({
-    queryKey: ['catalog-assignments', 'unmanaged', resourceType, page, limit],
+    queryKey: ['catalog-assignments', 'history', resourceType, resourceId],
     queryFn: async () => {
-      const response = await apiClient<UnmanagedListResponse>(
-        `/api/catalog-assignments/unmanaged?resource_type=${resourceType}&page=${page}&limit=${limit}`,
+      const response = await apiClient<{ assignments: CatalogAssignmentHistoryRow[] }>(
+        `/api/catalog-assignments?resource_type=${resourceType}&resource_id=${resourceId}`,
       );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to load unmanaged catalog resources'));
-      return response.data;
-    },
-    staleTime: 30 * 1000,
-  });
-}
-
-export function useCatalogAssignmentPreview(resourceType: CatalogResourceType | null, resourceId: string | null) {
-  return useQuery({
-    queryKey: ['catalog-assignments', 'preview', resourceType, resourceId],
-    queryFn: async () => {
-      const response = await apiClient<AssignmentImpactPreview>(
-        `/api/catalog-assignments/preview?resource_type=${resourceType}&resource_id=${resourceId}`,
-      );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to load the impact preview'));
-      return response.data;
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load catalog assignment history'));
+      return response.data.assignments;
     },
     enabled: Boolean(resourceType && resourceId),
-  });
-}
-
-export function useCreateCatalogAssignment() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: CreateCatalogAssignmentInput) => {
-      const response = await apiClient<{ id: string }>('/api/catalog-assignments', { method: 'POST', body: JSON.stringify(input) });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to assign catalog management'));
-      return response.data;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['catalog-assignments'] });
-      toast.success('Catalog management assigned');
-    },
-    onError: (error: Error) => toast.error(error.message),
   });
 }

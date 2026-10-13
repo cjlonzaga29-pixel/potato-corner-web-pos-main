@@ -219,7 +219,10 @@ export const productsRepository = {
     return prisma.productVariant.findUnique({
       where: { id: variantId },
       include: {
-        product: true,
+        // POS-PERF-P36 — branchAvailability is needed by
+        // hasActiveCatalogAuthorityForProduct's sellingBranchIds derivation;
+        // see catalog-authority.ts.
+        product: { include: { branchAvailability: { select: { branchId: true, isAvailable: true } } } },
         variantFlavors: { include: { flavor: { select: { id: true, name: true, colorHex: true } } } },
       },
     });
@@ -519,7 +522,16 @@ export const productsRepository = {
   findImagePath(productId: string) {
     return prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true, imagePath: true, createdBy: true, managedBy: true, branchExclusive: true, exclusiveBranchId: true },
+      select: {
+        id: true,
+        imagePath: true,
+        createdBy: true,
+        managedBy: true,
+        branchExclusive: true,
+        exclusiveBranchId: true,
+        // POS-PERF-P36 — see findVariantById's identical comment.
+        branchAvailability: { select: { branchId: true, isAvailable: true } },
+      },
     });
   },
 

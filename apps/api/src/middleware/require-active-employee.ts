@@ -57,11 +57,12 @@ export async function requireActiveEmployee(req: Request, res: Response, next: N
  * product-components/catalog-assignments). deactivateEmployee-equivalent
  * flows revoke a supervisor's refresh tokens on deactivation but, same gap
  * as staff before CR-003's requireActiveEmployee, never blacklist the
- * already-issued access token — isCatalogManager/isCatalogManagerForProduct
- * only ever check who a record is assigned to, never whether that
- * assignee's account is still active, so a deactivated supervisor's live
- * token kept mutating catalog records they were assigned to until the
- * token's own TTL expired. Shares activeStatusCache with
+ * already-issued access token — hasActiveCatalogAuthority/
+ * hasSharedCatalogAuthority (catalog-authority.ts, POS-PERF-P36) only ever
+ * check whether the supervisor currently holds an active branch assignment,
+ * never whether that assignment was read from a stale, still-valid token,
+ * so a deactivated supervisor's live token kept mutating catalog records
+ * until the token's own TTL expired. Shares activeStatusCache with
  * requireActiveEmployee — safe because a given userId has exactly one role,
  * so the same cache key never crosses roles. Deliberately not applied
  * app-wide to every supervisor-accessible route (POS/cash/attendance/etc.)

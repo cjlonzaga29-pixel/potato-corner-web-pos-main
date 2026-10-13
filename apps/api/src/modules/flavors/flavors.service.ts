@@ -7,7 +7,7 @@ import { ProductError } from '../products/products.types.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { isCatalogManagerForProduct } from '../../lib/catalog-ownership.js';
+import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -237,8 +237,8 @@ export const flavorsService = {
     // POS-PERF-P34R — a supervisor may only link an existing flavor to a
     // variant on a product they created; the flavor catalog itself stays
     // read-only to them (standalone creation/edit are adminOnly above).
-    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(product, actor.id))) {
-      throw new ProductError('VARIANT_FLAVOR_LINK_FORBIDDEN', 'You may only link flavors on a product you created', 403);
+    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(product, actor.id))) {
+      throw new ProductError('VARIANT_FLAVOR_LINK_FORBIDDEN', 'You may only link flavors on a product an active branch assignment gives you authority over', 403);
     }
 
     const flavor = await flavorsRepository.findById(data.flavor_id);
@@ -283,8 +283,8 @@ export const flavorsService = {
     if (!variant || variant.productId !== productId) {
       throw new ProductError('VARIANT_NOT_FOUND', 'Variant not found', 404);
     }
-    if (actor.role === ROLES.SUPERVISOR && !(await isCatalogManagerForProduct(variant.product, actor.id))) {
-      throw new ProductError('VARIANT_FLAVOR_UPDATE_FORBIDDEN', 'You may only update flavor links on a product you created', 403);
+    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(variant.product, actor.id))) {
+      throw new ProductError('VARIANT_FLAVOR_UPDATE_FORBIDDEN', 'You may only update flavor links on a product an active branch assignment gives you authority over', 403);
     }
 
     const existingLink = await flavorsRepository.findVariantFlavorLink(variantId, flavorId);

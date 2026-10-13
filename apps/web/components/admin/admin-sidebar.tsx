@@ -10,7 +10,6 @@ import {
   ClipboardCheck,
   BarChart3,
   Settings,
-  UserCog,
   ChevronsLeft,
   ChevronsRight,
   ChevronDown,
@@ -40,6 +39,11 @@ import type { NavItem } from '@/components/shared/nav-types';
 // removed from here. The underlying pages still exist for Admin as
 // read-only reporting views (see ManagedElsewhereBanner), just no longer
 // linked from this nav — reachable only by direct URL.
+// POS-PERF-P36 — the "Catalog Assignment" item (manually granting
+// management of a shared/orphaned catalog record to a supervisor) is
+// removed: catalog authority is now derived live from a supervisor's active
+// branch assignments, so there is nothing left for Admin to manually grant.
+// Branch/supervisor assignment itself still lives under Branches.
 export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
@@ -47,11 +51,6 @@ export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Employees', href: '/admin/employees', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
-  // POS-PERF-P35R — the one catalog-adjacent action still exclusively
-  // Admin's: explicitly assigning management of a shared/orphaned catalog
-  // or inventory-definition record to a Supervisor. Not catalog CRUD
-  // itself, which stays on the Supervisor side (see the P35 comment above).
-  { label: 'Catalog Assignment', href: '/admin/catalog-assignment', icon: UserCog },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];
 
@@ -60,7 +59,6 @@ const SECTION_LABELS: Record<string, string> = {
   Dashboard: 'Overview',
   Branches: 'Management',
   Employees: 'People',
-  'Catalog Assignment': 'System',
   Settings: 'System',
 };
 

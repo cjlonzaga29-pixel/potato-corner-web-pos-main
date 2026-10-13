@@ -42,9 +42,21 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// POS-PERF-P36 — catalog-authority.ts's hasSharedCatalogAuthority (option
+// groups/options) and hasActiveCatalogAuthorityForProduct (variant
+// assignment) both read this. Option groups/options are branch-agnostic
+// shared master data — authority = "actor has >=1 active branch
+// assignment", never per-group/per-option createdBy/managedBy anymore.
+vi.mock('../branches/branches.repository.js', () => ({
+  branchesRepository: {
+    findAllActiveBranchIds: vi.fn(),
+  },
+}));
+
 const { productOptionsRepository: repo } = await import('./product-options.repository.js');
 const { productsRepository } = await import('../products/products.repository.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
+const { branchesRepository } = await import('../branches/branches.repository.js');
 const { productOptionsService } = await import('./product-options.service.js');
 
 const ACTOR = { id: 'admin-1', role: 'super_admin' };
@@ -147,6 +159,7 @@ function buildAssignment(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-1']);
 });
 
 describe('productOptionsService.createGroup', () => {
@@ -173,8 +186,18 @@ describe('productOptionsService.updateGroup', () => {
     });
   });
 
-  it('denies editing a group created by (and not assigned to) another supervisor', async () => {
+  it('POS-PERF-P36: allows editing a group created by another supervisor — option groups are branch-agnostic shared master data, not personally owned', async () => {
     vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup({ createdBy: 'someone-else' }) as never);
+    vi.mocked(repo.updateGroup).mockResolvedValue(buildGroup({ createdBy: 'someone-else', name: 'New name' }) as never);
+
+    await productOptionsService.updateGroup('group-1', { name: 'New name' }, ACTOR, null);
+
+    expect(repo.updateGroup).toHaveBeenCalled();
+  });
+
+  it('POS-PERF-P36: denies editing when the actor has zero active branch assignments', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+    vi.mocked(repo.findGroupById).mockResolvedValue(buildGroup() as never);
 
     await expect(productOptionsService.updateGroup('group-1', { name: 'New name' }, ACTOR, null)).rejects.toMatchObject({
       code: 'OPTION_GROUP_UPDATE_FORBIDDEN',
@@ -449,19 +472,10 @@ describe('productOptionsService.createOption — inventory_deduction (TASK 75)',
   });
 });
 
-describe('productOptionsService.updateOption — ownership is per-option, not inherited from the parent group (POS-PERF-P35R3)', () => {
-  it('denies a supervisor who manages the parent GROUP but not this specific OPTION — owning the group does not widen into owning every option inside it', async () => {
-    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ createdBy: 'other-supervisor', managedBy: null }) as never);
-
-    await expect(
-      productOptionsService.updateOption('group-1', 'option-1', { name: 'Cheese v2' }, { id: ACTOR.id, role: 'supervisor' }, null),
-    ).rejects.toMatchObject({ code: 'OPTION_UPDATE_FORBIDDEN' });
-    expect(repo.updateOption).not.toHaveBeenCalled();
-  });
-
-  it('allows a supervisor who manages this specific OPTION even though they do not manage the parent group — PRODUCT_OPTION is independently ownable, by design (catalog-assignment.types.ts\'s CatalogResourceType lists it separately from PRODUCT_OPTION_GROUP)', async () => {
-    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ createdBy: 'other-supervisor', managedBy: ACTOR.id, inventoryMapping: null }) as never);
-    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ managedBy: ACTOR.id, inventoryMapping: null }) as never);
+describe('productOptionsService.updateOption — branch-team authority (POS-PERF-P36)', () => {
+  it('allows a supervisor with an active branch assignment to edit an option created/managed by a different supervisor — PRODUCT_OPTION is branch-agnostic shared master data, not personally owned', async () => {
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ createdBy: 'other-supervisor', managedBy: 'yet-another-supervisor', inventoryMapping: null }) as never);
+    vi.mocked(repo.updateOption).mockResolvedValue(buildOption({ inventoryMapping: null }) as never);
 
     const result = await productOptionsService.updateOption(
       'group-1',
@@ -473,6 +487,16 @@ describe('productOptionsService.updateOption — ownership is per-option, not in
 
     expect(repo.updateOption).toHaveBeenCalled();
     expect(result.name).toBe('Cheese');
+  });
+
+  it('denies a supervisor with zero active branch assignments, regardless of who created/manages the option', async () => {
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+    vi.mocked(repo.findOptionById).mockResolvedValue(buildOption({ createdBy: ACTOR.id, managedBy: ACTOR.id }) as never);
+
+    await expect(
+      productOptionsService.updateOption('group-1', 'option-1', { name: 'Cheese v2' }, { id: ACTOR.id, role: 'supervisor' }, null),
+    ).rejects.toMatchObject({ code: 'OPTION_UPDATE_FORBIDDEN' });
+    expect(repo.updateOption).not.toHaveBeenCalled();
   });
 });
 

@@ -2,14 +2,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 /**
- * POS-PERF-P35R4 — final scope check. catalog-assignment.integration.test.ts
- * proves createAssignment (the grant path) re-reads live branch assignments
- * at assignment time. It never exercises the mutation paths that rely on
- * that grant afterward — updateProduct/changeProductStatus/deleteProduct via
- * isCatalogManager. This suite closes that gap: once a supervisor is granted
- * managedBy on a branch-exclusive product, does a later-revoked branch
- * assignment actually block them from mutating it, or does managedBy alone
- * keep working as a bypass?
+ * POS-PERF-P35R4, still true under POS-PERF-P36's branch-team authority
+ * model (hasActiveCatalogAuthorityForProduct, catalog-authority.ts):
+ * managedBy is provenance/audit-only now, never consulted for live
+ * authority — so this proves the stronger invariant that revoking a
+ * supervisor's last active branch assignment blocks mutation of a
+ * branch-exclusive product regardless of what managedBy/createdBy say.
  */
 const databaseUrl = process.env.DATABASE_URL ?? '';
 const isLocalDatabase = /(^|@)(127\.0\.0\.1|localhost)(:|\/)/.test(databaseUrl);

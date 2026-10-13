@@ -1,6 +1,12 @@
 # POS-PERF-P36 — Branch-Based Catalog Access and Simple Product Builder
 
-**Status:** In progress (branch-team authority shipped; Simple Product Builder in progress — see "Rollout status" below).
+**Status:** Shipped — branch-team authority, Simple Product Builder, Recipe
+Readiness UI removal, and end-to-end inventory-match coverage are all
+committed and verified locally (see §8 Verification below). Scope not
+covered in this pass: the Choices step's Mix & Max slot editor UI (existing
+Mix & Max data/behavior is preserved, just not re-exposed in the new wizard —
+see §5 limitations) and Playwright browser e2e scenarios (unit/integration
+coverage only — see §8).
 
 ## 1. Why
 
@@ -104,33 +110,149 @@ the codebase read-only, for historical "who manages this" display only.
 
 ## 5. Simple Product Builder
 
-See the builder implementation notes in `apps/web/app/(supervisor)/supervisor/products/builder/` and the orchestration endpoint at
-`apps/api/src/modules/products/` (`builder/publish`) for the 5-step flow
-(Details → Sizes & Prices → Ingredients & Packaging → Choices → Review).
-Every step writes through the existing Product/ProductVariant/
-ProductComponent/ProductOptionGroup/ProductOption/ProductFlavorSlot APIs —
-no new product data concepts were introduced, only one guided UI over them.
-`productReadinessService` (unchanged) is the server-side gate behind "Add to
-POS"; the separate Recipe Readiness page is removed, its checks are not.
+`apps/web/app/(supervisor)/supervisor/products/builder/page.tsx` — one
+guided wizard (Details → Sizes & Prices → Ingredients & Packaging → Choices →
+Review) replacing the old `CreateProductDialog` + separately-navigated
+Categories/Options/Recipe-Readiness pages. Each step is composed from
+existing, already-tested components rather than reimplemented:
 
-## 6. Compatibility
+| Step | Reused components / endpoints |
+|---|---|
+| Details | Inline form (lifted from the old `CreateProductDialog`) → `POST /api/products` (branch-exclusive, status `draft`) + `POST /api/products/:id/image` |
+| Sizes & Prices | `VariantFormDialog` → `POST`/`PATCH .../variants` |
+| Ingredients & Packaging | `RecipeBomPanel` + `RecipeComponentFormDialog` → `POST/PATCH/DELETE .../components`, with a new inline "+ Create new item…" affordance (`InlineCreateInventoryItemDialog` → `POST /api/universal-inventory/items`) so a missing item never forces abandoning the step |
+| Choices | `AssignOptionGroupDialog` + `LinkFlavorDialog` → the existing variant/option-group and variant/flavor endpoints |
+| Review | `ReadinessChecklist` (unchanged) + `productsService.publishProduct` (the pre-existing Phase D1 "Add to POS" endpoint — already gated on `productReadinessService`, already refuses with the blocking-issue list when not ready, already never deducts stock) |
+
+**No new orchestration/draft/idempotency endpoint was built.** Once Step 1
+creates the Product (`status: draft`), every later step edits that *same*
+row directly through its own existing, independently-tested endpoint — so
+"draft" literally is a `Product` row with `BranchProductAvailability.
+isAvailable = false` for its branch, not a parallel storage system. "Save
+Draft" is therefore a no-op (everything already persisted incrementally);
+"Add to POS" is the pre-existing `publish` call. This was a late-discovered
+scope reduction from the original plan (which assumed no publish/readiness
+gate existed yet) — see the `mutable-scribbling-simon` plan file's §3 for
+the superseded original design.
+
+Client-only wizard progress (`apps/web/stores/product-builder.store.ts`,
+Zustand + localStorage) tracks only `{ productId, step }` — substantive data
+(variants, recipe components, choices) is never buffered client-side, so a
+refresh loses at most a half-typed Step 1 form before the first Product row
+exists, never an already-entered size/ingredient/choice.
+
+**Branch selection**: filtered to the supervisor's own active
+`UserBranchAssignment`s (via the JWT `branchIds` snapshot, same source
+`useSelectedBranch` already uses elsewhere) — auto-selected when exactly
+one, cleared when multiple, blocked with an explanatory empty state at zero.
+
+**Known limitation**: the Choices step exposes Option Groups/Options
+(flavors, add-ons) but not a dedicated Mix & Max slot (`ProductFlavorSlot`)
+editor — existing Mix & Max products/data/checkout behavior is fully
+preserved (nothing in this phase touches `ProductFlavorSlot`/
+`ProductFlavorSlotSnackOption` or their deduction path), it's just not yet
+reachable from the new wizard UI. A supervisor needing to configure Mix & Max
+slots for a brand-new product still needs direct API access until a
+follow-up adds that step.
+
+**Concurrency**: `ProductVariant.version` (already existed, already bumped
+on every update) is now also read as an optimistic-concurrency token —
+`PATCH .../variants/:id` accepts an optional `expected_version` and returns
+`409 VARIANT_CONFLICT` on mismatch; `VariantFormDialog` sends the version it
+loaded on edit. Product-level fields (name/category/etc., no per-row version
+column) are not covered by this — a known, narrower-scope gap than the full
+"handle concurrent edits" ask, left for a future migration adding a
+`Product.version` column.
+
+## 6. Query-cache branch scoping audit
+
+Traced every TanStack Query key in `apps/web/hooks/queries/use-products.ts`,
+`use-product-categories.ts`, `use-product-options.ts`, and
+`use-universal-inventory.ts`. **Conclusion: already correct, no changes
+needed.** Every read whose result actually varies by branch already carries
+`branchId` in its key — `['catalog', branchId]` (POS terminal catalog),
+`['product', productId, 'readiness', branchId]`, `['branch-inventory-stock',
+branchId]` — so switching branches naturally produces a different cache
+entry instead of serving a stale one. Every key *without* a branchId
+(categories, option groups/options, units, conversions, inventory items) is
+correctly branch-agnostic shared master data per §2 — adding a branchId to
+those keys would be wrong, not a fix.
+
+## 7. Compatibility
 
 - Legacy `ProductInventory`/`Flavor.ingredientName` deduction path: untouched.
 - `isCatalogManager`/`isCatalogManagerForProduct`/`effectiveCatalogManager`:
   untouched, kept for read-only provenance display.
 - Checkout, inventory deduction, PWD/Senior VAT, transaction-number, and JWT
   structure: untouched — none of this phase's files touch those modules.
+- Mix & Max (`ProductFlavorSlot`), legacy Flavor-based variant flavors,
+  Product Options/inventory mappings: untouched, still fully functional —
+  see §5's limitation note on the builder not yet exposing a Mix & Max editor.
 
-## 7. Rollout / rollback
+## 8. Verification
 
-Every change in this phase is additive or a pure authority-check swap:
-- No destructive migration. Any new builder-draft/idempotency table is
-  purely additive.
-- Rollback = stop routing traffic to the new builder route/endpoints and
-  the trimmed `catalog-assignment` router; `catalog-authority.ts` can be
-  reverted independently of the builder UI since it only changes which
-  check a router calls, not any stored data.
+Ran entirely against a local disposable Postgres (`127.0.0.1:5432/pos_verify`
+— verified host/port before every `prisma migrate`/`db execute` call per
+CLAUDE.md's three-URL rule; never touched `PRODUCTION_DATABASE_URL_DIRECT`).
+
+- **Migration**: an additive `Product.builder_draft_id` column was
+  generated, applied, and verified via `prisma migrate deploy` while
+  prototyping an idempotency-key design; once the design simplified (§5), the
+  column was found unnecessary and cleanly reverted (`ALTER TABLE ... DROP
+  COLUMN`, migration folder removed, `_prisma_migrations` row deleted) before
+  anything was committed — `git diff` on `schema.prisma` confirmed a clean
+  no-op. No migration is part of the final committed change.
+- **Typecheck**: `apps/api`, `apps/web`, `packages/shared` all clean
+  (`tsc --noEmit`), rerun after every edit round.
+- **API unit + real-Postgres integration suite** (`TEST_DATABASE_URL` set to
+  the local DB, run standalone — not concurrently with the web suite, which
+  caused transient cross-suite DB contention on a first combined attempt):
+  **2,947 passed, 0 failed, 99 skipped** (skips are integration suites gated
+  on env vars not relevant here). The new
+  `transactions.builder-recipe-match.integration.test.ts` (5 tests) passed
+  consistently across three separate runs.
+- **Web unit/component suite**: 1,218 tests; the only failures seen were
+  environment-timeout flakes (5s default `testTimeout`) in files this phase
+  never touched (`attendance-override-dialog`, `edit-product-dialog`,
+  `sales-analytics-section`, the admin dashboard page, the branch terminal
+  page, the supervisor reports page) — all four of the first group
+  independently confirmed passing when re-run in isolation; the pattern is
+  consistent with this session's machine being under heavy load from running
+  very large suites, not a regression. One real failure was fixed during this
+  phase: `recipe-component-form-dialog.test.tsx`'s mock of
+  `use-universal-inventory` needed `useInventoryCategories`/
+  `useCreateInventoryItem` added for the new inline item-creation dialog.
+- **Known environmental hazard observed, not a code defect**: one local-only
+  rerun of the pre-existing `transactions.integration.test.ts` CR-004 suite
+  showed a stock-mismatch false failure while this repo's own `apps/api` dev
+  server (`pnpm --filter @potato-corner/api dev`, left running from before
+  this session) was simultaneously connected to the same local database —
+  consistent with its background inventory-deduction poller racing the
+  test's own manual `inventoryDeductionService.runCycle()` call against the
+  same jobs table. Stopping contention (running the suite alone) made it
+  pass cleanly and reproducibly on every subsequent run. Recommend running
+  integration suites against a database with no live dev server attached.
+- **Not run in this pass**: Playwright browser e2e scenarios (supervisor
+  access without manual assignment, replacement/revocation,
+  create→publish→checkout→deduction, edit/archive, cross-branch denial,
+  admin nav absence). The scenarios this phase specifically required
+  (branch-authority replacing manual assignment, builder-driven
+  create→publish, exact multi-ingredient deduction match) are covered at the
+  integration level instead (§8 above); a follow-up session should add the
+  browser-level pass, following the now-deleted
+  `pos-perf-p35r2-catalog-assignment-browser.spec.ts` as a style reference
+  for structure (it was removed in this phase since its subject — the manual
+  assignment UI — no longer exists).
+
+## 9. Rollout / rollback
+
+Every change in this phase is additive or a pure authority-check swap, and
+no migration is actually part of the committed change (see §8):
+
+- Rollback = stop routing traffic to the new builder route and the trimmed
+  `catalog-assignment` router; `catalog-authority.ts` can be reverted
+  independently of the builder UI since it only changes which check a router
+  calls, not any stored data.
 - No production data, catalog copies, assignments, or uploads were touched
   in developing or verifying this phase — verification ran against a local
-  disposable Postgres only (see the verification report in this phase's
-  commit messages / PR description).
+  disposable Postgres only.

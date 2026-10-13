@@ -53,21 +53,31 @@ export const productComponentsRepository = {
     });
   },
 
-  update(id: string, data: UpdateProductComponentData) {
-    return prisma.productComponent.update({
-      where: { id },
+  /**
+   * POS-PERF-P36R2 — compare (expected_version) and write must be one
+   * atomic statement. The previous shape let the service read `before`,
+   * check it, then call a plain `update({ where: { id } })` with no version
+   * predicate — two concurrent callers that both read the same version
+   * could both pass the check and both write. Folding the predicate into
+   * the WHERE clause makes it a real compare-and-swap. Returns null when
+   * the predicate matched zero rows (stale version).
+   */
+  async update(id: string, data: UpdateProductComponentData, expectedVersion?: number, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    const { count } = await tx.productComponent.updateMany({
+      where: { id, ...(expectedVersion !== undefined && { version: expectedVersion }) },
       data: {
         ...(data.quantityRequired !== undefined && { quantityRequired: data.quantityRequired }),
         ...(data.recipeUnitId !== undefined && { recipeUnitId: data.recipeUnitId }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         version: { increment: 1 },
       },
-      include: productComponentInclude,
     });
+    if (count === 0) return null;
+    return tx.productComponent.findUniqueOrThrow({ where: { id }, include: productComponentInclude });
   },
 
-  delete(id: string, updatedBy: string) {
-    return prisma.productComponent.update({
+  delete(id: string, updatedBy: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    return tx.productComponent.update({
       where: { id },
       data: { deletedAt: new Date(), isActive: false, updatedBy },
     });

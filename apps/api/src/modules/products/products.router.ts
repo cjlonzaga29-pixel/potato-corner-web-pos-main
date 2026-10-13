@@ -30,7 +30,7 @@ import { productOptionsService } from '../product-options/product-options.servic
 import { ProductOptionError } from '../product-options/product-options.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, allRoles, supervisorOnly } from '../../middleware/authorize.js';
-import { branchGuard } from '../../middleware/branch-guard.js';
+import { branchGuard, branchGuardOptional } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee, requireActiveSupervisor } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
@@ -289,7 +289,7 @@ router.patch(
   requireActiveSupervisor,
   requirePasswordChange,
   validate(changeProductStatusSchema),
-  branchGuard,
+  branchGuardOptional,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;

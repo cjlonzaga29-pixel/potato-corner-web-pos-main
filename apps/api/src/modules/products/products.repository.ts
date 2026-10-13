@@ -154,9 +154,21 @@ export const productsRepository = {
     });
   },
 
-  update(productId: string, data: UpdateProductData) {
-    return prisma.product.update({
-      where: { id: productId },
+  /**
+   * POS-PERF-P36R2 — must stay a single conditional statement. The previous
+   * shape (service reads `before.version`, checks it, then this method does
+   * a plain `update({ where: { id } })` with no version predicate) leaves a
+   * race window: two requests that both read the same version can both pass
+   * the service's check and both write, because nothing here enforces
+   * mutual exclusion. Folding the version predicate into the WHERE clause of
+   * one `updateMany` makes the compare-and-swap atomic at the database
+   * level — only one concurrent caller can match `version: expectedVersion`
+   * and its own write is what invalidates the other's.  Returns the updated
+   * row's id, or null if the predicate matched zero rows (stale version).
+   */
+  async update(productId: string, data: UpdateProductData, expectedVersion?: number) {
+    const { count } = await prisma.product.updateMany({
+      where: { id: productId, ...(expectedVersion !== undefined && { version: expectedVersion }) },
       data: {
         name: data.name,
         description: data.description,
@@ -170,10 +182,11 @@ export const productsRepository = {
         ...(data.seasonalEndDate !== undefined && {
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : null,
         }),
-        ...(data.version !== undefined && { version: data.version }),
+        version: { increment: 1 },
       },
-      include: detailInclude,
     });
+    if (count === 0) return null;
+    return prisma.product.findUniqueOrThrow({ where: { id: productId }, include: detailInclude });
   },
 
   updateStatus(productId: string, status: PrismaProductStatus) {
@@ -203,17 +216,30 @@ export const productsRepository = {
     });
   },
 
-  updateVariant(variantId: string, data: UpdateVariantData) {
-    return prisma.productVariant.update({
-      where: { id: variantId },
+  /**
+   * POS-PERF-P36R2 — this path previously never touched `version` at all
+   * (it only moved for the separate flavor-slot governance path), so the
+   * expected_version check in products.service.ts's updateVariant could
+   * never actually detect a stale edit: the DB value it compared against
+   * never changed. Same atomic-compare-and-swap shape as products.update
+   * above: fold the predicate into the WHERE clause and increment version
+   * on every successful write. Returns null if the predicate matched zero
+   * rows (stale version).
+   */
+  async updateVariant(variantId: string, data: UpdateVariantData, expectedVersion?: number) {
+    const { count } = await prisma.productVariant.updateMany({
+      where: { id: variantId, ...(expectedVersion !== undefined && { version: expectedVersion }) },
       data: {
         name: data.name,
         sizeLabel: data.sizeLabel,
         basePrice: data.basePrice,
         displayOrder: data.displayOrder,
         isActive: data.isActive,
+        version: { increment: 1 },
       },
     });
+    if (count === 0) return null;
+    return prisma.productVariant.findUniqueOrThrow({ where: { id: variantId } });
   },
 
   findVariantById(variantId: string) {

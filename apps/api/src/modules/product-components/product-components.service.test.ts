@@ -30,6 +30,20 @@ vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// POS-PERF-P36R2 — updateMapping/deleteMapping now take productCatalogLockId
+// inside their own transaction before delegating to the (fully mocked)
+// repository; same stand-in-tx technique as attendance.service.test.ts.
+// The stand-in tx is passed straight through to the mocked repo calls, so
+// assertions on repo.update/repo.delete's arguments still see it.
+vi.mock('../../lib/prisma.js', () => {
+  const txClient = { $executeRaw: vi.fn().mockResolvedValue(undefined) };
+  const prismaMock = {
+    $executeRaw: vi.fn().mockResolvedValue(undefined),
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txClient)),
+  };
+  return { prisma: prismaMock };
+});
+
 const { productComponentsRepository: repo } = await import('./product-components.repository.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { productsRepository } = await import('../products/products.repository.js');
@@ -249,7 +263,7 @@ describe('productComponentsService.updateMapping', () => {
 
     const result = await productComponentsService.updateMapping('component-1', { quantity_required: 5 }, ACTOR, null);
 
-    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 5 });
+    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 5 }, undefined, expect.anything());
     expect(result.quantity_required).toBe(5);
     expect(result.version).toBe(2);
   });
@@ -268,7 +282,7 @@ describe('productComponentsService.updateMapping', () => {
 
     const result = await productComponentsService.updateMapping('component-1', { quantity_required: 100, recipe_unit_id: 'unit-g' }, ACTOR, null);
 
-    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 100, recipeUnitId: 'unit-g' });
+    expect(repo.update).toHaveBeenCalledWith('component-1', { quantityRequired: 100, recipeUnitId: 'unit-g' }, undefined, expect.anything());
     expect(result.recipe_unit_code).toBe('g');
   });
 
@@ -309,7 +323,7 @@ describe('productComponentsService.deleteMapping', () => {
 
     await productComponentsService.deleteMapping('component-1', ACTOR, null);
 
-    expect(repo.delete).toHaveBeenCalledWith('component-1', ACTOR.id);
+    expect(repo.delete).toHaveBeenCalledWith('component-1', ACTOR.id, expect.anything());
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_COMPONENT_DELETED', entityId: 'component-1' }));
   });
 

@@ -203,7 +203,10 @@ vi.mock('../../lib/notify.js', () => ({
 // separately above, so the tx client itself is never touched — a stand-in
 // object is enough, and $transaction just runs the callback immediately with
 // it. Same pattern as branches.service.test.ts's CR-005 3b companion fix.
-const { txMock } = vi.hoisted(() => ({ txMock: {} }));
+// POS-PERF-P36R2 — publishProduct also wraps its readiness-check + flip in
+// prisma.$transaction, taking productCatalogLockId first, so the stand-in tx
+// needs a working $executeRaw too (same technique, see the comment above).
+const { txMock } = vi.hoisted(() => ({ txMock: { $executeRaw: vi.fn().mockResolvedValue(undefined) } }));
 vi.mock('../../lib/prisma.js', () => ({
   prisma: { $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(txMock)) },
 }));
@@ -894,7 +897,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
 
     const result = await productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
 
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPER_ADMIN.id);
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPER_ADMIN.id, txMock);
     expect((result as { is_available: boolean }).is_available).toBe(true);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
   });
@@ -1808,15 +1811,19 @@ describe('productsService.updateVariant', () => {
     expect(result.name).toBe('Large');
   });
 
-  it('POS-PERF-P36: rejects with VARIANT_CONFLICT when expected_version does not match the current version', async () => {
+  it('POS-PERF-P36 / P36R2: rejects with VARIANT_CONFLICT when the atomic compare-and-swap matches zero rows', async () => {
     vi.mocked(productsRepository.findVariantById).mockResolvedValue(
       buildVariant({ version: 3, product: { id: 'prod-1', status: 'active', branchExclusive: false, exclusiveBranchId: null, branchAvailability: [] } }) as never,
     );
+    // The compare now happens inside the repository's WHERE clause (see
+    // products.repository.ts's updateVariant), so the service always calls
+    // through; a stale expected_version surfaces as a null return.
+    vi.mocked(productsRepository.updateVariant).mockResolvedValue(null as never);
 
     await expect(
       productsService.updateVariant('prod-1', 'variant-1', { name: 'Large', expected_version: 2 }, SUPER_ADMIN, null),
     ).rejects.toMatchObject({ code: 'VARIANT_CONFLICT', statusCode: 409 });
-    expect(productsRepository.updateVariant).not.toHaveBeenCalled();
+    expect(productsRepository.updateVariant).toHaveBeenCalledWith('variant-1', expect.anything(), 2);
   });
 
   it('allows the update when expected_version matches the current version', async () => {

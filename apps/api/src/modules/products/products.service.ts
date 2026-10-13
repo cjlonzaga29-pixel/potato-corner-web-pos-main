@@ -20,6 +20,7 @@ import { stockAvailabilityService } from '../stock-availability/stock-availabili
 import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
 import { hasBranchAccess } from '../../lib/branch-access.js';
 import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
+import { productCatalogLockId } from '../../lib/pg-lock.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -928,19 +929,6 @@ export const productsService = {
     if (updatedBy.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(before, updatedBy.id))) {
       throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product an active branch assignment gives you authority over', 403);
     }
-    // POS-PERF-P36R — closes the gap flagged in docs/decisions/POS-PERF-P36
-    // §5: variant-level expected_version existed, but Product-level fields
-    // (name/category/display_order/seasonal window) had no equivalent, so a
-    // stale Edit Product form could silently overwrite another supervisor's
-    // concurrent change. Same posture as updateVariant: omitted = no check.
-    if (data.expected_version !== undefined && data.expected_version !== before.version) {
-      throw new ProductError(
-        'PRODUCT_CONFLICT',
-        'This product was changed by someone else since you loaded it. Reload to see the latest version before saving again.',
-        409,
-      );
-    }
-
     const mergedIsSeasonal = data.is_seasonal ?? before.isSeasonal;
     const mergedStart =
       data.seasonal_start_date !== undefined
@@ -961,17 +949,33 @@ export const productsService = {
       if (!category) throw new ProductError('CATEGORY_NOT_FOUND', 'category_id does not reference an existing product category', 422);
     }
 
-    const product = await productsRepository.update(productId, {
-      name: data.name,
-      description: data.description,
-      category: data.category,
-      categoryId: data.category_id,
-      displayOrder: data.display_order,
-      isSeasonal: data.is_seasonal,
-      seasonalStartDate: data.seasonal_start_date,
-      seasonalEndDate: data.seasonal_end_date,
-      version: before.version + 1,
-    });
+    // POS-PERF-P36R2 — the compare (expected_version vs. current) and the
+    // write must be one atomic statement, not a separate check followed by
+    // an unconditional update; see products.repository.ts's `update` for
+    // why. `null` here means the version predicate matched zero rows: either
+    // someone else's concurrent write already bumped the version, or (rare,
+    // already excluded by the `before` lookup above) the row is gone.
+    const product = await productsRepository.update(
+      productId,
+      {
+        name: data.name,
+        description: data.description,
+        category: data.category,
+        categoryId: data.category_id,
+        displayOrder: data.display_order,
+        isSeasonal: data.is_seasonal,
+        seasonalStartDate: data.seasonal_start_date,
+        seasonalEndDate: data.seasonal_end_date,
+      },
+      data.expected_version,
+    );
+    if (!product) {
+      throw new ProductError(
+        'PRODUCT_CONFLICT',
+        'This product was changed by someone else since you loaded it. Reload to see the latest version before saving again.',
+        409,
+      );
+    }
 
     const response = toProductDetailResponse(product as DetailRow);
 
@@ -1434,23 +1438,29 @@ export const productsService = {
     if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(existing.product, actor.id))) {
       throw new ProductError('VARIANT_UPDATE_FORBIDDEN', 'You may only update variants on a product an active branch assignment gives you authority over', 403);
     }
-    // POS-PERF-P36 — explicit conflict instead of a silent last-write-wins
-    // overwrite when two supervisors edit the same variant concurrently.
-    if (data.expected_version !== undefined && data.expected_version !== existing.version) {
+    // POS-PERF-P36 / P36R2 — explicit conflict instead of a silent
+    // last-write-wins overwrite when two supervisors edit the same variant
+    // concurrently. The compare and the write are one atomic statement (see
+    // products.repository.ts's updateVariant); a null return means the
+    // version predicate matched zero rows.
+    const updated = await productsRepository.updateVariant(
+      variantId,
+      {
+        name: data.name,
+        sizeLabel: data.size_label,
+        basePrice: data.base_price,
+        displayOrder: data.display_order,
+        isActive: data.is_active,
+      },
+      data.expected_version,
+    );
+    if (!updated) {
       throw new ProductError(
         'VARIANT_CONFLICT',
         'This variant was changed by someone else since you loaded it. Reload and try again.',
         409,
       );
     }
-
-    const updated = await productsRepository.updateVariant(variantId, {
-      name: data.name,
-      sizeLabel: data.size_label,
-      basePrice: data.base_price,
-      displayOrder: data.display_order,
-      isActive: data.is_active,
-    });
     const response = toVariantResponse({ ...updated, variantFlavors: existing.variantFlavors });
 
     await recordAuditLog({
@@ -1648,17 +1658,57 @@ export const productsService = {
    * Never auto-creates mappings or fixes anything — a NOT_READY product is
    * simply rejected with its exact blocking issues.
    */
+  /**
+   * POS-PERF-P36R2 — the readiness evaluation and the availability flip
+   * used to be two separate, unlocked steps: evaluate, then
+   * updateBranchProductAvailability. A concurrent Recipe/BOM delete (or any
+   * other readiness-affecting mutation, see productCatalogLockId's doc)
+   * landing in between could publish a product whose configuration was
+   * invalidated before the flip committed. Taking this product's advisory
+   * lock before evaluating readiness, and holding it through the
+   * availability write, serializes publish against every mutation that
+   * also takes this lock — proven with a real concurrent-Postgres race in
+   * products.publish-safety.integration.test.ts.
+   */
   async publishProduct(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
-    const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
-    const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
+    const product = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
 
-    if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
-      throw new ProductError('PRODUCT_NOT_READY', 'Product is not ready to publish at this branch', 409, {
-        blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
-      });
-    }
+      const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
+      const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
 
-    return this.updateBranchProductAvailability(productId, branchId, true, actor, ipAddress);
+      if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
+        throw new ProductError('PRODUCT_NOT_READY', 'Product is not ready to publish at this branch', 409, {
+          blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
+        });
+      }
+
+      const existing = await productsRepository.findById(productId);
+      if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+      if (existing.status === 'discontinued' || existing.status === 'archived') {
+        throw new ProductError(
+          'PRODUCT_GLOBALLY_UNAVAILABLE',
+          'Cannot enable a globally discontinued or archived product for a branch',
+          409,
+        );
+      }
+      assertSupervisorMayEnableAtBranch(existing, branchId, true, actor);
+
+      return productsRepository.upsertBranchProductAvailability(branchId, productId, true, actor.id, tx);
+    });
+
+    await recordAuditLog({
+      action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
+      entityType: 'branch_product_availability',
+      entityId: product.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId,
+      afterState: { productId, isAvailable: true },
+      ipAddress,
+    });
+
+    return toBranchAvailabilityRow(product);
   },
 
   /** Unpublish = disable BranchProductAvailability only — never deletes configuration, archives variants, or touches ProductInventory. No readiness gate needed to turn something off. */

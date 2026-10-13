@@ -6,6 +6,8 @@ import { universalInventoryRepository } from '../universal-inventory/universal-i
 import { productsRepository } from '../products/products.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
+import { prisma } from '../../lib/prisma.js';
+import { productCatalogLockId } from '../../lib/pg-lock.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -75,7 +77,7 @@ async function resolveRecipeUnitId(baseUnitId: string, requestedUnitId: string |
  * POS-PERF-P34R — restricts a supervisor to recipe/BOM mappings on a
  * product they themselves created.
  */
-async function assertParentProductWritable(productVariantId: string, actor: ActorContext): Promise<void> {
+async function assertParentProductWritable(productVariantId: string, actor: ActorContext): Promise<{ productId: string }> {
   const variant = await productsRepository.findVariantById(productVariantId);
   if (variant?.product?.status === 'archived') {
     throw new ProductComponentError(
@@ -91,6 +93,8 @@ async function assertParentProductWritable(productVariantId: string, actor: Acto
       403,
     );
   }
+  if (!variant) throw new ProductComponentError('PRODUCT_VARIANT_NOT_FOUND', 'product_variant_id does not exist', 404);
+  return { productId: variant.productId };
 }
 
 export const productComponentsService = {
@@ -147,20 +151,7 @@ export const productComponentsService = {
   async updateMapping(id: string, data: UpdateProductComponentInput, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
-    await assertParentProductWritable(before.productVariantId, actor);
-
-    // POS-PERF-P36R — Recipe/BOM mappings already carried a `version` column
-    // (bumped on every update) but nothing ever checked it, so two
-    // supervisors editing the same ingredient quantity concurrently could
-    // silently overwrite each other. Mirrors updateVariant/updateProduct's
-    // expected_version posture: omitted = no check (backward compatible).
-    if (data.expected_version !== undefined && data.expected_version !== before.version) {
-      throw new ProductComponentError(
-        'MAPPING_CONFLICT',
-        'This recipe component was changed by someone else since you loaded it. Reload to see the latest version before saving again.',
-        409,
-      );
-    }
+    const { productId } = await assertParentProductWritable(before.productVariantId, actor);
 
     const updateData: { quantityRequired?: number; recipeUnitId?: string; isActive?: boolean } = {};
     if (data.quantity_required !== undefined) updateData.quantityRequired = data.quantity_required;
@@ -169,7 +160,23 @@ export const productComponentsService = {
     }
     if (data.is_active !== undefined) updateData.isActive = data.is_active;
 
-    const component = await repo.update(id, updateData);
+    // POS-PERF-P36R / P36R2 — Recipe/BOM mappings carry a `version` column;
+    // the compare (expected_version) and the write are one atomic statement
+    // (see product-components.repository.ts's update), so two supervisors
+    // editing the same ingredient quantity concurrently can't both pass.
+    // Also takes productCatalogLockId (see pg-lock.ts) so this write can't
+    // land inside a concurrent publishProduct's readiness-to-flip window.
+    const component = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
+      return repo.update(id, updateData, data.expected_version, tx);
+    });
+    if (!component) {
+      throw new ProductComponentError(
+        'MAPPING_CONFLICT',
+        'This recipe component was changed by someone else since you loaded it. Reload to see the latest version before saving again.',
+        409,
+      );
+    }
     const response = toResponse(component);
 
     await recordAuditLog({
@@ -189,9 +196,15 @@ export const productComponentsService = {
   async deleteMapping(id: string, actor: ActorContext, ipAddress: string | null) {
     const before = await repo.findById(id);
     if (!before) throw new ProductComponentError('MAPPING_NOT_FOUND', 'Product component mapping not found', 404);
-    await assertParentProductWritable(before.productVariantId, actor);
+    const { productId } = await assertParentProductWritable(before.productVariantId, actor);
 
-    await repo.delete(id, actor.id);
+    // POS-PERF-P36R2 — same productCatalogLockId as publishProduct: a
+    // delete landing inside a concurrent publish's readiness-to-flip window
+    // could leave a published product with zero valid components.
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
+      await repo.delete(id, actor.id, tx);
+    });
 
     await recordAuditLog({
       action: 'PRODUCT_COMPONENT_DELETED',

@@ -39,3 +39,30 @@ export async function branchGuard(req: Request, res: Response, next: NextFunctio
 
   next();
 }
+
+/**
+ * POS-PERF-P36R2 — variant for the one route (PATCH /products/:productId/
+ * status) whose own doc comment says branch_id is intentionally optional:
+ * omitted, it's a global lifecycle change (archive/discontinue/restore),
+ * authorized entirely inside products.service.ts's changeProductStatus
+ * (hasActiveCatalogAuthorityForProduct); present, it's a branch-scoped
+ * availability flip that still needs the same hasBranchAccess check
+ * `branchGuard` enforces everywhere else. Plain `branchGuard` doesn't know
+ * this distinction — it 400s BRANCH_ID_REQUIRED unconditionally for every
+ * non-super_admin caller, which made every supervisor's Archive/Discontinue/
+ * Restore action fail outright (confirmed with a real browser: the Archive
+ * confirmation dialog never closed, because the PATCH itself 400'd before
+ * the service's own authority check ever ran). Skips straight to `next()`
+ * when branch_id is absent; defers to the real `branchGuard` otherwise.
+ */
+export async function branchGuardOptional(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!req.user) {
+    res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
+    return;
+  }
+  if (!extractBranchId(req)) {
+    next();
+    return;
+  }
+  await branchGuard(req, res, next);
+}

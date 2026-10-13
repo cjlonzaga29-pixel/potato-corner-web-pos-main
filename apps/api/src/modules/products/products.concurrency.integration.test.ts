@@ -89,4 +89,40 @@ describe.skipIf(!isLocalDatabase)('Product-level optimistic concurrency (real Po
     expect(updated.name).toBe('Renamed with no version check');
     expect(updated.version).toBe(before.version + 1);
   });
+
+  // POS-PERF-P36R2 — the two tests above only ever issue one write at a time
+  // (sequential "tab two saves, then tab one tries"), which never exercises
+  // the actual race window: updateProduct reads `before.version`, checks it,
+  // then calls a plain `prisma.product.update({ where: { id } })` with no
+  // version predicate in the WHERE clause. Two requests that both read the
+  // same version and race into that update can both pass the check and both
+  // write, because nothing prevents it.
+  it('two truly concurrent updateProduct calls with the same expected_version: only one succeeds, the other gets 409', async () => {
+    const before = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+
+    const results = await Promise.allSettled([
+      productsService.updateProduct(
+        productId,
+        { name: 'Concurrent A', expected_version: before.version },
+        { id: supervisorId, role: 'supervisor' },
+        null,
+      ),
+      productsService.updateProduct(
+        productId,
+        { name: 'Concurrent B', expected_version: before.version },
+        { id: supervisorId, role: 'supervisor' },
+        null,
+      ),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'PRODUCT_CONFLICT', statusCode: 409 });
+
+    const finalRow = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    expect(finalRow.version).toBe(before.version + 1);
+  });
 });

@@ -75,3 +75,21 @@ export function attendanceOpenSessionLockId(employeeId: string): bigint {
 export function inventoryApprovalRowLockId(requestId: string): bigint {
   return hashToLockId(sha256Hex(`inventory-approval-correct:${requestId}`));
 }
+
+/**
+ * Canonical advisory-lock key for one product's readiness-vs-mutation race
+ * (POS-PERF-P36R2). publishProduct evaluates readiness (recipe/BOM
+ * completeness, flavor/slot configuration) and then flips
+ * BranchProductAvailability as two separate, otherwise-unlocked database
+ * steps; a concurrent Recipe/BOM delete (or any other readiness-affecting
+ * mutation) landing between them could publish a product whose
+ * configuration was invalidated before the flip committed. Both
+ * publishProduct and every ProductComponent/flavor-slot mutation that can
+ * invalidate readiness must take this same lock, keyed on productId, before
+ * reading/writing — whichever acquires it first completes its entire
+ * read-then-write against a consistent snapshot; the other serializes
+ * behind it instead of racing it.
+ */
+export function productCatalogLockId(productId: string): bigint {
+  return hashToLockId(sha256Hex(`product-catalog:${productId}`));
+}

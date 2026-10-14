@@ -149,6 +149,17 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
     });
     branchBId = branchB.id;
 
+    // POS-PERF-P36R4's hasActiveCatalogAuthority requires full coverage of
+    // every branch a shared product is configured at — the product below
+    // sells at both A and B, so the supervisor needs an active assignment
+    // to both, not just operational reach somewhere.
+    await prisma.userBranchAssignment.createMany({
+      data: [
+        { userId: supervisorId, branchId: branchAId },
+        { userId: supervisorId, branchId: branchBId },
+      ],
+    });
+
     const product = await prisma.product.create({ data: { name: 'CR-005C Lifecycle Fries', status: 'active' } });
     productId = product.id;
     createdProductIds.push(productId);
@@ -390,6 +401,11 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
       data: { name: 'CR-005D Branch', code: `CR005D-${randomUUID().slice(0, 8)}`, address: '1 Test St', city: 'Testville' },
     });
     branchId = branch.id;
+
+    // POS-PERF-P36R4's hasActiveCatalogAuthority rejects a supervisor with
+    // zero active branch assignments outright, regardless of the product's
+    // own branch configuration.
+    await prisma.userBranchAssignment.create({ data: { userId: supervisorId, branchId } });
 
     const product = await prisma.product.create({ data: { name: 'CR-005D Slot Fries', status: 'active' } });
     productId = product.id;

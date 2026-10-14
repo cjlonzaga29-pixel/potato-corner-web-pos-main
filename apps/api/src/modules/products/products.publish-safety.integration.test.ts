@@ -53,16 +53,17 @@ describe.skipIf(!isLocalDatabase)('Product publication safety (real Postgres)', 
     await prisma.productFlavorSlot.deleteMany({ where: { id: { in: slotIds } } });
     await prisma.productComponent.deleteMany({ where: { productVariantId: { in: variantIds } } });
     await prisma.branchProductAvailability.deleteMany({ where: { productId: { in: productIds } } });
+    // Must precede productVariant.deleteMany — ProductChangeLog.productVariantId
+    // is a required FK, and the lock-race tests above exercise
+    // performSlotEditWithActiveGovernance's ACTIVE-variant path, which writes
+    // one of these rows per edit.
+    await prisma.productChangeLog.deleteMany({ where: { productVariantId: { in: variantIds } } });
     await prisma.productVariant.deleteMany({ where: { id: { in: variantIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
 
     await prisma.inventoryStock.deleteMany({ where: { branchId: { in: branchIds } } });
     await prisma.inventoryItem.deleteMany({ where: { id: itemId } });
     await prisma.unitOfMeasure.deleteMany({ where: { id: gramUnitId } });
-    // POS-PERF-P36R3's flavor-slot tests exercise performSlotEditWithActiveGovernance's
-    // ACTIVE-variant path, which writes a ProductChangeLog row (changedById:
-    // supervisorId) — must be cleared before the user row can be deleted.
-    await prisma.productChangeLog.deleteMany({ where: { changedById: supervisorId } });
     await prisma.userBranchAssignment.deleteMany({ where: { userId: supervisorId } });
     await prisma.user.deleteMany({ where: { id: supervisorId } });
     await prisma.branch.deleteMany({ where: { id: { in: branchIds } } });

@@ -562,6 +562,14 @@ export const unpublishProductSchema = z.object({
   branch_id: z.uuid(),
 });
 
+// POS-PERF-P36R4 — a supervisor with authority over only some of a shared
+// product's branches cannot edit it in place (that would change every
+// branch at once); forking gives them a branch-exclusive copy, scoped to
+// one branch they do control, that they fully own instead.
+export const forkProductToBranchSchema = z.object({
+  branch_id: z.uuid(),
+});
+
 // ---------------------------------------------------------------------------
 // Task 209.6 — Product Image Management (Admin Only). image_url is always a
 // short-lived Supabase Storage signed URL, minted per-request — never a

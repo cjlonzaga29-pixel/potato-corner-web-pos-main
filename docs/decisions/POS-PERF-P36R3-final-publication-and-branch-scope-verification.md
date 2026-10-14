@@ -93,14 +93,23 @@ Re-read `branchGuardOptional` (`apps/api/src/middleware/branch-guard.ts`),
   additionally only ever returns a value when `typeof candidate ===
   'string'`, so even if validation were bypassed, a nested value cannot be
   coerced into "absent, therefore global."
-- A *shared* (non-exclusive) product's global authority is the already-
-  approved POS-PERF-P36 branch-team model
-  (`docs/decisions/POS-PERF-P36-branch-catalog-and-builder.md` §3): any
-  active-branch intersection with the product's current selling branches
-  grants authority over the *whole* product, by design — not a defect, not
-  redesigned here (`CLAUDE.md`: architecture docs are not open for revision
-  without a CR). What **is** verified as still correctly rejected is a
-  supervisor with **zero** intersection at all.
+- **Superseded by `docs/decisions/POS-PERF-P36R4-branch-isolation-authority-
+  correction.md`**: the paragraph below described a *shared* (non-exclusive)
+  product's global authority as "any active-branch intersection with the
+  product's current selling branches grants authority over the *whole*
+  product, by design." That contradicted the actually-approved requirement
+  ("supervisor authority follows assigned branches, and editing Branch A
+  must not change Branch B") — a supervisor assigned to only one of a
+  shared product's branches could edit Product/ProductVariant/
+  ProductComponent/ProductFlavorSlot/ProductVariantOptionGroup rows that are
+  global across every branch selling it, silently changing branches they
+  had no assignment to. POS-PERF-P36R4 corrected
+  `hasActiveCatalogAuthority` to require the actor's active branches be a
+  **superset** of every branch the product is configured at (not mere
+  overlap), and added a scoped fork-to-branch path for a supervisor who
+  controls only some of them. What was and still is correctly rejected: a
+  supervisor with **zero** overlap at all — preserved below, now also true
+  of a supervisor with partial (but not full) overlap.
 
 **New test coverage** (`apps/api/src/modules/products/products.status-branch-
 guard.integration.test.ts`, extending P36R2's existing 2 tests to 7, all
@@ -110,7 +119,7 @@ booting the real Express app + Postgres):
 |---|---|
 | Assigned supervisor archives their own branch-exclusive product, no `branch_id` | `200` (P36R2, unchanged) |
 | Branch-scoped change naming a branch the supervisor lacks access to | `403` (P36R2, unchanged) |
-| Global change (no `branch_id`) on a *shared* product the supervisor has **zero** active-branch overlap with | `403` — `hasActiveCatalogAuthorityForProduct`'s intersection check correctly finds nothing to intersect; product status unchanged |
+| Global change (no `branch_id`) on a *shared* product the supervisor has **zero** active-branch overlap with | `403` — `hasActiveCatalogAuthorityForProduct` correctly finds no coverage; product status unchanged. (POS-PERF-P36R4: a supervisor with **partial** overlap is now also `403` here — see that doc.) |
 | Branch-scoped change naming a syntactically-valid but nonexistent `branch_id` (forged) | `403` — never appears in `findAllActiveBranchIds` |
 | `branch_id` submitted as a nested object | `422` — Zod validation, never reaches `branchGuardOptional` |
 | Branch-scoped change after the supervisor's assignment to that branch is revoked (`removedAt` set) | `403` |

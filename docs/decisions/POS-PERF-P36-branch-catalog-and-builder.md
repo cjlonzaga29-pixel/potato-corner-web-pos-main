@@ -85,11 +85,24 @@ hasSharedCatalogAuthority(actorId)
 
 hasActiveCatalogAuthorityForProduct(product, actorId)
   -> branch-exclusive product: actor's active branches include exclusiveBranchId
-  -> non-exclusive, published at >=1 branch (BranchProductAvailability,
-     isAvailable=true): actor's active branches intersect those selling branches
-  -> non-exclusive, never published (zero availability rows): any active
-     supervisor (a brand-new draft is not orphaned before its first publish)
+  -> non-exclusive, configured at >=1 branch (BranchProductAvailability,
+     any row, available or not): actor's active branches must be a SUPERSET
+     of every branch the product is configured at (corrected by
+     POS-PERF-P36R4 — see that doc; this originally read "intersect", which
+     let a supervisor assigned to only one branch edit shared rows that
+     affect every branch selling the product)
+  -> non-exclusive, never configured anywhere (zero availability rows): any
+     active supervisor (a brand-new draft is not orphaned before its first
+     publish)
 ```
+
+**POS-PERF-P36R4 correction**: see
+`docs/decisions/POS-PERF-P36R4-branch-isolation-authority-correction.md`.
+The "intersect" rule above was never actually consistent with "supervisor
+authority follows assigned branches, and editing Branch A must not change
+Branch B" — it was corrected to require full coverage, and a
+fork-to-branch scoped-copy path was added for a supervisor who controls
+only some of a shared product's branches.
 
 `createdBy`/`managedBy` are no longer read for the live authority decision —
 `catalog-ownership.ts`'s `effectiveCatalogManager`/`isCatalogManager` stay in

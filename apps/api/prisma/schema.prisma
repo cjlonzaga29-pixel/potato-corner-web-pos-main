@@ -732,6 +732,19 @@ model Product {
   branchExclusive   Boolean @default(false) @map("branch_exclusive")
   exclusiveBranchId String? @map("exclusive_branch_id")
 
+  // POS-PERF-P36R4 — set when this Product is a branch-scoped copy created
+  // via the fork-to-branch path (a supervisor who controls only some of a
+  // shared product's branches cannot edit it in place, since that product
+  // is global across every branch selling it; forking gives them a
+  // branch-exclusive copy they fully own instead). NULL for every
+  // originally-created product. The unique index below is this feature's
+  // idempotency guard: a retried/concurrent fork request for the same
+  // (source product, destination branch) resolves to the same row instead
+  // of creating a duplicate — NULL forkedFromProductId values never collide
+  // under Postgres unique-index semantics, so ordinary products are
+  // unaffected.
+  forkedFromProductId String? @map("forked_from_product_id")
+
   // CR-008: canonical ProductCategory FK, additive alongside the legacy free-text
   // `category` column above (left untouched — existing POS/reporting code still
   // reads it). New admin UI writes categoryId; `category` is no longer required.
@@ -761,6 +774,8 @@ model Product {
   manager            User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
   productCategory    ProductCategory?            @relation(fields: [categoryId], references: [id])
+  forkedFromProduct  Product?                    @relation("ProductForkedFrom", fields: [forkedFromProductId], references: [id])
+  forkedCopies       Product[]                   @relation("ProductForkedFrom")
   variants           ProductVariant[]
   branchAvailability BranchProductAvailability[]
   transactionItems   TransactionItem[]
@@ -772,6 +787,7 @@ model Product {
   @@index([status])
   @@index([category])
   @@index([categoryId])
+  @@unique([forkedFromProductId, exclusiveBranchId])
   @@map("products")
 }
 

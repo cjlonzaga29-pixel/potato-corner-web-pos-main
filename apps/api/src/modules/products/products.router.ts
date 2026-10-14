@@ -14,6 +14,7 @@ import {
   updateVariantOptionGroupSchema,
   publishProductSchema,
   unpublishProductSchema,
+  forkProductToBranchSchema,
   cartAvailabilityCheckSchema,
   addFlavorSlotSchema,
   updateFlavorSlotSchema,
@@ -445,6 +446,37 @@ router.post(
         req.ip ?? null,
       );
       res.status(200).json({ data: row, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P36R4 — scoped copy path: a supervisor who controls only some of
+// a shared product's branches can no longer edit it in place (see
+// catalog-authority.ts's full-coverage authority rule); this gives them a
+// branch-exclusive copy of it, scoped to one branch they DO control.
+// branchGuard enforces that branch_id is one the acting supervisor actually
+// has an active assignment to — the service layer never re-derives that.
+router.post(
+  '/:productId/fork-to-branch',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(forkProductToBranchSchema),
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { branch_id } = req.body as { branch_id: string };
+      const product = await productsService.forkProductForBranch(
+        req.params.productId as string,
+        branch_id,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(201).json({ data: product, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

@@ -43,15 +43,33 @@ export async function hasSharedCatalogAuthority(actorId: string): Promise<boolea
 }
 
 /**
+ * POS-PERF-P36R4 — corrects the prior posture ("any active-branch
+ * intersection with the product's current selling branches grants
+ * authority over the *whole* product"), which let a supervisor assigned to
+ * only one of a shared product's branches edit data that is global across
+ * every branch selling it (Product details, ProductVariant/pricing,
+ * ProductComponent recipe/BOM, ProductFlavorSlot/snack options,
+ * ProductVariantOptionGroup assignments, status/archive/restore/delete,
+ * image) — editing Branch A's share of a shared product silently changed
+ * Branch B's too, violating "supervisor authority follows assigned
+ * branches, and editing Branch A must not change Branch B."
+ *
  * Branch-scoped authority for a Product (or anything resolved through one,
  * e.g. a ProductVariant's ProductComponent/ProductOption binding):
  * - branch-exclusive: the supervisor's active assignment must include
- *   exclusiveBranchId.
- * - non-exclusive, published at >=1 branch: the supervisor's active branch
- *   set must intersect the product's current selling branches.
- * - non-exclusive, never published (sellingBranchIds empty): falls back to
- *   "any active supervisor" so a brand-new draft isn't orphaned before its
- *   first Add to POS — same posture as hasSharedCatalogAuthority.
+ *   exclusiveBranchId (unchanged — a single branch, so "any" and "all" are
+ *   the same check).
+ * - non-exclusive, configured at >=1 branch: the supervisor's active branch
+ *   set must be a SUPERSET of every branch this product is configured at —
+ *   i.e. full coverage, not mere overlap. A supervisor missing even one of
+ *   the product's branches has no authority over this shared resource at
+ *   all; see catalog-authority.ts's forkProductForBranch (products.service.ts)
+ *   for the scoped path such a supervisor uses instead — a branch-exclusive
+ *   copy they fully own, rather than editing the shared row in place.
+ * - non-exclusive, never configured at any branch (configuredBranchIds
+ *   empty): falls back to "any active supervisor" so a brand-new draft
+ *   isn't orphaned before its first Add to POS — same posture as
+ *   hasSharedCatalogAuthority.
  */
 export async function hasActiveCatalogAuthority(actorId: string, resource: CatalogBranchScope): Promise<boolean> {
   const activeBranchIds = await branchesRepository.findAllActiveBranchIds(actorId);
@@ -63,19 +81,28 @@ export async function hasActiveCatalogAuthority(actorId: string, resource: Catal
 
   if (resource.sellingBranchIds.length === 0) return true;
 
-  return resource.sellingBranchIds.some((id) => activeBranchIds.includes(id));
+  const activeSet = new Set(activeBranchIds);
+  return resource.sellingBranchIds.every((id) => activeSet.has(id));
 }
 
-/** Derives CatalogBranchScope from a Product row loaded with its branchAvailability relation (productsRepository.findById's detailInclude shape). */
+/**
+ * Derives CatalogBranchScope from a Product row loaded with its
+ * branchAvailability relation (productsRepository.findById's detailInclude
+ * shape). Deliberately includes every configured branch, not only rows
+ * with isAvailable: true — a branch where the product is temporarily
+ * unpublished is still a branch this shared resource is tied to, and a
+ * supervisor who lost access to it must not retain authority over the rest
+ * of the product just because its availability there happens to be off.
+ */
 export function branchScopeFromProduct(product: {
   branchExclusive: boolean;
   exclusiveBranchId: string | null;
-  branchAvailability: { branchId: string; isAvailable: boolean }[];
+  branchAvailability: { branchId: string }[];
 }): CatalogBranchScope {
   return {
     branchExclusive: product.branchExclusive,
     exclusiveBranchId: product.exclusiveBranchId,
-    sellingBranchIds: product.branchAvailability.filter((a) => a.isAvailable).map((a) => a.branchId),
+    sellingBranchIds: product.branchAvailability.map((a) => a.branchId),
   };
 }
 

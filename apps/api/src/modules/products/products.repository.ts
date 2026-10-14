@@ -154,6 +154,170 @@ export const productsRepository = {
     });
   },
 
+  /** POS-PERF-P36R4 — idempotency read for forkProductCascade: a fork already made for this (source product, destination branch) pair, if any. */
+  findForkCopy(sourceProductId: string, branchId: string) {
+    return prisma.product.findUnique({
+      where: { forkedFromProductId_exclusiveBranchId: { forkedFromProductId: sourceProductId, exclusiveBranchId: branchId } },
+      include: detailInclude,
+    });
+  },
+
+  /**
+   * POS-PERF-P36R4 — scoped copy/fork path: a supervisor who controls only
+   * some of a shared product's branches cannot edit its global rows
+   * (Product/ProductVariant/ProductComponent/ProductFlavorSlot/
+   * ProductVariantOptionGroup — see catalog-authority.ts) in place, since
+   * that would change every branch selling it, not just theirs. This clones
+   * the product's full configuration into a brand-new, branch-exclusive
+   * Product the acting supervisor fully owns, so they can keep configuring
+   * their own branch's version independently.
+   *
+   * Deliberately NOT copied: InventoryStock/InventoryStockMovement balances,
+   * TransactionItem/HoldOrderItem sale history, pending inventory-deduction
+   * jobs, and ProductChangeLog audit history — none of that is "catalog
+   * configuration," and copying it would fabricate history or double-count
+   * stock. The source product, its id, its variants' ids, and its own sale
+   * history are completely untouched.
+   *
+   * Idempotency: the unique index on (forkedFromProductId, exclusiveBranchId)
+   * makes a concurrent/retried fork for the same pair resolve to one row —
+   * the transaction below can race with another request also forking this
+   * exact (productId, branchId) pair, hit a P2002 unique-violation on the
+   * final create, and the caller (products.service.ts's forkProductForBranch)
+   * falls back to findForkCopy to return the winner's row rather than erroring.
+   */
+  async forkProductCascade(sourceProductId: string, branchId: string, actorId: string) {
+    const source = await prisma.product.findUnique({
+      where: { id: sourceProductId },
+      include: {
+        variants: {
+          include: {
+            variantFlavors: true,
+            productComponents: { where: { deletedAt: null } },
+            optionGroupAssignments: { include: { allowedOptions: true } },
+            flavorSlots: { include: { snackOptions: true } },
+          },
+        },
+      },
+    });
+    if (!source) return null;
+
+    return prisma.$transaction(async (tx) => {
+      const forked = await tx.product.create({
+        data: {
+          name: source.name,
+          description: source.description,
+          category: source.category,
+          categoryId: source.categoryId,
+          status: 'draft',
+          displayOrder: source.displayOrder,
+          isSeasonal: source.isSeasonal,
+          seasonalStartDate: source.seasonalStartDate,
+          seasonalEndDate: source.seasonalEndDate,
+          branchExclusive: true,
+          exclusiveBranchId: branchId,
+          forkedFromProductId: sourceProductId,
+          createdBy: actorId,
+        },
+      });
+
+      await tx.branchProductAvailability.create({
+        data: { branchId, productId: forked.id, isAvailable: false, updatedBy: actorId },
+      });
+
+      for (const variant of source.variants) {
+        const newVariant = await tx.productVariant.create({
+          data: {
+            productId: forked.id,
+            name: variant.name,
+            sizeLabel: variant.sizeLabel,
+            basePrice: variant.basePrice,
+            vatableCapAmount: variant.vatableCapAmount,
+            displayOrder: variant.displayOrder,
+            isActive: variant.isActive,
+            kcal: variant.kcal,
+            maxFlavors: variant.maxFlavors,
+            lifecycleStatus: 'ACTIVE',
+            createdById: actorId,
+          },
+        });
+
+        if (variant.variantFlavors.length > 0) {
+          await tx.productVariantFlavor.createMany({
+            data: variant.variantFlavors.map((vf) => ({
+              productVariantId: newVariant.id,
+              flavorId: vf.flavorId,
+              pricePremium: vf.pricePremium,
+              isAvailable: vf.isAvailable,
+            })),
+          });
+        }
+
+        if (variant.productComponents.length > 0) {
+          await tx.productComponent.createMany({
+            data: variant.productComponents.map((c) => ({
+              productVariantId: newVariant.id,
+              inventoryItemId: c.inventoryItemId,
+              quantityRequired: c.quantityRequired,
+              recipeUnitId: c.recipeUnitId,
+              flavorId: c.flavorId,
+              productOptionId: c.productOptionId,
+              createdBy: actorId,
+            })),
+          });
+        }
+
+        for (const group of variant.optionGroupAssignments) {
+          const newAssignment = await tx.productVariantOptionGroup.create({
+            data: {
+              productVariantId: newVariant.id,
+              optionGroupId: group.optionGroupId,
+              required: group.required,
+              sortOrder: group.sortOrder,
+              createdBy: actorId,
+            },
+          });
+          if (group.allowedOptions.length > 0) {
+            await tx.productVariantOptionGroupOption.createMany({
+              data: group.allowedOptions.map((o) => ({
+                variantOptionGroupId: newAssignment.id,
+                productOptionId: o.productOptionId,
+                sortOrder: o.sortOrder,
+              })),
+            });
+          }
+        }
+
+        for (const slot of variant.flavorSlots) {
+          const newSlot = await tx.productFlavorSlot.create({
+            data: {
+              productVariantId: newVariant.id,
+              slotIndex: slot.slotIndex,
+              label: slot.label,
+              flavorQty: slot.flavorQty,
+              unit: slot.unit,
+              required: slot.required,
+            },
+          });
+          if (slot.snackOptions.length > 0) {
+            await tx.productFlavorSlotSnackOption.createMany({
+              data: slot.snackOptions.map((so) => ({
+                flavorSlotId: newSlot.id,
+                // The snack option still points at the ORIGINAL snack
+                // ProductVariant (e.g. Fries, Loopys) — those are their own
+                // independent products with their own branch authority and
+                // are not part of what this fork is cloning.
+                snackProductVariantId: so.snackProductVariantId,
+              })),
+            });
+          }
+        }
+      }
+
+      return tx.product.findUniqueOrThrow({ where: { id: forked.id }, include: detailInclude });
+    });
+  },
+
   /**
    * POS-PERF-P36R2 — must stay a single conditional statement. The previous
    * shape (service reads `before.version`, checks it, then this method does

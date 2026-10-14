@@ -1924,6 +1924,69 @@ export const productsService = {
     });
   },
 
+  /**
+   * POS-PERF-P36R4 — scoped copy path for a supervisor who controls only
+   * some of a shared product's branches: hasActiveCatalogAuthorityForProduct
+   * now requires authority over every branch the product is configured at
+   * (catalog-authority.ts), so such a supervisor can no longer edit the
+   * shared rows in place (that would silently change branches they don't
+   * control). This creates a branch-exclusive copy, scoped to one branch
+   * they DO control, that they fully own and can edit independently —
+   * the source product and every other branch it sells at are untouched.
+   */
+  async forkProductForBranch(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
+    const source = await productsRepository.findById(productId);
+    if (!source) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    if (source.branchExclusive) {
+      throw new ProductError('PRODUCT_ALREADY_BRANCH_EXCLUSIVE', 'This product is already branch-exclusive and does not need to be forked', 409);
+    }
+
+    if (!source.branchAvailability.some((a) => a.branchId === branchId)) {
+      throw new ProductError('BRANCH_NOT_CONFIGURED_FOR_PRODUCT', 'This branch is not one this product is configured at', 422);
+    }
+
+    // Router-level branchGuard already confirmed the actor has active
+    // authority over branchId specifically (hasBranchAccess) — no further
+    // authority check is needed: forking is deliberately scoped to the ONE
+    // branch the actor controls, not the product's full branch set.
+    const existingFork = await productsRepository.findForkCopy(productId, branchId);
+    if (existingFork) {
+      return toProductDetailResponse(existingFork as DetailRow);
+    }
+
+    let forked;
+    try {
+      forked = await productsRepository.forkProductCascade(productId, branchId, actor.id);
+    } catch (error) {
+      // Concurrent fork request for the same (productId, branchId) pair won
+      // the race first — the unique index on (forkedFromProductId,
+      // exclusiveBranchId) rejected this one. Return the winner's row
+      // instead of a duplicate or an error.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const winner = await productsRepository.findForkCopy(productId, branchId);
+        if (winner) return toProductDetailResponse(winner as DetailRow);
+      }
+      throw error;
+    }
+    if (!forked) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    const response = toProductDetailResponse(forked as DetailRow);
+
+    await recordAuditLog({
+      action: 'PRODUCT_FORKED_FOR_BRANCH',
+      entityType: 'product',
+      entityId: forked.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId,
+      afterState: { forkedFromProductId: productId, branchId },
+      ipAddress,
+    });
+
+    return response;
+  },
+
   async deleteVariant(productId: string, variantId: string, actor: ActorContext, ipAddress: string | null) {
     const existing = await productsRepository.findVariantById(variantId);
     if (!existing || existing.productId !== productId) {

@@ -409,6 +409,60 @@ export function useUnpublishProduct(productId: string) {
   });
 }
 
+/**
+ * POS-PERF-P36R5 — "Create Branch Copy": a supervisor with only partial
+ * authority over a shared product cannot edit it in place (see
+ * catalog-authority.ts). This gives them a branch-exclusive copy, scoped to
+ * one branch they do control, that they fully own. Idempotent server-side
+ * (findForkCopy before create) — calling this again for the same
+ * (product, branch) pair, including after a network failure/retry, returns
+ * the same copy rather than creating a duplicate, so the caller can always
+ * just retry and navigate to whatever product id comes back.
+ */
+export function useForkProductToBranch(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (branchId: string) => {
+      const response = await apiClient<ProductDetailResponse>(`/api/products/${productId}/fork-to-branch`, {
+        method: 'POST',
+        body: JSON.stringify({ branch_id: branchId }),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to create a branch copy of this product'));
+      return response.data;
+    },
+    onSuccess: (copy) => {
+      void queryClient.invalidateQueries({ queryKey: ['product', copy.id] });
+      void queryClient.invalidateQueries({ queryKey: ['products'] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * POS-PERF-P36R5 — explicit replacement: makes the branch copy the sellable
+ * product at its branch and disables the source there, atomically, in one
+ * request. Every other branch the source sells at is untouched.
+ */
+export function useReplaceSourceWithCopy(copyProductId: string, sourceProductId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (branchId: string) => {
+      const response = await apiClient<{ copy: BranchProductAvailabilityRow; source: BranchProductAvailabilityRow }>(
+        `/api/products/${copyProductId}/replace-source`,
+        { method: 'POST', body: JSON.stringify({ branch_id: branchId }) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to replace the source product with this branch copy'));
+      return response.data;
+    },
+    onSuccess: (_data, branchId) => {
+      invalidateAfterPublishChange(queryClient, copyProductId, branchId);
+      void queryClient.invalidateQueries({ queryKey: ['product', sourceProductId] });
+      toast.success('This branch copy now replaces the source product at your branch');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
 export function useCreateVariant(productId: string) {
   const queryClient = useQueryClient();
   return useMutation({

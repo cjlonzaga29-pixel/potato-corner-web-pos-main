@@ -34,6 +34,8 @@ import { VariantFormDialog } from '@/components/admin/products/variant-form-dial
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
 import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
+import { BranchCopyDialog } from '@/components/admin/products/branch-copy-dialog';
+import { ReplaceSourceDialog } from '@/components/admin/products/replace-source-dialog';
 
 interface SupervisorProductDetailPageProps {
   params: Promise<{ productId: string }>;
@@ -48,6 +50,7 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [branchCopyOpen, setBranchCopyOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -78,6 +81,21 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
   // configuration and publishing both target that one branch directly, no
   // branch selector needed.
   const branchId = product.exclusive_branch_id;
+
+  // POS-PERF-P36R5 — "Create Branch Copy" is only offered for a shared
+  // (non-exclusive) product the actor has partial coverage over: at least
+  // one, but not every, branch it's configured at. branch_availability
+  // carries a row for every branch this product is configured at
+  // (products.repository.ts's detailInclude), not only currently-available
+  // ones, matching catalog-authority.ts's branchScopeFromProduct — a branch
+  // temporarily unpublished is still one the actor needs coverage of to
+  // edit in place.
+  const eligibleCopyBranches = product.branch_exclusive
+    ? []
+    : product.branch_availability
+        .filter((row) => activeBranchIds.includes(row.branch_id))
+        .map((row) => ({ id: row.branch_id, name: row.branch_name }));
+  const canOfferBranchCopy = !isOwner && !product.branch_exclusive && eligibleCopyBranches.length > 0;
 
   return (
     <div className="app-section app-section-gap">
@@ -119,9 +137,17 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
       </div>
 
       {!isOwner && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          You don&apos;t currently have an active branch assignment that gives you authority over this product. You can view its
-          configuration, but only a supervisor actively assigned to its branch may edit it.
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <span>
+            {canOfferBranchCopy
+              ? "This product is shared with branches outside your assignment, so you can't edit it directly. Create a copy scoped to your own branch instead."
+              : "You don't currently have an active branch assignment that gives you authority over this product. You can view its configuration, but only a supervisor actively assigned to its branch may edit it."}
+          </span>
+          {canOfferBranchCopy && (
+            <Button size="sm" variant="outline" onClick={() => setBranchCopyOpen(true)}>
+              Create Branch Copy
+            </Button>
+          )}
         </div>
       )}
 
@@ -156,6 +182,10 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
             }}
           />
         </>
+      )}
+
+      {canOfferBranchCopy && (
+        <BranchCopyDialog open={branchCopyOpen} onOpenChange={setBranchCopyOpen} product={product} eligibleBranches={eligibleCopyBranches} />
       )}
     </div>
   );
@@ -258,11 +288,15 @@ function VariantsTab({
     null,
   );
   const [deletingVariant, setDeletingVariant] = useState<ProductVariantResponse | null>(null);
+  const [replaceSourceOpen, setReplaceSourceOpen] = useState(false);
   const deleteVariant = useDeleteVariant(product.id);
   const readiness = useProductReadiness(product.id, branchId);
   const publishProduct = usePublishProduct(product.id);
   const unpublishProduct = useUnpublishProduct(product.id);
   const availabilitySectionRef = useRef<HTMLDivElement>(null);
+  // POS-PERF-P36R5 — only a branch-exclusive fork-to-branch copy can
+  // replace its source; a regular product never shows this action.
+  const isBranchCopy = Boolean(product.forked_from_product_id);
 
   const isArchived = product.status === 'archived';
   const canConfigure = isOwner && !isArchived;
@@ -308,29 +342,43 @@ function VariantsTab({
                       : 'Resolve the blocking issues below before publishing.'}
                   </p>
                 </div>
-                {isOwner &&
-                  (isPublishedAtBranch ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={unpublishProduct.isPending}
-                      onClick={() => void unpublishProduct.mutateAsync(branchId)}
-                    >
-                      {unpublishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Unpublish
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={!isReadyToPublish(readiness.data) || publishProduct.isPending || isArchived}
-                      onClick={() => void publishProduct.mutateAsync(branchId)}
-                    >
-                      {publishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Publish
-                    </Button>
-                  ))}
+                {isOwner && (
+                  <div className="flex gap-2">
+                    {isPublishedAtBranch ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={unpublishProduct.isPending}
+                        onClick={() => void unpublishProduct.mutateAsync(branchId)}
+                      >
+                        {unpublishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Unpublish
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!isReadyToPublish(readiness.data) || publishProduct.isPending || isArchived}
+                        onClick={() => void publishProduct.mutateAsync(branchId)}
+                      >
+                        {publishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Publish
+                      </Button>
+                    )}
+                    {isBranchCopy && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!isReadyToPublish(readiness.data) || isArchived}
+                        onClick={() => setReplaceSourceOpen(true)}
+                      >
+                        Replace Source Product
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
               <ReadinessChecklist
                 data={readiness.data}
@@ -388,6 +436,10 @@ function VariantsTab({
           variantId={editFlavor.variant.id}
           flavor={editFlavor.flavor}
         />
+      )}
+
+      {isBranchCopy && branchId && (
+        <ReplaceSourceDialog open={replaceSourceOpen} onOpenChange={setReplaceSourceOpen} copy={product} branchId={branchId} />
       )}
 
       {deletingVariant && canConfigure && (

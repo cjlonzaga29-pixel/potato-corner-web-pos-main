@@ -15,6 +15,7 @@ import {
   publishProductSchema,
   unpublishProductSchema,
   forkProductToBranchSchema,
+  replaceSourceWithCopySchema,
   cartAvailabilityCheckSchema,
   addFlavorSlotSchema,
   updateFlavorSlotSchema,
@@ -326,13 +327,17 @@ router.get(
   },
 );
 
+// POS-PERF-P36R5 — branchGuard removed: it only ever extracts a single
+// top-level branch_id, but this route's body is `{ updates: [...] }` (each
+// item carrying its own branch_id) — branchGuard would 400 before this ever
+// ran. productsService.bulkUpdateBranchProductAvailability checks every
+// branch_id in the array against the actor's live branch access itself.
 router.patch(
   '/:productId/branch-availability/bulk',
   authenticate,
   supervisorOnly,
   requireActiveSupervisor,
   requirePasswordChange,
-  branchGuard,
   validate(bulkBranchProductAvailabilitySchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -477,6 +482,36 @@ router.post(
         req.ip ?? null,
       );
       res.status(201).json({ data: product, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P36R5 — explicit replacement: the supervisor chooses to make
+// their edited branch copy the sellable product at its branch, replacing
+// the source there only. :productId is the COPY's id; branch_id must be the
+// copy's own exclusiveBranchId (service-checked) and branchGuard confirms
+// the actor actually controls it right now — same posture as fork-to-branch.
+router.post(
+  '/:productId/replace-source',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(replaceSourceWithCopySchema),
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { branch_id } = req.body as { branch_id: string };
+      const result = await productsService.replaceSharedProductAtBranch(
+        req.params.productId as string,
+        branch_id,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

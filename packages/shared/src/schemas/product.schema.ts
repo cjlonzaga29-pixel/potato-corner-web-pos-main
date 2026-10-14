@@ -294,6 +294,11 @@ export const productResponseSchema = z.object({
   branch_exclusive: z.boolean(),
   exclusive_branch_id: z.uuid().nullable(),
   exclusive_branch_name: z.string().nullable(),
+  // POS-PERF-P36R5 — set only when this product is a fork-to-branch copy;
+  // points at the shared source product it was copied from. Optional (not
+  // just nullable) so pre-existing test fixtures built against this type
+  // before the field existed keep typechecking without updating every one.
+  forked_from_product_id: z.uuid().nullable().optional(),
   created_by: z.uuid().nullable(),
   created_at: z.iso.datetime(),
   updated_at: z.iso.datetime(),
@@ -567,6 +572,15 @@ export const unpublishProductSchema = z.object({
 // branch at once); forking gives them a branch-exclusive copy, scoped to
 // one branch they do control, that they fully own instead.
 export const forkProductToBranchSchema = z.object({
+  branch_id: z.uuid(),
+});
+
+// POS-PERF-P36R5 — explicit replacement: branch_id must be the branch copy's
+// own exclusiveBranchId (checked by the service against the copy row, not
+// trusted from the body) and is also what branchGuard authorizes the actor
+// against, so a revoked/cross-branch supervisor is denied the same way
+// fork-to-branch is.
+export const replaceSourceWithCopySchema = z.object({
   branch_id: z.uuid(),
 });
 

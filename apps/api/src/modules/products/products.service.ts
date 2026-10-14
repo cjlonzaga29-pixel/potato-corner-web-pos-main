@@ -258,6 +258,10 @@ function toProductBase(product: {
   // POS-PERF-P36R — optional so pre-existing partial-shape call sites (tests,
   // cascade audit snapshots) don't need updating; a real row always has one.
   version?: number;
+  // POS-PERF-P36R5 — optional for the same reason as version: not every
+  // partial-shape call site re-selects it, but every real row has the column
+  // (NULL unless this product is a fork-to-branch copy).
+  forkedFromProductId?: string | null;
 }) {
   return {
     id: product.id,
@@ -276,6 +280,7 @@ function toProductBase(product: {
     branch_exclusive: product.branchExclusive,
     exclusive_branch_id: product.exclusiveBranchId,
     exclusive_branch_name: product.exclusiveBranch?.name ?? null,
+    forked_from_product_id: product.forkedFromProductId ?? null,
     created_by: product.createdBy,
     created_at: product.createdAt.toISOString(),
     updated_at: product.updatedAt.toISOString(),
@@ -1553,6 +1558,20 @@ export const productsService = {
     return toBranchAvailabilityRow(row);
   },
 
+  /**
+   * POS-PERF-P36R5 — the router's branchGuard only ever extracts a single
+   * top-level branch_id (lib/request.ts's extractBranchId), but this
+   * route's body is `{ updates: [{ branch_id, is_available }, ...] }` — no
+   * top-level branch_id exists for it to find, so branchGuard 400'd
+   * BRANCH_ID_REQUIRED for every supervisor caller (its only allowed role —
+   * POS-PERF-P35 removed super_admin's catalog write access) before this
+   * method ever ran. The route no longer runs branchGuard; authorization for
+   * every branch_id in the array happens here instead, checked against the
+   * actor's live branch access (same hasBranchAccess query branchGuard
+   * itself uses) before any row is touched — one denied branch_id fails the
+   * whole batch, not just its own row, since "every active branch admin
+   * flips availability for" is the gate, not "intersects any branch".
+   */
   async bulkUpdateBranchProductAvailability(
     productId: string,
     updates: { branch_id: string; is_available: boolean }[],
@@ -1561,6 +1580,15 @@ export const productsService = {
   ) {
     const product = await productsRepository.findById(productId);
     if (!product) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      const actorPayload = { user_id: actor.id, role: actor.role, branch_ids: [] } as unknown as JwtPayload;
+      for (const update of updates) {
+        if (!(await hasBranchAccess(actorPayload, update.branch_id))) {
+          throw new ProductError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+        }
+      }
+    }
 
     const globallyLocked = product.status === 'discontinued' || product.status === 'archived';
     if (globallyLocked && updates.some((u) => u.is_available)) {
@@ -1985,6 +2013,95 @@ export const productsService = {
     });
 
     return response;
+  },
+
+  /**
+   * POS-PERF-P36R5 — explicit replacement. A branch copy made by
+   * forkProductForBranch starts draft/unavailable (createWithCascade's
+   * default never runs for a fork — forkProductCascade inserts
+   * BranchProductAvailability with isAvailable: false explicitly) so its
+   * mere existence never hides the source or adds a second sellable entry.
+   * This is the one action that flips that: the supervisor explicitly
+   * chooses to make their edited copy the sellable product at their branch,
+   * replacing the source there (and only there — every other branch the
+   * source sells at is untouched).
+   *
+   * Validates the copy's own readiness at its branch first (same gate
+   * publishProduct uses) — a not-ready copy is rejected with its blocking
+   * issues and NEITHER row is touched. The two availability flips (copy on,
+   * source off) happen inside one transaction holding both products'
+   * productCatalogLockId (locked in a fixed sorted order to avoid a
+   * deadlock against a concurrent replace/publish touching the same pair in
+   * the opposite order) — a crash or thrown error between them rolls back
+   * atomically, so cancellation/failure can never leave both or neither
+   * available. Existing carts referencing the source are safe with no new
+   * code: transactions.service.ts's checkout path already re-evaluates
+   * sellable/readiness per cart line at checkout time (not from whatever the
+   * cart was built against), so a stale cart line against the now-disabled
+   * source fails checkout with PRODUCT_UNAVAILABLE instead of silently
+   * selling against disabled availability. Historical sales/pending
+   * deductions keep referencing the source product's original id/variant
+   * ids untouched — this only ever writes BranchProductAvailability.
+   */
+  async replaceSharedProductAtBranch(copyProductId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
+    const copy = await productsRepository.findById(copyProductId);
+    if (!copy) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+
+    if (!copy.branchExclusive || !copy.exclusiveBranchId || !copy.forkedFromProductId) {
+      throw new ProductError(
+        'PRODUCT_NOT_A_BRANCH_COPY',
+        'Only a branch copy created via fork-to-branch can replace its source',
+        422,
+      );
+    }
+    // branchGuard (router) already confirmed the actor has active authority
+    // over branch_id; this confirms branch_id is actually the copy's own
+    // branch, not a different branch the actor also happens to control —
+    // the copy can only ever replace the source at the one branch it was
+    // forked for.
+    if (copy.exclusiveBranchId !== branchId) {
+      throw new ProductError('BRANCH_MISMATCH', 'This branch copy was not forked for the given branch_id', 422);
+    }
+
+    const source = await productsRepository.findById(copy.forkedFromProductId);
+    if (!source) throw new ProductError('PRODUCT_NOT_FOUND', 'Source product not found', 404);
+
+    const firstId = source.id < copy.id ? source.id : copy.id;
+    const secondId = source.id < copy.id ? copy.id : source.id;
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(firstId)})`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(secondId)})`;
+
+      const readiness = await productReadinessService.evaluateProductReadiness({ productId: copy.id, branchId });
+      const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
+      if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
+        throw new ProductError('PRODUCT_NOT_READY', 'The branch copy is not ready to replace the source product at this branch', 409, {
+          blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
+        });
+      }
+
+      const copyAvailability = await productsRepository.upsertBranchProductAvailability(branchId, copy.id, true, actor.id, tx);
+      const sourceAvailability = await productsRepository.upsertBranchProductAvailability(branchId, source.id, false, actor.id, tx);
+      return { copyAvailability, sourceAvailability };
+    });
+
+    await recordAuditLog({
+      action: 'PRODUCT_REPLACED_AT_BRANCH',
+      entityType: 'product',
+      entityId: copy.id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId,
+      beforeState: { sourceProductId: source.id, sourceAvailableAtBranch: true, copyAvailableAtBranch: false },
+      afterState: { sourceProductId: source.id, sourceAvailableAtBranch: false, copyProductId: copy.id, copyAvailableAtBranch: true },
+      ipAddress,
+    });
+
+    return {
+      copy: toBranchAvailabilityRow(result.copyAvailability),
+      source: toBranchAvailabilityRow(result.sourceAvailability),
+    };
   },
 
   async deleteVariant(productId: string, variantId: string, actor: ActorContext, ipAddress: string | null) {

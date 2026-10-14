@@ -63,6 +63,12 @@ describe.skipIf(!canRunIntegrationTests)('Simple Product Builder recipe — end-
     return new Map(rows.map((r) => [r.inventoryItemId, r.quantityOnHand.toNumber()]));
   }
 
+  function stockOf(stock: Map<string, number>, itemId: string): number {
+    const value = stock.get(itemId);
+    if (value === undefined) throw new Error(`no inventory_stock row for item ${itemId}`);
+    return value;
+  }
+
   beforeAll(async () => {
     const user = await prisma.user.create({
       data: {
@@ -199,10 +205,10 @@ describe.skipIf(!canRunIntegrationTests)('Simple Product Builder recipe — end-
     await inventoryDeductionService.runCycle(10);
 
     const after = await allStockOf(branchId, [friesId, cupId, tissueId, flavorXPowderId, flavorYPowderId]);
-    expect(before.get(friesId)! - after.get(friesId)!).toBe(450);
-    expect(before.get(cupId)! - after.get(cupId)!).toBe(3);
-    expect(before.get(tissueId)! - after.get(tissueId)!).toBe(6);
-    expect(before.get(flavorXPowderId)! - after.get(flavorXPowderId)!).toBe(15);
+    expect(stockOf(before, friesId) - stockOf(after, friesId)).toBe(450);
+    expect(stockOf(before, cupId) - stockOf(after, cupId)).toBe(3);
+    expect(stockOf(before, tissueId) - stockOf(after, tissueId)).toBe(6);
+    expect(stockOf(before, flavorXPowderId) - stockOf(after, flavorXPowderId)).toBe(15);
     expect(after.get(flavorYPowderId)).toBe(before.get(flavorYPowderId)); // untouched
 
     const movements = await prisma.inventoryStockMovement.findMany({ where: { referenceId: result.id, movementType: 'SALE' } });
@@ -241,7 +247,7 @@ describe.skipIf(!canRunIntegrationTests)('Simple Product Builder recipe — end-
     await inventoryDeductionService.runCycle(10);
 
     const after = await allStockOf(branchId, [cupId]);
-    expect(before.get(cupId)! - after.get(cupId)!).toBe(5); // 3 + 2, summed correctly across both lines
+    expect(stockOf(before, cupId) - stockOf(after, cupId)).toBe(5); // 3 + 2, summed correctly across both lines
   });
 
   it('a recipe authored in kg (0.15kg) resolves through UnitConversion to the same 150g deduction as the gram-authored recipe', async () => {
@@ -263,7 +269,7 @@ describe.skipIf(!canRunIntegrationTests)('Simple Product Builder recipe — end-
     await inventoryDeductionService.runCycle(10);
 
     const after = await allStockOf(branchId, [friesId]);
-    expect(before.get(friesId)! - after.get(friesId)!).toBe(150);
+    expect(stockOf(before, friesId) - stockOf(after, friesId)).toBe(150);
   });
 
   it('insufficient stock on just one ingredient (Cup) rejects the whole sale — no Transaction and no movement row for ANY ingredient', async () => {

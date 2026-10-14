@@ -469,10 +469,39 @@ export const productsRepository = {
     });
   },
 
-  /** Sets branch_product_availability back to available (at active branches only) — used when an archived product is restored to active, mirroring createWithCascade's default cascade. */
-  cascadeBranchAvailabilityOn(productId: string, updatedBy: string) {
+  /**
+   * Sets branch_product_availability back to available (at active branches
+   * only) — used when an archived product is restored to active, mirroring
+   * createWithCascade's default cascade.
+   *
+   * POS-PERF-P36R6 — excludes any branch where a fork-to-branch copy has
+   * already replaced this product (replaceSharedProductAtBranch flipped the
+   * copy on and the source off there). Without this, restoring the source
+   * would silently put both the source and its replacement sellable at that
+   * branch at once — the exact "restore re-publishes everywhere" conflict
+   * flagged but left unfixed in docs/decisions/POS-PERF-P36R5-branch-copy-
+   * ui-and-replacement.md §3. Every other branch this product sells at
+   * (never replaced) still restores exactly as before.
+   */
+  async cascadeBranchAvailabilityOn(productId: string, updatedBy: string) {
+    const replacingForks = await prisma.product.findMany({
+      where: {
+        forkedFromProductId: productId,
+        branchExclusive: true,
+        exclusiveBranchId: { not: null },
+        branchAvailability: { some: { isAvailable: true } },
+      },
+      select: { exclusiveBranchId: true },
+    });
+    const replacedBranchIds = replacingForks.map((p) => p.exclusiveBranchId as string);
+
     return prisma.branchProductAvailability.updateMany({
-      where: { productId, isAvailable: false, branch: { status: 'active' } },
+      where: {
+        productId,
+        isAvailable: false,
+        branch: { status: 'active' },
+        ...(replacedBranchIds.length > 0 ? { branchId: { notIn: replacedBranchIds } } : {}),
+      },
       data: { isAvailable: true, updatedBy },
     });
   },

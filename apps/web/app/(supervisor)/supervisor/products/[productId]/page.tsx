@@ -70,13 +70,24 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
   // mirrors that check client-side using the JWT's branchIds snapshot —
   // advisory only, driving the read-only banner and disabling actions up
   // front; the server re-validates live on every write regardless.
+  //
+  // POS-PERF-P36R6 — must match hasActiveCatalogAuthority exactly: EVERY
+  // branch this shared product is configured at (branchScopeFromProduct
+  // deliberately includes a branch even while temporarily unpublished —
+  // row.is_available filtered OUT here before would have under-counted the
+  // required set), and the actor must cover ALL of them (.every, not
+  // .some) — partial coverage is exactly the case "Create Branch Copy"
+  // exists for, not in-place edit authority. The previous .some()-over-
+  // available-only check showed full Edit/Change Status/Archive controls
+  // (and silently-failing writes) to a supervisor who only partially
+  // covered a shared product, instead of the read-only banner.
   const activeBranchIds = user?.branchIds ?? [];
-  const sellingBranchIds = product.branch_availability.filter((row) => row.is_available).map((row) => row.branch_id);
+  const configuredBranchIds = product.branch_availability.map((row) => row.branch_id);
   const isOwner =
     Boolean(user) &&
     (product.branch_exclusive
       ? Boolean(product.exclusive_branch_id) && activeBranchIds.includes(product.exclusive_branch_id as string)
-      : sellingBranchIds.length === 0 || sellingBranchIds.some((id) => activeBranchIds.includes(id)));
+      : configuredBranchIds.length === 0 || configuredBranchIds.every((id) => activeBranchIds.includes(id)));
   // Supervisor-created products are always branch-exclusive (POS-PERF-P34R) —
   // configuration and publishing both target that one branch directly, no
   // branch selector needed.

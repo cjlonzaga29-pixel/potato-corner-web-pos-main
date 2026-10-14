@@ -19,6 +19,7 @@ describe.skipIf(!isLocalDatabase)('Product publication safety (real Postgres)', 
   let supervisorId: string;
   let gramUnitId: string;
   let itemId: string;
+  const branchIds: string[] = [];
 
   beforeAll(async () => {
     const suffix = randomUUID().slice(0, 8);
@@ -33,6 +34,29 @@ describe.skipIf(!isLocalDatabase)('Product publication safety (real Postgres)', 
   });
 
   afterAll(async () => {
+    // Every Product this file creates (both branch-exclusive and the Mix &
+    // Max snack products) is createdBy: supervisorId — scoping cleanup by
+    // that one field reaches everything makeProductWithVariant and
+    // makeMixMaxReadyProduct created, without tracking each product/variant
+    // id individually.
+    const productIds = (await prisma.product.findMany({ where: { createdBy: supervisorId }, select: { id: true } })).map((p) => p.id);
+    const variantIds = (
+      await prisma.productVariant.findMany({ where: { productId: { in: productIds } }, select: { id: true } })
+    ).map((v) => v.id);
+    const slotIds = (
+      await prisma.productFlavorSlot.findMany({ where: { productVariantId: { in: variantIds } }, select: { id: true } })
+    ).map((s) => s.id);
+
+    await prisma.productFlavorSlotSnackOption.deleteMany({
+      where: { OR: [{ flavorSlotId: { in: slotIds } }, { snackProductVariantId: { in: variantIds } }] },
+    });
+    await prisma.productFlavorSlot.deleteMany({ where: { id: { in: slotIds } } });
+    await prisma.productComponent.deleteMany({ where: { productVariantId: { in: variantIds } } });
+    await prisma.branchProductAvailability.deleteMany({ where: { productId: { in: productIds } } });
+    await prisma.productVariant.deleteMany({ where: { id: { in: variantIds } } });
+    await prisma.product.deleteMany({ where: { id: { in: productIds } } });
+
+    await prisma.inventoryStock.deleteMany({ where: { branchId: { in: branchIds } } });
     await prisma.inventoryItem.deleteMany({ where: { id: itemId } });
     await prisma.unitOfMeasure.deleteMany({ where: { id: gramUnitId } });
     // POS-PERF-P36R3's flavor-slot tests exercise performSlotEditWithActiveGovernance's
@@ -41,12 +65,14 @@ describe.skipIf(!isLocalDatabase)('Product publication safety (real Postgres)', 
     await prisma.productChangeLog.deleteMany({ where: { changedById: supervisorId } });
     await prisma.userBranchAssignment.deleteMany({ where: { userId: supervisorId } });
     await prisma.user.deleteMany({ where: { id: supervisorId } });
+    await prisma.branch.deleteMany({ where: { id: { in: branchIds } } });
   });
 
   async function makeBranch(suffix: string) {
     const branch = await prisma.branch.create({
       data: { name: `P36R2 Pub Branch ${suffix}`, code: `P36R2P-${suffix}`, address: 'Test', city: 'Test', status: 'active' },
     });
+    branchIds.push(branch.id);
     await prisma.userBranchAssignment.create({ data: { userId: supervisorId, branchId: branch.id } });
     return branch.id;
   }

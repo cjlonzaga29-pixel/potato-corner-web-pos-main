@@ -1596,7 +1596,7 @@ describe('productsService.addFlavorSlot', () => {
 
     await productsService.addFlavorSlot('variant-1', { label: 'Flavor A', flavorQty: 10, unit: 'grams' }, undefined, SUPER_ADMIN, null);
 
-    expect(productsRepository.insertFlavorSlot).toHaveBeenCalledWith(expect.objectContaining({ slotIndex: 0 }), prisma);
+    expect(productsRepository.insertFlavorSlot).toHaveBeenCalledWith(expect.objectContaining({ slotIndex: 0 }), txMock);
   });
 
   it('auto-assigns slotIndex N when N slots already exist', async () => {
@@ -1606,7 +1606,7 @@ describe('productsService.addFlavorSlot', () => {
 
     await productsService.addFlavorSlot('variant-1', { label: 'Flavor C', flavorQty: 10, unit: 'grams' }, undefined, SUPER_ADMIN, null);
 
-    expect(productsRepository.insertFlavorSlot).toHaveBeenCalledWith(expect.objectContaining({ slotIndex: 2 }), prisma);
+    expect(productsRepository.insertFlavorSlot).toHaveBeenCalledWith(expect.objectContaining({ slotIndex: 2 }), txMock);
   });
 
   it('rejects when maxFlavors is 0', async () => {
@@ -1691,8 +1691,8 @@ describe('productsService.removeFlavorSlot', () => {
 
     await productsService.removeFlavorSlot('slot-2', undefined, SUPERVISOR, null);
 
-    expect(productsRepository.deleteFlavorSlot).toHaveBeenCalledWith('slot-2', prisma);
-    expect(productsRepository.shiftFlavorSlotIndicesDown).toHaveBeenCalledWith('variant-1', 1, prisma);
+    expect(productsRepository.deleteFlavorSlot).toHaveBeenCalledWith('slot-2', txMock);
+    expect(productsRepository.shiftFlavorSlotIndicesDown).toHaveBeenCalledWith('variant-1', 1, txMock);
     expect(productsRepository.updateVariantLifecycle).not.toHaveBeenCalled();
   });
 
@@ -1737,7 +1737,7 @@ describe('productsService.reorderFlavorSlots', () => {
 
     const result = await productsService.reorderFlavorSlots('variant-1', { slotIds: ['s2', 's0', 's1'] }, undefined, SUPERVISOR, null);
 
-    expect(productsRepository.rewriteFlavorSlotOrder).toHaveBeenCalledWith('variant-1', ['s2', 's0', 's1'], prisma);
+    expect(productsRepository.rewriteFlavorSlotOrder).toHaveBeenCalledWith('variant-1', ['s2', 's0', 's1'], txMock);
     expect((result as { id: string }[]).map((s) => s.id)).toEqual(['s2', 's0', 's1']);
   });
 
@@ -1756,7 +1756,7 @@ describe('productsService.reorderFlavorSlots', () => {
 
     await productsService.reorderFlavorSlots('variant-1', { slotIds: ['s2', 's0', 's1'] }, undefined, SUPERVISOR, null);
 
-    expect(productsRepository.rewriteFlavorSlotOrder).toHaveBeenCalledWith('variant-1', ['s2', 's0', 's1'], prisma);
+    expect(productsRepository.rewriteFlavorSlotOrder).toHaveBeenCalledWith('variant-1', ['s2', 's0', 's1'], txMock);
   });
 
   it('length mismatch is rejected', async () => {

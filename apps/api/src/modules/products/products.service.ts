@@ -528,6 +528,13 @@ async function performSlotEditWithActiveGovernance<T>(
     }
 
     result = await prisma.$transaction(async (tx) => {
+      // POS-PERF-P36R3 — same productCatalogLockId as publishProduct/
+      // product-components: a concurrent REMOVE_SLOT/REMOVE_SNACK_OPTION
+      // could invalidate a required slot's readiness in the gap between
+      // publishProduct's readiness read and its availability write. Taking
+      // the lock before reading slotsBefore serializes this mutation against
+      // a concurrent publish on the same product.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(variant.productId)})`;
       const slotsBefore = await productsRepository.listVariantFlavorSlots(variantId, tx);
       const mutationResult = await mutation(tx, variant);
       const slotsAfter = await productsRepository.listVariantFlavorSlots(variantId, tx);
@@ -578,7 +585,17 @@ async function performSlotEditWithActiveGovernance<T>(
         403,
       );
     }
-    result = await mutation(prisma, variant);
+    // POS-PERF-P36R3 — DRAFT/PENDING_APPROVAL slot edits previously ran
+    // unlocked (and outside any transaction) against `prisma` directly.
+    // Wrapped in a transaction holding productCatalogLockId so this path
+    // gets the same publish-vs-mutation serialization as the ACTIVE branch
+    // above and product-components' update/delete — a concurrent
+    // REMOVE_SNACK_OPTION on a draft variant can no longer land between
+    // publishProduct's readiness read and its availability write.
+    result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(variant.productId)})`;
+      return mutation(tx, variant);
+    });
   }
 
   notifySuperAdmin(SOCKET_EVENTS.VARIANT_FLAVOR_SLOTS_CHANGED, { variant_id: variantId, operation });

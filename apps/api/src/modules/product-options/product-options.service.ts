@@ -1,4 +1,5 @@
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
+import { Prisma } from '@prisma/client';
 import { productOptionsRepository as repo } from './product-options.repository.js';
 import {
   ProductOptionError,
@@ -559,13 +560,32 @@ export const productOptionsService = {
     const allowedOptionIds = data.allowed_option_ids ?? [];
     await assertOptionIdsBelongToGroup(data.option_group_id, allowedOptionIds);
 
-    const assignment = await repo.assignOptionGroup(variantId, {
-      optionGroupId: data.option_group_id,
-      required: data.required,
-      sortOrder: data.sort_order,
-      allowedOptionIds,
-      createdBy: actor.id,
-    });
+    // POS-PERF-P36R3 — findVariantOptionGroupAssignment above is a
+    // check-then-insert: two concurrent assigns of the same group to the
+    // same variant can both pass that check before either has written its
+    // row. The `@@unique([productVariantId, optionGroupId])` constraint
+    // (schema.prisma) already stops the loser's insert from landing, so the
+    // data is never duplicated — but the loser's raw PrismaClientKnownRequestError
+    // (P2002) isn't a ProductOptionError, so it fell through to app.ts's
+    // generic 500 "Something went wrong" instead of this same route's own
+    // already-defined, actionable 409 for the identical case. Translating
+    // it here reuses the constraint as the source of truth; no version
+    // field or lock was needed.
+    let assignment;
+    try {
+      assignment = await repo.assignOptionGroup(variantId, {
+        optionGroupId: data.option_group_id,
+        required: data.required,
+        sortOrder: data.sort_order,
+        allowedOptionIds,
+        createdBy: actor.id,
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ProductOptionError('VARIANT_OPTION_GROUP_ALREADY_ASSIGNED', 'This option group is already assigned to this variant', 409);
+      }
+      throw error;
+    }
     const response = toVariantOptionGroupResponse(assignment);
 
     await recordAuditLog({
@@ -604,11 +624,29 @@ export const productOptionsService = {
       await assertOptionIdsBelongToGroup(before.optionGroupId, data.allowed_option_ids);
     }
 
-    const assignment = await repo.updateVariantOptionGroup(assignmentId, {
-      required: data.required,
-      sortOrder: data.sort_order,
-      allowedOptionIds: data.allowed_option_ids,
-    });
+    // POS-PERF-P36R3 — the `before` check above only proves the row existed
+    // at read time; a concurrent unassignOptionGroupFromVariant can still
+    // delete it before this write runs, which previously surfaced as a raw
+    // PrismaClientKnownRequestError (P2025, "record not found") reaching
+    // app.ts's generic 500 instead of this same route's own already-defined
+    // 404 for "this assignment is gone." No version field was added — the
+    // row either still exists (update proceeds normally) or it doesn't
+    // (translated to the existing actionable error), which is the correct
+    // outcome either way since unassign has no precondition of its own to
+    // violate.
+    let assignment;
+    try {
+      assignment = await repo.updateVariantOptionGroup(assignmentId, {
+        required: data.required,
+        sortOrder: data.sort_order,
+        allowedOptionIds: data.allowed_option_ids,
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        throw new ProductOptionError('VARIANT_OPTION_GROUP_NOT_FOUND', 'This option group is not assigned to this variant', 404);
+      }
+      throw error;
+    }
     const response = toVariantOptionGroupResponse(assignment);
 
     await recordAuditLog({
@@ -637,7 +675,19 @@ export const productOptionsService = {
       throw new ProductOptionError('VARIANT_OPTION_GROUP_NOT_FOUND', 'This option group is not assigned to this variant', 404);
     }
 
-    await repo.deleteVariantOptionGroup(assignmentId);
+    // POS-PERF-P36R3 — same `before`-check-then-write gap as update above:
+    // a concurrent unassign of the same assignment (double-click, retried
+    // request) can delete the row between this call's own `before` read and
+    // its delete. Translated to the same actionable 404 instead of a raw
+    // P2025 500.
+    try {
+      await repo.deleteVariantOptionGroup(assignmentId);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        throw new ProductOptionError('VARIANT_OPTION_GROUP_NOT_FOUND', 'This option group is not assigned to this variant', 404);
+      }
+      throw error;
+    }
 
     await recordAuditLog({
       action: 'VARIANT_OPTION_GROUP_UNASSIGNED',

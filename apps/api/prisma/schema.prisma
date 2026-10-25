@@ -745,6 +745,14 @@ model Product {
   // unaffected.
   forkedFromProductId String? @map("forked_from_product_id")
 
+  // POS-PERF-P37 — true only for a non-exclusive product a supervisor created
+  // from a multi-branch "Available at branches" selection. Its
+  // branch_product_availability rows are exactly that selection, and a
+  // supervisor may never enable it at a branch outside them (the multi-branch
+  // counterpart of branchExclusive's single-branch guard). Distinguishes these
+  // from pre-P35 legacy shared products, which keep their existing behavior.
+  branchSelectionScoped Boolean @default(false) @map("branch_selection_scoped")
+
   // CR-008: canonical ProductCategory FK, additive alongside the legacy free-text
   // `category` column above (left untouched — existing POS/reporting code still
   // reads it). New admin UI writes categoryId; `category` is no longer required.

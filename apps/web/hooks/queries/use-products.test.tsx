@@ -18,6 +18,8 @@ const {
   useUpdateVariantFlavor,
   useProductReadiness,
   usePublishProduct,
+  usePublishProductToBranches,
+  useProductReadinessForBranches,
   useUnpublishProduct,
 } = await import('./use-products.js');
 
@@ -192,5 +194,53 @@ describe('useLinkVariantFlavor / useUpdateVariantFlavor', () => {
     await result.current.mutateAsync({ isAvailable: false } as never);
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog'] });
+  });
+});
+
+describe('POS-PERF-P37 — multi-branch Add to POS', () => {
+  it('posts the whole branch selection once and invalidates every selected branch catalog, no others', async () => {
+    const queryClient = newClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({ data: { product_id: 'product-1', branches: [] }, error: null, meta: null });
+
+    const { result } = renderHook(() => usePublishProductToBranches('product-1'), { wrapper: clientWrapper(queryClient) });
+    await result.current.mutateAsync(['branch-a', 'branch-b']);
+
+    expect(apiClient).toHaveBeenCalledTimes(1);
+    expect(apiClient).toHaveBeenCalledWith('/api/products/product-1/publish-branches', {
+      method: 'POST',
+      body: JSON.stringify({ branch_ids: ['branch-a', 'branch-b'] }),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-a'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-b'] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-c'] });
+  });
+
+  it('surfaces the server error and refetches readiness when publication is rejected', async () => {
+    const queryClient = newClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValue({
+      data: null,
+      error: { code: 'PRODUCT_NOT_READY', message: 'Product is not ready to publish at Branch B. Nothing was published.' },
+      meta: null,
+    });
+
+    const { result } = renderHook(() => usePublishProductToBranches('product-1'), { wrapper: clientWrapper(queryClient) });
+    await expect(result.current.mutateAsync(['branch-a', 'branch-b'])).rejects.toThrow(/Branch B/);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product', 'product-1', 'readiness'] });
+  });
+
+  it('loads readiness once per selected branch under the single-branch cache keys', async () => {
+    const queryClient = newClient();
+    vi.mocked(apiClient).mockImplementation(async (path: string) => ({ data: { scope: 'branch', path }, error: null, meta: null }) as never);
+
+    const { result } = renderHook(() => useProductReadinessForBranches('product-1', ['branch-a', 'branch-b']), {
+      wrapper: clientWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.every((q) => q.isSuccess)).toBe(true));
+    expect(apiClient).toHaveBeenCalledWith('/api/products/product-1/readiness?branch_id=branch-a');
+    expect(apiClient).toHaveBeenCalledWith('/api/products/product-1/readiness?branch_id=branch-b');
+    expect(queryClient.getQueryData(['product', 'product-1', 'readiness', 'branch-b'])).toBeTruthy();
   });
 });

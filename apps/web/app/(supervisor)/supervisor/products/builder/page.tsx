@@ -7,7 +7,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { ArrowLeft, Check, Loader2, Plus, Trash2 } from 'lucide-react';
-import type { ProductVariantResponse } from '@potato-corner/shared';
+import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
@@ -15,6 +15,7 @@ import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -34,8 +35,8 @@ import {
   useCreateProduct,
   useUploadProductImage,
   useDeleteVariant,
-  useProductReadiness,
-  usePublishProduct,
+  useProductReadinessForBranches,
+  usePublishProductToBranches,
   isReadyToPublish,
 } from '@/hooks/queries/use-products';
 import {
@@ -201,9 +202,34 @@ const detailsFormSchema = z.object({
   name: z.string().min(2, 'Minimum 2 characters').max(100),
   description: z.string().max(500).optional(),
   category_id: z.string().optional(),
-  branch_id: z.string().min(1, 'Select a branch'),
+  branch_ids: z.array(z.string()).min(1, 'Select at least one branch'),
 });
 type DetailsFormValues = z.input<typeof detailsFormSchema>;
+
+interface BuilderBranch {
+  id: string;
+  name: string;
+}
+
+/**
+ * POS-PERF-P37 — the branches this builder product publishes to, as the
+ * server records them: a branch-exclusive product's one branch, or a
+ * multi-branch selection's branch_availability rows. A legacy shared product
+ * (neither) has no builder selection — it's published per branch from its
+ * product page, exactly as before.
+ */
+function builderBranches(product: ProductDetailResponse): BuilderBranch[] {
+  if (product.branch_exclusive && product.exclusive_branch_id) {
+    const row = product.branch_availability.find((r) => r.branch_id === product.exclusive_branch_id);
+    return [{ id: product.exclusive_branch_id, name: product.exclusive_branch_name ?? row?.branch_name ?? 'Branch' }];
+  }
+  if (product.branch_selection_scoped) {
+    return [...product.branch_availability]
+      .sort((a, b) => a.branch_name.localeCompare(b.branch_name))
+      .map((row) => ({ id: row.branch_id, name: row.branch_name }));
+  }
+  return [];
+}
 
 function DetailsStep({
   onCreated,
@@ -220,13 +246,20 @@ function DetailsStep({
     // already set; this step is just a summary with a way forward. Name/
     // category/image live on the existing Edit Product flow, not duplicated
     // here, so builder-driven edits never fight with it over the same field.
+    const branches = existingProduct ? builderBranches(existingProduct) : [];
     return (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">{existingProduct?.name ?? 'Loading…'}</CardTitle>
           <CardDescription>{existingProduct?.category_name ?? 'Uncategorized'}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {branches.length > 0 && (
+            <p className="text-sm" data-testid="builder-selected-branches">
+              <span className="text-muted-foreground">Available at: </span>
+              {branches.map((b) => b.name).join(', ')}
+            </p>
+          )}
           <Button onClick={onContinue}>Continue to Sizes &amp; Prices</Button>
         </CardContent>
       </Card>
@@ -249,9 +282,16 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
     limit: 100,
   });
 
+  const { draftBranchIds, setDraftBranchIds } = useProductBuilderStore();
+
+  // "Assigned branches" = active branches this supervisor is assigned to
+  // right now — never every branch in the organization. The server re-checks
+  // the live assignment on create and again on Add to POS.
   const myActiveBranchIds = user?.branchIds ?? [];
-  const myBranches = (branchData?.branches ?? []).filter((b) => myActiveBranchIds.includes(b.id));
-  const myOnlyBranch = myBranches.length === 1 ? myBranches[0] : undefined;
+  const myBranches = (branchData?.branches ?? [])
+    .filter((b) => myActiveBranchIds.includes(b.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const myBranchIdsKey = myBranches.map((b) => b.id).join(',');
 
   const form = useForm<DetailsFormValues>({
     resolver: zodResolver(detailsFormSchema),
@@ -259,19 +299,36 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
       name: '',
       description: '',
       category_id: '',
-      branch_id: myOnlyBranch?.id ?? '',
+      branch_ids: [],
     },
   });
   const [pendingImage, setPendingImage] = useState<File | null>(null);
   const [createdProductId, setCreatedProductId] = useState<string | null>(null);
+  const selectedBranchIds = form.watch('branch_ids');
 
-  // Auto-select when exactly one active branch resolves after load; otherwise leave cleared for a deliberate pick.
+  // Once assigned branches resolve: restore a persisted draft selection
+  // (dropping any branch no longer assigned), or preselect the only branch.
   useEffect(() => {
-    if (myOnlyBranch && !form.getValues('branch_id')) {
-      form.setValue('branch_id', myOnlyBranch.id);
-    }
+    if (branchesLoading) return;
+    const assigned = new Set(myBranches.map((b) => b.id));
+    const restored = draftBranchIds.filter((id) => assigned.has(id));
+    const initial = restored.length > 0 ? restored : myBranches.length === 1 ? [myBranches[0]?.id ?? ''] : [];
+    form.setValue('branch_ids', initial.filter(Boolean));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myOnlyBranch]);
+  }, [branchesLoading, myBranchIdsKey]);
+
+  function setSelectedBranchIds(branchIds: string[]) {
+    form.setValue('branch_ids', branchIds, { shouldValidate: form.formState.isSubmitted });
+    setDraftBranchIds(branchIds);
+  }
+
+  function toggleBranch(branchId: string, checked: boolean) {
+    const current = form.getValues('branch_ids');
+    setSelectedBranchIds(checked ? [...new Set([...current, branchId])] : current.filter((id) => id !== branchId));
+  }
+
+  const allSelected = myBranches.length > 0 && myBranches.every((b) => selectedBranchIds.includes(b.id));
+  const selectedBranchNames = myBranches.filter((b) => selectedBranchIds.includes(b.id)).map((b) => b.name);
 
   async function onSubmit(values: DetailsFormValues) {
     let productId = createdProductId;
@@ -292,8 +349,8 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
         category_id: values.category_id || undefined,
         status: 'active',
         is_seasonal: false,
-        branch_exclusive: true,
-        exclusive_branch_id: values.branch_id,
+        branch_exclusive: false,
+        branch_ids: values.branch_ids,
       });
       productId = created.id;
       setCreatedProductId(created.id);
@@ -310,7 +367,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
     return (
       <EmptyState
         title="No active branch assignment"
-        description="You need an active assignment to at least one branch before you can build a product. Ask an admin to assign you to a branch."
+        description="You need an active assignment to at least one branch before you can build a product. An administrator must assign you to a branch first."
       />
     );
   }
@@ -348,34 +405,47 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="builder-branch">Branch</Label>
-              {myOnlyBranch ? (
-                <p className="bg-muted/30 rounded-md border px-3 py-2 text-sm font-medium">
-                  {myOnlyBranch.name} ({myOnlyBranch.code})
-                </p>
+            <fieldset className="space-y-2" aria-describedby="builder-branches-summary">
+              <legend className="text-sm font-medium leading-none">Available at branches</legend>
+              {branchesLoading ? (
+                <p className="text-muted-foreground text-sm">Loading your branches…</p>
               ) : (
-                <Select
-                  value={form.watch('branch_id')}
-                  onValueChange={(value) => form.setValue('branch_id', value)}
-                  disabled={branchesLoading}
-                >
-                  <SelectTrigger id="builder-branch">
-                    <SelectValue placeholder="Select a branch" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {myBranches.map((branch) => (
-                      <SelectItem key={branch.id} value={branch.id}>
-                        {branch.name} ({branch.code})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="space-y-2 rounded-md border p-3">
+                  {myBranches.length > 1 && (
+                    <label className="flex items-center gap-2 border-b pb-2 text-sm font-medium">
+                      <Checkbox
+                        checked={allSelected}
+                        onCheckedChange={(checked) =>
+                          setSelectedBranchIds(checked === true ? myBranches.map((b) => b.id) : [])
+                        }
+                        aria-label="Select all assigned branches"
+                      />
+                      Select all assigned branches
+                    </label>
+                  )}
+                  {myBranches.map((branch) => (
+                    <label key={branch.id} className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={selectedBranchIds.includes(branch.id)}
+                        onCheckedChange={(checked) => toggleBranch(branch.id, checked === true)}
+                        aria-label={branch.name}
+                      />
+                      {branch.name} ({branch.code})
+                    </label>
+                  ))}
+                </div>
               )}
-              <p className="text-muted-foreground text-xs">
-                This product publishes only to this branch.
+              <p id="builder-branches-summary" className="text-muted-foreground text-xs" data-testid="builder-branch-count">
+                {selectedBranchNames.length === 0
+                  ? 'Select at least one branch. The product is only added to the POS at the branches you select.'
+                  : `${selectedBranchNames.length} branch${selectedBranchNames.length === 1 ? '' : 'es'} selected: ${selectedBranchNames.join(', ')}. You configure the product once; Add to POS publishes it at these branches only.`}
               </p>
-            </div>
+              {form.formState.errors.branch_ids && (
+                <p className="text-destructive text-sm font-medium" role="alert">
+                  {form.formState.errors.branch_ids.message}
+                </p>
+              )}
+            </fieldset>
 
             <div className="space-y-2">
               <Label>Photo</Label>
@@ -386,7 +456,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
               />
             </div>
 
-            <Button type="submit" disabled={isSubmitting}>
+            <Button type="submit" disabled={isSubmitting || branchesLoading || selectedBranchIds.length === 0}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Continue to Sizes &amp; Prices
             </Button>
@@ -518,7 +588,10 @@ function IngredientsStep({
     );
   }
 
-  const branchId = product.exclusive_branch_id;
+  // A single-branch product shows that branch's inventory badge inline; a
+  // multi-branch selection is checked branch by branch on Review instead.
+  const branches = builderBranches(product);
+  const branchId = branches.length === 1 ? (branches[0]?.id ?? null) : null;
   const variants = [...product.variants].sort(
     (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0),
   );
@@ -529,6 +602,12 @@ function IngredientsStep({
         Configure what each size consumes per serving — inventory item, quantity, and unit. Create a
         new inventory item inline if you don&apos;t see it in the list.
       </p>
+      {branches.length > 1 && (
+        <p className="text-muted-foreground text-sm">
+          This recipe is shared by {branches.map((b) => b.name).join(', ')}. Each branch deducts its
+          own stock; Review checks that every selected branch has inventory set up for these items.
+        </p>
+      )}
       {variants.map((variant) => (
         <RecipeBomPanel
           key={variant.id}
@@ -702,9 +781,10 @@ function ReviewStep({
   onJumpToStep: (step: BuilderStep) => void;
 }) {
   const { data: product, isLoading } = useProduct(productId);
-  const branchId = product?.exclusive_branch_id ?? null;
-  const readiness = useProductReadiness(productId, branchId);
-  const publishProduct = usePublishProduct(productId);
+  const branches = product ? builderBranches(product) : [];
+  const branchIds = branches.map((b) => b.id);
+  const readinessByBranch = useProductReadinessForBranches(productId, branchIds);
+  const publishProduct = usePublishProductToBranches(productId);
   const { reset } = useProductBuilderStore();
   const router = useRouter();
 
@@ -716,13 +796,19 @@ function ReviewStep({
     );
   }
 
-  const isPublished = branchId
-    ? product.branch_availability.some((row) => row.branch_id === branchId && row.is_available)
-    : false;
+  const isPublished =
+    branchIds.length > 0 &&
+    branchIds.every((id) => product.branch_availability.some((row) => row.branch_id === id && row.is_available));
+  const readinessLoading = readinessByBranch.some((query) => query.isLoading);
+  const allBranchesReady =
+    branchIds.length > 0 &&
+    readinessByBranch.every(
+      (query) => query.data && query.data.scope === 'branch' && isReadyToPublish(query.data),
+    );
 
   async function handlePublish() {
-    if (!branchId) return;
-    await publishProduct.mutateAsync(branchId);
+    if (branchIds.length === 0) return;
+    await publishProduct.mutateAsync(branchIds);
     reset();
     router.push(`/supervisor/products/${productId}`);
   }
@@ -753,16 +839,51 @@ function ReviewStep({
         </CardContent>
       </Card>
 
-      {readiness.isLoading ? (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Available at branches</CardTitle>
+          <CardDescription>
+            {branches.length === 0
+              ? 'This product is not tied to a builder branch selection. Publish it per branch from its product page.'
+              : `Add to POS publishes at these ${branches.length === 1 ? 'branch' : `${branches.length} branches`} only — all at once, or none if any branch isn't ready. Save Draft keeps it off the POS everywhere.`}
+          </CardDescription>
+        </CardHeader>
+        {branches.length > 0 && (
+          <CardContent className="flex flex-wrap gap-1.5" data-testid="review-selected-branches">
+            {branches.map((branch) => {
+              const published = product.branch_availability.some(
+                (row) => row.branch_id === branch.id && row.is_available,
+              );
+              return (
+                <Badge key={branch.id} variant={published ? 'active' : 'outline'}>
+                  {branch.name}
+                  {published ? ' · on POS' : ''}
+                </Badge>
+              );
+            })}
+          </CardContent>
+        )}
+      </Card>
+
+      {readinessLoading ? (
         <div className="flex justify-center py-8">
           <LoadingSpinner />
         </div>
-      ) : readiness.data && readiness.data.scope === 'branch' ? (
-        <ReadinessChecklist
-          data={readiness.data}
-          onNavigateToTab={(tab) => onJumpToStep(tab === 'variants' ? 'ingredients' : 'sizes')}
-        />
-      ) : null}
+      ) : (
+        branches.map((branch, index) => {
+          const data = readinessByBranch[index]?.data;
+          if (!data || data.scope !== 'branch') return null;
+          return (
+            <div key={branch.id} className="space-y-2">
+              {branches.length > 1 && <h3 className="text-sm font-semibold">{branch.name}</h3>}
+              <ReadinessChecklist
+                data={data}
+                onNavigateToTab={(tab) => onJumpToStep(tab === 'variants' ? 'ingredients' : 'sizes')}
+              />
+            </div>
+          );
+        })
+      )}
 
       <div className="flex flex-wrap justify-between gap-3 pt-2">
         <Button variant="outline" onClick={onBack}>
@@ -774,13 +895,7 @@ function ReviewStep({
           </Button>
           <Button
             onClick={() => void handlePublish()}
-            disabled={
-              isPublished ||
-              !readiness.data ||
-              readiness.data.scope !== 'branch' ||
-              !isReadyToPublish(readiness.data) ||
-              publishProduct.isPending
-            }
+            disabled={isPublished || !allBranchesReady || publishProduct.isPending}
           >
             {publishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isPublished ? 'Already on POS' : 'Add to POS'}

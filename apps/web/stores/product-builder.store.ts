@@ -8,8 +8,15 @@ interface ProductBuilderState {
   /** Null until Step 1 (Details) successfully creates the Product; every later step edits this same product. */
   productId: string | null;
   step: BuilderStep;
+  /**
+   * POS-PERF-P37 — Step 1's "Available at branches" checkboxes before the
+   * Product exists. Once it is created, the server's branch_availability rows
+   * are the selection of record and this is no longer read.
+   */
+  draftBranchIds: string[];
   setProductId: (id: string) => void;
   setStep: (step: BuilderStep) => void;
+  setDraftBranchIds: (branchIds: string[]) => void;
   /** Starts a brand-new draft, discarding any in-progress one — distinct from resuming an existing product (see loadExisting). */
   reset: () => void;
   /** Resumes the builder against an already-existing product (Edit Product entry point). */
@@ -20,7 +27,8 @@ interface ProductBuilderState {
  * POS-PERF-P36 — browser-only wizard progress for the Simple Product
  * Builder (CLAUDE.md's state-separation rule: UI/navigation state here,
  * server data stays in TanStack Query). Deliberately minimal: only
- * `productId` + `step` are persisted. Every substantive field the builder
+ * `productId` + `step` (+ POS-PERF-P37's pre-creation `draftBranchIds`) are
+ * persisted. Every substantive field the builder
  * collects (variants, recipe components, option/flavor assignments) is
  * written to the server the moment its own step's form submits — not
  * buffered client-side until a final "save" — so a refresh never loses
@@ -34,10 +42,12 @@ export const useProductBuilderStore = create<ProductBuilderState>()(
     (set) => ({
       productId: null,
       step: 'details',
+      draftBranchIds: [],
       setProductId: (id) => set({ productId: id }),
       setStep: (step) => set({ step }),
-      reset: () => set({ productId: null, step: 'details' }),
-      loadExisting: (productId) => set({ productId, step: 'details' }),
+      setDraftBranchIds: (branchIds) => set({ draftBranchIds: branchIds }),
+      reset: () => set({ productId: null, step: 'details', draftBranchIds: [] }),
+      loadExisting: (productId) => set({ productId, step: 'details', draftBranchIds: [] }),
     }),
     {
       name: 'potato-corner:product-builder-draft',

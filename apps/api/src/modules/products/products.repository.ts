@@ -122,6 +122,7 @@ export const productsRepository = {
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : undefined,
           branchExclusive: data.branchExclusive,
           exclusiveBranchId: data.branchExclusive ? data.exclusiveBranchId : undefined,
+          branchSelectionScoped: !data.branchExclusive && data.selectedBranchIds !== undefined,
           createdBy,
         },
       });
@@ -138,6 +139,15 @@ export const productsRepository = {
         cascadedBranchIds = [data.exclusiveBranchId];
         await tx.branchProductAvailability.create({
           data: { branchId: data.exclusiveBranchId, productId: product.id, isAvailable: false, updatedBy: createdBy },
+        });
+      } else if (data.selectedBranchIds !== undefined) {
+        // POS-PERF-P37 — multi-branch selection: rows only at the selected
+        // branches, never the company-wide cascade below. The caller
+        // (productsService.createProduct) has already deduplicated the ids
+        // and verified each one is active and assigned to the actor.
+        cascadedBranchIds = data.selectedBranchIds;
+        await tx.branchProductAvailability.createMany({
+          data: data.selectedBranchIds.map((branchId) => ({ branchId, productId: product.id, isAvailable: false, updatedBy: createdBy })),
         });
       } else {
         const activeBranches = await tx.branch.findMany({ where: { status: 'active' }, select: { id: true } });
@@ -520,6 +530,11 @@ export const productsRepository = {
 
   findActiveBranch(branchId: string) {
     return prisma.branch.findFirst({ where: { id: branchId, status: 'active' }, select: { id: true, name: true } });
+  },
+
+  /** POS-PERF-P37 — the subset of these ids that reference an active branch (an absent id is unknown or inactive). */
+  findActiveBranchesByIds(branchIds: string[]) {
+    return prisma.branch.findMany({ where: { id: { in: branchIds }, status: 'active' }, select: { id: true, name: true } });
   },
 
   /** Phase 10 POS terminal catalog — active products, available at this branch, with only active variants and available flavors. */

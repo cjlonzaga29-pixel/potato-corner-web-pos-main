@@ -24,6 +24,7 @@ vi.mock('./products.service.js', () => ({
     getProductImage: vi.fn(),
     uploadProductImage: vi.fn(),
     deleteProductImage: vi.fn(),
+    publishProductToBranches: vi.fn(),
   },
 }));
 
@@ -244,6 +245,62 @@ describe('DELETE /api/products/:productId/image — Supervisor only', () => {
     await runHandlers(handlers, req, res);
 
     expect(productsService.deleteProductImage).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+// POS-PERF-P37 — multi-branch "Add to POS". Supervisor-only like /publish;
+// no branchGuard (array body), so the service's own whole-selection
+// authorization (covered by products.multi-branch-selection.integration.test.ts)
+// is the branch check — these tests pin the role gate and body validation.
+describe('POST /api/products/:productId/publish-branches — Supervisor only, validated branch_ids', () => {
+  it('rejects a branch actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/publish-branches');
+    const req = mockReq({ ...authHeader(generateBranchToken(randomUUID())), params: { productId: 'prod-1' }, body: { branch_ids: [randomUUID()] } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productsService.publishProductToBranches).not.toHaveBeenCalled();
+  });
+
+  it('rejects a super_admin actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/publish-branches');
+    const req = mockReq({ ...authHeader(generateSuperAdminToken()), params: { productId: 'prod-1' }, body: { branch_ids: [randomUUID()] } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productsService.publishProductToBranches).not.toHaveBeenCalled();
+  });
+
+  it.each([[{ branch_ids: [] }], [{ branch_ids: ['not-a-uuid'] }], [{ branch_id: randomUUID() }]])(
+    'rejects an invalid body %j with 422, never reaching the service',
+    async (body) => {
+      const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/publish-branches');
+      const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), params: { productId: 'prod-1' }, body });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(422);
+      expect(productsService.publishProductToBranches).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes the whole selection to the service for a supervisor', async () => {
+    const branchA = randomUUID();
+    const branchB = randomUUID();
+    vi.mocked(productsService.publishProductToBranches).mockResolvedValue({ product_id: 'prod-1', branches: [] });
+    const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/publish-branches');
+    const req = mockReq({ ...authHeader(generateSupervisorToken([branchA, branchB])), params: { productId: 'prod-1' }, body: { branch_ids: [branchA, branchB] } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(productsService.publishProductToBranches).toHaveBeenCalledWith('prod-1', [branchA, branchB], expect.objectContaining({ role: 'supervisor' }), null);
     expect(res.status).toHaveBeenCalledWith(200);
   });
 });

@@ -18,7 +18,7 @@ import { productReadinessService } from '../product-readiness/product-readiness.
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
 import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
 import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
-import { hasBranchAccess } from '../../lib/branch-access.js';
+import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
 import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
 import { productCatalogLockId } from '../../lib/pg-lock.js';
 
@@ -78,9 +78,19 @@ function assertVariantTransition(current: VariantLifecycleStatus, next: VariantL
  * it to, via the same branch-availability/publish actions that are
  * otherwise correctly branch-scoped by branchGuard. super_admin is
  * unrestricted, same as every other branch_exclusive-adjacent action.
+ *
+ * POS-PERF-P37 — the same guard for a multi-branch selection
+ * (branchSelectionScoped): such a product may only be enabled at a branch it
+ * was created for (has a branch_product_availability row at). Legacy shared
+ * products (branchSelectionScoped false) are unaffected.
  */
 function assertSupervisorMayEnableAtBranch(
-  product: { branchExclusive: boolean; exclusiveBranchId: string | null },
+  product: {
+    branchExclusive: boolean;
+    exclusiveBranchId: string | null;
+    branchSelectionScoped?: boolean;
+    branchAvailability?: { branchId: string }[];
+  },
   branchId: string,
   isAvailable: boolean,
   actor: ActorContext,
@@ -93,6 +103,43 @@ function assertSupervisorMayEnableAtBranch(
       403,
     );
   }
+  if (product.branchSelectionScoped && !(product.branchAvailability ?? []).some((row) => row.branchId === branchId)) {
+    throw new ProductError(
+      'PRODUCT_BRANCH_NOT_SELECTED',
+      'This product was not created for this branch and cannot be enabled here',
+      403,
+    );
+  }
+}
+
+/**
+ * POS-PERF-P37 — validates a whole create/publish branch selection before
+ * anything is written: every id must be an active branch and, for a
+ * supervisor, one of their live active assignments (resolved from the
+ * database, never the JWT's branch_ids snapshot). One bad id rejects the
+ * entire selection. Returns the branches in the caller's (deduplicated) order.
+ */
+async function assertBranchSelectionAuthorized(branchIds: string[], actor: ActorContext): Promise<{ id: string; name: string }[]> {
+  const activeBranches = await productsRepository.findActiveBranchesByIds(branchIds);
+  const activeById = new Map(activeBranches.map((b) => [b.id, b]));
+  const invalidIds = branchIds.filter((id) => !activeById.has(id));
+  if (invalidIds.length > 0) {
+    throw new ProductError('BRANCH_SELECTION_INVALID', 'One or more selected branches do not exist or are inactive', 422, {
+      invalid_branch_ids: invalidIds,
+    });
+  }
+
+  if (actor.role === ROLES.SUPERVISOR) {
+    const accessible = await getAccessibleBranchIds({ user_id: actor.id, role: actor.role, branch_ids: [] } as unknown as JwtPayload);
+    const deniedIds = accessible === 'all' ? [] : branchIds.filter((id) => !accessible.includes(id));
+    if (deniedIds.length > 0) {
+      throw new ProductError('BRANCH_ACCESS_DENIED', 'You do not have an active assignment to every selected branch', 403, {
+        denied_branch_ids: deniedIds,
+      });
+    }
+  }
+
+  return branchIds.map((id) => activeById.get(id) as { id: string; name: string });
 }
 
 /** Every branch this product currently has a branch_product_availability row for — the "branch rooms" a variant lifecycle event is broadcast to. */
@@ -262,6 +309,8 @@ function toProductBase(product: {
   // partial-shape call site re-selects it, but every real row has the column
   // (NULL unless this product is a fork-to-branch copy).
   forkedFromProductId?: string | null;
+  // POS-PERF-P37 — optional for the same reason as forkedFromProductId.
+  branchSelectionScoped?: boolean;
 }) {
   return {
     id: product.id,
@@ -281,6 +330,7 @@ function toProductBase(product: {
     exclusive_branch_id: product.exclusiveBranchId,
     exclusive_branch_name: product.exclusiveBranch?.name ?? null,
     forked_from_product_id: product.forkedFromProductId ?? null,
+    branch_selection_scoped: product.branchSelectionScoped ?? false,
     created_by: product.createdBy,
     created_at: product.createdAt.toISOString(),
     updated_at: product.updatedAt.toISOString(),
@@ -372,6 +422,7 @@ interface CreateProductInput {
   seasonal_end_date?: string;
   branch_exclusive: boolean;
   exclusive_branch_id?: string;
+  branch_ids?: string[];
 }
 
 interface UpdateProductInput {
@@ -852,15 +903,34 @@ export const productsService = {
     // provision catalog state at branches outside their assignment. This is
     // the safe, explicit, narrower rule — super_admin keeps the existing
     // broader (company-wide) creation capability.
-    if (createdBy.role === ROLES.SUPERVISOR && !data.branch_exclusive) {
+    //
+    // POS-PERF-P37 — an explicit branch_ids selection is the other accepted
+    // supervisor shape. It is never inferred: a request carrying neither is
+    // still rejected here, not treated as company-wide availability.
+    if (createdBy.role === ROLES.SUPERVISOR && !data.branch_exclusive && !data.branch_ids) {
       throw new ProductError(
         'SUPERVISOR_EXCLUSIVE_BRANCH_REQUIRED',
-        'As a supervisor, you must create this product as branch-exclusive, scoped to one of your own branches',
+        'As a supervisor, you must create this product scoped to your own branches',
         403,
       );
     }
 
-    if (data.branch_exclusive) {
+    let branchExclusive = data.branch_exclusive;
+    let exclusiveBranchId = data.exclusive_branch_id;
+    let selectedBranchIds: string[] | undefined;
+    if (data.branch_ids) {
+      // POS-PERF-P37 — the whole (deduplicated) selection is authorized
+      // before any write. One branch keeps the existing branch-exclusive
+      // shape exactly; two or more share one product configuration.
+      const uniqueBranchIds = [...new Set(data.branch_ids)];
+      await assertBranchSelectionAuthorized(uniqueBranchIds, createdBy);
+      if (uniqueBranchIds.length === 1) {
+        branchExclusive = true;
+        exclusiveBranchId = uniqueBranchIds[0];
+      } else {
+        selectedBranchIds = uniqueBranchIds;
+      }
+    } else if (data.branch_exclusive) {
       if (!data.exclusive_branch_id) {
         throw new ProductError('EXCLUSIVE_BRANCH_REQUIRED', 'exclusive_branch_id is required when branch_exclusive is true', 422);
       }
@@ -901,8 +971,9 @@ export const productsService = {
         isSeasonal: data.is_seasonal,
         seasonalStartDate: data.seasonal_start_date,
         seasonalEndDate: data.seasonal_end_date,
-        branchExclusive: data.branch_exclusive,
-        exclusiveBranchId: data.exclusive_branch_id,
+        branchExclusive,
+        exclusiveBranchId,
+        selectedBranchIds,
       },
       createdBy.id,
     );
@@ -929,7 +1000,8 @@ export const productsService = {
       actorId: createdBy.id,
       actorRole: createdBy.role,
       afterState: {
-        branchExclusive: data.branch_exclusive,
+        branchExclusive,
+        branchSelectionScoped: selectedBranchIds !== undefined,
         cascadedToBranchIds: cascadedBranchIds,
         branchCount: cascadedBranchIds.length,
       },
@@ -1719,15 +1791,9 @@ export const productsService = {
     const product = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
 
-      const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
-      const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
-
-      if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
-        throw new ProductError('PRODUCT_NOT_READY', 'Product is not ready to publish at this branch', 409, {
-          blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
-        });
-      }
-
+      // POS-PERF-P37 — authorization (branch-spread guard) before readiness,
+      // so a branch the product may never be enabled at gets 403, not a
+      // readiness report for that branch.
       const existing = await productsRepository.findById(productId);
       if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
       if (existing.status === 'discontinued' || existing.status === 'archived') {
@@ -1738,6 +1804,15 @@ export const productsService = {
         );
       }
       assertSupervisorMayEnableAtBranch(existing, branchId, true, actor);
+
+      const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
+      const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
+
+      if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
+        throw new ProductError('PRODUCT_NOT_READY', 'Product is not ready to publish at this branch', 409, {
+          blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
+        });
+      }
 
       return productsRepository.upsertBranchProductAvailability(branchId, productId, true, actor.id, tx);
     });
@@ -1754,6 +1829,87 @@ export const productsService = {
     });
 
     return toBranchAvailabilityRow(product);
+  },
+
+  /**
+   * POS-PERF-P37 — Review's "Add to POS" across the builder's whole branch
+   * selection, all-or-nothing. Under the same advisory lock publishProduct
+   * takes, it re-checks the actor's live assignment to every branch,
+   * the branch-spread guard, and readiness at each branch — then flips every
+   * row in the same transaction. Any failure (one branch not ready, one
+   * branch revoked) throws before a single row is written, so the product is
+   * never left published at only part of the selection. A retry after
+   * success is a no-op upsert of the same unique (branch, product) rows.
+   *
+   * Readiness, not stock level, is the gate: a branch missing InventoryStock
+   * setup for a recipe item (INVENTORY_STOCK_MISSING) blocks publication,
+   * while a branch that simply has low or zero stock does not — shortage
+   * stays a checkout-time INSUFFICIENT_STOCK outcome, never a
+   * configuration error.
+   */
+  async publishProductToBranches(productId: string, branchIds: string[], actor: ActorContext, ipAddress: string | null) {
+    const uniqueBranchIds = [...new Set(branchIds)];
+
+    const rows = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
+
+      const existing = await productsRepository.findById(productId);
+      if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+      if (existing.status === 'discontinued' || existing.status === 'archived') {
+        throw new ProductError(
+          'PRODUCT_GLOBALLY_UNAVAILABLE',
+          'Cannot enable a globally discontinued or archived product for a branch',
+          409,
+        );
+      }
+
+      const branches = await assertBranchSelectionAuthorized(uniqueBranchIds, actor);
+      for (const branch of branches) {
+        assertSupervisorMayEnableAtBranch(existing, branch.id, true, actor);
+      }
+
+      const notReady: { branch_id: string; branch_name: string; blocking_issues: ReturnType<typeof toAdminReadinessIssue>[] }[] = [];
+      for (const branch of branches) {
+        const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId: branch.id });
+        const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
+        if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
+          notReady.push({
+            branch_id: branch.id,
+            branch_name: branch.name,
+            blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
+          });
+        }
+      }
+      if (notReady.length > 0) {
+        throw new ProductError(
+          'PRODUCT_NOT_READY',
+          `Product is not ready to publish at ${notReady.map((b) => b.branch_name).join(', ')}. Nothing was published.`,
+          409,
+          { branches: notReady, blocking_issues: notReady.flatMap((b) => b.blocking_issues) },
+        );
+      }
+
+      const written = [];
+      for (const branch of branches) {
+        written.push(await productsRepository.upsertBranchProductAvailability(branch.id, productId, true, actor.id, tx));
+      }
+      return written;
+    });
+
+    for (const row of rows) {
+      await recordAuditLog({
+        action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
+        entityType: 'branch_product_availability',
+        entityId: row.id,
+        actorId: actor.id,
+        actorRole: actor.role,
+        branchId: row.branchId,
+        afterState: { productId, isAvailable: true, publishedBranchIds: uniqueBranchIds },
+        ipAddress,
+      });
+    }
+
+    return { product_id: productId, branches: rows.map(toBranchAvailabilityRow) };
   },
 
   /** Unpublish = disable BranchProductAvailability only — never deletes configuration, archives variants, or touches ProductInventory. No readiness gate needed to turn something off. */

@@ -13,6 +13,7 @@ import {
   assignVariantOptionGroupSchema,
   updateVariantOptionGroupSchema,
   publishProductSchema,
+  publishProductToBranchesSchema,
   unpublishProductSchema,
   forkProductToBranchSchema,
   replaceSourceWithCopySchema,
@@ -426,6 +427,35 @@ router.post(
         req.ip ?? null,
       );
       res.status(200).json({ data: row, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P37 — the builder's multi-branch "Add to POS". No branchGuard, for
+// the same reason as /branch-availability/bulk: the body carries an array of
+// branch ids, not one top-level branch_id. productsService.
+// publishProductToBranches authorizes every id against the actor's live
+// assignments, under the product's lock, before writing anything.
+router.post(
+  '/:productId/publish-branches',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(publishProductToBranchesSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const { branch_ids } = req.body as { branch_ids: string[] };
+      const result = await productsService.publishProductToBranches(
+        req.params.productId as string,
+        branch_ids,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

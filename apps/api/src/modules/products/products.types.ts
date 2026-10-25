@@ -24,6 +24,8 @@ export interface CreateProductData {
   seasonalEndDate?: string;
   branchExclusive: boolean;
   exclusiveBranchId?: string;
+  /** POS-PERF-P37 — non-exclusive only: seed unpublished availability at exactly these branches (and mark the product branchSelectionScoped) instead of every active branch. */
+  selectedBranchIds?: string[];
 }
 
 export interface UpdateProductData {

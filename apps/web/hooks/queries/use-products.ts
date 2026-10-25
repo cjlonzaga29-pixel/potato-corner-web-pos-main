@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   SOCKET_EVENTS,
@@ -332,8 +332,8 @@ export function useBulkUpdateBranchProductAvailability(productId: string) {
 }
 
 /** Phase D1 — Admin Readiness panel. branchId 'all' returns a read-only per-branch summary; a specific id returns full readiness detail for that branch. */
-export function useProductReadiness(productId: string | null | undefined, branchId: string | null | undefined) {
-  return useQuery({
+function productReadinessQuery(productId: string | null | undefined, branchId: string | null | undefined) {
+  return {
     queryKey: ['product', productId, 'readiness', branchId],
     queryFn: async () => {
       const response = await apiClient<ProductReadiness>(`/api/products/${productId}/readiness?branch_id=${branchId}`);
@@ -342,7 +342,16 @@ export function useProductReadiness(productId: string | null | undefined, branch
     },
     enabled: Boolean(productId) && Boolean(branchId),
     staleTime: 15 * 1000,
-  });
+  };
+}
+
+export function useProductReadiness(productId: string | null | undefined, branchId: string | null | undefined) {
+  return useQuery(productReadinessQuery(productId, branchId));
+}
+
+/** POS-PERF-P37 — one readiness query per selected branch, sharing useProductReadiness's cache keys. */
+export function useProductReadinessForBranches(productId: string | null | undefined, branchIds: string[]) {
+  return useQueries({ queries: branchIds.map((branchId) => productReadinessQuery(productId, branchId)) });
 }
 
 /**
@@ -387,6 +396,31 @@ export function usePublishProduct(productId: string) {
       toast.success('Product published at this branch');
     },
     onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/** POS-PERF-P37 — all-or-nothing "Add to POS" across the builder's branch selection. */
+export function usePublishProductToBranches(productId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (branchIds: string[]) => {
+      const response = await apiClient<{ product_id: string; branches: BranchProductAvailabilityRow[] }>(
+        `/api/products/${productId}/publish-branches`,
+        { method: 'POST', body: JSON.stringify({ branch_ids: branchIds }) },
+      );
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to publish product'));
+      return response.data;
+    },
+    onSuccess: (_data, branchIds) => {
+      for (const branchId of branchIds) invalidateAfterPublishChange(queryClient, productId, branchId);
+      toast.success(branchIds.length === 1 ? 'Product published at this branch' : `Product published at ${branchIds.length} branches`);
+    },
+    onError: (error: Error) => {
+      // A failed publish may mean readiness changed underneath the Review
+      // screen — refetch so its checklist shows the current blockers.
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
+      toast.error(error.message);
+    },
   });
 }
 

@@ -3,6 +3,8 @@ import { PRODUCT_STATUS, type ProductStatus } from '../constants/status.js';
 
 const productStatusValues = Object.values(PRODUCT_STATUS) as [ProductStatus, ...ProductStatus[]];
 const CREATABLE_STATUSES = new Set<ProductStatus>([PRODUCT_STATUS.DRAFT, PRODUCT_STATUS.ACTIVE]);
+/** POS-PERF-P37 — upper bound on one create/publish branch selection; far above any real supervisor's assignment count. */
+const MAX_PRODUCT_BRANCH_SELECTION = 100;
 
 /** true when `value`, rounded to `max` decimal places, doesn't change — rejects e.g. 19.999 at max=2. */
 function hasMaxDecimals(max: number) {
@@ -76,8 +78,21 @@ export const createProductSchema = z
     // that to "requesting branch only" and requires exclusive_branch_id.
     branch_exclusive: z.boolean().default(false),
     exclusive_branch_id: z.uuid().optional(),
+    // POS-PERF-P37 — "Available at branches": the supervisor's explicit
+    // branch selection. One id keeps the existing branch-exclusive shape;
+    // two or more create one shared product seeded (unpublished) at exactly
+    // those branches. Mutually exclusive with the legacy branch_exclusive/
+    // exclusive_branch_id pair, which existing callers keep using unchanged.
+    branch_ids: z.array(z.uuid()).min(1, 'Select at least one branch').max(MAX_PRODUCT_BRANCH_SELECTION).optional(),
   })
   .superRefine((data, ctx) => {
+    if (data.branch_ids && (data.branch_exclusive || data.exclusive_branch_id)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['branch_ids'],
+        message: 'branch_ids cannot be combined with branch_exclusive/exclusive_branch_id',
+      });
+    }
     if (!CREATABLE_STATUSES.has(data.status)) {
       ctx.addIssue({
         code: 'custom',
@@ -299,6 +314,11 @@ export const productResponseSchema = z.object({
   // just nullable) so pre-existing test fixtures built against this type
   // before the field existed keep typechecking without updating every one.
   forked_from_product_id: z.uuid().nullable().optional(),
+  // POS-PERF-P37 — true for a product created from a multi-branch selection:
+  // its branch_availability rows ARE that selection, and a supervisor may
+  // never enable it at a branch outside them. Optional for the same fixture
+  // reason as forked_from_product_id.
+  branch_selection_scoped: z.boolean().optional(),
   created_by: z.uuid().nullable(),
   created_at: z.iso.datetime(),
   updated_at: z.iso.datetime(),
@@ -565,6 +585,14 @@ export const publishProductSchema = z.object({
 
 export const unpublishProductSchema = z.object({
   branch_id: z.uuid(),
+});
+
+// POS-PERF-P37 — Review's "Add to POS" for a product selected at one or more
+// branches: all-or-nothing across the whole selection (see
+// productsService.publishProductToBranches). Duplicate ids are tolerated and
+// collapsed server-side.
+export const publishProductToBranchesSchema = z.object({
+  branch_ids: z.array(z.uuid()).min(1, 'Select at least one branch').max(MAX_PRODUCT_BRANCH_SELECTION),
 });
 
 // POS-PERF-P36R4 — a supervisor with authority over only some of a shared

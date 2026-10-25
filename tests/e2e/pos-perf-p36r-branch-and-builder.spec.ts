@@ -18,14 +18,49 @@ const SNACK_FLAVOR_ID = '4e5b2ad2-6a67-4112-81e2-c78e7b9c36cf';
 const suffix = Date.now().toString(36);
 
 test.describe.configure({ mode: 'serial' });
+// The Mix & Max test is a full builder session plus a POS checkout — well past
+// Playwright's 30s default — and the 61s rate-limit wait below shares this budget.
+test.setTimeout(180_000);
+
+// POS-PERF-P37R — apps/api's global apiLimiter (100 req/min, in-memory) runs
+// before authenticate, so locally every request shares the one 127.0.0.1
+// bucket. Wait out the window before each test instead of touching the limiter.
+test.beforeEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 61_000));
+});
 
 let snackProductId: string;
 let snackVariantId: string;
 let mixMaxProductId: string;
 let mixMaxVariantId: string;
 
+/**
+ * POS-PERF-P37R — closes whatever attendance the seeded staff fixture has
+ * open (clockOut resolves the open record regardless of the branch_id it
+ * names; MAIN01 is just what branchGuard needs). Run before, so an earlier
+ * spec's stale clock-in at a test branch can't decide the terminal's state,
+ * and after, so this spec's own clock-in doesn't leak into the next one.
+ */
+async function closeStaffAttendance(request: import('@playwright/test').APIRequestContext, url: string) {
+  const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
+  const staffList = await authedGet<{ employees: { id: string; email: string }[] }>(
+    request,
+    `/api/employees?search=${encodeURIComponent(TEST_USERS.staff.email)}`,
+    admin.accessToken,
+  );
+  const staffEmployeeId = staffList.data?.employees.find((e) => e.email === TEST_USERS.staff.email)?.id;
+  if (!staffEmployeeId) throw new Error('Seeded staff fixture not found');
+  const staff = await apiLogin(request, TEST_USERS.staff.email, TEST_USERS.staff.password);
+  await authedPost(request, url, '/api/attendance/clock-out', staff.accessToken, { employee_id: staffEmployeeId, branch_id: MAIN_BRANCH_ID });
+}
+
+test.afterAll(async ({ request, baseURL }) => {
+  await closeStaffAttendance(request, baseURL ?? 'http://localhost:3000');
+});
+
 test.beforeAll(async ({ request, baseURL }) => {
   const url = baseURL ?? 'http://localhost:3000';
+  await closeStaffAttendance(request, url);
   const supervisor = await apiLogin(request, TEST_USERS.supervisor.email, TEST_USERS.supervisor.password);
 
   // Snack product (the thing a Mix & Max slot lets a customer pick) —
@@ -86,7 +121,8 @@ test('Mix & Max: builder Choices step configures a flavor slot + snack option, p
   // before clicking Continue — otherwise branch_id is still '' and the
   // schema's min(1) rejects the submit silently (no FormMessage is wired to
   // this read-only-text field).
-  await expect(page.getByText('Main Branch (MAIN01)')).toBeVisible();
+  // P37R: Step 1's checkbox list waits on the assigned-branches query; 5s is too tight on a cold API.
+  await expect(page.getByText('Main Branch (MAIN01)')).toBeVisible({ timeout: 15_000 });
   await page.getByLabel('Product Name').fill(`P36R Mix Max ${suffix}`);
   const [createResp] = await Promise.all([
     page.waitForResponse((r) => r.url().includes('/api/products') && r.request().method() === 'POST'),

@@ -428,13 +428,20 @@ export const inventoryRepository = {
         });
         if (existingProductAvailability?.isAvailable === false) continue;
 
+        const product = await client.product.findUnique({ where: { id: productId }, select: { id: true, name: true, branchSelectionScoped: true } });
+        // POS-PERF-P37R — a multi-branch selection product's rows ARE its
+        // selection (branch-spread guard, full-coverage authority). Seeding
+        // one here would silently add this branch to it; with no row the
+        // product isn't sellable here anyway, so there's nothing to disable.
+        // Legacy shared products keep the historical upsert.
+        if (!existingProductAvailability && product?.branchSelectionScoped) continue;
+
         await client.branchProductAvailability.upsert({
           where: { branchId_productId: { branchId, productId } },
           create: { branchId, productId, isAvailable: false },
           update: { isAvailable: false },
         });
 
-        const product = await client.product.findUnique({ where: { id: productId }, select: { id: true, name: true } });
         if (product) affectedProducts.push({ productId: product.id, productName: product.name });
       }
 

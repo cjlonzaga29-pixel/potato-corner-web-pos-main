@@ -22,7 +22,8 @@ import { TEST_USERS } from './fixtures/test-users';
 import { apiLogin, authedPost, authedPatch, authedGet } from './fixtures/api-helpers';
 
 test.describe.configure({ mode: 'serial' });
-test.setTimeout(120_000);
+// Includes the 61s rate-limit wait in beforeEach (hooks share the test timeout).
+test.setTimeout(180_000);
 
 const suffix = Date.now().toString(36);
 const MAIN_BRANCH_ID = 'ff0da4c4-4685-4a62-9c67-2f0c7e25c6ab'; // seeded "Main Branch" (MAIN01) — the seeded staff fixture's home branch, restored in afterAll.
@@ -215,9 +216,29 @@ test.beforeAll(async ({ request, baseURL }) => {
 
 test.afterAll(async ({ request, baseURL }) => {
   const url = baseURL ?? 'http://localhost:3000';
-  if (!staffEmployeeId) return;
   const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
-  await authedPatch(request, url, `/api/employees/${staffEmployeeId}`, admin.accessToken, { branch_ids: [MAIN_BRANCH_ID] });
+  if (staffEmployeeId) {
+    // POS-PERF-P37R — close the Branch A clock-in from beforeAll/the POS test:
+    // left open, later specs' terminals inherit an attendance at a test branch.
+    const staffLogin = await apiLogin(request, TEST_USERS.staff.email, TEST_USERS.staff.password);
+    await authedPost(request, url, '/api/attendance/clock-out', staffLogin.accessToken, { employee_id: staffEmployeeId, branch_id: branchAId });
+    await authedPatch(request, url, `/api/employees/${staffEmployeeId}`, admin.accessToken, { branch_ids: [MAIN_BRANCH_ID] });
+  }
+  // Branches with sales can't be deleted; deactivate them so they don't crowd
+  // later specs' branch selectors (same as the P37 spec's afterAll).
+  for (const id of [branchAId, branchBId]) {
+    if (id) await authedPatch(request, url, `/api/branches/${id}`, admin.accessToken, { status: 'inactive' });
+  }
+});
+
+// POS-PERF-P37R — apps/api's global apiLimiter (100 req/min, in-memory) is
+// real throttling. It runs before any router's authenticate, so locally
+// every request shares the one 127.0.0.1 bucket. Run back to back, test 4's
+// product GET got a 429, which the detail page renders as "Product not
+// found". Wait out the window before each test instead of touching the
+// limiter (same pacing as the P37 spec).
+test.beforeEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 61_000));
 });
 
 async function loginAs(page: import('@playwright/test').Page, email: string, password: string, dashboardGlob: string) {

@@ -27,7 +27,16 @@ const TINY_PNG = Buffer.from(
 );
 
 test.describe('POS-PERF-P36R2 browser scenarios', () => {
-  test.setTimeout(90_000);
+  // Includes the 61s rate-limit wait in beforeEach (hooks share the test timeout).
+  test.setTimeout(150_000);
+
+  // POS-PERF-P37R — apps/api's global apiLimiter (100 req/min, in-memory) runs
+  // before any router's authenticate, so locally every request shares the one
+  // 127.0.0.1 bucket. Back to back, Scenario 4's UI login was request #103 in
+  // its minute and got a 429. Wait out the window instead of touching the limiter.
+  test.beforeEach(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 61_000));
+  });
 
   test('Scenario 1: inline inventory-item creation preserves the product draft, no duplicates', async ({ page }) => {
     await page.goto('/login');
@@ -38,7 +47,8 @@ test.describe('POS-PERF-P36R2 browser scenarios', () => {
 
     const productName = `P36R2 Inline Item ${suffix}`;
     await page.goto('/supervisor/products/builder');
-    await expect(page.getByText('Main Branch (MAIN01)')).toBeVisible();
+    // P37R: Step 1's checkbox list waits on the assigned-branches query; 5s is too tight on a cold API.
+    await expect(page.getByText('Main Branch (MAIN01)')).toBeVisible({ timeout: 15_000 });
     await page.getByLabel('Product Name').fill(productName);
     const [createResp] = await Promise.all([
       page.waitForResponse((r) => r.url().includes('/api/products') && r.request().method() === 'POST'),
@@ -108,7 +118,8 @@ test.describe('POS-PERF-P36R2 browser scenarios', () => {
 
     const productName = `P36R2 Draft Resume ${suffix}`;
     await page.goto('/supervisor/products/builder');
-    await expect(page.getByText('Main Branch (MAIN01)')).toBeVisible();
+    // P37R: Step 1's checkbox list waits on the assigned-branches query; 5s is too tight on a cold API.
+    await expect(page.getByText('Main Branch (MAIN01)')).toBeVisible({ timeout: 15_000 });
     await page.getByLabel('Product Name').fill(productName);
     await Promise.all([
       page.waitForResponse((r) => r.url().includes('/api/products') && r.request().method() === 'POST'),
@@ -280,64 +291,84 @@ test.describe('POS-PERF-P36R2 browser scenarios', () => {
       variants: [{ name: 'Regular', size_label: 'Regular', base_price: 20 }],
     });
 
-    await page.goto('/login');
-    await page.getByLabel('Email').fill(TEST_USERS.super_admin.email);
-    await page.getByRole('textbox', { name: 'Password' }).fill(TEST_USERS.super_admin.password);
-    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.waitForURL('**/admin/dashboard');
+    // POS-PERF-P37R — the selector lists at most 100 active branches, newest
+    // first. On a long-lived local DB the seeded Main/Second branches fall off
+    // that page, so switch between two branches this test owns (newest, so
+    // listed first) and deactivate them afterwards.
+    const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
+    const staleName = `P36R2 Switch Stale ${suffix}`;
+    const freshName = `P36R2 Switch Fresh ${suffix}`;
+    const ownedBranchIds: string[] = [];
+    for (const name of [staleName, freshName]) {
+      const res = await authedPost<{ id: string }>(request, url, '/api/branches', admin.accessToken, { name, address: `1 ${name} St`, city: 'Test City', status: 'active' });
+      if (!res.data?.id) throw new Error(`Failed to seed branch ${name}: ${JSON.stringify(res.error)}`);
+      ownedBranchIds.push(res.data.id);
+    }
+    const [staleBranchId] = ownedBranchIds;
+    try {
+      await page.goto('/login');
+      await page.getByLabel('Email').fill(TEST_USERS.super_admin.email);
+      await page.getByRole('textbox', { name: 'Password' }).fill(TEST_USERS.super_admin.password);
+      await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await page.waitForURL('**/admin/dashboard');
 
-    await page.goto(`/admin/products/${productId}`);
-    await page.getByRole('tab', { name: 'Variants & Flavors' }).click();
-    await expect(page.getByRole('combobox')).toBeVisible();
+      await page.goto(`/admin/products/${productId}`);
+      await page.getByRole('tab', { name: 'Variants & Flavors' }).click();
+      await expect(page.getByRole('combobox')).toBeVisible();
 
-    const STALE_MARKER = 'STALE-MAIN-BRANCH-SHOULD-NOT-APPEAR-AFTER-SWITCH';
-    await page.route(`**/api/products/${productId}/readiness*branch_id=${MAIN_BRANCH_ID}*`, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          data: {
-            scope: 'branch',
-            product_id: productId,
-            branch_id: MAIN_BRANCH_ID,
-            status: 'NOT_READY',
-            sellable: false,
-            completion_percentage: 0,
-            variant_count: 1,
-            eligible_variant_count: 0,
-            ready_variant_count: 0,
-            blocking_issues: [
-              {
-                code: 'RECIPE_MISSING',
-                severity: 'blocking',
-                entity_type: 'product_variant',
-                entity_id: productId,
-                message: STALE_MARKER,
-                recommended_action: 'n/a',
-              },
-            ],
-            warnings: [],
-            variants: [],
-            publish_is_variant_level: false,
-          },
-          error: null,
-          meta: null,
-        }),
+      const STALE_MARKER = 'STALE-BRANCH-SHOULD-NOT-APPEAR-AFTER-SWITCH';
+      await page.route(`**/api/products/${productId}/readiness*branch_id=${staleBranchId}*`, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            data: {
+              scope: 'branch',
+              product_id: productId,
+              branch_id: staleBranchId,
+              status: 'NOT_READY',
+              sellable: false,
+              completion_percentage: 0,
+              variant_count: 1,
+              eligible_variant_count: 0,
+              ready_variant_count: 0,
+              blocking_issues: [
+                {
+                  code: 'RECIPE_MISSING',
+                  severity: 'blocking',
+                  entity_type: 'product_variant',
+                  entity_id: productId,
+                  message: STALE_MARKER,
+                  recommended_action: 'n/a',
+                },
+              ],
+              warnings: [],
+              variants: [],
+              publish_is_variant_level: false,
+            },
+            error: null,
+            meta: null,
+          }),
+        });
       });
-    });
 
-    // Trigger the (now-delayed) fetch for Main Branch, then switch away
-    // before it resolves.
-    await page.getByRole('combobox').click();
-    await page.getByRole('option', { name: /Main Branch/ }).click();
-    await page.getByRole('combobox').click();
-    await page.getByRole('option', { name: /Second Branch.*MAIN02/ }).click();
+      // Trigger the (now-delayed) fetch for the stale branch, then switch away
+      // before it resolves.
+      await page.getByRole('combobox').click();
+      await page.getByRole('option', { name: new RegExp(staleName) }).click();
+      await page.getByRole('combobox').click();
+      await page.getByRole('option', { name: new RegExp(freshName) }).click();
 
-    // Give the delayed Main Branch response time to resolve in the background.
-    await page.waitForTimeout(4000);
+      // Give the delayed stale-branch response time to resolve in the background.
+      await page.waitForTimeout(4000);
 
-    await expect(page.getByText(STALE_MARKER)).not.toBeVisible();
-    await expect(page.getByRole('combobox')).toContainText('MAIN02');
+      await expect(page.getByText(STALE_MARKER)).not.toBeVisible();
+      await expect(page.getByRole('combobox')).toContainText(freshName);
+    } finally {
+      for (const id of ownedBranchIds) {
+        await authedPatch(request, url, `/api/branches/${id}`, admin.accessToken, { status: 'inactive' });
+      }
+    }
   });
 });

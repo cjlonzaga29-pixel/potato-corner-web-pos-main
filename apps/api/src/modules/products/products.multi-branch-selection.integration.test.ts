@@ -330,6 +330,94 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P37 multi-branch product selection (
     expect(copyRow?.isAvailable).toBe(true);
   });
 
+  /**
+   * POS-PERF-P37R — the §7.2 out-of-stock cascade at a branch outside a
+   * scoped product's selection must not seed a row there: a row is what
+   * the branch-spread guard and full-coverage authority read as "selected".
+   */
+  describe('out-of-stock flavor cascade', () => {
+    const flavorIds: string[] = [];
+    const cascadeVariantIds: string[] = [];
+
+    /** A flavor that is the variant's only flavor, plus a branch-scoped ingredient feeding it — zero stock triggers the cascade at that branch. */
+    async function linkSoleFlavor(variantId: string, cascadeBranchIds: string[]) {
+      const flavor = await prisma.flavor.create({
+        data: { name: `P37R Flavor ${randomUUID().slice(0, 6)}`, ingredientName: 'P37R Powder', ingredientUnit: 'g' },
+      });
+      flavorIds.push(flavor.id);
+      cascadeVariantIds.push(variantId);
+      await prisma.productVariantFlavor.create({ data: { productVariantId: variantId, flavorId: flavor.id } });
+      const ingredientByBranch = new Map<string, string>();
+      for (const branchId of cascadeBranchIds) {
+        const ingredient = await prisma.ingredient.create({
+          data: { name: `P37R Powder ${flavor.id.slice(0, 6)}`, unit: 'g', lowStockThreshold: 1, criticalThreshold: 0, branchId },
+        });
+        await prisma.productInventory.create({
+          data: { branchId, productVariantId: variantId, ingredientId: ingredient.id, flavorId: flavor.id, quantityRequired: 5, unit: 'g' },
+        });
+        ingredientByBranch.set(branchId, ingredient.id);
+      }
+      return ingredientByBranch;
+    }
+
+    afterAll(async () => {
+      await prisma.productInventory.deleteMany({ where: { productVariantId: { in: cascadeVariantIds } } });
+      await prisma.ingredient.deleteMany({ where: { branchId: { in: branchIds }, name: { startsWith: 'P37R Powder' } } });
+      await prisma.productVariantFlavor.deleteMany({ where: { flavorId: { in: flavorIds } } });
+      await prisma.branchFlavorAvailability.deleteMany({ where: { flavorId: { in: flavorIds } } });
+      await prisma.flavor.deleteMany({ where: { id: { in: flavorIds } } });
+    });
+
+    it('never creates a row at an unselected branch, so the selection and full-coverage scope stay unchanged', async () => {
+      const { inventoryRepository } = await import('../inventory/inventory.repository.js');
+      const { productId, variantId } = await createConfiguredProduct('Cascade Scope', [branchA, branchB]);
+      await productsService.publishProductToBranches(productId, [branchA, branchB], supervisor, null);
+      const ingredients = await linkSoleFlavor(variantId, [branchC, branchA]);
+
+      // C: assigned to the supervisor, never selected.
+      const atC = await inventoryRepository.runOutOfStockCascade(branchC, ingredients.get(branchC) ?? '');
+      expect(atC.affectedFlavors).toHaveLength(1);
+      expect(atC.affectedProducts.map((p) => p.productId)).not.toContain(productId);
+      expect((await availabilityRows(productId)).map((r) => r.branchId).sort()).toEqual([branchA, branchB].sort());
+
+      // Still unselected at C for every enable path...
+      await prisma.inventoryStock.create({ data: { branchId: branchC, inventoryItemId: itemId, quantityOnHand: 100 } });
+      try {
+        await expect(productsService.publishProduct(productId, branchC, supervisor, null)).rejects.toMatchObject({ code: 'PRODUCT_BRANCH_NOT_SELECTED' });
+      } finally {
+        await prisma.inventoryStock.deleteMany({ where: { branchId: branchC, inventoryItemId: itemId } });
+      }
+      // ...and a supervisor covering exactly A and B still has full-coverage edit authority.
+      const coveringAB = await makeUser('cover-ab');
+      await assign(coveringAB, branchA);
+      await assign(coveringAB, branchB);
+      const renamed = await productsService.updateProduct(productId, { name: `P37 Cascade Scope Renamed ${suffix}` }, coveringAB, null);
+      expect(renamed.name).toBe(`P37 Cascade Scope Renamed ${suffix}`);
+
+      // A selected branch still flips unavailable; B is untouched.
+      const atA = await inventoryRepository.runOutOfStockCascade(branchA, ingredients.get(branchA) ?? '');
+      expect(atA.affectedProducts.map((p) => p.productId)).toContain(productId);
+      const rows = await availabilityRows(productId);
+      expect(rows.find((r) => r.branchId === branchA)?.isAvailable).toBe(false);
+      expect(rows.find((r) => r.branchId === branchB)?.isAvailable).toBe(true);
+    });
+
+    it('a legacy shared product keeps the historical behavior (unavailable row seeded at the cascading branch)', async () => {
+      const { inventoryRepository } = await import('../inventory/inventory.repository.js');
+      const legacy = await prisma.product.create({ data: { name: `P37R Legacy Cascade ${suffix}`, status: 'active', createdBy: supervisor.id } });
+      await prisma.branchProductAvailability.create({ data: { branchId: branchA, productId: legacy.id, isAvailable: true } });
+      const variant = await prisma.productVariant.create({
+        data: { productId: legacy.id, name: 'Regular', sizeLabel: 'Regular', basePrice: 50, isActive: true, lifecycleStatus: 'ACTIVE' },
+      });
+      const ingredients = await linkSoleFlavor(variant.id, [branchC]);
+
+      const atC = await inventoryRepository.runOutOfStockCascade(branchC, ingredients.get(branchC) ?? '');
+      expect(atC.affectedProducts.map((p) => p.productId)).toContain(legacy.id);
+      const rowAtC = await prisma.branchProductAvailability.findUnique({ where: { branchId_productId: { branchId: branchC, productId: legacy.id } } });
+      expect(rowAtC?.isAvailable).toBe(false);
+    });
+  });
+
   it('creating and publishing never touches inventory balances', async () => {
     const before = await prisma.inventoryStock.findMany({ where: { inventoryItemId: itemId }, orderBy: { branchId: 'asc' } });
     const { productId } = await createConfiguredProduct('No Stock Change', [branchA, branchB]);

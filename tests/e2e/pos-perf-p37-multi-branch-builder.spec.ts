@@ -193,6 +193,9 @@ test.afterAll(async ({ request, baseURL }) => {
   if (!staffEmployeeId) return;
   const admin = await apiLogin(request, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password);
   await authedPatch(request, url, `/api/employees/${staffEmployeeId}`, admin.accessToken, { branch_ids: [MAIN_BRANCH_ID] });
+  // sellOneAt clocks out on success only; a failed sale assertion would leave the clock-in open.
+  const staff = await apiLogin(request, TEST_USERS.staff.email, TEST_USERS.staff.password);
+  await authedPost(request, url, '/api/attendance/clock-out', staff.accessToken, { employee_id: staffEmployeeId, branch_id: MAIN_BRANCH_ID });
   // Branches with sales can't be deleted; deactivate them so they don't crowd
   // other specs' branch selectors (e.g. P36R2 Scenario 5's "Main Branch" pick).
   for (const id of [branchA, branchB, branchC, branchUnassigned]) {

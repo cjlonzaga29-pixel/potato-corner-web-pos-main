@@ -347,6 +347,10 @@ async function buildPublicationPlan(
     const readiness = await productReadinessService.evaluateProductReadiness({ productId: product.id, branchId: branch.id });
     const branchIssues: PublicationIssue[] = [];
     const notices = new Set<string>();
+    // The guard publishProduct had before P38R, kept even if readiness ever omits the issue for it.
+    if (readiness.eligibleVariantCount === 0) {
+      sharedIssues.push({ code: 'NO_ELIGIBLE_VARIANTS', message: 'Add at least one active size with a price.', fix_step: 'sizes' });
+    }
     for (const issue of readiness.blockingIssues) {
       if (PUBLICATION_SETUP_CODES.has(issue.code)) continue;
       if (issue.code === 'FLAVOR_NOT_AVAILABLE_AT_BRANCH') {
@@ -392,6 +396,79 @@ async function loadPublicationTarget(productId: string, branchIds: string[], act
     assertSupervisorMayEnableAtBranch(existing, branch.id, true, actor);
   }
   return { existing, branches };
+}
+
+/**
+ * POS-PERF-P38R — the one publication operation every publish endpoint runs.
+ * The caller must already hold this product's productCatalogLockId inside
+ * `tx`. Re-checks the actor's live assignment and the branch-spread guard,
+ * evaluates buildPublicationPlan for exactly `branchIds` (the plan Review and
+ * the product page's check show), creates the missing zero-stock
+ * InventoryStock links only at those branches (createStockRows'
+ * skipDuplicates insert — never touches an existing row), verifies every
+ * planned link is present, then flips availability at those branches only.
+ * Any throw rolls the whole transaction back.
+ */
+async function publishWithinLock(tx: Prisma.TransactionClient, productId: string, branchIds: string[], actor: ActorContext) {
+  const { existing, branches } = await loadPublicationTarget(productId, branchIds, actor);
+  const plan = await buildPublicationPlan(existing, branches);
+  if (!plan.ready) {
+    const blocked = plan.branches.filter((b) => !b.is_published);
+    const blockingIssues = [...plan.issues, ...blocked.flatMap((b) => b.issues)];
+    throw new ProductError(
+      'PRODUCT_NOT_READY',
+      `Product setup is incomplete${plan.issues.length === 0 ? ` at ${blocked.filter((b) => b.issues.length > 0).map((b) => b.branch_name).join(', ')}` : ''}. Nothing was published.`,
+      409,
+      {
+        issues: plan.issues,
+        branches: blocked.map((b) => ({ branch_id: b.branch_id, branch_name: b.branch_name, blocking_issues: [...plan.issues, ...b.issues] })),
+        blocking_issues: dedupeIssues(blockingIssues),
+      },
+    );
+  }
+
+  const links = plan.branches.flatMap((b) => b.setup_items.map((item) => ({ branchId: b.branch_id, inventoryItemId: item.inventory_item_id })));
+  if (links.length > 0) {
+    await universalInventoryRepository.createStockRows(links, tx);
+    const present = new Set(
+      (await productsRepository.findStockPairs(
+        [...new Set(links.map((l) => l.branchId))],
+        [...new Set(links.map((l) => l.inventoryItemId))],
+        tx,
+      )).map((r) => `${r.branchId}:${r.inventoryItemId}`),
+    );
+    if (links.some((l) => !present.has(`${l.branchId}:${l.inventoryItemId}`))) {
+      throw new ProductError('PRODUCT_SETUP_FAILED', 'Branch inventory setup could not be completed. Nothing was published.', 409);
+    }
+  }
+
+  const rows = [];
+  for (const branch of branches) {
+    rows.push(await productsRepository.upsertBranchProductAvailability(branch.id, productId, true, actor.id, tx));
+  }
+  return { rows, stockLinks: links };
+}
+
+/** After commit: one INVENTORY_ITEM_BRANCH_ASSIGNED per item publication actually linked. A retry that links nothing writes none. */
+async function recordPublicationSetupAudit(
+  productId: string,
+  stockLinks: { branchId: string; inventoryItemId: string }[],
+  actor: ActorContext,
+  ipAddress: string | null,
+): Promise<void> {
+  const linksByItem = new Map<string, string[]>();
+  for (const link of stockLinks) linksByItem.set(link.inventoryItemId, [...(linksByItem.get(link.inventoryItemId) ?? []), link.branchId]);
+  for (const [inventoryItemId, assigned] of linksByItem) {
+    await recordAuditLog({
+      action: 'INVENTORY_ITEM_BRANCH_ASSIGNED',
+      entityType: 'inventory_stock',
+      entityId: inventoryItemId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      afterState: { inventory_item_id: inventoryItemId, assigned, source: 'product_publication', product_id: productId },
+      ipAddress,
+    });
+  }
 }
 
 /** Every branch this product currently has a branch_product_availability row for — the "branch rooms" a variant lifecycle event is broadcast to. */
@@ -2021,11 +2098,16 @@ export const productsService = {
 
   /**
    * Publish = enable BranchProductAvailability for this product at one
-   * branch, gated by productReadinessService. BRANCH_NOT_AVAILABLE is
-   * excluded from the gate: it is precisely the flag this action flips, so
-   * gating on it would make every first-time publish permanently blocked.
-   * Never auto-creates mappings or fixes anything — a NOT_READY product is
-   * simply rejected with its exact blocking issues.
+   * branch. BRANCH_NOT_AVAILABLE is never a gate: it is precisely the flag
+   * this action flips.
+   *
+   * POS-PERF-P38R — runs publishWithinLock for exactly [branchId], the same
+   * operation the builder's Add to POS runs for its whole selection: the
+   * gate is buildPublicationPlan, and a valid recipe/option item with no
+   * InventoryStock row at this branch gets that row at zero before the
+   * flip. Only this branch is set up or published — never the product's
+   * other selected branches. Still never creates recipes, mappings or
+   * conversions; invalid configuration is rejected with PRODUCT_NOT_READY.
    */
   /**
    * POS-PERF-P36R2 — the readiness evaluation and the availability flip
@@ -2040,35 +2122,14 @@ export const productsService = {
    * products.publish-safety.integration.test.ts.
    */
   async publishProduct(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
-    const product = await prisma.$transaction(async (tx) => {
+    const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
-
-      // POS-PERF-P37 — authorization (branch-spread guard) before readiness,
-      // so a branch the product may never be enabled at gets 403, not a
-      // readiness report for that branch.
-      const existing = await productsRepository.findById(productId);
-      if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
-      if (existing.status === 'discontinued' || existing.status === 'archived') {
-        throw new ProductError(
-          'PRODUCT_GLOBALLY_UNAVAILABLE',
-          'Cannot enable a globally discontinued or archived product for a branch',
-          409,
-        );
-      }
-      assertSupervisorMayEnableAtBranch(existing, branchId, true, actor);
-
-      const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId });
-      const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
-
-      if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
-        throw new ProductError('PRODUCT_NOT_READY', 'Product is not ready to publish at this branch', 409, {
-          blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
-        });
-      }
-
-      return productsRepository.upsertBranchProductAvailability(branchId, productId, true, actor.id, tx);
+      return publishWithinLock(tx, productId, [branchId], actor);
     });
+    // Exactly one row: publishWithinLock only ever touches the branches it was given.
+    const product = rows[0] as (typeof rows)[number];
 
+    await recordPublicationSetupAudit(productId, stockLinks, actor, ipAddress);
     await recordAuditLog({
       action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
       entityType: 'branch_product_availability',
@@ -2104,65 +2165,19 @@ export const productsService = {
    * primitive branch/item provisioning uses; never a receipt, movement, or
    * change to an existing row), only at the authorized selected branches,
    * then publishes. Any failure rolls both back.
+   *
+   * POS-PERF-P38R — that body is publishWithinLock, shared with the product
+   * page's single-branch publishProduct.
    */
   async publishProductToBranches(productId: string, branchIds: string[], actor: ActorContext, ipAddress: string | null) {
     const uniqueBranchIds = [...new Set(branchIds)];
 
     const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
-
-      const { existing, branches } = await loadPublicationTarget(productId, uniqueBranchIds, actor);
-      const plan = await buildPublicationPlan(existing, branches);
-      if (!plan.ready) {
-        const blocked = plan.branches.filter((b) => !b.is_published);
-        const blockingIssues = [...plan.issues, ...blocked.flatMap((b) => b.issues)];
-        throw new ProductError(
-          'PRODUCT_NOT_READY',
-          `Product setup is incomplete${plan.issues.length === 0 ? ` at ${blocked.filter((b) => b.issues.length > 0).map((b) => b.branch_name).join(', ')}` : ''}. Nothing was published.`,
-          409,
-          {
-            issues: plan.issues,
-            branches: blocked.map((b) => ({ branch_id: b.branch_id, branch_name: b.branch_name, blocking_issues: [...plan.issues, ...b.issues] })),
-            blocking_issues: dedupeIssues(blockingIssues),
-          },
-        );
-      }
-
-      const links = plan.branches.flatMap((b) => b.setup_items.map((item) => ({ branchId: b.branch_id, inventoryItemId: item.inventory_item_id })));
-      if (links.length > 0) {
-        await universalInventoryRepository.createStockRows(links, tx);
-        const present = new Set(
-          (await productsRepository.findStockPairs(
-            [...new Set(links.map((l) => l.branchId))],
-            [...new Set(links.map((l) => l.inventoryItemId))],
-            tx,
-          )).map((r) => `${r.branchId}:${r.inventoryItemId}`),
-        );
-        if (links.some((l) => !present.has(`${l.branchId}:${l.inventoryItemId}`))) {
-          throw new ProductError('PRODUCT_SETUP_FAILED', 'Branch inventory setup could not be completed. Nothing was published.', 409);
-        }
-      }
-
-      const written = [];
-      for (const branch of branches) {
-        written.push(await productsRepository.upsertBranchProductAvailability(branch.id, productId, true, actor.id, tx));
-      }
-      return { rows: written, stockLinks: links };
+      return publishWithinLock(tx, productId, uniqueBranchIds, actor);
     });
 
-    const linksByItem = new Map<string, string[]>();
-    for (const link of stockLinks) linksByItem.set(link.inventoryItemId, [...(linksByItem.get(link.inventoryItemId) ?? []), link.branchId]);
-    for (const [inventoryItemId, assigned] of linksByItem) {
-      await recordAuditLog({
-        action: 'INVENTORY_ITEM_BRANCH_ASSIGNED',
-        entityType: 'inventory_stock',
-        entityId: inventoryItemId,
-        actorId: actor.id,
-        actorRole: actor.role,
-        afterState: { inventory_item_id: inventoryItemId, assigned, source: 'product_publication', product_id: productId },
-        ipAddress,
-      });
-    }
+    await recordPublicationSetupAudit(productId, stockLinks, actor, ipAddress);
 
     for (const row of rows) {
       await recordAuditLog({

@@ -46,7 +46,16 @@ vi.mock('./products.repository.js', () => ({
     // Task 209.6 — Product Image Management (Admin Only)
     findImagePath: vi.fn(),
     updateImagePath: vi.fn(),
+    // POS-PERF-P38R — publishProduct now runs the shared publication plan.
+    findActiveBranchesByIds: vi.fn((ids: string[]) => Promise.resolve(ids.map((id) => ({ id, name: id })))),
+    findPublicationDependencies: vi.fn().mockResolvedValue([]),
+    findStockPairs: vi.fn().mockResolvedValue([]),
+    findUnitConversionsFor: vi.fn().mockResolvedValue([[], []]),
   },
+}));
+
+vi.mock('../universal-inventory/universal-inventory.repository.js', () => ({
+  universalInventoryRepository: { createStockRows: vi.fn().mockResolvedValue({ count: 0 }) },
 }));
 
 // Task 209.6 — mirrors expenses.service.test.ts's storageMock/sharp mocks
@@ -68,6 +77,7 @@ const storageMock = {
 // hit the real branchesRepository/prisma.
 vi.mock('../../lib/branch-access.js', () => ({
   hasBranchAccess: vi.fn(),
+  getAccessibleBranchIds: vi.fn().mockResolvedValue(['branch-a', 'branch-b']),
 }));
 
 // POS-PERF-P36 — catalog-authority.ts's hasActiveCatalogAuthorityForProduct
@@ -221,6 +231,7 @@ const { recordAuditLog } = await import('../../middleware/audit-log.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
+const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
 const { hasBranchAccess } = await import('../../lib/branch-access.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
@@ -823,12 +834,45 @@ describe('productsService.getProductReadiness (Phase D1 — Admin Readiness pane
 });
 
 describe('productsService.publishProduct (Phase D1)', () => {
-  it('blocks publish and returns the exact blocking issues when the product is NOT_READY', async () => {
+  it('blocks publish and returns the exact blocking issues when the configuration is incomplete', async () => {
     vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
       productReadinessResult({
         status: 'NOT_READY',
         sellable: false,
         readyVariantCount: 0,
+        blockingIssues: [
+          {
+            code: 'RECIPE_MISSING',
+            severity: 'blocking',
+            entityType: 'product_variant',
+            entityId: 'variant-1',
+            productVariantId: 'variant-1',
+            productId: 'prod-1',
+            branchId: 'branch-a',
+            message: 'Regular has no Recipe/BOM components.',
+            recommendedAction: 'Add at least one component.',
+          },
+        ],
+      }),
+    );
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+
+    await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
+      code: 'PRODUCT_NOT_READY',
+      statusCode: 409,
+      details: {
+        blocking_issues: [expect.objectContaining({ code: 'RECIPE_MISSING' })],
+      },
+    });
+    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P38R — the product page's Publish runs the same setup as the builder's Add to POS.
+  it('creates a missing zero-stock link at the requested branch only, then publishes there', async () => {
+    vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
+      productReadinessResult({
+        status: 'NOT_READY',
+        sellable: false,
         blockingIssues: [
           {
             code: 'INVENTORY_STOCK_MISSING',
@@ -844,15 +888,38 @@ describe('productsService.publishProduct (Phase D1)', () => {
         ],
       }),
     );
-
-    await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
-      code: 'PRODUCT_NOT_READY',
-      statusCode: 409,
-      details: {
-        blocking_issues: [expect.objectContaining({ code: 'INVENTORY_STOCK_MISSING' })],
+    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findPublicationDependencies).mockResolvedValueOnce([
+      {
+        id: 'variant-1',
+        name: 'Regular',
+        productComponents: [
+          { recipeUnitId: null, recipeUnit: null, inventoryItem: { id: 'item-1', name: 'Potato', deletedAt: null, baseUnitId: 'g', baseUnit: { code: 'g' } } },
+        ],
+        optionGroupAssignments: [],
       },
-    });
-    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+    ] as never);
+    // Absent during the plan; present when re-read inside the transaction.
+    vi.mocked(productsRepository.findStockPairs)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ branchId: 'branch-a', inventoryItemId: 'item-1' }] as never);
+    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
+      id: 'row-1',
+      branchId: 'branch-a',
+      isAvailable: true,
+      updatedAt: new Date(),
+      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+    } as never);
+
+    const result = await productsService.publishProduct('prod-1', 'branch-a', SUPERVISOR, null);
+
+    expect(universalInventoryRepository.createStockRows).toHaveBeenCalledWith([{ branchId: 'branch-a', inventoryItemId: 'item-1' }], txMock);
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledTimes(1);
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPERVISOR.id, txMock);
+    expect(recordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'INVENTORY_ITEM_BRANCH_ASSIGNED', afterState: expect.objectContaining({ assigned: ['branch-a'] }) }),
+    );
+    expect((result as { branch_id: string }).branch_id).toBe('branch-a');
   });
 
   it('blocks publish when the product has no eligible variants at all, even with zero other blocking issues', async () => {

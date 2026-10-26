@@ -22,6 +22,7 @@ import {
   useProductImage,
   useUploadProductImage,
   usePublishProduct,
+  usePublicationCheck,
   useUnpublishProduct,
   isReadyToPublish,
 } from '@/hooks/queries/use-products';
@@ -36,6 +37,7 @@ import { EditVariantFlavorDialog } from '@/components/admin/products/edit-varian
 import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
 import { BranchCopyDialog } from '@/components/admin/products/branch-copy-dialog';
 import { ReplaceSourceDialog } from '@/components/admin/products/replace-source-dialog';
+import { ProductWriteError } from '@/components/products/product-write-error';
 
 interface SupervisorProductDetailPageProps {
   params: Promise<{ productId: string }>;
@@ -314,6 +316,41 @@ function VariantsTab({
   const sortedVariants = [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
   const isPublishedAtBranch = branchId ? product.branch_availability.some((row) => row.branch_id === branchId && row.is_available) : false;
 
+  // POS-PERF-P38R — Publish is gated on the server's own publication plan for
+  // this one branch (the decision POST /publish makes), not on sale
+  // readiness: a missing inventory link that publishing creates, or being
+  // unpublished, never disables it. Only checked while there is something
+  // to publish and the actor may publish here.
+  const publicationCheck = usePublicationCheck(product.id, branchId && isOwner && !isPublishedAtBranch ? [branchId] : []);
+  const [publishError, setPublishError] = useState<Error | null>(null);
+  const plan = publicationCheck.data;
+  const branchPlan = plan?.branches.find((b) => b.branch_id === branchId);
+  const publicationIssues = plan ? [...plan.issues, ...(branchPlan?.issues ?? [])] : [];
+  const canPublish = Boolean(plan?.ready) && !publishProduct.isPending && !isArchived;
+
+  async function handlePublish(targetBranchId: string) {
+    setPublishError(null);
+    try {
+      await publishProduct.mutateAsync(targetBranchId);
+    } catch (error) {
+      // Keep the page as it is; the inline error explains what happened.
+      setPublishError(error instanceof Error ? error : new Error('Failed to publish this product.'));
+    }
+  }
+
+  function publicationSummary(): string {
+    if (isPublishedAtBranch) return 'On POS at your branch.';
+    if (!isOwner) {
+      return isReadyToPublish(readiness.data && readiness.data.scope === 'branch' ? readiness.data : null)
+        ? 'Readiness checks pass — ready to publish.'
+        : 'Resolve the blocking issues below before publishing.';
+    }
+    if (publicationCheck.isLoading) return 'Checking publication setup…';
+    if (publicationCheck.error) return `Couldn't check this product: ${publicationCheck.error.message}`;
+    if (!plan?.ready) return 'Fix the setup below before publishing.';
+    return 'Ready to publish.';
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -347,11 +384,15 @@ function VariantsTab({
               <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
                 <div className="flex-1">
                   <p className="text-sm font-medium">{isPublishedAtBranch ? 'Published at your branch' : 'Not published at your branch'}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {isReadyToPublish(readiness.data)
-                      ? 'Readiness checks pass — ready to publish.'
-                      : 'Resolve the blocking issues below before publishing.'}
+                  <p className="text-xs text-muted-foreground" data-testid="publication-summary">
+                    {publicationSummary()}
                   </p>
+                  {!isPublishedAtBranch && branchPlan && branchPlan.setup_items.length > 0 && (
+                    <p className="text-xs text-muted-foreground" data-testid="publication-setup-items">
+                      Publishing also adds {branchPlan.setup_items.length === 1 ? 'this item' : `these ${branchPlan.setup_items.length} items`} to
+                      this branch&apos;s inventory at zero stock: {branchPlan.setup_items.map((item) => item.name).join(', ')}.
+                    </p>
+                  )}
                 </div>
                 {isOwner && (
                   <div className="flex gap-2">
@@ -370,8 +411,8 @@ function VariantsTab({
                       <Button
                         type="button"
                         size="sm"
-                        disabled={!isReadyToPublish(readiness.data) || publishProduct.isPending || isArchived}
-                        onClick={() => void publishProduct.mutateAsync(branchId)}
+                        disabled={!canPublish}
+                        onClick={() => void handlePublish(branchId)}
                       >
                         {publishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                         Publish
@@ -390,6 +431,41 @@ function VariantsTab({
                     )}
                   </div>
                 )}
+              </div>
+              {!isPublishedAtBranch && publicationIssues.length > 0 && (
+                <ul className="space-y-2" data-testid="publication-issues">
+                  {publicationIssues.map((issue) => (
+                    <li key={`${issue.code}-${issue.message}`} className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm">
+                      <span>{issue.message}</span>
+                      {issue.fix_step === 'details' && (
+                        <Button variant="outline" size="sm" onClick={() => onNavigateToTab('overview')}>
+                          Fix
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {!isPublishedAtBranch &&
+                branchPlan?.notices.map((notice) => (
+                  <p key={notice} className="text-xs text-muted-foreground">
+                    {notice}
+                  </p>
+                ))}
+              {publishError && (
+                <ProductWriteError
+                  error={publishError}
+                  failedTitle="Couldn't publish this product"
+                  pausedTitle="Publishing is paused for maintenance"
+                  testId="product-publish-error"
+                />
+              )}
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Sale readiness at this branch</h3>
+                <p className="text-xs text-muted-foreground">
+                  What the POS checks before each sale. An unpublished product and inventory links Publish will add are listed here until
+                  it is published.
+                </p>
               </div>
               <ReadinessChecklist
                 data={readiness.data}

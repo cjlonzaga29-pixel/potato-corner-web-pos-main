@@ -38,13 +38,13 @@ import {
   useDeleteVariant,
   usePublicationCheck,
   usePublishProductToBranches,
-  ProductApiError,
 } from '@/hooks/queries/use-products';
 import {
   useVariantOptionGroups,
   useUnassignVariantOptionGroup,
 } from '@/hooks/queries/use-product-options';
 import { RecipeBomPanel } from '@/components/products/recipe-bom-panel';
+import { ProductWriteError } from '@/components/products/product-write-error';
 import { FlavorSlotPanel } from '@/components/admin/products/flavor-slot-panel';
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
@@ -468,7 +468,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
             </div>
 
             {submitError && (
-              <BuilderWriteError error={submitError} failedTitle="Couldn't save this product" pausedTitle="Saving is paused for maintenance" />
+              <ProductWriteError error={submitError} failedTitle="Couldn't save this product" pausedTitle="Saving is paused for maintenance" testId="builder-write-error" />
             )}
 
             <Button type="submit" disabled={isSubmitting || branchesLoading || selectedBranchIds.length === 0}>
@@ -796,26 +796,6 @@ const BRANCH_STATUS_LABELS: Record<
   missing_setup: { label: 'Missing setup', variant: 'warning' },
 };
 
-/**
- * POS-PERF-P38 — a failed builder write stays on screen until the next
- * attempt (a toast disappears). Only an actual SERVICE_WRITE_GATE_CLOSED
- * response is described as maintenance; anything else shows its own message.
- */
-function BuilderWriteError({ error, failedTitle, pausedTitle }: { error: Error; failedTitle: string; pausedTitle: string }) {
-  const paused = error instanceof ProductApiError && error.code === 'SERVICE_WRITE_GATE_CLOSED';
-  return (
-    <Alert variant={paused ? 'default' : 'destructive'} data-testid="builder-write-error">
-      <AlertTriangle className="h-4 w-4" />
-      <AlertTitle>{paused ? pausedTitle : failedTitle}</AlertTitle>
-      <AlertDescription>
-        {paused
-          ? 'Changes are temporarily paused while the system is updated. Nothing was changed, and everything you entered is still here. Try again in a few minutes.'
-          : `${error.message} Nothing you entered was lost.`}
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 function PublicationIssueList({ issues, onFix }: { issues: PublicationIssue[]; onFix: (step: BuilderStep) => void }) {
   return (
     <ul className="space-y-2">
@@ -977,7 +957,12 @@ function ReviewStep({
       )}
 
       {publishError && (
-        <BuilderWriteError error={publishError} failedTitle="Couldn't add to POS" pausedTitle="Add to POS is paused for maintenance" />
+        <ProductWriteError
+          error={publishError}
+          failedTitle="Couldn't add to POS"
+          pausedTitle="Add to POS is paused for maintenance"
+          testId="builder-write-error"
+        />
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 pt-2">

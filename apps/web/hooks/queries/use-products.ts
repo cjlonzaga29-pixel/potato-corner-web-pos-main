@@ -379,6 +379,8 @@ export function useProductReadiness(productId: string | null | undefined, branch
  * POS-PERF-P38 — Review's single source of truth: the server's own plan for
  * Add to POS at these branches (the exact decision publish-branches makes),
  * so the button can never disagree with the server about what blocks it.
+ * POS-PERF-P38R — the product page reads it for its one branch: the same
+ * decision its single-branch publish makes.
  */
 export function usePublicationCheck(productId: string | null | undefined, branchIds: string[]) {
   const key = [...branchIds].sort().join(',');
@@ -396,7 +398,9 @@ export function usePublicationCheck(productId: string | null | undefined, branch
 }
 
 /**
- * POS-PERF-P36R — mirrors products.service.ts's publishProduct exactly:
+ * POS-PERF-P36R — mirrors products.service.ts's replaceSharedProductAtBranch
+ * gate (and, before POS-PERF-P38R, publishProduct's — the product page's
+ * Publish now reads usePublicationCheck instead):
  * BRANCH_NOT_AVAILABLE is the one blocking issue publish itself resolves,
  * so it must never be a precondition for enabling the Publish/"Add to POS"
  * button. readiness.sellable (= blockingIssues.length === 0, no exclusion)
@@ -429,14 +433,20 @@ export function usePublishProduct(productId: string) {
         method: 'POST',
         body: JSON.stringify({ branch_id: branchId }),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to publish product'));
+      if (!response.data) throw productApiError(response, 'Failed to publish product');
       return response.data;
     },
     onSuccess: (_data, branchId) => {
       invalidateAfterPublishChange(queryClient, productId, branchId);
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
       toast.success('Product published at this branch');
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: () => {
+      // POS-PERF-P38R — same as Add to POS: the product page shows the error
+      // inline and persistent, and refetches the plan in case setup changed.
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
+    },
   });
 }
 

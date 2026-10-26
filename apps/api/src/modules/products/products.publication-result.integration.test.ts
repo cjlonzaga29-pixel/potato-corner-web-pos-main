@@ -1,10 +1,7 @@
 import 'dotenv/config';
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createProductSchema } from '@potato-corner/shared';
-
-const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
-vi.mock('@sentry/node', async (importOriginal) => ({ ...(await importOriginal<typeof import('@sentry/node')>()), captureException: sentry.captureException }));
 
 /**
  * POS-PERF-P38R3 — what happens after publication commits, against real
@@ -16,28 +13,30 @@ vi.mock('@sentry/node', async (importOriginal) => ({ ...(await importOriginal<ty
  * retry after a lost response, and concurrent retries — none may duplicate
  * inventory links or audit entries, and no required entry may vanish
  * silently.
+ *
+ * POS-PERF-P38R4 — the entries are now durable intents committed with the
+ * publication and delivered by the audit outbox worker, so the response no
+ * longer waits for them and an audit failure can no longer touch the
+ * request. The audit-failure cases moved to
+ * audit-outbox/audit-outbox.integration.test.ts (worker-level faults).
  */
 const databaseUrl = process.env.DATABASE_URL ?? '';
 const isLocalDatabase = /(^|@)(127\.0\.0\.1|localhost)(:|\/)/.test(databaseUrl);
 
 const { prisma } = await import('../../lib/prisma.js');
 const { productsService } = await import('./products.service.js');
+const { runAuditOutboxCycle } = await import('../audit-outbox/audit-outbox.worker.js');
 
 type Actor = { id: string; role: string };
-
-/** Fault injection on audit_logs inserts only. Inactive unless a test sets it. */
-const faults = {
-  auditDelayMs: 0,
-  /** Fail this many audit INSERT attempts before the statement runs. */
-  failBefore: 0,
-  /** Run this many audit INSERTs, then throw as if the reply was lost. */
-  failAfter: 0,
-  failAlways: false,
-};
 
 describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry safety (real Postgres)', () => {
   const suffix = randomUUID().slice(0, 8);
   const userIds: string[] = [];
+
+  async function deliverAudits() {
+    const pending = await prisma.auditOutbox.findMany({ where: { actorId: { in: userIds }, status: { not: 'delivered' } }, select: { groupId: true } });
+    if (pending.length > 0) await runAuditOutboxCycle({ groupIds: [...new Set(pending.map((row) => row.groupId))], batchSize: 1000 });
+  }
   const branchIds: string[] = [];
   const itemIds: string[] = [];
   const unitIds: string[] = [];
@@ -95,6 +94,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry s
 
   /** Every audit entry this publication flow writes for one product, by kind. */
   async function audits(productId: string) {
+    await deliverAudits();
     const rows = await prisma.auditLog.findMany({
       where: { actorId: supervisor.id, action: { in: ['INVENTORY_ITEM_BRANCH_ASSIGNED', 'PRODUCT_BRANCH_AVAILABILITY_CHANGED'] } },
       orderBy: { createdAt: 'asc' },
@@ -121,22 +121,6 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry s
   }
 
   beforeAll(async () => {
-    prisma.$use(async (params, next) => {
-      if (params.model !== 'AuditLog' || params.action !== 'create') return next(params);
-      if (faults.auditDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, faults.auditDelayMs));
-      if (faults.failAlways) throw new Error('simulated audit outage');
-      if (faults.failBefore > 0) {
-        faults.failBefore -= 1;
-        throw new Error('simulated audit failure before insert');
-      }
-      const result: unknown = await next(params);
-      if (faults.failAfter > 0) {
-        faults.failAfter -= 1;
-        throw new Error('simulated lost reply after audit insert');
-      }
-      return result;
-    });
-
     const user = await prisma.user.create({
       data: { role: 'supervisor', firstName: 'P38R3', lastName: 'Sup', employmentType: 'regular', email: `p38r3-sup-${suffix}@test.local` },
     });
@@ -157,12 +141,6 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry s
     branchB = await makeBranch('B');
   });
 
-  afterEach(() => {
-    Object.assign(faults, { auditDelayMs: 0, failBefore: 0, failAfter: 0, failAlways: false });
-    sentry.captureException.mockClear();
-    vi.restoreAllMocks();
-  });
-
   afterAll(async () => {
     const productIds = (await prisma.product.findMany({ where: { createdBy: { in: userIds } }, select: { id: true } })).map((p) => p.id);
     const variantIds = (await prisma.productVariant.findMany({ where: { productId: { in: productIds } }, select: { id: true } })).map((v) => v.id);
@@ -178,6 +156,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry s
     await prisma.inventoryItem.deleteMany({ where: { id: { in: itemIds } } });
     await prisma.unitOfMeasure.deleteMany({ where: { id: { in: unitIds } } });
     await prisma.userBranchAssignment.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.auditOutbox.deleteMany({ where: { actorId: { in: userIds } } });
     await prisma.auditLog.deleteMany({ where: { actorId: { in: userIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.branch.deleteMany({ where: { id: { in: branchIds } } });
@@ -185,23 +164,28 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry s
 
   let productId = '';
 
-  it('commits before slow audit writes finish: the publication is visible while the response is still pending', async () => {
+  it('answers once the publication and its audit intents commit, without waiting for the audit chain', async () => {
     productId = await createProduct('Slow Audit', [branchA, branchB]);
-    faults.auditDelayMs = 400;
-    let settled = false;
-    const pending = productsService.publishProductToBranches(productId, [branchA, branchB], supervisor, null).finally(() => {
-      settled = true;
-    });
 
-    // Another connection sees the committed publication before the call returns.
-    const deadline = Date.now() + 10_000;
-    while ((await publishedAt(productId)).length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    const result = await productsService.publishProductToBranches(productId, [branchA, branchB], supervisor, null);
+
+    // At response time: published and linked, the entries durable but not yet in audit_logs.
+    expect(result.setup.stock_links).toHaveLength(4);
     expect(await publishedAt(productId)).toEqual([branchA, branchB].sort());
     expect(await linkCount([branchA, branchB])).toBe(4);
-    expect(settled).toBe(false);
+    const inChain = await prisma.auditLog.findMany({
+      where: { actorId: supervisor.id, action: { in: ['INVENTORY_ITEM_BRANCH_ASSIGNED', 'PRODUCT_BRANCH_AVAILABILITY_CHANGED'] } },
+    });
+    expect(inChain.filter((r) => JSON.stringify(r.afterState).includes(productId))).toEqual([]);
+    const intents = await prisma.auditOutbox.findMany({ where: { actorId: supervisor.id, status: 'pending' }, orderBy: { position: 'asc' } });
+    expect(intents.map((i) => i.action)).toEqual([
+      'INVENTORY_ITEM_BRANCH_ASSIGNED',
+      'INVENTORY_ITEM_BRANCH_ASSIGNED',
+      'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
+      'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
+    ]);
 
-    const result = await pending;
-    expect(result.setup.stock_links).toHaveLength(4);
+    // The worker delivers them.
     const written = await audits(productId);
     expect(written.assigned).toEqual(expectedPairs([branchA, branchB]));
     expect(written.availability).toEqual([branchA, branchB].sort());
@@ -251,59 +235,5 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R3 publication result and retry s
     const row = await productsService.publishProduct(single, branchA, supervisor, null);
     expect(row.is_available).toBe(true);
     expect(await audits(single)).toEqual(before);
-  });
-
-  it('a transient audit failure after commit is retried: every entry is written exactly once', async () => {
-    const fresh = await makeBranch('T');
-    const transient = await createProduct('Transient', [fresh]);
-    faults.failBefore = 2;
-
-    const result = await productsService.publishProductToBranches(transient, [fresh], supervisor, null);
-
-    expect(result.setup.stock_links).toHaveLength(2);
-    const written = await audits(transient);
-    expect(written.assigned).toEqual(expectedPairs([fresh]));
-    expect(written.availability).toEqual([fresh]);
-    expect(sentry.captureException).not.toHaveBeenCalled();
-  });
-
-  it('a lost reply to an audit INSERT that landed is not written twice', async () => {
-    const fresh = await makeBranch('L');
-    const lostReply = await createProduct('Lost Reply', [fresh]);
-    faults.failAfter = 1;
-
-    await productsService.publishProductToBranches(lostReply, [fresh], supervisor, null);
-
-    const written = await audits(lostReply);
-    expect(written.assigned).toEqual(expectedPairs([fresh]));
-    expect(written.availability).toEqual([fresh]);
-    expect(new Set(written.hashes).size).toBe(written.hashes.length);
-  });
-
-  it('a persistent audit outage after commit still reports the committed publication, and reports every missing entry loudly', async () => {
-    const fresh = await makeBranch('O');
-    const outage = await createProduct('Outage', [fresh]);
-    faults.failAlways = true;
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    const result = await productsService.publishProductToBranches(outage, [fresh], supervisor, null);
-
-    expect(result.branches.map((b) => b.is_available)).toEqual([true]);
-    expect(await publishedAt(outage)).toEqual([fresh]);
-    expect(await audits(outage)).toEqual({ assigned: [], availability: [], hashes: [] });
-    // 2 assignment entries + 1 availability entry: each one reported with its full content.
-    expect(sentry.captureException).toHaveBeenCalledTimes(3);
-    const reported = errors.mock.calls.filter((call) => call[0] === 'AUDIT_ENTRY_NOT_RECORDED');
-    expect(reported.map((call) => (call[1] as { entry: { action: string } }).entry.action).sort()).toEqual([
-      'INVENTORY_ITEM_BRANCH_ASSIGNED',
-      'INVENTORY_ITEM_BRANCH_ASSIGNED',
-      'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
-    ]);
-
-    // Retrying once the outage is over changes nothing.
-    faults.failAlways = false;
-    const retry = await productsService.publishProductToBranches(outage, [fresh], supervisor, null);
-    expect(retry.setup.stock_links).toEqual([]);
-    expect(await linkCount([fresh])).toBe(2);
   });
 });

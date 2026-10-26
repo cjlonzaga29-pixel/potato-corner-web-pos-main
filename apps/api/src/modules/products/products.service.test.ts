@@ -227,12 +227,17 @@ vi.mock('../../lib/prisma.js', () => ({
 
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
-  recordCommittedAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
+// POS-PERF-P38R4 — publication enqueues its audit entries in its transaction.
+vi.mock('../audit-outbox/audit-outbox.repository.js', () => ({
+  auditOutboxRepository: { enqueue: vi.fn().mockResolvedValue('group-1') },
 }));
 
 const { productsRepository } = await import('./products.repository.js');
 const { productsService, __resetSignedUrlCacheForTests } = await import('./products.service.js');
-const { recordAuditLog, recordCommittedAuditLog } = await import('../../middleware/audit-log.js');
+const { recordAuditLog } = await import('../../middleware/audit-log.js');
+const { auditOutboxRepository } = await import('../audit-outbox/audit-outbox.repository.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
@@ -934,9 +939,13 @@ describe('productsService.publishProduct (Phase D1)', () => {
     expect(universalInventoryRepository.createStockRows).toHaveBeenCalledWith([{ branchId: 'branch-a', inventoryItemId: 'item-1' }], txMock);
     expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledTimes(1);
     expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledWith(['branch-a'], 'prod-1', SUPERVISOR.id, txMock);
-    expect(recordCommittedAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'INVENTORY_ITEM_BRANCH_ASSIGNED', afterState: expect.objectContaining({ assigned: ['branch-a'] }) }),
-    );
+    // POS-PERF-P38R4 — one batch of intents, in the publication transaction: setup first, then availability.
+    expect(auditOutboxRepository.enqueue).toHaveBeenCalledTimes(1);
+    expect(auditOutboxRepository.enqueue).toHaveBeenCalledWith(txMock, [
+      expect.objectContaining({ action: 'INVENTORY_ITEM_BRANCH_ASSIGNED', actorId: SUPERVISOR.id, afterState: expect.objectContaining({ assigned: ['branch-a'] }) }),
+      expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED', entityId: 'row-1', branchId: 'branch-a' }),
+    ]);
+    expect(recordAuditLog).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
     expect((result as { branch_id: string }).branch_id).toBe('branch-a');
 
     // POS-PERF-P38R2 — every publication read uses the locked transaction's
@@ -1000,7 +1009,9 @@ describe('productsService.publishProduct (Phase D1)', () => {
 
     expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledWith(['branch-a'], 'prod-1', SUPER_ADMIN.id, txMock);
     expect((result as { is_available: boolean }).is_available).toBe(true);
-    expect(recordCommittedAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
+    expect(auditOutboxRepository.enqueue).toHaveBeenCalledWith(txMock, [
+      expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED', afterState: { productId: 'prod-1', isAvailable: true } }),
+    ]);
   });
 
   // POS-PERF-P34R — branch_exclusive has no ongoing enforcement past

@@ -93,3 +93,15 @@ export function inventoryApprovalRowLockId(requestId: string): bigint {
 export function productCatalogLockId(productId: string): bigint {
   return hashToLockId(sha256Hex(`product-catalog:${productId}`));
 }
+
+/**
+ * Canonical advisory-lock key for appending to the audit_logs hash chain
+ * from the audit outbox (POS-PERF-P38R4). Each delivery reads the chain's
+ * tail and inserts entries chained to it inside one transaction holding
+ * this lock, so two outbox workers (on one or several API instances) can
+ * never chain to the same tail. Legacy recordAuditLog writers do not take
+ * it (unchanged; see the P38 runbook).
+ */
+export function auditChainLockId(): bigint {
+  return hashToLockId(sha256Hex('audit-log-chain'));
+}

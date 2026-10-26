@@ -10,8 +10,24 @@
 //   audits <productId>                                        -> [ "branchId:itemId", ... ]
 //   availability <productId>                                  -> { published: [branchId...], audited: [branchId...] }
 //       POS-PERF-P38R3: where it is on POS now, and one entry per PRODUCT_BRANCH_AVAILABILITY_CHANGED written for it
+//   POS-PERF-P38R4: audits/availability first wait (up to 30 s) until the running API's audit outbox
+//   worker has delivered every intent publication enqueued for the product, so they read settled entries.
 const path = require('node:path');
 const { PrismaClient } = require(path.join(__dirname, '..', '..', '..', 'apps', 'api', 'node_modules', '@prisma', 'client'));
+
+async function waitForDelivery(prisma, productId) {
+  const where = {
+    status: { not: 'delivered' },
+    OR: [{ afterState: { path: ['product_id'], equals: productId } }, { afterState: { path: ['productId'], equals: productId } }],
+  };
+  for (let i = 0; i < 60; i++) {
+    const pending = await prisma.auditOutbox.findMany({ where, select: { status: true } });
+    if (pending.length === 0) return;
+    if (pending.some((r) => r.status === 'stuck')) throw new Error(`audit outbox: stuck intents for ${productId}`);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`audit outbox: intents for ${productId} still undelivered after 30 s (is the API's worker running?)`);
+}
 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
@@ -46,6 +62,7 @@ async function main() {
     }
     if (mode === 'audits') {
       const [productId] = args;
+      await waitForDelivery(prisma, productId);
       const rows = await prisma.auditLog.findMany({ where: { action: 'INVENTORY_ITEM_BRANCH_ASSIGNED' } });
       const pairs = rows
         .filter((r) => r.afterState && r.afterState.product_id === productId)
@@ -56,6 +73,7 @@ async function main() {
     }
     if (mode === 'availability') {
       const [productId] = args;
+      await waitForDelivery(prisma, productId);
       const rows = await prisma.branchProductAvailability.findMany({ where: { productId, isAvailable: true } });
       const audits = await prisma.auditLog.findMany({ where: { action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' } });
       const audited = audits.filter((r) => r.afterState && r.afterState.productId === productId).map((r) => r.branchId);

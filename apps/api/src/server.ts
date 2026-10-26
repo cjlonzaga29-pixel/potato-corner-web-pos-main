@@ -9,6 +9,7 @@ import { scheduleNightlyEodSummary } from './queues/eod.queue.js';
 import { scheduleEvery } from './lib/daily-scheduler.js';
 import { sweepExpiredInventoryEvidence } from './modules/universal-inventory/universal-inventory.service.js';
 import { createInventoryDeductionWorker } from './modules/inventory-deduction/inventory-deduction.worker.js';
+import { createAuditOutboxWorker } from './modules/audit-outbox/audit-outbox.worker.js';
 import { authRepository } from './modules/auth/auth.repository.js';
 import { disconnectPrisma, prisma } from './lib/prisma.js';
 import {
@@ -86,6 +87,13 @@ async function start(): Promise<void> {
   inventoryDeductionWorker.start();
   console.log('Inventory deduction worker started (polling every 2s).');
 
+  // POS-PERF-P38R4 — unconditional for the same reason: publication commits
+  // its audit intents with the change and returns; this is what appends
+  // them to audit_logs. Safe on several instances (claim token + guard).
+  const auditOutboxWorker = createAuditOutboxWorker();
+  auditOutboxWorker.start();
+  console.log('Audit outbox worker started (polling every 5s).');
+
   const httpServer = createServer(app);
   createSocketServer(httpServer);
 
@@ -101,7 +109,7 @@ async function start(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`${signal} received — shutting down gracefully.`);
-    await inventoryDeductionWorker.stop();
+    await Promise.all([inventoryDeductionWorker.stop(), auditOutboxWorker.stop()]);
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     await disconnectPrisma();
     process.exit(0);

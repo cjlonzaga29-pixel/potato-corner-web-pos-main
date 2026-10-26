@@ -167,11 +167,12 @@ describe.skipIf(!enabled)('POS-PERF-P38R2 publication transaction budget (measur
     lastLog = [...queryLog];
     const statements = queryLog.filter((q) => !/^(BEGIN|COMMIT|ROLLBACK)/.test(q.query)).length;
     const auditInserts = queryLog.filter((q) => /INSERT INTO "public"\."audit_logs"/.test(q.query)).length;
+    const intentInserts = queryLog.filter((q) => /INSERT INTO "public"\."audit_outbox"/.test(q.query)).length;
     const lockWait = queryLog.find((q) => q.query.includes('pg_advisory_xact_lock'))?.duration ?? 0;
     const begin = queryLog.findIndex((q) => q.query.startsWith('BEGIN'));
     const end = queryLog.findIndex((q) => /^(COMMIT|ROLLBACK)/.test(q.query));
     const inTx = begin >= 0 && end > begin ? end - begin - 1 : 0;
-    return { statements, inTx, auditInserts, txMs: Math.round(txMs), totalMs: Math.round(totalMs), lockWait, error };
+    return { statements, inTx, auditInserts, intentInserts, txMs: Math.round(txMs), totalMs: Math.round(totalMs), lockWait, error };
   }
 
   beforeAll(async () => {
@@ -211,6 +212,7 @@ describe.skipIf(!enabled)('POS-PERF-P38R2 publication transaction budget (measur
     await prisma.inventoryItem.deleteMany({ where: { id: { in: itemIds } } });
     await prisma.unitOfMeasure.deleteMany({ where: { id: { in: unitIds } } });
     await prisma.userBranchAssignment.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.auditOutbox.deleteMany({ where: { actorId: { in: userIds } } });
     await prisma.auditLog.deleteMany({ where: { actorId: { in: userIds } } });
     await prisma.branch.updateMany({ where: { id: { in: branchIds } }, data: { status: 'inactive' } });
     await prisma.$disconnect();
@@ -242,11 +244,34 @@ describe.skipIf(!enabled)('POS-PERF-P38R2 publication transaction budget (measur
           statements: result.statements,
           inTx: result.inTx,
           audits: result.auditInserts,
+          intents: result.intentInserts,
           txMs: result.txMs,
           totalMs: result.totalMs,
           error: result.error ?? '',
         });
         if (rttMs === 0) expect(result.error).toBeNull();
+        // POS-PERF-P38R4 — the audit entries are delivered by the outbox worker, outside the request: time that separately.
+        const pending = await prisma.auditOutbox.findMany({ where: { actorId: supervisor.id, status: 'pending' }, select: { groupId: true } });
+        if (pending.length > 0) {
+          const { runAuditOutboxCycle } = await import('../audit-outbox/audit-outbox.worker.js');
+          const delivery = await measure(() => runAuditOutboxCycle({ groupIds: [...new Set(pending.map((r) => r.groupId))], batchSize: 1000 }));
+          rows.push({
+            scenario: scenario.label,
+            rtt: rttMs,
+            branches: scenario.branches,
+            components: product.componentCount,
+            items: product.distinctItems,
+            pass: `${pass}: worker delivery (${pending.length} entries)`,
+            links: '',
+            statements: delivery.statements,
+            inTx: delivery.inTx,
+            audits: delivery.auditInserts,
+            intents: '',
+            txMs: delivery.txMs,
+            totalMs: delivery.totalMs,
+            error: delivery.error ?? '',
+          });
+        }
         if (process.env.PUBLICATION_BUDGET_DUMP === scenario.label + pass) {
           const fs = await import('node:fs');
           fs.writeFileSync(process.env.PUBLICATION_BUDGET_DUMP_FILE ?? 'dump.txt', lastLog.map((q) => q.query.replace(/\s+/g, ' ').slice(0, 220)).join('\n'));

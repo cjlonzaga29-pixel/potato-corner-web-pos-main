@@ -431,6 +431,7 @@ No schema change, no migration.
   writes an assignment entry, because nothing is linked. The page hides
   Publish once a product is published.
 - Assignment audit entries are written after commit (existing pattern).
+  *P38R4: now durable intents committed with the publication, see below.*
 - The availability `PATCH` endpoints and replacement keep their own
   semantics (above). They are not routed through the shared operation.
 
@@ -992,6 +993,9 @@ library.
 
 ### Why not move audit into the transaction, or add a durable outbox
 
+> Superseded by **P38R4** (below): the crash window this section accepted
+> is closed by a durable audit outbox.
+
 - **In the transaction:** each entry is 2 more sequential statements (a
   first S4 publish has 27 entries, 54 statements). That brings back the
   per-entry growth P38R2 removed, and the timeout risk with it. The chain
@@ -1068,7 +1072,8 @@ Attempts before the final run, all harness problems:
 
 ## Remaining timeout and concurrency limits
 
-- **The response still waits for the audit chain.** Answers lost in that
+- *(P38R4: no longer true. The response returns at commit.)*
+  **The response still waits for the audit chain.** Answers lost in that
   window are now reconciled, not hidden. A failing entry adds up to
   1.25 s of retry waits plus its attempts. During an audit-database outage
   this lengthens the response, and therefore the ambiguity window.
@@ -1179,3 +1184,329 @@ production data, configuration, billing or credentials were touched.
 Local leftovers in `pos_verify`: the integration test deletes its data in
 `afterAll`. The browser spec's branches are deactivated in `afterAll`, and
 its products/items stay, as with earlier phases.
+
+---
+
+# POS-PERF-P38R4 — Durable Publication Audit Delivery
+
+## What changed
+
+P38R3 wrote publication's audit entries **after** commit, awaited, in the
+request. A process crash, kill or deploy between COMMIT and the last audit
+INSERT lost the remaining entries for good (P38R3 "Tradeoff accepted"). It
+also made the response wait 2 round trips per entry.
+
+P38R4 closes that window with a durable outbox:
+
+| Step | Where | What |
+| --- | --- | --- |
+| 1. Publication transaction | `publishWithinLock` (both publish endpoints) | Unchanged checks, links and availability, **plus one `createMany` into `audit_outbox`**: one intent per entry for what this call actually changed. Same entries, same order as before: one `INVENTORY_ITEM_BRANCH_ASSIGNED` per newly linked item, then one `PRODUCT_BRANCH_AVAILABILITY_CHANGED` per newly published branch. Nothing changed → nothing enqueued (no statement). |
+| 2. Commit | `prisma.$transaction` resolves | Links, availability and intents are durable together. Any throw before it rolls back all three. |
+| 3. Response | endpoint returns | **Right after commit.** It never waits for the audit chain. Response shapes are unchanged and carry no audit information, so a queued or failing delivery can never be shown as a failed publication. |
+| 4. Delivery | `audit-outbox.worker.ts`, started in `server.ts` on every API instance (poll 5 s) | Appends each group to `audit_logs` (below). |
+
+No post-commit audit code remains on the publication path.
+`recordCommittedAuditLog` (P38R3) was removed. P38R3's web reconciliation
+(lost answer → read `publication-check` → published / not published /
+unknown) and the no-op retry are unchanged. No web code changed.
+
+## Schema (additive): `audit_outbox`
+
+Migration `20261026140000_pos_perf_p38r4_audit_outbox`: enum
+`AuditOutboxStatus` (`pending`, `processing`, `delivered`, `stuck`) and
+table `audit_outbox`. Nothing else is touched (`audit_logs` unchanged).
+
+- **Event columns, never updated after insert:** `event_key` (unique,
+  `<group_id>:<position>`), `group_id` + `position` (unique; one group per
+  publication call), `action`, `entity_type`, `entity_id`, `actor_id`,
+  `actor_role`, `branch_id`, `before_state`, `after_state` (the original
+  entry payload), `ip_address` (the request IP, as on every audit entry; no
+  user agent, credentials or other request data), `occurred_at` (the
+  publication transaction's time).
+- **Delivery columns:** `status`, `attempts`, `last_error` (first line of the
+  error, ≤ 500 chars), `next_attempt_at`, `locked_at`, `claim_token`,
+  `delivered_at`, `updated_at`.
+- Indexes: `(status, next_attempt_at)`, `occurred_at`.
+- No foreign keys, so an outbox row never blocks a user/branch change.
+  Delivered rows are kept; code never deletes a row.
+
+## Delivery semantics and guarantees
+
+**Claim** (`claimBatch`): the same token-stamped two-phase claim as the
+inventory deduction/projection outboxes, at group granularity. It reads up
+to 50 eligible rows oldest-first (`pending` past their backoff, or
+`processing` with a claim older than **5 min**), then flips every row of
+their groups to `processing` with a fresh `claim_token` in one guarded
+`updateMany`. Postgres re-checks eligibility under each row lock, so two
+workers never claim the same row. A group always changes state as a whole.
+
+**Deliver** (`deliverGroup`), **one transaction per group**:
+
+1. Ownership guard: `UPDATE … SET status='delivered' WHERE group_id = ? AND
+   status='processing' AND claim_token = ?`. 0 rows → this worker lost the
+   claim; return, nothing written. It row-locks the group, so a concurrent
+   recoverer waits for this transaction and then no longer matches.
+2. `pg_advisory_xact_lock(auditChainLockId())`: serializes chain appends
+   between outbox workers on any number of instances.
+3. Read the chain tail (`created_at DESC`, as `appendAuditLog` does).
+4. One `createMany` of the group's entries in `position` order. Each is
+   chained to the previous one with the **same** `computeAuditHash`
+   `appendAuditLog` uses. `created_at` values are 1 ms apart and strictly
+   later than the tail's, ending at "now" (unless the tail is newer), so the
+   tail lookup keeps returning the group's last entry.
+
+Insertion and acknowledgment commit atomically, so an entry is in
+`audit_logs` **if and only if** its rows are `delivered`. That is enforced
+by the database transaction plus the row-locked token guard, not by an
+application lookup:
+
+| Crash / fault point | Result |
+| --- | --- |
+| Before the publication commits | Nothing: no links, availability or intents |
+| After commit, before any delivery (incl. API restart, deploy, rollback) | Intents stay `pending`; the next cycle on any P38R4+ instance delivers them |
+| During delivery, before COMMIT (incl. after the audit INSERT) | Rolled back: no entries, rows still `processing` → retry (recorded failure) or stale-claim recovery after 5 min |
+| After the delivery COMMIT, reply lost | Rows are `delivered`; the failure handler's guarded update matches 0 rows; never re-claimed, so no duplicate |
+| Worker stalls past 5 min, another recovers | The stale owner's guard / failure update match 0 rows; it can't finalize or fail the recoverer's claim |
+
+**Ordering:** within a publication the entries keep their order and are
+inserted contiguously; nothing can chain onto the middle of a group.
+Groups are claimed oldest `occurred_at` first. Publications of one product
+are serialized by its lock, so their groups' `occurred_at` follow commit
+order. Across different publications, order between concurrent instances
+is approximately occurrence order, not strict. No consumer relied on
+cross-publication order.
+
+**Retry and failure:** a failed delivery puts the whole group back to
+`pending` with backoff **10 s, 60 s, 5 min, 15 min, 30 min**. The 6th
+failed attempt (about 50 minutes) marks it **`stuck`**: never claimed
+again automatically, never deleted. It sends one Sentry event (tag
+`audit_outbox=stuck`, extra: group id, event keys, actions, entity ids,
+error) and one `AUDIT_OUTBOX_STUCK` error log. Each retry logs an
+`AUDIT_OUTBOX_RETRY` warning. Eventual delivery depends on neither the
+browser nor Sentry.
+
+**What audit entries look like now:** fields, actions and hash are as
+before. `after_state` gains two keys: `occurred_at` (when the publication
+happened) and `audit_event_id` (the outbox `event_key`). `created_at` is
+the insertion (delivery) time, normally a few seconds later. Both new
+keys are inside the hash. The delivered `after_state` is built in jsonb key
+order before hashing, so a delivered entry's hash **can be recomputed from
+the stored row** (the integration test verifies every one). This is not
+true for most legacy entries: their hash covers the caller's key order,
+which jsonb discards. That is pre-existing and unchanged.
+
+**Hash chain alongside other writers:** `recordAuditLog` (every other
+module) is unchanged and takes no lock, so it can still fork the chain
+with any concurrent writer, as before P38R3. Outbox workers never fork
+with each other. A fork between a legacy writer and a worker is the same
+pre-existing race; publication entries used to be such legacy writers
+themselves. The concurrent test reports 1 such fork per run among 30
+unlocked legacy writes. Locking every audit writer was out of scope; it
+would add a transaction and a global lock to every audited request.
+
+## Transaction cost (measured)
+
+`products.publication-budget.measure.test.ts`, local Docker Postgres
+(`pos_verify`), pool 5, same scenarios as P38R2. Baseline = `3c5fa1c`
+(P38R3) with the unmodified harness. The harness now also counts outbox
+inserts and times the worker's delivery separately.
+
+| Scenario | In-tx statements before → after | Response total @0 ms before → after | Tx @100 ms before → after | Response total @100 ms before → after |
+| --- | --- | --- | --- | --- |
+| S1 first (4 entries) | 30 → **31** | 242 → 145 ms | 7.1 → 7.3 s | 8.2 → **7.3 s** |
+| S1 repeat | 28 → 28 | 101 → 64 ms | 3.9 → 3.9 s | 3.9 → 3.9 s |
+| S2 first (12 entries) | 42 → **43** | 518 → 173 ms | 10.1 → 9.1 s | 13.8 → **9.1 s** |
+| S2 repeat | 40 → 40 | 166 → 89 ms | 5.6 → 5.6 s | 5.6 → 5.6 s |
+| S3 first (23 entries) | 42 → **43** | 484 → 195 ms | 10.3 → 9.0 s | 16.2 → **9.0 s** |
+| S3 repeat | 40 → 40 | 124 → 115 ms | 5.4 → 5.4 s | 5.4 → 5.4 s |
+| S4 first (27 entries) | 42 → **43** | 452 → 306 ms | 8.7 → 10.4 s | 15.6 → **10.4 s** |
+| S4 repeat | 40 → 40 | 119 → 197 ms | 5.7 → 5.4 s | 5.7 → 5.4 s |
+
+- **Added transaction cost: exactly one statement** (the intent
+  `createMany`), only when something changed. A repeat publish adds
+  nothing. At about 1.4–2.4 round trips per statement (P38R2), that is
+  about 140–240 ms at 100 ms RTT. Run-to-run noise in this harness at
+  100 ms is ±1.5 s (S4 first measured 8.7 s before and 10.4 s after; S2/S3
+  measured faster after). The statement count is the reliable figure. The
+  transaction budget (10 s / 30 s) was **not** changed.
+- **Removed from the response:** the post-commit chain, 2 statements per
+  entry (S4 first: 54 statements, 6.8 s at 100 ms). A first publish now
+  answers when its transaction commits.
+- **Delivery (background, not in any request):** 7 statements per cycle,
+  whatever the entry count: 3 to claim (Prisma wraps the claim's
+  `updateMany` in its own BEGIN/COMMIT) plus **one 4-statement
+  transaction** (guard, chain lock, tail read, `createMany`). Measured 26–57
+  ms at 0 ms, and 0.9–1.1 s transaction / 1.5–2.2 s cycle at 100 ms, for 4
+  to 27 entries. It holds the chain lock only for that transaction; legacy
+  writers don't wait on it. It holds 1 pool connection briefly every 5 s
+  when there is work. One read when there isn't.
+- Same-product contention is unchanged (4 concurrent @100 ms: 3 succeed,
+  the 4th exceeds 30 s and rolls back, before and after).
+
+## Release: migration first, and overlap
+
+The table must exist **before** any P38R4 API instance runs. The
+production workflow already orders it that way: CI → approval →
+`prisma migrate deploy` → Render deploy hook. Vercel deploys the web
+independently on push, as before. **This release changes no web code**, so
+every web/API combination behaves as in P38R3.
+
+| Combination | Behavior |
+| --- | --- |
+| Migration applied, old (P38R3) API still serving | Old code ignores `audit_outbox`; it audits publications post-commit as before |
+| Render swap overlap: old and new instances | Each publication runs on exactly one instance: old → post-commit entries, new → intents. Never both, so no duplicates. Both serialize on the same product lock. Several new instances each run a worker; claims and guards make that safe |
+| New API without the migration (wrong order; expected from the code path, not executed) | The intent insert fails inside the publication transaction → the **whole publication rolls back** (`500`, nothing published). The web's reconciliation shows "Not on POS yet", which is true. Worker cycles log `Audit outbox worker cycle failed`. Fix: apply the migration; no data repair needed |
+| Old or new web | Unaffected (no response change) |
+
+## Worker startup verification (after deploy, read-only)
+
+1. Render logs for the new deploy show `Audit outbox worker started
+   (polling every 5s).` right after `Inventory deduction worker started`.
+2. After the next real publication, read-only:
+   `SELECT status, count(*), min(occurred_at) FROM audit_outbox GROUP BY status;`
+   Expect only `delivered` within seconds (or run
+   `tsx scripts/audit-outbox.ts status`; it prints the target host/db and
+   counts, and writes nothing).
+3. No `AUDIT_OUTBOX_RETRY` / `AUDIT_OUTBOX_STUCK` in logs or Sentry.
+   Add a Sentry alert on tag `audit_outbox=stuck` (a Sentry setting, not
+   code; not done here).
+
+## Failure monitoring and manual recovery
+
+Signals: Sentry `audit_outbox=stuck`; logs `AUDIT_OUTBOX_STUCK` (error) and
+`AUDIT_OUTBOX_RETRY` (warn); `pending` rows whose `occurred_at` is older
+than about 1 hour (the full retry schedule) mean no worker is running.
+
+Bounded recovery procedure (`apps/api/scripts/audit-outbox.ts`; never
+deletes, prints the target first; run from a P38R4+ checkout with the
+environment's `DATABASE_URL`, only by an operator who has verified that
+target):
+
+1. `status`. Then read the stuck rows' `last_error`, `group_id`, `action`
+   and `entity_id`.
+2. Fix the cause (e.g. database outage over; a hard-deleted actor fails the
+   `audit_logs.actor_id` foreign key and stays stuck until resolved).
+3. `requeue --group <group_id>` (one group) or `requeue --all-stuck
+   --limit N` (at most 100 per run, default 10). The rows return to
+   `pending` with a fresh attempt budget, and `last_error` is kept.
+4. The API's worker delivers within 5 s. Or `drain [--group <id>]
+   [--cycles N]` (at most 50 cycles) runs the same guarded delivery from the
+   script. It is safe while the API's workers run.
+5. `status` again: the group is `delivered`. Each entry's
+   `after_state->>'audit_event_id'` equals its outbox `event_key`.
+
+## Rollback
+
+- **API back to P38R3 (`3c5fa1c`):** safe. Leave `audit_outbox` in place;
+  never drop it. Verified locally: `prisma migrate deploy` with P38R3's
+  migrations folder against a database that has this migration reports "No
+  pending migrations to apply", and the table and its rows survive. Pending
+  intents wait. The P38R3 API audits new publications post-commit. Intents
+  committed before the rollback are delivered when a P38R4+ API runs again
+  (with their original `occurred_at`), or by `scripts/audit-outbox.ts
+  drain` from a P38R4 checkout. Check `status` before and after a rollback.
+- **Re-release after rollback:** pending intents are picked up
+  automatically; there is no duplicate path, since the P38R3 code never
+  read or wrote the outbox.
+- **Web:** no web change in this release.
+- The migration is additive; there is no down-migration and none is needed.
+
+## Remaining limits
+
+- Delivery is asynchronous: an entry reaches `audit_logs` about 0–5 s
+  after publication (plus delivery time at the real round trip). If no
+  worker runs, it stays `pending` (visible) until one does.
+- Legacy `recordAuditLog` writers can still fork the chain (pre-existing,
+  above).
+- Cross-publication ordering in `audit_logs` is approximate between
+  concurrent instances; within a publication it is exact.
+- Delivered entries are back-dated by at most (entries − 1) ms so the last
+  one is "now". Instance clock skew can push `created_at` later than the
+  tail (the tail always wins).
+- A hard-deleted actor makes its group `stuck` (foreign key). Users are
+  normally deactivated, not deleted.
+- Production round-trip latency is still unmeasured (P38R2); the delivery
+  transaction is 4 statements, so it fits its 30 s budget by a wide margin.
+- Only publication uses the outbox. Other modules' audit entries keep the
+  existing post-commit, best-effort `recordAuditLog`.
+
+## Verification (P38R4, local `127.0.0.1:5432/pos_verify` only)
+
+`DATABASE_URL`/`DIRECT_URL` were printed as host/port/database only
+(`127.0.0.1:5432/pos_verify`) before any `prisma` command. No production
+data, migration, configuration, credentials or billing were touched.
+
+- **Migration on a populated disposable copy** (`CREATE DATABASE pos_p38r4_mig
+  TEMPLATE pos_verify`, then `prisma migrate deploy`): before/after
+  identical for `audit_logs` (15,542 rows, same chain-tail hash
+  `384a36cd…`), `inventory_stocks` (15,715 rows, same total on hand),
+  products (458) and `branch_product_availability` (576). Constraints
+  195 → 196 and indexes 231 → 236 (the new table only); `migrate diff`
+  from the migrations to the schema showed only the new enum, table and
+  indexes. Then on that copy: a pending group → `scripts/audit-outbox.ts
+  status` (3 pending) → `drain` (1 cycle, delivered) → `status` (3
+  delivered); the first delivered entry chains to `384a36cd…`. P38R3's
+  migrations folder against it: "No pending migrations to apply".
+- **New `audit-outbox.integration.test.ts`: 10/10** in each of 5 isolated
+  runs, real Postgres, deterministic faults via Prisma middleware and a
+  spied repository call: commit together (incl. actor, role, branch, IP,
+  payload, `occurred_at` vs later `created_at`, hash recomputed); failure
+  after the intent insert rolls back links, availability and intents; 3
+  concurrent first publishes → one group; repeat → nothing; crash after
+  commit → next cycle delivers once; crash after the audit INSERT before
+  COMMIT → nothing written, backoff respected, delivered once; lost COMMIT
+  reply → no duplicate; stale claim recovered, stale owner can't finalize
+  or fail it; stale owner and recoverer racing → one write; transient →
+  retried; exhausted → `stuck`, 1 Sentry event, 1 `AUDIT_OUTBOX_STUCK`,
+  not re-claimed, requeued and delivered once; 4 concurrent workers + 30
+  concurrent legacy writers → every event once, hashes verify, groups
+  contiguous, no worker-vs-worker fork (1 legacy-involved fork reported per
+  run, pre-existing).
+- **Updated suites:** `products.service.test.ts` 164/164 (intents enqueued
+  in the transaction, in order). P38R3 `publication-result` 5/5 (the 3
+  post-commit audit-failure cases moved to the outbox suite; its first case
+  now asserts the response does not wait for the chain). P38 setup 11/11,
+  P38R single-publication 12/12, P38R2 budget 4/4 (each delivers its own
+  groups before reading audits).
+- **Affected API suites in parallel** (products, product-readiness,
+  middleware, transactions, branches, `src/lib`, audit, audit-outbox,
+  inventory-deduction, universal-inventory; 66 files, 1,382 tests):
+  1,302 passed / 0 failed in 3 of 8 runs. The other runs had load
+  timeouts on the local Docker Postgres ("Transaction already closed …
+  5000 ms", hook/test timeouts, incl. suites this change doesn't touch).
+  **The same set at `3c5fa1c` (3 runs)** failed the P38R2 six-way
+  concurrency test once and an untouched restore-cascade test once:
+  pre-existing load flakiness, not introduced here. **Serial
+  (`--no-file-parallelism`), same set: 60 files passed, 1,302 passed, 0
+  failed.** (An earlier serial attempt was void: the Docker engine stopped
+  responding and every database suite failed at setup; Docker Desktop was
+  restarted locally and the run repeated.)
+- `pnpm type-check` 4/4. ESLint on every changed API file: 0 errors (the
+  only warnings are `no-console`, matching `server.ts`'s and the scripts'
+  existing convention). `apps/api` (`tsc`) and `apps/web` (`next build`)
+  builds pass.
+- **Measurements:** above (`products.publication-budget.measure.test.ts`,
+  baseline at `3c5fa1c` with the unmodified harness, same machine).
+- **Browser** (built `apps/api` `node dist/server.js` with its real
+  worker, `next build` + `next start`, `--project="Admin Dashboard
+  (Desktop)"`): **P38R3 publication result 4/4** (6.1 min: normal Add to
+  POS; answer delayed then lost after commit while offline → "Could not
+  confirm", then On POS; product page Publish answer lost → reconciled as
+  published; never reached the server → "Not on POS yet", retry publishes
+  once), **P38R product page Publish 2/2** (4.3 min), **P38 builder Add to
+  POS 2/2** (6.4 min). `p38r-single-publish.cjs` now waits until the
+  product's intents are delivered (up to 30 s; fails on `stuck`) before
+  reading audit entries, so every "exactly once" check ran against entries
+  the API's own worker delivered. API log: `Audit outbox worker started
+  (polling every 5s).`, no worker cycle failures.
+- **Live crash recovery (unplanned):** the Docker outage killed test runs
+  mid-flight, leaving 93 undelivered groups. On API start the worker
+  delivered every group whose actor still existed. The other 80 groups (150
+  rows) belong to test users those runs had already hard-deleted; the
+  `audit_logs.actor_id` foreign key rejects them, so they retry
+  (`AUDIT_OUTBOX_RETRY`) toward `stuck`, exactly the documented limit.
+  No production code hard-deletes users. They are local test data and were
+  left in place.
+
+Local leftovers: the disposable `pos_p38r4_mig` and `pos_p38r4_shadow`
+databases; the integration tests delete their own rows.

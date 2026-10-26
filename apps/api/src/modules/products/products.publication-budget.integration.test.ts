@@ -29,6 +29,7 @@ vi.mock('../../lib/prisma.js', async () => {
 });
 
 const { prisma } = await import('../../lib/prisma.js');
+const { runAuditOutboxCycle } = await import('../audit-outbox/audit-outbox.worker.js');
 const { productsService } = await import('./products.service.js');
 const { productsRepository } = await import('./products.repository.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
@@ -45,6 +46,12 @@ function statementsInTransaction(log: string[]): number {
 describe.skipIf(!isLocalDatabase)('POS-PERF-P38R2 publication transaction budget (real Postgres)', () => {
   const suffix = randomUUID().slice(0, 8);
   const userIds: string[] = [];
+
+  /** POS-PERF-P38R4 — publication's audit entries are written by the audit outbox worker; deliver this suite's pending ones now. */
+  async function deliverAudits() {
+    const pending = await prisma.auditOutbox.findMany({ where: { actorId: { in: userIds }, status: { not: 'delivered' } }, select: { groupId: true } });
+    if (pending.length > 0) await runAuditOutboxCycle({ groupIds: [...new Set(pending.map((row) => row.groupId))], batchSize: 1000 });
+  }
   const branchIds: string[] = [];
   const itemIds: string[] = [];
   const unitIds: string[] = [];
@@ -147,6 +154,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R2 publication transaction budget
     await prisma.inventoryItem.deleteMany({ where: { id: { in: itemIds } } });
     await prisma.unitOfMeasure.deleteMany({ where: { id: { in: unitIds } } });
     await prisma.userBranchAssignment.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.auditOutbox.deleteMany({ where: { actorId: { in: userIds } } });
     await prisma.auditLog.deleteMany({ where: { actorId: { in: userIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.branch.deleteMany({ where: { id: { in: branchIds } } });
@@ -211,6 +219,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R2 publication transaction budget
     const links = await prisma.inventoryStock.findMany({ where: { branchId: { in: branches } }, select: { quantityOnHand: true } });
     expect(links).toHaveLength(branches.length * 4);
     expect(links.every((l) => l.quantityOnHand.toNumber() === 0)).toBe(true);
+    await deliverAudits();
     const audits = await prisma.auditLog.findMany({ where: { actorId: supervisor.id, action: 'INVENTORY_ITEM_BRANCH_ASSIGNED' } });
     const pairs = audits
       .filter((a) => (a.afterState as { product_id?: string }).product_id === productId)

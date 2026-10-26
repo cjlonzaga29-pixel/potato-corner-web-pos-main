@@ -2491,6 +2491,53 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+enum AuditOutboxStatus {
+  pending
+  processing
+  delivered
+  stuck
+}
+
+/// POS-PERF-P38R4 — durable audit intents. A write that must be audited
+/// inserts its intents in the same transaction as the change itself, so
+/// both commit or neither does; audit-outbox.worker.ts appends them to
+/// audit_logs later. One `groupId` per originating operation, delivered as
+/// a unit in `position` order. The event columns (action … occurredAt) are
+/// never updated after insert; only the delivery columns (status …
+/// deliveredAt) change. Delivered rows are kept, never deleted by code.
+model AuditOutbox {
+  id            String            @id @default(uuid())
+  /// Stable event identity: `<groupId>:<position>`. Unique in the database.
+  eventKey      String            @unique @map("event_key")
+  groupId       String            @map("group_id")
+  position      Int
+  action        String
+  entityType    String            @map("entity_type")
+  entityId      String?           @map("entity_id")
+  actorId       String?           @map("actor_id")
+  actorRole     String            @map("actor_role")
+  branchId      String?           @map("branch_id")
+  beforeState   Json?             @map("before_state")
+  afterState    Json?             @map("after_state")
+  ipAddress     String?           @map("ip_address")
+  /// When the audited change was made (its transaction), not when it reached audit_logs.
+  occurredAt    DateTime          @map("occurred_at")
+  status        AuditOutboxStatus @default(pending)
+  attempts      Int               @default(0)
+  lastError     String?           @map("last_error")
+  nextAttemptAt DateTime?         @map("next_attempt_at")
+  lockedAt      DateTime?         @map("locked_at")
+  claimToken    String?           @map("claim_token")
+  /// When the audit_logs rows were inserted (same transaction as the flip to `delivered`).
+  deliveredAt   DateTime?         @map("delivered_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  @@unique([groupId, position])
+  @@index([status, nextAttemptAt])
+  @@index([occurredAt])
+  @@map("audit_outbox")
+}
+
 model FraudAlert {
   id              String             @id @default(uuid())
   alertType       String             @map("alert_type")

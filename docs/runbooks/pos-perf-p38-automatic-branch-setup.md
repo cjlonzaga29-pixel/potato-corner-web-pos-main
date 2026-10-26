@@ -860,3 +860,322 @@ or `autoDeploy` setting was touched.
 Local leftovers in `pos_verify`: the `P38R2 …` test branches are deleted
 (regression suite) or deactivated (measurement harness) in `afterAll`; the
 browser specs' data stays, as with earlier phases.
+
+---
+
+# POS-PERF-P38R3 — Post-Commit Result and Retry Safety
+
+## Commit → audit → response (traced at `06621fe`)
+
+Both publish endpoints run the same sequence (`products.service.ts`):
+
+| Step | Builder Add to POS (`POST /:id/publish-branches`) | Product page Publish (`POST /:id/publish`) |
+| --- | --- | --- |
+| 1. Transaction | `prisma.$transaction` (10 s / 30 s budget): advisory lock, `publishWithinLock` for all requested branches | Same, for `[branch_id]` |
+| 2. **Commit boundary** | `$transaction` resolves. Links and availability are durable and visible to every reader from here on | Same |
+| 3. Audit, after commit, awaited in order | One `INVENTORY_ITEM_BRANCH_ASSIGNED` per linked item, then one `PRODUCT_BRANCH_AVAILABILITY_CHANGED` per branch. Each entry is 2 statements on the global client (read the chain tail, insert) | Same, one availability entry |
+| 4. Response | `200` after the last audit entry | `200` after the audit entries |
+
+- **Errors after commit never reached the client** (before and after
+  P38R3). `recordAuditLog` swallowed every failure. P38R3's
+  `recordCommittedAuditLog` also never throws. Nothing else runs after
+  commit. A response sent after commit is always `200`.
+- **A `200` is not guaranteed after commit.** The response waits for the
+  audit chain (2 statements per entry; P38R2 measured about 9 s for S4's
+  first publish at 150 ms RTT). A dropped connection, a tab closed or
+  suspended, an API restart, or a proxy `502`/`504` in that window loses
+  the answer to a publication that committed. A `P2028` raised while Prisma
+  commits can, in principle, also be ambiguous. All of these reach the
+  client as `NETWORK_ERROR`, `UNREADABLE_RESPONSE` (non-JSON body) or
+  `500 INTERNAL_ERROR`.
+- **Before P38R3 the client showed a committed publication as a failure.**
+  Builder: "Couldn't add to POS. Could not reach the server…". A proxy page
+  showed "Checkout could not be confirmed. Please check Receipts…"
+  (`UNREADABLE_RESPONSE`'s checkout text). Product page: "Couldn't publish
+  this product". Neither said "rolled back" (the `PRODUCT_NOT_READY` text
+  "Nothing was published" is only used before any write), but both claimed
+  a failure for a success. The supervisor's natural recovery was to retry.
+- **Retry before P38R3:** links were never duplicated (`skipDuplicates`,
+  then only missing pairs are planned), and assignment entries were never
+  duplicated (written only for links this call created). Availability was
+  re-written every time, though. `updated_by`/`updated_at` changed, and a
+  new `PRODUCT_BRANCH_AVAILABILITY_CHANGED` entry was written for every
+  branch, every time. This was pre-existing (P37 upsert / P38R2 batched
+  write), but this flow makes the retry the expected recovery.
+
+## Fault injection (real Postgres, `127.0.0.1:5432/pos_verify`)
+
+`products.publication-result.integration.test.ts` injects faults with a
+Prisma `$use` middleware on `AuditLog.create` only. **Against the unmodified
+`06621fe` code: 6 of 8 failed.** All 8 pass after the fix.
+
+| Case | Before (`06621fe`) | After |
+| --- | --- | --- |
+| Slow audit (400 ms per insert, 6 entries): is the publication committed while the call is still pending? | Yes: visible to another connection before the call returned (~2.0–2.3 s total). Passed. | Same (unchanged semantics) |
+| Retry after a lost response (sequential) | No new links or assignment entries, but **+1 availability entry per branch**, and the rows' `updated_at`/`updated_by` were rewritten | Nothing written. Rows are byte-identical. Same `200` body shape, `setup.stock_links: []` |
+| 3 concurrent retries of an already-published operation | **+6 availability entries** (2 branches × 3) | Nothing written |
+| 3 concurrent first publications (racing retry) | **6 availability entries for 2 branches** | Exactly 2 |
+| Single-branch Publish retry | **+1 availability entry** | Nothing written |
+| Transient audit failure (first 2 inserts fail) | **Entries silently lost** (console only), response `200` | Retried. Every entry is written exactly once. No Sentry event |
+| Lost reply to an audit INSERT that landed | (no retry existed) | The retry finds the attempt's hash and does not write it again. All hashes unique |
+| Persistent audit outage | **Silently lost**, no Sentry event | Publication still answers `200` (it committed). Each missing entry goes to Sentry and to an `AUDIT_ENTRY_NOT_RECORDED` error log with the full entry. A retry after the outage writes no links |
+
+## Fixes
+
+API:
+
+1. **Retry writes nothing for already-published branches.**
+   `publishWithinLock` returns `newlyPublished`: the branches the plan
+   (read in the transaction, under the product lock) showed as *not*
+   published. Only those get a `PRODUCT_BRANCH_AVAILABILITY_CHANGED` entry.
+   `publishBranchProductAvailability`'s `updateMany` now matches
+   `is_available = false` only, so an already-on row keeps its
+   `updated_by`/`updated_at`. A concurrent duplicate waits on the product
+   lock and then sees the first one's commit (READ COMMITTED), so it writes
+   nothing. Response shapes are unchanged.
+2. **Required audit entries are no longer dropped silently.**
+   `recordCommittedAuditLog` (audit-log.ts), used for every publication
+   entry:
+   - It retries a failed append (after 250 ms and then 1 s), re-reading the
+     chain tail each time, so it goes through the same hash chain.
+   - Before a retry it looks up the previous attempt's `current_hash` (via
+     the `(entity_type, entity_id)` index). A lost reply to an INSERT that
+     landed is never written twice.
+   - If all 3 attempts fail, it sends `Sentry.captureException` with the
+     entry, plus a structured `AUDIT_ENTRY_NOT_RECORDED` error log with the
+     full entry, so it can be re-entered. It does not throw: the data
+     committed, and the response must say so.
+   - `recordAuditLog` (everyone else) is unchanged. Its body moved into a
+     shared throwing `appendAuditLog`.
+
+Web:
+
+3. **Reconcile before claiming failure.** `usePublishProductToBranches` and
+   `usePublishProduct` treat `NETWORK_ERROR`, `UNREADABLE_RESPONSE`,
+   `INTERNAL_ERROR` and a code-less error as **unconfirmed**. Every other
+   code is a rejection the API makes before writing, and it is shown as
+   before. For an unconfirmed error, the hook reads
+   `GET /publication-check` (read-only) for the same branches:
+   - published at every branch → the mutation **succeeds** (normal toast,
+     invalidation; the builder goes to the product page);
+   - not published → `PublicationNotConfirmedError('not_published')`:
+     **"Not on POS yet** … If the earlier attempt is still finishing, it
+     will show up when you check again. Trying again is safe: it never adds
+     anything twice." Add to POS / Publish stays available;
+   - the check fails → `PublicationNotConfirmedError('unknown')`: **"Could
+     not confirm whether this was added to POS** … It may already be on POS.
+     Check again before trying to add it." Add to POS / Publish is
+     **disabled** until a check settles it (the last cached plan may be
+     stale).
+
+   Both show a **Check again** button (`useConfirmPublication`). It only
+   reads, refreshes the product, readiness, catalog and plan, and never
+   publishes. Builder state and the persisted draft are kept. Once the plan
+   shows the product on POS, the unconfirmed alert is replaced by the
+   normal "On POS" / "Already on POS" state. The publish is never repeated
+   automatically.
+4. **Service-worker cache bypass for that read.** next-pwa's default
+   runtime caching serves same-origin `/api/*` GETs network-first, with a
+   **10 s network timeout and a cached fallback** (24 h, 16 entries). Review
+   had just cached a plan from *before* the publish. Offline, or with no
+   answer within 10 s, the check returned that stale plan, and the UI said
+   **"Not on POS yet" for a publication that had committed** (reproduced in
+   the browser, below). `readPublicationOutcome` adds a unique `fresh=` to
+   its URL, so no cache entry can match. The read then fails and gives
+   `unknown`. The API's `publicationCheckQuerySchema` strips the extra key
+   (works against old and new APIs).
+
+Unchanged: the transaction, product lock, live authorization, branch-spread
+guard, selected-branch scope, all-or-nothing multi-branch publication, the
+plan, and the transaction budget. No schema change, no migration, no new
+library.
+
+### Why not move audit into the transaction, or add a durable outbox
+
+- **In the transaction:** each entry is 2 more sequential statements (a
+  first S4 publish has 27 entries, 54 statements). That brings back the
+  per-entry growth P38R2 removed, and the timeout risk with it. The chain
+  reads its tail with `ORDER BY created_at DESC` and no lock. Inside a
+  multi-second transaction, other requests would chain to an older tail
+  until commit, so forks become far more likely. A single batched insert
+  gives rows the same `created_at` (P38R2).
+- **Durable outbox:** no existing generic one exists.
+  `InventoryProjectionOutbox` is specific to inventory projections, and
+  `job-runner.ts` is in-memory ("an in-flight job is lost on process
+  restart"). A new table needs a migration and a worker, which is out of
+  scope for a narrow fix.
+- **Tradeoff accepted:** a process crash or kill *between commit and the
+  last audit insert* (about 2 round trips per entry) still loses the
+  remaining entries. The data stays correct. To detect it, compare published
+  `branch_product_availability` rows / publication-created
+  `inventory_stocks` with the audit entries. Every other failure is now
+  retried or reported loudly.
+- **Pre-existing, not changed:** `recordAuditLog`'s chain has no lock, so
+  concurrent writers anywhere in the API can fork it. P38R3 does not make
+  that worse (same post-commit path).
+
+## Browser verification (P38R3)
+
+`tests/e2e/pos-perf-p38r3-publication-result.spec.ts`: built API
+(`node dist/server.js`), `next build` + `next start` (service worker
+active), `--project="Admin Dashboard (Desktop)"`. Faults are injected on
+the browser's own requests. `page.route` lets the real POST reach the API
+and commit, then holds and drops the answer. `context.setOffline`
+emulates the connection loss. **4/4 (5.7 min)** in one final run:
+
+1. **Normal Add to POS** (A+B): one POST, `200`, product page. Links and
+   assignment entries for exactly the 3 missing pairs. Availability
+   entries: A and B once.
+2. **Delayed answer, lost after commit, while offline.** The POST commits
+   (`200` at the API; the DB shows A+B published) while the browser waits
+   3 s more. Add to POS stays disabled (pending), with no error. Then the
+   browser goes offline and the answer is dropped. **"Could not confirm
+   whether this was added to POS"**, not "Couldn't add to POS" and not
+   "Not on POS yet". "Nothing you entered was lost." Add to POS is
+   disabled, and the builder is kept. **Check again** while offline:
+   same honest message, still 1 POST. Reconnecting reloads the page
+   (next-pwa `reloadOnOnline`). Review resumes with both branches **On
+   POS** and **Already on POS**. Entries exactly once. An API retry of the
+   same operation: `200`, `stock_links: []`, no new entries.
+   - **Before the `fresh=` fix** (the web bundle built before it), this
+     same step showed **"Not on POS yet"** with `data-outcome=
+     "not_published"` for a publication that had committed. The service
+     worker answered the offline check with Review's pre-publish plan.
+3. **Product page Publish, answer lost after commit** (online): reconciled
+   from the check, shown as **"Published at your branch" / "On POS at your
+   branch."** with no error. 1 POST plus the check. The cup link and A's
+   availability are each audited once.
+4. **Add to POS never reached the server**: **"Not on POS yet … Trying
+   again is safe"**. Neither the check nor Check again writes anything
+   (links, availability and entries unchanged; 1 POST). After
+   reconnecting, Add to POS publishes once (`200`). Entries exactly once.
+
+Regression, same build: **P38R product page Publish 2/2** (4.4 min),
+**P38 builder Add to POS 2/2** (6.8 min), each against a fresh API.
+
+Attempts before the final run, all harness problems:
+
+- `beforeAll` exceeded Playwright's 30 s hook default (four seeded
+  products). The spec now gives it 180 s.
+- The check-blocking route used a glob that never matched. Then a URL
+  predicate didn't fire either, because the service worker serves
+  same-origin `/api` GETs and `page.route` doesn't see those. That
+  finding led to fix 4. The spec now uses `setOffline`.
+- Two runs landed on `/supervisor/dashboard` when navigating right after
+  login (before the dashboard rendered). `loginAs` now waits for the
+  dashboard heading, and `openReview` re-navigates once. This is in
+  login/navigation, which P38R3 doesn't change.
+
+## Remaining timeout and concurrency limits
+
+- **The response still waits for the audit chain.** Answers lost in that
+  window are now reconciled, not hidden. A failing entry adds up to
+  1.25 s of retry waits plus its attempts. During an audit-database outage
+  this lengthens the response, and therefore the ambiguity window.
+- **`not_published` is a snapshot.** If the original request is still
+  running (for example, queued behind the product lock), the check can run
+  before it commits. The message says so. A retry serializes behind it and
+  is a no-op.
+- **Same-product concurrency and pool use** are unchanged from P38R2:
+  publications of one product serialize on its lock (2 of 4 exceeded 30 s
+  at 150 ms in P38R2 and rolled back cleanly). Each publication holds 1 of
+  5 pool connections for its transaction. Not load-tested.
+- **Review's own plan query** (not the reconciliation read) still goes
+  through the service worker's network-first cache. Offline, it can show
+  the last cached plan. Add to POS is disabled while an attempt is
+  unconfirmed, and a retry is a no-op.
+- The unused availability `PATCH` endpoints don't take the product lock. A
+  `PATCH` racing a publication could make the "newly published" decision
+  miss or add one availability entry. No UI mounts them (P38R).
+
+## Latency: what is known
+
+| Kind | Figure | Source |
+| --- | --- | --- |
+| Historical production | Checkout latency "dominated by per-round-trip network latency" | `f33e1a5` (P25, Render diagnostics) |
+| Historical QA | `closeShift` (~6–7 statements) took 5137 ms, then 6602 ms on retry | `f2cb843` |
+| Historical load test | HTTP median 90 ms, p95 1.11 s (whole requests) | Phase 19 |
+| Local proxy (P38R2) | Publication transaction 3.9–10.1 s at 100 ms RTT, 5.1–12.1 s at 150 ms; post-commit audit adds up to ~9 s (S4 first, 150 ms) | `products.publication-budget.measure.test.ts` |
+| Local (P38R3) | 400 ms per audit insert × 6 entries: committed state visible ~2 s before the call returned | fault-injection test |
+| Estimate | Transaction ≈ 40–100 × RTT. Audit ≈ 2 × RTT × (linked items + branches) | P38R2 |
+
+Production publication latency is not *measured*, but it is bounded by the
+evidence above. The P2028/QA figures show round trips there can be large.
+
+## Controlled release checklist
+
+1. Release diff `157deac..HEAD` still has no schema or migration change
+   (`git diff 157deac..HEAD -- apps/api/prisma` is empty). Verify again
+   before pushing.
+2. Push. Vercel serves the new web first ("new web + old API", P38R2). The
+   new web's `fresh=` read and reconciliation work against P37R/P38/P38R2
+   APIs: the extra query key is stripped, and a pre-P38 API returns 404 →
+   `unknown` → "Could not confirm", never a false success or failure.
+3. CI green → close the write gate → approve → `migrate deploy` (no-op) →
+   Render deploy → confirm the live commit in Render's dashboard → reopen
+   the gate (P38R2 evidence rules).
+4. Confirm Sentry is receiving events from the deployed API (an
+   `AUDIT_ENTRY_NOT_RECORDED` must reach someone). Add an alert on that tag
+   if one does not exist. This is a Sentry setting, not code.
+5. Rollback: web-only is safe (old messages return). API back to `06621fe`
+   is safe for data; availability entries on retries and silent audit loss
+   return.
+
+## Timing the next real publication (after deployment, no new diagnostics)
+
+Do not create synthetic production data. When the owner next publishes a
+real product:
+
+1. Ask the supervisor to keep the browser's DevTools Network panel open (or
+   save a HAR). Record the `publish-branches` / `publish` request duration
+   and status, and whether any "Could not confirm" / "Not on POS yet"
+   appeared.
+2. Afterwards, run read-only queries for that product:
+   - `inventory_stocks.created_at` of its publication links and
+     `branch_product_availability.updated_at` (inside the transaction);
+   - `audit_logs.created_at` of its `INVENTORY_ITEM_BRANCH_ASSIGNED` /
+     `PRODUCT_BRANCH_AVAILABILITY_CHANGED` entries (after commit).
+
+   Last audit `created_at` minus the availability `updated_at` ≈
+   post-commit audit time. Request duration minus that ≈ transaction plus
+   network time. Divided by the statement counts above, that gives a
+   production per-round-trip estimate without enabling
+   `DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED`.
+3. Check Render's logs and Sentry for `AUDIT_ENTRY_NOT_RECORDED` around
+   that time.
+
+If the request exceeds about 30 s, or the transaction fails with `P2028`,
+treat the P38R2 budget as insufficient for production before relying on
+Add to POS in the pilot.
+
+## Verification (P38R3, local `127.0.0.1:5432/pos_verify` only)
+
+`DATABASE_URL`/`DIRECT_URL` were checked as `127.0.0.1:5432/pos_verify` (host
+and database printed, no credentials). No `prisma migrate` was run. No
+production data, configuration, billing or credentials were touched.
+
+- **New `products.publication-result.integration.test.ts`: 8/8** (6/8
+  failed on `06621fe`, table above).
+- **Updated `products.service.test.ts` 164/164** (publication entries go
+  through `recordCommittedAuditLog`).
+- **Affected API suites** (products, product-readiness, middleware,
+  transactions): **26 files, 773 passed**, 65 skipped (env-gated, as
+  before), 0 failed.
+- **Web:** `use-products.test.tsx` 21/21 (+5: lost answer → `published`
+  with 1 POST and a `fresh` read; `not_published` never retried; failed
+  check → `unknown`; definite rejection → no check; Check again only
+  reads). Product page test 7/7 (+1: unconfirmed message, Publish
+  disabled until checked, Check again reads only, settles to
+  published). Products, builder, components and stores suites: 10 files,
+  81 passed.
+- `pnpm type-check` 4/4. ESLint on every changed API and web file: 0
+  problems. `apps/api` and `apps/web` builds pass.
+- **Browser:** above.
+- **Not executed:** the full API/web suites (changes are limited to the
+  publish path, the audit helper's new export and the two publish screens),
+  the P37/P36R browser specs, mobile/PWA projects, and any production
+  measurement.
+
+Local leftovers in `pos_verify`: the integration test deletes its data in
+`afterAll`. The browser spec's branches are deactivated in `afterAll`, and
+its products/items stay, as with earlier phases.

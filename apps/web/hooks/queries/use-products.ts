@@ -73,6 +73,70 @@ function productApiError(response: ApiErrorShape, fallback: string): ProductApiE
   return new ProductApiError(errorMessage(response, fallback), errorCode(response));
 }
 
+/**
+ * POS-PERF-P38R3 — publication commits on the server before its audit
+ * entries are written and before the response is sent, so these errors do
+ * not say whether it happened: the request never got an answer
+ * (NETWORK_ERROR), got a non-JSON proxy page (UNREADABLE_RESPONSE, e.g. a
+ * 502/504), or failed unexpectedly (INTERNAL_ERROR). Every other code is the
+ * API rejecting the request before anything was written.
+ */
+const UNCONFIRMED_PUBLISH_CODES = new Set(['NETWORK_ERROR', 'UNREADABLE_RESPONSE', 'INTERNAL_ERROR']);
+
+function isUnconfirmedPublishError(error: ProductApiError): boolean {
+  return error.code === undefined || UNCONFIRMED_PUBLISH_CODES.has(error.code);
+}
+
+export type PublicationOutcome = 'published' | 'not_published' | 'unknown';
+
+/**
+ * POS-PERF-P38R3 — reads whether the product is on POS at every one of these
+ * branches right now, through the read-only publication check (a GET that
+ * writes nothing). 'unknown' when the check itself fails.
+ *
+ * `fresh` makes every read a distinct URL: the service worker serves
+ * same-origin /api GETs network-first with a cached fallback (offline, or
+ * no answer within 10 s), and a plan cached before the publish would say
+ * "not published" for one that committed. With no matching cache entry the
+ * read fails instead, which is 'unknown'. The API ignores the extra field.
+ */
+export async function readPublicationOutcome(productId: string, branchIds: string[]): Promise<PublicationOutcome> {
+  const key = [...branchIds].sort().join(',');
+  const response = await apiClient<PublicationCheckResponse>(
+    `/api/products/${productId}/publication-check?branch_ids=${encodeURIComponent(key)}&fresh=${Date.now()}`,
+  );
+  if (!response.data) return 'unknown';
+  const requested = new Set(branchIds);
+  const rows = response.data.branches.filter((b) => requested.has(b.branch_id));
+  if (rows.length !== requested.size) return 'unknown';
+  return rows.every((b) => b.is_published) ? 'published' : 'not_published';
+}
+
+/**
+ * POS-PERF-P38R3 — a publish whose answer was lost, after the server's
+ * current state was checked: 'not_published' (it is not on POS at all of
+ * the branches yet — the earlier attempt may still be finishing, and a retry
+ * never adds anything twice), or 'unknown' (the check failed too).
+ */
+export class PublicationNotConfirmedError extends ProductApiError {
+  constructor(
+    cause: ProductApiError,
+    public readonly outcome: Exclude<PublicationOutcome, 'published'>,
+  ) {
+    super(cause.message, cause.code);
+    this.name = 'PublicationNotConfirmedError';
+  }
+}
+
+/** Turns a failed publish response into its error, after checking the server's state when the response doesn't say. Returns 'published' if the publication did commit. */
+async function reconcilePublishFailure(response: ApiErrorShape, productId: string, branchIds: string[]): Promise<'published'> {
+  const error = productApiError(response, 'Failed to publish product');
+  if (!isUnconfirmedPublishError(error)) throw error;
+  const outcome = await readPublicationOutcome(productId, branchIds);
+  if (outcome === 'published') return outcome;
+  throw new PublicationNotConfirmedError(error, outcome);
+}
+
 function buildQueryString(filters: ProductFilters): string {
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
@@ -425,15 +489,31 @@ function invalidateAfterPublishChange(queryClient: ReturnType<typeof useQueryCli
   void queryClient.invalidateQueries({ queryKey: ['catalog', branchId] });
 }
 
+/**
+ * POS-PERF-P38R3 — "Check again" after an unconfirmed publish: reads the
+ * server's state (never publishes), refreshes what the page shows, and
+ * confirms with the same toast as a normal success when it is on POS.
+ */
+export function useConfirmPublication(productId: string) {
+  const queryClient = useQueryClient();
+  return async (branchIds: string[]): Promise<PublicationOutcome> => {
+    const outcome = await readPublicationOutcome(productId, branchIds);
+    for (const branchId of branchIds) invalidateAfterPublishChange(queryClient, productId, branchId);
+    void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
+    if (outcome === 'published') toast.success(branchIds.length === 1 ? 'Product is on POS at this branch' : `Product is on POS at ${branchIds.length} branches`);
+    return outcome;
+  };
+}
+
 export function usePublishProduct(productId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (branchId: string) => {
+    mutationFn: async (branchId: string): Promise<BranchProductAvailabilityRow | 'published'> => {
       const response = await apiClient<BranchProductAvailabilityRow>(`/api/products/${productId}/publish`, {
         method: 'POST',
         body: JSON.stringify({ branch_id: branchId }),
       });
-      if (!response.data) throw productApiError(response, 'Failed to publish product');
+      if (!response.data) return reconcilePublishFailure(response, productId, [branchId]);
       return response.data;
     },
     onSuccess: (_data, branchId) => {
@@ -441,10 +521,12 @@ export function usePublishProduct(productId: string) {
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
       toast.success('Product published at this branch');
     },
-    onError: () => {
+    onError: (_error, branchId) => {
       // POS-PERF-P38R — same as Add to POS: the product page shows the error
       // inline and persistent, and refetches the plan in case setup changed.
-      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
+      // POS-PERF-P38R3 — and the product itself, in case an unconfirmed
+      // publication commits after all.
+      invalidateAfterPublishChange(queryClient, productId, branchId);
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
     },
   });
@@ -460,7 +542,8 @@ export function usePublishProductToBranches(productId: string) {
         branches: BranchProductAvailabilityRow[];
         setup: { stock_links: { branch_id: string; inventory_item_id: string }[] };
       }>(`/api/products/${productId}/publish-branches`, { method: 'POST', body: JSON.stringify({ branch_ids: branchIds }) });
-      if (!response.data) throw productApiError(response, 'Failed to publish product');
+      // POS-PERF-P38R3 — an answer lost after commit resolves as 'published' once the check confirms it.
+      if (!response.data) return reconcilePublishFailure(response, productId, branchIds);
       return response.data;
     },
     onSuccess: (_data, branchIds) => {
@@ -468,11 +551,11 @@ export function usePublishProductToBranches(productId: string) {
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
       toast.success(branchIds.length === 1 ? 'Product added to POS at this branch' : `Product added to POS at ${branchIds.length} branches`);
     },
-    onError: () => {
+    onError: (_error, branchIds) => {
       // A failed publish may mean the setup changed underneath Review —
       // refetch so it shows the current state. Review shows the error
       // itself, inline and persistent (POS-PERF-P38), so no toast here.
-      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
+      for (const branchId of branchIds) invalidateAfterPublishChange(queryClient, productId, branchId);
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
     },
   });

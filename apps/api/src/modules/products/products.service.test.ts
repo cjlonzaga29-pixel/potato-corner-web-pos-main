@@ -227,11 +227,12 @@ vi.mock('../../lib/prisma.js', () => ({
 
 vi.mock('../../middleware/audit-log.js', () => ({
   recordAuditLog: vi.fn().mockResolvedValue(undefined),
+  recordCommittedAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { productsRepository } = await import('./products.repository.js');
 const { productsService, __resetSignedUrlCacheForTests } = await import('./products.service.js');
-const { recordAuditLog } = await import('../../middleware/audit-log.js');
+const { recordAuditLog, recordCommittedAuditLog } = await import('../../middleware/audit-log.js');
 const { notifySuperAdmin, notifyBranch } = await import('../../lib/notify.js');
 const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
@@ -933,7 +934,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
     expect(universalInventoryRepository.createStockRows).toHaveBeenCalledWith([{ branchId: 'branch-a', inventoryItemId: 'item-1' }], txMock);
     expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledTimes(1);
     expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledWith(['branch-a'], 'prod-1', SUPERVISOR.id, txMock);
-    expect(recordAuditLog).toHaveBeenCalledWith(
+    expect(recordCommittedAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'INVENTORY_ITEM_BRANCH_ASSIGNED', afterState: expect.objectContaining({ assigned: ['branch-a'] }) }),
     );
     expect((result as { branch_id: string }).branch_id).toBe('branch-a');
@@ -999,7 +1000,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
 
     expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledWith(['branch-a'], 'prod-1', SUPER_ADMIN.id, txMock);
     expect((result as { is_available: boolean }).is_available).toBe(true);
-    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
+    expect(recordCommittedAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
   });
 
   // POS-PERF-P34R — branch_exclusive has no ongoing enforcement past

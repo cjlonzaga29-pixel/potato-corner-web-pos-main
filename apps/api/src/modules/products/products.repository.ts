@@ -627,8 +627,10 @@ export const productsRepository = {
       data: branchIds.map((branchId) => ({ branchId, productId, isAvailable: true, updatedBy })),
       skipDuplicates: true,
     });
+    // POS-PERF-P38R3 — only rows that are off: a retry of an already-published
+    // branch leaves its row (updatedBy/updatedAt) exactly as it was.
     await tx.branchProductAvailability.updateMany({
-      where: { productId, branchId: { in: branchIds } },
+      where: { productId, branchId: { in: branchIds }, isAvailable: false },
       data: { isAvailable: true, updatedBy },
     });
     const rows = await tx.branchProductAvailability.findMany({

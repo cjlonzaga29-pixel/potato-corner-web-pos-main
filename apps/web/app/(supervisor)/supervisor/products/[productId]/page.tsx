@@ -23,6 +23,8 @@ import {
   useUploadProductImage,
   usePublishProduct,
   usePublicationCheck,
+  useConfirmPublication,
+  PublicationNotConfirmedError,
   useUnpublishProduct,
   isReadyToPublish,
 } from '@/hooks/queries/use-products';
@@ -323,10 +325,14 @@ function VariantsTab({
   // to publish and the actor may publish here.
   const publicationCheck = usePublicationCheck(product.id, branchId && isOwner && !isPublishedAtBranch ? [branchId] : []);
   const [publishError, setPublishError] = useState<Error | null>(null);
+  const confirmPublication = useConfirmPublication(product.id);
+  const [checkingPublication, setCheckingPublication] = useState(false);
   const plan = publicationCheck.data;
   const branchPlan = plan?.branches.find((b) => b.branch_id === branchId);
   const publicationIssues = plan ? [...plan.issues, ...(branchPlan?.issues ?? [])] : [];
-  const canPublish = Boolean(plan?.ready) && !publishProduct.isPending && !isArchived;
+  // POS-PERF-P38R3 — after an answer that couldn't be confirmed, Check again comes first (the last plan may be stale).
+  const unconfirmed = publishError instanceof PublicationNotConfirmedError && publishError.outcome === 'unknown';
+  const canPublish = Boolean(plan?.ready) && !publishProduct.isPending && !checkingPublication && !unconfirmed && !isArchived;
 
   async function handlePublish(targetBranchId: string) {
     setPublishError(null);
@@ -335,6 +341,18 @@ function VariantsTab({
     } catch (error) {
       // Keep the page as it is; the inline error explains what happened.
       setPublishError(error instanceof Error ? error : new Error('Failed to publish this product.'));
+    }
+  }
+
+  // POS-PERF-P38R3 — read-only: never repeats Publish.
+  async function handleCheckAgain() {
+    if (!branchId || !(publishError instanceof PublicationNotConfirmedError)) return;
+    setCheckingPublication(true);
+    try {
+      const outcome = await confirmPublication([branchId]);
+      setPublishError(outcome === 'published' ? null : new PublicationNotConfirmedError(publishError, outcome));
+    } finally {
+      setCheckingPublication(false);
     }
   }
 
@@ -452,12 +470,15 @@ function VariantsTab({
                     {notice}
                   </p>
                 ))}
-              {publishError && (
+              {/* POS-PERF-P38R3 — once the product shows as published here, an unconfirmed attempt is settled. */}
+              {publishError && !(isPublishedAtBranch && publishError instanceof PublicationNotConfirmedError) && (
                 <ProductWriteError
                   error={publishError}
                   failedTitle="Couldn't publish this product"
                   pausedTitle="Publishing is paused for maintenance"
                   testId="product-publish-error"
+                  onCheckAgain={() => void handleCheckAgain()}
+                  checking={checkingPublication}
                 />
               )}
               <div className="space-y-1">

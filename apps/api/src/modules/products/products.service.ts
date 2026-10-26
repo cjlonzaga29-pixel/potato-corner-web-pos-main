@@ -9,7 +9,7 @@ import {
   type ReorderFlavorSlotsInput,
   type UpdateFlavorSlotInput,
 } from './products.types.js';
-import { recordAuditLog } from '../../middleware/audit-log.js';
+import { recordAuditLog, recordCommittedAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
 import { config } from '../../config/index.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
@@ -471,7 +471,11 @@ async function publishWithinLock(tx: Prisma.TransactionClient, productId: string
     actor.id,
     tx,
   );
-  return { rows, stockLinks: links };
+  // POS-PERF-P38R3 — read under the lock in this transaction, so a retry (or
+  // a concurrent duplicate) of a publication that already committed sees
+  // those branches as published and audits nothing for them.
+  const newlyPublished = new Set(plan.branches.filter((b) => !b.is_published).map((b) => b.branch_id));
+  return { rows, stockLinks: links, newlyPublished };
 }
 
 /**
@@ -487,7 +491,16 @@ async function publishWithinLock(tx: Prisma.TransactionClient, productId: string
  */
 const PUBLICATION_TRANSACTION_OPTIONS = { maxWait: config.posTransaction.maxWaitMs, timeout: config.posTransaction.timeoutMs };
 
-/** After commit: one INVENTORY_ITEM_BRANCH_ASSIGNED per item publication actually linked. A retry that links nothing writes none. */
+/**
+ * After commit: one INVENTORY_ITEM_BRANCH_ASSIGNED per item publication actually linked. A retry that links nothing writes none.
+ *
+ * POS-PERF-P38R3 — publication's entries are written with
+ * recordCommittedAuditLog: the data is already committed, so a failed entry
+ * is retried (never duplicated) and, if it still fails, reported to Sentry
+ * with its full content instead of being dropped. Still after commit, in
+ * order, through the hash chain — inside the transaction they would add 2
+ * statements each to the measured budget (P38R2).
+ */
 async function recordPublicationSetupAudit(
   productId: string,
   stockLinks: { branchId: string; inventoryItemId: string }[],
@@ -497,7 +510,7 @@ async function recordPublicationSetupAudit(
   const linksByItem = new Map<string, string[]>();
   for (const link of stockLinks) linksByItem.set(link.inventoryItemId, [...(linksByItem.get(link.inventoryItemId) ?? []), link.branchId]);
   for (const [inventoryItemId, assigned] of linksByItem) {
-    await recordAuditLog({
+    await recordCommittedAuditLog({
       action: 'INVENTORY_ITEM_BRANCH_ASSIGNED',
       entityType: 'inventory_stock',
       entityId: inventoryItemId,
@@ -2160,7 +2173,7 @@ export const productsService = {
    * products.publish-safety.integration.test.ts.
    */
   async publishProduct(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
-    const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
+    const { rows, stockLinks, newlyPublished } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
       return publishWithinLock(tx, productId, [branchId], actor);
     }, PUBLICATION_TRANSACTION_OPTIONS);
@@ -2168,16 +2181,19 @@ export const productsService = {
     const product = rows[0] as (typeof rows)[number];
 
     await recordPublicationSetupAudit(productId, stockLinks, actor, ipAddress);
-    await recordAuditLog({
-      action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
-      entityType: 'branch_product_availability',
-      entityId: product.id,
-      actorId: actor.id,
-      actorRole: actor.role,
-      branchId,
-      afterState: { productId, isAvailable: true },
-      ipAddress,
-    });
+    // POS-PERF-P38R3 — a retry at a branch that was already published changed nothing to audit.
+    if (newlyPublished.has(branchId)) {
+      await recordCommittedAuditLog({
+        action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
+        entityType: 'branch_product_availability',
+        entityId: product.id,
+        actorId: actor.id,
+        actorRole: actor.role,
+        branchId,
+        afterState: { productId, isAvailable: true },
+        ipAddress,
+      });
+    }
 
     return toBranchAvailabilityRow(product);
   },
@@ -2210,15 +2226,17 @@ export const productsService = {
   async publishProductToBranches(productId: string, branchIds: string[], actor: ActorContext, ipAddress: string | null) {
     const uniqueBranchIds = [...new Set(branchIds)];
 
-    const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
+    const { rows, stockLinks, newlyPublished } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
       return publishWithinLock(tx, productId, uniqueBranchIds, actor);
     }, PUBLICATION_TRANSACTION_OPTIONS);
 
     await recordPublicationSetupAudit(productId, stockLinks, actor, ipAddress);
 
-    for (const row of rows) {
-      await recordAuditLog({
+    // POS-PERF-P38R3 — only the branches this call turned on; a retry after a
+    // lost response returns the same rows and audits nothing again.
+    for (const row of rows.filter((r) => newlyPublished.has(r.branchId))) {
+      await recordCommittedAuditLog({
         action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
         entityType: 'branch_product_availability',
         entityId: row.id,

@@ -38,6 +38,8 @@ import {
   useDeleteVariant,
   usePublicationCheck,
   usePublishProductToBranches,
+  useConfirmPublication,
+  PublicationNotConfirmedError,
 } from '@/hooks/queries/use-products';
 import {
   useVariantOptionGroups,
@@ -827,7 +829,9 @@ function ReviewStep({
   const branchIds = branches.map((b) => b.id);
   const check = usePublicationCheck(productId, branchIds);
   const publishProduct = usePublishProductToBranches(productId);
+  const confirmPublication = useConfirmPublication(productId);
   const [publishError, setPublishError] = useState<Error | null>(null);
+  const [checkingPublication, setCheckingPublication] = useState(false);
   const { reset } = useProductBuilderStore();
   const router = useRouter();
 
@@ -841,7 +845,9 @@ function ReviewStep({
 
   const plan = check.data;
   const isPublished = !!plan && plan.branches.length > 0 && plan.branches.every((b) => b.is_published);
-  const canAddToPos = !!plan && plan.ready && !isPublished && !publishProduct.isPending;
+  // POS-PERF-P38R3 — after an answer that couldn't be confirmed, Check again comes first (the last plan may be stale).
+  const unconfirmed = publishError instanceof PublicationNotConfirmedError && publishError.outcome === 'unknown';
+  const canAddToPos = !!plan && plan.ready && !isPublished && !publishProduct.isPending && !checkingPublication && !unconfirmed;
 
   async function handlePublish() {
     if (branchIds.length === 0) return;
@@ -855,6 +861,23 @@ function ReviewStep({
     }
     reset();
     router.push(`/supervisor/products/${productId}`);
+  }
+
+  // POS-PERF-P38R3 — read-only: never repeats Add to POS. The builder stays as it is unless the server shows it is on POS.
+  async function handleCheckAgain() {
+    if (!(publishError instanceof PublicationNotConfirmedError)) return;
+    setCheckingPublication(true);
+    try {
+      const outcome = await confirmPublication(branchIds);
+      if (outcome === 'published') {
+        reset();
+        router.push(`/supervisor/products/${productId}`);
+        return;
+      }
+      setPublishError(new PublicationNotConfirmedError(publishError, outcome));
+    } finally {
+      setCheckingPublication(false);
+    }
   }
 
   function handleSaveDraft() {
@@ -956,12 +979,15 @@ function ReviewStep({
         </Card>
       )}
 
-      {publishError && (
+      {/* POS-PERF-P38R3 — once Review's own check shows it on POS, an unconfirmed attempt is settled. */}
+      {publishError && !(isPublished && publishError instanceof PublicationNotConfirmedError) && (
         <ProductWriteError
           error={publishError}
           failedTitle="Couldn't add to POS"
           pausedTitle="Add to POS is paused for maintenance"
           testId="builder-write-error"
+          onCheckAgain={() => void handleCheckAgain()}
+          checking={checkingPublication}
         />
       )}
 

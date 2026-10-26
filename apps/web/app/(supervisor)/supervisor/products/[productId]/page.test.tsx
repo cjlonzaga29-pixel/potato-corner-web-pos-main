@@ -4,11 +4,12 @@ import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import SupervisorProductDetailPage from './page';
 import type { ProductDetailResponse, ProductReadinessResponse, PublicationCheckResponse } from '@potato-corner/shared';
 
-const { mockUseProduct, mockUseProductReadiness, mockUsePublicationCheck, mockPublish } = vi.hoisted(() => ({
+const { mockUseProduct, mockUseProductReadiness, mockUsePublicationCheck, mockPublish, mockConfirm } = vi.hoisted(() => ({
   mockUseProduct: vi.fn(),
   mockUseProductReadiness: vi.fn(),
   mockUsePublicationCheck: vi.fn(),
   mockPublish: vi.fn(),
+  mockConfirm: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -51,6 +52,7 @@ vi.mock('@/hooks/queries/use-products', async (importOriginal) => {
     useUploadProductImage: () => ({ mutateAsync: vi.fn(), isPending: false }),
     usePublishProduct: () => ({ mutateAsync: mockPublish, isPending: false }),
     usePublicationCheck: mockUsePublicationCheck,
+    useConfirmPublication: () => mockConfirm,
     useUnpublishProduct: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
 });
@@ -249,5 +251,35 @@ describe('SupervisorProductDetailPage Publish (POS-PERF-P38R)', () => {
 
     expect(mockUsePublicationCheck).toHaveBeenCalledWith('product-1', []);
     expect(screen.getByRole('button', { name: 'Unpublish' })).toBeInTheDocument();
+  });
+
+  it('POS-PERF-P38R3: an unconfirmed publish says so, and Check again only reads the server state', async () => {
+    const { ProductApiError, PublicationNotConfirmedError } = await import('@/hooks/queries/use-products');
+    mockPublish.mockRejectedValue(new PublicationNotConfirmedError(new ProductApiError('Could not reach the server.', 'NETWORK_ERROR'), 'unknown'));
+    mockConfirm.mockResolvedValueOnce('not_published').mockResolvedValueOnce('published');
+    await renderVariantsTab();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    });
+    const error = screen.getByTestId('product-publish-error');
+    expect(error).toHaveTextContent('Could not confirm whether this was added to POS');
+    expect(error).not.toHaveTextContent("Couldn't publish");
+    expect(screen.getByRole('button', { name: 'Publish' })).toBeDisabled(); // check first, never a blind repeat
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    });
+    expect(mockConfirm).toHaveBeenCalledWith(['branch-1']);
+    expect(screen.getByTestId('product-publish-error')).toHaveTextContent('Not on POS yet');
+    expect(screen.getByTestId('product-publish-error')).toHaveTextContent('Trying again is safe');
+    expect(screen.getByRole('button', { name: 'Publish' })).toBeEnabled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    });
+    expect(screen.queryByTestId('product-publish-error')).not.toBeInTheDocument();
+    // Publish ran once; every later step was a read.
+    expect(mockPublish).toHaveBeenCalledTimes(1);
   });
 });

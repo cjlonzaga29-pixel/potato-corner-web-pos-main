@@ -8,6 +8,8 @@
 //   configure <productId> <potatoId> <cupId> <flavorId> [kg]  -> { regularVariantId }
 //       kg: enter the potato in a new kilogram unit with no conversion (genuinely invalid setup)
 //   audits <productId>                                        -> [ "branchId:itemId", ... ]
+//   availability <productId>                                  -> { published: [branchId...], audited: [branchId...] }
+//       POS-PERF-P38R3: where it is on POS now, and one entry per PRODUCT_BRANCH_AVAILABILITY_CHANGED written for it
 const path = require('node:path');
 const { PrismaClient } = require(path.join(__dirname, '..', '..', '..', 'apps', 'api', 'node_modules', '@prisma', 'client'));
 
@@ -50,6 +52,14 @@ async function main() {
         .flatMap((r) => (r.afterState.assigned || []).map((branchId) => `${branchId}:${r.entityId}`))
         .sort();
       process.stdout.write(JSON.stringify(pairs));
+      return;
+    }
+    if (mode === 'availability') {
+      const [productId] = args;
+      const rows = await prisma.branchProductAvailability.findMany({ where: { productId, isAvailable: true } });
+      const audits = await prisma.auditLog.findMany({ where: { action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' } });
+      const audited = audits.filter((r) => r.afterState && r.afterState.productId === productId).map((r) => r.branchId);
+      process.stdout.write(JSON.stringify({ published: rows.map((r) => r.branchId).sort(), audited: audited.sort() }));
       return;
     }
     throw new Error(`unknown mode: ${mode}`);

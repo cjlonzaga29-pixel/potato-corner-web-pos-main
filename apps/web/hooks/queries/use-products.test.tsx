@@ -21,6 +21,8 @@ const {
   usePublishProductToBranches,
   usePublicationCheck,
   ProductApiError,
+  PublicationNotConfirmedError,
+  useConfirmPublication,
   useUnpublishProduct,
 } = await import('./use-products.js');
 
@@ -256,5 +258,89 @@ describe('POS-PERF-P37 — multi-branch Add to POS', () => {
     expect(apiClient).toHaveBeenCalledTimes(1);
     expect(apiClient).toHaveBeenCalledWith(`/api/products/product-1/publication-check?branch_ids=${encodeURIComponent('branch-a,branch-b')}`);
     expect(queryClient.getQueryData(['product', 'product-1', 'publication-check', 'branch-a,branch-b'])).toBeTruthy();
+  });
+});
+
+describe('POS-PERF-P38R3 — a publish whose answer was lost is reconciled, never repeated', () => {
+  const networkError = { data: null, error: { code: 'NETWORK_ERROR', message: 'Could not reach the server.' }, meta: null };
+  const plan = (published: Record<string, boolean>) => ({
+    data: {
+      product_id: 'product-1',
+      ready: true,
+      issues: [],
+      branches: Object.entries(published).map(([branch_id, is_published]) => ({ branch_id, branch_name: branch_id, is_published, status: is_published ? 'on_pos' : 'ready', issues: [], notices: [], setup_items: [] })),
+    },
+    error: null,
+    meta: null,
+  });
+  // The reconciliation read carries a unique `fresh=` so the service worker's cached fallback can never answer it.
+  const calls = () =>
+    vi.mocked(apiClient).mock.calls.map(([path, init]) => {
+      const fresh = /&fresh=\d+$/.test(path);
+      return `${(init as RequestInit | undefined)?.method ?? 'GET'} ${path.replace(/&fresh=\d+$/, '')}${fresh ? ' (fresh)' : ''}`;
+    });
+
+  it('Add to POS: a lost answer to a publication that committed resolves as published, with one POST and a read-only check', async () => {
+    const queryClient = newClient();
+    vi.mocked(apiClient).mockResolvedValueOnce(networkError).mockResolvedValueOnce(plan({ 'branch-a': true, 'branch-b': true }));
+
+    const { result } = renderHook(() => usePublishProductToBranches('product-1'), { wrapper: clientWrapper(queryClient) });
+    await expect(result.current.mutateAsync(['branch-a', 'branch-b'])).resolves.toBe('published');
+
+    expect(calls()).toEqual([
+      'POST /api/products/product-1/publish-branches',
+      `GET /api/products/product-1/publication-check?branch_ids=${encodeURIComponent('branch-a,branch-b')} (fresh)`,
+    ]);
+  });
+
+  it('Add to POS: not on POS at every branch → not_published, never retried automatically', async () => {
+    const queryClient = newClient();
+    vi.mocked(apiClient).mockResolvedValueOnce(networkError).mockResolvedValueOnce(plan({ 'branch-a': true, 'branch-b': false }));
+
+    const { result } = renderHook(() => usePublishProductToBranches('product-1'), { wrapper: clientWrapper(queryClient) });
+    const error = await result.current.mutateAsync(['branch-a', 'branch-b']).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PublicationNotConfirmedError);
+    expect(error).toMatchObject({ outcome: 'not_published', code: 'NETWORK_ERROR' });
+    expect(calls().filter((c) => c.startsWith('POST'))).toHaveLength(1);
+  });
+
+  it('Publish: an unreadable or failed answer plus a failed check → unknown', async () => {
+    const queryClient = newClient();
+    vi.mocked(apiClient)
+      .mockResolvedValueOnce({ data: null, error: { code: 'UNREADABLE_RESPONSE', message: 'Checkout could not be confirmed.' }, meta: null })
+      .mockResolvedValueOnce(networkError);
+
+    const { result } = renderHook(() => usePublishProduct('product-1'), { wrapper: clientWrapper(queryClient) });
+    const error = await result.current.mutateAsync('branch-a').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PublicationNotConfirmedError);
+    expect(error).toMatchObject({ outcome: 'unknown' });
+    expect(calls()).toEqual(['POST /api/products/product-1/publish', 'GET /api/products/product-1/publication-check?branch_ids=branch-a (fresh)']);
+  });
+
+  it('a definite rejection is shown as it is, without a check', async () => {
+    const queryClient = newClient();
+    vi.mocked(apiClient).mockResolvedValueOnce({ data: null, error: { code: 'BRANCH_ACCESS_DENIED', message: 'No access.' }, meta: null });
+
+    const { result } = renderHook(() => usePublishProduct('product-1'), { wrapper: clientWrapper(queryClient) });
+    const error = await result.current.mutateAsync('branch-a').catch((e: unknown) => e);
+
+    expect(error).not.toBeInstanceOf(PublicationNotConfirmedError);
+    expect(error).toMatchObject({ code: 'BRANCH_ACCESS_DENIED' });
+    expect(apiClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('Check again only reads, and refreshes the product and its branches', async () => {
+    const queryClient = newClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(apiClient).mockResolvedValueOnce(plan({ 'branch-a': true }));
+
+    const { result } = renderHook(() => useConfirmPublication('product-1'), { wrapper: clientWrapper(queryClient) });
+    await expect(result.current(['branch-a'])).resolves.toBe('published');
+
+    expect(calls()).toEqual(['GET /api/products/product-1/publication-check?branch_ids=branch-a (fresh)']);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product', 'product-1'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['catalog', 'branch-a'] });
   });
 });
